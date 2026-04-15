@@ -5,10 +5,9 @@
 # Hermes Agent ☤
 
 <p align="center">
-  <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Documentation"></a>
-  <a href="https://discord.gg/NousResearch"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
-  <a href="https://github.com/NousResearch/hermes-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
-  <a href="https://nousresearch.com"><img src="https://img.shields.io/badge/Built%20by-Nous%20Research-blueviolet?style=for-the-badge" alt="Built by Nous Research"></a>
+  <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-hermes--agent.nousresearch.com-FFD700?style=flat-square" alt="Documentation"></a>
+  <a href="https://discord.gg/NousResearch"><img src="https://img.shields.io/badge/Discord-5865F2?style=flat-square&logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="https://github.com/NousResearch/hermes-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="License: MIT"></a>
 </p>
 
 **An open-source AI agent with memory, tools, messaging, and a learning loop that compounds over time.**
@@ -18,14 +17,6 @@ Hermes is built for people who want more than a chat window: it remembers across
 More than a chat UI or tool runner, Hermes is a persistent agent that can remember, act, automate, message you back, and improve how it works.
 
 Bring your own model: use [Nous Portal](https://portal.nousresearch.com), [OpenRouter](https://openrouter.ai), OpenAI, or your own endpoint. Switch providers with `hermes model` — no code changes, no lock-in.
-
-## Why teams and power users stick with Hermes
-
-- **It learns from real work** — Hermes creates skills after complex tasks, improves them during use, and reuses them later.
-- **It remembers across sessions** — persistent memory and session search give it continuity instead of reset-every-time chat behavior.
-- **It meets you where you already work** — use the same agent from the CLI, Telegram, Discord, Slack, WhatsApp, Signal, Email, and more.
-- **It can run unattended** — schedules, background jobs, and subagents let work continue without babysitting.
-- **It runs locally or remotely** — from your laptop to Docker, SSH, Daytona, Singularity, and Modal.
 
 ## What you can do in the first 10 minutes
 
@@ -52,19 +43,13 @@ Want messaging instead of terminal? Run `hermes gateway` after setup to connect 
 >
 > **Windows:** Native Windows is not supported. Please install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and run the command above.
 
-## Core capabilities
+## Why teams and power users stick with Hermes
 
-<table>
-<tr><td><b>A real terminal interface</b></td><td>Full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output.</td></tr>
-<tr><td><b>Lives where you do</b></td><td>Telegram, Discord, Slack, WhatsApp, Signal, and CLI — all from a single gateway process. Voice memo transcription, cross-platform conversation continuity.</td></tr>
-<tr><td><b>A closed learning loop</b></td><td>Agent-curated memory with periodic nudges. Autonomous skill creation after complex tasks. Skills self-improve during use. FTS5 session search with LLM summarization for cross-session recall. <a href="https://github.com/plastic-labs/honcho">Honcho</a> dialectic user modeling. Compatible with the <a href="https://agentskills.io">agentskills.io</a> open standard.</td></tr>
-<tr><td><b>Scheduled automations</b></td><td>Built-in cron scheduler with delivery to any platform. Daily reports, nightly backups, weekly audits — all in natural language, running unattended.</td></tr>
-<tr><td><b>Delegates and parallelizes</b></td><td>Spawn isolated subagents for parallel workstreams. Write Python scripts that call tools via RPC, collapsing multi-step pipelines into zero-context-cost turns.</td></tr>
-<tr><td><b>Runs anywhere, not just your laptop</b></td><td>Six terminal backends — local, Docker, SSH, Daytona, Singularity, and Modal. Daytona and Modal offer serverless persistence — your agent's environment hibernates when idle and wakes on demand, costing nearly nothing between sessions.</td></tr>
-<tr><td><b>Research-ready</b></td><td>Batch trajectory generation, Atropos RL environments, trajectory compression for training the next generation of tool-calling models.</td></tr>
-</table>
-
----
+- **It learns from real work** — Hermes creates skills after complex tasks, improves them during use, and reuses them later.
+- **It remembers across sessions** — persistent memory and session search give it continuity instead of reset-every-time chat behavior.
+- **It meets you where you already work** — use the same agent from the CLI, Telegram, Discord, Slack, WhatsApp, Signal, Email, and more.
+- **It can run unattended** — schedules, background jobs, and subagents let work continue without babysitting.
+- **It runs locally or remotely** — from your laptop to Docker, SSH, Daytona, Singularity, and Modal.
 
 ## Getting Started
 
@@ -99,6 +84,18 @@ Hermes has two entry points: start the terminal UI with `hermes`, or run the gat
 | Platform-specific status | `/platforms` | `/status`, `/sethome` |
 
 For the full command lists, see the [CLI guide](https://hermes-agent.nousresearch.com/docs/user-guide/cli) and the [Messaging Gateway guide](https://hermes-agent.nousresearch.com/docs/user-guide/messaging).
+
+## Capabilities in depth
+
+<table>
+<tr><td><b>A real terminal interface</b></td><td>Full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output.</td></tr>
+<tr><td><b>Lives where you do</b></td><td>Telegram, Discord, Slack, WhatsApp, Signal, and CLI — all from a single gateway process. Voice memo transcription, cross-platform conversation continuity.</td></tr>
+<tr><td><b>A closed learning loop</b></td><td>Agent-curated memory with periodic nudges. Autonomous skill creation after complex tasks. Skills self-improve during use. FTS5 session search with LLM summarization for cross-session recall. <a href="https://github.com/plastic-labs/honcho">Honcho</a> dialectic user modeling. Compatible with the <a href="https://agentskills.io">agentskills.io</a> open standard.</td></tr>
+<tr><td><b>Scheduled automations</b></td><td>Built-in cron scheduler with delivery to any platform. Daily reports, nightly backups, weekly audits — all in natural language, running unattended.</td></tr>
+<tr><td><b>Delegates and parallelizes</b></td><td>Spawn isolated subagents for parallel workstreams. Write Python scripts that call tools via RPC, collapsing multi-step pipelines into zero-context-cost turns.</td></tr>
+<tr><td><b>Runs anywhere, not just your laptop</b></td><td>Six terminal backends — local, Docker, SSH, Daytona, Singularity, and Modal. Daytona and Modal offer serverless persistence — your agent's environment hibernates when idle and wakes on demand, costing nearly nothing between sessions.</td></tr>
+<tr><td><b>Research-ready</b></td><td>Batch trajectory generation, Atropos RL environments, trajectory compression for training the next generation of tool-calling models.</td></tr>
+</table>
 
 ---
 
