@@ -14,6 +14,7 @@ Usage:
 """
 
 import logging
+import math
 import os
 import shutil
 import sys
@@ -1903,30 +1904,64 @@ class HermesCLI:
         return tool_names
 
     @staticmethod
-    def _categorize_rpg_tool(tool_name: str) -> str:
+    def _categorize_rpg_tool(tool_name: str) -> Dict[str, float]:
         name = (tool_name or "").strip().lower()
         if not name:
-            return "misc"
-        if name in {"read_file", "search_files", "session_search", "vision_analyze", "browser_navigate", "browser_snapshot", "browser_vision", "web_search", "browser_get_images"} or name.startswith("browser_"):
-            return "research"
-        if name in {"write_file", "patch", "execute_code", "delegate_task"}:
-            return "build"
+            return {}
+        if name in {"read_file", "search_files", "session_search", "vision_analyze", "web_search", "browser_get_images"} or name.startswith("browser_"):
+            return {"research": 1.0}
+        if name in {"write_file", "patch"}:
+            return {"build": 1.0}
+        if name == "execute_code":
+            return {"build": 0.6, "debug": 0.4}
+        if name == "delegate_task":
+            return {"build": 0.5, "ops": 0.5}
         if name in {"terminal", "process", "rollback", "browser_console"}:
-            return "debug"
+            return {"debug": 0.7, "ops": 0.3}
         if name in {"cronjob", "send_message", "reload-mcp", "reload_mcp"}:
-            return "ops"
+            return {"ops": 1.0}
         if name in {"memory", "todo", "skill_manage", "skills_list", "skill_view"}:
-            return "memory"
-        return "misc"
+            return {"memory": 1.0}
+        return {"misc": 1.0}
+
+    @staticmethod
+    def _smooth_rpg_stat(score: float, scale: float = 2.4) -> int:
+        value = 1 + int(8 * (score / (score + scale))) if score > 0 else 1
+        return max(1, min(9, value))
+
+    @staticmethod
+    def _rpg_percent_bar(percent: int, width: int = 20, filled: str = "█", empty: str = "░") -> str:
+        safe = max(0, min(100, percent or 0))
+        fill = round((safe / 100) * width)
+        return f"[{filled * fill}{empty * max(0, width - fill)}] {safe}%"
+
+    @staticmethod
+    def _rpg_stat_bar(value: int, width: int = 9) -> str:
+        safe = max(0, min(width, int(value or 0)))
+        return ("█" * safe) + ("░" * max(0, width - safe))
+
+    @staticmethod
+    def _rpg_box_line(left: str = "", right: str = "", inner_width: int = 74) -> str:
+        left = (left or "").strip()
+        right = (right or "").strip()
+        if right:
+            max_left = max(0, inner_width - len(right) - 2)
+            left = left[:max_left]
+            pad = max(0, inner_width - len(left) - len(right))
+            return f"│ {left}{' ' * max(0, pad - 2)}{right} │"
+        return f"│ {(left[:inner_width]).ljust(inner_width)} │"
 
     def _compute_rpg_progression_snapshot(self) -> Dict[str, Any]:
         status = self._get_status_bar_snapshot()
         tool_names = self._iter_session_tool_names()
-        counts = {"research": 0.0, "build": 0.0, "debug": 0.0, "ops": 0.0, "memory": 0.0}
+        categories = ["research", "build", "debug", "ops", "memory"]
+        weighted_counts = {k: 0.0 for k in categories}
+        unique_by_category = {k: set() for k in categories}
         for tool_name in tool_names:
-            category = self._categorize_rpg_tool(tool_name)
-            if category in counts:
-                counts[category] += 1.0
+            for category, weight in self._categorize_rpg_tool(tool_name).items():
+                if category in weighted_counts:
+                    weighted_counts[category] += float(weight)
+                    unique_by_category[category].add(tool_name)
 
         total_tools = len(tool_names)
         unique_tools = len(set(tool_names))
@@ -1934,75 +1969,100 @@ class HermesCLI:
         total_tokens = int(status.get("session_total_tokens") or 0)
         api_calls = int(status.get("session_api_calls") or 0)
         compressions = int(status.get("compressions") or 0)
+        active_minutes = max(1, min(elapsed_minutes, api_calls * 4 + total_tools * 2 + 4))
 
-        counts["research"] += min(4.0, total_tokens / 12000.0)
-        counts["build"] += min(3.0, unique_tools / 3.0)
-        counts["debug"] += compressions * 1.3
-        counts["ops"] += min(3.0, elapsed_minutes / 20.0)
-        counts["memory"] += compressions + min(2.0, unique_tools / 4.0)
+        tool_den = max(1.0, float(total_tools))
+        unique_den = max(1.0, float(unique_tools))
+        tool_share = {k: weighted_counts[k] / tool_den for k in categories}
+        unique_share = {k: len(unique_by_category[k]) / unique_den for k in categories}
 
-        def _to_stat(value: float) -> int:
-            return max(1, min(9, int(round(value)) or 1))
-
-        stats = {
-            "research": _to_stat(counts["research"]),
-            "build": _to_stat(counts["build"]),
-            "debug": _to_stat(counts["debug"]),
-            "ops": _to_stat(counts["ops"]),
-            "memory": _to_stat(counts["memory"]),
-        }
+        token_intensity = min(1.0, total_tokens / 24000.0)
+        api_density = min(1.0, api_calls / 12.0)
+        duration_factor = min(1.0, active_minutes / 45.0)
+        compression_pressure = min(1.0, compressions / 3.0)
+        execution_intensity = min(1.0, (api_calls + unique_tools) / 12.0)
 
         class_scores = {
-            "Researcher": counts["research"],
-            "Builder": counts["build"],
-            "Debugger": counts["debug"],
-            "Operator": counts["ops"],
+            "Researcher": 0.65 * tool_share["research"] + 0.20 * unique_share["research"] + 0.15 * token_intensity,
+            "Builder": 0.65 * tool_share["build"] + 0.20 * unique_share["build"] + 0.15 * execution_intensity,
+            "Debugger": 0.70 * tool_share["debug"] + 0.15 * api_density + 0.15 * compression_pressure,
+            "Operator": 0.70 * tool_share["ops"] + 0.15 * duration_factor + 0.15 * api_density,
         }
-        archetype = max(class_scores, key=class_scores.get)
+        ranked_classes = sorted(class_scores.items(), key=lambda kv: (-kv[1], kv[0]))
+        archetype = ranked_classes[0][0]
+        if len(ranked_classes) > 1 and (ranked_classes[0][1] - ranked_classes[1][1]) < 0.08 and ranked_classes[1][1] > 0.18:
+            archetype = f"{ranked_classes[0][0]}-{ranked_classes[1][0]}"
+
+        stat_scores = {
+            "research": weighted_counts["research"] + 2.4 * token_intensity + 0.8 * unique_share["research"],
+            "build": weighted_counts["build"] + 1.2 * execution_intensity + 0.9 * unique_share["build"],
+            "debug": weighted_counts["debug"] + 1.0 * api_density + 0.8 * compression_pressure,
+            "ops": weighted_counts["ops"] + 1.1 * duration_factor + 0.7 * api_density,
+            "memory": weighted_counts["memory"] + 0.7 * compression_pressure + 0.5 * duration_factor + 0.3 * unique_tools,
+        }
+        stats = {k: self._smooth_rpg_stat(v) for k, v in stat_scores.items()}
 
         progression_score = (
-            total_tools * 12
-            + unique_tools * 8
-            + api_calls * 5
-            + compressions * 15
-            + min(60, total_tokens / 1500.0)
-            + min(40, elapsed_minutes / 2.0)
+            8 * total_tools
+            + 20 * min(unique_tools, 4)
+            + 8 * max(0, unique_tools - 4)
+            + 10 * api_calls
+            + 25 * math.log1p(total_tokens / 4000.0)
+            + 12 * math.log1p(active_minutes / 15.0)
+            + (8 * compressions if total_tokens >= 12000 else 0)
         )
-        level = max(1, min(9, 1 + int(progression_score // 100)))
-        xp_percent = max(0, min(99, int(progression_score % 100)))
+        thresholds = [0, 80, 180, 320, 520, 780, 1100, 1500, 2000]
+        level = 1
+        for idx, threshold in enumerate(thresholds, start=1):
+            if progression_score >= threshold:
+                level = idx
+        level = min(level, 9)
+        current_floor = thresholds[level - 1]
+        next_floor = thresholds[min(level, len(thresholds) - 1)] if level < len(thresholds) else thresholds[-1]
+        if level >= 9:
+            xp_percent = 99
+        else:
+            span = max(1.0, next_floor - current_floor)
+            xp_percent = max(0, min(99, int(((progression_score - current_floor) / span) * 100)))
 
-        notes: list[str] = []
+        note_candidates: list[tuple[float, str]] = []
         if unique_tools >= 4:
-            notes.append("+Tool diversity")
-        if archetype == "Researcher" and counts["research"] >= 3:
-            notes.append("+Research streak")
-        if archetype == "Builder" and counts["build"] >= 3:
-            notes.append("+Builder streak")
-        if counts["debug"] >= 2.5:
-            notes.append("+Debug streak")
+            note_candidates.append((2.5 + unique_tools * 0.2, f"Broad toolkit ({unique_tools} unique tools)"))
+        if weighted_counts["research"] >= 2:
+            note_candidates.append((weighted_counts["research"], f"Research-heavy mix ({round(weighted_counts['research'], 1)} research actions)"))
+        if weighted_counts["build"] >= 2:
+            note_candidates.append((weighted_counts["build"], f"Build momentum ({round(weighted_counts['build'], 1)} build actions)"))
+        if weighted_counts["debug"] >= 1.8:
+            note_candidates.append((weighted_counts["debug"], f"Debug pressure ({round(weighted_counts['debug'], 1)} debug actions)"))
+        if total_tokens >= 16000:
+            note_candidates.append((2.2, f"High throughput ({format_token_count_compact(total_tokens)} tokens)"))
         if compressions >= 1:
-            notes.append("+Context compression")
-        if counts["memory"] >= 2:
-            notes.append("+Memory active")
-        if elapsed_minutes >= 30:
-            notes.append("+Long run")
+            noun = "compression" if compressions == 1 else "compressions"
+            note_candidates.append((1.8 + compressions * 0.2, f"Deep-context run ({compressions} {noun})"))
+        if active_minutes >= 30:
+            note_candidates.append((1.5 + active_minutes / 30.0, f"Sustained session ({active_minutes}m active)"))
         if api_calls >= 8:
-            notes.append("+Busy session")
-        if not notes:
-            notes.append("+Warmup")
+            note_candidates.append((1.8 + api_calls / 10.0, f"Busy turn flow ({api_calls} API calls)"))
+        if not note_candidates:
+            note_candidates.append((1.0, "Warmup session"))
+        note_candidates.sort(key=lambda item: (-item[0], item[1]))
+        notes = [text for _, text in note_candidates[:3]]
 
         return {
             "archetype": archetype,
+            "class_scores": class_scores,
             "level": level,
             "xp_percent": xp_percent,
+            "progression_score": progression_score,
             "stats": stats,
-            "notes": notes[:3],
+            "notes": notes,
             "tool_count": total_tools,
             "unique_tools": unique_tools,
             "session_api_calls": api_calls,
             "session_total_tokens": total_tokens,
             "compressions": compressions,
             "duration": status.get("duration"),
+            "active_minutes": active_minutes,
         }
 
     def _format_rpg_compact(self, snapshot: Optional[Dict[str, Any]] = None) -> str:
@@ -2021,21 +2081,39 @@ class HermesCLI:
             return json.dumps(snapshot, indent=2, ensure_ascii=False)
 
         stats = snapshot["stats"]
-        notes = ", ".join(snapshot["notes"])
-        return "\n".join([
-            "⚔ Hermes Character Sheet",
-            f"Class: {snapshot['archetype']}",
-            f"Level: {snapshot['level']}",
-            f"XP: {snapshot['xp_percent']}%",
-            (
-                "Stats: "
-                f"Rsch {stats['research']} | Build {stats['build']} | "
-                f"Debug {stats['debug']} | Ops {stats['ops']} | Memory {stats['memory']}"
+        width = 74
+        title = " Hermes // Character Sheet "
+        lead = 26
+        tail = max(0, width - lead - len(title))
+        lines = [
+            f"┌{'─' * lead}{title}{'─' * tail}┐",
+            self._rpg_box_line(f"Class      {snapshot['archetype']}", "Rank        Active Session", width),
+            self._rpg_box_line(f"Level      {snapshot['level']}", f"XP          {snapshot['xp_percent']} / 100", width),
+            self._rpg_box_line(f"XP Bar     {self._rpg_percent_bar(snapshot['xp_percent'], width=20)}", inner_width=width),
+            f"├{'─' * 30} Core Stats {'─' * 32}┤",
+            self._rpg_box_line(
+                f"RSRCH  {stats['research']}  {self._rpg_stat_bar(stats['research'])}   BUILD  {stats['build']}  {self._rpg_stat_bar(stats['build'])}",
+                inner_width=width,
             ),
-            f"Recent: {notes}",
-            f"Signals: {snapshot['tool_count']} tool calls | {snapshot['unique_tools']} unique tools | {snapshot['session_api_calls']} API calls",
+            self._rpg_box_line(
+                f"DEBUG  {stats['debug']}  {self._rpg_stat_bar(stats['debug'])}   OPS    {stats['ops']}  {self._rpg_stat_bar(stats['ops'])}",
+                inner_width=width,
+            ),
+            self._rpg_box_line(f"MEMORY {stats['memory']}  {self._rpg_stat_bar(stats['memory'])}", inner_width=width),
+            f"├{'─' * 29} Recent Notes {'─' * 31}┤",
+        ]
+        for note in snapshot["notes"][:3]:
+            lines.append(self._rpg_box_line(f"• {note}", inner_width=width))
+        lines.extend([
+            f"├{'─' * 28} Session Signals {'─' * 29}┤",
+            self._rpg_box_line(
+                f"Tools {snapshot['tool_count']} total   Unique {snapshot['unique_tools']}   API {snapshot['session_api_calls']}   Comp {snapshot['compressions']}   {snapshot['duration']}",
+                inner_width=width,
+            ),
+            f"└{'─' * width}┘",
             "Heuristic only — derived from current-session behavior, not a hidden score.",
         ])
+        return "\n".join(lines)
 
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
         # Prefer the agent's model name — it updates on fallback.

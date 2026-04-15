@@ -109,7 +109,7 @@ class TestCLIStatusBar:
         assert snapshot["archetype"] == "Researcher"
         assert snapshot["level"] >= 1
         assert snapshot["stats"]["research"] >= snapshot["stats"]["ops"]
-        assert "+Tool diversity" in snapshot["notes"]
+        assert any("Broad toolkit" in note or "Research-heavy mix" in note for note in snapshot["notes"])
 
     def test_build_status_bar_text_includes_rpg_fragment_when_enabled(self):
         cli_obj = _attach_agent(
@@ -130,6 +130,37 @@ class TestCLIStatusBar:
 
         assert "Lv." in text
         assert "XP" in text
+
+    def test_render_rpg_sheet_builds_character_panel(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=18_000,
+            completion_tokens=3_000,
+            total_tokens=21_000,
+            api_calls=9,
+            context_tokens=21_000,
+            context_length=200_000,
+            compressions=1,
+        )
+        cli_obj.conversation_history = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"function": {"name": "read_file"}},
+                    {"function": {"name": "search_files"}},
+                    {"function": {"name": "write_file"}},
+                    {"function": {"name": "terminal"}},
+                ],
+            }
+        ]
+
+        sheet = cli_obj._render_rpg_sheet()
+
+        assert "Hermes // Character Sheet" in sheet
+        assert "XP Bar" in sheet
+        assert "Core Stats" in sheet
+        assert "Session Signals" in sheet
+        assert "Heuristic only" in sheet
 
     def test_input_height_counts_wide_characters_using_cell_width(self):
         cli_obj = _make_cli()
