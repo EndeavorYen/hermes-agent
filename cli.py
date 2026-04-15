@@ -2082,36 +2082,44 @@ class HermesCLI:
 
         stats = snapshot["stats"]
         width = 74
-        title = " Hermes // Character Sheet "
-        lead = 26
+        title = " Hermes Character Sheet "
+        lead = 24
         tail = max(0, width - lead - len(title))
+        xp_to_next = max(1, 100 - int(snapshot['xp_percent'])) if snapshot['level'] < 9 else 0
+        next_rank_label = "MAX RANK" if snapshot['level'] >= 9 else f"{xp_to_next} XP to rank {snapshot['level'] + 1}"
         lines = [
             f"┌{'─' * lead}{title}{'─' * tail}┐",
-            self._rpg_box_line(f"Class      {snapshot['archetype']}", "Rank        Active Session", width),
-            self._rpg_box_line(f"Level      {snapshot['level']}", f"XP          {snapshot['xp_percent']} / 100", width),
-            self._rpg_box_line(f"XP Bar     {self._rpg_percent_bar(snapshot['xp_percent'], width=20)}", inner_width=width),
+            self._rpg_box_line(snapshot['archetype'], f"Level {snapshot['level']}", width),
+            self._rpg_box_line(
+                f"Progress to next rank: {self._rpg_percent_bar(snapshot['xp_percent'], width=20)}",
+                next_rank_label,
+                width,
+            ),
             f"├{'─' * 30} Core Stats {'─' * 32}┤",
             self._rpg_box_line(
-                f"RSRCH  {stats['research']}  {self._rpg_stat_bar(stats['research'])}   BUILD  {stats['build']}  {self._rpg_stat_bar(stats['build'])}",
+                f"INSIGHT {stats['research']}  {self._rpg_stat_bar(stats['research'])}   CRAFT   {stats['build']}  {self._rpg_stat_bar(stats['build'])}",
                 inner_width=width,
             ),
             self._rpg_box_line(
-                f"DEBUG  {stats['debug']}  {self._rpg_stat_bar(stats['debug'])}   OPS    {stats['ops']}  {self._rpg_stat_bar(stats['ops'])}",
+                f"RESOLVE {stats['debug']}  {self._rpg_stat_bar(stats['debug'])}   COMMAND {stats['ops']}  {self._rpg_stat_bar(stats['ops'])}",
                 inner_width=width,
             ),
-            self._rpg_box_line(f"MEMORY {stats['memory']}  {self._rpg_stat_bar(stats['memory'])}", inner_width=width),
-            f"├{'─' * 29} Recent Notes {'─' * 31}┤",
+            self._rpg_box_line(f"MEMORY  {stats['memory']}  {self._rpg_stat_bar(stats['memory'])}", inner_width=width),
+            f"├{'─' * 30} Recent Feats {'─' * 31}┤",
         ]
         for note in snapshot["notes"][:3]:
             lines.append(self._rpg_box_line(f"• {note}", inner_width=width))
         lines.extend([
-            f"├{'─' * 28} Session Signals {'─' * 29}┤",
+            f"├{'─' * 30} Field Report {'─' * 31}┤",
             self._rpg_box_line(
-                f"Tools {snapshot['tool_count']} total   Unique {snapshot['unique_tools']}   API {snapshot['session_api_calls']}   Comp {snapshot['compressions']}   {snapshot['duration']}",
+                f"{snapshot['tool_count']} actions   {snapshot['unique_tools']} unique tools   {snapshot['session_api_calls']} API calls   {snapshot['duration']}",
+                inner_width=width,
+            ),
+            self._rpg_box_line(
+                f"Compressions {snapshot['compressions']}   Active window {snapshot.get('active_minutes', 0)}m",
                 inner_width=width,
             ),
             f"└{'─' * width}┘",
-            "Heuristic only — derived from current-session behavior, not a hidden score.",
         ])
         return "\n".join(lines)
 

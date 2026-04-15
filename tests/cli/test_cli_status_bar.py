@@ -156,11 +156,11 @@ class TestCLIStatusBar:
 
         sheet = cli_obj._render_rpg_sheet()
 
-        assert "Hermes // Character Sheet" in sheet
-        assert "XP Bar" in sheet
+        assert "Hermes Character Sheet" in sheet
+        assert "Progress to next rank" in sheet
         assert "Core Stats" in sheet
-        assert "Session Signals" in sheet
-        assert "Heuristic only" in sheet
+        assert "Field Report" in sheet
+        assert "Recent Feats" in sheet
 
     def test_input_height_counts_wide_characters_using_cell_width(self):
         cli_obj = _make_cli()
