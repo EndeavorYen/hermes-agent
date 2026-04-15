@@ -14,7 +14,7 @@
 
 Hermes is for people who want more than a chat window: it remembers across sessions, uses real tools, runs in the terminal or your messaging apps, and turns repeated work into reusable skills.
 
-Bring your own model: use [Nous Portal](https://portal.nousresearch.com), [OpenRouter](https://openrouter.ai), OpenAI, or your own endpoint. Switch providers with `hermes model` — no code changes, no lock-in.
+Use any model you want — [Nous Portal](https://portal.nousresearch.com), [OpenRouter](https://openrouter.ai) (200+ models), [Xiaomi MiMo](https://platform.xiaomimimo.com), [z.ai/GLM](https://z.ai), [Kimi/Moonshot](https://platform.moonshot.ai), [MiniMax](https://www.minimax.io), [Hugging Face](https://huggingface.co), OpenAI, or your own endpoint. Switch with `hermes model` — no code changes, no lock-in.
 
 ## In your first 10 minutes
 
