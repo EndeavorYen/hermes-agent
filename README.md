@@ -10,23 +10,21 @@
   <a href="https://github.com/NousResearch/hermes-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="License: MIT"></a>
 </p>
 
-**An open-source AI agent with memory, tools, messaging, and a learning loop that compounds over time.**
+**An open-source AI agent with memory, tools, messaging, and a learning loop.**
 
-Hermes is built for people who want more than a chat window: it remembers across sessions, uses real tools, runs in the terminal or your messaging apps, and turns repeated work into reusable skills.
-
-More than a chat UI or tool runner, Hermes is a persistent agent that can remember, act, automate, message you back, and improve how it works.
+Hermes is for people who want more than a chat window: it remembers across sessions, uses real tools, runs in the terminal or your messaging apps, and turns repeated work into reusable skills.
 
 Bring your own model: use [Nous Portal](https://portal.nousresearch.com), [OpenRouter](https://openrouter.ai), OpenAI, or your own endpoint. Switch providers with `hermes model` — no code changes, no lock-in.
 
-## What you can do in the first 10 minutes
+## In your first 10 minutes
 
-- Start a real terminal-native agent session with streaming tool output
-- Pick a model/provider without changing code
-- Give Hermes terminal, browser, file, code execution, and delegation tools
+- Start a terminal-native agent session with streaming tool output
+- Choose a model/provider without changing code
+- Enable terminal, browser, file, code execution, and delegation tools
 - Talk to the same agent from chat platforms while it runs elsewhere
-- Keep durable memory and reusable skills instead of starting from scratch every session
+- Keep durable memory and reusable skills across sessions
 
-## Try Hermes in 2 minutes
+## Get started in 2 minutes
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
@@ -43,33 +41,40 @@ Want messaging instead of terminal? Run `hermes gateway` after setup to connect 
 >
 > **Windows:** Native Windows is not supported. Please install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and run the command above.
 
-## Why teams and power users stick with Hermes
+## Why people stick with Hermes
 
 - **It learns from real work** — Hermes creates skills after complex tasks, improves them during use, and reuses them later.
 - **It remembers across sessions** — persistent memory and session search give it continuity instead of reset-every-time chat behavior.
-- **It meets you where you already work** — use the same agent from the CLI, Telegram, Discord, Slack, WhatsApp, Signal, Email, and more.
+- **It works where you do** — use the same agent from the CLI, Telegram, Discord, Slack, WhatsApp, Signal, Email, and more.
 - **It can run unattended** — schedules, background jobs, and subagents let work continue without babysitting.
 - **It runs locally or remotely** — from your laptop to Docker, SSH, Daytona, Singularity, and Modal.
 
 ## Getting Started
 
+After install, most people do this next:
+
 ```bash
-hermes              # Interactive CLI — start a conversation
-hermes model        # Choose your LLM provider and model
-hermes tools        # Configure which tools are enabled
-hermes config set   # Set individual config values
-hermes gateway      # Start the messaging gateway (Telegram, Discord, etc.)
-hermes setup        # Run the full setup wizard (configures everything at once)
-hermes claw migrate # Migrate from OpenClaw (if coming from OpenClaw)
-hermes update       # Update to the latest version
-hermes doctor       # Diagnose any issues
+hermes model   # choose your provider and model
+hermes         # start a conversation
+hermes tools   # enable or review tool access
+hermes gateway # connect Telegram, Discord, Slack, and more
+```
+
+Useful setup and maintenance commands:
+
+```bash
+hermes setup        # run the full setup wizard
+hermes config set   # change individual config values
+hermes update       # update to the latest version
+hermes doctor       # diagnose issues
+hermes claw migrate # migrate from OpenClaw
 ```
 
 📖 **[Full documentation →](https://hermes-agent.nousresearch.com/docs/)**
 
-## CLI vs Messaging Quick Reference
+## Quick Reference: CLI vs Messaging
 
-Hermes has two entry points: start the terminal UI with `hermes`, or run the gateway and talk to it from Telegram, Discord, Slack, WhatsApp, Signal, or Email. Once you're in a conversation, many slash commands are shared across both interfaces.
+Hermes has two main entry points: start the terminal UI with `hermes`, or run the gateway and talk to it from Telegram, Discord, Slack, WhatsApp, Signal, or Email. Many slash commands work across both.
 
 | Action | CLI | Messaging platforms |
 |---------|-----|---------------------|
