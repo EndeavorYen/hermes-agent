@@ -16,6 +16,7 @@ def _make_cli():
     cli_obj.session_id = "session-123"
     cli_obj._pending_input = MagicMock()
     cli_obj._status_bar_visible = True
+    cli_obj._rpg_progression_bar_visible = False
     cli_obj.model = "openai/gpt-5.4"
     cli_obj.provider = "openai"
     cli_obj.session_start = datetime(2026, 4, 9, 19, 24)
@@ -29,6 +30,12 @@ def test_status_command_is_available_in_cli_registry():
     cmd = resolve_command("status")
     assert cmd is not None
     assert cmd.gateway_only is False
+
+
+def test_rpg_command_is_available_in_cli_registry():
+    cmd = resolve_command("rpg")
+    assert cmd is not None
+    assert cmd.cli_only is True
 
 
 def test_process_command_status_dispatches_without_toggling_status_bar():
@@ -48,6 +55,15 @@ def test_statusbar_still_toggles_visibility():
     assert cli_obj._status_bar_visible is False
 
 
+def test_rpg_command_dispatches_to_handler():
+    cli_obj = _make_cli()
+
+    with patch.object(cli_obj, "_handle_rpg_command", create=True) as mock_rpg:
+        assert cli_obj.process_command("/rpg") is True
+
+    mock_rpg.assert_called_once_with("/rpg")
+
+
 def test_status_prefix_prefers_status_command_over_statusbar_toggle():
     cli_obj = _make_cli()
 
@@ -56,6 +72,19 @@ def test_status_prefix_prefers_status_command_over_statusbar_toggle():
 
     mock_status.assert_called_once_with()
     assert cli_obj._status_bar_visible is True
+
+
+def test_handle_rpg_command_toggles_status_bar_setting(capsys):
+    cli_obj = _make_cli()
+
+    with patch("cli.save_config_value") as mock_save, \
+         patch.object(cli_obj, "_format_rpg_compact", return_value="Researcher Lv.2 XP 44%"):
+        cli_obj._handle_rpg_command("/rpg on")
+
+    output = capsys.readouterr().out
+    assert cli_obj._rpg_progression_bar_visible is True
+    assert "enabled" in output
+    mock_save.assert_called_once_with("display.rpg_progression_bar", True)
 
 
 def test_show_session_status_prints_gateway_style_summary():
@@ -69,7 +98,8 @@ def test_show_session_status_prints_gateway_style_summary():
         "started_at": 1775791440,
     }
 
-    with patch("cli.display_hermes_home", return_value="~/.hermes"):
+    with patch("cli.display_hermes_home", return_value="~/.hermes"), \
+         patch.object(cli_obj, "_format_rpg_compact", return_value="Researcher Lv.2 XP 44%"):
         cli_obj._show_session_status()
 
     printed = "\n".join(str(call.args[0]) for call in cli_obj.console.print.call_args_list)
@@ -80,6 +110,7 @@ def test_show_session_status_prints_gateway_style_summary():
     assert "Model: openai/gpt-5.4 (openai)" in printed
     assert "Tokens: 321" in printed
     assert "Agent Running: No" in printed
+    assert "Progression: Researcher Lv.2 XP 44%" in printed
     _, kwargs = cli_obj.console.print.call_args
     assert kwargs.get("highlight") is False
     assert kwargs.get("markup") is False

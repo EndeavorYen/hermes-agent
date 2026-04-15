@@ -11,6 +11,7 @@ def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
     cli_obj.session_start = datetime.now() - timedelta(minutes=14, seconds=32)
     cli_obj.conversation_history = [{"role": "user", "content": "hi"}]
     cli_obj.agent = None
+    cli_obj._rpg_progression_bar_visible = False
     return cli_obj
 
 
@@ -79,6 +80,56 @@ class TestCLIStatusBar:
         assert "6%" in text
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
+
+    def test_rpg_snapshot_derives_archetype_and_stats_from_tool_mix(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=1,
+        )
+        cli_obj.conversation_history = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"function": {"name": "read_file"}},
+                    {"function": {"name": "search_files"}},
+                    {"function": {"name": "browser_navigate"}},
+                    {"function": {"name": "terminal"}},
+                ],
+            }
+        ]
+
+        snapshot = cli_obj._compute_rpg_progression_snapshot()
+
+        assert snapshot["archetype"] == "Researcher"
+        assert snapshot["level"] >= 1
+        assert snapshot["stats"]["research"] >= snapshot["stats"]["ops"]
+        assert "+Tool diversity" in snapshot["notes"]
+
+    def test_build_status_bar_text_includes_rpg_fragment_when_enabled(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj._rpg_progression_bar_visible = True
+        cli_obj.conversation_history = [
+            {"role": "assistant", "tool_calls": [{"function": {"name": "read_file"}}]}
+        ]
+
+        text = cli_obj._build_status_bar_text(width=140)
+
+        assert "Lv." in text
+        assert "XP" in text
 
     def test_input_height_counts_wide_characters_using_cell_width(self):
         cli_obj = _make_cli()

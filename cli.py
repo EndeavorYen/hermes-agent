@@ -1622,6 +1622,7 @@ class HermesCLI:
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
         # show_reasoning: display model thinking/reasoning before the response
         self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", False)
+        self._rpg_progression_bar_visible = CLI_CONFIG["display"].get("rpg_progression_bar", False)
         # busy_input_mode: "interrupt" (Enter interrupts current run) or "queue" (Enter queues for next turn)
         _bim = CLI_CONFIG["display"].get("busy_input_mode", "interrupt")
         self.busy_input_mode = "queue" if str(_bim).strip().lower() == "queue" else "interrupt"
@@ -1873,6 +1874,169 @@ class HermesCLI:
         filled = round((safe_percent / 100) * width)
         return f"[{('█' * filled) + ('░' * max(0, width - filled))}]"
 
+    @staticmethod
+    def _extract_tool_name_from_call(tool_call: Any) -> Optional[str]:
+        if isinstance(tool_call, dict):
+            fn = tool_call.get("function")
+            if isinstance(fn, dict) and fn.get("name"):
+                return str(fn.get("name"))
+            if tool_call.get("name"):
+                return str(tool_call.get("name"))
+        fn = getattr(tool_call, "function", None)
+        if fn is not None and getattr(fn, "name", None):
+            return str(fn.name)
+        if getattr(tool_call, "name", None):
+            return str(tool_call.name)
+        return None
+
+    def _iter_session_tool_names(self) -> list[str]:
+        tool_names: list[str] = []
+        for msg in getattr(self, "conversation_history", []) or []:
+            for tool_call in msg.get("tool_calls") or []:
+                name = self._extract_tool_name_from_call(tool_call)
+                if name:
+                    tool_names.append(name)
+            if msg.get("role") == "tool":
+                tool_name = msg.get("name") or msg.get("tool_name")
+                if tool_name:
+                    tool_names.append(str(tool_name))
+        return tool_names
+
+    @staticmethod
+    def _categorize_rpg_tool(tool_name: str) -> str:
+        name = (tool_name or "").strip().lower()
+        if not name:
+            return "misc"
+        if name in {"read_file", "search_files", "session_search", "vision_analyze", "browser_navigate", "browser_snapshot", "browser_vision", "web_search", "browser_get_images"} or name.startswith("browser_"):
+            return "research"
+        if name in {"write_file", "patch", "execute_code", "delegate_task"}:
+            return "build"
+        if name in {"terminal", "process", "rollback", "browser_console"}:
+            return "debug"
+        if name in {"cronjob", "send_message", "reload-mcp", "reload_mcp"}:
+            return "ops"
+        if name in {"memory", "todo", "skill_manage", "skills_list", "skill_view"}:
+            return "memory"
+        return "misc"
+
+    def _compute_rpg_progression_snapshot(self) -> Dict[str, Any]:
+        status = self._get_status_bar_snapshot()
+        tool_names = self._iter_session_tool_names()
+        counts = {"research": 0.0, "build": 0.0, "debug": 0.0, "ops": 0.0, "memory": 0.0}
+        for tool_name in tool_names:
+            category = self._categorize_rpg_tool(tool_name)
+            if category in counts:
+                counts[category] += 1.0
+
+        total_tools = len(tool_names)
+        unique_tools = len(set(tool_names))
+        elapsed_minutes = max(1, int(max(0.0, (datetime.now() - self.session_start).total_seconds()) // 60))
+        total_tokens = int(status.get("session_total_tokens") or 0)
+        api_calls = int(status.get("session_api_calls") or 0)
+        compressions = int(status.get("compressions") or 0)
+
+        counts["research"] += min(4.0, total_tokens / 12000.0)
+        counts["build"] += min(3.0, unique_tools / 3.0)
+        counts["debug"] += compressions * 1.3
+        counts["ops"] += min(3.0, elapsed_minutes / 20.0)
+        counts["memory"] += compressions + min(2.0, unique_tools / 4.0)
+
+        def _to_stat(value: float) -> int:
+            return max(1, min(9, int(round(value)) or 1))
+
+        stats = {
+            "research": _to_stat(counts["research"]),
+            "build": _to_stat(counts["build"]),
+            "debug": _to_stat(counts["debug"]),
+            "ops": _to_stat(counts["ops"]),
+            "memory": _to_stat(counts["memory"]),
+        }
+
+        class_scores = {
+            "Researcher": counts["research"],
+            "Builder": counts["build"],
+            "Debugger": counts["debug"],
+            "Operator": counts["ops"],
+        }
+        archetype = max(class_scores, key=class_scores.get)
+
+        progression_score = (
+            total_tools * 12
+            + unique_tools * 8
+            + api_calls * 5
+            + compressions * 15
+            + min(60, total_tokens / 1500.0)
+            + min(40, elapsed_minutes / 2.0)
+        )
+        level = max(1, min(9, 1 + int(progression_score // 100)))
+        xp_percent = max(0, min(99, int(progression_score % 100)))
+
+        notes: list[str] = []
+        if unique_tools >= 4:
+            notes.append("+Tool diversity")
+        if archetype == "Researcher" and counts["research"] >= 3:
+            notes.append("+Research streak")
+        if archetype == "Builder" and counts["build"] >= 3:
+            notes.append("+Builder streak")
+        if counts["debug"] >= 2.5:
+            notes.append("+Debug streak")
+        if compressions >= 1:
+            notes.append("+Context compression")
+        if counts["memory"] >= 2:
+            notes.append("+Memory active")
+        if elapsed_minutes >= 30:
+            notes.append("+Long run")
+        if api_calls >= 8:
+            notes.append("+Busy session")
+        if not notes:
+            notes.append("+Warmup")
+
+        return {
+            "archetype": archetype,
+            "level": level,
+            "xp_percent": xp_percent,
+            "stats": stats,
+            "notes": notes[:3],
+            "tool_count": total_tools,
+            "unique_tools": unique_tools,
+            "session_api_calls": api_calls,
+            "session_total_tokens": total_tokens,
+            "compressions": compressions,
+            "duration": status.get("duration"),
+        }
+
+    def _format_rpg_compact(self, snapshot: Optional[Dict[str, Any]] = None) -> str:
+        snapshot = snapshot or self._compute_rpg_progression_snapshot()
+        return f"{snapshot['archetype']} Lv.{snapshot['level']} XP {snapshot['xp_percent']}%"
+
+    def _render_rpg_sheet(self, mode: str = "default") -> str:
+        snapshot = self._compute_rpg_progression_snapshot()
+        if mode == "compact":
+            stats = snapshot["stats"]
+            return (
+                f"{snapshot['archetype']} Lv.{snapshot['level']} — XP {snapshot['xp_percent']}% — "
+                f"R{stats['research']} B{stats['build']} D{stats['debug']} O{stats['ops']} M{stats['memory']}"
+            )
+        if mode == "raw":
+            return json.dumps(snapshot, indent=2, ensure_ascii=False)
+
+        stats = snapshot["stats"]
+        notes = ", ".join(snapshot["notes"])
+        return "\n".join([
+            "⚔ Hermes Character Sheet",
+            f"Class: {snapshot['archetype']}",
+            f"Level: {snapshot['level']}",
+            f"XP: {snapshot['xp_percent']}%",
+            (
+                "Stats: "
+                f"Rsch {stats['research']} | Build {stats['build']} | "
+                f"Debug {stats['debug']} | Ops {stats['ops']} | Memory {stats['memory']}"
+            ),
+            f"Recent: {notes}",
+            f"Signals: {snapshot['tool_count']} tool calls | {snapshot['unique_tools']} unique tools | {snapshot['session_api_calls']} API calls",
+            "Heuristic only — derived from current-session behavior, not a hidden score.",
+        ])
+
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
         # Prefer the agent's model name — it updates on fallback.
         # self.model reflects the originally configured model and never
@@ -2056,6 +2220,8 @@ class HermesCLI:
                 context_label = "ctx --"
 
             parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            if self._rpg_progression_bar_visible and width >= 110:
+                parts.append(self._format_rpg_compact())
             parts.append(duration_label)
             return self._trim_status_bar_text(" │ ".join(parts), width)
         except Exception:
@@ -2113,10 +2279,17 @@ class HermesCLI:
                         (bar_style, self._build_context_bar(percent)),
                         ("class:status-bar-dim", " "),
                         (bar_style, percent_label),
+                    ]
+                    if self._rpg_progression_bar_visible and width >= 110:
+                        frags.extend([
+                            ("class:status-bar-dim", " │ "),
+                            ("class:status-bar-strong", self._format_rpg_compact()),
+                        ])
+                    frags.extend([
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", duration_label),
                         ("class:status-bar", " "),
-                    ]
+                    ])
 
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)
             if total_width > width:
@@ -3624,7 +3797,41 @@ class HermesCLI:
             f"Tokens: {total_tokens:,}",
             f"Agent Running: {'Yes' if is_running else 'No'}",
         ])
+        try:
+            lines.append(f"Progression: {self._format_rpg_compact()}")
+        except Exception:
+            pass
         self.console.print("\n".join(lines), highlight=False, markup=False)
+
+    def _handle_rpg_command(self, cmd_original: str) -> None:
+        parts = cmd_original.split(None, 1)
+        mode = (parts[1].strip().lower() if len(parts) > 1 else "default")
+
+        if mode in {"on", "off"}:
+            enabled = mode == "on"
+            self._rpg_progression_bar_visible = enabled
+            save_config_value("display.rpg_progression_bar", enabled)
+            state = "enabled" if enabled else "disabled"
+            print(f"  RPG progression status bar {state}")
+            print(f"  {self._format_rpg_compact()}")
+            return
+
+        if mode == "status":
+            state = "on" if self._rpg_progression_bar_visible else "off"
+            print(f"  RPG progression status bar: {state}")
+            print(f"  {self._format_rpg_compact()}")
+            return
+
+        if mode == "help":
+            print("  /rpg             Show the current session character sheet")
+            print("  /rpg compact     Show a one-line progression summary")
+            print("  /rpg raw         Show the heuristic inputs as JSON")
+            print("  /rpg on|off      Toggle the wide status-bar progression fragment")
+            print("  /rpg status      Show whether the status-bar fragment is enabled")
+            return
+
+        render_mode = "compact" if mode == "compact" else "raw" if mode == "raw" else "default"
+        print(self._render_rpg_sheet(mode=render_mode))
     
     def _fast_command_available(self) -> bool:
         try:
@@ -5395,6 +5602,8 @@ class HermesCLI:
             self._show_gateway_status()
         elif canonical == "status":
             self._show_session_status()
+        elif canonical == "rpg":
+            self._handle_rpg_command(cmd_original)
         elif canonical == "statusbar":
             self._status_bar_visible = not self._status_bar_visible
             state = "visible" if self._status_bar_visible else "hidden"

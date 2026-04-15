@@ -498,6 +498,7 @@ DEFAULT_CONFIG = {
         "busy_input_mode": "interrupt",
         "bell_on_complete": False,
         "show_reasoning": False,
+        "rpg_progression_bar": False,
         "streaming": False,
         "inline_diffs": True,     # Show inline diff previews for write actions (write_file, patch, skill_manage)
         "show_cost": False,       # Show $ cost in the status bar (off by default)
@@ -702,7 +703,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 16,
+    "_config_version": 17,
 }
 
 # =============================================================================
