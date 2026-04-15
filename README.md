@@ -11,39 +11,42 @@
   <a href="https://nousresearch.com"><img src="https://img.shields.io/badge/Built%20by-Nous%20Research-blueviolet?style=for-the-badge" alt="Built by Nous Research"></a>
 </p>
 
-**A self-improving AI agent that actually gets better as you use it.**
+**An open-source AI agent with memory, tools, messaging, and a learning loop that compounds over time.**
 
-Hermes turns conversations, tools, memory, and repeated work into a compounding learning loop: it creates skills from experience, improves them during use, searches its own past sessions, and builds a deeper model of who you are across time.
+Hermes is built for people who want more than a chat window: it remembers across sessions, uses real tools, runs in the terminal or your messaging apps, and turns repeated work into reusable skills.
 
-Not just a chat UI. Not just a tool runner. Not just a wrapper around model APIs. **A real agent with memory, skills, messaging, automation, and a long-term learning loop.**
+More than a chat UI or tool runner, Hermes is a persistent agent that can remember, act, automate, message you back, and improve how it works.
 
-Use any model you want — [Nous Portal](https://portal.nousresearch.com), [OpenRouter](https://openrouter.ai) (200+ models), [z.ai/GLM](https://z.ai), [Kimi/Moonshot](https://platform.moonshot.ai), [MiniMax](https://www.minimax.io), OpenAI, or your own endpoint. Switch with `hermes model` — no code changes, no lock-in.
+Bring your own model: use [Nous Portal](https://portal.nousresearch.com), [OpenRouter](https://openrouter.ai), OpenAI, or your own endpoint. Switch providers with `hermes model` — no code changes, no lock-in.
 
-## Why Hermes feels different
+## Why teams and power users stick with Hermes
 
-- **It learns from experience** — skills are created after complex work, improved during use, and reused later.
-- **It remembers across sessions** — persistent memory plus FTS5 session search gives it real continuity.
-- **It lives where you do** — CLI, Telegram, Discord, Slack, WhatsApp, Signal, Email, and more from one gateway.
-- **It can work unattended** — cron scheduling, background processes, subagents, and delivery back to chat.
-- **It runs beyond your laptop** — local, Docker, SSH, Daytona, Singularity, and Modal backends.
+- **It learns from real work** — Hermes creates skills after complex tasks, improves them during use, and reuses them later.
+- **It remembers across sessions** — persistent memory and session search give it continuity instead of reset-every-time chat behavior.
+- **It meets you where you already work** — use the same agent from the CLI, Telegram, Discord, Slack, WhatsApp, Signal, Email, and more.
+- **It can run unattended** — schedules, background jobs, and subagents let work continue without babysitting.
+- **It runs locally or remotely** — from your laptop to Docker, SSH, Daytona, Singularity, and Modal.
 
 ## What you can do in the first 10 minutes
 
-- Chat with Hermes in a real terminal UI
-- Switch models/providers without changing code
-- Give it terminal, browser, file, code-execution, and delegation tools
-- Talk to the same agent from messaging platforms while it runs elsewhere
-- Save durable memory and reusable skills instead of re-explaining yourself every session
+- Start a real terminal-native agent session with streaming tool output
+- Pick a model/provider without changing code
+- Give Hermes terminal, browser, file, code execution, and delegation tools
+- Talk to the same agent from chat platforms while it runs elsewhere
+- Keep durable memory and reusable skills instead of starting from scratch every session
 
-## Quick Install
+## Try Hermes in 2 minutes
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
 source ~/.bashrc    # or: source ~/.zshrc
-hermes
+hermes model        # choose a provider/model
+hermes              # start chatting
 ```
 
-Works on Linux, macOS, WSL2, and Android via Termux. The installer handles the platform-specific setup for you.
+Runs on Linux, macOS, WSL2, and Android via Termux. The installer handles most platform-specific setup automatically.
+
+Want messaging instead of terminal? Run `hermes gateway` after setup to connect Telegram, Discord, Slack, WhatsApp, Signal, and more.
 
 > **Android / Termux:** The tested manual path is documented in the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux). On Termux, Hermes installs a curated `.[termux]` extra because the full `.[all]` extra currently pulls Android-incompatible voice dependencies.
 >
