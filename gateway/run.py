@@ -1539,17 +1539,45 @@ class GatewayRunner:
             self._clear_loop_state(session_key)
             return None
 
-        from hermes_cli.loop import decide_continuation_for_session, _normalize_loop_prompt, _preview_text
+        from hermes_cli.loop import (
+            decide_continuation_for_session,
+            _normalize_loop_prompt,
+            _preview_text,
+            record_background_review,
+        )
 
         result_preview = _preview_text(final_response)
         if not result_preview:
+            record_background_review(
+                session_id=session_id,
+                goal=goal,
+                progress_state="empty_result",
+                stop_reason="empty_continuation_result",
+                result_preview=str(state.get("last_result_preview") or ""),
+                source="bounded_loop_gateway",
+            )
             self._clear_loop_state(session_key)
             return None
         previous_result_preview = str(state.get("last_result_preview") or "")
         if previous_result_preview and result_preview == previous_result_preview:
+            record_background_review(
+                session_id=session_id,
+                goal=goal,
+                progress_state="duplicate_result",
+                stop_reason="duplicate_result_preview",
+                result_preview=previous_result_preview,
+                source="bounded_loop_gateway",
+            )
             self._clear_loop_state(session_key)
             return None
         state["last_result_preview"] = result_preview
+        record_background_review(
+            session_id=session_id,
+            goal=goal,
+            progress_state="meaningful_result",
+            result_preview=result_preview,
+            source="bounded_loop_gateway",
+        )
 
         decision = await asyncio.to_thread(
             decide_continuation_for_session,
@@ -1557,6 +1585,14 @@ class GatewayRunner:
             goal,
         )
         if decision.get("action") != "continue":
+            record_background_review(
+                session_id=session_id,
+                goal=goal,
+                progress_state="stop",
+                stop_reason=str(decision.get("stop_reason") or "model_stop"),
+                result_preview=result_preview,
+                source="bounded_loop_gateway",
+            )
             self._clear_loop_state(session_key)
             return None
 

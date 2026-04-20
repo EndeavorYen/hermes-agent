@@ -102,6 +102,13 @@ def _last_json_line(text):
     return json.loads(lines[-1])
 
 
+def _read_background_reviews(tmp_path):
+    path = tmp_path / "logs" / "background_reviews.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
 def test_loop_command_stop_path(monkeypatch, capsys, tmp_path):
     _DecisionAgent.instances = []
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -120,6 +127,9 @@ def test_loop_command_stop_path(monkeypatch, capsys, tmp_path):
     assert result["exit_code"] == 0
     assert summary["outcome"] == "stopped"
     assert summary["stop_reason"] == "model_stop"
+    reviews = _read_background_reviews(tmp_path)
+    assert reviews[-1]["progress_state"] == "stop"
+    assert reviews[-1]["stop_reason"] == "model_stop"
 
 
 def test_decide_continuation_for_session_returns_session_scoped_decision(monkeypatch, tmp_path):
@@ -127,6 +137,16 @@ def test_decide_continuation_for_session_returns_session_scoped_decision(monkeyp
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr("hermes_cli.loop.SessionDB", _FakeSessionDB)
     monkeypatch.setattr("hermes_cli.loop.AIAgent", _DecisionAgent)
+    (tmp_path / "logs").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "logs" / "background_reviews.jsonl").write_text(
+        json.dumps({
+            "session_id": "sess-1",
+            "source": "bounded_loop",
+            "progress_state": "meaningful_result",
+            "result_preview": "prior review preview",
+        }) + "\n",
+        encoding="utf-8",
+    )
 
     result = decide_continuation_for_session("sess-1", "Keep going")
 
@@ -139,6 +159,7 @@ def test_decide_continuation_for_session_returns_session_scoped_decision(monkeyp
     assert "recent_history" in decision_prompt
     assert "initial goal" in decision_prompt
     assert "initial answer" in decision_prompt
+    assert "prior review preview" in decision_prompt
 
 
 def test_loop_command_continue_executes_one_step(monkeypatch, capsys, tmp_path):
@@ -162,6 +183,9 @@ def test_loop_command_continue_executes_one_step(monkeypatch, capsys, tmp_path):
     assert result["cycles_completed"] == 1
     assert summary["outcome"] == "continued"
     assert summary["stop_reason"] == "max_cycles_reached"
+    reviews = _read_background_reviews(tmp_path)
+    assert reviews[-1]["progress_state"] == "max_cycles"
+    assert reviews[-2]["progress_state"] == "meaningful_result"
 
 
 def test_loop_command_malformed_decision_defaults_stop(monkeypatch, capsys, tmp_path):
@@ -294,6 +318,9 @@ def test_loop_command_stops_on_empty_continuation_result(monkeypatch, capsys, tm
     assert result["outcome"] == "stopped"
     assert result["stop_reason"] == "empty_continuation_result"
     assert summary["stop_reason"] == "empty_continuation_result"
+    reviews = _read_background_reviews(tmp_path)
+    assert reviews[-1]["progress_state"] == "empty_result"
+    assert reviews[-1]["stop_reason"] == "empty_continuation_result"
 
 
 def test_loop_command_stops_on_duplicate_result_preview(monkeypatch, capsys, tmp_path):
@@ -331,6 +358,9 @@ def test_loop_command_stops_on_duplicate_result_preview(monkeypatch, capsys, tmp
     assert result["outcome"] == "stopped"
     assert result["stop_reason"] == "duplicate_result_preview"
     assert summary["stop_reason"] == "duplicate_result_preview"
+    reviews = _read_background_reviews(tmp_path)
+    assert reviews[-1]["progress_state"] == "duplicate_result"
+    assert reviews[-1]["stop_reason"] == "duplicate_result_preview"
 
 
 def test_loop_command_stops_on_repeated_next_prompt(monkeypatch, capsys, tmp_path):
@@ -369,6 +399,9 @@ def test_loop_command_stops_on_repeated_next_prompt(monkeypatch, capsys, tmp_pat
     assert result["stop_reason"] == "repeated_next_prompt"
     assert result["cycles_completed"] == 1
     assert summary["stop_reason"] == "repeated_next_prompt"
+    reviews = _read_background_reviews(tmp_path)
+    assert reviews[-1]["progress_state"] == "repeated_prompt"
+    assert reviews[-1]["stop_reason"] == "repeated_next_prompt"
 
 
 def test_cmd_loop_raises_system_exit_for_error(monkeypatch):

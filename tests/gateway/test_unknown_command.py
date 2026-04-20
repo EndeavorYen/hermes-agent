@@ -5,6 +5,7 @@ text, which often leads to silent failure (e.g. the model inventing a bogus
 delegate_task call instead of telling the user the command doesn't exist).
 """
 
+import json
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -74,6 +75,13 @@ def _make_runner():
     runner._capture_gateway_honcho_if_configured = lambda *args, **kwargs: None
     runner._emit_gateway_run_progress = AsyncMock()
     return runner
+
+
+def _read_background_reviews(tmp_path):
+    path = tmp_path / "logs" / "background_reviews.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 @pytest.mark.asyncio
@@ -258,7 +266,8 @@ async def test_loop_built_in_command_falls_back_to_skill_mode_on_controller_erro
 
 
 @pytest.mark.asyncio
-async def test_maybe_schedule_loop_followup_returns_internal_event(monkeypatch):
+async def test_maybe_schedule_loop_followup_returns_internal_event(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     runner = _make_runner()
     runner._loop_states[build_session_key(_make_source())] = {
         "goal": "Keep going",
@@ -287,6 +296,9 @@ async def test_maybe_schedule_loop_followup_returns_internal_event(monkeypatch):
     assert event.text == "Implement the next thin slice."
     assert runner._loop_states[build_session_key(_make_source())]["remaining_auto_turns"] == 1
     assert runner._loop_states[build_session_key(_make_source())]["last_result_preview"] == "Implemented the next thin slice."
+    reviews = _read_background_reviews(tmp_path)
+    assert reviews[-1]["progress_state"] == "meaningful_result"
+    assert reviews[-1]["source"] == "bounded_loop_gateway"
 
 
 @pytest.mark.asyncio
@@ -319,7 +331,8 @@ async def test_maybe_schedule_loop_followup_stops_on_repeated_prompt(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_maybe_schedule_loop_followup_stops_on_duplicate_result_preview(monkeypatch):
+async def test_maybe_schedule_loop_followup_stops_on_duplicate_result_preview(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     runner = _make_runner()
     runner._loop_states[build_session_key(_make_source())] = {
         "goal": "Keep going",
@@ -345,6 +358,9 @@ async def test_maybe_schedule_loop_followup_stops_on_duplicate_result_preview(mo
 
     assert event is None
     assert build_session_key(_make_source()) not in runner._loop_states
+    reviews = _read_background_reviews(tmp_path)
+    assert reviews[-1]["progress_state"] == "duplicate_result"
+    assert reviews[-1]["stop_reason"] == "duplicate_result_preview"
 
 
 @pytest.mark.asyncio

@@ -62,6 +62,38 @@ def _continuation_artifact_dir() -> Path:
     return get_hermes_home() / "logs"
 
 
+def _append_jsonl_artifact(path: Path, payload: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
+def record_background_review(
+    *,
+    session_id: str,
+    goal: str,
+    progress_state: str,
+    stop_reason: str = "",
+    next_prompt: str | None = None,
+    result_preview: str = "",
+    source: str = "bounded_loop",
+    cycle: int | None = None,
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "session_id": session_id,
+        "source": source,
+        "goal": goal,
+        "progress_state": progress_state,
+        "stop_reason": stop_reason,
+        "next_prompt": next_prompt,
+        "result_preview": result_preview,
+    }
+    if cycle is not None:
+        payload["cycle"] = cycle
+    _append_jsonl_artifact(_continuation_artifact_dir() / "background_reviews.jsonl", payload)
+    return payload
+
+
 def _extract_json_object(text: str) -> Dict[str, Any] | None:
     text = (text or "").strip()
     if not text:
@@ -364,6 +396,15 @@ def loop_command(args: Namespace) -> Dict[str, Any]:
             stop_reason = decision.get("stop_reason") or "model_stop"
             outcome = "error" if stop_reason in {"invalid_decision_payload", "missing_next_prompt"} else "stopped"
             exit_code = 1 if outcome == "error" else 0
+            record_background_review(
+                session_id=session_id,
+                goal=goal,
+                progress_state="stop",
+                stop_reason=stop_reason,
+                next_prompt=last_next_prompt,
+                result_preview=last_result_preview,
+                cycle=cycle,
+            )
             return _emit_result(
                 session_id=session_id,
                 goal=goal,
@@ -384,6 +425,15 @@ def loop_command(args: Namespace) -> Dict[str, Any]:
         next_prompt_norm = _normalize_loop_prompt(next_prompt)
         if previous_prompt_norm is not None and next_prompt_norm == previous_prompt_norm:
             print("Reason:   Stopped: repeated next prompt from previous cycle (stall suppression).")
+            record_background_review(
+                session_id=session_id,
+                goal=goal,
+                progress_state="repeated_prompt",
+                stop_reason="repeated_next_prompt",
+                next_prompt=next_prompt,
+                result_preview=last_result_preview,
+                cycle=cycle,
+            )
             return _emit_result(
                 session_id=session_id,
                 goal=goal,
@@ -402,6 +452,15 @@ def loop_command(args: Namespace) -> Dict[str, Any]:
         print(f"Prompt:   {next_prompt}")
         if getattr(args, "dry_run", False):
             print("Dry run: continuation step not executed.")
+            record_background_review(
+                session_id=session_id,
+                goal=goal,
+                progress_state="dry_run",
+                stop_reason="dry_run",
+                next_prompt=next_prompt,
+                result_preview=last_result_preview,
+                cycle=cycle,
+            )
             return _emit_result(
                 session_id=session_id,
                 goal=goal,
@@ -422,6 +481,15 @@ def loop_command(args: Namespace) -> Dict[str, Any]:
         result_preview = _preview_text(final_response)
         if not result_preview:
             print("Reason:   Stopped: continuation produced no visible result.")
+            record_background_review(
+                session_id=session_id,
+                goal=goal,
+                progress_state="empty_result",
+                stop_reason="empty_continuation_result",
+                next_prompt=next_prompt,
+                result_preview=last_result_preview,
+                cycle=cycle,
+            )
             return _emit_result(
                 session_id=session_id,
                 goal=goal,
@@ -438,6 +506,15 @@ def loop_command(args: Namespace) -> Dict[str, Any]:
             )
         if last_result_preview and result_preview == last_result_preview:
             print("Reason:   Stopped: continuation produced no meaningful new result preview.")
+            record_background_review(
+                session_id=session_id,
+                goal=goal,
+                progress_state="duplicate_result",
+                stop_reason="duplicate_result_preview",
+                next_prompt=next_prompt,
+                result_preview=last_result_preview,
+                cycle=cycle,
+            )
             return _emit_result(
                 session_id=session_id,
                 goal=goal,
@@ -453,12 +530,29 @@ def loop_command(args: Namespace) -> Dict[str, Any]:
                 exit_code=0,
             )
         last_result_preview = result_preview
+        record_background_review(
+            session_id=session_id,
+            goal=goal,
+            progress_state="meaningful_result",
+            next_prompt=next_prompt,
+            result_preview=result_preview,
+            cycle=cycle,
+        )
         cycles_completed += 1
         if final_response:
             print()
             print(final_response)
 
     print(f"Stopped after reaching max cycles ({max_cycles}).")
+    record_background_review(
+        session_id=session_id,
+        goal=goal,
+        progress_state="max_cycles",
+        stop_reason="max_cycles_reached",
+        next_prompt=last_next_prompt,
+        result_preview=last_result_preview,
+        cycle=max_cycles,
+    )
     return _emit_result(
         session_id=session_id,
         goal=goal,
