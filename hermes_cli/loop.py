@@ -419,7 +419,40 @@ def loop_command(args: Namespace) -> Dict[str, Any]:
 
         result = _run_single_continuation(session_row, next_prompt, args)
         final_response = result.get("final_response", "")
-        last_result_preview = _preview_text(final_response)
+        result_preview = _preview_text(final_response)
+        if not result_preview:
+            print("Reason:   Stopped: continuation produced no visible result.")
+            return _emit_result(
+                session_id=session_id,
+                goal=goal,
+                max_cycles=max_cycles,
+                cycles_attempted=cycle,
+                cycles_completed=cycles_completed,
+                outcome="stopped",
+                stop_reason="empty_continuation_result",
+                decision_reason=reason,
+                next_prompt=next_prompt,
+                executed=cycles_completed > 0,
+                result_preview=last_result_preview,
+                exit_code=0,
+            )
+        if last_result_preview and result_preview == last_result_preview:
+            print("Reason:   Stopped: continuation produced no meaningful new result preview.")
+            return _emit_result(
+                session_id=session_id,
+                goal=goal,
+                max_cycles=max_cycles,
+                cycles_attempted=cycle,
+                cycles_completed=cycles_completed,
+                outcome="stopped",
+                stop_reason="duplicate_result_preview",
+                decision_reason=reason,
+                next_prompt=next_prompt,
+                executed=cycles_completed > 0,
+                result_preview=last_result_preview,
+                exit_code=0,
+            )
+        last_result_preview = result_preview
         cycles_completed += 1
         if final_response:
             print()

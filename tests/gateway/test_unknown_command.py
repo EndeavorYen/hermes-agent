@@ -264,6 +264,7 @@ async def test_maybe_schedule_loop_followup_returns_internal_event(monkeypatch):
         "goal": "Keep going",
         "remaining_auto_turns": 2,
         "last_prompt_norm": "initial prompt",
+        "last_result_preview": "",
     }
 
     with patch(
@@ -278,12 +279,14 @@ async def test_maybe_schedule_loop_followup_returns_internal_event(monkeypatch):
             session_key=build_session_key(_make_source()),
             session_id="sess-1",
             source=_make_source(),
+            final_response="Implemented the next thin slice.",
         )
 
     assert event is not None
     assert event.internal is True
     assert event.text == "Implement the next thin slice."
     assert runner._loop_states[build_session_key(_make_source())]["remaining_auto_turns"] == 1
+    assert runner._loop_states[build_session_key(_make_source())]["last_result_preview"] == "Implemented the next thin slice."
 
 
 @pytest.mark.asyncio
@@ -293,6 +296,7 @@ async def test_maybe_schedule_loop_followup_stops_on_repeated_prompt(monkeypatch
         "goal": "Keep going",
         "remaining_auto_turns": 2,
         "last_prompt_norm": "implement the next thin slice.",
+        "last_result_preview": "fresh result",
     }
 
     with patch(
@@ -307,6 +311,36 @@ async def test_maybe_schedule_loop_followup_stops_on_repeated_prompt(monkeypatch
             session_key=build_session_key(_make_source()),
             session_id="sess-1",
             source=_make_source(),
+            final_response="Different new result",
+        )
+
+    assert event is None
+    assert build_session_key(_make_source()) not in runner._loop_states
+
+
+@pytest.mark.asyncio
+async def test_maybe_schedule_loop_followup_stops_on_duplicate_result_preview(monkeypatch):
+    runner = _make_runner()
+    runner._loop_states[build_session_key(_make_source())] = {
+        "goal": "Keep going",
+        "remaining_auto_turns": 2,
+        "last_prompt_norm": "different prompt",
+        "last_result_preview": "Repeated summary",
+    }
+
+    with patch(
+        "hermes_cli.loop.decide_continuation_for_session",
+        return_value={
+            "action": "continue",
+            "reason": "clear next slice",
+            "next_prompt": "Do the next thing.",
+        },
+    ):
+        event = await runner._maybe_schedule_loop_followup(
+            session_key=build_session_key(_make_source()),
+            session_id="sess-1",
+            source=_make_source(),
+            final_response="Repeated summary",
         )
 
     assert event is None

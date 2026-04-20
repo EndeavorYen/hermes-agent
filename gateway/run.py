@@ -1520,6 +1520,7 @@ class GatewayRunner:
         session_key: str,
         session_id: str,
         source,
+        final_response: str,
     ) -> MessageEvent | None:
         loop_states = getattr(self, "_loop_states", None)
         if not isinstance(loop_states, dict):
@@ -1538,7 +1539,17 @@ class GatewayRunner:
             self._clear_loop_state(session_key)
             return None
 
-        from hermes_cli.loop import decide_continuation_for_session, _normalize_loop_prompt
+        from hermes_cli.loop import decide_continuation_for_session, _normalize_loop_prompt, _preview_text
+
+        result_preview = _preview_text(final_response)
+        if not result_preview:
+            self._clear_loop_state(session_key)
+            return None
+        previous_result_preview = str(state.get("last_result_preview") or "")
+        if previous_result_preview and result_preview == previous_result_preview:
+            self._clear_loop_state(session_key)
+            return None
+        state["last_result_preview"] = result_preview
 
         decision = await asyncio.to_thread(
             decide_continuation_for_session,
@@ -1600,6 +1611,7 @@ class GatewayRunner:
                         "goal": goal,
                         "remaining_auto_turns": 2,
                         "last_prompt_norm": _normalize_loop_prompt(next_prompt),
+                        "last_result_preview": "",
                         "channel_prompt": getattr(event, "channel_prompt", None),
                     }
                     event.text = next_prompt
@@ -10625,6 +10637,7 @@ class GatewayRunner:
                         session_key=session_key,
                         session_id=session_id,
                         source=source,
+                        final_response=result.get("final_response", ""),
                     )
                     if pending_event is not None:
                         pending = pending_event.text or _build_media_placeholder(pending_event)

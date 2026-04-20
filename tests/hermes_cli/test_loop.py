@@ -263,6 +263,76 @@ def test_loop_command_honors_max_cycles(monkeypatch, capsys, tmp_path):
     assert summary["cycles_attempted"] == 2
 
 
+def test_loop_command_stops_on_empty_continuation_result(monkeypatch, capsys, tmp_path):
+    class _EmptyResultAgent:
+        instances = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.calls = []
+            _EmptyResultAgent.instances.append(self)
+
+        def run_conversation(self, user_message, conversation_history=None, task_id=None):
+            self.calls.append({
+                "user_message": user_message,
+                "conversation_history": conversation_history,
+                "task_id": task_id,
+            })
+            if len(_EmptyResultAgent.instances) == 1:
+                return {"final_response": json.dumps({"action": "continue", "reason": "step 1", "next_prompt": "Do step 1"})}
+            return {"final_response": "   "}
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.loop.SessionDB", _FakeSessionDB)
+    monkeypatch.setattr("hermes_cli.loop.AIAgent", _EmptyResultAgent)
+
+    result = loop_command(_make_args())
+
+    out = capsys.readouterr().out
+    summary = _last_json_line(out)
+    assert "no visible result" in out.lower()
+    assert result["outcome"] == "stopped"
+    assert result["stop_reason"] == "empty_continuation_result"
+    assert summary["stop_reason"] == "empty_continuation_result"
+
+
+def test_loop_command_stops_on_duplicate_result_preview(monkeypatch, capsys, tmp_path):
+    class _DuplicateResultAgent:
+        instances = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.calls = []
+            _DuplicateResultAgent.instances.append(self)
+
+        def run_conversation(self, user_message, conversation_history=None, task_id=None):
+            self.calls.append({
+                "user_message": user_message,
+                "conversation_history": conversation_history,
+                "task_id": task_id,
+            })
+            if len(_DuplicateResultAgent.instances) == 1:
+                return {"final_response": json.dumps({"action": "continue", "reason": "step 1", "next_prompt": "Do step 1"})}
+            if len(_DuplicateResultAgent.instances) == 2:
+                return {"final_response": "Repeated summary"}
+            if len(_DuplicateResultAgent.instances) == 3:
+                return {"final_response": json.dumps({"action": "continue", "reason": "step 2", "next_prompt": "Do step 2"})}
+            return {"final_response": "Repeated summary"}
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.loop.SessionDB", _FakeSessionDB)
+    monkeypatch.setattr("hermes_cli.loop.AIAgent", _DuplicateResultAgent)
+
+    result = loop_command(_make_args(max_cycles=4))
+
+    out = capsys.readouterr().out
+    summary = _last_json_line(out)
+    assert "no meaningful new result preview" in out.lower()
+    assert result["outcome"] == "stopped"
+    assert result["stop_reason"] == "duplicate_result_preview"
+    assert summary["stop_reason"] == "duplicate_result_preview"
+
+
 def test_loop_command_stops_on_repeated_next_prompt(monkeypatch, capsys, tmp_path):
     class _RepeatPromptAgent:
         instances = []
