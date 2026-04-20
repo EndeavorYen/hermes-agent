@@ -125,6 +125,21 @@ def _preview_text(text: str, limit: int = 200) -> str:
     return compact[: limit - 1].rstrip() + "…"
 
 
+def format_loop_stop_notice(stop_reason: str, reason: str = "") -> str:
+    reason_text = (reason or "").strip()
+    mapping = {
+        "model_stop": reason_text or "No clear bounded next step.",
+        "repeated_next_prompt": "repeated next prompt (stall suppression).",
+        "empty_continuation_result": "continuation produced no visible result.",
+        "duplicate_result_preview": "continuation produced no meaningful new result.",
+        "missing_next_prompt": "controller chose continue without a bounded next prompt.",
+        "max_auto_turns_reached": "bounded auto-turn budget reached.",
+        "missing_goal": "loop goal is missing.",
+    }
+    detail = mapping.get(stop_reason, reason_text or stop_reason or "unknown reason")
+    return f"Loop stopped: {detail} ({stop_reason or 'unknown'})"
+
+
 def _emit_result(**payload: Any) -> Dict[str, Any]:
     result = {
         "session_id": payload.get("session_id"),

@@ -284,7 +284,7 @@ async def test_maybe_schedule_loop_followup_returns_internal_event(monkeypatch, 
             "next_prompt": "Implement the next thin slice.",
         },
     ):
-        event = await runner._maybe_schedule_loop_followup(
+        event, stop_notice = await runner._maybe_schedule_loop_followup(
             session_key=build_session_key(_make_source()),
             session_id="sess-1",
             source=_make_source(),
@@ -292,6 +292,7 @@ async def test_maybe_schedule_loop_followup_returns_internal_event(monkeypatch, 
         )
 
     assert event is not None
+    assert stop_notice is None
     assert event.internal is True
     assert event.text == "Implement the next thin slice."
     assert runner._loop_states[build_session_key(_make_source())]["remaining_auto_turns"] == 1
@@ -302,7 +303,8 @@ async def test_maybe_schedule_loop_followup_returns_internal_event(monkeypatch, 
 
 
 @pytest.mark.asyncio
-async def test_maybe_schedule_loop_followup_stops_on_repeated_prompt(monkeypatch):
+async def test_maybe_schedule_loop_followup_stops_on_repeated_prompt(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     runner = _make_runner()
     runner._loop_states[build_session_key(_make_source())] = {
         "goal": "Keep going",
@@ -319,7 +321,7 @@ async def test_maybe_schedule_loop_followup_stops_on_repeated_prompt(monkeypatch
             "next_prompt": "Implement the next thin slice.",
         },
     ):
-        event = await runner._maybe_schedule_loop_followup(
+        event, stop_notice = await runner._maybe_schedule_loop_followup(
             session_key=build_session_key(_make_source()),
             session_id="sess-1",
             source=_make_source(),
@@ -327,7 +329,11 @@ async def test_maybe_schedule_loop_followup_stops_on_repeated_prompt(monkeypatch
         )
 
     assert event is None
+    assert "repeated next prompt" in stop_notice.lower()
     assert build_session_key(_make_source()) not in runner._loop_states
+    reviews = _read_background_reviews(tmp_path)
+    assert reviews[-1]["progress_state"] == "repeated_prompt"
+    assert reviews[-1]["stop_reason"] == "repeated_next_prompt"
 
 
 @pytest.mark.asyncio
@@ -349,7 +355,7 @@ async def test_maybe_schedule_loop_followup_stops_on_duplicate_result_preview(mo
             "next_prompt": "Do the next thing.",
         },
     ):
-        event = await runner._maybe_schedule_loop_followup(
+        event, stop_notice = await runner._maybe_schedule_loop_followup(
             session_key=build_session_key(_make_source()),
             session_id="sess-1",
             source=_make_source(),
@@ -357,10 +363,46 @@ async def test_maybe_schedule_loop_followup_stops_on_duplicate_result_preview(mo
         )
 
     assert event is None
+    assert "no meaningful new result" in stop_notice.lower()
     assert build_session_key(_make_source()) not in runner._loop_states
     reviews = _read_background_reviews(tmp_path)
     assert reviews[-1]["progress_state"] == "duplicate_result"
     assert reviews[-1]["stop_reason"] == "duplicate_result_preview"
+
+
+@pytest.mark.asyncio
+async def test_maybe_schedule_loop_followup_reports_max_auto_turns(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    runner._loop_states[build_session_key(_make_source())] = {
+        "goal": "Keep going",
+        "remaining_auto_turns": 0,
+        "last_prompt_norm": "prompt",
+        "last_result_preview": "Recent progress",
+    }
+
+    event, stop_notice = await runner._maybe_schedule_loop_followup(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        source=_make_source(),
+        final_response="Recent progress",
+    )
+
+    assert event is None
+    assert "auto-turn budget" in stop_notice.lower()
+    assert build_session_key(_make_source()) not in runner._loop_states
+    reviews = _read_background_reviews(tmp_path)
+    assert reviews[-1]["progress_state"] == "max_auto_turns"
+    assert reviews[-1]["stop_reason"] == "max_auto_turns_reached"
+
+
+def test_apply_loop_stop_notice_appends_to_final_response():
+    runner = _make_runner()
+    result = {"final_response": "Did step 1"}
+
+    updated = runner._apply_loop_stop_notice(result, "Loop stopped: repeated next prompt (repeated_next_prompt)")
+
+    assert updated["final_response"] == "Did step 1\n\nLoop stopped: repeated next prompt (repeated_next_prompt)"
 
 
 @pytest.mark.asyncio

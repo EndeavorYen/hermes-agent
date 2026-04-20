@@ -1514,6 +1514,11 @@ class GatewayRunner:
         if isinstance(loop_states, dict):
             loop_states.pop(session_key, None)
 
+    def _apply_loop_stop_notice(self, result: Dict[str, Any], stop_notice: str) -> Dict[str, Any]:
+        final_text = (result.get("final_response") or "").rstrip()
+        result["final_response"] = f"{final_text}\n\n{stop_notice}" if final_text else stop_notice
+        return result
+
     async def _maybe_schedule_loop_followup(
         self,
         *,
@@ -1521,29 +1526,41 @@ class GatewayRunner:
         session_id: str,
         source,
         final_response: str,
-    ) -> MessageEvent | None:
+    ) -> tuple[MessageEvent | None, str | None]:
         loop_states = getattr(self, "_loop_states", None)
         if not isinstance(loop_states, dict):
-            return None
+            return None, None
         state = loop_states.get(session_key)
         if not state:
-            return None
+            return None, None
 
         remaining_auto_turns = int(state.get("remaining_auto_turns", 0) or 0)
         if remaining_auto_turns <= 0:
+            from hermes_cli.loop import record_background_review, format_loop_stop_notice
+
+            goal = str(state.get("goal") or "").strip()
+            record_background_review(
+                session_id=session_id,
+                goal=goal,
+                progress_state="max_auto_turns",
+                stop_reason="max_auto_turns_reached",
+                result_preview=str(state.get("last_result_preview") or ""),
+                source="bounded_loop_gateway",
+            )
             self._clear_loop_state(session_key)
-            return None
+            return None, format_loop_stop_notice("max_auto_turns_reached")
 
         goal = str(state.get("goal") or "").strip()
         if not goal:
             self._clear_loop_state(session_key)
-            return None
+            return None, None
 
         from hermes_cli.loop import (
             decide_continuation_for_session,
             _normalize_loop_prompt,
             _preview_text,
             record_background_review,
+            format_loop_stop_notice,
         )
 
         result_preview = _preview_text(final_response)
@@ -1557,7 +1574,7 @@ class GatewayRunner:
                 source="bounded_loop_gateway",
             )
             self._clear_loop_state(session_key)
-            return None
+            return None, format_loop_stop_notice("empty_continuation_result")
         previous_result_preview = str(state.get("last_result_preview") or "")
         if previous_result_preview and result_preview == previous_result_preview:
             record_background_review(
@@ -1569,7 +1586,7 @@ class GatewayRunner:
                 source="bounded_loop_gateway",
             )
             self._clear_loop_state(session_key)
-            return None
+            return None, format_loop_stop_notice("duplicate_result_preview")
         state["last_result_preview"] = result_preview
         record_background_review(
             session_id=session_id,
@@ -1585,27 +1602,46 @@ class GatewayRunner:
             goal,
         )
         if decision.get("action") != "continue":
+            stop_reason = str(decision.get("stop_reason") or "model_stop")
+            reason = str(decision.get("reason") or "")
             record_background_review(
                 session_id=session_id,
                 goal=goal,
                 progress_state="stop",
-                stop_reason=str(decision.get("stop_reason") or "model_stop"),
+                stop_reason=stop_reason,
                 result_preview=result_preview,
                 source="bounded_loop_gateway",
             )
             self._clear_loop_state(session_key)
-            return None
+            return None, format_loop_stop_notice(stop_reason, reason)
 
         next_prompt = (decision.get("next_prompt") or "").strip()
         if not next_prompt:
+            record_background_review(
+                session_id=session_id,
+                goal=goal,
+                progress_state="missing_next_prompt",
+                stop_reason="missing_next_prompt",
+                result_preview=result_preview,
+                source="bounded_loop_gateway",
+            )
             self._clear_loop_state(session_key)
-            return None
+            return None, format_loop_stop_notice("missing_next_prompt")
 
         next_prompt_norm = _normalize_loop_prompt(next_prompt)
         previous_prompt_norm = str(state.get("last_prompt_norm") or "")
         if previous_prompt_norm and next_prompt_norm == previous_prompt_norm:
+            record_background_review(
+                session_id=session_id,
+                goal=goal,
+                progress_state="repeated_prompt",
+                stop_reason="repeated_next_prompt",
+                next_prompt=next_prompt,
+                result_preview=result_preview,
+                source="bounded_loop_gateway",
+            )
             self._clear_loop_state(session_key)
-            return None
+            return None, format_loop_stop_notice("repeated_next_prompt")
 
         state["last_prompt_norm"] = next_prompt_norm
         state["remaining_auto_turns"] = remaining_auto_turns - 1
@@ -1617,7 +1653,7 @@ class GatewayRunner:
             message_id=None,
             internal=True,
             channel_prompt=(state.get("channel_prompt") or None),
-        )
+        ), None
 
     async def _prepare_loop_mode(
         self,
@@ -10668,8 +10704,9 @@ class GatewayRunner:
                     logger.debug("Delivering leftover /steer as next turn: '%s...'", pending[:40])
 
             if result and not pending and not pending_event and not result.get("interrupted") and not result.get("failed"):
+                loop_stop_notice = None
                 try:
-                    pending_event = await self._maybe_schedule_loop_followup(
+                    pending_event, loop_stop_notice = await self._maybe_schedule_loop_followup(
                         session_key=session_key,
                         session_id=session_id,
                         source=source,
@@ -10678,6 +10715,8 @@ class GatewayRunner:
                     if pending_event is not None:
                         pending = pending_event.text or _build_media_placeholder(pending_event)
                         logger.debug("Scheduling loop follow-up for session %s: '%s...'", session_key[:20] if session_key else "?", pending[:40])
+                    elif loop_stop_notice:
+                        self._apply_loop_stop_notice(result, loop_stop_notice)
                 except Exception:
                     logger.exception("Failed to schedule loop follow-up for session %s", session_key[:20] if session_key else "?")
                     self._clear_loop_state(session_key)
