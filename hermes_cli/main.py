@@ -4066,6 +4066,26 @@ def cmd_status(args):
     show_status(args)
 
 
+def cmd_loop(args):
+    """Run one bounded autonomous continuation decision/execution pass."""
+    from hermes_cli.loop import loop_command
+
+    result = loop_command(args)
+    if result.get("exit_code", 0):
+        raise SystemExit(result["exit_code"])
+
+
+
+def cmd_loop_run(args):
+    """Run repeated bounded continuation passes until stop/error/max-runs."""
+    from hermes_cli.loop import loop_run_command
+
+    result = loop_run_command(args)
+    if result.get("exit_code", 0):
+        raise SystemExit(result["exit_code"])
+
+
+
 def cmd_cron(args):
     """Cron job management."""
     from hermes_cli.cron import cron_command
@@ -6875,6 +6895,60 @@ For more help on a command:
         "--deep", action="store_true", help="Run deep checks (may take longer)"
     )
     status_parser.set_defaults(func=cmd_status)
+
+    # =========================================================================
+    # loop command
+    # =========================================================================
+    loop_parser = subparsers.add_parser(
+        "loop",
+        help="Run a bounded autonomous continuation loop",
+        description="Inspect a session, decide continue/stop, and optionally execute bounded continuation passes",
+    )
+    loop_subparsers = loop_parser.add_subparsers(dest="loop_command")
+
+    loop_once = loop_subparsers.add_parser("once", help="Run one bounded continuation pass")
+    loop_once.add_argument("--goal", required=True, help="Top-level objective Hermes should judge continuation against")
+    loop_once.add_argument("--resume", help="Session ID to inspect and continue")
+    loop_once.add_argument(
+        "-c",
+        "--continue",
+        dest="continue_last",
+        action="store_true",
+        help="Continue the most recent CLI session if --resume is omitted",
+    )
+    loop_once.add_argument("--dry-run", action="store_true", help="Decide the next step without executing it")
+    loop_once.add_argument(
+        "--max-cycles",
+        type=int,
+        default=1,
+        help="Maximum bounded continuation cycles to run before stopping (default: 1)",
+    )
+    loop_once.add_argument("--model", help="Override the model used for the loop decision/execution")
+    loop_once.add_argument("--provider", help="Override the provider used for the loop decision/execution")
+    loop_once.set_defaults(func=cmd_loop)
+
+    loop_run = loop_subparsers.add_parser(
+        "run", help="Repeat bounded continuation passes until stop/error/max-runs"
+    )
+    loop_run.add_argument("--goal", required=True, help="Top-level objective Hermes should judge continuation against")
+    loop_run.add_argument("--resume", help="Session ID to inspect and continue")
+    loop_run.add_argument(
+        "-c",
+        "--continue",
+        dest="continue_last",
+        action="store_true",
+        help="Continue the most recent CLI session if --resume is omitted",
+    )
+    loop_run.add_argument("--dry-run", action="store_true", help="Decide the next step without executing it")
+    loop_run.add_argument(
+        "--max-runs",
+        type=int,
+        default=3,
+        help="Maximum outer launcher runs before stopping (default: 3)",
+    )
+    loop_run.add_argument("--model", help="Override the model used for the loop decision/execution")
+    loop_run.add_argument("--provider", help="Override the provider used for the loop decision/execution")
+    loop_run.set_defaults(func=cmd_loop_run)
 
     # =========================================================================
     # cron command
