@@ -215,6 +215,44 @@ def _decide_once(goal: str, session_row: Dict[str, Any], args: Namespace) -> Dic
     return payload
 
 
+def decide_continuation_for_session(
+    session_id: str,
+    goal: str,
+    *,
+    model: str | None = None,
+    provider: str | None = None,
+) -> Dict[str, Any]:
+    """Return a bounded continue/stop decision for an explicit session id.
+
+    This exposes the controller logic to non-CLI surfaces like gateway /loop
+    without requiring them to shell out through the CLI runner.
+    """
+    if not (session_id or "").strip():
+        return {
+            "action": "stop",
+            "reason": "Missing target session id.",
+            "stop_reason": "missing_session_id",
+        }
+
+    db = SessionDB()
+    try:
+        session_row = db.get_session(session_id)
+    finally:
+        db.close()
+
+    if not session_row:
+        return {
+            "action": "stop",
+            "reason": f"Session '{session_id}' was not found.",
+            "stop_reason": "session_not_found",
+        }
+
+    args = Namespace(model=model, provider=provider)
+    decision = _decide_once(goal.strip(), session_row, args)
+    decision.setdefault("session_id", session_id)
+    return decision
+
+
 def _run_single_continuation(session_row: Dict[str, Any], next_prompt: str, args: Namespace) -> Dict[str, Any]:
     db = SessionDB()
     try:

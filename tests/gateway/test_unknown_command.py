@@ -167,7 +167,7 @@ async def test_underscored_alias_for_hyphenated_builtin_not_flagged(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_loop_built_in_command_loads_continuation_skill(monkeypatch):
+async def test_loop_built_in_command_routes_through_bounded_controller(monkeypatch):
     import gateway.run as gateway_run
 
     runner = _make_runner()
@@ -178,6 +178,64 @@ async def test_loop_built_in_command_loads_continuation_skill(monkeypatch):
     )
 
     with patch(
+        "hermes_cli.loop.decide_continuation_for_session",
+        return_value={
+            "action": "continue",
+            "reason": "clear next slice",
+            "next_prompt": "Implement the next thin slice and verify it.",
+            "session_id": "sess-1",
+        },
+    ) as mock_decide:
+        result = await runner._handle_message(_make_event("/loop 請繼續完成後續任務"))
+
+    assert result == "handled"
+    mock_decide.assert_called_once_with("sess-1", "請繼續完成後續任務")
+    runner._handle_message_with_agent.assert_awaited_once()
+    forwarded_event = runner._handle_message_with_agent.await_args.args[0]
+    assert forwarded_event.text == "Implement the next thin slice and verify it."
+
+
+@pytest.mark.asyncio
+async def test_loop_built_in_command_returns_stop_reason_without_running_agent(monkeypatch):
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._handle_message_with_agent = AsyncMock(return_value="handled")
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    with patch(
+        "hermes_cli.loop.decide_continuation_for_session",
+        return_value={
+            "action": "stop",
+            "reason": "No clear bounded next step.",
+            "stop_reason": "model_stop",
+            "session_id": "sess-1",
+        },
+    ):
+        result = await runner._handle_message(_make_event("/loop"))
+
+    assert result == "Loop stopped: No clear bounded next step. (model_stop)"
+    runner._handle_message_with_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_loop_built_in_command_falls_back_to_skill_mode_on_controller_error(monkeypatch):
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._handle_message_with_agent = AsyncMock(return_value="handled")
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    with patch(
+        "hermes_cli.loop.decide_continuation_for_session",
+        side_effect=RuntimeError("boom"),
+    ), patch(
         "agent.skill_commands.build_multi_skill_invocation_message",
         return_value='[SYSTEM: The user has invoked the "continuation-loop-controller-slices" skill.]',
     ) as mock_build:

@@ -3519,32 +3519,58 @@ class GatewayRunner:
                 return f"Failed to enter plan mode: {e}"
 
         if canonical == "loop":
+            user_instruction = event.get_command_args().strip()
+            session_entry = self.session_store.get_or_create_session(source)
+            goal = user_instruction or (
+                "Continue autonomously from this chat until a real stop condition is reached. "
+                "Choose the next best thin slice, implement it, verify it independently, and keep going by default."
+            )
             try:
-                from agent.skill_commands import build_multi_skill_invocation_message
+                from hermes_cli.loop import decide_continuation_for_session
 
-                user_instruction = event.get_command_args().strip()
-                session_entry = self.session_store.get_or_create_session(source)
-                event.text = build_multi_skill_invocation_message(
-                    [
-                        "/continuation-loop-controller-slices",
-                        "/autonomous-continuation-loop",
-                    ],
-                    user_instruction,
-                    task_id=_quick_key,
-                    runtime_note=(
-                        "Current gateway session id: "
-                        f"{session_entry.session_id}. Continue autonomously from this chat: "
-                        "choose the next best thin slice, implement it, verify it independently, "
-                        "and continue by default until a real stop condition is reached."
-                    ),
+                decision = await asyncio.to_thread(
+                    decide_continuation_for_session,
+                    session_entry.session_id,
+                    goal,
                 )
-                if not event.text:
-                    return "Failed to load the bundled /loop skill."
-                canonical = None
-                command = None
-            except Exception as e:
-                logger.exception("Failed to prepare /loop command")
-                return f"Failed to enter loop mode: {e}"
+                if decision.get("action") == "continue":
+                    next_prompt = (decision.get("next_prompt") or "").strip()
+                    if next_prompt:
+                        event.text = next_prompt
+                        canonical = None
+                        command = None
+                    else:
+                        return "Loop controller chose continue but did not provide a next prompt."
+                else:
+                    reason = (decision.get("reason") or "No clear bounded next step.").strip()
+                    stop_reason = (decision.get("stop_reason") or "model_stop").strip()
+                    return f"Loop stopped: {reason} ({stop_reason})"
+            except Exception:
+                logger.exception("Failed to run bounded /loop controller; falling back to continuation skills")
+                try:
+                    from agent.skill_commands import build_multi_skill_invocation_message
+
+                    event.text = build_multi_skill_invocation_message(
+                        [
+                            "/continuation-loop-controller-slices",
+                            "/autonomous-continuation-loop",
+                        ],
+                        user_instruction,
+                        task_id=_quick_key,
+                        runtime_note=(
+                            "Current gateway session id: "
+                            f"{session_entry.session_id}. Continue autonomously from this chat: "
+                            "choose the next best thin slice, implement it, verify it independently, "
+                            "and continue by default until a real stop condition is reached."
+                        ),
+                    )
+                    if not event.text:
+                        return "Failed to load the bundled /loop skill."
+                    canonical = None
+                    command = None
+                except Exception as e:
+                    logger.exception("Failed to prepare /loop command fallback")
+                    return f"Failed to enter loop mode: {e}"
         
         if canonical == "retry":
             return await self._handle_retry_command(event)

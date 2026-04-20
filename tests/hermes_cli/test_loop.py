@@ -3,7 +3,7 @@ from argparse import Namespace
 
 import pytest
 
-from hermes_cli.loop import loop_command, loop_run_command
+from hermes_cli.loop import decide_continuation_for_session, loop_command, loop_run_command
 from hermes_cli.main import cmd_loop, cmd_loop_run
 
 
@@ -122,6 +122,20 @@ def test_loop_command_stop_path(monkeypatch, capsys, tmp_path):
     assert summary["stop_reason"] == "model_stop"
 
 
+def test_decide_continuation_for_session_returns_session_scoped_decision(monkeypatch, tmp_path):
+    _DecisionAgent.instances = []
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.loop.SessionDB", _FakeSessionDB)
+    monkeypatch.setattr("hermes_cli.loop.AIAgent", _DecisionAgent)
+
+    result = decide_continuation_for_session("sess-1", "Keep going")
+
+    assert result["action"] == "stop"
+    assert result["stop_reason"] == "model_stop"
+    assert result["session_id"] == "sess-1"
+    assert len(_DecisionAgent.instances) == 1
+
+
 def test_loop_command_continue_executes_one_step(monkeypatch, capsys, tmp_path):
     _ContinueAgent.instances = []
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -173,6 +187,17 @@ def test_loop_command_malformed_decision_defaults_stop(monkeypatch, capsys, tmp_
     assert result["exit_code"] == 1
     assert summary["outcome"] == "error"
     assert summary["stop_reason"] == "invalid_decision_payload"
+
+
+def test_decide_continuation_for_session_handles_missing_session(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.loop.SessionDB", _FakeSessionDB)
+
+    result = decide_continuation_for_session("missing-session", "Keep going")
+
+    assert result["action"] == "stop"
+    assert result["stop_reason"] == "session_not_found"
+    assert "missing-session" in result["reason"]
 
 
 def test_loop_command_dry_run_skips_execution(monkeypatch, capsys, tmp_path):
