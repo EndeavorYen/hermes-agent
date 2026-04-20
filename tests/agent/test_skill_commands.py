@@ -10,6 +10,9 @@ from agent.skill_commands import (
     build_plan_path,
     build_preloaded_skills_prompt,
     build_skill_invocation_message,
+    build_multi_skill_invocation_message,
+    default_skill_runtime_note,
+    resolve_bare_skill_invocation,
     resolve_skill_command_key,
     scan_skill_commands,
 )
@@ -191,6 +194,74 @@ class TestResolveSkillCommandKey:
             # Underscore form also works (Telegram round-trip)
             assert resolve_skill_command_key("foo_bar") == "/foo-bar"
 
+    def test_alias_resolves_to_canonical_skill(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "continuation-loop-controller-slices",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    aliases: [loop]\n"
+                ),
+            )
+            result = scan_skill_commands()
+            assert "/loop" not in result
+            assert resolve_skill_command_key("loop") == "/continuation-loop-controller-slices"
+
+
+class TestResolveBareSkillInvocation:
+    def test_exact_skill_name_matches(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "continuation-loop-controller-slices")
+            scan_skill_commands()
+            assert resolve_bare_skill_invocation("continuation-loop-controller-slices") == (
+                "/continuation-loop-controller-slices",
+                "",
+            )
+
+    def test_first_line_skill_name_can_carry_multiline_instruction(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "continuation-loop-controller-slices")
+            scan_skill_commands()
+            assert resolve_bare_skill_invocation(
+                "continuation-loop-controller-slices\n繼續做下去\n多和 Claude 辯論"
+            ) == (
+                "/continuation-loop-controller-slices",
+                "繼續做下去\n多和 Claude 辯論",
+            )
+
+    def test_one_line_plain_text_does_not_accidentally_match(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "continuation-loop-controller-slices")
+            scan_skill_commands()
+            assert resolve_bare_skill_invocation(
+                "continuation-loop-controller-slices 繼續做下去"
+            ) is None
+
+    def test_slash_commands_are_ignored(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "continuation-loop-controller-slices")
+            scan_skill_commands()
+            assert resolve_bare_skill_invocation("/continuation-loop-controller-slices") is None
+
+    def test_alias_can_trigger_bare_skill_invocation(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "continuation-loop-controller-slices",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    aliases: [loop]\n"
+                ),
+            )
+            scan_skill_commands()
+            assert resolve_bare_skill_invocation("loop") == (
+                "/continuation-loop-controller-slices",
+                "",
+            )
+
 
 class TestBuildPreloadedSkillsPrompt:
     def test_builds_prompt_for_multiple_named_skills(self, tmp_path):
@@ -252,6 +323,39 @@ Generate some audio.
         assert msg is not None
         assert "test-skill" in msg
         assert "do stuff" in msg
+
+    def test_continuation_skills_get_default_runtime_note(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "continuation-loop-controller-slices")
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/continuation-loop-controller-slices")
+        assert msg is not None
+        assert "bounded continuation launcher surface exists inside Hermes" in msg
+        assert "do not ask the user to manually run shell commands" in msg
+
+    def test_continuation_runtime_note_can_include_current_session_id(self):
+        note = default_skill_runtime_note(
+            "continuation-loop-controller-slices",
+            current_session_id="sess-123",
+        )
+        assert "sess-123" in note
+        assert "current session id" in note.lower()
+
+    def test_build_multi_skill_invocation_message_combines_skills(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "continuation-loop-controller-slices")
+            _make_skill(tmp_path, "autonomous-continuation-loop")
+            scan_skill_commands()
+            msg = build_multi_skill_invocation_message(
+                ["/continuation-loop-controller-slices", "/autonomous-continuation-loop"],
+                "繼續做下去",
+                runtime_note="Current session id: sess-123",
+            )
+        assert msg is not None
+        assert "continuation-loop-controller-slices" in msg
+        assert "autonomous-continuation-loop" in msg
+        assert "繼續做下去" in msg
+        assert "sess-123" in msg
 
     def test_returns_none_for_unknown(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):

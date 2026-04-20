@@ -97,7 +97,7 @@ class TestResolveCommand:
     def test_alias_resolves_to_canonical(self):
         assert resolve_command("bg").name == "background"
         assert resolve_command("reset").name == "new"
-        assert resolve_command("q").name == "quit"
+        assert resolve_command("q").name == "queue"
         assert resolve_command("exit").name == "quit"
         assert resolve_command("gateway").name == "platforms"
         assert resolve_command("set-home").name == "sethome"
@@ -158,6 +158,9 @@ class TestGatewayKnownCommands:
                 assert cmd.name not in GATEWAY_KNOWN_COMMANDS, \
                     f"cli_only command '{cmd.name}' should not be in GATEWAY_KNOWN_COMMANDS"
 
+    def test_loop_is_in_gateway_known_commands(self):
+        assert "loop" in GATEWAY_KNOWN_COMMANDS
+
     def test_includes_config_gated_cli_only(self):
         """Commands with gateway_config_gate are always in GATEWAY_KNOWN_COMMANDS."""
         for cmd in COMMAND_REGISTRY:
@@ -185,6 +188,15 @@ class TestGatewayHelpLines:
         lines = gateway_help_lines()
         assert len(lines) > 10
 
+    def test_loop_command_appears_in_gateway_help(self):
+        import importlib
+        import hermes_cli.commands as commands_module
+
+        commands_module = importlib.reload(commands_module)
+        lines = commands_module.gateway_help_lines()
+        joined = "\n".join(lines)
+        assert "`/loop" in joined
+
     def test_excludes_cli_only_commands_without_config_gate(self):
         lines = gateway_help_lines()
         joined = "\n".join(lines)
@@ -207,6 +219,10 @@ class TestTelegramBotCommands:
         for name, desc in cmds:
             assert isinstance(name, str)
             assert isinstance(desc, str)
+
+    def test_loop_command_in_telegram_bot_commands(self):
+        names = {name for name, _ in telegram_bot_commands()}
+        assert "loop" in names
 
     def test_no_hyphens_in_command_names(self):
         """Telegram does not support hyphens in command names."""
@@ -1028,3 +1044,154 @@ class TestDiscordSkillCommands:
             assert len(name) <= _CMD_NAME_LIMIT, (
                 f"Name '{name}' is {len(name)} chars (limit {_CMD_NAME_LIMIT})"
             )
+
+
+# ---------------------------------------------------------------------------
+# Discord skill commands grouped by category
+# ---------------------------------------------------------------------------
+
+from hermes_cli.commands import discord_skill_commands_by_category  # noqa: E402
+
+
+class TestDiscordSkillCommandsByCategory:
+    """Tests for discord_skill_commands_by_category() — /skill group registration."""
+
+    def test_groups_skills_by_category(self, tmp_path, monkeypatch):
+        """Skills nested 2+ levels deep should be grouped by top-level category."""
+        from unittest.mock import patch
+
+        fake_skills_dir = str(tmp_path / "skills")
+        # Create the directory structure so resolve() works
+        for p in [
+            "skills/creative/ascii-art",
+            "skills/creative/excalidraw",
+            "skills/media/gif-search",
+        ]:
+            (tmp_path / p).mkdir(parents=True, exist_ok=True)
+            (tmp_path / p / "SKILL.md").write_text("---\nname: test\n---\n")
+
+        fake_cmds = {
+            "/ascii-art": {
+                "name": "ascii-art",
+                "description": "Generate ASCII art",
+                "skill_md_path": f"{fake_skills_dir}/creative/ascii-art/SKILL.md",
+            },
+            "/excalidraw": {
+                "name": "excalidraw",
+                "description": "Hand-drawn diagrams",
+                "skill_md_path": f"{fake_skills_dir}/creative/excalidraw/SKILL.md",
+            },
+            "/gif-search": {
+                "name": "gif-search",
+                "description": "Search for GIFs",
+                "skill_md_path": f"{fake_skills_dir}/media/gif-search/SKILL.md",
+            },
+        }
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+        ):
+            categories, uncategorized, hidden = discord_skill_commands_by_category(
+                reserved_names=set(),
+            )
+
+        assert "creative" in categories
+        assert "media" in categories
+        assert len(categories["creative"]) == 2
+        assert len(categories["media"]) == 1
+        assert uncategorized == []
+        assert hidden == 0
+
+    def test_root_level_skills_are_uncategorized(self, tmp_path, monkeypatch):
+        """Skills directly under SKILLS_DIR (only 1 path component) → uncategorized."""
+        from unittest.mock import patch
+
+        fake_skills_dir = str(tmp_path / "skills")
+        (tmp_path / "skills" / "dogfood").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "skills" / "dogfood" / "SKILL.md").write_text("")
+
+        fake_cmds = {
+            "/dogfood": {
+                "name": "dogfood",
+                "description": "QA testing",
+                "skill_md_path": f"{fake_skills_dir}/dogfood/SKILL.md",
+            },
+        }
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+        ):
+            categories, uncategorized, hidden = discord_skill_commands_by_category(
+                reserved_names=set(),
+            )
+
+        assert categories == {}
+        assert len(uncategorized) == 1
+        assert uncategorized[0][0] == "dogfood"
+
+    def test_hub_skills_excluded(self, tmp_path, monkeypatch):
+        """Skills under .hub should be excluded."""
+        from unittest.mock import patch
+
+        fake_skills_dir = str(tmp_path / "skills")
+        (tmp_path / "skills" / ".hub" / "some-skill").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "skills" / ".hub" / "some-skill" / "SKILL.md").write_text("")
+
+        fake_cmds = {
+            "/some-skill": {
+                "name": "some-skill",
+                "description": "Hub skill",
+                "skill_md_path": f"{fake_skills_dir}/.hub/some-skill/SKILL.md",
+            },
+        }
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+        ):
+            categories, uncategorized, hidden = discord_skill_commands_by_category(
+                reserved_names=set(),
+            )
+
+        assert categories == {}
+        assert uncategorized == []
+
+    def test_deep_nested_skills_use_top_category(self, tmp_path, monkeypatch):
+        """Skills like mlops/training/axolotl should group under 'mlops'."""
+        from unittest.mock import patch
+
+        fake_skills_dir = str(tmp_path / "skills")
+        (tmp_path / "skills" / "mlops" / "training" / "axolotl").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "skills" / "mlops" / "training" / "axolotl" / "SKILL.md").write_text("")
+        (tmp_path / "skills" / "mlops" / "inference" / "vllm").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "skills" / "mlops" / "inference" / "vllm" / "SKILL.md").write_text("")
+
+        fake_cmds = {
+            "/axolotl": {
+                "name": "axolotl",
+                "description": "Fine-tuning with Axolotl",
+                "skill_md_path": f"{fake_skills_dir}/mlops/training/axolotl/SKILL.md",
+            },
+            "/vllm": {
+                "name": "vllm",
+                "description": "vLLM inference",
+                "skill_md_path": f"{fake_skills_dir}/mlops/inference/vllm/SKILL.md",
+            },
+        }
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+        ):
+            categories, uncategorized, hidden = discord_skill_commands_by_category(
+                reserved_names=set(),
+            )
+
+        # Both should be under 'mlops' regardless of sub-category
+        assert "mlops" in categories
+        names = {n for n, _d, _k in categories["mlops"]}
+        assert "axolotl" in names
+        assert "vllm" in names
+        assert len(uncategorized) == 0

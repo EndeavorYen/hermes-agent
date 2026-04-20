@@ -6,6 +6,7 @@ Shows the status of all Hermes Agent components.
 
 import os
 import sys
+import json
 import subprocess
 from pathlib import Path
 
@@ -79,6 +80,53 @@ def _effective_provider_label() -> str:
     return provider_label(effective)
 
 
+def _read_jsonl_artifact_summary(path: Path) -> tuple[int, str]:
+    """Return (line_count, last_timestamp) for a JSONL artifact log."""
+    if not path.exists():
+        return 0, "(none)"
+
+    count = 0
+    last_timestamp = "(unknown)"
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for raw in handle:
+                text = raw.strip()
+                if not text:
+                    continue
+                count += 1
+                try:
+                    payload = json.loads(text)
+                except Exception:
+                    continue
+                if isinstance(payload, dict):
+                    last_timestamp = _format_iso_timestamp(payload.get("timestamp"))
+    except Exception:
+        return 0, "(error)"
+    return count, last_timestamp
+
+
+def _show_runtime_reflection_status(config: dict) -> None:
+    """Show deterministic reflection / affordance artifact status."""
+    reflection_cfg = config.get("reflection", {}) if isinstance(config, dict) else {}
+    if not isinstance(reflection_cfg, dict):
+        reflection_cfg = {}
+
+    artifacts_dir = get_hermes_home() / "artifacts"
+    reflections_count, reflections_last = _read_jsonl_artifact_summary(artifacts_dir / "reflections.jsonl")
+    gaps_count, gaps_last = _read_jsonl_artifact_summary(artifacts_dir / "affordance_gaps.jsonl")
+    reviews_count, reviews_last = _read_jsonl_artifact_summary(artifacts_dir / "background_reviews.jsonl")
+
+    print()
+    print(color("◆ Runtime Reflection", Colors.CYAN, Colors.BOLD))
+    print(f"  Enabled:      {check_mark(bool(reflection_cfg.get('enabled', False)))} {'on' if reflection_cfg.get('enabled', False) else 'off'}")
+    print(f"  Reflections:  {reflections_count}")
+    print(f"    Last:       {reflections_last}")
+    print(f"  Gap logs:     {gaps_count}")
+    print(f"    Last:       {gaps_last}")
+    print(f"  BG reviews:   {reviews_count}")
+    print(f"    Last:       {reviews_last}")
+
+
 from hermes_constants import is_termux as _is_termux
 
 
@@ -110,6 +158,8 @@ def show_status(args):
 
     print(f"  Model:        {_configured_model_label(config)}")
     print(f"  Provider:     {_effective_provider_label()}")
+
+    _show_runtime_reflection_status(config)
     
     # =========================================================================
     # API Keys
@@ -212,7 +262,7 @@ def show_status(args):
     if managed_nous_tools_enabled():
         features = get_nous_subscription_features(config)
         print()
-        print(color("◆ Nous Subscription Features", Colors.CYAN, Colors.BOLD))
+        print(color("◆ Nous Tool Gateway", Colors.CYAN, Colors.BOLD))
         if not features.nous_auth_present:
             print("  Nous Portal   ✗ not logged in")
         else:
@@ -230,6 +280,18 @@ def show_status(args):
             else:
                 state = "not configured"
             print(f"  {feature.label:<15} {check_mark(feature.available or feature.active or feature.managed_by_nous)} {state}")
+    elif nous_logged_in:
+        # Logged into Nous but on the free tier — show upgrade nudge
+        print()
+        print(color("◆ Nous Tool Gateway", Colors.CYAN, Colors.BOLD))
+        print("  Your free-tier Nous account does not include Tool Gateway access.")
+        print("  Upgrade your subscription to unlock managed web, image, TTS, and browser tools.")
+        try:
+            portal_url = nous_status.get("portal_base_url", "").rstrip("/")
+            if portal_url:
+                print(f"  Upgrade: {portal_url}")
+        except Exception:
+            pass
 
     # =========================================================================
     # API-Key Providers
@@ -305,6 +367,7 @@ def show_status(args):
         "WeCom Callback": ("WECOM_CALLBACK_CORP_ID", None),
         "Weixin": ("WEIXIN_ACCOUNT_ID", "WEIXIN_HOME_CHANNEL"),
         "BlueBubbles": ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_HOME_CHANNEL"),
+        "QQBot": ("QQ_APP_ID", "QQ_HOME_CHANNEL"),
     }
     
     for name, (token_var, home_var) in platforms.items():

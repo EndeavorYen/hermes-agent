@@ -7,13 +7,17 @@ delegate_task call instead of telling the user the command doesn't exist).
 
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
+
+
+def _skill_message(skill_name: str) -> str:
+    return f'[SYSTEM: The user has invoked the "{skill_name}" skill.]'
 
 
 def _make_source() -> SessionSource:
@@ -126,6 +130,106 @@ async def test_unknown_slash_command_underscored_form_also_guarded(monkeypatch):
     assert "Unknown command" in result
     assert "/made_up_thing" in result
     runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_bare_skill_name_is_forwarded_as_skill_invocation(monkeypatch):
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._handle_message_with_agent = AsyncMock(return_value="handled")
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    mock_multi_build = MagicMock(return_value=_skill_message("continuation-loop-controller-slices"))
+    with patch(
+        "agent.skill_commands.resolve_bare_skill_invocation",
+        return_value=("/continuation-loop-controller-slices", ""),
+    ), patch(
+        "agent.skill_commands.build_multi_skill_invocation_message",
+        mock_multi_build,
+    ), patch(
+        "agent.skill_commands.get_skill_commands",
+        return_value={
+            "/continuation-loop-controller-slices": {"name": "continuation-loop-controller-slices"},
+            "/autonomous-continuation-loop": {"name": "autonomous-continuation-loop"},
+        },
+    ):
+        result = await runner._handle_message(_make_event("continuation-loop-controller-slices"))
+
+    assert result == "handled"
+    runner._handle_message_with_agent.assert_awaited_once()
+    forwarded_event = runner._handle_message_with_agent.await_args.args[0]
+    first_call = mock_multi_build.call_args_list[0]
+    assert "invoked the \"continuation-loop-controller-slices\" skill" in forwarded_event.text
+    assert "/autonomous-continuation-loop" in first_call.args[0]
+    assert "sess-1" in first_call.kwargs["runtime_note"]
+
+
+@pytest.mark.asyncio
+async def test_slash_continuation_skill_receives_current_session_runtime_note(monkeypatch):
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._handle_message_with_agent = AsyncMock(return_value="handled")
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    mock_multi_build = MagicMock(return_value=_skill_message("continuation-loop-controller-slices"))
+    with patch(
+        "agent.skill_commands.build_multi_skill_invocation_message",
+        mock_multi_build,
+    ), patch(
+        "agent.skill_commands.get_skill_commands",
+        return_value={
+            "/continuation-loop-controller-slices": {"name": "continuation-loop-controller-slices"},
+            "/autonomous-continuation-loop": {"name": "autonomous-continuation-loop"},
+        },
+    ):
+        result = await runner._handle_message(_make_event("/continuation-loop-controller-slices"))
+
+    assert result == "handled"
+    first_call = mock_multi_build.call_args_list[0]
+    assert "/autonomous-continuation-loop" in first_call.args[0]
+    assert "sess-1" in first_call.kwargs["runtime_note"]
+
+
+@pytest.mark.asyncio
+async def test_loop_built_in_command_loads_continuation_skill(monkeypatch):
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._handle_message_with_agent = AsyncMock(return_value="handled")
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    mock_multi_build = MagicMock(return_value=_skill_message("continuation-loop-controller-slices"))
+    with patch(
+        "agent.skill_commands.build_multi_skill_invocation_message",
+        mock_multi_build,
+    ), patch(
+        "agent.skill_commands.get_skill_commands",
+        return_value={
+            "/continuation-loop-controller-slices": {"name": "continuation-loop-controller-slices"},
+            "/autonomous-continuation-loop": {"name": "autonomous-continuation-loop"},
+        },
+    ):
+        result = await runner._handle_message(_make_event("/loop 請繼續完成後續任務"))
+
+    assert result == "handled"
+    first_call = mock_multi_build.call_args_list[0]
+    assert first_call.args[0] == [
+        "/continuation-loop-controller-slices",
+        "/autonomous-continuation-loop",
+    ]
+    assert "請繼續完成後續任務" in first_call.args[1]
+    assert "sess-1" in first_call.kwargs["runtime_note"]
 
 
 @pytest.mark.asyncio
