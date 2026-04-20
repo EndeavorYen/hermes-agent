@@ -191,3 +191,32 @@ async def test_loop_built_in_command_loads_continuation_skill(monkeypatch):
     runner._handle_message_with_agent.assert_awaited_once()
     forwarded_event = runner._handle_message_with_agent.await_args.args[0]
     assert "continuation-loop-controller-slices" in forwarded_event.text
+
+
+@pytest.mark.asyncio
+async def test_bare_loop_invocation_loads_continuation_skill(monkeypatch):
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._handle_message_with_agent = AsyncMock(return_value="handled")
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    with patch(
+        "agent.skill_commands.build_skill_invocation_message",
+        return_value='[SYSTEM: The user has invoked the "continuation-loop-controller-slices" skill.]',
+    ) as mock_build:
+        result = await runner._handle_message(
+            _make_event("loop\n請繼續完成後續任務\n多和 Claude 辯論 + 討論")
+        )
+
+    assert result == "handled"
+    mock_build.assert_called_once()
+    assert mock_build.call_args.args[0] == "/continuation-loop-controller-slices"
+    assert mock_build.call_args.args[1] == "請繼續完成後續任務\n多和 Claude 辯論 + 討論"
+    assert "sess-1" in mock_build.call_args.kwargs["runtime_note"]
+    runner._handle_message_with_agent.assert_awaited_once()
+    forwarded_event = runner._handle_message_with_agent.await_args.args[0]
+    assert "continuation-loop-controller-slices" in forwarded_event.text

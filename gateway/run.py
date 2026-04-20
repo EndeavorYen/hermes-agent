@@ -3741,6 +3741,30 @@ class GatewayRunner:
         # Pending exec approvals are handled by /approve and /deny commands above.
         # No bare text matching — "yes" in normal conversation must not trigger
         # execution of a dangerous command.
+        if not command and event.text:
+            _loop_lines = event.text.strip().splitlines()
+            if _loop_lines and _loop_lines[0].strip().lower() == "loop":
+                try:
+                    from agent.skill_commands import build_skill_invocation_message
+
+                    user_instruction = "\n".join(_loop_lines[1:]).strip()
+                    session_entry = self.session_store.get_or_create_session(source)
+                    event.text = build_skill_invocation_message(
+                        "/continuation-loop-controller-slices",
+                        user_instruction,
+                        task_id=_quick_key,
+                        runtime_note=(
+                            "Current gateway session id: "
+                            f"{session_entry.session_id}. Continue autonomously from this chat: "
+                            "choose the next best thin slice, implement it, verify it independently, "
+                            "and continue by default until a real stop condition is reached."
+                        ),
+                    )
+                    if not event.text:
+                        return "Failed to load the bundled loop continuation skill."
+                except Exception as e:
+                    logger.exception("Failed to prepare bare loop invocation")
+                    return f"Failed to enter loop mode: {e}"
 
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there
