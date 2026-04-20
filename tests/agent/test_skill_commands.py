@@ -7,9 +7,12 @@ from unittest.mock import patch
 
 import tools.skills_tool as skills_tool_module
 from agent.skill_commands import (
+    build_multi_skill_invocation_message,
     build_plan_path,
     build_preloaded_skills_prompt,
     build_skill_invocation_message,
+    default_skill_runtime_note,
+    resolve_bare_skill_invocation,
     resolve_skill_command_key,
     scan_skill_commands,
 )
@@ -177,6 +180,16 @@ class TestResolveSkillCommandKey:
             assert resolve_skill_command_key("does_not_exist") is None
             assert resolve_skill_command_key("does-not-exist") is None
 
+    def test_alias_resolves_to_canonical_skill(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "continuation-loop-controller-slices",
+                frontmatter_extra="metadata:\n  hermes:\n    aliases: [loop]\n",
+            )
+            scan_skill_commands()
+            assert resolve_skill_command_key("loop") == "/continuation-loop-controller-slices"
+
     def test_empty_command_returns_none(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             scan_skill_commands()
@@ -206,6 +219,31 @@ class TestBuildPreloadedSkillsPrompt:
         assert "first-skill" in prompt
         assert "second-skill" in prompt
         assert "preloaded" in prompt.lower()
+
+    def test_resolves_bare_skill_invocation_first_line_only(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "continuation-loop-controller-slices",
+                frontmatter_extra="metadata:\n  hermes:\n    aliases: [loop]\n",
+            )
+            scan_skill_commands()
+            resolved = resolve_bare_skill_invocation(
+                "loop\n請繼續完成後續任務\n多和 Claude 辯論"
+            )
+
+        assert resolved == (
+            "/continuation-loop-controller-slices",
+            "請繼續完成後續任務\n多和 Claude 辯論",
+        )
+
+    def test_default_skill_runtime_note_for_continuation_skill(self):
+        note = default_skill_runtime_note(
+            "continuation-loop-controller-slices",
+            current_session_id="sess-1",
+        )
+        assert "sess-1" in note
+        assert "do not ask the user to manually run shell commands" in note
 
     def test_reports_missing_named_skills(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
@@ -258,6 +296,26 @@ Generate some audio.
             scan_skill_commands()
             msg = build_skill_invocation_message("/nonexistent")
         assert msg is None
+
+    def test_builds_multi_skill_message(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "continuation-loop-controller-slices")
+            _make_skill(tmp_path, "autonomous-continuation-loop")
+            scan_skill_commands()
+            msg = build_multi_skill_invocation_message(
+                [
+                    "/continuation-loop-controller-slices",
+                    "/autonomous-continuation-loop",
+                ],
+                "請繼續",
+                runtime_note="Current session id: sess-1",
+            )
+
+        assert msg is not None
+        assert "continuation-loop-controller-slices" in msg
+        assert "autonomous-continuation-loop" in msg
+        assert "請繼續" in msg
+        assert "sess-1" in msg
 
     def test_uses_shared_skill_loader_for_secure_setup(self, tmp_path, monkeypatch):
         monkeypatch.delenv("TENOR_API_KEY", raising=False)

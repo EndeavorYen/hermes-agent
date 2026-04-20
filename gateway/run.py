@@ -3520,12 +3520,15 @@ class GatewayRunner:
 
         if canonical == "loop":
             try:
-                from agent.skill_commands import build_skill_invocation_message
+                from agent.skill_commands import build_multi_skill_invocation_message
 
                 user_instruction = event.get_command_args().strip()
                 session_entry = self.session_store.get_or_create_session(source)
-                event.text = build_skill_invocation_message(
-                    "/continuation-loop-controller-slices",
+                event.text = build_multi_skill_invocation_message(
+                    [
+                        "/continuation-loop-controller-slices",
+                        "/autonomous-continuation-loop",
+                    ],
                     user_instruction,
                     task_id=_quick_key,
                     runtime_note=(
@@ -3538,6 +3541,7 @@ class GatewayRunner:
                 if not event.text:
                     return "Failed to load the bundled /loop skill."
                 canonical = None
+                command = None
             except Exception as e:
                 logger.exception("Failed to prepare /loop command")
                 return f"Failed to enter loop mode: {e}"
@@ -3682,6 +3686,7 @@ class GatewayRunner:
             try:
                 from agent.skill_commands import (
                     get_skill_commands,
+                    build_multi_skill_invocation_message,
                     build_skill_invocation_message,
                     resolve_skill_command_key,
                 )
@@ -3714,9 +3719,19 @@ class GatewayRunner:
                             "choose the next best thin slice, implement it, verify it independently, "
                             "and continue by default until a real stop condition is reached."
                         )
-                    msg = build_skill_invocation_message(
-                        cmd_key, user_instruction, task_id=_quick_key, runtime_note=runtime_note
-                    )
+                        msg = build_multi_skill_invocation_message(
+                            [
+                                "/continuation-loop-controller-slices",
+                                "/autonomous-continuation-loop",
+                            ],
+                            user_instruction,
+                            task_id=_quick_key,
+                            runtime_note=runtime_note,
+                        )
+                    else:
+                        msg = build_skill_invocation_message(
+                            cmd_key, user_instruction, task_id=_quick_key, runtime_note=runtime_note
+                        )
                     if msg:
                         event.text = msg
                         # Fall through to normal message processing with skill content
@@ -3757,12 +3772,15 @@ class GatewayRunner:
             _loop_lines = event.text.strip().splitlines()
             if _loop_lines and _loop_lines[0].strip().lower() == "loop":
                 try:
-                    from agent.skill_commands import build_skill_invocation_message
+                    from agent.skill_commands import build_multi_skill_invocation_message
 
                     user_instruction = "\n".join(_loop_lines[1:]).strip()
                     session_entry = self.session_store.get_or_create_session(source)
-                    event.text = build_skill_invocation_message(
-                        "/continuation-loop-controller-slices",
+                    event.text = build_multi_skill_invocation_message(
+                        [
+                            "/continuation-loop-controller-slices",
+                            "/autonomous-continuation-loop",
+                        ],
                         user_instruction,
                         task_id=_quick_key,
                         runtime_note=(

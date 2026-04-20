@@ -17,6 +17,7 @@ from hermes_constants import display_hermes_home
 logger = logging.getLogger(__name__)
 
 _skill_commands: Dict[str, Dict[str, Any]] = {}
+_skill_command_aliases: Dict[str, str] = {}
 _PLAN_SLUG_RE = re.compile(r"[^a-z0-9]+")
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
@@ -42,6 +43,13 @@ def build_plan_path(
     slug = slug or "conversation-plan"
     timestamp = (now or datetime.now()).strftime("%Y-%m-%d_%H%M%S")
     return Path(".hermes") / "plans" / f"{timestamp}-{slug}.md"
+
+
+def _normalize_skill_slug(value: str) -> str:
+    slug = (value or "").strip().lower().replace(" ", "-").replace("_", "-")
+    slug = _SKILL_INVALID_CHARS.sub("", slug)
+    slug = _SKILL_MULTI_HYPHEN.sub("-", slug).strip("-")
+    return slug
 
 
 def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:
@@ -212,8 +220,9 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     Returns:
         Dict mapping "/skill-name" to {name, description, skill_md_path, skill_dir}.
     """
-    global _skill_commands
+    global _skill_commands, _skill_command_aliases
     _skill_commands = {}
+    _skill_command_aliases = {}
     try:
         from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, _get_disabled_skill_names
         from agent.skill_utils import get_external_skills_dirs
@@ -250,20 +259,34 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                                 description = line[:80]
                                 break
                     seen_names.add(name)
-                    # Normalize to hyphen-separated slug, stripping
-                    # non-alnum chars (e.g. +, /) to avoid invalid
-                    # Telegram command names downstream.
-                    cmd_name = name.lower().replace(' ', '-').replace('_', '-')
-                    cmd_name = _SKILL_INVALID_CHARS.sub('', cmd_name)
-                    cmd_name = _SKILL_MULTI_HYPHEN.sub('-', cmd_name).strip('-')
+                    cmd_name = _normalize_skill_slug(name)
                     if not cmd_name:
                         continue
-                    _skill_commands[f"/{cmd_name}"] = {
+                    canonical_key = f"/{cmd_name}"
+                    _skill_commands[canonical_key] = {
                         "name": name,
                         "description": description or f"Invoke the {name} skill",
                         "skill_md_path": str(skill_md),
                         "skill_dir": str(skill_md.parent),
                     }
+
+                    hermes_meta = ((frontmatter.get("metadata") or {}).get("hermes") or {})
+                    raw_aliases = (
+                        hermes_meta.get("aliases")
+                        or hermes_meta.get("command_aliases")
+                        or []
+                    )
+                    if isinstance(raw_aliases, str):
+                        raw_aliases = [raw_aliases]
+                    if isinstance(raw_aliases, list):
+                        for alias in raw_aliases:
+                            alias_slug = _normalize_skill_slug(str(alias))
+                            if not alias_slug or alias_slug == cmd_name:
+                                continue
+                            alias_key = f"/{alias_slug}"
+                            if alias_key in _skill_commands or alias_key in _skill_command_aliases:
+                                continue
+                            _skill_command_aliases[alias_key] = canonical_key
                 except Exception:
                     continue
     except Exception:
@@ -288,13 +311,60 @@ def resolve_skill_command_key(command: str) -> Optional[str]:
     (which disallow hyphens, so ``/claude-code`` is registered as
     ``/claude_code`` and comes back in the underscored form).
 
-    Returns the matching ``/slug`` key from ``get_skill_commands()`` or
-    ``None`` if no match.
+    Exact per-skill aliases are also supported via ``metadata.hermes.aliases``
+    (or ``command_aliases``) in the skill frontmatter; aliases resolve to the
+    canonical command key rather than appearing as separate commands in help.
+
+    Returns the matching canonical ``/slug`` key from ``get_skill_commands()``
+    or ``None`` if no match.
     """
     if not command:
         return None
     cmd_key = f"/{command.replace('_', '-')}"
-    return cmd_key if cmd_key in get_skill_commands() else None
+    commands = get_skill_commands()
+    if cmd_key in commands:
+        return cmd_key
+    return _skill_command_aliases.get(cmd_key)
+
+
+def resolve_bare_skill_invocation(text: str) -> Optional[tuple[str, str]]:
+    """Resolve a bare skill-name message into (cmd_key, user_instruction)."""
+    stripped = (text or "").strip()
+    if not stripped or stripped.startswith("/"):
+        return None
+
+    lines = stripped.splitlines()
+    skill_token = lines[0].strip()
+    if not skill_token or any(ch.isspace() for ch in skill_token):
+        return None
+
+    cmd_key = resolve_skill_command_key(skill_token)
+    if cmd_key is None:
+        return None
+
+    user_instruction = "\n".join(line.rstrip() for line in lines[1:]).strip()
+    return cmd_key, user_instruction
+
+
+def default_skill_runtime_note(
+    skill_name: str,
+    current_session_id: str | None = None,
+) -> str:
+    """Return an implicit runtime note for specific skills when useful."""
+    normalized = (skill_name or "").strip().lower()
+    if normalized in {
+        "autonomous-continuation-loop",
+        "continuation-loop-controller-slices",
+    }:
+        note = (
+            "A bounded continuation launcher surface exists inside Hermes. "
+            "If continuation bootstrap is needed, trigger it yourself with available tools; "
+            "do not ask the user to manually run shell commands."
+        )
+        if current_session_id:
+            note += f" Current session id: {current_session_id}. Prefer this session over guessing the most recent CLI session."
+        return note
+    return ""
 
 
 def build_skill_invocation_message(
@@ -303,15 +373,7 @@ def build_skill_invocation_message(
     task_id: str | None = None,
     runtime_note: str = "",
 ) -> Optional[str]:
-    """Build the user message content for a skill slash command invocation.
-
-    Args:
-        cmd_key: The command key including leading slash (e.g., "/gif-search").
-        user_instruction: Optional text the user typed after the command.
-
-    Returns:
-        The formatted message string, or None if the skill wasn't found.
-    """
+    """Build the user message content for a skill slash command invocation."""
     commands = get_skill_commands()
     skill_info = commands.get(cmd_key)
     if not skill_info:
@@ -326,6 +388,7 @@ def build_skill_invocation_message(
         f'[SYSTEM: The user has invoked the "{skill_name}" skill, indicating they want '
         "you to follow its instructions. The full skill content is loaded below.]"
     )
+    runtime_note = runtime_note or default_skill_runtime_note(skill_name)
     return _build_skill_message(
         loaded_skill,
         skill_dir,
@@ -333,6 +396,57 @@ def build_skill_invocation_message(
         user_instruction=user_instruction,
         runtime_note=runtime_note,
     )
+
+
+def build_multi_skill_invocation_message(
+    cmd_keys: list[str],
+    user_instruction: str = "",
+    task_id: str | None = None,
+    runtime_note: str = "",
+) -> Optional[str]:
+    """Build one combined user message that activates multiple skills in order."""
+    prompt_parts: list[str] = []
+    seen: set[str] = set()
+
+    commands = get_skill_commands()
+    for cmd_key in cmd_keys:
+        normalized = (cmd_key or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        skill_info = commands.get(normalized)
+        if not skill_info:
+            return None
+        loaded = _load_skill_payload(skill_info["skill_dir"], task_id=task_id)
+        if not loaded:
+            return f"[Failed to load skill: {skill_info['name']}]"
+        loaded_skill, skill_dir, skill_name = loaded
+        activation_note = (
+            f'[SYSTEM: The user has invoked the "{skill_name}" skill as part of a combined continuation mode. '
+            "Follow its instructions together with the other loaded skills below.]"
+        )
+        prompt_parts.append(
+            _build_skill_message(
+                loaded_skill,
+                skill_dir,
+                activation_note,
+            )
+        )
+
+    if not prompt_parts:
+        return None
+
+    if user_instruction:
+        prompt_parts.append("")
+        prompt_parts.append(
+            f"The user has provided the following instruction alongside the combined skill invocation: {user_instruction}"
+        )
+
+    if runtime_note:
+        prompt_parts.append("")
+        prompt_parts.append(f"[Runtime note: {runtime_note}]")
+
+    return "\n\n".join(prompt_parts)
 
 
 def build_preloaded_skills_prompt(

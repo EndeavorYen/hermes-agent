@@ -178,14 +178,17 @@ async def test_loop_built_in_command_loads_continuation_skill(monkeypatch):
     )
 
     with patch(
-        "agent.skill_commands.build_skill_invocation_message",
+        "agent.skill_commands.build_multi_skill_invocation_message",
         return_value='[SYSTEM: The user has invoked the "continuation-loop-controller-slices" skill.]',
     ) as mock_build:
         result = await runner._handle_message(_make_event("/loop 請繼續完成後續任務"))
 
     assert result == "handled"
     mock_build.assert_called_once()
-    assert mock_build.call_args.args[0] == "/continuation-loop-controller-slices"
+    assert mock_build.call_args.args[0] == [
+        "/continuation-loop-controller-slices",
+        "/autonomous-continuation-loop",
+    ]
     assert mock_build.call_args.args[1] == "請繼續完成後續任務"
     assert "sess-1" in mock_build.call_args.kwargs["runtime_note"]
     runner._handle_message_with_agent.assert_awaited_once()
@@ -209,10 +212,13 @@ async def test_direct_continuation_skill_gets_session_runtime_note(monkeypatch):
         return_value={
             "/continuation-loop-controller-slices": {
                 "name": "continuation-loop-controller-slices"
-            }
+            },
+            "/autonomous-continuation-loop": {
+                "name": "autonomous-continuation-loop"
+            },
         },
     ), patch(
-        "agent.skill_commands.build_skill_invocation_message",
+        "agent.skill_commands.build_multi_skill_invocation_message",
         return_value='[SYSTEM: The user has invoked the "continuation-loop-controller-slices" skill.]',
     ) as mock_build:
         result = await runner._handle_message(
@@ -221,7 +227,10 @@ async def test_direct_continuation_skill_gets_session_runtime_note(monkeypatch):
 
     assert result == "handled"
     mock_build.assert_called_once()
-    assert mock_build.call_args.args[0] == "/continuation-loop-controller-slices"
+    assert mock_build.call_args.args[0] == [
+        "/continuation-loop-controller-slices",
+        "/autonomous-continuation-loop",
+    ]
     assert mock_build.call_args.args[1] == "請繼續"
     assert "sess-1" in mock_build.call_args.kwargs["runtime_note"]
 
@@ -238,7 +247,7 @@ async def test_bare_loop_invocation_loads_continuation_skill(monkeypatch):
     )
 
     with patch(
-        "agent.skill_commands.build_skill_invocation_message",
+        "agent.skill_commands.build_multi_skill_invocation_message",
         return_value='[SYSTEM: The user has invoked the "continuation-loop-controller-slices" skill.]',
     ) as mock_build:
         result = await runner._handle_message(
@@ -247,7 +256,10 @@ async def test_bare_loop_invocation_loads_continuation_skill(monkeypatch):
 
     assert result == "handled"
     mock_build.assert_called_once()
-    assert mock_build.call_args.args[0] == "/continuation-loop-controller-slices"
+    assert mock_build.call_args.args[0] == [
+        "/continuation-loop-controller-slices",
+        "/autonomous-continuation-loop",
+    ]
     assert mock_build.call_args.args[1] == "請繼續完成後續任務\n多和 Claude 辯論 + 討論"
     assert "sess-1" in mock_build.call_args.kwargs["runtime_note"]
     runner._handle_message_with_agent.assert_awaited_once()
