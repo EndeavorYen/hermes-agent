@@ -144,10 +144,29 @@ def _session_runtime_config(session_row: Dict[str, Any], args: Namespace) -> Dic
     return {"model": model, "provider": provider, "base_url": base_url}
 
 
+def _recent_history_context(session_id: str, limit: int = 6) -> List[Dict[str, str]]:
+    db = SessionDB()
+    try:
+        history = db.get_messages_as_conversation(session_id) or []
+    finally:
+        db.close()
+
+    rows: List[Dict[str, str]] = []
+    for msg in history[-limit:]:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "")
+        content = _preview_text(str(msg.get("content") or ""), limit=280)
+        if role and content:
+            rows.append({"role": role, "content": content})
+    return rows
+
+
 def _build_decision_prompt(
     *,
     goal: str,
     session_row: Dict[str, Any],
+    recent_history: List[Dict[str, str]],
     reflections: List[Dict[str, Any]],
     gaps: List[Dict[str, Any]],
     background_reviews: List[Dict[str, Any]],
@@ -156,18 +175,20 @@ def _build_decision_prompt(
         "goal": goal,
         "session_id": session_row.get("id"),
         "title": session_row.get("title") or "",
+        "recent_history": recent_history,
         "last_reflections": reflections,
         "last_affordance_gaps": gaps,
         "last_background_reviews": background_reviews,
     }
     return (
         "You are Hermes deciding whether an autonomous continuation loop should run one more step.\n"
-        "Given the objective and recent runtime artifacts, return ONLY JSON with this schema:\n"
+        "Given the objective, the recent session transcript, and any runtime artifacts, return ONLY JSON with this schema:\n"
         '{"action":"continue|stop","reason":"short string","next_prompt":"required iff action=continue"}.\n'
         "Rules:\n"
         "- continue only if there is one clear bounded next step\n"
         "- stop on ambiguity, convergence, repeated/stalled motion, or real user-level tradeoff\n"
-        "- keep next_prompt concrete and directly executable\n\n"
+        "- keep next_prompt concrete and directly executable\n"
+        "- use the recent_history as the primary grounding signal\n\n"
         f"Context:\n{json.dumps(context, ensure_ascii=False, indent=2)}"
     )
 
@@ -175,6 +196,7 @@ def _build_decision_prompt(
 def _decide_once(goal: str, session_row: Dict[str, Any], args: Namespace) -> Dict[str, Any]:
     session_id = session_row["id"]
     artifacts_dir = _continuation_artifact_dir()
+    recent_history = _recent_history_context(session_id)
     reflections = _load_recent_jsonl(artifacts_dir / "reflections.jsonl", session_id=session_id)
     gaps = _load_recent_jsonl(artifacts_dir / "affordance_gaps.jsonl", session_id=session_id)
     background_reviews = _load_recent_jsonl(artifacts_dir / "background_reviews.jsonl", session_id=session_id)
@@ -186,12 +208,14 @@ def _decide_once(goal: str, session_row: Dict[str, Any], args: Namespace) -> Dic
         quiet_mode=True,
         skip_context_files=True,
         skip_memory=True,
+        enabled_toolsets=[],
         max_iterations=4,
     )
     result = agent.run_conversation(
         _build_decision_prompt(
             goal=goal,
             session_row=session_row,
+            recent_history=recent_history,
             reflections=reflections,
             gaps=gaps,
             background_reviews=background_reviews,

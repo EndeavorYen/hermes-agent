@@ -61,6 +61,7 @@ def _make_runner():
     runner._running_agents = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
+    runner._loop_states = {}
     runner._session_db = None
     runner._reasoning_config = None
     runner._provider_routing = {}
@@ -190,6 +191,8 @@ async def test_loop_built_in_command_routes_through_bounded_controller(monkeypat
 
     assert result == "handled"
     mock_decide.assert_called_once_with("sess-1", "請繼續完成後續任務")
+    assert runner._loop_states[build_session_key(_make_source())]["goal"] == "請繼續完成後續任務"
+    assert runner._loop_states[build_session_key(_make_source())]["remaining_auto_turns"] == 2
     runner._handle_message_with_agent.assert_awaited_once()
     forwarded_event = runner._handle_message_with_agent.await_args.args[0]
     assert forwarded_event.text == "Implement the next thin slice and verify it."
@@ -255,7 +258,84 @@ async def test_loop_built_in_command_falls_back_to_skill_mode_on_controller_erro
 
 
 @pytest.mark.asyncio
-async def test_direct_continuation_skill_gets_session_runtime_note(monkeypatch):
+async def test_maybe_schedule_loop_followup_returns_internal_event(monkeypatch):
+    runner = _make_runner()
+    runner._loop_states[build_session_key(_make_source())] = {
+        "goal": "Keep going",
+        "remaining_auto_turns": 2,
+        "last_prompt_norm": "initial prompt",
+    }
+
+    with patch(
+        "hermes_cli.loop.decide_continuation_for_session",
+        return_value={
+            "action": "continue",
+            "reason": "clear next slice",
+            "next_prompt": "Implement the next thin slice.",
+        },
+    ):
+        event = await runner._maybe_schedule_loop_followup(
+            session_key=build_session_key(_make_source()),
+            session_id="sess-1",
+            source=_make_source(),
+        )
+
+    assert event is not None
+    assert event.internal is True
+    assert event.text == "Implement the next thin slice."
+    assert runner._loop_states[build_session_key(_make_source())]["remaining_auto_turns"] == 1
+
+
+@pytest.mark.asyncio
+async def test_maybe_schedule_loop_followup_stops_on_repeated_prompt(monkeypatch):
+    runner = _make_runner()
+    runner._loop_states[build_session_key(_make_source())] = {
+        "goal": "Keep going",
+        "remaining_auto_turns": 2,
+        "last_prompt_norm": "implement the next thin slice.",
+    }
+
+    with patch(
+        "hermes_cli.loop.decide_continuation_for_session",
+        return_value={
+            "action": "continue",
+            "reason": "clear next slice",
+            "next_prompt": "Implement the next thin slice.",
+        },
+    ):
+        event = await runner._maybe_schedule_loop_followup(
+            session_key=build_session_key(_make_source()),
+            session_id="sess-1",
+            source=_make_source(),
+        )
+
+    assert event is None
+    assert build_session_key(_make_source()) not in runner._loop_states
+
+
+@pytest.mark.asyncio
+async def test_non_loop_user_message_clears_existing_loop_state(monkeypatch):
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._handle_message_with_agent = AsyncMock(return_value="handled")
+    runner._loop_states[build_session_key(_make_source())] = {
+        "goal": "Keep going",
+        "remaining_auto_turns": 2,
+        "last_prompt_norm": "implement the next thin slice.",
+    }
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    await runner._handle_message(_make_event("hello"))
+
+    assert build_session_key(_make_source()) not in runner._loop_states
+
+
+@pytest.mark.asyncio
+async def test_direct_continuation_skill_routes_through_bounded_controller(monkeypatch):
     import gateway.run as gateway_run
 
     runner = _make_runner()
@@ -276,25 +356,27 @@ async def test_direct_continuation_skill_gets_session_runtime_note(monkeypatch):
             },
         },
     ), patch(
-        "agent.skill_commands.build_multi_skill_invocation_message",
-        return_value='[SYSTEM: The user has invoked the "continuation-loop-controller-slices" skill.]',
-    ) as mock_build:
+        "hermes_cli.loop.decide_continuation_for_session",
+        return_value={
+            "action": "continue",
+            "reason": "clear next slice",
+            "next_prompt": "Implement the next thin slice and verify it.",
+            "session_id": "sess-1",
+        },
+    ) as mock_decide:
         result = await runner._handle_message(
             _make_event("/continuation-loop-controller-slices 請繼續")
         )
 
     assert result == "handled"
-    mock_build.assert_called_once()
-    assert mock_build.call_args.args[0] == [
-        "/continuation-loop-controller-slices",
-        "/autonomous-continuation-loop",
-    ]
-    assert mock_build.call_args.args[1] == "請繼續"
-    assert "sess-1" in mock_build.call_args.kwargs["runtime_note"]
+    mock_decide.assert_called_once_with("sess-1", "請繼續")
+    assert runner._loop_states[build_session_key(_make_source())]["remaining_auto_turns"] == 2
+    forwarded_event = runner._handle_message_with_agent.await_args.args[0]
+    assert forwarded_event.text == "Implement the next thin slice and verify it."
 
 
 @pytest.mark.asyncio
-async def test_bare_loop_invocation_loads_continuation_skill(monkeypatch):
+async def test_bare_loop_invocation_routes_through_bounded_controller(monkeypatch):
     import gateway.run as gateway_run
 
     runner = _make_runner()
@@ -305,44 +387,28 @@ async def test_bare_loop_invocation_loads_continuation_skill(monkeypatch):
     )
 
     with patch(
-        "agent.skill_commands.resolve_bare_skill_invocation",
-        return_value=(
-            "/continuation-loop-controller-slices",
-            "請繼續完成後續任務\n多和 Claude 辯論 + 討論",
-        ),
-    ), patch(
-        "agent.skill_commands.get_skill_commands",
+        "hermes_cli.loop.decide_continuation_for_session",
         return_value={
-            "/continuation-loop-controller-slices": {
-                "name": "continuation-loop-controller-slices"
-            },
-            "/autonomous-continuation-loop": {
-                "name": "autonomous-continuation-loop"
-            },
+            "action": "continue",
+            "reason": "clear next slice",
+            "next_prompt": "Implement the next thin slice and verify it.",
+            "session_id": "sess-1",
         },
-    ), patch(
-        "agent.skill_commands.build_multi_skill_invocation_message",
-        return_value='[SYSTEM: The user has invoked the "continuation-loop-controller-slices" skill.]',
-    ) as mock_build:
+    ) as mock_decide:
         result = await runner._handle_message(
             _make_event("loop\n請繼續完成後續任務\n多和 Claude 辯論 + 討論")
         )
 
     assert result == "handled"
-    mock_build.assert_called_once()
-    assert mock_build.call_args.args[0] == [
-        "/continuation-loop-controller-slices",
-        "/autonomous-continuation-loop",
-    ]
-    assert mock_build.call_args.args[1] == "請繼續完成後續任務\n多和 Claude 辯論 + 討論"
-    assert "sess-1" in mock_build.call_args.kwargs["runtime_note"]
+    mock_decide.assert_called_once_with("sess-1", "請繼續完成後續任務\n多和 Claude 辯論 + 討論")
+    assert runner._loop_states[build_session_key(_make_source())]["remaining_auto_turns"] == 2
     runner._handle_message_with_agent.assert_awaited_once()
     forwarded_event = runner._handle_message_with_agent.await_args.args[0]
-    assert "continuation-loop-controller-slices" in forwarded_event.text
+    assert forwarded_event.text == "Implement the next thin slice and verify it."
 
 
 @pytest.mark.asyncio
-async def test_bare_continuation_skill_invocation_loads_combined_mode(monkeypatch):
+async def test_bare_continuation_skill_invocation_routes_through_bounded_controller(monkeypatch):
     import gateway.run as gateway_run
 
     runner = _make_runner()
@@ -363,18 +429,20 @@ async def test_bare_continuation_skill_invocation_loads_combined_mode(monkeypatc
             },
         },
     ), patch(
-        "agent.skill_commands.build_multi_skill_invocation_message",
-        return_value='[SYSTEM: The user has invoked the "continuation-loop-controller-slices" skill.]',
-    ) as mock_build:
+        "hermes_cli.loop.decide_continuation_for_session",
+        return_value={
+            "action": "continue",
+            "reason": "clear next slice",
+            "next_prompt": "Implement the next thin slice and verify it.",
+            "session_id": "sess-1",
+        },
+    ) as mock_decide:
         result = await runner._handle_message(
             _make_event("continuation-loop-controller-slices\n請繼續完成後續任務")
         )
 
     assert result == "handled"
-    mock_build.assert_called_once()
-    assert mock_build.call_args.args[0] == [
-        "/continuation-loop-controller-slices",
-        "/autonomous-continuation-loop",
-    ]
-    assert mock_build.call_args.args[1] == "請繼續完成後續任務"
-    assert "sess-1" in mock_build.call_args.kwargs["runtime_note"]
+    mock_decide.assert_called_once_with("sess-1", "請繼續完成後續任務")
+    assert runner._loop_states[build_session_key(_make_source())]["remaining_auto_turns"] == 2
+    forwarded_event = runner._handle_message_with_agent.await_args.args[0]
+    assert forwarded_event.text == "Implement the next thin slice and verify it."

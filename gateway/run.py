@@ -657,6 +657,7 @@ class GatewayRunner:
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
         self._session_run_generation: Dict[str, int] = {}
+        self._loop_states: Dict[str, Dict[str, Any]] = {}
 
         # Cache AIAgent instances per session to preserve prompt caching.
         # Without this, a new AIAgent is created per message, rebuilding the
@@ -1508,6 +1509,134 @@ class GatewayRunner:
             return
         merge_pending_message_event(adapter._pending_messages, session_key, event)
 
+    def _clear_loop_state(self, session_key: str) -> None:
+        loop_states = getattr(self, "_loop_states", None)
+        if isinstance(loop_states, dict):
+            loop_states.pop(session_key, None)
+
+    async def _maybe_schedule_loop_followup(
+        self,
+        *,
+        session_key: str,
+        session_id: str,
+        source,
+    ) -> MessageEvent | None:
+        loop_states = getattr(self, "_loop_states", None)
+        if not isinstance(loop_states, dict):
+            return None
+        state = loop_states.get(session_key)
+        if not state:
+            return None
+
+        remaining_auto_turns = int(state.get("remaining_auto_turns", 0) or 0)
+        if remaining_auto_turns <= 0:
+            self._clear_loop_state(session_key)
+            return None
+
+        goal = str(state.get("goal") or "").strip()
+        if not goal:
+            self._clear_loop_state(session_key)
+            return None
+
+        from hermes_cli.loop import decide_continuation_for_session, _normalize_loop_prompt
+
+        decision = await asyncio.to_thread(
+            decide_continuation_for_session,
+            session_id,
+            goal,
+        )
+        if decision.get("action") != "continue":
+            self._clear_loop_state(session_key)
+            return None
+
+        next_prompt = (decision.get("next_prompt") or "").strip()
+        if not next_prompt:
+            self._clear_loop_state(session_key)
+            return None
+
+        next_prompt_norm = _normalize_loop_prompt(next_prompt)
+        previous_prompt_norm = str(state.get("last_prompt_norm") or "")
+        if previous_prompt_norm and next_prompt_norm == previous_prompt_norm:
+            self._clear_loop_state(session_key)
+            return None
+
+        state["last_prompt_norm"] = next_prompt_norm
+        state["remaining_auto_turns"] = remaining_auto_turns - 1
+        loop_states[session_key] = state
+
+        return MessageEvent(
+            text=next_prompt,
+            source=source,
+            message_id=None,
+            internal=True,
+            channel_prompt=(state.get("channel_prompt") or None),
+        )
+
+    async def _prepare_loop_mode(
+        self,
+        *,
+        event: MessageEvent,
+        source,
+        session_key: str,
+        user_instruction: str,
+    ) -> str | None:
+        session_entry = self.session_store.get_or_create_session(source)
+        goal = user_instruction or (
+            "Continue autonomously from this chat until a real stop condition is reached. "
+            "Choose the next best thin slice, implement it, verify it independently, and keep going by default."
+        )
+        try:
+            from hermes_cli.loop import decide_continuation_for_session, _normalize_loop_prompt
+
+            decision = await asyncio.to_thread(
+                decide_continuation_for_session,
+                session_entry.session_id,
+                goal,
+            )
+            if decision.get("action") == "continue":
+                next_prompt = (decision.get("next_prompt") or "").strip()
+                if next_prompt:
+                    self._loop_states[session_key] = {
+                        "goal": goal,
+                        "remaining_auto_turns": 2,
+                        "last_prompt_norm": _normalize_loop_prompt(next_prompt),
+                        "channel_prompt": getattr(event, "channel_prompt", None),
+                    }
+                    event.text = next_prompt
+                    return None
+                self._clear_loop_state(session_key)
+                return "Loop controller chose continue but did not provide a next prompt."
+
+            self._clear_loop_state(session_key)
+            reason = (decision.get("reason") or "No clear bounded next step.").strip()
+            stop_reason = (decision.get("stop_reason") or "model_stop").strip()
+            return f"Loop stopped: {reason} ({stop_reason})"
+        except Exception:
+            logger.exception("Failed to run bounded /loop controller; falling back to continuation skills")
+            try:
+                from agent.skill_commands import build_multi_skill_invocation_message
+
+                event.text = build_multi_skill_invocation_message(
+                    [
+                        "/continuation-loop-controller-slices",
+                        "/autonomous-continuation-loop",
+                    ],
+                    user_instruction,
+                    task_id=session_key,
+                    runtime_note=(
+                        "Current gateway session id: "
+                        f"{session_entry.session_id}. Continue autonomously from this chat: "
+                        "choose the next best thin slice, implement it, verify it independently, "
+                        "and continue by default until a real stop condition is reached."
+                    ),
+                )
+                if not event.text:
+                    return "Failed to load the bundled /loop skill."
+                return None
+            except Exception as e:
+                logger.exception("Failed to prepare /loop command fallback")
+                return f"Failed to enter loop mode: {e}"
+
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Draining case (gateway restarting/stopping) ---
         if self._draining:
@@ -1546,6 +1675,7 @@ class GatewayRunner:
         # interrupt causes the current run to exit.
         from gateway.platforms.base import merge_pending_message_event
         merge_pending_message_event(adapter._pending_messages, session_key, event)
+        self._clear_loop_state(session_key)
 
         # Interrupt the running agent — this aborts in-flight tool calls and
         # causes the agent loop to exit at the next check point.
@@ -3102,6 +3232,10 @@ class GatewayRunner:
         # forwarded it to the user; now the user's reply goes back via
         # .update_response so the update process can continue.
         _quick_key = self._session_key_for_source(source)
+        if not getattr(event, "internal", False):
+            _incoming_cmd = event.get_command()
+            if _incoming_cmd != "loop":
+                self._clear_loop_state(_quick_key)
         _update_prompts = getattr(self, "_update_prompt_pending", {})
         if _update_prompts.get(_quick_key):
             raw = (event.text or "").strip()
@@ -3519,58 +3653,16 @@ class GatewayRunner:
                 return f"Failed to enter plan mode: {e}"
 
         if canonical == "loop":
-            user_instruction = event.get_command_args().strip()
-            session_entry = self.session_store.get_or_create_session(source)
-            goal = user_instruction or (
-                "Continue autonomously from this chat until a real stop condition is reached. "
-                "Choose the next best thin slice, implement it, verify it independently, and keep going by default."
+            loop_result = await self._prepare_loop_mode(
+                event=event,
+                source=source,
+                session_key=_quick_key,
+                user_instruction=event.get_command_args().strip(),
             )
-            try:
-                from hermes_cli.loop import decide_continuation_for_session
-
-                decision = await asyncio.to_thread(
-                    decide_continuation_for_session,
-                    session_entry.session_id,
-                    goal,
-                )
-                if decision.get("action") == "continue":
-                    next_prompt = (decision.get("next_prompt") or "").strip()
-                    if next_prompt:
-                        event.text = next_prompt
-                        canonical = None
-                        command = None
-                    else:
-                        return "Loop controller chose continue but did not provide a next prompt."
-                else:
-                    reason = (decision.get("reason") or "No clear bounded next step.").strip()
-                    stop_reason = (decision.get("stop_reason") or "model_stop").strip()
-                    return f"Loop stopped: {reason} ({stop_reason})"
-            except Exception:
-                logger.exception("Failed to run bounded /loop controller; falling back to continuation skills")
-                try:
-                    from agent.skill_commands import build_multi_skill_invocation_message
-
-                    event.text = build_multi_skill_invocation_message(
-                        [
-                            "/continuation-loop-controller-slices",
-                            "/autonomous-continuation-loop",
-                        ],
-                        user_instruction,
-                        task_id=_quick_key,
-                        runtime_note=(
-                            "Current gateway session id: "
-                            f"{session_entry.session_id}. Continue autonomously from this chat: "
-                            "choose the next best thin slice, implement it, verify it independently, "
-                            "and continue by default until a real stop condition is reached."
-                        ),
-                    )
-                    if not event.text:
-                        return "Failed to load the bundled /loop skill."
-                    canonical = None
-                    command = None
-                except Exception as e:
-                    logger.exception("Failed to prepare /loop command fallback")
-                    return f"Failed to enter loop mode: {e}"
+            if loop_result is not None:
+                return loop_result
+            canonical = None
+            command = None
         
         if canonical == "retry":
             return await self._handle_retry_command(event)
@@ -3738,29 +3830,21 @@ class GatewayRunner:
                         "/continuation-loop-controller-slices",
                         "/autonomous-continuation-loop",
                     }:
-                        session_entry = self.session_store.get_or_create_session(source)
-                        runtime_note = (
-                            "Current gateway session id: "
-                            f"{session_entry.session_id}. Continue autonomously from this chat: "
-                            "choose the next best thin slice, implement it, verify it independently, "
-                            "and continue by default until a real stop condition is reached."
+                        loop_result = await self._prepare_loop_mode(
+                            event=event,
+                            source=source,
+                            session_key=_quick_key,
+                            user_instruction=user_instruction,
                         )
-                        msg = build_multi_skill_invocation_message(
-                            [
-                                "/continuation-loop-controller-slices",
-                                "/autonomous-continuation-loop",
-                            ],
-                            user_instruction,
-                            task_id=_quick_key,
-                            runtime_note=runtime_note,
-                        )
+                        if loop_result is not None:
+                            return loop_result
                     else:
                         msg = build_skill_invocation_message(
                             cmd_key, user_instruction, task_id=_quick_key, runtime_note=runtime_note
                         )
-                    if msg:
-                        event.text = msg
-                        # Fall through to normal message processing with skill content
+                        if msg:
+                            event.text = msg
+                            # Fall through to normal message processing with skill content
                 else:
                     # Not an active skill — check if it's a known-but-disabled or
                     # uninstalled skill and give actionable guidance.
@@ -3795,6 +3879,18 @@ class GatewayRunner:
         # No bare text matching — "yes" in normal conversation must not trigger
         # execution of a dangerous command.
         if not command and event.text:
+            stripped_text = (event.text or "").strip()
+            first_line = stripped_text.splitlines()[0].strip().lower() if stripped_text else ""
+            if first_line == "loop":
+                user_instruction = "\n".join(stripped_text.splitlines()[1:]).strip()
+                loop_result = await self._prepare_loop_mode(
+                    event=event,
+                    source=source,
+                    session_key=_quick_key,
+                    user_instruction=user_instruction,
+                )
+                if loop_result is not None:
+                    return loop_result
             try:
                 from agent.skill_commands import (
                     build_multi_skill_invocation_message,
@@ -3805,33 +3901,22 @@ class GatewayRunner:
                 bare_skill = resolve_bare_skill_invocation(event.text)
                 if bare_skill is not None:
                     cmd_key, user_instruction = bare_skill
-                    session_entry = self.session_store.get_or_create_session(source)
                     runtime_note = ""
                     if cmd_key in {
                         "/continuation-loop-controller-slices",
                         "/autonomous-continuation-loop",
                     }:
-                        runtime_note = (
-                            "Current gateway session id: "
-                            f"{session_entry.session_id}. Continue autonomously from this chat: "
-                            "choose the next best thin slice, implement it, verify it independently, "
-                            "and continue by default until a real stop condition is reached."
+                        loop_result = await self._prepare_loop_mode(
+                            event=event,
+                            source=source,
+                            session_key=_quick_key,
+                            user_instruction=user_instruction,
                         )
-                        event.text = build_multi_skill_invocation_message(
-                            [
-                                "/continuation-loop-controller-slices",
-                                "/autonomous-continuation-loop",
-                            ],
-                            user_instruction,
-                            task_id=_quick_key,
-                            runtime_note=runtime_note,
-                        )
+                        if loop_result is not None:
+                            return loop_result
                     else:
                         event.text = build_skill_invocation_message(
-                            cmd_key,
-                            user_instruction,
-                            task_id=_quick_key,
-                            runtime_note=runtime_note,
+                            cmd_key, user_instruction, task_id=_quick_key, runtime_note=runtime_note
                         )
                     if not event.text:
                         return "Failed to load the requested skill."
@@ -10534,6 +10619,20 @@ class GatewayRunner:
                     pending = _leftover_steer
                     logger.debug("Delivering leftover /steer as next turn: '%s...'", pending[:40])
 
+            if result and not pending and not pending_event and not result.get("interrupted") and not result.get("failed"):
+                try:
+                    pending_event = await self._maybe_schedule_loop_followup(
+                        session_key=session_key,
+                        session_id=session_id,
+                        source=source,
+                    )
+                    if pending_event is not None:
+                        pending = pending_event.text or _build_media_placeholder(pending_event)
+                        logger.debug("Scheduling loop follow-up for session %s: '%s...'", session_key[:20] if session_key else "?", pending[:40])
+                except Exception:
+                    logger.exception("Failed to schedule loop follow-up for session %s", session_key[:20] if session_key else "?")
+                    self._clear_loop_state(session_key)
+
             # Safety net: if the pending text is a slash command (e.g. "/stop",
             # "/new"), discard it — commands should never be passed to the agent
             # as user input.  The primary fix is in base.py (commands bypass the
@@ -10564,6 +10663,7 @@ class GatewayRunner:
                 )
                 pending_event = None
                 pending = None
+                self._clear_loop_state(session_key)
 
             if pending_event or pending:
                 logger.debug("Processing pending message: '%s...'", pending[:40])

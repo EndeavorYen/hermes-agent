@@ -134,6 +134,11 @@ def test_decide_continuation_for_session_returns_session_scoped_decision(monkeyp
     assert result["stop_reason"] == "model_stop"
     assert result["session_id"] == "sess-1"
     assert len(_DecisionAgent.instances) == 1
+    assert _DecisionAgent.instances[0].kwargs["enabled_toolsets"] == []
+    decision_prompt = _DecisionAgent.instances[0].calls[0]["user_message"]
+    assert "recent_history" in decision_prompt
+    assert "initial goal" in decision_prompt
+    assert "initial answer" in decision_prompt
 
 
 def test_loop_command_continue_executes_one_step(monkeypatch, capsys, tmp_path):
