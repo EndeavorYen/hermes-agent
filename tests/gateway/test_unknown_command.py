@@ -7,7 +7,7 @@ delegate_task call instead of telling the user the command doesn't exist).
 
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -164,3 +164,30 @@ async def test_underscored_alias_for_hyphenated_builtin_not_flagged(monkeypatch)
     # Whatever /reload_mcp returns, it must not be the unknown-command guard.
     if result is not None:
         assert "Unknown command" not in result
+
+
+@pytest.mark.asyncio
+async def test_loop_built_in_command_loads_continuation_skill(monkeypatch):
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._handle_message_with_agent = AsyncMock(return_value="handled")
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    with patch(
+        "agent.skill_commands.build_skill_invocation_message",
+        return_value='[SYSTEM: The user has invoked the "continuation-loop-controller-slices" skill.]',
+    ) as mock_build:
+        result = await runner._handle_message(_make_event("/loop 請繼續完成後續任務"))
+
+    assert result == "handled"
+    mock_build.assert_called_once()
+    assert mock_build.call_args.args[0] == "/continuation-loop-controller-slices"
+    assert mock_build.call_args.args[1] == "請繼續完成後續任務"
+    assert "sess-1" in mock_build.call_args.kwargs["runtime_note"]
+    runner._handle_message_with_agent.assert_awaited_once()
+    forwarded_event = runner._handle_message_with_agent.await_args.args[0]
+    assert "continuation-loop-controller-slices" in forwarded_event.text

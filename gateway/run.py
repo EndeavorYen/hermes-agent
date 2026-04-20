@@ -3517,6 +3517,30 @@ class GatewayRunner:
             except Exception as e:
                 logger.exception("Failed to prepare /plan command")
                 return f"Failed to enter plan mode: {e}"
+
+        if canonical == "loop":
+            try:
+                from agent.skill_commands import build_skill_invocation_message
+
+                user_instruction = event.get_command_args().strip()
+                session_entry = self.session_store.get_or_create_session(source)
+                event.text = build_skill_invocation_message(
+                    "/continuation-loop-controller-slices",
+                    user_instruction,
+                    task_id=_quick_key,
+                    runtime_note=(
+                        "Current gateway session id: "
+                        f"{session_entry.session_id}. Continue autonomously from this chat: "
+                        "choose the next best thin slice, implement it, verify it independently, "
+                        "and continue by default until a real stop condition is reached."
+                    ),
+                )
+                if not event.text:
+                    return "Failed to load the bundled /loop skill."
+                canonical = None
+            except Exception as e:
+                logger.exception("Failed to prepare /loop command")
+                return f"Failed to enter loop mode: {e}"
         
         if canonical == "retry":
             return await self._handle_retry_command(event)

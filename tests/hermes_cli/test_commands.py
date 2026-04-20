@@ -161,6 +161,9 @@ class TestGatewayKnownCommands:
                 assert cmd.name not in GATEWAY_KNOWN_COMMANDS, \
                     f"cli_only command '{cmd.name}' should not be in GATEWAY_KNOWN_COMMANDS"
 
+    def test_loop_is_in_gateway_known_commands(self):
+        assert "loop" in GATEWAY_KNOWN_COMMANDS
+
     def test_includes_config_gated_cli_only(self):
         """Commands with gateway_config_gate are always in GATEWAY_KNOWN_COMMANDS."""
         for cmd in COMMAND_REGISTRY:
@@ -188,6 +191,11 @@ class TestGatewayHelpLines:
         lines = gateway_help_lines()
         assert len(lines) > 10
 
+    def test_loop_command_appears_in_gateway_help(self):
+        lines = gateway_help_lines()
+        joined = "\n".join(lines)
+        assert "`/loop" in joined
+
     def test_excludes_cli_only_commands_without_config_gate(self):
         lines = gateway_help_lines()
         joined = "\n".join(lines)
@@ -210,6 +218,10 @@ class TestTelegramBotCommands:
         for name, desc in cmds:
             assert isinstance(name, str)
             assert isinstance(desc, str)
+
+    def test_loop_command_in_telegram_bot_commands(self):
+        names = {name for name, _ in telegram_bot_commands()}
+        assert "loop" in names
 
     def test_no_hyphens_in_command_names(self):
         """Telegram does not support hyphens in command names."""
