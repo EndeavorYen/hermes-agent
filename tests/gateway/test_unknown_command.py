@@ -283,6 +283,9 @@ async def test_maybe_schedule_loop_followup_returns_internal_event(monkeypatch, 
             "reason": "clear next slice",
             "next_prompt": "Implement the next thin slice.",
         },
+    ), patch(
+        "hermes_cli.loop.verify_progress_for_session",
+        return_value={"verdict": "progress", "reason": "real progress", "should_continue": True},
     ):
         event, stop_notice = await runner._maybe_schedule_loop_followup(
             session_key=build_session_key(_make_source()),
@@ -320,6 +323,9 @@ async def test_maybe_schedule_loop_followup_stops_on_repeated_prompt(monkeypatch
             "reason": "clear next slice",
             "next_prompt": "Implement the next thin slice.",
         },
+    ), patch(
+        "hermes_cli.loop.verify_progress_for_session",
+        return_value={"verdict": "progress", "reason": "real progress", "should_continue": True},
     ):
         event, stop_notice = await runner._maybe_schedule_loop_followup(
             session_key=build_session_key(_make_source()),
@@ -354,6 +360,9 @@ async def test_maybe_schedule_loop_followup_stops_on_duplicate_result_preview(mo
             "reason": "clear next slice",
             "next_prompt": "Do the next thing.",
         },
+    ), patch(
+        "hermes_cli.loop.verify_progress_for_session",
+        return_value={"verdict": "progress", "reason": "real progress", "should_continue": True},
     ):
         event, stop_notice = await runner._maybe_schedule_loop_followup(
             session_key=build_session_key(_make_source()),
@@ -368,6 +377,66 @@ async def test_maybe_schedule_loop_followup_stops_on_duplicate_result_preview(mo
     reviews = _read_background_reviews(tmp_path)
     assert reviews[-1]["progress_state"] == "duplicate_result"
     assert reviews[-1]["stop_reason"] == "duplicate_result_preview"
+
+
+@pytest.mark.asyncio
+async def test_maybe_schedule_loop_followup_stops_on_semantic_stall(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    runner._loop_states[build_session_key(_make_source())] = {
+        "goal": "Keep going",
+        "remaining_auto_turns": 2,
+        "last_prompt_norm": "different prompt",
+        "last_result_preview": "Older result",
+    }
+
+    with patch(
+        "hermes_cli.loop.verify_progress_for_session",
+        return_value={"verdict": "stalled", "reason": "Mostly restated prior status.", "should_continue": False},
+    ):
+        event, stop_notice = await runner._maybe_schedule_loop_followup(
+            session_key=build_session_key(_make_source()),
+            session_id="sess-1",
+            source=_make_source(),
+            final_response="Fresh result",
+        )
+
+    assert event is None
+    assert "did not materially advance" in stop_notice.lower() or "no meaningful new result" in stop_notice.lower()
+    assert build_session_key(_make_source()) not in runner._loop_states
+    reviews = _read_background_reviews(tmp_path)
+    assert reviews[-1]["progress_state"] == "semantic_stall"
+    assert reviews[-1]["stop_reason"] == "progress_verifier_stalled"
+
+
+@pytest.mark.asyncio
+async def test_maybe_schedule_loop_followup_stops_on_semantic_done(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    runner._loop_states[build_session_key(_make_source())] = {
+        "goal": "Keep going",
+        "remaining_auto_turns": 2,
+        "last_prompt_norm": "different prompt",
+        "last_result_preview": "Older result",
+    }
+
+    with patch(
+        "hermes_cli.loop.verify_progress_for_session",
+        return_value={"verdict": "done", "reason": "Latest continuation appears effectively complete.", "should_continue": False},
+    ):
+        event, stop_notice = await runner._maybe_schedule_loop_followup(
+            session_key=build_session_key(_make_source()),
+            session_id="sess-1",
+            source=_make_source(),
+            final_response="Fresh result",
+        )
+
+    assert event is None
+    assert "effectively complete" in stop_notice.lower() or "no clear bounded next step" in stop_notice.lower()
+    assert build_session_key(_make_source()) not in runner._loop_states
+    reviews = _read_background_reviews(tmp_path)
+    assert reviews[-1]["progress_state"] == "semantic_done"
+    assert reviews[-1]["stop_reason"] == "progress_verifier_done"
 
 
 @pytest.mark.asyncio

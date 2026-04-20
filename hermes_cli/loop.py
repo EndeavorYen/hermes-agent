@@ -240,6 +240,36 @@ def _build_decision_prompt(
     )
 
 
+def _build_progress_verifier_prompt(
+    *,
+    goal: str,
+    session_row: Dict[str, Any],
+    recent_history: List[Dict[str, str]],
+    background_reviews: List[Dict[str, Any]],
+    final_response: str,
+) -> str:
+    context = {
+        "goal": goal,
+        "session_id": session_row.get("id"),
+        "title": session_row.get("title") or "",
+        "recent_history": recent_history,
+        "last_background_reviews": background_reviews,
+        "latest_final_response": _preview_text(final_response, limit=400),
+    }
+    return (
+        "You are Hermes verifying whether the latest bounded continuation step made real progress.\n"
+        "Return ONLY JSON with this schema:\n"
+        '{"verdict":"progress|stalled|done","reason":"short string","should_continue":true|false}.\n'
+        "Rules:\n"
+        "- verdict=progress only if the latest response materially advances the goal\n"
+        "- verdict=stalled if the response mostly restates status, repeats prior content, or does not create meaningful progress\n"
+        "- verdict=done if the latest response indicates the bounded objective is effectively complete or no further bounded step is warranted\n"
+        "- use recent_history as the primary grounding signal\n"
+        "- keep the reason concise and factual\n\n"
+        f"Context:\n{json.dumps(context, ensure_ascii=False, indent=2)}"
+    )
+
+
 def _decide_once(goal: str, session_row: Dict[str, Any], args: Namespace) -> Dict[str, Any]:
     session_id = session_row["id"]
     artifacts_dir = _continuation_artifact_dir()
@@ -322,6 +352,74 @@ def decide_continuation_for_session(
     decision = _decide_once(goal.strip(), session_row, args)
     decision.setdefault("session_id", session_id)
     return decision
+
+
+def verify_progress_for_session(
+    session_id: str,
+    goal: str,
+    final_response: str,
+    *,
+    model: str | None = None,
+    provider: str | None = None,
+) -> Dict[str, Any]:
+    """Return a bounded semantic progress verdict for an explicit session id."""
+    if not (session_id or "").strip():
+        return {
+            "verdict": "stalled",
+            "reason": "Missing target session id.",
+            "should_continue": False,
+            "stop_reason": "missing_session_id",
+        }
+
+    db = SessionDB()
+    try:
+        session_row = db.get_session(session_id)
+    finally:
+        db.close()
+
+    if not session_row:
+        return {
+            "verdict": "stalled",
+            "reason": f"Session '{session_id}' was not found.",
+            "should_continue": False,
+            "stop_reason": "session_not_found",
+        }
+
+    artifacts_dir = _continuation_artifact_dir()
+    recent_history = _recent_history_context(session_id)
+    background_reviews = _load_recent_jsonl(artifacts_dir / "background_reviews.jsonl", session_id=session_id)
+    runtime = _session_runtime_config(session_row, Namespace(model=model, provider=provider))
+    agent = AIAgent(
+        model=runtime.get("model") or "",
+        provider=runtime.get("provider"),
+        base_url=runtime.get("base_url"),
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        enabled_toolsets=[],
+        max_iterations=4,
+    )
+    result = agent.run_conversation(
+        _build_progress_verifier_prompt(
+            goal=goal.strip(),
+            session_row=session_row,
+            recent_history=recent_history,
+            background_reviews=background_reviews,
+            final_response=final_response,
+        )
+    )
+    payload = _extract_json_object(result.get("final_response", ""))
+    if not payload or payload.get("verdict") not in {"progress", "stalled", "done"}:
+        return {
+            "verdict": "progress",
+            "reason": "Invalid verifier payload; defaulting to progress.",
+            "should_continue": True,
+            "stop_reason": "invalid_progress_verifier_payload",
+        }
+    if not isinstance(payload.get("should_continue"), bool):
+        payload["should_continue"] = payload.get("verdict") == "progress"
+    payload.setdefault("reason", "")
+    return payload
 
 
 def _run_single_continuation(session_row: Dict[str, Any], next_prompt: str, args: Namespace) -> Dict[str, Any]:

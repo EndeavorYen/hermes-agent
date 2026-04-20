@@ -3,7 +3,12 @@ from argparse import Namespace
 
 import pytest
 
-from hermes_cli.loop import decide_continuation_for_session, loop_command, loop_run_command
+from hermes_cli.loop import (
+    decide_continuation_for_session,
+    verify_progress_for_session,
+    loop_command,
+    loop_run_command,
+)
 from hermes_cli.main import cmd_loop, cmd_loop_run
 
 
@@ -160,6 +165,33 @@ def test_decide_continuation_for_session_returns_session_scoped_decision(monkeyp
     assert "initial goal" in decision_prompt
     assert "initial answer" in decision_prompt
     assert "prior review preview" in decision_prompt
+
+
+def test_verify_progress_for_session_returns_scoped_verdict(monkeypatch, tmp_path):
+    class _VerifierAgent(_DecisionAgent):
+        instances = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.calls = []
+            _VerifierAgent.instances.append(self)
+
+        def run_conversation(self, user_message, conversation_history=None, task_id=None):
+            self.calls.append({"user_message": user_message})
+            return {"final_response": json.dumps({"verdict": "stalled", "reason": "Mostly restated status.", "should_continue": False})}
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.loop.SessionDB", _FakeSessionDB)
+    monkeypatch.setattr("hermes_cli.loop.AIAgent", _VerifierAgent)
+
+    result = verify_progress_for_session("sess-1", "Keep going", "Latest response")
+
+    assert result["verdict"] == "stalled"
+    assert result["should_continue"] is False
+    assert len(_VerifierAgent.instances) == 1
+    verifier_prompt = _VerifierAgent.instances[0].calls[0]["user_message"]
+    assert "latest_final_response" in verifier_prompt
+    assert "Latest response" in verifier_prompt
 
 
 def test_loop_command_continue_executes_one_step(monkeypatch, capsys, tmp_path):

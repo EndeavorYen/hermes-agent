@@ -1557,6 +1557,7 @@ class GatewayRunner:
 
         from hermes_cli.loop import (
             decide_continuation_for_session,
+            verify_progress_for_session,
             _normalize_loop_prompt,
             _preview_text,
             record_background_review,
@@ -1595,6 +1596,37 @@ class GatewayRunner:
             result_preview=result_preview,
             source="bounded_loop_gateway",
         )
+
+        verifier = await asyncio.to_thread(
+            verify_progress_for_session,
+            session_id,
+            goal,
+            final_response,
+        )
+        verifier_verdict = str(verifier.get("verdict") or "progress")
+        verifier_reason = str(verifier.get("reason") or "")
+        if verifier_verdict == "done":
+            record_background_review(
+                session_id=session_id,
+                goal=goal,
+                progress_state="semantic_done",
+                stop_reason="progress_verifier_done",
+                result_preview=result_preview,
+                source="bounded_loop_gateway",
+            )
+            self._clear_loop_state(session_key)
+            return None, format_loop_stop_notice("model_stop", verifier_reason or "Latest continuation appears effectively complete.")
+        if verifier_verdict == "stalled" or verifier.get("should_continue") is False:
+            record_background_review(
+                session_id=session_id,
+                goal=goal,
+                progress_state="semantic_stall",
+                stop_reason="progress_verifier_stalled",
+                result_preview=result_preview,
+                source="bounded_loop_gateway",
+            )
+            self._clear_loop_state(session_key)
+            return None, format_loop_stop_notice("duplicate_result_preview", verifier_reason or "Latest continuation did not materially advance the goal.")
 
         decision = await asyncio.to_thread(
             decide_continuation_for_session,
