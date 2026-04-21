@@ -2558,42 +2558,20 @@ class GatewayRunner:
         state["retry_count"] = 0
         decision = decision
         decision_action = str(decision.get("action") or "")
+        next_prompt = str(decision.get("next_prompt") or "").strip()
+        pending_wakeup_at = ""
         if decision_action == "wait":
-            next_prompt = str(decision.get("next_prompt") or "").strip()
-            next_expected_evidence = str(decision.get("expected_evidence") or "").strip()
             pending_wakeup_at = self._compute_pending_wakeup_at(str(decision.get("wake_after") or ""))
-            if not pending_wakeup_at:
-                record_background_review(
-                    session_id=session_id,
-                    goal=goal,
-                    progress_state="stop",
-                    stop_reason="missing_wake_after",
-                    result_preview=result_preview,
-                    source="bounded_loop_gateway",
-                    goal_id=_goal_id,
-                    run_id=_run_id,
-                )
-                self._clear_loop_state(
-                    session_key,
-                    stop_reason="missing_wake_after",
-                    event_type="loop_stopped",
-                    event_payload={
-                        "goal": goal,
-                        "reason": "controller chose wait without a bounded wake_after.",
-                        "result_preview": result_preview,
-                    },
-                )
-                return None, format_loop_stop_notice("missing_wake_after")
-            schedule_result = LoopRuntime().schedule_wait(
-                session_id,
-                next_prompt=next_prompt,
-                next_prompt_norm=_normalize_loop_prompt(next_prompt),
-                expected_evidence=next_expected_evidence,
-                remaining_auto_turns=remaining_auto_turns - 1,
-                result_preview=result_preview,
-                pending_wakeup_at=pending_wakeup_at,
-            )
-            if not schedule_result.get("ok"):
+
+        apply_result = LoopRuntime().apply_followup_decision(
+            session_id=session_id,
+            decision=decision,
+            result_preview=result_preview,
+            remaining_auto_turns=remaining_auto_turns - 1,
+            pending_wakeup_at=pending_wakeup_at,
+        )
+        if not apply_result.get("ok"):
+            if decision_action == "wait":
                 return None, self._stop_loop_for_persistence_failure(
                     session_key=session_key,
                     stop_reason="loop_schedule_wait_failed",
@@ -2605,107 +2583,59 @@ class GatewayRunner:
                         "pending_wakeup_at": pending_wakeup_at,
                     },
                 )
-            state = dict(schedule_result.get("checkpoint") or state)
-            loop_states[session_key] = state
-            return None, None
-        if decision_action != "continue":
-            stop_reason = str(decision.get("stop_reason") or "model_stop")
-            reason = str(decision.get("reason") or "")
-            record_background_review(
-                session_id=session_id,
-                goal=goal,
-                progress_state="stop",
-                stop_reason=stop_reason,
-                result_preview=result_preview,
-                source="bounded_loop_gateway",
-                goal_id=_goal_id,
-                run_id=_run_id,
-            )
-            self._clear_loop_state(
-                session_key,
-                stop_reason=stop_reason,
-                event_type="loop_stopped",
-                event_payload={
-                    "goal": goal,
-                    "reason": reason,
-                    "result_preview": result_preview,
-                },
-            )
-            return None, format_loop_stop_notice(stop_reason, reason)
-
-        next_prompt = (decision.get("next_prompt") or "").strip()
-        next_expected_evidence = str(decision.get("expected_evidence") or "").strip()
-        if not next_prompt:
-            record_background_review(
-                session_id=session_id,
-                goal=goal,
-                progress_state="missing_next_prompt",
-                stop_reason="missing_next_prompt",
-                result_preview=result_preview,
-                source="bounded_loop_gateway",
-                goal_id=_goal_id,
-                run_id=_run_id,
-            )
-            self._clear_loop_state(
-                session_key,
-                stop_reason="missing_next_prompt",
-                event_type="loop_stopped",
-                event_payload={
-                    "goal": goal,
-                    "reason": "controller chose continue without a bounded next prompt.",
-                    "result_preview": result_preview,
-                },
-            )
-            return None, format_loop_stop_notice("missing_next_prompt")
-
-        next_prompt_norm = _normalize_loop_prompt(next_prompt)
-        previous_prompt_norm = str(state.get("last_prompt_norm") or "")
-        if previous_prompt_norm and next_prompt_norm == previous_prompt_norm:
-            record_background_review(
-                session_id=session_id,
-                goal=goal,
-                progress_state="repeated_prompt",
-                stop_reason="repeated_next_prompt",
-                next_prompt=next_prompt,
-                result_preview=result_preview,
-                source="bounded_loop_gateway",
-                goal_id=_goal_id,
-                run_id=_run_id,
-            )
-            self._clear_loop_state(
-                session_key,
-                stop_reason="repeated_next_prompt",
-                event_type="loop_stopped",
-                event_payload={
-                    "goal": goal,
-                    "reason": "repeated next prompt (stall suppression).",
-                    "next_prompt": next_prompt,
-                    "result_preview": result_preview,
-                },
-            )
-            return None, format_loop_stop_notice("repeated_next_prompt")
-
-        schedule_result = LoopRuntime().schedule_continue(
-            session_id,
-            next_prompt=next_prompt,
-            next_prompt_norm=next_prompt_norm,
-            expected_evidence=next_expected_evidence,
-            remaining_auto_turns=remaining_auto_turns - 1,
-            result_preview=result_preview,
-        )
-        if not schedule_result.get("ok"):
+            if decision_action == "continue":
+                return None, self._stop_loop_for_persistence_failure(
+                    session_key=session_key,
+                    stop_reason="loop_schedule_continue_failed",
+                    reason="failed to persist scheduled loop follow-up through runtime; stopping conservatively.",
+                    event_payload={
+                        "goal": goal,
+                        "next_prompt": next_prompt,
+                        "result_preview": result_preview,
+                    },
+                )
             return None, self._stop_loop_for_persistence_failure(
                 session_key=session_key,
-                stop_reason="loop_schedule_continue_failed",
-                reason="failed to persist scheduled loop follow-up through runtime; stopping conservatively.",
+                stop_reason="loop_stop_finalize_failed",
+                reason="failed to persist loop stop finalization through runtime; stopping conservatively.",
                 event_payload={
                     "goal": goal,
-                    "next_prompt": next_prompt,
                     "result_preview": result_preview,
+                    "next_prompt": next_prompt,
                 },
             )
 
-        state = dict(schedule_result.get("checkpoint") or state)
+        apply_kind = str(apply_result.get("kind") or "")
+        if apply_kind == "wait":
+            state = dict(apply_result.get("checkpoint") or state)
+            loop_states[session_key] = state
+            return None, None
+
+        if apply_kind == "stop":
+            stop_reason = str(apply_result.get("stop_reason") or "model_stop")
+            stop_message = str(apply_result.get("stop_message") or "")
+            progress_state = "stop"
+            review_payload: dict[str, Any] = {}
+            if stop_reason == "missing_next_prompt":
+                progress_state = "missing_next_prompt"
+            elif stop_reason == "repeated_next_prompt":
+                progress_state = "repeated_prompt"
+                review_payload["next_prompt"] = next_prompt
+            record_background_review(
+                session_id=session_id,
+                goal=goal,
+                progress_state=progress_state,
+                stop_reason=stop_reason,
+                result_preview=result_preview,
+                source="bounded_loop_gateway",
+                goal_id=_goal_id,
+                run_id=_run_id,
+                **review_payload,
+            )
+            loop_states.pop(session_key, None)
+            return None, format_loop_stop_notice(stop_reason, stop_message)
+
+        state = dict(apply_result.get("checkpoint") or state)
         loop_states[session_key] = state
 
         return MessageEvent(

@@ -566,7 +566,7 @@ async def test_loop_built_in_command_falls_back_to_skill_mode_on_controller_erro
 
 
 @pytest.mark.asyncio
-async def test_maybe_schedule_loop_followup_uses_runtime_schedule_continue(monkeypatch, tmp_path):
+async def test_maybe_schedule_loop_followup_continue_path_uses_runtime_apply_followup_decision(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     runner = _make_runner()
     session_key = _seed_loop_state(
@@ -581,6 +581,7 @@ async def test_maybe_schedule_loop_followup_uses_runtime_schedule_continue(monke
 
     runtime_result = {
         "ok": True,
+        "kind": "continue",
         "checkpoint": {
             "session_id": "sess-1",
             "session_key": session_key,
@@ -626,9 +627,9 @@ async def test_maybe_schedule_loop_followup_uses_runtime_schedule_continue(monke
         "hermes_cli.loop.verify_progress_for_session",
         return_value={"verdict": "progress", "reason": "real progress", "should_continue": True},
     ) as mock_verifier, patch(
-        "gateway.run.LoopRuntime.schedule_continue",
+        "gateway.run.LoopRuntime.apply_followup_decision",
         return_value=runtime_result,
-    ) as mock_schedule_continue:
+    ) as mock_apply_followup_decision:
         event, stop_notice = await runner._maybe_schedule_loop_followup(
             session_key=session_key,
             session_id="sess-1",
@@ -640,13 +641,17 @@ async def test_maybe_schedule_loop_followup_uses_runtime_schedule_continue(monke
     assert stop_notice is None
     assert event.internal is True
     assert event.text == "Implement the next thin slice."
-    mock_schedule_continue.assert_called_once_with(
-        "sess-1",
-        next_prompt="Implement the next thin slice.",
-        next_prompt_norm="implement the next thin slice.",
-        expected_evidence="tests/bar.py",
-        remaining_auto_turns=1,
+    mock_apply_followup_decision.assert_called_once_with(
+        session_id="sess-1",
+        decision={
+            "action": "continue",
+            "reason": "clear next slice",
+            "next_prompt": "Implement the next thin slice.",
+            "expected_evidence": "tests/bar.py",
+        },
         result_preview="Implemented the next thin slice in tests/foo.py.",
+        remaining_auto_turns=1,
+        pending_wakeup_at="",
     )
     assert runner._loop_states[session_key] == runtime_result["checkpoint"]
     verifier_kwargs = mock_verifier.call_args.kwargs
@@ -817,7 +822,7 @@ async def test_maybe_schedule_loop_followup_stops_conservatively_when_runtime_fi
 
 
 @pytest.mark.asyncio
-async def test_maybe_schedule_loop_followup_wait_branch_uses_runtime_schedule_wait(monkeypatch, tmp_path):
+async def test_maybe_schedule_loop_followup_wait_branch_uses_runtime_apply_followup_decision(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     runner = _make_runner()
     session_key = _seed_loop_state(
@@ -831,6 +836,7 @@ async def test_maybe_schedule_loop_followup_wait_branch_uses_runtime_schedule_wa
     )
     runtime_result = {
         "ok": True,
+        "kind": "wait",
         "checkpoint": {
             "session_id": "sess-1",
             "session_key": session_key,
@@ -881,9 +887,9 @@ async def test_maybe_schedule_loop_followup_wait_branch_uses_runtime_schedule_wa
         "gateway.run.GatewayRunner._compute_pending_wakeup_at",
         return_value="2026-01-01T00:05:00+00:00",
     ) as mock_pending_wakeup, patch(
-        "gateway.run.LoopRuntime.schedule_wait",
+        "gateway.run.LoopRuntime.apply_followup_decision",
         return_value=runtime_result,
-    ) as mock_schedule_wait:
+    ) as mock_apply_followup_decision:
         event, stop_notice = await runner._maybe_schedule_loop_followup(
             session_key=session_key,
             session_id="sess-1",
@@ -894,13 +900,17 @@ async def test_maybe_schedule_loop_followup_wait_branch_uses_runtime_schedule_wa
     assert event is None
     assert stop_notice is None
     mock_pending_wakeup.assert_called_once_with("5m")
-    mock_schedule_wait.assert_called_once_with(
-        "sess-1",
-        next_prompt="Resume the next thin slice.",
-        next_prompt_norm="resume the next thin slice.",
-        expected_evidence="tests/deferred.py",
-        remaining_auto_turns=1,
+    mock_apply_followup_decision.assert_called_once_with(
+        session_id="sess-1",
+        decision={
+            "action": "wait",
+            "reason": "wait for external change",
+            "next_prompt": "Resume the next thin slice.",
+            "wake_after": "5m",
+            "expected_evidence": "tests/deferred.py",
+        },
         result_preview="Implemented the next thin slice in tests/foo.py.",
+        remaining_auto_turns=1,
         pending_wakeup_at="2026-01-01T00:05:00+00:00",
     )
     assert runner._loop_states[session_key] == runtime_result["checkpoint"]
@@ -1034,7 +1044,7 @@ async def test_maybe_schedule_loop_followup_continues_when_expected_evidence_obs
 
 
 @pytest.mark.asyncio
-async def test_maybe_schedule_loop_followup_stops_on_repeated_prompt(monkeypatch, tmp_path):
+async def test_maybe_schedule_loop_followup_repeated_prompt_stop_uses_runtime_apply_followup_decision(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     runner = _make_runner()
     session_key = _seed_loop_state(
@@ -1045,6 +1055,41 @@ async def test_maybe_schedule_loop_followup_stops_on_repeated_prompt(monkeypatch
         last_prompt_norm="implement the next thin slice.",
         last_result_preview="fresh result",
     )
+
+    runtime_result = {
+        "ok": True,
+        "kind": "stop",
+        "stop_reason": "repeated_next_prompt",
+        "stop_message": "repeated next prompt (stall suppression).",
+        "checkpoint": {
+            "session_id": "sess-1",
+            "session_key": session_key,
+            "goal": "Keep going",
+            "goal_id": "goal-runtime-repeat",
+            "run_id": "run-runtime-repeat",
+            "remaining_auto_turns": 2,
+            "last_prompt": "Implement the next thin slice.",
+            "last_prompt_norm": "implement the next thin slice.",
+            "last_result_preview": "Different new result tests/foo.py",
+            "expected_evidence": "tests/foo.py",
+            "channel_prompt": None,
+            "active": False,
+            "state": "stopped",
+            "resumable": False,
+            "stop_reason": "repeated_next_prompt",
+            "stop_class": "verification",
+            "stop_message": "repeated next prompt (stall suppression).",
+            "last_progress_summary": "Different new result tests/foo.py",
+            "retry_count": 0,
+            "max_retry_budget": 2,
+            "idle_timeout_seconds": 900,
+            "last_activity_at": "2026-01-01T00:00:00+00:00",
+            "pending_wakeup_at": "",
+            "inflight_prompt": "",
+            "inflight_started_at": "",
+        },
+        "event": {"event_type": "loop_stopped", "stop_reason": "repeated_next_prompt"},
+    }
 
     with patch(
         "hermes_cli.loop.decide_continuation_for_session",
@@ -1057,7 +1102,10 @@ async def test_maybe_schedule_loop_followup_stops_on_repeated_prompt(monkeypatch
     ), patch(
         "hermes_cli.loop.verify_progress_for_session",
         return_value={"verdict": "progress", "reason": "real progress", "should_continue": True},
-    ):
+    ), patch(
+        "gateway.run.LoopRuntime.apply_followup_decision",
+        return_value=runtime_result,
+    ) as mock_apply_followup_decision:
         event, stop_notice = await runner._maybe_schedule_loop_followup(
             session_key=session_key,
             session_id="sess-1",
@@ -1068,6 +1116,18 @@ async def test_maybe_schedule_loop_followup_stops_on_repeated_prompt(monkeypatch
     assert event is None
     assert "repeated next prompt" in stop_notice.lower()
     assert session_key not in runner._loop_states
+    mock_apply_followup_decision.assert_called_once_with(
+        session_id="sess-1",
+        decision={
+            "action": "continue",
+            "reason": "clear next slice",
+            "next_prompt": "Implement the next thin slice.",
+            "expected_evidence": "tests/foo.py",
+        },
+        result_preview="Different new result tests/foo.py",
+        remaining_auto_turns=1,
+        pending_wakeup_at="",
+    )
     reviews = _read_background_reviews(tmp_path)
     assert reviews[-1]["progress_state"] == "repeated_prompt"
     assert reviews[-1]["stop_reason"] == "repeated_next_prompt"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -363,6 +364,176 @@ class LoopRuntime:
             return self._error("schedule_wait_failed", checkpoint=checkpoint)
         return {"ok": True, "checkpoint": updated, "event": event}
 
+    def apply_followup_decision(
+        self,
+        *,
+        session_id: str,
+        decision: dict[str, Any],
+        result_preview: str,
+        remaining_auto_turns: int,
+        pending_wakeup_at: str = "",
+    ) -> dict[str, Any]:
+        checkpoint = self.status(session_id)
+        if checkpoint is None:
+            return {
+                **self._error("not_found"),
+                "kind": "error",
+                "event": None,
+                "stop_reason": "",
+                "stop_message": "",
+                "next_prompt": "",
+                "pending_wakeup_at": "",
+            }
+
+        action = str((decision or {}).get("action") or "").strip()
+        next_prompt = str((decision or {}).get("next_prompt") or "").strip()
+        next_prompt_norm = self._normalize_followup_prompt(next_prompt)
+        expected_evidence = str((decision or {}).get("expected_evidence") or "").strip()
+        result_preview_text = str(result_preview or "")
+        pending_wakeup_text = str(pending_wakeup_at or "")
+
+        stop_result: dict[str, Any] | None = None
+        if action in {"continue", "wait"} and not next_prompt:
+            stop_result = self.finalize_stop(
+                session_id,
+                stop_reason="missing_next_prompt",
+                stop_message="controller chose continue without a bounded next prompt.",
+                result_preview=result_preview_text,
+            )
+        elif action == "wait" and not pending_wakeup_text:
+            stop_result = self.finalize_stop(
+                session_id,
+                stop_reason="missing_wake_after",
+                stop_message="controller chose wait without a bounded wake_after.",
+                result_preview=result_preview_text,
+            )
+        elif action in {"continue", "wait"}:
+            previous_prompt_norm = str(checkpoint.get("last_prompt_norm") or "")
+            if previous_prompt_norm and next_prompt_norm == previous_prompt_norm:
+                stop_result = self.finalize_stop(
+                    session_id,
+                    stop_reason="repeated_next_prompt",
+                    stop_message="repeated next prompt (stall suppression).",
+                    result_preview=result_preview_text,
+                    next_prompt=next_prompt,
+                )
+
+        if stop_result is not None:
+            if not stop_result.get("ok"):
+                return {
+                    **stop_result,
+                    "kind": "error",
+                    "event": stop_result.get("event"),
+                    "stop_reason": str(stop_result.get("stop_reason") or ""),
+                    "stop_message": str(stop_result.get("stop_message") or ""),
+                    "next_prompt": next_prompt,
+                    "pending_wakeup_at": pending_wakeup_text,
+                }
+            updated = dict(stop_result.get("checkpoint") or checkpoint)
+            return {
+                **stop_result,
+                "kind": "stop",
+                "checkpoint": updated,
+                "event": stop_result.get("event"),
+                "stop_reason": str(updated.get("stop_reason") or ""),
+                "stop_message": str(updated.get("stop_message") or ""),
+                "next_prompt": str(updated.get("last_prompt") or next_prompt),
+                "pending_wakeup_at": str(updated.get("pending_wakeup_at") or ""),
+            }
+
+        if action == "continue":
+            result = self.schedule_continue(
+                session_id,
+                next_prompt=next_prompt,
+                next_prompt_norm=next_prompt_norm,
+                expected_evidence=expected_evidence,
+                remaining_auto_turns=remaining_auto_turns,
+                result_preview=result_preview_text,
+            )
+            if not result.get("ok"):
+                return {
+                    **result,
+                    "kind": "error",
+                    "event": result.get("event"),
+                    "stop_reason": "",
+                    "stop_message": "",
+                    "next_prompt": next_prompt,
+                    "pending_wakeup_at": "",
+                }
+            updated = dict(result.get("checkpoint") or checkpoint)
+            return {
+                **result,
+                "kind": "continue",
+                "checkpoint": updated,
+                "event": result.get("event"),
+                "stop_reason": "",
+                "stop_message": "",
+                "next_prompt": str(updated.get("last_prompt") or next_prompt),
+                "pending_wakeup_at": str(updated.get("pending_wakeup_at") or ""),
+            }
+
+        if action == "wait":
+            result = self.schedule_wait(
+                session_id,
+                next_prompt=next_prompt,
+                next_prompt_norm=next_prompt_norm,
+                expected_evidence=expected_evidence,
+                remaining_auto_turns=remaining_auto_turns,
+                result_preview=result_preview_text,
+                pending_wakeup_at=pending_wakeup_text,
+            )
+            if not result.get("ok"):
+                return {
+                    **result,
+                    "kind": "error",
+                    "event": result.get("event"),
+                    "stop_reason": "",
+                    "stop_message": "",
+                    "next_prompt": next_prompt,
+                    "pending_wakeup_at": pending_wakeup_text,
+                }
+            updated = dict(result.get("checkpoint") or checkpoint)
+            return {
+                **result,
+                "kind": "wait",
+                "checkpoint": updated,
+                "event": result.get("event"),
+                "stop_reason": "",
+                "stop_message": "",
+                "next_prompt": str(updated.get("last_prompt") or next_prompt),
+                "pending_wakeup_at": str(updated.get("pending_wakeup_at") or pending_wakeup_text),
+            }
+
+        stop_reason = str((decision or {}).get("stop_reason") or "model_stop").strip() or "model_stop"
+        stop_message = str((decision or {}).get("reason") or "").strip() or stop_reason
+        result = self.finalize_stop(
+            session_id,
+            stop_reason=stop_reason,
+            stop_message=stop_message,
+            result_preview=result_preview_text,
+        )
+        if not result.get("ok"):
+            return {
+                **result,
+                "kind": "error",
+                "event": result.get("event"),
+                "stop_reason": stop_reason,
+                "stop_message": stop_message,
+                "next_prompt": next_prompt,
+                "pending_wakeup_at": pending_wakeup_text,
+            }
+        updated = dict(result.get("checkpoint") or checkpoint)
+        return {
+            **result,
+            "kind": "stop",
+            "checkpoint": updated,
+            "event": result.get("event"),
+            "stop_reason": str(updated.get("stop_reason") or stop_reason),
+            "stop_message": str(updated.get("stop_message") or stop_message),
+            "next_prompt": str(updated.get("last_prompt") or next_prompt),
+            "pending_wakeup_at": str(updated.get("pending_wakeup_at") or ""),
+        }
+
     def _write_checkpoint(self, session_id: str, checkpoint: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
         payload = dict(checkpoint)
         payload.update(updates)
@@ -455,6 +626,10 @@ class LoopRuntime:
     @staticmethod
     def _now_iso() -> str:
         return datetime.now(timezone.utc).isoformat()
+
+    @staticmethod
+    def _normalize_followup_prompt(text: str) -> str:
+        return re.sub(r"\s+", " ", (text or "").strip()).lower()
 
     @staticmethod
     def _cli_session_key(session_id: str) -> str:

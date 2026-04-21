@@ -242,6 +242,127 @@ def test_runtime_schedule_wait_writes_waiting_checkpoint_and_deferred_event(monk
     assert events[-1]["deferred"] is True
 
 
+def test_runtime_apply_followup_decision_continue_delegates_to_schedule_continue(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    store = LoopStore()
+    _write_checkpoint(
+        store,
+        session_id="sess-apply-continue",
+        session_key="telegram:sess-apply-continue",
+        goal="Keep going",
+        goal_id="goal-apply-continue",
+        run_id="run-apply-continue",
+        remaining_auto_turns=2,
+        last_prompt="Old prompt",
+        last_prompt_norm="old prompt",
+        expected_evidence="tests/old.py",
+    )
+
+    result = LoopRuntime(store=store).apply_followup_decision(
+        session_id="sess-apply-continue",
+        decision={
+            "action": "continue",
+            "next_prompt": "Implement the next thin slice.",
+            "expected_evidence": "tests/new.py",
+        },
+        result_preview="Updated tests/new.py and reran pytest -q.",
+        remaining_auto_turns=1,
+    )
+
+    assert result["ok"] is True
+    assert result["kind"] == "continue"
+    assert result["stop_reason"] == ""
+    assert result["checkpoint"]["last_prompt"] == "Implement the next thin slice."
+    assert result["checkpoint"]["last_prompt_norm"] == "implement the next thin slice."
+    assert result["checkpoint"]["expected_evidence"] == "tests/new.py"
+    assert result["checkpoint"]["remaining_auto_turns"] == 1
+    assert result["event"]["event_type"] == "loop_followup_scheduled"
+
+
+def test_runtime_apply_followup_decision_wait_delegates_to_schedule_wait(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    store = LoopStore()
+    pending_wakeup_at = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+    _write_checkpoint(
+        store,
+        session_id="sess-apply-wait",
+        session_key="telegram:sess-apply-wait",
+        goal="Keep going",
+        goal_id="goal-apply-wait",
+        run_id="run-apply-wait",
+        remaining_auto_turns=2,
+        last_prompt="Old prompt",
+        last_prompt_norm="old prompt",
+        expected_evidence="tests/old.py",
+    )
+
+    result = LoopRuntime(store=store).apply_followup_decision(
+        session_id="sess-apply-wait",
+        decision={
+            "action": "wait",
+            "next_prompt": "Resume the next thin slice.",
+            "expected_evidence": "tests/deferred.py",
+        },
+        result_preview="Implemented the current slice and waiting on external change.",
+        remaining_auto_turns=1,
+        pending_wakeup_at=pending_wakeup_at,
+    )
+
+    assert result["ok"] is True
+    assert result["kind"] == "wait"
+    assert result["checkpoint"]["last_prompt"] == "Resume the next thin slice."
+    assert result["checkpoint"]["last_prompt_norm"] == "resume the next thin slice."
+    assert result["checkpoint"]["expected_evidence"] == "tests/deferred.py"
+    assert result["checkpoint"]["pending_wakeup_at"] == pending_wakeup_at
+    assert result["pending_wakeup_at"] == pending_wakeup_at
+    assert result["event"]["event_type"] == "loop_followup_scheduled"
+
+
+def test_runtime_apply_followup_decision_repeated_next_prompt_finalizes_stop(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    store = LoopStore()
+    _write_checkpoint(
+        store,
+        session_id="sess-apply-stop",
+        session_key="telegram:sess-apply-stop",
+        goal="Keep going",
+        goal_id="goal-apply-stop",
+        run_id="run-apply-stop",
+        remaining_auto_turns=2,
+        last_prompt="Implement the next thin slice.",
+        last_prompt_norm="implement the next thin slice.",
+        expected_evidence="tests/foo.py",
+        pending_wakeup_at="2026-01-01T00:05:00+00:00",
+        inflight_prompt="Current inflight prompt",
+        inflight_started_at="2026-01-01T00:00:00+00:00",
+    )
+
+    result = LoopRuntime(store=store).apply_followup_decision(
+        session_id="sess-apply-stop",
+        decision={
+            "action": "continue",
+            "next_prompt": "Implement the next thin slice.",
+            "expected_evidence": "tests/bar.py",
+        },
+        result_preview="Different new result tests/foo.py",
+        remaining_auto_turns=1,
+    )
+
+    assert result["ok"] is True
+    assert result["kind"] == "stop"
+    assert result["stop_reason"] == "repeated_next_prompt"
+    assert result["stop_message"] == "repeated next prompt (stall suppression)."
+    checkpoint = store.read_checkpoint("sess-apply-stop")
+    assert checkpoint["active"] is False
+    assert checkpoint["state"] == "stopped"
+    assert checkpoint["stop_reason"] == "repeated_next_prompt"
+    assert checkpoint["pending_wakeup_at"] == ""
+    assert checkpoint["inflight_prompt"] == ""
+    events = store.read_events("sess-apply-stop")
+    assert events[-1]["event_type"] == "loop_stopped"
+    assert events[-1]["stop_reason"] == "repeated_next_prompt"
+
+
 def test_runtime_schedule_initial_writes_waiting_checkpoint_and_event_for_immediate_start(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     store = LoopStore()
