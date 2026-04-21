@@ -702,7 +702,97 @@ async def test_maybe_schedule_loop_followup_stops_when_runtime_schedule_continue
 
 
 @pytest.mark.asyncio
-async def test_maybe_schedule_loop_followup_waits_without_immediate_event(monkeypatch, tmp_path):
+async def test_maybe_schedule_loop_followup_wait_branch_uses_runtime_schedule_wait(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    session_key = _seed_loop_state(
+        tmp_path,
+        runner,
+        goal="Keep going",
+        remaining_auto_turns=2,
+        expected_evidence="tests/foo.py",
+        last_prompt_norm="initial prompt",
+        last_result_preview="",
+    )
+    runtime_result = {
+        "ok": True,
+        "checkpoint": {
+            "session_id": "sess-1",
+            "session_key": session_key,
+            "goal": "Keep going",
+            "goal_id": "goal-runtime",
+            "run_id": "run-runtime",
+            "remaining_auto_turns": 1,
+            "last_prompt": "Resume the next thin slice.",
+            "last_prompt_norm": "resume the next thin slice.",
+            "last_result_preview": "Implemented the next thin slice in tests/foo.py.",
+            "expected_evidence": "tests/deferred.py",
+            "channel_prompt": None,
+            "active": True,
+            "state": "waiting",
+            "resumable": True,
+            "stop_reason": "",
+            "stop_class": "",
+            "stop_message": "",
+            "last_progress_summary": "Implemented the next thin slice in tests/foo.py.",
+            "retry_count": 0,
+            "max_retry_budget": 2,
+            "idle_timeout_seconds": 900,
+            "last_activity_at": "2026-01-01T00:00:00+00:00",
+            "pending_wakeup_at": "2026-01-01T00:05:00+00:00",
+            "inflight_prompt": "",
+            "inflight_started_at": "",
+        },
+        "event": {
+            "event_type": "loop_followup_scheduled",
+            "pending_wakeup_at": "2026-01-01T00:05:00+00:00",
+            "deferred": True,
+        },
+    }
+
+    with patch(
+        "hermes_cli.loop.decide_continuation_for_session",
+        return_value={
+            "action": "wait",
+            "reason": "wait for external change",
+            "next_prompt": "Resume the next thin slice.",
+            "wake_after": "5m",
+            "expected_evidence": "tests/deferred.py",
+        },
+    ), patch(
+        "hermes_cli.loop.verify_progress_for_session",
+        return_value={"verdict": "progress", "reason": "real progress", "should_continue": True},
+    ), patch(
+        "gateway.run.GatewayRunner._compute_pending_wakeup_at",
+        return_value="2026-01-01T00:05:00+00:00",
+    ) as mock_pending_wakeup, patch(
+        "gateway.run.LoopRuntime.schedule_wait",
+        return_value=runtime_result,
+    ) as mock_schedule_wait:
+        event, stop_notice = await runner._maybe_schedule_loop_followup(
+            session_key=session_key,
+            session_id="sess-1",
+            source=_make_source(),
+            final_response="Implemented the next thin slice in tests/foo.py.",
+        )
+
+    assert event is None
+    assert stop_notice is None
+    mock_pending_wakeup.assert_called_once_with("5m")
+    mock_schedule_wait.assert_called_once_with(
+        "sess-1",
+        next_prompt="Resume the next thin slice.",
+        next_prompt_norm="resume the next thin slice.",
+        expected_evidence="tests/deferred.py",
+        remaining_auto_turns=1,
+        result_preview="Implemented the next thin slice in tests/foo.py.",
+        pending_wakeup_at="2026-01-01T00:05:00+00:00",
+    )
+    assert runner._loop_states[session_key] == runtime_result["checkpoint"]
+
+
+@pytest.mark.asyncio
+async def test_maybe_schedule_loop_followup_stops_when_runtime_schedule_wait_fails(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     runner = _make_runner()
     session_key = _seed_loop_state(
@@ -727,6 +817,12 @@ async def test_maybe_schedule_loop_followup_waits_without_immediate_event(monkey
     ), patch(
         "hermes_cli.loop.verify_progress_for_session",
         return_value={"verdict": "progress", "reason": "real progress", "should_continue": True},
+    ), patch(
+        "gateway.run.GatewayRunner._compute_pending_wakeup_at",
+        return_value="2026-01-01T00:05:00+00:00",
+    ), patch(
+        "gateway.run.LoopRuntime.schedule_wait",
+        return_value={"ok": False, "error": "schedule_wait_failed"},
     ):
         event, stop_notice = await runner._maybe_schedule_loop_followup(
             session_key=session_key,
@@ -736,19 +832,12 @@ async def test_maybe_schedule_loop_followup_waits_without_immediate_event(monkey
         )
 
     assert event is None
-    assert stop_notice is None
-    state = runner._loop_states[session_key]
-    assert state["state"] == "waiting"
-    assert state["last_prompt"] == "Resume the next thin slice."
-    assert state["expected_evidence"] == "tests/deferred.py"
-    assert state["pending_wakeup_at"]
+    assert stop_notice is not None
+    assert "persist" in stop_notice.lower()
+    assert session_key not in runner._loop_states
     checkpoint = _read_loop_checkpoint(tmp_path)
-    assert checkpoint["pending_wakeup_at"] == state["pending_wakeup_at"]
-    assert checkpoint["expected_evidence"] == "tests/deferred.py"
-    events = _read_loop_events(tmp_path)
-    assert events[-1]["event_type"] == "loop_followup_scheduled"
-    assert events[-1]["pending_wakeup_at"] == state["pending_wakeup_at"]
-    assert events[-1]["deferred"] is True
+    assert checkpoint["active"] is False
+    assert checkpoint["stop_reason"] == "loop_schedule_wait_failed"
 
 
 @pytest.mark.asyncio

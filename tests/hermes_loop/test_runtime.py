@@ -173,6 +173,75 @@ def test_runtime_schedule_continue_writes_waiting_checkpoint_and_event(monkeypat
     assert events[-1].get("deferred") in (None, False)
 
 
+def test_runtime_schedule_wait_writes_waiting_checkpoint_and_deferred_event(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    store = LoopStore()
+    pending_wakeup_at = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+    _write_checkpoint(
+        store,
+        session_id="sess-wait",
+        session_key="telegram:sess-wait",
+        goal="Keep going",
+        goal_id="goal-wait",
+        run_id="run-wait",
+        remaining_auto_turns=2,
+        last_prompt="Old prompt",
+        last_prompt_norm="old prompt",
+        expected_evidence="tests/old.py",
+        last_result_preview="Old preview",
+        last_progress_summary="Old preview",
+        stop_reason="old_stop",
+        stop_class="internal",
+        stop_message="old message",
+        retry_count=3,
+        pending_wakeup_at="2026-01-01T00:00:00+00:00",
+        inflight_prompt="Old inflight",
+        inflight_started_at="2026-01-01T00:00:00+00:00",
+    )
+
+    result = LoopRuntime(store=store).schedule_wait(
+        "sess-wait",
+        next_prompt="Resume the next thin slice.",
+        next_prompt_norm="resume the next thin slice.",
+        expected_evidence="tests/deferred.py",
+        remaining_auto_turns=1,
+        result_preview="Implemented the current slice and waiting on external change.",
+        pending_wakeup_at=pending_wakeup_at,
+    )
+
+    assert result["ok"] is True
+    checkpoint = store.read_checkpoint("sess-wait")
+    assert checkpoint["session_key"] == "telegram:sess-wait"
+    assert checkpoint["last_prompt"] == "Resume the next thin slice."
+    assert checkpoint["last_prompt_norm"] == "resume the next thin slice."
+    assert checkpoint["expected_evidence"] == "tests/deferred.py"
+    assert checkpoint["remaining_auto_turns"] == 1
+    assert checkpoint["active"] is True
+    assert checkpoint["state"] == "waiting"
+    assert checkpoint["resumable"] is True
+    assert checkpoint["stop_reason"] == ""
+    assert checkpoint["stop_class"] == ""
+    assert checkpoint["stop_message"] == ""
+    assert checkpoint["retry_count"] == 0
+    assert checkpoint["pending_wakeup_at"] == pending_wakeup_at
+    assert checkpoint["inflight_prompt"] == ""
+    assert checkpoint["inflight_started_at"] == ""
+    assert checkpoint["last_result_preview"] == "Implemented the current slice and waiting on external change."
+    assert checkpoint["last_progress_summary"] == "Implemented the current slice and waiting on external change."
+    assert checkpoint["last_activity_at"]
+    events = store.read_events("sess-wait")
+    assert events[-1]["event_type"] == "loop_followup_scheduled"
+    assert events[-1]["goal"] == "Keep going"
+    assert events[-1]["goal_id"] == "goal-wait"
+    assert events[-1]["run_id"] == "run-wait"
+    assert events[-1]["next_prompt"] == "Resume the next thin slice."
+    assert events[-1]["expected_evidence"] == "tests/deferred.py"
+    assert events[-1]["remaining_auto_turns"] == 1
+    assert events[-1]["result_preview"] == "Implemented the current slice and waiting on external change."
+    assert events[-1]["pending_wakeup_at"] == pending_wakeup_at
+    assert events[-1]["deferred"] is True
+
+
 def test_runtime_schedule_initial_writes_waiting_checkpoint_and_event_for_immediate_start(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     store = LoopStore()
