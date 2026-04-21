@@ -27,7 +27,7 @@ import time
 from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, Any, List
 
 # --- Agent cache tuning ---------------------------------------------------
@@ -86,6 +86,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
 from hermes_constants import get_hermes_home
+from hermes_loop import LoopRuntime
 from utils import atomic_yaml_write, is_truthy_value
 _hermes_home = get_hermes_home()
 
@@ -1566,10 +1567,95 @@ class GatewayRunner:
 
     @staticmethod
     def _pending_wakeup_due(state: Dict[str, Any]) -> bool:
-        wakeup = GatewayRunner._parse_loop_iso(state.get("pending_wakeup_at"))
+        wakeup_text = str(state.get("pending_wakeup_at") or "").strip()
+        if not wakeup_text:
+            return True
+        wakeup = GatewayRunner._parse_loop_iso(wakeup_text)
         if wakeup is None:
             return False
         return wakeup <= datetime.now(timezone.utc)
+
+    @staticmethod
+    def _compute_pending_wakeup_at(wake_after: str) -> str | None:
+        try:
+            from hermes_cli.loop import parse_wake_after_duration_seconds
+
+            seconds = parse_wake_after_duration_seconds(wake_after)
+        except Exception:
+            seconds = None
+        if seconds is None:
+            return None
+        return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
+
+    @staticmethod
+    def _format_loop_wait_notice(pending_wakeup_at: str) -> str:
+        return f"Loop waiting until {pending_wakeup_at}."
+
+    @staticmethod
+    def _parse_loop_option_int(name: str, raw_value: str) -> int:
+        try:
+            value = int(str(raw_value or "").strip())
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Invalid /loop option {name}={raw_value}: expected a positive integer."
+            ) from exc
+        if value <= 0:
+            raise ValueError(
+                f"Invalid /loop option {name}={raw_value}: expected a positive integer."
+            )
+        return value
+
+    @staticmethod
+    def _parse_loop_option_duration(name: str, raw_value: str) -> int:
+        duration = str(raw_value or "").strip().lower()
+        match = re.fullmatch(r"(\d+)([smh])", duration)
+        if not match:
+            raise ValueError(
+                f"Invalid /loop option {name}={raw_value}: expected <int>s, <int>m, or <int>h."
+            )
+        amount = int(match.group(1))
+        unit = match.group(2)
+        if amount <= 0:
+            raise ValueError(
+                f"Invalid /loop option {name}={raw_value}: expected <int>s, <int>m, or <int>h."
+            )
+        multiplier = {"s": 1, "m": 60, "h": 3600}[unit]
+        return amount * multiplier
+
+    @classmethod
+    def _parse_loop_start_options(cls, user_instruction: str) -> tuple[str, Dict[str, int]]:
+        remaining_auto_turns = 2
+        idle_timeout_seconds = 900
+        max_retry_budget = 2
+        goal_tokens: List[str] = []
+        recognized_option_seen = False
+        instruction_text = str(user_instruction or "")
+        for token in instruction_text.split():
+            if "=" not in token:
+                goal_tokens.append(token)
+                continue
+            name, raw_value = token.split("=", 1)
+            normalized_name = name.strip().lower()
+            if normalized_name in {"turns", "auto_turns"}:
+                remaining_auto_turns = cls._parse_loop_option_int(name.strip(), raw_value)
+                recognized_option_seen = True
+                continue
+            if normalized_name in {"timeout", "idle_timeout"}:
+                idle_timeout_seconds = cls._parse_loop_option_duration(name.strip(), raw_value)
+                recognized_option_seen = True
+                continue
+            if normalized_name == "retries":
+                max_retry_budget = cls._parse_loop_option_int(name.strip(), raw_value)
+                recognized_option_seen = True
+                continue
+            goal_tokens.append(token)
+
+        goal_text = " ".join(goal_tokens).strip() if recognized_option_seen else instruction_text.strip()
+        return goal_text, {
+            "remaining_auto_turns": remaining_auto_turns,
+            "idle_timeout_seconds": idle_timeout_seconds,
+            "max_retry_budget": max_retry_budget,
+        }
 
     def _persist_loop_checkpoint(self, session_key: str, state: Dict[str, Any]) -> bool:
         session_id = str(state.get("session_id") or "").strip()
@@ -1587,6 +1673,7 @@ class GatewayRunner:
                     "last_prompt": str(state.get("last_prompt") or ""),
                     "last_prompt_norm": str(state.get("last_prompt_norm") or ""),
                     "last_result_preview": str(state.get("last_result_preview") or ""),
+                    "expected_evidence": str(state.get("expected_evidence") or ""),
                     "channel_prompt": state.get("channel_prompt"),
                     "active": bool(state.get("active", True)),
                     "state": str(state.get("state") or "waiting"),
@@ -1676,6 +1763,7 @@ class GatewayRunner:
                 "last_prompt": str(checkpoint.get("last_prompt") or ""),
                 "last_prompt_norm": str(checkpoint.get("last_prompt_norm") or ""),
                 "last_result_preview": str(checkpoint.get("last_result_preview") or ""),
+                "expected_evidence": str(checkpoint.get("expected_evidence") or ""),
                 "channel_prompt": checkpoint.get("channel_prompt"),
                 "active": active,
                 "state": str(checkpoint.get("state") or ("waiting" if active else "stopped")),
@@ -1739,6 +1827,7 @@ class GatewayRunner:
                 "last_prompt",
                 "last_prompt_norm",
                 "last_result_preview",
+                "expected_evidence",
                 "state",
                 "pending_wakeup_at",
                 "run_id",
@@ -1773,6 +1862,7 @@ class GatewayRunner:
                     "last_prompt": str((state or {}).get("last_prompt") or ""),
                     "last_prompt_norm": str((state or {}).get("last_prompt_norm") or ""),
                     "last_result_preview": str((state or {}).get("last_result_preview") or ""),
+                    "expected_evidence": str((state or {}).get("expected_evidence") or ""),
                     "channel_prompt": (state or {}).get("channel_prompt"),
                     "state": "failed",
                     "resumable": False,
@@ -1847,19 +1937,47 @@ class GatewayRunner:
         )
 
     def _queue_due_loop_event(self, session_key: str, state: Dict[str, Any]) -> bool:
-        event = self._build_recovered_loop_event(session_key, state)
-        if event is None:
+        source = None
+        try:
+            if getattr(self, "session_store", None) is not None:
+                self.session_store._ensure_loaded()
+                entry = self.session_store._entries.get(session_key)
+                source = getattr(entry, "origin", None) if entry else None
+        except Exception as exc:
+            logger.debug("Failed to load session origin for recovered loop %s: %s", session_key, exc)
+        if source is None:
             self._mark_recovery_incomplete(session_key, state)
             return False
-        state = dict(state)
-        state["pending_wakeup_at"] = ""
-        state["last_activity_at"] = self._loop_now_iso()
-        loop_states = getattr(self, "_loop_states", None)
-        if isinstance(loop_states, dict):
-            loop_states[session_key] = state
-        if not self._persist_loop_checkpoint(session_key, state):
+        session_id = str(state.get("session_id") or "").strip()
+        result = LoopRuntime().resume(
+            session_id,
+            message="Loop resumed by due wake recovery.",
+            metadata={"resume_reason": "due_wake_recovery", "resume_source": "gateway_watcher"},
+        )
+        checkpoint = result.get("checkpoint")
+        if isinstance(checkpoint, dict):
+            refreshed_state = self._normalize_loop_checkpoint_state(checkpoint, active_only=True)
+            if refreshed_state is not None:
+                loop_states = getattr(self, "_loop_states", None)
+                if isinstance(loop_states, dict):
+                    loop_states[session_key] = refreshed_state
+        if not result.get("ok"):
             self._mark_recovery_incomplete(session_key, state)
             return False
+        if not bool(result.get("should_tick_now")):
+            return False
+        event_state = refreshed_state if refreshed_state is not None else state
+        next_prompt = str(event_state.get("last_prompt") or "").strip()
+        if not next_prompt:
+            self._mark_recovery_incomplete(session_key, event_state)
+            return False
+        event = MessageEvent(
+            text=next_prompt,
+            source=source,
+            message_id=None,
+            internal=True,
+            channel_prompt=(event_state.get("channel_prompt") or None),
+        )
         task = asyncio.create_task(self._handle_message(event))
         background_tasks = getattr(self, "_background_tasks", None)
         if isinstance(background_tasks, set):
@@ -1875,6 +1993,8 @@ class GatewayRunner:
         for session_key, state in list(loop_states.items()):
             if str(state.get("inflight_prompt") or "").strip() or str(state.get("inflight_started_at") or "").strip():
                 self._mark_recovery_incomplete(session_key, state)
+                continue
+            if not self._pending_wakeup_due(state):
                 continue
             if self._queue_due_loop_event(session_key, state):
                 resumed += 1
@@ -1966,6 +2086,7 @@ class GatewayRunner:
             "last_prompt": str(state.get("last_prompt") or ""),
             "last_prompt_norm": str(state.get("last_prompt_norm") or ""),
             "last_result_preview": str(state.get("last_result_preview") or ""),
+            "expected_evidence": str(state.get("expected_evidence") or ""),
             "state": str(checkpoint_state.get("state") or "stopped"),
             "resumable": bool(checkpoint_state.get("resumable", False)),
         }
@@ -2131,6 +2252,7 @@ class GatewayRunner:
             decide_continuation_for_session,
             verify_progress_for_session,
             _has_observable_evidence,
+            _final_response_has_expected_evidence,
             _normalize_loop_prompt,
             _preview_text,
             record_background_review,
@@ -2138,6 +2260,7 @@ class GatewayRunner:
         )
 
         result_preview = _preview_text(final_response)
+        expected_evidence = str(state.get("expected_evidence") or "").strip()
         if not result_preview:
             record_background_review(
                 session_id=session_id,
@@ -2205,6 +2328,32 @@ class GatewayRunner:
                 },
             )
             return None, format_loop_stop_notice("missing_observable_evidence")
+        if expected_evidence and not _final_response_has_expected_evidence(final_response, expected_evidence):
+            record_background_review(
+                session_id=session_id,
+                goal=goal,
+                progress_state="expected_evidence_missing",
+                stop_reason="expected_evidence_missing",
+                result_preview=result_preview,
+                source="bounded_loop_gateway",
+                goal_id=_goal_id,
+                run_id=_run_id,
+            )
+            self._clear_loop_state(
+                session_key,
+                stop_reason="expected_evidence_missing",
+                event_type="loop_stopped",
+                event_payload={
+                    "goal": goal,
+                    "reason": f"continuation did not include expected evidence marker: {expected_evidence}",
+                    "result_preview": result_preview,
+                    "expected_evidence": expected_evidence,
+                },
+            )
+            return None, format_loop_stop_notice(
+                "expected_evidence_missing",
+                f"continuation did not include expected evidence marker: {expected_evidence}",
+            )
         state["last_result_preview"] = result_preview
         state["last_progress_summary"] = result_preview
         state["last_activity_at"] = self._loop_now_iso()
@@ -2237,6 +2386,7 @@ class GatewayRunner:
                 session_id,
                 goal,
                 final_response,
+                expected_evidence=expected_evidence,
             )
             if str(verifier.get("stop_reason") or "") != "invalid_progress_verifier_payload":
                 break
@@ -2335,7 +2485,13 @@ class GatewayRunner:
                 goal,
             )
             stop_reason = str(decision.get("stop_reason") or "")
-            if decision.get("action") == "continue" or stop_reason not in {"invalid_decision_payload", "missing_next_prompt"}:
+            if decision.get("action") in {"continue", "wait"} or stop_reason not in {
+                "invalid_decision_payload",
+                "missing_next_prompt",
+                "missing_expected_evidence",
+                "missing_wake_after",
+                "missing_reason",
+            }:
                 break
             if decision_retry_count >= decision_retry_budget:
                 record_background_review(
@@ -2377,7 +2533,88 @@ class GatewayRunner:
             )
         state["retry_count"] = 0
         decision = decision
-        if decision.get("action") != "continue":
+        decision_action = str(decision.get("action") or "")
+        if decision_action == "wait":
+            next_prompt = str(decision.get("next_prompt") or "").strip()
+            next_expected_evidence = str(decision.get("expected_evidence") or "").strip()
+            pending_wakeup_at = self._compute_pending_wakeup_at(str(decision.get("wake_after") or ""))
+            if not pending_wakeup_at:
+                record_background_review(
+                    session_id=session_id,
+                    goal=goal,
+                    progress_state="stop",
+                    stop_reason="missing_wake_after",
+                    result_preview=result_preview,
+                    source="bounded_loop_gateway",
+                    goal_id=_goal_id,
+                    run_id=_run_id,
+                )
+                self._clear_loop_state(
+                    session_key,
+                    stop_reason="missing_wake_after",
+                    event_type="loop_stopped",
+                    event_payload={
+                        "goal": goal,
+                        "reason": "controller chose wait without a bounded wake_after.",
+                        "result_preview": result_preview,
+                    },
+                )
+                return None, format_loop_stop_notice("missing_wake_after")
+            state["last_prompt"] = next_prompt
+            state["last_prompt_norm"] = _normalize_loop_prompt(next_prompt)
+            state["expected_evidence"] = next_expected_evidence
+            state["remaining_auto_turns"] = remaining_auto_turns - 1
+            state["state"] = "waiting"
+            state["resumable"] = True
+            state["stop_reason"] = ""
+            state["stop_class"] = ""
+            state["stop_message"] = ""
+            state["retry_count"] = 0
+            state["pending_wakeup_at"] = pending_wakeup_at
+            state["inflight_prompt"] = ""
+            state["inflight_started_at"] = ""
+            state["last_activity_at"] = self._loop_now_iso()
+            loop_states[session_key] = state
+            if not self._persist_loop_checkpoint(session_key, state):
+                return None, self._stop_loop_for_persistence_failure(
+                    session_key=session_key,
+                    stop_reason="loop_checkpoint_persist_failed",
+                    reason="failed to persist deferred loop follow-up; stopping conservatively.",
+                    event_payload={
+                        "goal": goal,
+                        "next_prompt": next_prompt,
+                        "result_preview": result_preview,
+                        "pending_wakeup_at": pending_wakeup_at,
+                    },
+                )
+            if not self._append_loop_event(
+                session_id,
+                "loop_followup_scheduled",
+                {
+                    "goal": goal,
+                    "goal_id": str(state.get("goal_id") or ""),
+                    "run_id": str(state.get("run_id") or ""),
+                    "next_prompt": next_prompt,
+                    "expected_evidence": next_expected_evidence,
+                    "remaining_auto_turns": state["remaining_auto_turns"],
+                    "result_preview": result_preview,
+                    "pending_wakeup_at": pending_wakeup_at,
+                    "deferred": True,
+                },
+            ):
+                return None, self._stop_loop_for_persistence_failure(
+                    session_key=session_key,
+                    stop_reason="loop_event_persist_failed",
+                    reason="failed to persist deferred loop event; stopping conservatively.",
+                    event_payload={
+                        "goal": goal,
+                        "next_prompt": next_prompt,
+                        "result_preview": result_preview,
+                        "pending_wakeup_at": pending_wakeup_at,
+                    },
+                )
+            return None, None
+        if decision_action != "continue":
             stop_reason = str(decision.get("stop_reason") or "model_stop")
             reason = str(decision.get("reason") or "")
             record_background_review(
@@ -2403,6 +2640,7 @@ class GatewayRunner:
             return None, format_loop_stop_notice(stop_reason, reason)
 
         next_prompt = (decision.get("next_prompt") or "").strip()
+        next_expected_evidence = str(decision.get("expected_evidence") or "").strip()
         if not next_prompt:
             record_background_review(
                 session_id=session_id,
@@ -2455,6 +2693,7 @@ class GatewayRunner:
 
         state["last_prompt"] = next_prompt
         state["last_prompt_norm"] = next_prompt_norm
+        state["expected_evidence"] = next_expected_evidence
         state["remaining_auto_turns"] = remaining_auto_turns - 1
         state["state"] = "waiting"
         state["resumable"] = True
@@ -2486,6 +2725,7 @@ class GatewayRunner:
                 "goal_id": str(state.get("goal_id") or ""),
                 "run_id": str(state.get("run_id") or ""),
                 "next_prompt": next_prompt,
+                "expected_evidence": next_expected_evidence,
                 "remaining_auto_turns": state["remaining_auto_turns"],
                 "result_preview": result_preview,
             },
@@ -2518,7 +2758,11 @@ class GatewayRunner:
         user_instruction: str,
     ) -> str | None:
         session_entry = self.session_store.get_or_create_session(source)
-        goal = user_instruction or (
+        try:
+            parsed_goal, loop_budgets = self._parse_loop_start_options(user_instruction)
+        except ValueError as exc:
+            return str(exc)
+        goal = parsed_goal or (
             "Continue autonomously from this chat until a real stop condition is reached. "
             "Choose the next best thin slice, implement it, verify it independently, and keep going by default."
         )
@@ -2530,18 +2774,25 @@ class GatewayRunner:
                 session_entry.session_id,
                 goal,
             )
-            if decision.get("action") == "continue":
+            if decision.get("action") in {"continue", "wait"}:
                 next_prompt = (decision.get("next_prompt") or "").strip()
                 if next_prompt:
+                    pending_wakeup_at = ""
+                    deferred = decision.get("action") == "wait"
+                    if deferred:
+                        pending_wakeup_at = self._compute_pending_wakeup_at(str(decision.get("wake_after") or "")) or ""
+                        if not pending_wakeup_at:
+                            return "Loop stopped: controller chose wait without a bounded wake_after (missing_wake_after)"
                     self._loop_states[session_key] = {
                         "session_id": session_entry.session_id,
                         "goal": goal,
                         "goal_id": _stable_goal_id(session_entry.session_id, goal),
                         "run_id": _new_run_id(),
-                        "remaining_auto_turns": 2,
+                        "remaining_auto_turns": loop_budgets["remaining_auto_turns"],
                         "last_prompt": next_prompt,
                         "last_prompt_norm": _normalize_loop_prompt(next_prompt),
                         "last_result_preview": "",
+                        "expected_evidence": str(decision.get("expected_evidence") or "").strip(),
                         "channel_prompt": getattr(event, "channel_prompt", None),
                         "active": True,
                         "state": "waiting",
@@ -2551,10 +2802,10 @@ class GatewayRunner:
                         "stop_message": "",
                         "last_progress_summary": "",
                         "retry_count": 0,
-                        "max_retry_budget": 2,
-                        "idle_timeout_seconds": 900,
+                        "max_retry_budget": loop_budgets["max_retry_budget"],
+                        "idle_timeout_seconds": loop_budgets["idle_timeout_seconds"],
                         "last_activity_at": self._loop_now_iso(),
-                        "pending_wakeup_at": "",
+                        "pending_wakeup_at": pending_wakeup_at,
                         "inflight_prompt": "",
                         "inflight_started_at": "",
                     }
@@ -2566,6 +2817,7 @@ class GatewayRunner:
                             event_payload={
                                 "goal": goal,
                                 "next_prompt": next_prompt,
+                                "pending_wakeup_at": pending_wakeup_at,
                             },
                         )
                         return "Loop stopped: failed to persist loop start (loop_checkpoint_persist_failed)"
@@ -2577,7 +2829,12 @@ class GatewayRunner:
                             "goal_id": self._loop_states[session_key]["goal_id"],
                             "run_id": self._loop_states[session_key]["run_id"],
                             "next_prompt": next_prompt,
-                            "remaining_auto_turns": 2,
+                            "expected_evidence": self._loop_states[session_key]["expected_evidence"],
+                            "remaining_auto_turns": loop_budgets["remaining_auto_turns"],
+                            "idle_timeout_seconds": loop_budgets["idle_timeout_seconds"],
+                            "max_retry_budget": loop_budgets["max_retry_budget"],
+                            "pending_wakeup_at": pending_wakeup_at,
+                            "deferred": deferred,
                         },
                     ):
                         self._stop_loop_for_persistence_failure(
@@ -2587,6 +2844,7 @@ class GatewayRunner:
                             event_payload={
                                 "goal": goal,
                                 "next_prompt": next_prompt,
+                                "pending_wakeup_at": pending_wakeup_at,
                             },
                         )
                         return "Loop stopped: failed to persist loop start event (loop_event_persist_failed)"
@@ -2595,9 +2853,11 @@ class GatewayRunner:
                             session_key=session_key,
                             stop_reason="loop_goal_artifact_persist_failed",
                             reason="failed to persist loop goal artifact; stopping conservatively.",
-                            event_payload={"goal": goal, "next_prompt": next_prompt},
+                            event_payload={"goal": goal, "next_prompt": next_prompt, "pending_wakeup_at": pending_wakeup_at},
                         )
                         return "Loop stopped: failed to persist loop goal artifact (loop_goal_artifact_persist_failed)"
+                    if deferred:
+                        return self._format_loop_wait_notice(pending_wakeup_at)
                     event.text = next_prompt
                     return None
                 self._clear_loop_state(session_key)

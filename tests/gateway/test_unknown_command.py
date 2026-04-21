@@ -105,6 +105,7 @@ def _seed_loop_state(tmp_path, runner, *, session_id="sess-1", session_key=None,
         "goal": goal,
         "goal_id": str(state.get("goal_id") or _stable_goal_id(session_id, goal)),
         "run_id": str(state.get("run_id") or "run-123"),
+        "expected_evidence": str(state.get("expected_evidence") or ""),
         "remaining_auto_turns": int(state.get("remaining_auto_turns", 0) or 0),
         "last_prompt": str(state.get("last_prompt") or ""),
         "last_prompt_norm": str(state.get("last_prompt_norm") or ""),
@@ -250,27 +251,157 @@ async def test_loop_built_in_command_routes_through_bounded_controller(monkeypat
             "action": "continue",
             "reason": "clear next slice",
             "next_prompt": "Implement the next thin slice and verify it.",
+            "expected_evidence": "tests/foo.py",
             "session_id": "sess-1",
         },
     ) as mock_decide:
-        result = await runner._handle_message(_make_event("/loop 請繼續完成後續任務"))
+        result = await runner._handle_message(
+            _make_event("/loop turns=5 timeout=30m retries=3 finish the refactor")
+        )
 
     assert result == "handled"
-    mock_decide.assert_called_once_with("sess-1", "請繼續完成後續任務")
-    assert runner._loop_states[build_session_key(_make_source())]["goal"] == "請繼續完成後續任務"
-    assert runner._loop_states[build_session_key(_make_source())]["remaining_auto_turns"] == 2
-    assert runner._loop_states[build_session_key(_make_source())]["goal_id"]
-    assert runner._loop_states[build_session_key(_make_source())]["run_id"]
+    mock_decide.assert_called_once_with("sess-1", "finish the refactor")
+    state = runner._loop_states[build_session_key(_make_source())]
+    assert state["goal"] == "finish the refactor"
+    assert state["remaining_auto_turns"] == 5
+    assert state["idle_timeout_seconds"] == 1800
+    assert state["max_retry_budget"] == 3
+    assert state["goal_id"]
+    assert state["run_id"]
+    assert state["expected_evidence"] == "tests/foo.py"
     checkpoint = _read_loop_checkpoint(tmp_path)
-    assert checkpoint["goal_id"] == runner._loop_states[build_session_key(_make_source())]["goal_id"]
-    assert checkpoint["run_id"] == runner._loop_states[build_session_key(_make_source())]["run_id"]
+    assert checkpoint["goal_id"] == state["goal_id"]
+    assert checkpoint["run_id"] == state["run_id"]
+    assert checkpoint["remaining_auto_turns"] == 5
+    assert checkpoint["idle_timeout_seconds"] == 1800
+    assert checkpoint["max_retry_budget"] == 3
+    assert checkpoint["expected_evidence"] == "tests/foo.py"
     events = _read_loop_events(tmp_path)
     assert events[-1]["event_type"] == "loop_started"
     assert events[-1]["goal_id"] == checkpoint["goal_id"]
     assert events[-1]["run_id"] == checkpoint["run_id"]
+    assert events[-1]["remaining_auto_turns"] == 5
+    assert events[-1]["idle_timeout_seconds"] == 1800
+    assert events[-1]["max_retry_budget"] == 3
+    assert events[-1]["expected_evidence"] == "tests/foo.py"
     runner._handle_message_with_agent.assert_awaited_once()
     forwarded_event = runner._handle_message_with_agent.await_args.args[0]
     assert forwarded_event.text == "Implement the next thin slice and verify it."
+
+
+@pytest.mark.asyncio
+async def test_loop_built_in_command_keeps_default_budgets_without_options(monkeypatch, tmp_path):
+    import gateway.run as gateway_run
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    runner._handle_message_with_agent = AsyncMock(return_value="handled")
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    with patch(
+        "hermes_cli.loop.decide_continuation_for_session",
+        return_value={
+            "action": "continue",
+            "reason": "clear next slice",
+            "next_prompt": "Implement the next thin slice and verify it.",
+            "expected_evidence": "tests/foo.py",
+            "session_id": "sess-1",
+        },
+    ) as mock_decide:
+        result = await runner._handle_message(_make_event("/loop finish the refactor"))
+
+    assert result == "handled"
+    mock_decide.assert_called_once_with("sess-1", "finish the refactor")
+    state = runner._loop_states[build_session_key(_make_source())]
+    assert state["remaining_auto_turns"] == 2
+    assert state["idle_timeout_seconds"] == 900
+    assert state["max_retry_budget"] == 2
+    checkpoint = _read_loop_checkpoint(tmp_path)
+    assert checkpoint["remaining_auto_turns"] == 2
+    assert checkpoint["idle_timeout_seconds"] == 900
+    assert checkpoint["max_retry_budget"] == 2
+    events = _read_loop_events(tmp_path)
+    assert events[-1]["event_type"] == "loop_started"
+    assert events[-1]["remaining_auto_turns"] == 2
+    assert events[-1]["idle_timeout_seconds"] == 900
+    assert events[-1]["max_retry_budget"] == 2
+    runner._handle_message_with_agent.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_loop_built_in_command_waits_for_deferred_start(monkeypatch, tmp_path):
+    import gateway.run as gateway_run
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    runner._handle_message_with_agent = AsyncMock(return_value="handled")
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    with patch(
+        "hermes_cli.loop.decide_continuation_for_session",
+        return_value={
+            "action": "wait",
+            "reason": "wait for retry window",
+            "next_prompt": "Resume the thin slice.",
+            "wake_after": "10s",
+            "expected_evidence": "tests/wait.py",
+            "session_id": "sess-1",
+        },
+    ):
+        result = await runner._handle_message(_make_event("/loop finish the refactor"))
+
+    assert "waiting until" in result.lower()
+    state = runner._loop_states[build_session_key(_make_source())]
+    assert state["state"] == "waiting"
+    assert state["last_prompt"] == "Resume the thin slice."
+    assert state["expected_evidence"] == "tests/wait.py"
+    assert state["pending_wakeup_at"]
+    checkpoint = _read_loop_checkpoint(tmp_path)
+    assert checkpoint["last_prompt"] == "Resume the thin slice."
+    assert checkpoint["expected_evidence"] == "tests/wait.py"
+    assert checkpoint["pending_wakeup_at"]
+    events = _read_loop_events(tmp_path)
+    assert events[-1]["event_type"] == "loop_started"
+    assert events[-1]["pending_wakeup_at"] == checkpoint["pending_wakeup_at"]
+    assert events[-1]["deferred"] is True
+    runner._handle_message_with_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command_text", "expected_error"),
+    [
+        ("/loop turns=0 finish the refactor", "Invalid /loop option turns=0"),
+        ("/loop timeout=abc finish the refactor", "Invalid /loop option timeout=abc"),
+    ],
+)
+async def test_loop_built_in_command_rejects_invalid_options(
+    monkeypatch, tmp_path, command_text, expected_error
+):
+    import gateway.run as gateway_run
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    runner._handle_message_with_agent = AsyncMock(return_value="handled")
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    with patch("hermes_cli.loop.decide_continuation_for_session") as mock_decide:
+        result = await runner._handle_message(_make_event(command_text))
+
+    assert expected_error in result
+    mock_decide.assert_not_called()
+    runner._handle_message_with_agent.assert_not_awaited()
+    assert runner._loop_states == {}
+    assert not (tmp_path / "state" / "loops" / "sess-1" / "checkpoint.json").exists()
 
 
 @pytest.mark.asyncio
@@ -341,6 +472,7 @@ async def test_maybe_schedule_loop_followup_returns_internal_event(monkeypatch, 
         runner,
         goal="Keep going",
         remaining_auto_turns=2,
+        expected_evidence="tests/foo.py",
         last_prompt_norm="initial prompt",
         last_result_preview="",
     )
@@ -351,11 +483,12 @@ async def test_maybe_schedule_loop_followup_returns_internal_event(monkeypatch, 
             "action": "continue",
             "reason": "clear next slice",
             "next_prompt": "Implement the next thin slice.",
+            "expected_evidence": "tests/bar.py",
         },
     ), patch(
         "hermes_cli.loop.verify_progress_for_session",
         return_value={"verdict": "progress", "reason": "real progress", "should_continue": True},
-    ):
+    ) as mock_verifier:
         event, stop_notice = await runner._maybe_schedule_loop_followup(
             session_key=session_key,
             session_id="sess-1",
@@ -368,12 +501,16 @@ async def test_maybe_schedule_loop_followup_returns_internal_event(monkeypatch, 
     assert event.internal is True
     assert event.text == "Implement the next thin slice."
     assert runner._loop_states[session_key]["remaining_auto_turns"] == 1
+    assert runner._loop_states[session_key]["expected_evidence"] == "tests/bar.py"
     assert runner._loop_states[session_key]["last_result_preview"] == "Implemented the next thin slice in tests/foo.py."
+    verifier_kwargs = mock_verifier.call_args.kwargs
+    assert verifier_kwargs["expected_evidence"] == "tests/foo.py"
     reviews = _read_background_reviews(tmp_path)
     assert reviews[-1]["progress_state"] == "meaningful_result"
     assert reviews[-1]["source"] == "bounded_loop_gateway"
     checkpoint = _read_loop_checkpoint(tmp_path)
     assert checkpoint["remaining_auto_turns"] == 1
+    assert checkpoint["expected_evidence"] == "tests/bar.py"
     assert checkpoint["last_result_preview"] == "Implemented the next thin slice in tests/foo.py."
     assert checkpoint["goal_id"] == runner._loop_states[session_key]["goal_id"]
     assert checkpoint["run_id"] == runner._loop_states[session_key]["run_id"]
@@ -381,6 +518,135 @@ async def test_maybe_schedule_loop_followup_returns_internal_event(monkeypatch, 
     assert events[-1]["event_type"] == "loop_followup_scheduled"
     assert events[-1]["goal_id"] == checkpoint["goal_id"]
     assert events[-1]["run_id"] == checkpoint["run_id"]
+    assert events[-1]["expected_evidence"] == "tests/bar.py"
+
+
+@pytest.mark.asyncio
+async def test_maybe_schedule_loop_followup_waits_without_immediate_event(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    session_key = _seed_loop_state(
+        tmp_path,
+        runner,
+        goal="Keep going",
+        remaining_auto_turns=2,
+        expected_evidence="tests/foo.py",
+        last_prompt_norm="initial prompt",
+        last_result_preview="",
+    )
+
+    with patch(
+        "hermes_cli.loop.decide_continuation_for_session",
+        return_value={
+            "action": "wait",
+            "reason": "wait for external change",
+            "next_prompt": "Resume the next thin slice.",
+            "wake_after": "5m",
+            "expected_evidence": "tests/deferred.py",
+        },
+    ), patch(
+        "hermes_cli.loop.verify_progress_for_session",
+        return_value={"verdict": "progress", "reason": "real progress", "should_continue": True},
+    ):
+        event, stop_notice = await runner._maybe_schedule_loop_followup(
+            session_key=session_key,
+            session_id="sess-1",
+            source=_make_source(),
+            final_response="Implemented the next thin slice in tests/foo.py.",
+        )
+
+    assert event is None
+    assert stop_notice is None
+    state = runner._loop_states[session_key]
+    assert state["state"] == "waiting"
+    assert state["last_prompt"] == "Resume the next thin slice."
+    assert state["expected_evidence"] == "tests/deferred.py"
+    assert state["pending_wakeup_at"]
+    checkpoint = _read_loop_checkpoint(tmp_path)
+    assert checkpoint["pending_wakeup_at"] == state["pending_wakeup_at"]
+    assert checkpoint["expected_evidence"] == "tests/deferred.py"
+    events = _read_loop_events(tmp_path)
+    assert events[-1]["event_type"] == "loop_followup_scheduled"
+    assert events[-1]["pending_wakeup_at"] == state["pending_wakeup_at"]
+    assert events[-1]["deferred"] is True
+
+
+@pytest.mark.asyncio
+async def test_maybe_schedule_loop_followup_stops_when_expected_evidence_missing(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    session_key = _seed_loop_state(
+        tmp_path,
+        runner,
+        goal="Keep going",
+        remaining_auto_turns=2,
+        expected_evidence="tests/foo.py",
+        last_prompt_norm="different prompt",
+        last_result_preview="Older result tests/bar.py",
+    )
+
+    with patch(
+        "hermes_cli.loop.verify_progress_for_session",
+        return_value={"verdict": "progress", "reason": "real progress", "should_continue": True},
+    ) as mock_verifier, patch(
+        "hermes_cli.loop.decide_continuation_for_session",
+        return_value={"action": "continue", "reason": "more to do", "next_prompt": "Keep going.", "expected_evidence": "tests/next.py"},
+    ) as mock_decide:
+        event, stop_notice = await runner._maybe_schedule_loop_followup(
+            session_key=session_key,
+            session_id="sess-1",
+            source=_make_source(),
+            final_response="Implemented a fresh result in tests/bar.py.",
+        )
+
+    assert event is None
+    assert "expected evidence" in stop_notice.lower()
+    assert session_key not in runner._loop_states
+    mock_verifier.assert_not_called()
+    mock_decide.assert_not_called()
+    reviews = _read_background_reviews(tmp_path)
+    assert reviews[-1]["progress_state"] == "expected_evidence_missing"
+    assert reviews[-1]["stop_reason"] == "expected_evidence_missing"
+
+
+@pytest.mark.asyncio
+async def test_maybe_schedule_loop_followup_continues_when_expected_evidence_observed(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    session_key = _seed_loop_state(
+        tmp_path,
+        runner,
+        goal="Keep going",
+        remaining_auto_turns=2,
+        expected_evidence="tests/foo.py",
+        last_prompt_norm="initial prompt",
+        last_result_preview="",
+    )
+
+    with patch(
+        "hermes_cli.loop.decide_continuation_for_session",
+        return_value={
+            "action": "continue",
+            "reason": "clear next slice",
+            "next_prompt": "Implement the next thin slice.",
+            "expected_evidence": "tests/bar.py",
+        },
+    ) as mock_decide, patch(
+        "hermes_cli.loop.verify_progress_for_session",
+        return_value={"verdict": "progress", "reason": "real progress", "should_continue": True},
+    ) as mock_verifier:
+        event, stop_notice = await runner._maybe_schedule_loop_followup(
+            session_key=session_key,
+            session_id="sess-1",
+            source=_make_source(),
+            final_response="Implemented the next thin slice in tests/foo.py.",
+        )
+
+    assert event is not None
+    assert stop_notice is None
+    mock_verifier.assert_called_once()
+    mock_decide.assert_called_once()
+    assert mock_verifier.call_args.kwargs["expected_evidence"] == "tests/foo.py"
 
 
 @pytest.mark.asyncio
@@ -402,6 +668,7 @@ async def test_maybe_schedule_loop_followup_stops_on_repeated_prompt(monkeypatch
             "action": "continue",
             "reason": "clear next slice",
             "next_prompt": "Implement the next thin slice.",
+            "expected_evidence": "tests/foo.py",
         },
     ), patch(
         "hermes_cli.loop.verify_progress_for_session",
@@ -441,6 +708,7 @@ async def test_maybe_schedule_loop_followup_stops_on_duplicate_result_preview(mo
             "action": "continue",
             "reason": "clear next slice",
             "next_prompt": "Do the next thing.",
+            "expected_evidence": "tests/foo.py",
         },
     ), patch(
         "hermes_cli.loop.verify_progress_for_session",
@@ -547,7 +815,7 @@ async def test_maybe_schedule_loop_followup_stops_on_missing_observable_evidence
         return_value={"verdict": "progress", "reason": "looks fine", "should_continue": True},
     ) as mock_verifier, patch(
         "hermes_cli.loop.decide_continuation_for_session",
-        return_value={"action": "continue", "reason": "more to do", "next_prompt": "Keep going."},
+        return_value={"action": "continue", "reason": "more to do", "next_prompt": "Keep going.", "expected_evidence": "tests/foo.py"},
     ) as mock_decide:
         event, stop_notice = await runner._maybe_schedule_loop_followup(
             session_key=session_key,
@@ -651,6 +919,7 @@ async def test_direct_continuation_skill_routes_through_bounded_controller(monke
             "action": "continue",
             "reason": "clear next slice",
             "next_prompt": "Implement the next thin slice and verify it.",
+            "expected_evidence": "tests/foo.py",
             "session_id": "sess-1",
         },
     ) as mock_decide:
@@ -682,6 +951,7 @@ async def test_bare_loop_invocation_routes_through_bounded_controller(monkeypatc
             "action": "continue",
             "reason": "clear next slice",
             "next_prompt": "Implement the next thin slice and verify it.",
+            "expected_evidence": "tests/foo.py",
             "session_id": "sess-1",
         },
     ) as mock_decide:
@@ -724,6 +994,7 @@ async def test_bare_continuation_skill_invocation_routes_through_bounded_control
             "action": "continue",
             "reason": "clear next slice",
             "next_prompt": "Implement the next thin slice and verify it.",
+            "expected_evidence": "tests/foo.py",
             "session_id": "sess-1",
         },
     ) as mock_decide:
@@ -761,6 +1032,7 @@ async def test_loop_start_writes_goal_artifact(monkeypatch, tmp_path):
             "action": "continue",
             "reason": "clear next slice",
             "next_prompt": "Implement the next thin slice and verify it.",
+            "expected_evidence": "tests/foo.py",
             "session_id": "sess-1",
         },
     ):

@@ -86,10 +86,64 @@ class _ContinueAgent:
                         "action": "continue",
                         "reason": "clear next slice",
                         "next_prompt": "Implement the next thin slice.",
+                        "expected_evidence": "tests/foo.py",
                     }
                 )
             }
         return {"final_response": "Implemented the next thin slice. See tests/foo.py."}
+
+
+class _ExpectedEvidenceAgent:
+    instances = []
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self.calls = []
+        _ExpectedEvidenceAgent.instances.append(self)
+
+    def run_conversation(self, user_message, conversation_history=None, task_id=None):
+        self.calls.append({
+            "user_message": user_message,
+            "conversation_history": conversation_history,
+            "task_id": task_id,
+        })
+        return {
+            "final_response": json.dumps(
+                {
+                    "action": "continue",
+                    "reason": "clear next slice",
+                    "next_prompt": "Implement the next thin slice.",
+                    "expected_evidence": "tests/foo.py",
+                }
+            )
+        }
+
+
+class _WaitAgent:
+    instances = []
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self.calls = []
+        _WaitAgent.instances.append(self)
+
+    def run_conversation(self, user_message, conversation_history=None, task_id=None):
+        self.calls.append({
+            "user_message": user_message,
+            "conversation_history": conversation_history,
+            "task_id": task_id,
+        })
+        return {
+            "final_response": json.dumps(
+                {
+                    "action": "wait",
+                    "reason": "wait for a bounded retry window",
+                    "next_prompt": "Resume once the wake window opens.",
+                    "wake_after": "5m",
+                    "expected_evidence": "tests/bar.py",
+                }
+            )
+        }
 
 
 def _make_args(**overrides):
@@ -202,6 +256,150 @@ def test_verify_progress_for_session_returns_scoped_verdict(monkeypatch, tmp_pat
     assert "Latest response" in verifier_prompt
 
 
+def test_decide_continuation_for_session_continue_without_expected_evidence_fails_closed(monkeypatch, tmp_path):
+    class _MissingExpectedEvidenceAgent(_DecisionAgent):
+        instances = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.calls = []
+            _MissingExpectedEvidenceAgent.instances.append(self)
+
+        def run_conversation(self, user_message, conversation_history=None, task_id=None):
+            self.calls.append({"user_message": user_message})
+            return {
+                "final_response": json.dumps(
+                    {
+                        "action": "continue",
+                        "reason": "clear next slice",
+                        "next_prompt": "Implement the next thin slice.",
+                    }
+                )
+            }
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.loop.SessionDB", _FakeSessionDB)
+    monkeypatch.setattr("hermes_cli.loop.AIAgent", _MissingExpectedEvidenceAgent)
+
+    result = decide_continuation_for_session("sess-1", "Keep going")
+
+    assert result["action"] == "stop"
+    assert result["stop_reason"] == "missing_expected_evidence"
+    assert "expected evidence" in result["reason"].lower()
+
+
+def test_decide_continuation_for_session_preserves_expected_evidence(monkeypatch, tmp_path):
+    _ExpectedEvidenceAgent.instances = []
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.loop.SessionDB", _FakeSessionDB)
+    monkeypatch.setattr("hermes_cli.loop.AIAgent", _ExpectedEvidenceAgent)
+
+    result = decide_continuation_for_session("sess-1", "Keep going")
+
+    assert result["action"] == "continue"
+    assert result["expected_evidence"] == "tests/foo.py"
+
+
+def test_decide_continuation_for_session_wait_without_wake_after_fails_closed(monkeypatch, tmp_path):
+    class _MissingWakeAfterAgent(_DecisionAgent):
+        instances = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.calls = []
+            _MissingWakeAfterAgent.instances.append(self)
+
+        def run_conversation(self, user_message, conversation_history=None, task_id=None):
+            self.calls.append({"user_message": user_message})
+            return {
+                "final_response": json.dumps(
+                    {
+                        "action": "wait",
+                        "reason": "wait for external signal",
+                        "next_prompt": "Resume after wake.",
+                        "expected_evidence": "tests/foo.py",
+                    }
+                )
+            }
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.loop.SessionDB", _FakeSessionDB)
+    monkeypatch.setattr("hermes_cli.loop.AIAgent", _MissingWakeAfterAgent)
+
+    result = decide_continuation_for_session("sess-1", "Keep going")
+
+    assert result["action"] == "stop"
+    assert result["stop_reason"] == "missing_wake_after"
+    assert "wake_after" in result["reason"]
+
+
+
+def test_decide_continuation_for_session_wait_preserves_deferred_fields(monkeypatch, tmp_path):
+    class _WaitAgent(_DecisionAgent):
+        instances = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.calls = []
+            _WaitAgent.instances.append(self)
+
+        def run_conversation(self, user_message, conversation_history=None, task_id=None):
+            self.calls.append({"user_message": user_message})
+            return {
+                "final_response": json.dumps(
+                    {
+                        "action": "wait",
+                        "reason": "wait for a bounded retry window",
+                        "next_prompt": "Resume once the wake window opens.",
+                        "wake_after": "5m",
+                        "expected_evidence": "tests/bar.py",
+                    }
+                )
+            }
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.loop.SessionDB", _FakeSessionDB)
+    monkeypatch.setattr("hermes_cli.loop.AIAgent", _WaitAgent)
+
+    result = decide_continuation_for_session("sess-1", "Keep going")
+
+    assert result["action"] == "wait"
+    assert result["wake_after"] == "5m"
+    assert result["next_prompt"] == "Resume once the wake window opens."
+    assert result["expected_evidence"] == "tests/bar.py"
+
+
+
+def test_verify_progress_for_session_prompt_includes_expected_evidence(monkeypatch, tmp_path):
+    class _VerifierAgent(_DecisionAgent):
+        instances = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.calls = []
+            _VerifierAgent.instances.append(self)
+
+        def run_conversation(self, user_message, conversation_history=None, task_id=None):
+            self.calls.append({"user_message": user_message})
+            return {"final_response": json.dumps({"verdict": "progress", "reason": "real progress", "should_continue": True})}
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.loop.SessionDB", _FakeSessionDB)
+    monkeypatch.setattr("hermes_cli.loop.AIAgent", _VerifierAgent)
+
+    result = verify_progress_for_session(
+        "sess-1",
+        "Keep going",
+        "Latest response with tests/foo.py",
+        expected_evidence="tests/foo.py",
+    )
+
+    assert result["verdict"] == "progress"
+    verifier_prompt = _VerifierAgent.instances[0].calls[0]["user_message"]
+    assert "expected_evidence" in verifier_prompt
+    assert "tests/foo.py" in verifier_prompt
+
+
 def test_verify_progress_for_session_invalid_payload_fails_closed(monkeypatch, tmp_path):
     class _BadVerifierAgent(_DecisionAgent):
         instances = []
@@ -296,6 +494,33 @@ def test_decide_continuation_for_session_handles_missing_session(monkeypatch, tm
     assert "missing-session" in result["reason"]
 
 
+def test_loop_command_wait_returns_structured_waiting_result(monkeypatch, capsys, tmp_path):
+    _WaitAgent.instances = []
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.loop.SessionDB", _FakeSessionDB)
+    monkeypatch.setattr("hermes_cli.loop.AIAgent", _WaitAgent)
+
+    result = loop_command(_make_args())
+
+    out = capsys.readouterr().out
+    summary = _last_json_line(out)
+    assert "Decision: wait" in out
+    assert "Wake after: 5m" in out
+    assert "Resume once the wake window opens." in out
+    assert len(_WaitAgent.instances) == 1
+    assert result["outcome"] == "waiting"
+    assert result["stop_reason"] == "wait_requested"
+    assert result["wake_after"] == "5m"
+    assert result["next_prompt"] == "Resume once the wake window opens."
+    assert result["expected_evidence"] == "tests/bar.py"
+    assert result["executed"] is False
+    assert summary["outcome"] == "waiting"
+    assert summary["wake_after"] == "5m"
+    reviews = _read_background_reviews(tmp_path)
+    assert reviews[-1]["progress_state"] == "wait"
+    assert reviews[-1]["stop_reason"] == "wait_requested"
+
+
 def test_loop_command_dry_run_skips_execution(monkeypatch, capsys, tmp_path):
     _ContinueAgent.instances = []
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -330,7 +555,7 @@ def test_loop_command_honors_max_cycles(monkeypatch, capsys, tmp_path):
                 "task_id": task_id,
             })
             if len(_MultiCycleAgent.instances) == 1:
-                return {"final_response": json.dumps({"action": "continue", "reason": "step 1", "next_prompt": "Do step 1"})}
+                return {"final_response": json.dumps({"action": "continue", "reason": "step 1", "next_prompt": "Do step 1", "expected_evidence": "tests/foo.py"})}
             if len(_MultiCycleAgent.instances) == 2:
                 return {"final_response": "Did step 1 (tests/foo.py)"}
             return {"final_response": json.dumps({"action": "stop", "reason": "done"})}
@@ -370,7 +595,7 @@ def test_loop_command_stops_on_empty_continuation_result(monkeypatch, capsys, tm
                 "task_id": task_id,
             })
             if len(_EmptyResultAgent.instances) == 1:
-                return {"final_response": json.dumps({"action": "continue", "reason": "step 1", "next_prompt": "Do step 1"})}
+                return {"final_response": json.dumps({"action": "continue", "reason": "step 1", "next_prompt": "Do step 1", "expected_evidence": "tests/foo.py"})}
             return {"final_response": "   "}
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -406,11 +631,11 @@ def test_loop_command_stops_on_duplicate_result_preview(monkeypatch, capsys, tmp
                 "task_id": task_id,
             })
             if len(_DuplicateResultAgent.instances) == 1:
-                return {"final_response": json.dumps({"action": "continue", "reason": "step 1", "next_prompt": "Do step 1"})}
+                return {"final_response": json.dumps({"action": "continue", "reason": "step 1", "next_prompt": "Do step 1", "expected_evidence": "tests/foo.py"})}
             if len(_DuplicateResultAgent.instances) == 2:
                 return {"final_response": "Repeated summary tests/foo.py"}
             if len(_DuplicateResultAgent.instances) == 3:
-                return {"final_response": json.dumps({"action": "continue", "reason": "step 2", "next_prompt": "Do step 2"})}
+                return {"final_response": json.dumps({"action": "continue", "reason": "step 2", "next_prompt": "Do step 2", "expected_evidence": "tests/foo.py"})}
             return {"final_response": "Repeated summary tests/foo.py"}
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -446,7 +671,7 @@ def test_loop_command_stops_on_missing_observable_evidence(monkeypatch, capsys, 
                 "task_id": task_id,
             })
             if len(_SelfReportOnlyAgent.instances) == 1:
-                return {"final_response": json.dumps({"action": "continue", "reason": "step 1", "next_prompt": "Do step 1"})}
+                return {"final_response": json.dumps({"action": "continue", "reason": "step 1", "next_prompt": "Do step 1", "expected_evidence": "tests/foo.py"})}
             return {"final_response": "Great, I implemented and verified the change. Done."}
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -482,10 +707,10 @@ def test_loop_command_stops_on_repeated_next_prompt(monkeypatch, capsys, tmp_pat
                 "task_id": task_id,
             })
             if len(_RepeatPromptAgent.instances) == 1:
-                return {"final_response": json.dumps({"action": "continue", "reason": "step 1", "next_prompt": "Do step 1"})}
+                return {"final_response": json.dumps({"action": "continue", "reason": "step 1", "next_prompt": "Do step 1", "expected_evidence": "tests/foo.py"})}
             if len(_RepeatPromptAgent.instances) == 2:
                 return {"final_response": "Did step 1 tests/foo.py"}
-            return {"final_response": json.dumps({"action": "continue", "reason": "still thinks step 1", "next_prompt": "  do   STEP 1  "})}
+            return {"final_response": json.dumps({"action": "continue", "reason": "still thinks step 1", "next_prompt": "  do   STEP 1  ", "expected_evidence": "tests/foo.py"})}
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr("hermes_cli.loop.SessionDB", _FakeSessionDB)
@@ -587,6 +812,39 @@ def test_loop_run_command_repeats_until_terminal_stop(monkeypatch, capsys):
     assert result["runs_completed"] == 1
     assert result["last_result"]["outcome"] == "stopped"
     assert summary["runs_attempted"] == 2
+
+
+def test_loop_run_command_stops_on_waiting_outcome(monkeypatch, capsys):
+    calls = []
+
+    def _fake_loop_once(args):
+        calls.append(args.max_cycles)
+        return {
+            "session_id": "sess-1",
+            "goal": "g",
+            "outcome": "waiting",
+            "stop_reason": "wait_requested",
+            "wake_after": "5m",
+            "next_prompt": "Resume once the wake window opens.",
+            "expected_evidence": "tests/bar.py",
+            "exit_code": 0,
+        }
+
+    monkeypatch.setattr("hermes_cli.loop.loop_command", _fake_loop_once)
+
+    result = loop_run_command(_make_args(loop_command="run", max_runs=4))
+
+    out = capsys.readouterr().out
+    summary = _last_json_line(out)
+    assert calls == [1]
+    assert "Run 1/4" in out
+    assert "Run 2/4" not in out
+    assert result["outcome"] == "waiting"
+    assert result["stop_reason"] == "wait_requested"
+    assert result["runs_attempted"] == 1
+    assert result["runs_completed"] == 0
+    assert result["last_result"]["wake_after"] == "5m"
+    assert summary["outcome"] == "waiting"
 
 
 def test_loop_run_command_stops_after_max_runs(monkeypatch, capsys):
@@ -740,6 +998,87 @@ def test_loop_status_command_shows_checkpoint_and_recent_events(monkeypatch, cap
     assert summary["checkpoint"]["remaining_auto_turns"] == 2
 
 
+def test_loop_status_command_summary_includes_expected_evidence_and_pending_wakeup_at(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    store = LoopStore()
+    store.write_checkpoint(
+        session_id="sess-waiting",
+        session_key="telegram:u1:c1",
+        payload={
+            "goal": "Wait for CI to complete",
+            "active": True,
+            "state": "waiting",
+            "expected_evidence": "tests/hermes_cli/test_loop.py",
+            "pending_wakeup_at": "2026-04-22T04:30:00+00:00",
+        },
+    )
+
+    result = loop_status_command(Namespace(session_id="sess-waiting"))
+
+    out = capsys.readouterr().out
+    summary = _last_json_line(out)
+    assert "- expected_evidence: tests/hermes_cli/test_loop.py" in out
+    assert "- pending_wakeup_at: 2026-04-22T04:30:00+00:00" in out
+    assert result["checkpoint"]["expected_evidence"] == "tests/hermes_cli/test_loop.py"
+    assert summary["checkpoint"]["pending_wakeup_at"] == "2026-04-22T04:30:00+00:00"
+
+
+def test_loop_list_command_shows_waiting_details(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    store = LoopStore()
+    store.write_checkpoint(
+        session_id="sess-waiting",
+        session_key="telegram:u1:c1",
+        payload={
+            "goal": "Wait for CI to complete",
+            "active": True,
+            "state": "waiting",
+            "expected_evidence": "tests/hermes_cli/test_loop.py",
+            "pending_wakeup_at": "2026-04-22T04:30:00+00:00",
+        },
+    )
+
+    result = loop_list_command(Namespace(all=False))
+
+    out = capsys.readouterr().out
+    summary = _last_json_line(out)
+    assert "expected_evidence=tests/hermes_cli/test_loop.py" in out
+    assert "wakeup_at=2026-04-22T04:30:00+00:00" in out
+    assert result["events"][0]["expected_evidence"] == "tests/hermes_cli/test_loop.py"
+    assert summary["events"][0]["pending_wakeup_at"] == "2026-04-22T04:30:00+00:00"
+
+
+def test_loop_status_command_event_rendering_shows_deferred_details(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    store = LoopStore()
+    store.write_checkpoint(
+        session_id="sess-deferred",
+        session_key="telegram:u1:c1",
+        payload={"goal": "Wait for external signal", "active": True, "state": "waiting"},
+    )
+    store.append_event(
+        session_id="sess-deferred",
+        event_type="loop_followup_scheduled",
+        payload={
+            "goal": "Wait for external signal",
+            "next_prompt": "Resume after CI posts the final build artifact and rerun the narrow CLI verification slice.",
+            "expected_evidence": "tests/hermes_cli/test_loop.py",
+            "pending_wakeup_at": "2026-04-22T04:45:00+00:00",
+            "deferred": True,
+        },
+    )
+
+    result = loop_status_command(Namespace(session_id="sess-deferred"))
+
+    out = capsys.readouterr().out
+    assert "loop_followup_scheduled" in out
+    assert "next_prompt=Resume after CI posts the final build artifact and rerun the narrow CLI verification slice." in out
+    assert "expected_evidence=tests/hermes_cli/test_loop.py" in out
+    assert "pending_wakeup_at=2026-04-22T04:45:00+00:00" in out
+    assert "deferred=True" in out
+    assert result["events"][0]["deferred"] is True
+
+
 def test_loop_status_command_missing_session_returns_nonzero(monkeypatch, capsys, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
@@ -801,7 +1140,7 @@ def test_loop_pause_resume_stop_commands_mutate_checkpoint(monkeypatch, capsys, 
     assert resumed["exit_code"] == 0
     assert resumed_checkpoint["state"] == "waiting"
     assert resumed_checkpoint["active"] is True
-    assert resumed_checkpoint["pending_wakeup_at"]
+    assert resumed_checkpoint["pending_wakeup_at"] == ""
 
     stopped = loop_stop_command(Namespace(session_id="sess-active"))
     stopped_checkpoint = LoopStore().read_checkpoint("sess-active")
@@ -809,6 +1148,66 @@ def test_loop_pause_resume_stop_commands_mutate_checkpoint(monkeypatch, capsys, 
     assert stopped_checkpoint["state"] == "stopped"
     assert stopped_checkpoint["stop_reason"] == "operator_stop"
     assert stopped_checkpoint["resumable"] is False
+
+
+def test_loop_resume_command_uses_runtime_and_ticks_cli_only_when_due(monkeypatch, capsys):
+    seen_runtime_sessions = []
+    loop_calls = []
+
+    class _FakeRuntime:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def resume(self, session_id):
+            seen_runtime_sessions.append(session_id)
+            return {
+                "ok": True,
+                "checkpoint": {
+                    "session_id": session_id,
+                    "session_key": "cli:sess-active",
+                    "goal": "Keep going",
+                    "state": "waiting",
+                    "pending_wakeup_at": "",
+                },
+                "should_tick_now": True,
+            }
+
+    def _fake_loop_command(args):
+        loop_calls.append(args)
+        return {"exit_code": 0, "outcome": "continued"}
+
+    monkeypatch.setattr("hermes_cli.loop.LoopRuntime", _FakeRuntime)
+    monkeypatch.setattr("hermes_cli.loop.loop_command", _fake_loop_command)
+
+    result = loop_resume_command(Namespace(session_id="sess-active"))
+
+    assert result["exit_code"] == 0
+    assert seen_runtime_sessions == ["sess-active"]
+    assert len(loop_calls) == 1
+    assert loop_calls[0].resume == "sess-active"
+
+    class _FutureWakeRuntime(_FakeRuntime):
+        def resume(self, session_id):
+            seen_runtime_sessions.append(f"future:{session_id}")
+            return {
+                "ok": True,
+                "checkpoint": {
+                    "session_id": session_id,
+                    "session_key": "cli:sess-active",
+                    "goal": "Keep going",
+                    "state": "waiting",
+                    "pending_wakeup_at": "2026-04-22T04:30:00+00:00",
+                },
+                "should_tick_now": False,
+            }
+
+    monkeypatch.setattr("hermes_cli.loop.LoopRuntime", _FutureWakeRuntime)
+
+    deferred = loop_resume_command(Namespace(session_id="sess-active"))
+
+    assert deferred["exit_code"] == 0
+    assert seen_runtime_sessions[-1] == "future:sess-active"
+    assert len(loop_calls) == 1
 
 
 def test_cmd_loop_pause_resume_stop_wrap_exit_codes(monkeypatch):

@@ -1,5 +1,6 @@
 import asyncio
 import json
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -63,6 +64,7 @@ async def test_hydrate_loop_states_from_store_recovers_only_active_well_formed_c
             "goal": "Keep going",
             "goal_id": "goal-active",
             "run_id": "run-active",
+            "expected_evidence": "tests/foo.py",
             "remaining_auto_turns": 2,
             "last_prompt": "Implement the next thin slice.",
             "last_prompt_norm": "implement the next thin slice.",
@@ -122,6 +124,7 @@ async def test_hydrate_loop_states_from_store_recovers_only_active_well_formed_c
         "inflight_started_at": "",
         "goal_id": "goal-active",
         "run_id": "run-active",
+        "expected_evidence": "tests/foo.py",
     }
 
 
@@ -144,6 +147,7 @@ async def test_recovered_loop_state_can_drive_followup_logic(monkeypatch, tmp_pa
             "last_prompt": "Implement the next thin slice.",
             "last_prompt_norm": "different prompt",
             "last_result_preview": "previous result",
+            "expected_evidence": "tests/gateway/test_loop_recovery.py",
             "channel_prompt": None,
             "active": True,
         },
@@ -165,6 +169,7 @@ async def test_recovered_loop_state_can_drive_followup_logic(monkeypatch, tmp_pa
             "action": "continue",
             "reason": "clear next slice",
             "next_prompt": "Implement the next thin slice.",
+            "expected_evidence": "tests/gateway/test_loop_recovery.py",
         },
     ), patch(
         "hermes_cli.loop.verify_progress_for_session",
@@ -273,6 +278,20 @@ async def test_resume_recovered_loops_replays_persisted_prompt(monkeypatch, tmp_
     runner = _make_runner()
     source = _make_source()
     session_key = build_session_key(source)
+    store = LoopStore()
+    store.write_checkpoint(
+        session_id="sess-active",
+        session_key=session_key,
+        payload={
+            "goal": "Keep going",
+            "remaining_auto_turns": 1,
+            "last_prompt": "Implement the next thin slice.",
+            "last_prompt_norm": "implement the next thin slice.",
+            "last_result_preview": "",
+            "channel_prompt": "channel prompt",
+            "active": True,
+        },
+    )
     runner._loop_states[session_key] = {
         "session_id": "sess-active",
         "goal": "Keep going",
@@ -306,6 +325,217 @@ async def test_resume_recovered_loops_replays_persisted_prompt(monkeypatch, tmp_
     assert seen[0].internal is True
     assert seen[0].text == "Implement the next thin slice."
     assert seen[0].channel_prompt == "channel prompt"
+
+
+@pytest.mark.asyncio
+async def test_resume_recovered_loops_skips_future_wakeup(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    source = _make_source()
+    session_key = build_session_key(source)
+    future_wakeup = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+    runner._loop_states[session_key] = {
+        "session_id": "sess-active",
+        "goal": "Keep going",
+        "remaining_auto_turns": 1,
+        "last_prompt": "Implement the next thin slice.",
+        "last_prompt_norm": "implement the next thin slice.",
+        "last_result_preview": "",
+        "pending_wakeup_at": future_wakeup,
+        "channel_prompt": "channel prompt",
+        "active": True,
+    }
+    runner.session_store = SimpleNamespace(
+        _ensure_loaded=lambda: None,
+        _entries={session_key: SimpleNamespace(origin=source)},
+    )
+    runner._handle_message = AsyncMock()
+
+    class _FakeRuntime:
+        def resume(self, session_id, **kwargs):
+            return {
+                "ok": True,
+                "should_tick_now": False,
+                "checkpoint": {
+                    **runner._loop_states[session_key],
+                    "session_id": session_id,
+                    "session_key": session_key,
+                    "pending_wakeup_at": future_wakeup,
+                    "last_activity_at": "runtime-future",
+                },
+            }
+
+    with patch("gateway.run.LoopRuntime", return_value=_FakeRuntime()):
+        resumed = runner._resume_recovered_loops()
+
+    assert resumed == 0
+    runner._handle_message.assert_not_awaited()
+    assert runner._loop_states[session_key]["pending_wakeup_at"] == future_wakeup
+
+
+@pytest.mark.asyncio
+async def test_resume_recovered_loops_replays_due_wakeup_via_runtime_resume(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    source = _make_source()
+    session_key = build_session_key(source)
+    due_wakeup = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+    runner._loop_states[session_key] = {
+        "session_id": "sess-active",
+        "goal": "Keep going",
+        "remaining_auto_turns": 1,
+        "last_prompt": "Implement the next thin slice.",
+        "last_prompt_norm": "implement the next thin slice.",
+        "last_result_preview": "",
+        "pending_wakeup_at": due_wakeup,
+        "channel_prompt": "channel prompt",
+        "active": True,
+    }
+    runner.session_store = SimpleNamespace(
+        _ensure_loaded=lambda: None,
+        _entries={session_key: SimpleNamespace(origin=source)},
+    )
+
+    seen = []
+    handled = asyncio.Event()
+    runtime_calls = []
+
+    async def _fake_handle_message(event):
+        seen.append(event)
+        handled.set()
+        return None
+
+    runner._handle_message = _fake_handle_message
+
+    class _FakeRuntime:
+        def resume(self, session_id, **kwargs):
+            runtime_calls.append((session_id, kwargs))
+            return {
+                "ok": True,
+                "should_tick_now": True,
+                "checkpoint": {
+                    **runner._loop_states[session_key],
+                    "session_id": session_id,
+                    "session_key": session_key,
+                    "pending_wakeup_at": "",
+                    "last_activity_at": "runtime-updated",
+                },
+            }
+
+    with patch("gateway.run.LoopRuntime", return_value=_FakeRuntime()):
+        resumed = runner._resume_recovered_loops()
+    await asyncio.wait_for(handled.wait(), timeout=1)
+
+    assert resumed == 1
+    assert runtime_calls == [
+        (
+            "sess-active",
+            {
+                "message": "Loop resumed by due wake recovery.",
+                "metadata": {"resume_reason": "due_wake_recovery", "resume_source": "gateway_watcher"},
+            },
+        )
+    ]
+    assert len(seen) == 1
+    assert seen[0].text == "Implement the next thin slice."
+    assert runner._loop_states[session_key]["pending_wakeup_at"] == ""
+    assert runner._loop_states[session_key]["last_activity_at"] == "runtime-updated"
+
+
+@pytest.mark.asyncio
+async def test_queue_due_loop_event_uses_runtime_checkpoint_for_enqueued_message(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    source = _make_source()
+    session_key = build_session_key(source)
+    due_wakeup = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+    runner._loop_states[session_key] = {
+        "session_id": "sess-active",
+        "goal": "Keep going",
+        "remaining_auto_turns": 1,
+        "last_prompt": "stale prompt",
+        "last_prompt_norm": "stale prompt",
+        "last_result_preview": "",
+        "pending_wakeup_at": due_wakeup,
+        "channel_prompt": "stale channel prompt",
+        "active": True,
+    }
+    runner.session_store = SimpleNamespace(
+        _ensure_loaded=lambda: None,
+        _entries={session_key: SimpleNamespace(origin=source)},
+    )
+
+    seen = []
+    handled = asyncio.Event()
+
+    async def _fake_handle_message(event):
+        seen.append(event)
+        handled.set()
+        return None
+
+    runner._handle_message = _fake_handle_message
+
+    class _FakeRuntime:
+        def resume(self, session_id, **kwargs):
+            return {
+                "ok": True,
+                "should_tick_now": True,
+                "checkpoint": {
+                    **runner._loop_states[session_key],
+                    "session_id": session_id,
+                    "session_key": session_key,
+                    "pending_wakeup_at": "",
+                    "last_prompt": "Prompt from runtime checkpoint",
+                    "last_prompt_norm": "prompt from runtime checkpoint",
+                    "channel_prompt": "runtime channel prompt",
+                    "last_activity_at": "runtime-updated",
+                },
+            }
+
+    with patch("gateway.run.LoopRuntime", return_value=_FakeRuntime()):
+        queued = runner._queue_due_loop_event(session_key, runner._loop_states[session_key])
+    await asyncio.wait_for(handled.wait(), timeout=1)
+
+    assert queued is True
+    assert len(seen) == 1
+    assert seen[0].text == "Prompt from runtime checkpoint"
+    assert seen[0].channel_prompt == "runtime channel prompt"
+    assert runner._loop_states[session_key]["last_prompt"] == "Prompt from runtime checkpoint"
+    assert runner._loop_states[session_key]["channel_prompt"] == "runtime channel prompt"
+
+
+@pytest.mark.asyncio
+async def test_queue_due_loop_event_does_not_enqueue_when_runtime_resume_fails(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    source = _make_source()
+    session_key = build_session_key(source)
+    runner._loop_states[session_key] = {
+        "session_id": "sess-active",
+        "goal": "Keep going",
+        "remaining_auto_turns": 1,
+        "last_prompt": "Implement the next thin slice.",
+        "last_prompt_norm": "implement the next thin slice.",
+        "last_result_preview": "",
+        "pending_wakeup_at": "",
+        "channel_prompt": "channel prompt",
+        "active": True,
+    }
+    runner.session_store = SimpleNamespace(
+        _ensure_loaded=lambda: None,
+        _entries={session_key: SimpleNamespace(origin=source)},
+    )
+    runner._handle_message = AsyncMock()
+
+    class _FakeRuntime:
+        def resume(self, session_id, **kwargs):
+            return {"ok": False, "error": "missing_prompt", "checkpoint": runner._loop_states[session_key]}
+
+    with patch("gateway.run.LoopRuntime", return_value=_FakeRuntime()):
+        queued = runner._queue_due_loop_event(session_key, runner._loop_states[session_key])
+
+    assert queued is False
+    runner._handle_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -351,24 +581,12 @@ async def test_resume_recovered_loops_pauses_when_origin_cannot_be_rebuilt(monke
 
 
 @pytest.mark.asyncio
-async def test_resume_recovered_loops_pauses_when_checkpoint_update_fails(monkeypatch, tmp_path):
+async def test_queue_due_loop_event_does_not_enqueue_when_runtime_resume_returns_no_tick(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     runner = _make_runner()
     source = _make_source()
     session_key = build_session_key(source)
-    store = LoopStore()
-    store.write_checkpoint(
-        session_id="sess-active",
-        session_key=session_key,
-        payload={
-            "goal": "Keep going",
-            "remaining_auto_turns": 1,
-            "last_prompt": "Implement the next thin slice.",
-            "last_prompt_norm": "implement the next thin slice.",
-            "last_result_preview": "",
-            "active": True,
-        },
-    )
+    future_wakeup = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
     runner._loop_states[session_key] = {
         "session_id": "sess-active",
         "goal": "Keep going",
@@ -376,6 +594,8 @@ async def test_resume_recovered_loops_pauses_when_checkpoint_update_fails(monkey
         "last_prompt": "Implement the next thin slice.",
         "last_prompt_norm": "implement the next thin slice.",
         "last_result_preview": "",
+        "pending_wakeup_at": "",
+        "channel_prompt": "channel prompt",
         "active": True,
     }
     runner.session_store = SimpleNamespace(
@@ -384,24 +604,27 @@ async def test_resume_recovered_loops_pauses_when_checkpoint_update_fails(monkey
     )
     runner._handle_message = AsyncMock()
 
-    persist_calls = []
+    class _FakeRuntime:
+        def resume(self, session_id, **kwargs):
+            return {
+                "ok": True,
+                "should_tick_now": False,
+                "checkpoint": {
+                    **runner._loop_states[session_key],
+                    "session_id": session_id,
+                    "session_key": session_key,
+                    "pending_wakeup_at": future_wakeup,
+                    "last_activity_at": "runtime-deferred",
+                },
+            }
 
-    def _fake_persist(*args, **kwargs):
-        persist_calls.append((args, kwargs))
-        if len(persist_calls) == 1:
-            return False
-        return type(runner)._persist_loop_checkpoint(runner, *args, **kwargs)
+    with patch("gateway.run.LoopRuntime", return_value=_FakeRuntime()):
+        queued = runner._queue_due_loop_event(session_key, runner._loop_states[session_key])
 
-    with patch.object(runner, "_persist_loop_checkpoint", side_effect=_fake_persist):
-        resumed = runner._resume_recovered_loops()
-
-    assert resumed == 0
+    assert queued is False
     runner._handle_message.assert_not_awaited()
-    assert session_key not in runner._loop_states
-    checkpoint = _read_loop_checkpoint(tmp_path, "sess-active")
-    assert checkpoint["active"] is False
-    assert checkpoint["state"] == "paused"
-    assert checkpoint["stop_reason"] == "recovery_incomplete"
+    assert runner._loop_states[session_key]["pending_wakeup_at"] == future_wakeup
+    assert runner._loop_states[session_key]["last_activity_at"] == "runtime-deferred"
 
 
 @pytest.mark.asyncio
@@ -423,6 +646,7 @@ async def test_followup_stops_conservatively_when_loop_event_persist_fails(monke
             "last_prompt": "Implement the next thin slice.",
             "last_prompt_norm": "different prompt",
             "last_result_preview": "previous result",
+            "expected_evidence": "tests/gateway/test_loop_recovery.py",
             "channel_prompt": None,
             "active": True,
         },
@@ -443,6 +667,7 @@ async def test_followup_stops_conservatively_when_loop_event_persist_fails(monke
         "last_prompt": "Implement the next thin slice.",
         "last_prompt_norm": "different prompt",
         "last_result_preview": "previous result",
+        "expected_evidence": "tests/gateway/test_loop_recovery.py",
         "active": True,
         "state": "waiting",
         "resumable": False,
@@ -466,6 +691,7 @@ async def test_followup_stops_conservatively_when_loop_event_persist_fails(monke
             "action": "continue",
             "reason": "clear next slice",
             "next_prompt": "Implement the next thin slice.",
+            "expected_evidence": "tests/gateway/test_loop_recovery.py",
         },
     ), patch(
         "hermes_cli.loop.verify_progress_for_session",
@@ -505,6 +731,7 @@ async def test_recovered_followup_stops_conservatively_when_goal_artifact_is_mis
             "last_prompt": "Implement the next thin slice.",
             "last_prompt_norm": "different prompt",
             "last_result_preview": "previous result",
+            "expected_evidence": "tests/gateway/test_loop_recovery.py",
             "channel_prompt": None,
             "active": True,
         },

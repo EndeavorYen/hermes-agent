@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_constants import get_hermes_home
-from hermes_loop import LoopStore
+from hermes_loop import LoopRuntime, LoopStore
 from hermes_state import SessionDB
 from run_agent import AIAgent
 
@@ -173,11 +173,36 @@ def _has_observable_evidence(text: str) -> bool:
     return any(pat.search(compact) for pat in _OBSERVABLE_EVIDENCE_PATTERNS)
 
 
+
+def _normalize_expected_evidence(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip()).lower()
+
+
+
+def _final_response_has_expected_evidence(final_response: str, expected_evidence: str) -> bool:
+    marker = _normalize_expected_evidence(expected_evidence)
+    if not marker:
+        return False
+    haystack = _normalize_expected_evidence(final_response)
+    return marker in haystack
+
+
 def _preview_text(text: str, limit: int = 200) -> str:
     compact = re.sub(r"\s+", " ", (text or "").strip())
     if len(compact) <= limit:
         return compact
     return compact[: limit - 1].rstrip() + "…"
+
+
+def parse_wake_after_duration_seconds(raw_value: str) -> int | None:
+    duration = str(raw_value or "").strip().lower()
+    match = re.fullmatch(r"(\d+)([smh])", duration)
+    if not match:
+        return None
+    amount = int(match.group(1))
+    if amount <= 0:
+        return None
+    return amount * {"s": 1, "m": 60, "h": 3600}[match.group(2)]
 
 
 def format_loop_stop_notice(stop_reason: str, reason: str = "") -> str:
@@ -187,7 +212,10 @@ def format_loop_stop_notice(stop_reason: str, reason: str = "") -> str:
         "repeated_next_prompt": "repeated next prompt (stall suppression).",
         "empty_continuation_result": "continuation produced no visible result.",
         "duplicate_result_preview": "continuation produced no meaningful new result.",
+        "missing_reason": "controller chose wait without a reason.",
         "missing_next_prompt": "controller chose continue without a bounded next prompt.",
+        "missing_wake_after": "controller chose wait without a bounded wake_after.",
+        "missing_expected_evidence": "controller chose continue without expected evidence.",
         "max_auto_turns_reached": "bounded auto-turn budget reached.",
         "missing_goal": "loop goal is missing.",
         "operator_pause": "loop paused by operator.",
@@ -200,6 +228,7 @@ def format_loop_stop_notice(stop_reason: str, reason: str = "") -> str:
         "progress_verifier_done": reason_text or "latest continuation appears effectively complete.",
         "progress_verifier_stalled": reason_text or "latest continuation did not materially advance the goal.",
         "missing_observable_evidence": reason_text or "continuation lacked observable evidence (no code, diff, file path, test, or command).",
+        "expected_evidence_missing": reason_text or "continuation did not include the expected evidence marker.",
         "loop_goal_artifact_persist_failed": reason_text or "failed to persist loop goal artifact; stopped conservatively.",
         "loop_goal_artifact_missing": reason_text or "loop goal artifact is missing; cannot trust continuation target.",
         "loop_goal_artifact_malformed": reason_text or "loop goal artifact is malformed; cannot trust continuation target.",
@@ -220,6 +249,8 @@ def _emit_result(**payload: Any) -> Dict[str, Any]:
         "stop_reason": payload.get("stop_reason", "unknown"),
         "decision_reason": payload.get("decision_reason", ""),
         "next_prompt": payload.get("next_prompt"),
+        "expected_evidence": payload.get("expected_evidence"),
+        "wake_after": payload.get("wake_after"),
         "executed": payload.get("executed", False),
         "result_preview": payload.get("result_preview", ""),
         "exit_code": payload.get("exit_code", 1),
@@ -331,6 +362,7 @@ def _checkpoint_summary_fields(checkpoint: Dict[str, Any]) -> List[tuple[str, An
         ("max_retry_budget", checkpoint.get("max_retry_budget")),
         ("idle_timeout_seconds", checkpoint.get("idle_timeout_seconds")),
         ("last_activity_at", checkpoint.get("last_activity_at")),
+        ("expected_evidence", checkpoint.get("expected_evidence")),
         ("pending_wakeup_at", checkpoint.get("pending_wakeup_at")),
         ("last_prompt", checkpoint.get("last_prompt")),
         ("last_prompt_norm", checkpoint.get("last_prompt_norm")),
@@ -368,11 +400,17 @@ def loop_list_command(args: Namespace) -> Dict[str, Any]:
         goal = _preview_text(str(checkpoint.get("goal") or ""), limit=100)
         remaining = checkpoint.get("remaining_auto_turns")
         reason = str(checkpoint.get("stop_reason") or "")
+        expected_evidence = str(checkpoint.get("expected_evidence") or "")
+        pending_wakeup_at = str(checkpoint.get("pending_wakeup_at") or "")
         suffix_parts = []
         if goal:
             suffix_parts.append(f"goal={goal}")
         if remaining not in (None, ""):
             suffix_parts.append(f"remaining={remaining}")
+        if expected_evidence:
+            suffix_parts.append(f"expected_evidence={expected_evidence}")
+        if pending_wakeup_at:
+            suffix_parts.append(f"wakeup_at={pending_wakeup_at}")
         if reason:
             suffix_parts.append(f"stop_reason={reason}")
         suffix = f" {' '.join(suffix_parts)}" if suffix_parts else ""
@@ -390,7 +428,8 @@ def loop_list_command(args: Namespace) -> Dict[str, Any]:
 
 def loop_status_command(args: Namespace) -> Dict[str, Any]:
     session_id = (getattr(args, "session_id", "") or "").strip()
-    checkpoint = LoopStore().read_checkpoint(session_id)
+    runtime = LoopRuntime()
+    checkpoint = runtime.status(session_id)
     if checkpoint is None:
         print(f"Loop session '{session_id}' was not found in persisted artifacts.")
         return _emit_inspection_result(
@@ -416,11 +455,21 @@ def loop_status_command(args: Namespace) -> Dict[str, Any]:
             recorded_at = str(event.get("recorded_at") or "")
             event_type = str(event.get("event_type") or "unknown")
             details = []
-            for key in ("stop_reason", "stop_class", "goal", "remaining_auto_turns", "last_result_preview"):
+            for key in (
+                "stop_reason",
+                "stop_class",
+                "goal",
+                "remaining_auto_turns",
+                "last_result_preview",
+                "next_prompt",
+                "expected_evidence",
+                "pending_wakeup_at",
+                "deferred",
+            ):
                 value = event.get(key)
                 if value in (None, ""):
                     continue
-                if key == "last_result_preview":
+                if key in {"last_result_preview", "next_prompt"}:
                     value = _preview_text(str(value), limit=100)
                 details.append(f"{key}={value}")
             detail_suffix = f" ({', '.join(details)})" if details else ""
@@ -438,74 +487,36 @@ def loop_status_command(args: Namespace) -> Dict[str, Any]:
 
 def loop_pause_command(args: Namespace) -> Dict[str, Any]:
     session_id = (getattr(args, "session_id", "") or "").strip()
-    checkpoint = LoopStore().read_checkpoint(session_id)
-    if checkpoint is None:
+    result = LoopRuntime().pause(session_id)
+    if not result.get("ok"):
         print(f"Loop session '{session_id}' was not found in persisted artifacts.")
         return _emit_inspection_result(command="pause", session_id=session_id, count=0, checkpoint=None, events=[], exit_code=1)
 
-    updated = _update_loop_checkpoint(
-        session_id,
-        {
-            "active": False,
-            "state": "paused",
-            "resumable": True,
-            "stop_reason": "operator_pause",
-            "stop_class": "user",
-            "stop_message": "Loop paused by operator.",
-            "pending_wakeup_at": None,
-            "last_activity_at": _loop_now_iso(),
-        },
-    )
-    if updated is None:
-        print(f"Loop session '{session_id}' was not found in persisted artifacts.")
-        return _emit_inspection_result(command="pause", session_id=session_id, count=0, checkpoint=None, events=[], exit_code=1)
-    LoopStore().append_event(
-        session_id=session_id,
-        event_type="paused",
-        payload={"stop_reason": "operator_pause", "stop_class": "user", "message": "Loop paused by operator."},
-    )
+    updated = result.get("checkpoint")
     print(f"Paused loop '{session_id}'.")
     return _emit_inspection_result(command="pause", session_id=session_id, count=1, checkpoint=updated, events=[], exit_code=0)
 
 
 def loop_resume_command(args: Namespace) -> Dict[str, Any]:
     session_id = (getattr(args, "session_id", "") or "").strip()
-    checkpoint = LoopStore().read_checkpoint(session_id)
-    if checkpoint is None:
-        print(f"Loop session '{session_id}' was not found in persisted artifacts.")
-        return _emit_inspection_result(command="resume", session_id=session_id, count=0, checkpoint=None, events=[], exit_code=1)
-    if not _checkpoint_resumable(checkpoint):
-        print(f"Loop session '{session_id}' is not resumable.")
-        return _emit_inspection_result(command="resume", session_id=session_id, count=1, checkpoint=checkpoint, events=[], exit_code=1)
-    if not str(checkpoint.get("last_prompt") or "").strip():
-        print(f"Loop session '{session_id}' has no persisted prompt to resume.")
-        return _emit_inspection_result(command="resume", session_id=session_id, count=1, checkpoint=checkpoint, events=[], exit_code=1)
+    result = LoopRuntime().resume(session_id)
+    if not result.get("ok"):
+        checkpoint = result.get("checkpoint")
+        error = str(result.get("error") or "")
+        if error == "not_found":
+            print(f"Loop session '{session_id}' was not found in persisted artifacts.")
+            return _emit_inspection_result(command="resume", session_id=session_id, count=0, checkpoint=None, events=[], exit_code=1)
+        if error == "not_resumable":
+            print(f"Loop session '{session_id}' is not resumable.")
+        elif error == "missing_prompt":
+            print(f"Loop session '{session_id}' has no persisted prompt to resume.")
+        else:
+            print(f"Loop session '{session_id}' could not be resumed.")
+        return _emit_inspection_result(command="resume", session_id=session_id, count=1 if checkpoint else 0, checkpoint=checkpoint, events=[], exit_code=1)
 
-    now_iso = _loop_now_iso()
-    updated = _update_loop_checkpoint(
-        session_id,
-        {
-            "active": True,
-            "state": "waiting",
-            "resumable": True,
-            "stop_reason": "",
-            "stop_class": "",
-            "stop_message": "",
-            "pending_wakeup_at": now_iso,
-            "last_activity_at": now_iso,
-            "retry_count": 0,
-        },
-    )
-    if updated is None:
-        print(f"Loop session '{session_id}' was not found in persisted artifacts.")
-        return _emit_inspection_result(command="resume", session_id=session_id, count=0, checkpoint=None, events=[], exit_code=1)
-    LoopStore().append_event(
-        session_id=session_id,
-        event_type="resumed",
-        payload={"message": "Loop resumed by operator.", "pending_wakeup_at": updated.get("pending_wakeup_at")},
-    )
+    updated = result.get("checkpoint") or {}
     print(f"Resumed loop '{session_id}'.")
-    if str(updated.get("session_key") or "").startswith("cli:"):
+    if result.get("should_tick_now") and str(updated.get("session_key") or "").startswith("cli:"):
         return loop_command(
             Namespace(
                 loop_command="once",
@@ -525,32 +536,12 @@ def loop_resume_command(args: Namespace) -> Dict[str, Any]:
 
 def loop_stop_command(args: Namespace) -> Dict[str, Any]:
     session_id = (getattr(args, "session_id", "") or "").strip()
-    checkpoint = LoopStore().read_checkpoint(session_id)
-    if checkpoint is None:
+    result = LoopRuntime().stop(session_id)
+    if not result.get("ok"):
         print(f"Loop session '{session_id}' was not found in persisted artifacts.")
         return _emit_inspection_result(command="stop", session_id=session_id, count=0, checkpoint=None, events=[], exit_code=1)
 
-    updated = _update_loop_checkpoint(
-        session_id,
-        {
-            "active": False,
-            "state": "stopped",
-            "resumable": False,
-            "stop_reason": "operator_stop",
-            "stop_class": "user",
-            "stop_message": "Loop stopped by operator.",
-            "pending_wakeup_at": None,
-            "last_activity_at": _loop_now_iso(),
-        },
-    )
-    if updated is None:
-        print(f"Loop session '{session_id}' was not found in persisted artifacts.")
-        return _emit_inspection_result(command="stop", session_id=session_id, count=0, checkpoint=None, events=[], exit_code=1)
-    LoopStore().append_event(
-        session_id=session_id,
-        event_type="stop_requested",
-        payload={"stop_reason": "operator_stop", "stop_class": "user", "message": "Loop stopped by operator."},
-    )
+    updated = result.get("checkpoint")
     print(format_loop_stop_notice("operator_stop", "Loop stopped by operator."))
     return _emit_inspection_result(command="stop", session_id=session_id, count=1, checkpoint=updated, events=[], exit_code=0)
 
@@ -610,11 +601,14 @@ def _build_decision_prompt(
     return (
         "You are Hermes deciding whether an autonomous continuation loop should run one more step.\n"
         "Given the objective, the recent session transcript, and any runtime artifacts, return ONLY JSON with this schema:\n"
-        '{"action":"continue|stop","reason":"short string","next_prompt":"required iff action=continue"}.\n'
+        '{"action":"continue|wait|stop","reason":"short string","next_prompt":"required iff action=continue|wait","wake_after":"required iff action=wait; use <int>s, <int>m, or <int>h","expected_evidence":"required iff action=continue|wait"}.\n'
         "Rules:\n"
         "- continue only if there is one clear bounded next step\n"
+        "- use wait only for a bounded deferred continuation that should resume later\n"
         "- stop on ambiguity, convergence, repeated/stalled motion, or real user-level tradeoff\n"
         "- keep next_prompt concrete and directly executable\n"
+        "- for continue, expected_evidence must be a short literal marker we expect to observe in the next final response\n"
+        "- for wait, wake_after must use only s, m, or h units\n"
         "- use the recent_history as the primary grounding signal\n\n"
         f"Context:\n{json.dumps(context, ensure_ascii=False, indent=2)}"
     )
@@ -627,6 +621,7 @@ def _build_progress_verifier_prompt(
     recent_history: List[Dict[str, str]],
     background_reviews: List[Dict[str, Any]],
     final_response: str,
+    expected_evidence: str = "",
 ) -> str:
     context = {
         "goal": goal,
@@ -635,6 +630,7 @@ def _build_progress_verifier_prompt(
         "recent_history": recent_history,
         "last_background_reviews": background_reviews,
         "latest_final_response": _preview_text(final_response, limit=400),
+        "expected_evidence": (expected_evidence or "").strip(),
     }
     return (
         "You are Hermes verifying whether the latest bounded continuation step made real progress.\n"
@@ -680,7 +676,7 @@ def _decide_once(goal: str, session_row: Dict[str, Any], args: Namespace) -> Dic
         )
     )
     payload = _extract_json_object(result.get("final_response", ""))
-    if not payload or payload.get("action") not in {"continue", "stop"}:
+    if not payload or payload.get("action") not in {"continue", "wait", "stop"}:
         return {
             "action": "stop",
             "reason": "Invalid decision payload from Hermes.",
@@ -692,8 +688,44 @@ def _decide_once(goal: str, session_row: Dict[str, Any], args: Namespace) -> Dic
             "reason": "Hermes chose continue without a bounded next prompt.",
             "stop_reason": "missing_next_prompt",
         }
+    if payload["action"] == "continue" and not (payload.get("expected_evidence") or "").strip():
+        return {
+            "action": "stop",
+            "reason": "Hermes chose continue without expected evidence.",
+            "stop_reason": "missing_expected_evidence",
+        }
+    if payload["action"] == "wait" and not (payload.get("reason") or "").strip():
+        return {
+            "action": "stop",
+            "reason": "Hermes chose wait without a reason.",
+            "stop_reason": "missing_reason",
+        }
+    if payload["action"] == "wait" and not (payload.get("next_prompt") or "").strip():
+        return {
+            "action": "stop",
+            "reason": "Hermes chose wait without a bounded next prompt.",
+            "stop_reason": "missing_next_prompt",
+        }
+    if payload["action"] == "wait" and not (payload.get("expected_evidence") or "").strip():
+        return {
+            "action": "stop",
+            "reason": "Hermes chose wait without expected evidence.",
+            "stop_reason": "missing_expected_evidence",
+        }
+    if payload["action"] == "wait" and parse_wake_after_duration_seconds(str(payload.get("wake_after") or "")) is None:
+        return {
+            "action": "stop",
+            "reason": "Hermes chose wait without a bounded wake_after.",
+            "stop_reason": "missing_wake_after",
+        }
     if payload["action"] == "stop":
         payload.setdefault("stop_reason", "model_stop")
+    elif payload["action"] in {"continue", "wait"}:
+        payload["reason"] = str(payload.get("reason") or "").strip()
+        payload["next_prompt"] = str(payload.get("next_prompt") or "").strip()
+        payload["expected_evidence"] = str(payload.get("expected_evidence") or "").strip()
+        if payload["action"] == "wait":
+            payload["wake_after"] = str(payload.get("wake_after") or "").strip().lower()
     return payload
 
 
@@ -759,6 +791,7 @@ def verify_progress_for_session(
     goal: str,
     final_response: str,
     *,
+    expected_evidence: str = "",
     model: str | None = None,
     provider: str | None = None,
 ) -> Dict[str, Any]:
@@ -825,6 +858,7 @@ def verify_progress_for_session(
             recent_history=recent_history,
             background_reviews=background_reviews,
             final_response=final_response,
+            expected_evidence=expected_evidence,
         )
     )
     payload = _extract_json_object(result.get("final_response", ""))
@@ -896,6 +930,7 @@ def loop_command(args: Namespace) -> Dict[str, Any]:
     previous_prompt_norm: str | None = None
     cycles_completed = 0
     last_next_prompt: str | None = None
+    last_expected_evidence: str | None = None
     last_result_preview = ""
     for cycle in range(1, max_cycles + 1):
         print(f"Cycle {cycle}/{max_cycles}")
@@ -926,9 +961,45 @@ def loop_command(args: Namespace) -> Dict[str, Any]:
         if reason:
             print(f"Reason:   {reason}")
 
+        if action == "wait":
+            next_prompt = (decision.get("next_prompt") or "").strip()
+            expected_evidence = (decision.get("expected_evidence") or "").strip()
+            wake_after = str(decision.get("wake_after") or "").strip().lower()
+            last_next_prompt = next_prompt
+            last_expected_evidence = expected_evidence
+            print(f"Wake after: {wake_after}")
+            print(f"Prompt:   {next_prompt}")
+            record_background_review(
+                session_id=session_id,
+                goal=goal,
+                progress_state="wait",
+                stop_reason="wait_requested",
+                next_prompt=next_prompt,
+                result_preview=last_result_preview,
+                cycle=cycle,
+                goal_id=goal_id,
+                run_id=run_id,
+            )
+            return _emit_result(
+                session_id=session_id,
+                goal=goal,
+                max_cycles=max_cycles,
+                cycles_attempted=cycle,
+                cycles_completed=cycles_completed,
+                outcome="waiting",
+                stop_reason="wait_requested",
+                decision_reason=reason,
+                next_prompt=next_prompt,
+                expected_evidence=expected_evidence,
+                wake_after=wake_after,
+                executed=cycles_completed > 0,
+                result_preview=last_result_preview,
+                exit_code=0,
+            )
+
         if action != "continue":
             stop_reason = decision.get("stop_reason") or "model_stop"
-            outcome = "error" if stop_reason in {"invalid_decision_payload", "missing_next_prompt"} else "stopped"
+            outcome = "error" if stop_reason in {"invalid_decision_payload", "missing_next_prompt", "missing_expected_evidence"} else "stopped"
             exit_code = 1 if outcome == "error" else 0
             record_background_review(
                 session_id=session_id,
@@ -951,13 +1022,16 @@ def loop_command(args: Namespace) -> Dict[str, Any]:
                 stop_reason=stop_reason,
                 decision_reason=reason,
                 next_prompt=last_next_prompt,
+                expected_evidence=last_expected_evidence,
                 executed=cycles_completed > 0,
                 result_preview=last_result_preview,
                 exit_code=exit_code,
             )
 
         next_prompt = (decision.get("next_prompt") or "").strip()
+        expected_evidence = (decision.get("expected_evidence") or "").strip()
         last_next_prompt = next_prompt
+        last_expected_evidence = expected_evidence
         next_prompt_norm = _normalize_loop_prompt(next_prompt)
         if previous_prompt_norm is not None and next_prompt_norm == previous_prompt_norm:
             print("Reason:   Stopped: repeated next prompt from previous cycle (stall suppression).")
@@ -1162,15 +1236,27 @@ def loop_run_command(args: Namespace) -> Dict[str, Any]:
         if outcome == "continued":
             runs_completed += 1
             continue
+        if outcome in {"waiting", "stopped", "dry_run", "error"}:
+            return _emit_launcher_result(
+                session_id=last_result.get("session_id"),
+                goal=goal,
+                max_runs=max_runs,
+                runs_attempted=run,
+                runs_completed=runs_completed,
+                outcome=outcome,
+                stop_reason=last_result.get("stop_reason", "unknown"),
+                exit_code=last_result.get("exit_code", 1),
+                last_result=last_result,
+            )
         return _emit_launcher_result(
             session_id=last_result.get("session_id"),
             goal=goal,
             max_runs=max_runs,
             runs_attempted=run,
             runs_completed=runs_completed,
-            outcome=outcome,
-            stop_reason=last_result.get("stop_reason", "unknown"),
-            exit_code=last_result.get("exit_code", 1),
+            outcome="error",
+            stop_reason="unexpected_child_outcome",
+            exit_code=1,
             last_result=last_result,
         )
 
