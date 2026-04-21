@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import re
 from argparse import Namespace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -136,6 +137,15 @@ def format_loop_stop_notice(stop_reason: str, reason: str = "") -> str:
         "missing_next_prompt": "controller chose continue without a bounded next prompt.",
         "max_auto_turns_reached": "bounded auto-turn budget reached.",
         "missing_goal": "loop goal is missing.",
+        "operator_pause": "loop paused by operator.",
+        "operator_stop": "loop stopped by operator.",
+        "idle_timeout": "loop idle timeout reached.",
+        "max_retry_budget_reached": "loop retry budget exhausted.",
+        "recovery_incomplete": "recovered loop had an ambiguous interrupted turn; operator resume is required.",
+        "loop_checkpoint_persist_failed": "failed to persist loop checkpoint; stopped conservatively.",
+        "loop_event_persist_failed": "failed to persist loop event; stopped conservatively.",
+        "progress_verifier_done": reason_text or "latest continuation appears effectively complete.",
+        "progress_verifier_stalled": reason_text or "latest continuation did not materially advance the goal.",
     }
     detail = mapping.get(stop_reason, reason_text or stop_reason or "unknown reason")
     return f"Loop stopped: {detail} ({stop_reason or 'unknown'})"
@@ -190,17 +200,84 @@ def _emit_inspection_result(**payload: Any) -> Dict[str, Any]:
     return result
 
 
+def _loop_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _checkpoint_runtime_state(checkpoint: Dict[str, Any]) -> str:
+    state = str(checkpoint.get("state") or "").strip()
+    if state:
+        return state
+    if bool(checkpoint.get("active")):
+        return "waiting"
+    if checkpoint.get("stop_reason"):
+        return "stopped"
+    return "inactive"
+
+
+def _checkpoint_resumable(checkpoint: Dict[str, Any]) -> bool:
+    if "resumable" in checkpoint:
+        return bool(checkpoint.get("resumable"))
+    return _checkpoint_runtime_state(checkpoint) == "paused"
+
+
+def _checkpoint_payload_for_write(checkpoint: Dict[str, Any]) -> Dict[str, Any]:
+    return {key: value for key, value in checkpoint.items() if key not in {"session_id", "session_key"}}
+
+
+def _cli_loop_session_key(session_id: str) -> str:
+    return f"cli:{session_id}"
+
+
+def _write_cli_loop_checkpoint(session_id: str, checkpoint: Dict[str, Any]) -> Dict[str, Any]:
+    checkpoint = dict(checkpoint)
+    checkpoint.setdefault("session_id", session_id)
+    checkpoint.setdefault("session_key", _cli_loop_session_key(session_id))
+    checkpoint["updated_at"] = _loop_now_iso()
+    return LoopStore().write_checkpoint(
+        session_id=session_id,
+        session_key=str(checkpoint.get("session_key") or _cli_loop_session_key(session_id)),
+        payload=_checkpoint_payload_for_write(checkpoint),
+    )
+
+
+def _update_loop_checkpoint(session_id: str, updates: Dict[str, Any]) -> Dict[str, Any] | None:
+    checkpoint = LoopStore().read_checkpoint(session_id)
+    if checkpoint is None:
+        return None
+    checkpoint.update(updates)
+    checkpoint.setdefault("session_id", session_id)
+    checkpoint["updated_at"] = _loop_now_iso()
+    return LoopStore().write_checkpoint(
+        session_id=session_id,
+        session_key=str(checkpoint.get("session_key") or ""),
+        payload=_checkpoint_payload_for_write(checkpoint),
+    )
+
+
 def _checkpoint_summary_fields(checkpoint: Dict[str, Any]) -> List[tuple[str, Any]]:
     fields = [
         ("session_id", checkpoint.get("session_id")),
         ("session_key", checkpoint.get("session_key")),
+        ("state", checkpoint.get("state") or _checkpoint_runtime_state(checkpoint)),
         ("active", checkpoint.get("active")),
         ("updated_at", checkpoint.get("updated_at")),
         ("goal", checkpoint.get("goal")),
         ("remaining_auto_turns", checkpoint.get("remaining_auto_turns")),
+        ("resumable", checkpoint.get("resumable") if "resumable" in checkpoint else _checkpoint_resumable(checkpoint)),
         ("stop_reason", checkpoint.get("stop_reason")),
+        ("stop_class", checkpoint.get("stop_class")),
+        ("stop_message", checkpoint.get("stop_message")),
+        ("last_progress_summary", checkpoint.get("last_progress_summary")),
+        ("retry_count", checkpoint.get("retry_count")),
+        ("max_retry_budget", checkpoint.get("max_retry_budget")),
+        ("idle_timeout_seconds", checkpoint.get("idle_timeout_seconds")),
+        ("last_activity_at", checkpoint.get("last_activity_at")),
+        ("pending_wakeup_at", checkpoint.get("pending_wakeup_at")),
         ("last_prompt", checkpoint.get("last_prompt")),
         ("last_prompt_norm", checkpoint.get("last_prompt_norm")),
+        ("inflight_prompt", checkpoint.get("inflight_prompt")),
+        ("inflight_started_at", checkpoint.get("inflight_started_at")),
         ("last_result_preview", checkpoint.get("last_result_preview")),
         ("channel_prompt", checkpoint.get("channel_prompt")),
     ]
@@ -228,12 +305,20 @@ def loop_list_command(args: Namespace) -> Dict[str, Any]:
     print(heading)
     for checkpoint in checkpoints:
         session_id = str(checkpoint.get("session_id") or "")
-        active = bool(checkpoint.get("active", False))
+        state = _checkpoint_runtime_state(checkpoint)
         updated_at = str(checkpoint.get("updated_at") or "")
         goal = _preview_text(str(checkpoint.get("goal") or ""), limit=100)
-        status = "active" if active else "inactive"
-        suffix = f" goal={goal}" if goal else ""
-        print(f"- {session_id} [{status}] updated_at={updated_at}{suffix}")
+        remaining = checkpoint.get("remaining_auto_turns")
+        reason = str(checkpoint.get("stop_reason") or "")
+        suffix_parts = []
+        if goal:
+            suffix_parts.append(f"goal={goal}")
+        if remaining not in (None, ""):
+            suffix_parts.append(f"remaining={remaining}")
+        if reason:
+            suffix_parts.append(f"stop_reason={reason}")
+        suffix = f" {' '.join(suffix_parts)}" if suffix_parts else ""
+        print(f"- {session_id} [{state}] updated_at={updated_at}{suffix}")
 
     return _emit_inspection_result(
         command="list",
@@ -273,7 +358,7 @@ def loop_status_command(args: Namespace) -> Dict[str, Any]:
             recorded_at = str(event.get("recorded_at") or "")
             event_type = str(event.get("event_type") or "unknown")
             details = []
-            for key in ("stop_reason", "goal", "remaining_auto_turns", "last_result_preview"):
+            for key in ("stop_reason", "stop_class", "goal", "remaining_auto_turns", "last_result_preview"):
                 value = event.get(key)
                 if value in (None, ""):
                     continue
@@ -291,6 +376,125 @@ def loop_status_command(args: Namespace) -> Dict[str, Any]:
         events=events,
         exit_code=0,
     )
+
+
+def loop_pause_command(args: Namespace) -> Dict[str, Any]:
+    session_id = (getattr(args, "session_id", "") or "").strip()
+    checkpoint = LoopStore().read_checkpoint(session_id)
+    if checkpoint is None:
+        print(f"Loop session '{session_id}' was not found in persisted artifacts.")
+        return _emit_inspection_result(command="pause", session_id=session_id, count=0, checkpoint=None, events=[], exit_code=1)
+
+    updated = _update_loop_checkpoint(
+        session_id,
+        {
+            "active": False,
+            "state": "paused",
+            "resumable": True,
+            "stop_reason": "operator_pause",
+            "stop_class": "user",
+            "stop_message": "Loop paused by operator.",
+            "pending_wakeup_at": None,
+            "last_activity_at": _loop_now_iso(),
+        },
+    )
+    if updated is None:
+        print(f"Loop session '{session_id}' was not found in persisted artifacts.")
+        return _emit_inspection_result(command="pause", session_id=session_id, count=0, checkpoint=None, events=[], exit_code=1)
+    LoopStore().append_event(
+        session_id=session_id,
+        event_type="paused",
+        payload={"stop_reason": "operator_pause", "stop_class": "user", "message": "Loop paused by operator."},
+    )
+    print(f"Paused loop '{session_id}'.")
+    return _emit_inspection_result(command="pause", session_id=session_id, count=1, checkpoint=updated, events=[], exit_code=0)
+
+
+def loop_resume_command(args: Namespace) -> Dict[str, Any]:
+    session_id = (getattr(args, "session_id", "") or "").strip()
+    checkpoint = LoopStore().read_checkpoint(session_id)
+    if checkpoint is None:
+        print(f"Loop session '{session_id}' was not found in persisted artifacts.")
+        return _emit_inspection_result(command="resume", session_id=session_id, count=0, checkpoint=None, events=[], exit_code=1)
+    if not _checkpoint_resumable(checkpoint):
+        print(f"Loop session '{session_id}' is not resumable.")
+        return _emit_inspection_result(command="resume", session_id=session_id, count=1, checkpoint=checkpoint, events=[], exit_code=1)
+    if not str(checkpoint.get("last_prompt") or "").strip():
+        print(f"Loop session '{session_id}' has no persisted prompt to resume.")
+        return _emit_inspection_result(command="resume", session_id=session_id, count=1, checkpoint=checkpoint, events=[], exit_code=1)
+
+    now_iso = _loop_now_iso()
+    updated = _update_loop_checkpoint(
+        session_id,
+        {
+            "active": True,
+            "state": "waiting",
+            "resumable": True,
+            "stop_reason": "",
+            "stop_class": "",
+            "stop_message": "",
+            "pending_wakeup_at": now_iso,
+            "last_activity_at": now_iso,
+            "retry_count": 0,
+        },
+    )
+    if updated is None:
+        print(f"Loop session '{session_id}' was not found in persisted artifacts.")
+        return _emit_inspection_result(command="resume", session_id=session_id, count=0, checkpoint=None, events=[], exit_code=1)
+    LoopStore().append_event(
+        session_id=session_id,
+        event_type="resumed",
+        payload={"message": "Loop resumed by operator.", "pending_wakeup_at": updated.get("pending_wakeup_at")},
+    )
+    print(f"Resumed loop '{session_id}'.")
+    if str(updated.get("session_key") or "").startswith("cli:"):
+        return loop_command(
+            Namespace(
+                loop_command="once",
+                goal=str(updated.get("goal") or ""),
+                resume=session_id,
+                continue_last=None,
+                dry_run=False,
+                model=None,
+                provider=None,
+                max_turns=None,
+                max_cycles=1,
+                max_runs=1,
+            )
+        )
+    return _emit_inspection_result(command="resume", session_id=session_id, count=1, checkpoint=updated, events=[], exit_code=0)
+
+
+def loop_stop_command(args: Namespace) -> Dict[str, Any]:
+    session_id = (getattr(args, "session_id", "") or "").strip()
+    checkpoint = LoopStore().read_checkpoint(session_id)
+    if checkpoint is None:
+        print(f"Loop session '{session_id}' was not found in persisted artifacts.")
+        return _emit_inspection_result(command="stop", session_id=session_id, count=0, checkpoint=None, events=[], exit_code=1)
+
+    updated = _update_loop_checkpoint(
+        session_id,
+        {
+            "active": False,
+            "state": "stopped",
+            "resumable": False,
+            "stop_reason": "operator_stop",
+            "stop_class": "user",
+            "stop_message": "Loop stopped by operator.",
+            "pending_wakeup_at": None,
+            "last_activity_at": _loop_now_iso(),
+        },
+    )
+    if updated is None:
+        print(f"Loop session '{session_id}' was not found in persisted artifacts.")
+        return _emit_inspection_result(command="stop", session_id=session_id, count=0, checkpoint=None, events=[], exit_code=1)
+    LoopStore().append_event(
+        session_id=session_id,
+        event_type="stop_requested",
+        payload={"stop_reason": "operator_stop", "stop_class": "user", "message": "Loop stopped by operator."},
+    )
+    print(format_loop_stop_notice("operator_stop", "Loop stopped by operator."))
+    return _emit_inspection_result(command="stop", session_id=session_id, count=1, checkpoint=updated, events=[], exit_code=0)
 
 
 def _session_runtime_config(session_row: Dict[str, Any], args: Namespace) -> Dict[str, Any]:

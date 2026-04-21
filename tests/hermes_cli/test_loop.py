@@ -10,8 +10,11 @@ from hermes_cli.loop import (
     loop_run_command,
     loop_list_command,
     loop_status_command,
+    loop_pause_command,
+    loop_resume_command,
+    loop_stop_command,
 )
-from hermes_cli.main import cmd_loop, cmd_loop_run, cmd_loop_list, cmd_loop_status
+from hermes_cli.main import cmd_loop, cmd_loop_run, cmd_loop_list, cmd_loop_status, cmd_loop_pause, cmd_loop_resume, cmd_loop_stop
 from hermes_loop.store import LoopStore
 
 
@@ -696,3 +699,68 @@ def test_cmd_loop_status_raises_system_exit_for_error(monkeypatch):
         cmd_loop_status(Namespace(session_id="missing-session"))
 
     assert excinfo.value.code == 1
+
+
+def test_loop_pause_resume_stop_commands_mutate_checkpoint(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    store = LoopStore()
+    store.write_checkpoint(
+        session_id="sess-active",
+        session_key="telegram:u1:c1",
+        payload={
+            "goal": "Keep going",
+            "active": True,
+            "state": "waiting",
+            "resumable": True,
+            "last_prompt": "Implement the next thin slice.",
+        },
+    )
+
+    paused = loop_pause_command(Namespace(session_id="sess-active"))
+    paused_checkpoint = LoopStore().read_checkpoint("sess-active")
+    assert paused["exit_code"] == 0
+    assert paused_checkpoint["state"] == "paused"
+    assert paused_checkpoint["stop_reason"] == "operator_pause"
+    assert paused_checkpoint["resumable"] is True
+
+    resumed = loop_resume_command(Namespace(session_id="sess-active"))
+    resumed_checkpoint = LoopStore().read_checkpoint("sess-active")
+    assert resumed["exit_code"] == 0
+    assert resumed_checkpoint["state"] == "waiting"
+    assert resumed_checkpoint["active"] is True
+    assert resumed_checkpoint["pending_wakeup_at"]
+
+    stopped = loop_stop_command(Namespace(session_id="sess-active"))
+    stopped_checkpoint = LoopStore().read_checkpoint("sess-active")
+    assert stopped["exit_code"] == 0
+    assert stopped_checkpoint["state"] == "stopped"
+    assert stopped_checkpoint["stop_reason"] == "operator_stop"
+    assert stopped_checkpoint["resumable"] is False
+
+
+def test_cmd_loop_pause_resume_stop_wrap_exit_codes(monkeypatch):
+    monkeypatch.setattr("hermes_cli.loop.loop_pause_command", lambda args: {"exit_code": 0})
+    monkeypatch.setattr("hermes_cli.loop.loop_resume_command", lambda args: {"exit_code": 0})
+    monkeypatch.setattr("hermes_cli.loop.loop_stop_command", lambda args: {"exit_code": 0})
+
+    cmd_loop_pause(Namespace(session_id="sess-active"))
+    cmd_loop_resume(Namespace(session_id="sess-active"))
+    cmd_loop_stop(Namespace(session_id="sess-active"))
+
+
+def test_cmd_loop_pause_raises_system_exit_for_error(monkeypatch):
+    monkeypatch.setattr("hermes_cli.loop.loop_pause_command", lambda args: {"exit_code": 1})
+    with pytest.raises(SystemExit):
+        cmd_loop_pause(Namespace(session_id="missing"))
+
+
+def test_cmd_loop_resume_raises_system_exit_for_error(monkeypatch):
+    monkeypatch.setattr("hermes_cli.loop.loop_resume_command", lambda args: {"exit_code": 1})
+    with pytest.raises(SystemExit):
+        cmd_loop_resume(Namespace(session_id="missing"))
+
+
+def test_cmd_loop_stop_raises_system_exit_for_error(monkeypatch):
+    monkeypatch.setattr("hermes_cli.loop.loop_stop_command", lambda args: {"exit_code": 1})
+    with pytest.raises(SystemExit):
+        cmd_loop_stop(Namespace(session_id="missing"))

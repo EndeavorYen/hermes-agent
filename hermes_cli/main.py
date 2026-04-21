@@ -4106,6 +4106,36 @@ def cmd_loop_status(args):
 
 
 
+def cmd_loop_pause(args):
+    """Pause a persisted loop."""
+    from hermes_cli.loop import loop_pause_command
+
+    result = loop_pause_command(args)
+    if result.get("exit_code", 0):
+        raise SystemExit(result["exit_code"])
+
+
+
+def cmd_loop_resume(args):
+    """Resume a persisted loop."""
+    from hermes_cli.loop import loop_resume_command
+
+    result = loop_resume_command(args)
+    if result.get("exit_code", 0):
+        raise SystemExit(result["exit_code"])
+
+
+
+def cmd_loop_stop(args):
+    """Stop a persisted loop."""
+    from hermes_cli.loop import loop_stop_command
+
+    result = loop_stop_command(args)
+    if result.get("exit_code", 0):
+        raise SystemExit(result["exit_code"])
+
+
+
 def cmd_cron(args):
     """Cron job management."""
     from hermes_cli.cron import cron_command
@@ -6983,6 +7013,18 @@ For more help on a command:
         help="Number of recent events to show (default: 5, 0 = none)",
     )
     loop_status.set_defaults(func=cmd_loop_status)
+
+    loop_pause = loop_subparsers.add_parser("pause", help="Pause a persisted loop")
+    loop_pause.add_argument("session_id", help="Persisted loop session id to pause")
+    loop_pause.set_defaults(func=cmd_loop_pause)
+
+    loop_resume = loop_subparsers.add_parser("resume", help="Resume a persisted loop")
+    loop_resume.add_argument("session_id", help="Persisted loop session id to resume")
+    loop_resume.set_defaults(func=cmd_loop_resume)
+
+    loop_stop = loop_subparsers.add_parser("stop", help="Stop a persisted loop")
+    loop_stop.add_argument("session_id", help="Persisted loop session id to stop")
+    loop_stop.set_defaults(func=cmd_loop_stop)
 
     # =========================================================================
     # cron command
