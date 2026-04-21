@@ -4086,6 +4086,26 @@ def cmd_loop_run(args):
 
 
 
+def cmd_loop_list(args):
+    """List persisted loop checkpoints."""
+    from hermes_cli.loop import loop_list_command
+
+    result = loop_list_command(args)
+    if result.get("exit_code", 0):
+        raise SystemExit(result["exit_code"])
+
+
+
+def cmd_loop_status(args):
+    """Show persisted loop checkpoint status."""
+    from hermes_cli.loop import loop_status_command
+
+    result = loop_status_command(args)
+    if result.get("exit_code", 0):
+        raise SystemExit(result["exit_code"])
+
+
+
 def cmd_cron(args):
     """Cron job management."""
     from hermes_cli.cron import cron_command
@@ -6949,6 +6969,20 @@ For more help on a command:
     loop_run.add_argument("--model", help="Override the model used for the loop decision/execution")
     loop_run.add_argument("--provider", help="Override the provider used for the loop decision/execution")
     loop_run.set_defaults(func=cmd_loop_run)
+
+    loop_list = loop_subparsers.add_parser("list", help="List persisted loop checkpoints")
+    loop_list.add_argument("--all", action="store_true", help="Include inactive or stopped checkpoints")
+    loop_list.set_defaults(func=cmd_loop_list)
+
+    loop_status = loop_subparsers.add_parser("status", help="Show persisted loop checkpoint status")
+    loop_status.add_argument("session_id", help="Persisted loop session id to inspect")
+    loop_status.add_argument(
+        "--events",
+        type=int,
+        default=5,
+        help="Number of recent events to show (default: 5, 0 = none)",
+    )
+    loop_status.set_defaults(func=cmd_loop_status)
 
     # =========================================================================
     # cron command

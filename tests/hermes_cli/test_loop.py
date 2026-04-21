@@ -8,8 +8,11 @@ from hermes_cli.loop import (
     verify_progress_for_session,
     loop_command,
     loop_run_command,
+    loop_list_command,
+    loop_status_command,
 )
-from hermes_cli.main import cmd_loop, cmd_loop_run
+from hermes_cli.main import cmd_loop, cmd_loop_run, cmd_loop_list, cmd_loop_status
+from hermes_loop.store import LoopStore
 
 
 class _FakeSessionDB:
@@ -192,6 +195,31 @@ def test_verify_progress_for_session_returns_scoped_verdict(monkeypatch, tmp_pat
     verifier_prompt = _VerifierAgent.instances[0].calls[0]["user_message"]
     assert "latest_final_response" in verifier_prompt
     assert "Latest response" in verifier_prompt
+
+
+def test_verify_progress_for_session_invalid_payload_fails_closed(monkeypatch, tmp_path):
+    class _BadVerifierAgent(_DecisionAgent):
+        instances = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.calls = []
+            _BadVerifierAgent.instances.append(self)
+
+        def run_conversation(self, user_message, conversation_history=None, task_id=None):
+            self.calls.append({"user_message": user_message})
+            return {"final_response": "not valid json"}
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.loop.SessionDB", _FakeSessionDB)
+    monkeypatch.setattr("hermes_cli.loop.AIAgent", _BadVerifierAgent)
+
+    result = verify_progress_for_session("sess-1", "Keep going", "Latest response")
+
+    assert result["verdict"] == "stalled"
+    assert result["should_continue"] is False
+    assert result["stop_reason"] == "invalid_progress_verifier_payload"
+    assert "invalid verifier payload" in result["reason"].lower()
 
 
 def test_loop_command_continue_executes_one_step(monkeypatch, capsys, tmp_path):
@@ -527,3 +555,144 @@ def test_cmd_loop_run_does_not_raise_on_success(monkeypatch):
     )
 
     cmd_loop_run(Namespace())
+
+
+def test_loop_list_command_defaults_to_active_checkpoints(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    store = LoopStore()
+    store.write_checkpoint(
+        session_id="sess-active",
+        session_key="telegram:u1:c1",
+        payload={"goal": "Keep going", "active": True},
+    )
+    store.write_checkpoint(
+        session_id="sess-inactive",
+        session_key="telegram:u2:c2",
+        payload={"goal": "Already stopped", "active": False, "stop_reason": "done"},
+    )
+
+    result = loop_list_command(Namespace(all=False))
+
+    out = capsys.readouterr().out
+    summary = _last_json_line(out)
+    assert "Active persisted loops:" in out
+    assert "sess-active" in out
+    assert "sess-inactive" not in out
+    assert result["count"] == 1
+    assert result["active_only"] is True
+    assert summary["count"] == 1
+    assert summary["active_only"] is True
+    assert summary["events"][0]["session_id"] == "sess-active"
+
+
+def test_loop_list_command_all_includes_inactive_checkpoints(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    store = LoopStore()
+    store.write_checkpoint(
+        session_id="sess-active",
+        session_key="telegram:u1:c1",
+        payload={"goal": "Keep going", "active": True},
+    )
+    store.write_checkpoint(
+        session_id="sess-inactive",
+        session_key="telegram:u2:c2",
+        payload={"goal": "Already stopped", "active": False, "stop_reason": "done"},
+    )
+
+    result = loop_list_command(Namespace(all=True))
+
+    out = capsys.readouterr().out
+    summary = _last_json_line(out)
+    assert "Persisted loops:" in out
+    assert "sess-active" in out
+    assert "sess-inactive" in out
+    assert result["count"] == 2
+    assert result["active_only"] is False
+    assert summary["count"] == 2
+    assert summary["active_only"] is False
+
+
+def test_loop_list_command_empty_state(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    result = loop_list_command(Namespace(all=False))
+
+    out = capsys.readouterr().out
+    summary = _last_json_line(out)
+    assert "No active persisted loops found." in out
+    assert result["count"] == 0
+    assert result["exit_code"] == 0
+    assert summary["events"] == []
+
+
+def test_loop_status_command_shows_checkpoint_and_recent_events(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    store = LoopStore()
+    store.write_checkpoint(
+        session_id="sess-active",
+        session_key="telegram:u1:c1",
+        payload={
+            "goal": "Keep going",
+            "remaining_auto_turns": 2,
+            "last_result_preview": "Previous result preview.",
+            "active": True,
+        },
+    )
+    store.append_event(
+        session_id="sess-active",
+        event_type="loop_followup_scheduled",
+        payload={"goal": "Keep going", "remaining_auto_turns": 1},
+    )
+    store.append_event(
+        session_id="sess-active",
+        event_type="loop_stopped",
+        payload={"stop_reason": "model_stop", "last_result_preview": "Final result preview."},
+    )
+
+    result = loop_status_command(Namespace(session_id="sess-active"))
+
+    out = capsys.readouterr().out
+    summary = _last_json_line(out)
+    assert "Checkpoint summary:" in out
+    assert "- session_id: sess-active" in out
+    assert "Recent events:" in out
+    assert "loop_followup_scheduled" in out
+    assert "loop_stopped" in out
+    assert "model_stop" in out
+    assert result["checkpoint"]["session_id"] == "sess-active"
+    assert len(result["events"]) == 2
+    assert summary["checkpoint"]["remaining_auto_turns"] == 2
+
+
+def test_loop_status_command_missing_session_returns_nonzero(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    result = loop_status_command(Namespace(session_id="missing-session"))
+
+    out = capsys.readouterr().out
+    summary = _last_json_line(out)
+    assert "missing-session" in out
+    assert result["exit_code"] == 1
+    assert summary["checkpoint"] is None
+    assert summary["events"] == []
+
+
+def test_cmd_loop_list_does_not_raise_on_success(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.loop.loop_list_command",
+        lambda args: {"exit_code": 0, "count": 0, "events": []},
+    )
+
+    cmd_loop_list(Namespace())
+
+
+def test_cmd_loop_status_raises_system_exit_for_error(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.loop.loop_status_command",
+        lambda args: {"exit_code": 1, "checkpoint": None, "events": []},
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        cmd_loop_status(Namespace(session_id="missing-session"))
+
+    assert excinfo.value.code == 1

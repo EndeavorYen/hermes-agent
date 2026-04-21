@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_constants import get_hermes_home
+from hermes_loop import LoopStore
 from hermes_state import SessionDB
 from run_agent import AIAgent
 
@@ -173,6 +174,123 @@ def _emit_launcher_result(**payload: Any) -> Dict[str, Any]:
     }
     print(json.dumps(result, ensure_ascii=False))
     return result
+
+
+def _emit_inspection_result(**payload: Any) -> Dict[str, Any]:
+    result = {
+        "command": payload.get("command", "loop_inspection"),
+        "session_id": payload.get("session_id"),
+        "count": payload.get("count", 0),
+        "active_only": payload.get("active_only"),
+        "checkpoint": payload.get("checkpoint"),
+        "events": payload.get("events"),
+        "exit_code": payload.get("exit_code", 0),
+    }
+    print(json.dumps(result, ensure_ascii=False))
+    return result
+
+
+def _checkpoint_summary_fields(checkpoint: Dict[str, Any]) -> List[tuple[str, Any]]:
+    fields = [
+        ("session_id", checkpoint.get("session_id")),
+        ("session_key", checkpoint.get("session_key")),
+        ("active", checkpoint.get("active")),
+        ("updated_at", checkpoint.get("updated_at")),
+        ("goal", checkpoint.get("goal")),
+        ("remaining_auto_turns", checkpoint.get("remaining_auto_turns")),
+        ("stop_reason", checkpoint.get("stop_reason")),
+        ("last_prompt", checkpoint.get("last_prompt")),
+        ("last_prompt_norm", checkpoint.get("last_prompt_norm")),
+        ("last_result_preview", checkpoint.get("last_result_preview")),
+        ("channel_prompt", checkpoint.get("channel_prompt")),
+    ]
+    return [(key, value) for key, value in fields if value not in (None, "")]
+
+
+def loop_list_command(args: Namespace) -> Dict[str, Any]:
+    active_only = not bool(getattr(args, "all", False))
+    checkpoints = LoopStore().list_checkpoints(active_only=active_only)
+    if not checkpoints:
+        if active_only:
+            print("No active persisted loops found.")
+        else:
+            print("No persisted loops found.")
+        return _emit_inspection_result(
+            command="list",
+            count=0,
+            active_only=active_only,
+            checkpoint=None,
+            events=[],
+            exit_code=0,
+        )
+
+    heading = "Active persisted loops:" if active_only else "Persisted loops:"
+    print(heading)
+    for checkpoint in checkpoints:
+        session_id = str(checkpoint.get("session_id") or "")
+        active = bool(checkpoint.get("active", False))
+        updated_at = str(checkpoint.get("updated_at") or "")
+        goal = _preview_text(str(checkpoint.get("goal") or ""), limit=100)
+        status = "active" if active else "inactive"
+        suffix = f" goal={goal}" if goal else ""
+        print(f"- {session_id} [{status}] updated_at={updated_at}{suffix}")
+
+    return _emit_inspection_result(
+        command="list",
+        count=len(checkpoints),
+        active_only=active_only,
+        checkpoint=None,
+        events=checkpoints,
+        exit_code=0,
+    )
+
+
+def loop_status_command(args: Namespace) -> Dict[str, Any]:
+    session_id = (getattr(args, "session_id", "") or "").strip()
+    checkpoint = LoopStore().read_checkpoint(session_id)
+    if checkpoint is None:
+        print(f"Loop session '{session_id}' was not found in persisted artifacts.")
+        return _emit_inspection_result(
+            command="status",
+            session_id=session_id,
+            count=0,
+            checkpoint=None,
+            events=[],
+            exit_code=1,
+        )
+
+    event_limit = int(getattr(args, "events", 5) or 0)
+    events = LoopStore().read_events(session_id, limit=event_limit) if event_limit > 0 else []
+    print("Checkpoint summary:")
+    for key, value in _checkpoint_summary_fields(checkpoint):
+        print(f"- {key}: {value}")
+
+    print("Recent events:")
+    if not events:
+        print("- none")
+    else:
+        for event in events:
+            recorded_at = str(event.get("recorded_at") or "")
+            event_type = str(event.get("event_type") or "unknown")
+            details = []
+            for key in ("stop_reason", "goal", "remaining_auto_turns", "last_result_preview"):
+                value = event.get(key)
+                if value in (None, ""):
+                    continue
+                if key == "last_result_preview":
+                    value = _preview_text(str(value), limit=100)
+                details.append(f"{key}={value}")
+            detail_suffix = f" ({', '.join(details)})" if details else ""
+            print(f"- {recorded_at} {event_type}{detail_suffix}")
+
+    return _emit_inspection_result(
+        command="status",
+        session_id=session_id,
+        count=1,
+        checkpoint=checkpoint,
+        events=events,
+        exit_code=0,
+    )
 
 
 def _session_runtime_config(session_row: Dict[str, Any], args: Namespace) -> Dict[str, Any]:
@@ -411,9 +529,9 @@ def verify_progress_for_session(
     payload = _extract_json_object(result.get("final_response", ""))
     if not payload or payload.get("verdict") not in {"progress", "stalled", "done"}:
         return {
-            "verdict": "progress",
-            "reason": "Invalid verifier payload; defaulting to progress.",
-            "should_continue": True,
+            "verdict": "stalled",
+            "reason": "Invalid verifier payload; defaulting to stalled.",
+            "should_continue": False,
             "stop_reason": "invalid_progress_verifier_payload",
         }
     if not isinstance(payload.get("should_continue"), bool):
