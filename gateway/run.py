@@ -658,6 +658,7 @@ class GatewayRunner:
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
         self._session_run_generation: Dict[str, int] = {}
         self._loop_states: Dict[str, Dict[str, Any]] = {}
+        self._hydrate_loop_states_from_store()
 
         # Cache AIAgent instances per session to preserve prompt caching.
         # Without this, a new AIAgent is created per message, rebuilding the
@@ -1509,10 +1510,251 @@ class GatewayRunner:
             return
         merge_pending_message_event(adapter._pending_messages, session_key, event)
 
-    def _clear_loop_state(self, session_key: str) -> None:
+    def _persist_loop_checkpoint(self, session_key: str, state: Dict[str, Any]) -> bool:
+        session_id = str(state.get("session_id") or "").strip()
+        if not session_id:
+            return False
+        try:
+            from hermes_loop import LoopStore
+
+            LoopStore().write_checkpoint(
+                session_id=session_id,
+                session_key=session_key,
+                payload={
+                    "goal": str(state.get("goal") or ""),
+                    "remaining_auto_turns": int(state.get("remaining_auto_turns", 0) or 0),
+                    "last_prompt": str(state.get("last_prompt") or ""),
+                    "last_prompt_norm": str(state.get("last_prompt_norm") or ""),
+                    "last_result_preview": str(state.get("last_result_preview") or ""),
+                    "channel_prompt": state.get("channel_prompt"),
+                    "active": bool(state.get("active", True)),
+                    "stop_reason": str(state.get("stop_reason") or ""),
+                },
+            )
+            return True
+        except Exception:
+            logger.exception("Failed to persist loop checkpoint")
+            return False
+
+    def _append_loop_event(self, session_id: str, event_type: str, payload: Dict[str, Any]) -> bool:
+        if not (session_id or "").strip():
+            return False
+        try:
+            from hermes_loop import LoopStore
+
+            LoopStore().append_event(
+                session_id=session_id,
+                event_type=event_type,
+                payload=payload,
+            )
+            return True
+        except Exception:
+            logger.exception("Failed to append loop event")
+            return False
+
+    def _normalize_loop_checkpoint_state(
+        self,
+        checkpoint: Dict[str, Any],
+        *,
+        expected_session_key: str | None = None,
+        active_only: bool = False,
+    ) -> Dict[str, Any] | None:
+        try:
+            session_key = str(checkpoint.get("session_key") or "").strip()
+            session_id = str(checkpoint.get("session_id") or "").strip()
+            if not session_key or not session_id:
+                return None
+            if expected_session_key and session_key != expected_session_key:
+                return None
+            active = bool(checkpoint.get("active", False))
+            if active_only and not active:
+                return None
+            return {
+                "session_id": session_id,
+                "goal": str(checkpoint.get("goal") or ""),
+                "remaining_auto_turns": int(checkpoint.get("remaining_auto_turns", 0) or 0),
+                "last_prompt": str(checkpoint.get("last_prompt") or ""),
+                "last_prompt_norm": str(checkpoint.get("last_prompt_norm") or ""),
+                "last_result_preview": str(checkpoint.get("last_result_preview") or ""),
+                "channel_prompt": checkpoint.get("channel_prompt"),
+                "active": active,
+            }
+        except Exception:
+            return None
+
+    def _load_canonical_loop_state(
+        self,
+        *,
+        session_key: str,
+        session_id: str,
+        local_state: Dict[str, Any] | None,
+    ) -> tuple[Dict[str, Any] | None, str | None, str | None]:
+        try:
+            from hermes_loop import LoopStore
+
+            checkpoint = LoopStore().read_checkpoint(session_id)
+        except Exception:
+            logger.exception("Failed to read persisted loop checkpoint")
+            return None, "invalid_loop_checkpoint", "failed to read persisted loop checkpoint."
+
+        if not checkpoint:
+            return None, "missing_loop_checkpoint", "persisted loop checkpoint missing; stopping conservatively."
+
+        if not bool(checkpoint.get("active", False)):
+            return None, "inactive_loop_checkpoint", "persisted loop checkpoint is inactive; stopping conservatively."
+
+        canonical_state = self._normalize_loop_checkpoint_state(
+            checkpoint,
+            expected_session_key=session_key,
+            active_only=True,
+        )
+        if canonical_state is None:
+            return None, "invalid_loop_checkpoint", "persisted loop checkpoint is malformed; stopping conservatively."
+
+        if local_state:
+            comparable_keys = (
+                "goal",
+                "remaining_auto_turns",
+                "last_prompt",
+                "last_prompt_norm",
+                "last_result_preview",
+            )
+            if any(local_state.get(key) != canonical_state.get(key) for key in comparable_keys):
+                return None, "loop_checkpoint_mismatch", "persisted loop checkpoint diverged from in-memory state; stopping conservatively."
+
+        return canonical_state, None, None
+
+    def _stop_loop_for_persistence_failure(
+        self,
+        *,
+        session_key: str,
+        stop_reason: str,
+        reason: str,
+        event_payload: Dict[str, Any] | None = None,
+    ) -> str:
+        from hermes_cli.loop import format_loop_stop_notice
+
         loop_states = getattr(self, "_loop_states", None)
-        if isinstance(loop_states, dict):
-            loop_states.pop(session_key, None)
+        state = loop_states.pop(session_key, None) if isinstance(loop_states, dict) else None
+        session_id = str((state or {}).get("session_id") or "").strip()
+        if session_id:
+            try:
+                from hermes_loop import LoopStore
+
+                payload = {
+                    "goal": str((state or {}).get("goal") or ""),
+                    "remaining_auto_turns": int((state or {}).get("remaining_auto_turns", 0) or 0),
+                    "last_prompt": str((state or {}).get("last_prompt") or ""),
+                    "last_prompt_norm": str((state or {}).get("last_prompt_norm") or ""),
+                    "last_result_preview": str((state or {}).get("last_result_preview") or ""),
+                    "channel_prompt": (state or {}).get("channel_prompt"),
+                }
+                if event_payload:
+                    payload.update(event_payload)
+                LoopStore().mark_stopped(
+                    session_id=session_id,
+                    session_key=session_key,
+                    stop_reason=stop_reason,
+                    payload=payload,
+                )
+            except Exception:
+                logger.exception("Failed to persist conservative loop stop after persistence failure")
+        return format_loop_stop_notice(stop_reason, reason)
+
+    def _build_recovered_loop_event(self, session_key: str, state: Dict[str, Any]) -> MessageEvent | None:
+        next_prompt = str(state.get("last_prompt") or "").strip()
+        if not next_prompt:
+            return None
+        source = None
+        try:
+            if getattr(self, "session_store", None) is not None:
+                self.session_store._ensure_loaded()
+                entry = self.session_store._entries.get(session_key)
+                source = getattr(entry, "origin", None) if entry else None
+        except Exception as exc:
+            logger.debug("Failed to load session origin for recovered loop %s: %s", session_key, exc)
+        if source is None:
+            return None
+        return MessageEvent(
+            text=next_prompt,
+            source=source,
+            message_id=None,
+            internal=True,
+            channel_prompt=(state.get("channel_prompt") or None),
+        )
+
+    def _resume_recovered_loops(self) -> int:
+        resumed = 0
+        loop_states = getattr(self, "_loop_states", None)
+        if not isinstance(loop_states, dict):
+            return resumed
+        for session_key, state in list(loop_states.items()):
+            event = self._build_recovered_loop_event(session_key, state)
+            if event is None:
+                continue
+            task = asyncio.create_task(self._handle_message(event))
+            background_tasks = getattr(self, "_background_tasks", None)
+            if isinstance(background_tasks, set):
+                background_tasks.add(task)
+                task.add_done_callback(background_tasks.discard)
+            resumed += 1
+        return resumed
+
+    def _hydrate_loop_states_from_store(self) -> int:
+        loop_states = getattr(self, "_loop_states", None)
+        if not isinstance(loop_states, dict):
+            return 0
+        try:
+            from hermes_loop import LoopStore
+
+            checkpoints = LoopStore().list_checkpoints(active_only=True)
+        except Exception:
+            logger.exception("Failed to load persisted loop checkpoints")
+            return 0
+
+        recovered = 0
+        for checkpoint in checkpoints:
+            state = self._normalize_loop_checkpoint_state(checkpoint, active_only=True)
+            if state is None:
+                logger.debug("Skipping malformed loop checkpoint during hydration")
+                continue
+            loop_states[str(checkpoint.get("session_key") or "").strip()] = state
+            recovered += 1
+        return recovered
+
+    def _clear_loop_state(
+        self,
+        session_key: str,
+        *,
+        stop_reason: str | None = None,
+        event_type: str = "loop_cleared",
+        event_payload: Dict[str, Any] | None = None,
+    ) -> None:
+        loop_states = getattr(self, "_loop_states", None)
+        if not isinstance(loop_states, dict):
+            return
+        state = loop_states.pop(session_key, None)
+        if not state:
+            return
+        session_id = str(state.get("session_id") or "").strip()
+        if not session_id:
+            return
+        checkpoint_state = dict(state)
+        checkpoint_state["active"] = False
+        if stop_reason:
+            checkpoint_state["stop_reason"] = stop_reason
+        self._persist_loop_checkpoint(session_key, checkpoint_state)
+        payload = {
+            "goal": str(state.get("goal") or ""),
+            "remaining_auto_turns": int(state.get("remaining_auto_turns", 0) or 0),
+            "last_prompt_norm": str(state.get("last_prompt_norm") or ""),
+            "last_result_preview": str(state.get("last_result_preview") or ""),
+        }
+        if stop_reason:
+            payload["stop_reason"] = stop_reason
+        if event_payload:
+            payload.update(event_payload)
+        self._append_loop_event(session_id, event_type, payload)
 
     def _apply_loop_stop_notice(self, result: Dict[str, Any], stop_notice: str) -> Dict[str, Any]:
         final_text = (result.get("final_response") or "").rstrip()
@@ -1534,10 +1776,43 @@ class GatewayRunner:
         if not state:
             return None, None
 
+        from hermes_cli.loop import record_background_review, format_loop_stop_notice
+
+        canonical_state, checkpoint_stop_reason, checkpoint_stop_message = self._load_canonical_loop_state(
+            session_key=session_key,
+            session_id=session_id,
+            local_state=state,
+        )
+        if canonical_state is None:
+            goal = str(state.get("goal") or "").strip()
+            result_preview = str(state.get("last_result_preview") or "")
+            record_background_review(
+                session_id=session_id,
+                goal=goal,
+                progress_state="checkpoint_guard_stop",
+                stop_reason=checkpoint_stop_reason or "invalid_loop_checkpoint",
+                result_preview=result_preview,
+                source="bounded_loop_gateway",
+            )
+            self._clear_loop_state(
+                session_key,
+                stop_reason=checkpoint_stop_reason or "invalid_loop_checkpoint",
+                event_type="loop_stopped",
+                event_payload={
+                    "goal": goal,
+                    "reason": checkpoint_stop_message or "persisted loop checkpoint could not be trusted.",
+                    "result_preview": result_preview,
+                },
+            )
+            return None, format_loop_stop_notice(
+                checkpoint_stop_reason or "invalid_loop_checkpoint",
+                checkpoint_stop_message or "persisted loop checkpoint could not be trusted.",
+            )
+
+        state = canonical_state
+        loop_states[session_key] = state
         remaining_auto_turns = int(state.get("remaining_auto_turns", 0) or 0)
         if remaining_auto_turns <= 0:
-            from hermes_cli.loop import record_background_review, format_loop_stop_notice
-
             goal = str(state.get("goal") or "").strip()
             record_background_review(
                 session_id=session_id,
@@ -1547,7 +1822,16 @@ class GatewayRunner:
                 result_preview=str(state.get("last_result_preview") or ""),
                 source="bounded_loop_gateway",
             )
-            self._clear_loop_state(session_key)
+            self._clear_loop_state(
+                session_key,
+                stop_reason="max_auto_turns_reached",
+                event_type="loop_stopped",
+                event_payload={
+                    "goal": goal,
+                    "reason": "bounded auto-turn budget reached.",
+                    "result_preview": str(state.get("last_result_preview") or ""),
+                },
+            )
             return None, format_loop_stop_notice("max_auto_turns_reached")
 
         goal = str(state.get("goal") or "").strip()
@@ -1574,7 +1858,16 @@ class GatewayRunner:
                 result_preview=str(state.get("last_result_preview") or ""),
                 source="bounded_loop_gateway",
             )
-            self._clear_loop_state(session_key)
+            self._clear_loop_state(
+                session_key,
+                stop_reason="empty_continuation_result",
+                event_type="loop_stopped",
+                event_payload={
+                    "goal": goal,
+                    "reason": "continuation produced no visible result.",
+                    "result_preview": str(state.get("last_result_preview") or ""),
+                },
+            )
             return None, format_loop_stop_notice("empty_continuation_result")
         previous_result_preview = str(state.get("last_result_preview") or "")
         if previous_result_preview and result_preview == previous_result_preview:
@@ -1586,9 +1879,29 @@ class GatewayRunner:
                 result_preview=previous_result_preview,
                 source="bounded_loop_gateway",
             )
-            self._clear_loop_state(session_key)
+            self._clear_loop_state(
+                session_key,
+                stop_reason="duplicate_result_preview",
+                event_type="loop_stopped",
+                event_payload={
+                    "goal": goal,
+                    "reason": "continuation produced no meaningful new result.",
+                    "result_preview": previous_result_preview,
+                },
+            )
             return None, format_loop_stop_notice("duplicate_result_preview")
         state["last_result_preview"] = result_preview
+        if not self._persist_loop_checkpoint(session_key, state):
+            return None, self._stop_loop_for_persistence_failure(
+                session_key=session_key,
+                stop_reason="loop_checkpoint_persist_failed",
+                reason="failed to persist loop checkpoint after progress; stopping conservatively.",
+                event_payload={
+                    "goal": goal,
+                    "reason": "failed to persist loop checkpoint after progress.",
+                    "result_preview": result_preview,
+                },
+            )
         record_background_review(
             session_id=session_id,
             goal=goal,
@@ -1614,7 +1927,16 @@ class GatewayRunner:
                 result_preview=result_preview,
                 source="bounded_loop_gateway",
             )
-            self._clear_loop_state(session_key)
+            self._clear_loop_state(
+                session_key,
+                stop_reason="progress_verifier_done",
+                event_type="loop_stopped",
+                event_payload={
+                    "goal": goal,
+                    "reason": verifier_reason or "Latest continuation appears effectively complete.",
+                    "result_preview": result_preview,
+                },
+            )
             return None, format_loop_stop_notice("model_stop", verifier_reason or "Latest continuation appears effectively complete.")
         if verifier_verdict == "stalled" or verifier.get("should_continue") is False:
             record_background_review(
@@ -1625,7 +1947,16 @@ class GatewayRunner:
                 result_preview=result_preview,
                 source="bounded_loop_gateway",
             )
-            self._clear_loop_state(session_key)
+            self._clear_loop_state(
+                session_key,
+                stop_reason="progress_verifier_stalled",
+                event_type="loop_stopped",
+                event_payload={
+                    "goal": goal,
+                    "reason": verifier_reason or "Latest continuation did not materially advance the goal.",
+                    "result_preview": result_preview,
+                },
+            )
             return None, format_loop_stop_notice("duplicate_result_preview", verifier_reason or "Latest continuation did not materially advance the goal.")
 
         decision = await asyncio.to_thread(
@@ -1644,7 +1975,16 @@ class GatewayRunner:
                 result_preview=result_preview,
                 source="bounded_loop_gateway",
             )
-            self._clear_loop_state(session_key)
+            self._clear_loop_state(
+                session_key,
+                stop_reason=stop_reason,
+                event_type="loop_stopped",
+                event_payload={
+                    "goal": goal,
+                    "reason": reason,
+                    "result_preview": result_preview,
+                },
+            )
             return None, format_loop_stop_notice(stop_reason, reason)
 
         next_prompt = (decision.get("next_prompt") or "").strip()
@@ -1657,7 +1997,16 @@ class GatewayRunner:
                 result_preview=result_preview,
                 source="bounded_loop_gateway",
             )
-            self._clear_loop_state(session_key)
+            self._clear_loop_state(
+                session_key,
+                stop_reason="missing_next_prompt",
+                event_type="loop_stopped",
+                event_payload={
+                    "goal": goal,
+                    "reason": "controller chose continue without a bounded next prompt.",
+                    "result_preview": result_preview,
+                },
+            )
             return None, format_loop_stop_notice("missing_next_prompt")
 
         next_prompt_norm = _normalize_loop_prompt(next_prompt)
@@ -1672,12 +2021,54 @@ class GatewayRunner:
                 result_preview=result_preview,
                 source="bounded_loop_gateway",
             )
-            self._clear_loop_state(session_key)
+            self._clear_loop_state(
+                session_key,
+                stop_reason="repeated_next_prompt",
+                event_type="loop_stopped",
+                event_payload={
+                    "goal": goal,
+                    "reason": "repeated next prompt (stall suppression).",
+                    "next_prompt": next_prompt,
+                    "result_preview": result_preview,
+                },
+            )
             return None, format_loop_stop_notice("repeated_next_prompt")
 
+        state["last_prompt"] = next_prompt
         state["last_prompt_norm"] = next_prompt_norm
         state["remaining_auto_turns"] = remaining_auto_turns - 1
         loop_states[session_key] = state
+        if not self._persist_loop_checkpoint(session_key, state):
+            return None, self._stop_loop_for_persistence_failure(
+                session_key=session_key,
+                stop_reason="loop_checkpoint_persist_failed",
+                reason="failed to persist scheduled loop follow-up; stopping conservatively.",
+                event_payload={
+                    "goal": goal,
+                    "next_prompt": next_prompt,
+                    "result_preview": result_preview,
+                },
+            )
+        if not self._append_loop_event(
+            session_id,
+            "loop_followup_scheduled",
+            {
+                "goal": goal,
+                "next_prompt": next_prompt,
+                "remaining_auto_turns": state["remaining_auto_turns"],
+                "result_preview": result_preview,
+            },
+        ):
+            return None, self._stop_loop_for_persistence_failure(
+                session_key=session_key,
+                stop_reason="loop_event_persist_failed",
+                reason="failed to persist scheduled loop event; stopping conservatively.",
+                event_payload={
+                    "goal": goal,
+                    "next_prompt": next_prompt,
+                    "result_preview": result_preview,
+                },
+            )
 
         return MessageEvent(
             text=next_prompt,
@@ -1712,12 +2103,45 @@ class GatewayRunner:
                 next_prompt = (decision.get("next_prompt") or "").strip()
                 if next_prompt:
                     self._loop_states[session_key] = {
+                        "session_id": session_entry.session_id,
                         "goal": goal,
                         "remaining_auto_turns": 2,
+                        "last_prompt": next_prompt,
                         "last_prompt_norm": _normalize_loop_prompt(next_prompt),
                         "last_result_preview": "",
                         "channel_prompt": getattr(event, "channel_prompt", None),
+                        "active": True,
                     }
+                    if not self._persist_loop_checkpoint(session_key, self._loop_states[session_key]):
+                        self._stop_loop_for_persistence_failure(
+                            session_key=session_key,
+                            stop_reason="loop_checkpoint_persist_failed",
+                            reason="failed to persist loop start; stopping conservatively.",
+                            event_payload={
+                                "goal": goal,
+                                "next_prompt": next_prompt,
+                            },
+                        )
+                        return "Loop stopped: failed to persist loop start (loop_checkpoint_persist_failed)"
+                    if not self._append_loop_event(
+                        session_entry.session_id,
+                        "loop_started",
+                        {
+                            "goal": goal,
+                            "next_prompt": next_prompt,
+                            "remaining_auto_turns": 2,
+                        },
+                    ):
+                        self._stop_loop_for_persistence_failure(
+                            session_key=session_key,
+                            stop_reason="loop_event_persist_failed",
+                            reason="failed to persist loop start event; stopping conservatively.",
+                            event_payload={
+                                "goal": goal,
+                                "next_prompt": next_prompt,
+                            },
+                        )
+                        return "Loop stopped: failed to persist loop start event (loop_event_persist_failed)"
                     event.text = next_prompt
                     return None
                 self._clear_loop_state(session_key)
@@ -2428,6 +2852,10 @@ class GatewayRunner:
 
         # Notify the chat that initiated /restart that the gateway is back.
         await self._send_restart_notification()
+
+        recovered_loop_count = self._resume_recovered_loops()
+        if recovered_loop_count:
+            logger.info("Resumed %d recovered loop(s) from persisted checkpoints", recovered_loop_count)
 
         # Drain any recovered process watchers (from crash recovery checkpoint)
         try:

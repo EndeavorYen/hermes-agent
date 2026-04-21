@@ -15,6 +15,7 @@ import pytest
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
+from hermes_loop.store import LoopStore
 
 
 def _make_source() -> SessionSource:
@@ -82,6 +83,36 @@ def _read_background_reviews(tmp_path):
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _read_loop_checkpoint(tmp_path, session_id="sess-1"):
+    path = tmp_path / "state" / "loops" / session_id / "checkpoint.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _read_loop_events(tmp_path, session_id="sess-1"):
+    path = tmp_path / "state" / "loops" / session_id / "events.jsonl"
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _seed_loop_state(tmp_path, runner, *, session_id="sess-1", session_key=None, **state):
+    session_key = session_key or build_session_key(_make_source())
+    payload = {
+        "goal": str(state.get("goal") or "Keep going"),
+        "remaining_auto_turns": int(state.get("remaining_auto_turns", 0) or 0),
+        "last_prompt": str(state.get("last_prompt") or ""),
+        "last_prompt_norm": str(state.get("last_prompt_norm") or ""),
+        "last_result_preview": str(state.get("last_result_preview") or ""),
+        "channel_prompt": state.get("channel_prompt"),
+        "active": bool(state.get("active", True)),
+    }
+    LoopStore().write_checkpoint(
+        session_id=session_id,
+        session_key=session_key,
+        payload=payload,
+    )
+    runner._loop_states[session_key] = {"session_id": session_id, **payload}
+    return session_key
 
 
 @pytest.mark.asyncio
@@ -269,12 +300,14 @@ async def test_loop_built_in_command_falls_back_to_skill_mode_on_controller_erro
 async def test_maybe_schedule_loop_followup_returns_internal_event(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     runner = _make_runner()
-    runner._loop_states[build_session_key(_make_source())] = {
-        "goal": "Keep going",
-        "remaining_auto_turns": 2,
-        "last_prompt_norm": "initial prompt",
-        "last_result_preview": "",
-    }
+    session_key = _seed_loop_state(
+        tmp_path,
+        runner,
+        goal="Keep going",
+        remaining_auto_turns=2,
+        last_prompt_norm="initial prompt",
+        last_result_preview="",
+    )
 
     with patch(
         "hermes_cli.loop.decide_continuation_for_session",
@@ -288,7 +321,7 @@ async def test_maybe_schedule_loop_followup_returns_internal_event(monkeypatch, 
         return_value={"verdict": "progress", "reason": "real progress", "should_continue": True},
     ):
         event, stop_notice = await runner._maybe_schedule_loop_followup(
-            session_key=build_session_key(_make_source()),
+            session_key=session_key,
             session_id="sess-1",
             source=_make_source(),
             final_response="Implemented the next thin slice.",
@@ -298,23 +331,28 @@ async def test_maybe_schedule_loop_followup_returns_internal_event(monkeypatch, 
     assert stop_notice is None
     assert event.internal is True
     assert event.text == "Implement the next thin slice."
-    assert runner._loop_states[build_session_key(_make_source())]["remaining_auto_turns"] == 1
-    assert runner._loop_states[build_session_key(_make_source())]["last_result_preview"] == "Implemented the next thin slice."
+    assert runner._loop_states[session_key]["remaining_auto_turns"] == 1
+    assert runner._loop_states[session_key]["last_result_preview"] == "Implemented the next thin slice."
     reviews = _read_background_reviews(tmp_path)
     assert reviews[-1]["progress_state"] == "meaningful_result"
     assert reviews[-1]["source"] == "bounded_loop_gateway"
+    checkpoint = _read_loop_checkpoint(tmp_path)
+    assert checkpoint["remaining_auto_turns"] == 1
+    assert checkpoint["last_result_preview"] == "Implemented the next thin slice."
 
 
 @pytest.mark.asyncio
 async def test_maybe_schedule_loop_followup_stops_on_repeated_prompt(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     runner = _make_runner()
-    runner._loop_states[build_session_key(_make_source())] = {
-        "goal": "Keep going",
-        "remaining_auto_turns": 2,
-        "last_prompt_norm": "implement the next thin slice.",
-        "last_result_preview": "fresh result",
-    }
+    session_key = _seed_loop_state(
+        tmp_path,
+        runner,
+        goal="Keep going",
+        remaining_auto_turns=2,
+        last_prompt_norm="implement the next thin slice.",
+        last_result_preview="fresh result",
+    )
 
     with patch(
         "hermes_cli.loop.decide_continuation_for_session",
@@ -328,7 +366,7 @@ async def test_maybe_schedule_loop_followup_stops_on_repeated_prompt(monkeypatch
         return_value={"verdict": "progress", "reason": "real progress", "should_continue": True},
     ):
         event, stop_notice = await runner._maybe_schedule_loop_followup(
-            session_key=build_session_key(_make_source()),
+            session_key=session_key,
             session_id="sess-1",
             source=_make_source(),
             final_response="Different new result",
@@ -336,7 +374,7 @@ async def test_maybe_schedule_loop_followup_stops_on_repeated_prompt(monkeypatch
 
     assert event is None
     assert "repeated next prompt" in stop_notice.lower()
-    assert build_session_key(_make_source()) not in runner._loop_states
+    assert session_key not in runner._loop_states
     reviews = _read_background_reviews(tmp_path)
     assert reviews[-1]["progress_state"] == "repeated_prompt"
     assert reviews[-1]["stop_reason"] == "repeated_next_prompt"
@@ -346,12 +384,14 @@ async def test_maybe_schedule_loop_followup_stops_on_repeated_prompt(monkeypatch
 async def test_maybe_schedule_loop_followup_stops_on_duplicate_result_preview(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     runner = _make_runner()
-    runner._loop_states[build_session_key(_make_source())] = {
-        "goal": "Keep going",
-        "remaining_auto_turns": 2,
-        "last_prompt_norm": "different prompt",
-        "last_result_preview": "Repeated summary",
-    }
+    session_key = _seed_loop_state(
+        tmp_path,
+        runner,
+        goal="Keep going",
+        remaining_auto_turns=2,
+        last_prompt_norm="different prompt",
+        last_result_preview="Repeated summary",
+    )
 
     with patch(
         "hermes_cli.loop.decide_continuation_for_session",
@@ -365,7 +405,7 @@ async def test_maybe_schedule_loop_followup_stops_on_duplicate_result_preview(mo
         return_value={"verdict": "progress", "reason": "real progress", "should_continue": True},
     ):
         event, stop_notice = await runner._maybe_schedule_loop_followup(
-            session_key=build_session_key(_make_source()),
+            session_key=session_key,
             session_id="sess-1",
             source=_make_source(),
             final_response="Repeated summary",
@@ -373,7 +413,7 @@ async def test_maybe_schedule_loop_followup_stops_on_duplicate_result_preview(mo
 
     assert event is None
     assert "no meaningful new result" in stop_notice.lower()
-    assert build_session_key(_make_source()) not in runner._loop_states
+    assert session_key not in runner._loop_states
     reviews = _read_background_reviews(tmp_path)
     assert reviews[-1]["progress_state"] == "duplicate_result"
     assert reviews[-1]["stop_reason"] == "duplicate_result_preview"
@@ -383,19 +423,21 @@ async def test_maybe_schedule_loop_followup_stops_on_duplicate_result_preview(mo
 async def test_maybe_schedule_loop_followup_stops_on_semantic_stall(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     runner = _make_runner()
-    runner._loop_states[build_session_key(_make_source())] = {
-        "goal": "Keep going",
-        "remaining_auto_turns": 2,
-        "last_prompt_norm": "different prompt",
-        "last_result_preview": "Older result",
-    }
+    session_key = _seed_loop_state(
+        tmp_path,
+        runner,
+        goal="Keep going",
+        remaining_auto_turns=2,
+        last_prompt_norm="different prompt",
+        last_result_preview="Older result",
+    )
 
     with patch(
         "hermes_cli.loop.verify_progress_for_session",
         return_value={"verdict": "stalled", "reason": "Mostly restated prior status.", "should_continue": False},
     ):
         event, stop_notice = await runner._maybe_schedule_loop_followup(
-            session_key=build_session_key(_make_source()),
+            session_key=session_key,
             session_id="sess-1",
             source=_make_source(),
             final_response="Fresh result",
@@ -403,7 +445,7 @@ async def test_maybe_schedule_loop_followup_stops_on_semantic_stall(monkeypatch,
 
     assert event is None
     assert "did not materially advance" in stop_notice.lower() or "no meaningful new result" in stop_notice.lower()
-    assert build_session_key(_make_source()) not in runner._loop_states
+    assert session_key not in runner._loop_states
     reviews = _read_background_reviews(tmp_path)
     assert reviews[-1]["progress_state"] == "semantic_stall"
     assert reviews[-1]["stop_reason"] == "progress_verifier_stalled"
@@ -413,19 +455,21 @@ async def test_maybe_schedule_loop_followup_stops_on_semantic_stall(monkeypatch,
 async def test_maybe_schedule_loop_followup_stops_on_semantic_done(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     runner = _make_runner()
-    runner._loop_states[build_session_key(_make_source())] = {
-        "goal": "Keep going",
-        "remaining_auto_turns": 2,
-        "last_prompt_norm": "different prompt",
-        "last_result_preview": "Older result",
-    }
+    session_key = _seed_loop_state(
+        tmp_path,
+        runner,
+        goal="Keep going",
+        remaining_auto_turns=2,
+        last_prompt_norm="different prompt",
+        last_result_preview="Older result",
+    )
 
     with patch(
         "hermes_cli.loop.verify_progress_for_session",
         return_value={"verdict": "done", "reason": "Latest continuation appears effectively complete.", "should_continue": False},
     ):
         event, stop_notice = await runner._maybe_schedule_loop_followup(
-            session_key=build_session_key(_make_source()),
+            session_key=session_key,
             session_id="sess-1",
             source=_make_source(),
             final_response="Fresh result",
@@ -433,7 +477,7 @@ async def test_maybe_schedule_loop_followup_stops_on_semantic_done(monkeypatch, 
 
     assert event is None
     assert "effectively complete" in stop_notice.lower() or "no clear bounded next step" in stop_notice.lower()
-    assert build_session_key(_make_source()) not in runner._loop_states
+    assert session_key not in runner._loop_states
     reviews = _read_background_reviews(tmp_path)
     assert reviews[-1]["progress_state"] == "semantic_done"
     assert reviews[-1]["stop_reason"] == "progress_verifier_done"
@@ -443,15 +487,17 @@ async def test_maybe_schedule_loop_followup_stops_on_semantic_done(monkeypatch, 
 async def test_maybe_schedule_loop_followup_reports_max_auto_turns(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     runner = _make_runner()
-    runner._loop_states[build_session_key(_make_source())] = {
-        "goal": "Keep going",
-        "remaining_auto_turns": 0,
-        "last_prompt_norm": "prompt",
-        "last_result_preview": "Recent progress",
-    }
+    session_key = _seed_loop_state(
+        tmp_path,
+        runner,
+        goal="Keep going",
+        remaining_auto_turns=0,
+        last_prompt_norm="prompt",
+        last_result_preview="Recent progress",
+    )
 
     event, stop_notice = await runner._maybe_schedule_loop_followup(
-        session_key=build_session_key(_make_source()),
+        session_key=session_key,
         session_id="sess-1",
         source=_make_source(),
         final_response="Recent progress",
@@ -459,7 +505,7 @@ async def test_maybe_schedule_loop_followup_reports_max_auto_turns(monkeypatch, 
 
     assert event is None
     assert "auto-turn budget" in stop_notice.lower()
-    assert build_session_key(_make_source()) not in runner._loop_states
+    assert session_key not in runner._loop_states
     reviews = _read_background_reviews(tmp_path)
     assert reviews[-1]["progress_state"] == "max_auto_turns"
     assert reviews[-1]["stop_reason"] == "max_auto_turns_reached"
