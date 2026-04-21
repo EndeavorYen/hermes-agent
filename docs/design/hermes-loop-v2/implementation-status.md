@@ -14,6 +14,36 @@ It separates:
 3. `ef7b9e93` — top-level status visibility
 4. `955b1594` — richer control state + anti-stall guards
 5. `7f157794` — operator mutation commands
+6. `02b23acb` — fail closed when recovered replay cannot resume
+7. `197d1698` — observable-evidence progress gate
+8. `b19897b2` — persisted loop goal artifacts
+
+## Landed package surface to review
+
+- `gateway/run.py`
+  - persisted checkpoint hydration / replay
+  - live loop state mirroring + checkpoint watcher
+  - operator pause/resume/stop application
+  - observable-evidence progress gating
+  - persisted goal artifact consultation during followup/recovery
+- `hermes_cli/loop.py`
+  - bounded decision / verifier loop runner
+  - background review persistence
+  - operator-facing stop notices
+  - observable-evidence gating parity for CLI continuation checks
+  - persisted goal artifact consultation when deciding/verifying continuation
+- `hermes_loop/store.py`
+  - checkpoint + event persistence
+  - `goal.json` write/read helpers
+  - recovered goal artifact loading for runtime correlation
+- `tests/gateway/test_loop_recovery.py`
+  - restart hydration, conservative recovery, goal artifact replay coverage
+- `tests/gateway/test_unknown_command.py`
+  - gateway loop operator command coverage and persisted-goal followup behavior
+- `tests/hermes_cli/test_loop.py`
+  - CLI continuation guards, evidence gate, and persisted-goal behavior
+- `tests/hermes_loop/test_store.py`
+  - checkpoint/event/goal artifact store contract coverage
 
 ## What is landed now
 

@@ -10,22 +10,34 @@ It is intentionally **thin and upstream-friendly**:
 
 ## Current grounded baseline
 
-Today Hermes already has a bounded continuation slice:
+Today Hermes already has a durable thin slice for bounded continuation:
 - `hermes_cli/loop.py`
   - `decide_continuation_for_session()`
   - `verify_progress_for_session()`
   - `record_background_review()` to `background_reviews.jsonl`
   - `format_loop_stop_notice()`
   - bounded CLI loop runner
+  - observable-evidence gating for obviously unsupported progress claims
+  - persisted `goal.json` consultation during decision / verifier followup
 - `gateway/run.py`
   - `_loop_states` in-memory gateway state
   - `_maybe_schedule_loop_followup()`
   - `_apply_loop_stop_notice()`
   - gateway auto-followup and semantic progress verification
+  - checkpoint hydration / conservative replay of active loops
+  - checkpoint watcher so persisted operator writes affect live loop state
+  - observable-evidence gating for unsupported self-report progress
+  - persisted `goal.json` consultation during recovery / followup
+- `hermes_loop/store.py`
+  - checkpoint + event persistence via `LoopStore`
+  - `goal.json` artifact read/write helpers for immutable goal correlation
 - `agent/skill_commands.py`
   - continuation skill routing / fallback path
-- `tests/hermes_cli/test_loop.py`
-  - bounded loop controller behavior coverage
+- tests
+  - `tests/hermes_cli/test_loop.py`
+  - `tests/gateway/test_loop_recovery.py`
+  - `tests/gateway/test_unknown_command.py`
+  - `tests/hermes_loop/test_store.py`
 
 Loop v2 should evolve this slice into a durable long-running runtime without replacing Hermes with a separate agent framework.
 
