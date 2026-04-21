@@ -2756,11 +2756,13 @@ class GatewayRunner:
                         pending_wakeup_at = self._compute_pending_wakeup_at(str(decision.get("wake_after") or "")) or ""
                         if not pending_wakeup_at:
                             return "Loop stopped: controller chose wait without a bounded wake_after (missing_wake_after)"
+                    goal_id = _stable_goal_id(session_entry.session_id, goal)
+                    run_id = _new_run_id()
                     self._loop_states[session_key] = {
                         "session_id": session_entry.session_id,
                         "goal": goal,
-                        "goal_id": _stable_goal_id(session_entry.session_id, goal),
-                        "run_id": _new_run_id(),
+                        "goal_id": goal_id,
+                        "run_id": run_id,
                         "remaining_auto_turns": loop_budgets["remaining_auto_turns"],
                         "last_prompt": next_prompt,
                         "last_prompt_norm": _normalize_loop_prompt(next_prompt),
@@ -2782,45 +2784,38 @@ class GatewayRunner:
                         "inflight_prompt": "",
                         "inflight_started_at": "",
                     }
-                    if not self._persist_loop_checkpoint(session_key, self._loop_states[session_key]):
-                        self._stop_loop_for_persistence_failure(
+                    schedule_result = LoopRuntime().schedule_initial(
+                        session_id=session_entry.session_id,
+                        session_key=session_key,
+                        goal=goal,
+                        goal_id=goal_id,
+                        run_id=run_id,
+                        next_prompt=next_prompt,
+                        next_prompt_norm=_normalize_loop_prompt(next_prompt),
+                        expected_evidence=str(decision.get("expected_evidence") or "").strip(),
+                        remaining_auto_turns=loop_budgets["remaining_auto_turns"],
+                        max_retry_budget=loop_budgets["max_retry_budget"],
+                        idle_timeout_seconds=loop_budgets["idle_timeout_seconds"],
+                        channel_prompt=getattr(event, "channel_prompt", None),
+                        pending_wakeup_at=pending_wakeup_at,
+                        deferred=deferred,
+                    )
+                    if not schedule_result.get("ok"):
+                        return self._stop_loop_for_persistence_failure(
                             session_key=session_key,
-                            stop_reason="loop_checkpoint_persist_failed",
-                            reason="failed to persist loop start; stopping conservatively.",
+                            stop_reason="loop_schedule_initial_failed",
+                            reason="failed to persist loop start through runtime; stopping conservatively.",
                             event_payload={
                                 "goal": goal,
                                 "next_prompt": next_prompt,
                                 "pending_wakeup_at": pending_wakeup_at,
                             },
                         )
-                        return "Loop stopped: failed to persist loop start (loop_checkpoint_persist_failed)"
-                    if not self._append_loop_event(
-                        session_entry.session_id,
-                        "loop_started",
-                        {
-                            "goal": goal,
-                            "goal_id": self._loop_states[session_key]["goal_id"],
-                            "run_id": self._loop_states[session_key]["run_id"],
-                            "next_prompt": next_prompt,
-                            "expected_evidence": self._loop_states[session_key]["expected_evidence"],
-                            "remaining_auto_turns": loop_budgets["remaining_auto_turns"],
-                            "idle_timeout_seconds": loop_budgets["idle_timeout_seconds"],
-                            "max_retry_budget": loop_budgets["max_retry_budget"],
-                            "pending_wakeup_at": pending_wakeup_at,
-                            "deferred": deferred,
-                        },
-                    ):
-                        self._stop_loop_for_persistence_failure(
-                            session_key=session_key,
-                            stop_reason="loop_event_persist_failed",
-                            reason="failed to persist loop start event; stopping conservatively.",
-                            event_payload={
-                                "goal": goal,
-                                "next_prompt": next_prompt,
-                                "pending_wakeup_at": pending_wakeup_at,
-                            },
-                        )
-                        return "Loop stopped: failed to persist loop start event (loop_event_persist_failed)"
+                    checkpoint = schedule_result.get("checkpoint")
+                    if isinstance(checkpoint, dict) and str(checkpoint.get("session_key") or session_key) == session_key:
+                        self._loop_states[session_key] = dict(checkpoint)
+                    else:
+                        self._loop_states[session_key] = dict(self._loop_states[session_key])
                     if not self._write_loop_goal_artifact(session_key, session_entry.session_id, goal):
                         self._stop_loop_for_persistence_failure(
                             session_key=session_key,
@@ -2831,7 +2826,7 @@ class GatewayRunner:
                         return "Loop stopped: failed to persist loop goal artifact (loop_goal_artifact_persist_failed)"
                     if deferred:
                         return self._format_loop_wait_notice(pending_wakeup_at)
-                    event.text = next_prompt
+                    event.text = str(self._loop_states[session_key].get("last_prompt") or next_prompt)
                     return None
                 self._clear_loop_state(session_key)
                 return "Loop controller chose continue but did not provide a next prompt."

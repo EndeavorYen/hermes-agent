@@ -126,6 +126,75 @@ class LoopRuntime:
         )
         return {"ok": True, "checkpoint": updated, "event": event}
 
+    def schedule_initial(
+        self,
+        *,
+        session_id: str,
+        session_key: str,
+        goal: str,
+        goal_id: str,
+        run_id: str,
+        next_prompt: str,
+        next_prompt_norm: str,
+        expected_evidence: str,
+        remaining_auto_turns: int,
+        max_retry_budget: int,
+        idle_timeout_seconds: int,
+        channel_prompt: str | None,
+        pending_wakeup_at: str,
+        deferred: bool,
+    ) -> dict[str, Any]:
+        checkpoint = {"session_key": str(session_key or self._cli_session_key(session_id))}
+        try:
+            updated = self._write_checkpoint(
+                session_id,
+                checkpoint,
+                {
+                    "goal": str(goal or ""),
+                    "goal_id": str(goal_id or ""),
+                    "run_id": str(run_id or ""),
+                    "remaining_auto_turns": int(remaining_auto_turns or 0),
+                    "last_prompt": str(next_prompt or ""),
+                    "last_prompt_norm": str(next_prompt_norm or ""),
+                    "last_result_preview": "",
+                    "expected_evidence": str(expected_evidence or ""),
+                    "channel_prompt": channel_prompt,
+                    "active": True,
+                    "state": "waiting",
+                    "resumable": True,
+                    "stop_reason": "",
+                    "stop_class": "",
+                    "stop_message": "",
+                    "last_progress_summary": "",
+                    "retry_count": 0,
+                    "max_retry_budget": int(max_retry_budget or 0),
+                    "idle_timeout_seconds": int(idle_timeout_seconds or 0),
+                    "last_activity_at": self._now_iso(),
+                    "pending_wakeup_at": str(pending_wakeup_at or ""),
+                    "inflight_prompt": "",
+                    "inflight_started_at": "",
+                },
+            )
+            event = self.store.append_event(
+                session_id=session_id,
+                event_type="loop_started",
+                payload={
+                    "goal": str(goal or ""),
+                    "goal_id": str(goal_id or ""),
+                    "run_id": str(run_id or ""),
+                    "next_prompt": str(next_prompt or ""),
+                    "expected_evidence": str(expected_evidence or ""),
+                    "remaining_auto_turns": int(remaining_auto_turns or 0),
+                    "idle_timeout_seconds": int(idle_timeout_seconds or 0),
+                    "max_retry_budget": int(max_retry_budget or 0),
+                    "pending_wakeup_at": str(pending_wakeup_at or ""),
+                    "deferred": bool(deferred),
+                },
+            )
+        except Exception:
+            return self._error("schedule_initial_failed", checkpoint=checkpoint)
+        return {"ok": True, "checkpoint": updated, "event": event}
+
     def schedule_continue(
         self,
         session_id: str,

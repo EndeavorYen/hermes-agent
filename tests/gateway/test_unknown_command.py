@@ -234,7 +234,7 @@ async def test_underscored_alias_for_hyphenated_builtin_not_flagged(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_loop_built_in_command_routes_through_bounded_controller(monkeypatch, tmp_path):
+async def test_loop_built_in_command_continue_path_uses_runtime_schedule_initial(monkeypatch, tmp_path):
     import gateway.run as gateway_run
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -245,6 +245,34 @@ async def test_loop_built_in_command_routes_through_bounded_controller(monkeypat
         gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
     )
 
+    runtime_checkpoint = {
+        "session_id": "sess-1",
+        "session_key": build_session_key(_make_source()),
+        "goal": "finish the refactor",
+        "goal_id": "goal-runtime-start",
+        "run_id": "run-runtime-start",
+        "remaining_auto_turns": 5,
+        "last_prompt": "Implement the next thin slice and verify it.",
+        "last_prompt_norm": "implement the next thin slice and verify it.",
+        "last_result_preview": "",
+        "expected_evidence": "tests/foo.py",
+        "channel_prompt": None,
+        "active": True,
+        "state": "waiting",
+        "resumable": True,
+        "stop_reason": "",
+        "stop_class": "",
+        "stop_message": "",
+        "last_progress_summary": "",
+        "retry_count": 0,
+        "max_retry_budget": 3,
+        "idle_timeout_seconds": 1800,
+        "last_activity_at": "2026-01-01T00:00:00+00:00",
+        "pending_wakeup_at": "",
+        "inflight_prompt": "",
+        "inflight_started_at": "",
+    }
+
     with patch(
         "hermes_cli.loop.decide_continuation_for_session",
         return_value={
@@ -254,36 +282,34 @@ async def test_loop_built_in_command_routes_through_bounded_controller(monkeypat
             "expected_evidence": "tests/foo.py",
             "session_id": "sess-1",
         },
-    ) as mock_decide:
+    ) as mock_decide, patch(
+        "gateway.run.LoopRuntime.schedule_initial",
+        return_value={"ok": True, "checkpoint": runtime_checkpoint},
+    ) as mock_schedule_initial:
         result = await runner._handle_message(
             _make_event("/loop turns=5 timeout=30m retries=3 finish the refactor")
         )
 
     assert result == "handled"
     mock_decide.assert_called_once_with("sess-1", "finish the refactor")
-    state = runner._loop_states[build_session_key(_make_source())]
-    assert state["goal"] == "finish the refactor"
-    assert state["remaining_auto_turns"] == 5
-    assert state["idle_timeout_seconds"] == 1800
-    assert state["max_retry_budget"] == 3
-    assert state["goal_id"]
-    assert state["run_id"]
-    assert state["expected_evidence"] == "tests/foo.py"
-    checkpoint = _read_loop_checkpoint(tmp_path)
-    assert checkpoint["goal_id"] == state["goal_id"]
-    assert checkpoint["run_id"] == state["run_id"]
-    assert checkpoint["remaining_auto_turns"] == 5
-    assert checkpoint["idle_timeout_seconds"] == 1800
-    assert checkpoint["max_retry_budget"] == 3
-    assert checkpoint["expected_evidence"] == "tests/foo.py"
-    events = _read_loop_events(tmp_path)
-    assert events[-1]["event_type"] == "loop_started"
-    assert events[-1]["goal_id"] == checkpoint["goal_id"]
-    assert events[-1]["run_id"] == checkpoint["run_id"]
-    assert events[-1]["remaining_auto_turns"] == 5
-    assert events[-1]["idle_timeout_seconds"] == 1800
-    assert events[-1]["max_retry_budget"] == 3
-    assert events[-1]["expected_evidence"] == "tests/foo.py"
+    mock_schedule_initial.assert_called_once()
+    assert mock_schedule_initial.call_args.kwargs == {
+        "session_id": "sess-1",
+        "session_key": build_session_key(_make_source()),
+        "goal": "finish the refactor",
+        "goal_id": mock_schedule_initial.call_args.kwargs["goal_id"],
+        "run_id": mock_schedule_initial.call_args.kwargs["run_id"],
+        "next_prompt": "Implement the next thin slice and verify it.",
+        "next_prompt_norm": "implement the next thin slice and verify it.",
+        "expected_evidence": "tests/foo.py",
+        "remaining_auto_turns": 5,
+        "max_retry_budget": 3,
+        "idle_timeout_seconds": 1800,
+        "channel_prompt": None,
+        "pending_wakeup_at": "",
+        "deferred": False,
+    }
+    assert runner._loop_states[build_session_key(_make_source())] == runtime_checkpoint
     runner._handle_message_with_agent.assert_awaited_once()
     forwarded_event = runner._handle_message_with_agent.await_args.args[0]
     assert forwarded_event.text == "Implement the next thin slice and verify it."
@@ -332,7 +358,90 @@ async def test_loop_built_in_command_keeps_default_budgets_without_options(monke
 
 
 @pytest.mark.asyncio
-async def test_loop_built_in_command_waits_for_deferred_start(monkeypatch, tmp_path):
+async def test_loop_built_in_command_wait_path_uses_runtime_schedule_initial(monkeypatch, tmp_path):
+    import gateway.run as gateway_run
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    runner._handle_message_with_agent = AsyncMock(return_value="handled")
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    runtime_checkpoint = {
+        "session_id": "sess-1",
+        "session_key": build_session_key(_make_source()),
+        "goal": "finish the refactor",
+        "goal_id": "goal-runtime-wait",
+        "run_id": "run-runtime-wait",
+        "remaining_auto_turns": 2,
+        "last_prompt": "Resume the thin slice.",
+        "last_prompt_norm": "resume the thin slice.",
+        "last_result_preview": "",
+        "expected_evidence": "tests/wait.py",
+        "channel_prompt": None,
+        "active": True,
+        "state": "waiting",
+        "resumable": True,
+        "stop_reason": "",
+        "stop_class": "",
+        "stop_message": "",
+        "last_progress_summary": "",
+        "retry_count": 0,
+        "max_retry_budget": 2,
+        "idle_timeout_seconds": 900,
+        "last_activity_at": "2026-01-01T00:00:00+00:00",
+        "pending_wakeup_at": "2026-01-01T00:05:00+00:00",
+        "inflight_prompt": "",
+        "inflight_started_at": "",
+    }
+
+    with patch(
+        "hermes_cli.loop.decide_continuation_for_session",
+        return_value={
+            "action": "wait",
+            "reason": "wait for retry window",
+            "next_prompt": "Resume the thin slice.",
+            "wake_after": "10s",
+            "expected_evidence": "tests/wait.py",
+            "session_id": "sess-1",
+        },
+    ), patch.object(
+        runner,
+        "_compute_pending_wakeup_at",
+        return_value="2026-01-01T00:05:00+00:00",
+    ) as mock_pending_wakeup, patch(
+        "gateway.run.LoopRuntime.schedule_initial",
+        return_value={"ok": True, "checkpoint": runtime_checkpoint},
+    ) as mock_schedule_initial:
+        result = await runner._handle_message(_make_event("/loop finish the refactor"))
+
+    assert "waiting until" in result.lower()
+    mock_pending_wakeup.assert_called_once_with("10s")
+    mock_schedule_initial.assert_called_once()
+    assert mock_schedule_initial.call_args.kwargs == {
+        "session_id": "sess-1",
+        "session_key": build_session_key(_make_source()),
+        "goal": "finish the refactor",
+        "goal_id": mock_schedule_initial.call_args.kwargs["goal_id"],
+        "run_id": mock_schedule_initial.call_args.kwargs["run_id"],
+        "next_prompt": "Resume the thin slice.",
+        "next_prompt_norm": "resume the thin slice.",
+        "expected_evidence": "tests/wait.py",
+        "remaining_auto_turns": 2,
+        "max_retry_budget": 2,
+        "idle_timeout_seconds": 900,
+        "channel_prompt": None,
+        "pending_wakeup_at": "2026-01-01T00:05:00+00:00",
+        "deferred": True,
+    }
+    assert runner._loop_states[build_session_key(_make_source())] == runtime_checkpoint
+    runner._handle_message_with_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_loop_built_in_command_stops_conservatively_when_runtime_schedule_initial_fails(monkeypatch, tmp_path):
     import gateway.run as gateway_run
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -346,31 +455,24 @@ async def test_loop_built_in_command_waits_for_deferred_start(monkeypatch, tmp_p
     with patch(
         "hermes_cli.loop.decide_continuation_for_session",
         return_value={
-            "action": "wait",
-            "reason": "wait for retry window",
-            "next_prompt": "Resume the thin slice.",
-            "wake_after": "10s",
-            "expected_evidence": "tests/wait.py",
+            "action": "continue",
+            "reason": "clear next slice",
+            "next_prompt": "Implement the next thin slice and verify it.",
+            "expected_evidence": "tests/foo.py",
             "session_id": "sess-1",
         },
+    ), patch(
+        "gateway.run.LoopRuntime.schedule_initial",
+        return_value={"ok": False, "error": "schedule_initial_failed"},
     ):
         result = await runner._handle_message(_make_event("/loop finish the refactor"))
 
-    assert "waiting until" in result.lower()
-    state = runner._loop_states[build_session_key(_make_source())]
-    assert state["state"] == "waiting"
-    assert state["last_prompt"] == "Resume the thin slice."
-    assert state["expected_evidence"] == "tests/wait.py"
-    assert state["pending_wakeup_at"]
-    checkpoint = _read_loop_checkpoint(tmp_path)
-    assert checkpoint["last_prompt"] == "Resume the thin slice."
-    assert checkpoint["expected_evidence"] == "tests/wait.py"
-    assert checkpoint["pending_wakeup_at"]
-    events = _read_loop_events(tmp_path)
-    assert events[-1]["event_type"] == "loop_started"
-    assert events[-1]["pending_wakeup_at"] == checkpoint["pending_wakeup_at"]
-    assert events[-1]["deferred"] is True
+    assert "failed to persist loop start" in result.lower()
+    assert build_session_key(_make_source()) not in runner._loop_states
     runner._handle_message_with_agent.assert_not_awaited()
+    checkpoint = _read_loop_checkpoint(tmp_path)
+    assert checkpoint["active"] is False
+    assert checkpoint["stop_reason"] == "loop_schedule_initial_failed"
 
 
 @pytest.mark.asyncio

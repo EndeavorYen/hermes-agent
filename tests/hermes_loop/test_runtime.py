@@ -173,6 +173,100 @@ def test_runtime_schedule_continue_writes_waiting_checkpoint_and_event(monkeypat
     assert events[-1].get("deferred") in (None, False)
 
 
+def test_runtime_schedule_initial_writes_waiting_checkpoint_and_event_for_immediate_start(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    store = LoopStore()
+
+    result = LoopRuntime(store=store).schedule_initial(
+        session_id="sess-start-now",
+        session_key="telegram:sess-start-now",
+        goal="Finish the refactor",
+        goal_id="goal-start-now",
+        run_id="run-start-now",
+        next_prompt="Implement the next thin slice and verify it.",
+        next_prompt_norm="implement the next thin slice and verify it.",
+        expected_evidence="tests/foo.py",
+        remaining_auto_turns=5,
+        max_retry_budget=3,
+        idle_timeout_seconds=1800,
+        channel_prompt="channel context",
+        pending_wakeup_at="",
+        deferred=False,
+    )
+
+    assert result["ok"] is True
+    checkpoint = store.read_checkpoint("sess-start-now")
+    assert checkpoint["session_key"] == "telegram:sess-start-now"
+    assert checkpoint["goal"] == "Finish the refactor"
+    assert checkpoint["goal_id"] == "goal-start-now"
+    assert checkpoint["run_id"] == "run-start-now"
+    assert checkpoint["last_prompt"] == "Implement the next thin slice and verify it."
+    assert checkpoint["last_prompt_norm"] == "implement the next thin slice and verify it."
+    assert checkpoint["expected_evidence"] == "tests/foo.py"
+    assert checkpoint["remaining_auto_turns"] == 5
+    assert checkpoint["max_retry_budget"] == 3
+    assert checkpoint["idle_timeout_seconds"] == 1800
+    assert checkpoint["channel_prompt"] == "channel context"
+    assert checkpoint["active"] is True
+    assert checkpoint["state"] == "waiting"
+    assert checkpoint["resumable"] is True
+    assert checkpoint["stop_reason"] == ""
+    assert checkpoint["stop_class"] == ""
+    assert checkpoint["stop_message"] == ""
+    assert checkpoint["retry_count"] == 0
+    assert checkpoint["last_result_preview"] == ""
+    assert checkpoint["last_progress_summary"] == ""
+    assert checkpoint["pending_wakeup_at"] == ""
+    assert checkpoint["inflight_prompt"] == ""
+    assert checkpoint["inflight_started_at"] == ""
+    assert checkpoint["last_activity_at"]
+    events = store.read_events("sess-start-now")
+    assert events[-1]["event_type"] == "loop_started"
+    assert events[-1]["goal"] == "Finish the refactor"
+    assert events[-1]["goal_id"] == "goal-start-now"
+    assert events[-1]["run_id"] == "run-start-now"
+    assert events[-1]["next_prompt"] == "Implement the next thin slice and verify it."
+    assert events[-1]["expected_evidence"] == "tests/foo.py"
+    assert events[-1]["remaining_auto_turns"] == 5
+    assert events[-1]["max_retry_budget"] == 3
+    assert events[-1]["idle_timeout_seconds"] == 1800
+    assert events[-1]["pending_wakeup_at"] == ""
+    assert events[-1]["deferred"] is False
+
+
+def test_runtime_schedule_initial_writes_deferred_start_with_pending_wakeup(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    store = LoopStore()
+    pending_wakeup_at = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+
+    result = LoopRuntime(store=store).schedule_initial(
+        session_id="sess-start-later",
+        session_key="telegram:sess-start-later",
+        goal="Finish the refactor",
+        goal_id="goal-start-later",
+        run_id="run-start-later",
+        next_prompt="Resume the thin slice.",
+        next_prompt_norm="resume the thin slice.",
+        expected_evidence="tests/wait.py",
+        remaining_auto_turns=2,
+        max_retry_budget=2,
+        idle_timeout_seconds=900,
+        channel_prompt=None,
+        pending_wakeup_at=pending_wakeup_at,
+        deferred=True,
+    )
+
+    assert result["ok"] is True
+    checkpoint = store.read_checkpoint("sess-start-later")
+    assert checkpoint["pending_wakeup_at"] == pending_wakeup_at
+    assert checkpoint["state"] == "waiting"
+    assert checkpoint["active"] is True
+    events = store.read_events("sess-start-later")
+    assert events[-1]["event_type"] == "loop_started"
+    assert events[-1]["pending_wakeup_at"] == pending_wakeup_at
+    assert events[-1]["deferred"] is True
+
+
 def test_runtime_pause_writes_paused_checkpoint_and_event(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     store = LoopStore()
