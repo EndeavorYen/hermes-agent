@@ -100,7 +100,14 @@ Skeptical constraints that keep loop v2 honest:
 - fail-closed verifier behavior
 - explicit non-goals for initial rollout
 
-### 7. `rollout-plan.md`
+### 7. `runtime-tick-and-control-plane.md`
+Focused extraction spec for the next missing substrate seam:
+- canonical `LoopRuntime.tick()` contract
+- surface-neutral transition ownership
+- control-plane API for pause/resume/stop/start/status
+- durable write ordering and scheduler boundary
+
+### 8. `rollout-plan.md`
 Execution plan for implementation:
 - phase-by-phase milestones
 - migration from current bounded loop
@@ -129,8 +136,9 @@ This keeps the design easy to review in PRs and lets implementation land increme
 
 1. `runtime-architecture.md`
 2. `guardrails-and-non-goals.md`
-3. ADRs 001-003
-4. `interfaces-and-schemas.md`
-5. `rollout-plan.md`
+3. `runtime-tick-and-control-plane.md`
+4. ADRs 001-003
+5. `interfaces-and-schemas.md`
+6. `rollout-plan.md`
 
 For now, the concrete architecture is captured in `runtime-architecture.md`.
