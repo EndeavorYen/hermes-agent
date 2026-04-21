@@ -2161,26 +2161,35 @@ class GatewayRunner:
         remaining_auto_turns = int(state.get("remaining_auto_turns", 0) or 0)
         if remaining_auto_turns <= 0:
             goal = str(state.get("goal") or "").strip()
+            result_preview = str(state.get("last_result_preview") or "")
             record_background_review(
                 session_id=session_id,
                 goal=goal,
                 progress_state="max_auto_turns",
                 stop_reason="max_auto_turns_reached",
-                result_preview=str(state.get("last_result_preview") or ""),
+                result_preview=result_preview,
                 source="bounded_loop_gateway",
                 goal_id=_goal_id,
                 run_id=_run_id,
             )
-            self._clear_loop_state(
-                session_key,
+            max_auto_turns_message = "bounded auto-turn budget reached."
+            finalize_result = LoopRuntime().apply_validated_stop(
+                session_id,
                 stop_reason="max_auto_turns_reached",
-                event_type="loop_stopped",
-                event_payload={
-                    "goal": goal,
-                    "reason": "bounded auto-turn budget reached.",
-                    "result_preview": str(state.get("last_result_preview") or ""),
-                },
+                stop_message=max_auto_turns_message,
+                result_preview=result_preview,
             )
+            if not finalize_result.get("ok"):
+                return None, self._stop_loop_for_persistence_failure(
+                    session_key=session_key,
+                    stop_reason="loop_stop_finalize_failed",
+                    reason="failed to persist loop stop finalization through runtime; stopping conservatively.",
+                    event_payload={
+                        "goal": goal,
+                        "result_preview": result_preview,
+                    },
+                )
+            loop_states.pop(session_key, None)
             return None, format_loop_stop_notice("max_auto_turns_reached")
 
         goal = str(state.get("goal") or "").strip()
@@ -2192,26 +2201,35 @@ class GatewayRunner:
         if idle_timeout_seconds > 0 and last_activity_at is not None:
             idle_age = (datetime.now(timezone.utc) - last_activity_at).total_seconds()
             if idle_age >= idle_timeout_seconds:
+                idle_result_preview = str(state.get("last_result_preview") or "")
                 record_background_review(
                     session_id=session_id,
                     goal=goal,
                     progress_state="idle_timeout",
                     stop_reason="idle_timeout",
-                    result_preview=str(state.get("last_result_preview") or ""),
+                    result_preview=idle_result_preview,
                     source="bounded_loop_gateway",
                     goal_id=_goal_id,
                     run_id=_run_id,
                 )
-                self._clear_loop_state(
-                    session_key,
+                idle_timeout_message = "loop idle timeout reached."
+                finalize_result = LoopRuntime().apply_validated_stop(
+                    session_id,
                     stop_reason="idle_timeout",
-                    event_type="loop_stopped",
-                    event_payload={
-                        "goal": goal,
-                        "reason": "loop idle timeout reached.",
-                        "result_preview": str(state.get("last_result_preview") or ""),
-                    },
+                    stop_message=idle_timeout_message,
+                    result_preview=idle_result_preview,
                 )
+                if not finalize_result.get("ok"):
+                    return None, self._stop_loop_for_persistence_failure(
+                        session_key=session_key,
+                        stop_reason="loop_stop_finalize_failed",
+                        reason="failed to persist loop stop finalization through runtime; stopping conservatively.",
+                        event_payload={
+                            "goal": goal,
+                            "result_preview": idle_result_preview,
+                        },
+                    )
+                loop_states.pop(session_key, None)
                 return None, format_loop_stop_notice("idle_timeout")
 
         try:
@@ -2221,13 +2239,21 @@ class GatewayRunner:
             _goal_artifact = None
         _state_goal_id = str(state.get("goal_id") or "").strip()
         if _goal_artifact is None:
-            self._clear_loop_state(
-                session_key,
+            goal_missing_message = "goal artifact missing; stopping conservatively."
+            finalize_result = LoopRuntime().apply_validated_stop(
+                session_id,
                 stop_reason="loop_goal_artifact_missing",
-                event_type="loop_stopped",
-                event_payload={"goal": goal, "reason": "goal artifact missing; stopping conservatively."},
+                stop_message=goal_missing_message,
             )
-            return None, format_loop_stop_notice("loop_goal_artifact_missing", "goal artifact missing; stopping conservatively.")
+            if not finalize_result.get("ok"):
+                return None, self._stop_loop_for_persistence_failure(
+                    session_key=session_key,
+                    stop_reason="loop_stop_finalize_failed",
+                    reason="failed to persist loop stop finalization through runtime; stopping conservatively.",
+                    event_payload={"goal": goal},
+                )
+            loop_states.pop(session_key, None)
+            return None, format_loop_stop_notice("loop_goal_artifact_missing", goal_missing_message)
         _artifact_goal_id = str(_goal_artifact.get("goal_id") or "").strip()
         _artifact_goal_text = str(_goal_artifact.get("goal_text") or "").strip()
         if not _artifact_goal_id or not _artifact_goal_text:

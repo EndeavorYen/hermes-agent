@@ -908,3 +908,323 @@ async def test_followup_routes_progress_verifier_stalled_through_apply_validated
     assert mock_stop.called
     assert mock_stop.call_args.kwargs["stop_reason"] == "progress_verifier_stalled"
     assert session_key not in runner._loop_states
+
+
+@pytest.mark.asyncio
+async def test_followup_routes_max_auto_turns_through_apply_validated_stop(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    store = LoopStore()
+    source = _make_source()
+    session_key = build_session_key(source)
+
+    store.write_checkpoint(
+        session_id="sess-max",
+        session_key=session_key,
+        payload={
+            "goal": "Keep going",
+            "goal_id": "goal-sess-max",
+            "run_id": "run-sess-max",
+            "remaining_auto_turns": 0,
+            "last_prompt": "Implement the next thin slice.",
+            "last_prompt_norm": "implement the next thin slice.",
+            "last_result_preview": "prior result",
+            "expected_evidence": "",
+            "channel_prompt": None,
+            "active": True,
+        },
+    )
+    store.write_goal_artifact(
+        session_id="sess-max",
+        goal_id="goal-sess-max",
+        goal_text="Keep going",
+        created_by="gateway",
+        session_key=session_key,
+    )
+    state = _full_loop_state("sess-max", session_key, last_result_preview="prior result")
+    state["remaining_auto_turns"] = 0
+    runner._loop_states[session_key] = state
+
+    with patch(
+        "gateway.run.LoopRuntime.apply_validated_stop",
+        return_value={"ok": True, "checkpoint": {}, "event": {}},
+    ) as mock_stop:
+        event, stop_notice = await runner._maybe_schedule_loop_followup(
+            session_key=session_key,
+            session_id="sess-max",
+            source=source,
+            final_response="next continuation",
+        )
+
+    assert event is None
+    assert stop_notice is not None
+    assert mock_stop.called
+    assert mock_stop.call_args.kwargs["stop_reason"] == "max_auto_turns_reached"
+    assert mock_stop.call_args.kwargs["stop_message"] == "bounded auto-turn budget reached."
+    assert mock_stop.call_args.kwargs["result_preview"] == "prior result"
+    assert session_key not in runner._loop_states
+
+
+@pytest.mark.asyncio
+async def test_followup_routes_max_auto_turns_persists_through_runtime(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    store = LoopStore()
+    source = _make_source()
+    session_key = build_session_key(source)
+
+    store.write_checkpoint(
+        session_id="sess-max-persist",
+        session_key=session_key,
+        payload={
+            "goal": "Keep going",
+            "goal_id": "goal-sess-max-persist",
+            "run_id": "run-sess-max-persist",
+            "remaining_auto_turns": 0,
+            "last_prompt": "Implement the next thin slice.",
+            "last_prompt_norm": "implement the next thin slice.",
+            "last_result_preview": "prior result",
+            "expected_evidence": "",
+            "channel_prompt": None,
+            "active": True,
+        },
+    )
+    store.write_goal_artifact(
+        session_id="sess-max-persist",
+        goal_id="goal-sess-max-persist",
+        goal_text="Keep going",
+        created_by="gateway",
+        session_key=session_key,
+    )
+    state = _full_loop_state("sess-max-persist", session_key, last_result_preview="prior result")
+    state["remaining_auto_turns"] = 0
+    runner._loop_states[session_key] = state
+
+    event, stop_notice = await runner._maybe_schedule_loop_followup(
+        session_key=session_key,
+        session_id="sess-max-persist",
+        source=source,
+        final_response="next continuation",
+    )
+
+    assert event is None
+    assert stop_notice is not None
+    assert session_key not in runner._loop_states
+    checkpoint = _read_loop_checkpoint(tmp_path, "sess-max-persist")
+    assert checkpoint["active"] is False
+    assert checkpoint["state"] == "stopped"
+    assert checkpoint["resumable"] is False
+    assert checkpoint["stop_reason"] == "max_auto_turns_reached"
+    assert checkpoint["stop_class"] == "resource"
+
+
+@pytest.mark.asyncio
+async def test_followup_routes_idle_timeout_through_apply_validated_stop(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    store = LoopStore()
+    source = _make_source()
+    session_key = build_session_key(source)
+
+    stale_activity_at = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    store.write_checkpoint(
+        session_id="sess-idle",
+        session_key=session_key,
+        payload={
+            "goal": "Keep going",
+            "goal_id": "goal-sess-idle",
+            "run_id": "run-sess-idle",
+            "remaining_auto_turns": 2,
+            "last_prompt": "Implement the next thin slice.",
+            "last_prompt_norm": "implement the next thin slice.",
+            "last_result_preview": "earlier result",
+            "expected_evidence": "",
+            "channel_prompt": None,
+            "active": True,
+            "idle_timeout_seconds": 900,
+            "last_activity_at": stale_activity_at,
+        },
+    )
+    store.write_goal_artifact(
+        session_id="sess-idle",
+        goal_id="goal-sess-idle",
+        goal_text="Keep going",
+        created_by="gateway",
+        session_key=session_key,
+    )
+    state = _full_loop_state("sess-idle", session_key, last_result_preview="earlier result")
+    state["idle_timeout_seconds"] = 900
+    state["last_activity_at"] = stale_activity_at
+    runner._loop_states[session_key] = state
+
+    with patch(
+        "gateway.run.LoopRuntime.apply_validated_stop",
+        return_value={"ok": True, "checkpoint": {}, "event": {}},
+    ) as mock_stop:
+        event, stop_notice = await runner._maybe_schedule_loop_followup(
+            session_key=session_key,
+            session_id="sess-idle",
+            source=source,
+            final_response="continuation body",
+        )
+
+    assert event is None
+    assert stop_notice is not None
+    assert mock_stop.called
+    assert mock_stop.call_args.kwargs["stop_reason"] == "idle_timeout"
+    assert mock_stop.call_args.kwargs["stop_message"] == "loop idle timeout reached."
+    assert mock_stop.call_args.kwargs["result_preview"] == "earlier result"
+    assert session_key not in runner._loop_states
+
+
+@pytest.mark.asyncio
+async def test_followup_routes_idle_timeout_persists_through_runtime(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    store = LoopStore()
+    source = _make_source()
+    session_key = build_session_key(source)
+
+    stale_activity_at = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    store.write_checkpoint(
+        session_id="sess-idle-persist",
+        session_key=session_key,
+        payload={
+            "goal": "Keep going",
+            "goal_id": "goal-sess-idle-persist",
+            "run_id": "run-sess-idle-persist",
+            "remaining_auto_turns": 2,
+            "last_prompt": "Implement the next thin slice.",
+            "last_prompt_norm": "implement the next thin slice.",
+            "last_result_preview": "earlier result",
+            "expected_evidence": "",
+            "channel_prompt": None,
+            "active": True,
+            "idle_timeout_seconds": 900,
+            "last_activity_at": stale_activity_at,
+        },
+    )
+    store.write_goal_artifact(
+        session_id="sess-idle-persist",
+        goal_id="goal-sess-idle-persist",
+        goal_text="Keep going",
+        created_by="gateway",
+        session_key=session_key,
+    )
+    state = _full_loop_state("sess-idle-persist", session_key, last_result_preview="earlier result")
+    state["idle_timeout_seconds"] = 900
+    state["last_activity_at"] = stale_activity_at
+    runner._loop_states[session_key] = state
+
+    event, stop_notice = await runner._maybe_schedule_loop_followup(
+        session_key=session_key,
+        session_id="sess-idle-persist",
+        source=source,
+        final_response="continuation body",
+    )
+
+    assert event is None
+    assert stop_notice is not None
+    assert session_key not in runner._loop_states
+    checkpoint = _read_loop_checkpoint(tmp_path, "sess-idle-persist")
+    assert checkpoint["active"] is False
+    assert checkpoint["state"] == "stopped"
+    assert checkpoint["resumable"] is False
+    assert checkpoint["stop_reason"] == "idle_timeout"
+    assert checkpoint["stop_class"] == "resource"
+
+
+@pytest.mark.asyncio
+async def test_followup_routes_goal_artifact_missing_through_apply_validated_stop(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    store = LoopStore()
+    source = _make_source()
+    session_key = build_session_key(source)
+
+    store.write_checkpoint(
+        session_id="sess-no-goal",
+        session_key=session_key,
+        payload={
+            "goal": "Keep going",
+            "goal_id": "goal-sess-no-goal",
+            "run_id": "run-sess-no-goal",
+            "remaining_auto_turns": 2,
+            "last_prompt": "Implement the next thin slice.",
+            "last_prompt_norm": "implement the next thin slice.",
+            "last_result_preview": "prior result",
+            "expected_evidence": "",
+            "channel_prompt": None,
+            "active": True,
+        },
+    )
+    # Intentionally do NOT write a goal artifact.
+    runner._loop_states[session_key] = _full_loop_state(
+        "sess-no-goal", session_key, last_result_preview="prior result"
+    )
+
+    with patch(
+        "gateway.run.LoopRuntime.apply_validated_stop",
+        return_value={"ok": True, "checkpoint": {}, "event": {}},
+    ) as mock_stop:
+        event, stop_notice = await runner._maybe_schedule_loop_followup(
+            session_key=session_key,
+            session_id="sess-no-goal",
+            source=source,
+            final_response="continuation body",
+        )
+
+    assert event is None
+    assert stop_notice is not None
+    assert mock_stop.called
+    assert mock_stop.call_args.kwargs["stop_reason"] == "loop_goal_artifact_missing"
+    assert mock_stop.call_args.kwargs["stop_message"] == "goal artifact missing; stopping conservatively."
+    assert session_key not in runner._loop_states
+
+
+@pytest.mark.asyncio
+async def test_followup_routes_goal_artifact_missing_persists_through_runtime(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    store = LoopStore()
+    source = _make_source()
+    session_key = build_session_key(source)
+
+    store.write_checkpoint(
+        session_id="sess-no-goal-persist",
+        session_key=session_key,
+        payload={
+            "goal": "Keep going",
+            "goal_id": "goal-sess-no-goal-persist",
+            "run_id": "run-sess-no-goal-persist",
+            "remaining_auto_turns": 2,
+            "last_prompt": "Implement the next thin slice.",
+            "last_prompt_norm": "implement the next thin slice.",
+            "last_result_preview": "prior result",
+            "expected_evidence": "",
+            "channel_prompt": None,
+            "active": True,
+        },
+    )
+    # Intentionally do NOT write a goal artifact.
+    runner._loop_states[session_key] = _full_loop_state(
+        "sess-no-goal-persist", session_key, last_result_preview="prior result"
+    )
+
+    event, stop_notice = await runner._maybe_schedule_loop_followup(
+        session_key=session_key,
+        session_id="sess-no-goal-persist",
+        source=source,
+        final_response="continuation body",
+    )
+
+    assert event is None
+    assert stop_notice is not None
+    assert "goal artifact" in stop_notice.lower()
+    assert session_key not in runner._loop_states
+    checkpoint = _read_loop_checkpoint(tmp_path, "sess-no-goal-persist")
+    assert checkpoint["active"] is False
+    assert checkpoint["state"] == "stopped"
+    assert checkpoint["resumable"] is False
+    assert checkpoint["stop_reason"] == "loop_goal_artifact_missing"
+    assert checkpoint["stop_class"] == "runtime_error"
