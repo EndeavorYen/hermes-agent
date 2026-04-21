@@ -61,6 +61,8 @@ async def test_hydrate_loop_states_from_store_recovers_only_active_well_formed_c
         session_key=session_key,
         payload={
             "goal": "Keep going",
+            "goal_id": "goal-active",
+            "run_id": "run-active",
             "remaining_auto_turns": 2,
             "last_prompt": "Implement the next thin slice.",
             "last_prompt_norm": "implement the next thin slice.",
@@ -118,6 +120,8 @@ async def test_hydrate_loop_states_from_store_recovers_only_active_well_formed_c
         "pending_wakeup_at": "",
         "inflight_prompt": "",
         "inflight_started_at": "",
+        "goal_id": "goal-active",
+        "run_id": "run-active",
     }
 
 
@@ -134,6 +138,8 @@ async def test_recovered_loop_state_can_drive_followup_logic(monkeypatch, tmp_pa
         session_key=session_key,
         payload={
             "goal": "Keep going",
+            "goal_id": "goal-active",
+            "run_id": "run-active",
             "remaining_auto_turns": 2,
             "last_prompt": "Implement the next thin slice.",
             "last_prompt_norm": "different prompt",
@@ -161,7 +167,7 @@ async def test_recovered_loop_state_can_drive_followup_logic(monkeypatch, tmp_pa
             session_key=session_key,
             session_id="sess-active",
             source=source,
-            final_response="Implemented a fresh result.",
+            final_response="Updated tests/gateway/test_loop_recovery.py and reran pytest -q.",
         )
 
     assert stop_notice is None
@@ -169,13 +175,15 @@ async def test_recovered_loop_state_can_drive_followup_logic(monkeypatch, tmp_pa
     assert event.internal is True
     assert event.text == "Implement the next thin slice."
     assert runner._loop_states[session_key]["remaining_auto_turns"] == 1
-    assert runner._loop_states[session_key]["last_result_preview"] == "Implemented a fresh result."
+    assert runner._loop_states[session_key]["last_result_preview"] == "Updated tests/gateway/test_loop_recovery.py and reran pytest -q."
     checkpoint = _read_loop_checkpoint(tmp_path, "sess-active")
     assert checkpoint["session_key"] == session_key
     assert checkpoint["remaining_auto_turns"] == 1
     assert checkpoint["last_prompt"] == "Implement the next thin slice."
-    assert checkpoint["last_result_preview"] == "Implemented a fresh result."
+    assert checkpoint["last_result_preview"] == "Updated tests/gateway/test_loop_recovery.py and reran pytest -q."
     assert checkpoint["active"] is True
+    assert checkpoint["goal_id"] == runner._loop_states[session_key]["goal_id"]
+    assert checkpoint["run_id"] == runner._loop_states[session_key]["run_id"]
 
 
 @pytest.mark.asyncio
@@ -402,6 +410,8 @@ async def test_followup_stops_conservatively_when_loop_event_persist_fails(monke
         session_key=session_key,
         payload={
             "goal": "Keep going",
+            "goal_id": "goal-active",
+            "run_id": "run-active",
             "remaining_auto_turns": 2,
             "last_prompt": "Implement the next thin slice.",
             "last_prompt_norm": "different prompt",
@@ -413,6 +423,8 @@ async def test_followup_stops_conservatively_when_loop_event_persist_fails(monke
     runner._loop_states[session_key] = {
         "session_id": "sess-active",
         "goal": "Keep going",
+        "goal_id": "goal-active",
+        "run_id": "run-active",
         "remaining_auto_turns": 2,
         "last_prompt": "Implement the next thin slice.",
         "last_prompt_norm": "different prompt",
@@ -449,7 +461,7 @@ async def test_followup_stops_conservatively_when_loop_event_persist_fails(monke
             session_key=session_key,
             session_id="sess-active",
             source=source,
-            final_response="Implemented a fresh result.",
+            final_response="Updated tests/gateway/test_loop_recovery.py and reran pytest -q.",
         )
 
     assert event is None

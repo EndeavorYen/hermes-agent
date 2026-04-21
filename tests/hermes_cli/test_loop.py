@@ -4,6 +4,7 @@ from argparse import Namespace
 import pytest
 
 from hermes_cli.loop import (
+    _stable_goal_id,
     decide_continuation_for_session,
     verify_progress_for_session,
     loop_command,
@@ -88,7 +89,7 @@ class _ContinueAgent:
                     }
                 )
             }
-        return {"final_response": "Implemented the next thin slice."}
+        return {"final_response": "Implemented the next thin slice. See tests/foo.py."}
 
 
 def _make_args(**overrides):
@@ -153,6 +154,7 @@ def test_decide_continuation_for_session_returns_session_scoped_decision(monkeyp
         json.dumps({
             "session_id": "sess-1",
             "source": "bounded_loop",
+            "goal_id": _stable_goal_id("sess-1", "Keep going"),
             "progress_state": "meaningful_result",
             "result_preview": "prior review preview",
         }) + "\n",
@@ -249,6 +251,8 @@ def test_loop_command_continue_executes_one_step(monkeypatch, capsys, tmp_path):
     reviews = _read_background_reviews(tmp_path)
     assert reviews[-1]["progress_state"] == "max_cycles"
     assert reviews[-2]["progress_state"] == "meaningful_result"
+    assert reviews[-1]["goal_id"] == reviews[-2]["goal_id"]
+    assert reviews[-1]["run_id"] == reviews[-2]["run_id"]
 
 
 def test_loop_command_malformed_decision_defaults_stop(monkeypatch, capsys, tmp_path):
@@ -328,7 +332,7 @@ def test_loop_command_honors_max_cycles(monkeypatch, capsys, tmp_path):
             if len(_MultiCycleAgent.instances) == 1:
                 return {"final_response": json.dumps({"action": "continue", "reason": "step 1", "next_prompt": "Do step 1"})}
             if len(_MultiCycleAgent.instances) == 2:
-                return {"final_response": "Did step 1"}
+                return {"final_response": "Did step 1 (tests/foo.py)"}
             return {"final_response": json.dumps({"action": "stop", "reason": "done"})}
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -404,10 +408,10 @@ def test_loop_command_stops_on_duplicate_result_preview(monkeypatch, capsys, tmp
             if len(_DuplicateResultAgent.instances) == 1:
                 return {"final_response": json.dumps({"action": "continue", "reason": "step 1", "next_prompt": "Do step 1"})}
             if len(_DuplicateResultAgent.instances) == 2:
-                return {"final_response": "Repeated summary"}
+                return {"final_response": "Repeated summary tests/foo.py"}
             if len(_DuplicateResultAgent.instances) == 3:
                 return {"final_response": json.dumps({"action": "continue", "reason": "step 2", "next_prompt": "Do step 2"})}
-            return {"final_response": "Repeated summary"}
+            return {"final_response": "Repeated summary tests/foo.py"}
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr("hermes_cli.loop.SessionDB", _FakeSessionDB)
@@ -424,6 +428,42 @@ def test_loop_command_stops_on_duplicate_result_preview(monkeypatch, capsys, tmp
     reviews = _read_background_reviews(tmp_path)
     assert reviews[-1]["progress_state"] == "duplicate_result"
     assert reviews[-1]["stop_reason"] == "duplicate_result_preview"
+
+
+def test_loop_command_stops_on_missing_observable_evidence(monkeypatch, capsys, tmp_path):
+    class _SelfReportOnlyAgent:
+        instances = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.calls = []
+            _SelfReportOnlyAgent.instances.append(self)
+
+        def run_conversation(self, user_message, conversation_history=None, task_id=None):
+            self.calls.append({
+                "user_message": user_message,
+                "conversation_history": conversation_history,
+                "task_id": task_id,
+            })
+            if len(_SelfReportOnlyAgent.instances) == 1:
+                return {"final_response": json.dumps({"action": "continue", "reason": "step 1", "next_prompt": "Do step 1"})}
+            return {"final_response": "Great, I implemented and verified the change. Done."}
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.loop.SessionDB", _FakeSessionDB)
+    monkeypatch.setattr("hermes_cli.loop.AIAgent", _SelfReportOnlyAgent)
+
+    result = loop_command(_make_args(max_cycles=2))
+
+    out = capsys.readouterr().out
+    summary = _last_json_line(out)
+    assert "no observable evidence" in out.lower()
+    assert result["outcome"] == "stopped"
+    assert result["stop_reason"] == "missing_observable_evidence"
+    assert summary["stop_reason"] == "missing_observable_evidence"
+    reviews = _read_background_reviews(tmp_path)
+    assert reviews[-1]["progress_state"] == "missing_observable_evidence"
+    assert reviews[-1]["stop_reason"] == "missing_observable_evidence"
 
 
 def test_loop_command_stops_on_repeated_next_prompt(monkeypatch, capsys, tmp_path):
@@ -444,7 +484,7 @@ def test_loop_command_stops_on_repeated_next_prompt(monkeypatch, capsys, tmp_pat
             if len(_RepeatPromptAgent.instances) == 1:
                 return {"final_response": json.dumps({"action": "continue", "reason": "step 1", "next_prompt": "Do step 1"})}
             if len(_RepeatPromptAgent.instances) == 2:
-                return {"final_response": "Did step 1"}
+                return {"final_response": "Did step 1 tests/foo.py"}
             return {"final_response": json.dumps({"action": "continue", "reason": "still thinks step 1", "next_prompt": "  do   STEP 1  "})}
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -465,6 +505,39 @@ def test_loop_command_stops_on_repeated_next_prompt(monkeypatch, capsys, tmp_pat
     reviews = _read_background_reviews(tmp_path)
     assert reviews[-1]["progress_state"] == "repeated_prompt"
     assert reviews[-1]["stop_reason"] == "repeated_next_prompt"
+
+
+def test_background_reviews_filtered_by_goal_id(monkeypatch, tmp_path):
+    """Reviews that carry a different goal_id are excluded from the decision context."""
+    from hermes_cli.loop import _stable_goal_id
+
+    _DecisionAgent.instances = []
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.loop.SessionDB", _FakeSessionDB)
+    monkeypatch.setattr("hermes_cli.loop.AIAgent", _DecisionAgent)
+
+    reviews_path = tmp_path / "logs" / "background_reviews.jsonl"
+    reviews_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Review from a different goal on the same session — must be excluded.
+    other_goal_id = _stable_goal_id("sess-1", "Completely different goal")
+    reviews_path.write_text(
+        json.dumps({
+            "session_id": "sess-1",
+            "source": "bounded_loop",
+            "goal": "Completely different goal",
+            "goal_id": other_goal_id,
+            "progress_state": "meaningful_result",
+            "result_preview": "secret-cross-goal-data",
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    decide_continuation_for_session("sess-1", "Keep going")
+
+    assert len(_DecisionAgent.instances) == 1
+    decision_prompt = _DecisionAgent.instances[0].calls[0]["user_message"]
+    assert "secret-cross-goal-data" not in decision_prompt
 
 
 def test_cmd_loop_raises_system_exit_for_error(monkeypatch):

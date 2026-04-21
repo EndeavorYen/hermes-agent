@@ -1536,7 +1536,7 @@ class GatewayRunner:
             return "user"
         if reason in {"idle_timeout", "max_auto_turns_reached", "max_retry_budget_reached"}:
             return "resource"
-        if reason.startswith("progress_verifier") or reason in {"duplicate_result_preview", "repeated_next_prompt"}:
+        if reason.startswith("progress_verifier") or reason in {"duplicate_result_preview", "repeated_next_prompt", "missing_observable_evidence"}:
             return "verification"
         if reason in {"recovery_incomplete", "loop_checkpoint_persist_failed", "loop_event_persist_failed", "invalid_loop_checkpoint", "loop_checkpoint_mismatch"}:
             return "runtime_error"
@@ -1592,6 +1592,8 @@ class GatewayRunner:
                     "pending_wakeup_at": str(state.get("pending_wakeup_at") or ""),
                     "inflight_prompt": str(state.get("inflight_prompt") or ""),
                     "inflight_started_at": str(state.get("inflight_started_at") or ""),
+                    "goal_id": str(state.get("goal_id") or ""),
+                    "run_id": str(state.get("run_id") or ""),
                 },
             )
             return True
@@ -1654,6 +1656,8 @@ class GatewayRunner:
                 "pending_wakeup_at": str(checkpoint.get("pending_wakeup_at") or ""),
                 "inflight_prompt": str(checkpoint.get("inflight_prompt") or ""),
                 "inflight_started_at": str(checkpoint.get("inflight_started_at") or ""),
+                "goal_id": str(checkpoint.get("goal_id") or ""),
+                "run_id": str(checkpoint.get("run_id") or ""),
             }
         except Exception:
             return None
@@ -1695,12 +1699,14 @@ class GatewayRunner:
         if local_state:
             comparable_keys = (
                 "goal",
+                "goal_id",
                 "remaining_auto_turns",
                 "last_prompt",
                 "last_prompt_norm",
                 "last_result_preview",
                 "state",
                 "pending_wakeup_at",
+                "run_id",
             )
             if any(local_state.get(key) != canonical_state.get(key) for key in comparable_keys):
                 return None, "loop_checkpoint_mismatch", "persisted loop checkpoint diverged from in-memory state; stopping conservatively."
@@ -1726,6 +1732,8 @@ class GatewayRunner:
 
                 payload = {
                     "goal": str((state or {}).get("goal") or ""),
+                    "goal_id": str((state or {}).get("goal_id") or ""),
+                    "run_id": str((state or {}).get("run_id") or ""),
                     "remaining_auto_turns": int((state or {}).get("remaining_auto_turns", 0) or 0),
                     "last_prompt": str((state or {}).get("last_prompt") or ""),
                     "last_prompt_norm": str((state or {}).get("last_prompt_norm") or ""),
@@ -1795,6 +1803,8 @@ class GatewayRunner:
             "loop_stopped",
             {
                 "goal": str(state.get("goal") or ""),
+                "goal_id": str(state.get("goal_id") or ""),
+                "run_id": str(state.get("run_id") or ""),
                 "stop_reason": "recovery_incomplete",
                 "stop_class": self._loop_stop_class("recovery_incomplete"),
                 "message": "Recovered loop had an ambiguous interrupted turn; operator resume is required.",
@@ -1915,6 +1925,8 @@ class GatewayRunner:
         self._persist_loop_checkpoint(session_key, checkpoint_state)
         payload = {
             "goal": str(state.get("goal") or ""),
+            "goal_id": str(state.get("goal_id") or ""),
+            "run_id": str(state.get("run_id") or ""),
             "remaining_auto_turns": int(state.get("remaining_auto_turns", 0) or 0),
             "last_prompt": str(state.get("last_prompt") or ""),
             "last_prompt_norm": str(state.get("last_prompt_norm") or ""),
@@ -1950,6 +1962,9 @@ class GatewayRunner:
         if not state:
             return None, None
 
+        _goal_id = str(state.get("goal_id") or "") or None
+        _run_id = str(state.get("run_id") or "") or None
+
         from hermes_cli.loop import record_background_review, format_loop_stop_notice
 
         canonical_state, checkpoint_stop_reason, checkpoint_stop_message = self._load_canonical_loop_state(
@@ -1967,6 +1982,8 @@ class GatewayRunner:
                 stop_reason=checkpoint_stop_reason or "invalid_loop_checkpoint",
                 result_preview=result_preview,
                 source="bounded_loop_gateway",
+                goal_id=_goal_id,
+                run_id=_run_id,
             )
             self._clear_loop_state(
                 session_key,
@@ -1995,6 +2012,8 @@ class GatewayRunner:
                 stop_reason="max_auto_turns_reached",
                 result_preview=str(state.get("last_result_preview") or ""),
                 source="bounded_loop_gateway",
+                goal_id=_goal_id,
+                run_id=_run_id,
             )
             self._clear_loop_state(
                 session_key,
@@ -2024,6 +2043,8 @@ class GatewayRunner:
                     stop_reason="idle_timeout",
                     result_preview=str(state.get("last_result_preview") or ""),
                     source="bounded_loop_gateway",
+                    goal_id=_goal_id,
+                    run_id=_run_id,
                 )
                 self._clear_loop_state(
                     session_key,
@@ -2040,6 +2061,7 @@ class GatewayRunner:
         from hermes_cli.loop import (
             decide_continuation_for_session,
             verify_progress_for_session,
+            _has_observable_evidence,
             _normalize_loop_prompt,
             _preview_text,
             record_background_review,
@@ -2055,6 +2077,8 @@ class GatewayRunner:
                 stop_reason="empty_continuation_result",
                 result_preview=str(state.get("last_result_preview") or ""),
                 source="bounded_loop_gateway",
+                goal_id=_goal_id,
+                run_id=_run_id,
             )
             self._clear_loop_state(
                 session_key,
@@ -2076,6 +2100,8 @@ class GatewayRunner:
                 stop_reason="duplicate_result_preview",
                 result_preview=previous_result_preview,
                 source="bounded_loop_gateway",
+                goal_id=_goal_id,
+                run_id=_run_id,
             )
             self._clear_loop_state(
                 session_key,
@@ -2088,6 +2114,28 @@ class GatewayRunner:
                 },
             )
             return None, format_loop_stop_notice("duplicate_result_preview")
+        if not _has_observable_evidence(final_response):
+            record_background_review(
+                session_id=session_id,
+                goal=goal,
+                progress_state="missing_observable_evidence",
+                stop_reason="missing_observable_evidence",
+                result_preview=result_preview,
+                source="bounded_loop_gateway",
+                goal_id=_goal_id,
+                run_id=_run_id,
+            )
+            self._clear_loop_state(
+                session_key,
+                stop_reason="missing_observable_evidence",
+                event_type="loop_stopped",
+                event_payload={
+                    "goal": goal,
+                    "reason": "continuation lacked observable evidence (no code, diff, file path, test, or command).",
+                    "result_preview": result_preview,
+                },
+            )
+            return None, format_loop_stop_notice("missing_observable_evidence")
         state["last_result_preview"] = result_preview
         state["last_progress_summary"] = result_preview
         state["last_activity_at"] = self._loop_now_iso()
@@ -2108,6 +2156,8 @@ class GatewayRunner:
             progress_state="meaningful_result",
             result_preview=result_preview,
             source="bounded_loop_gateway",
+            goal_id=_goal_id,
+            run_id=_run_id,
         )
 
         verifier_retry_budget = int(state.get("max_retry_budget", 2) or 0)
@@ -2129,6 +2179,8 @@ class GatewayRunner:
                     stop_reason="max_retry_budget_reached",
                     result_preview=result_preview,
                     source="bounded_loop_gateway",
+                    goal_id=_goal_id,
+                    run_id=_run_id,
                 )
                 self._clear_loop_state(
                     session_key,
@@ -2150,6 +2202,8 @@ class GatewayRunner:
                 "retry_scheduled",
                 {
                     "goal": goal,
+                    "goal_id": str(state.get("goal_id") or ""),
+                    "run_id": str(state.get("run_id") or ""),
                     "retry_count": verifier_retry_count,
                     "max_retry_budget": verifier_retry_budget,
                     "reason": "invalid_progress_verifier_payload",
@@ -2166,6 +2220,8 @@ class GatewayRunner:
                 stop_reason="progress_verifier_done",
                 result_preview=result_preview,
                 source="bounded_loop_gateway",
+                goal_id=_goal_id,
+                run_id=_run_id,
             )
             self._clear_loop_state(
                 session_key,
@@ -2186,6 +2242,8 @@ class GatewayRunner:
                 stop_reason="progress_verifier_stalled",
                 result_preview=result_preview,
                 source="bounded_loop_gateway",
+                goal_id=_goal_id,
+                run_id=_run_id,
             )
             self._clear_loop_state(
                 session_key,
@@ -2218,6 +2276,8 @@ class GatewayRunner:
                     stop_reason="max_retry_budget_reached",
                     result_preview=result_preview,
                     source="bounded_loop_gateway",
+                    goal_id=_goal_id,
+                    run_id=_run_id,
                 )
                 self._clear_loop_state(
                     session_key,
@@ -2239,6 +2299,8 @@ class GatewayRunner:
                 "retry_scheduled",
                 {
                     "goal": goal,
+                    "goal_id": str(state.get("goal_id") or ""),
+                    "run_id": str(state.get("run_id") or ""),
                     "retry_count": decision_retry_count,
                     "max_retry_budget": decision_retry_budget,
                     "reason": stop_reason,
@@ -2256,6 +2318,8 @@ class GatewayRunner:
                 stop_reason=stop_reason,
                 result_preview=result_preview,
                 source="bounded_loop_gateway",
+                goal_id=_goal_id,
+                run_id=_run_id,
             )
             self._clear_loop_state(
                 session_key,
@@ -2278,6 +2342,8 @@ class GatewayRunner:
                 stop_reason="missing_next_prompt",
                 result_preview=result_preview,
                 source="bounded_loop_gateway",
+                goal_id=_goal_id,
+                run_id=_run_id,
             )
             self._clear_loop_state(
                 session_key,
@@ -2302,6 +2368,8 @@ class GatewayRunner:
                 next_prompt=next_prompt,
                 result_preview=result_preview,
                 source="bounded_loop_gateway",
+                goal_id=_goal_id,
+                run_id=_run_id,
             )
             self._clear_loop_state(
                 session_key,
@@ -2346,6 +2414,8 @@ class GatewayRunner:
             "loop_followup_scheduled",
             {
                 "goal": goal,
+                "goal_id": str(state.get("goal_id") or ""),
+                "run_id": str(state.get("run_id") or ""),
                 "next_prompt": next_prompt,
                 "remaining_auto_turns": state["remaining_auto_turns"],
                 "result_preview": result_preview,
@@ -2384,7 +2454,7 @@ class GatewayRunner:
             "Choose the next best thin slice, implement it, verify it independently, and keep going by default."
         )
         try:
-            from hermes_cli.loop import decide_continuation_for_session, _normalize_loop_prompt
+            from hermes_cli.loop import decide_continuation_for_session, _normalize_loop_prompt, _stable_goal_id, _new_run_id
 
             decision = await asyncio.to_thread(
                 decide_continuation_for_session,
@@ -2397,6 +2467,8 @@ class GatewayRunner:
                     self._loop_states[session_key] = {
                         "session_id": session_entry.session_id,
                         "goal": goal,
+                        "goal_id": _stable_goal_id(session_entry.session_id, goal),
+                        "run_id": _new_run_id(),
                         "remaining_auto_turns": 2,
                         "last_prompt": next_prompt,
                         "last_prompt_norm": _normalize_loop_prompt(next_prompt),
@@ -2433,6 +2505,8 @@ class GatewayRunner:
                         "loop_started",
                         {
                             "goal": goal,
+                            "goal_id": self._loop_states[session_key]["goal_id"],
+                            "run_id": self._loop_states[session_key]["run_id"],
                             "next_prompt": next_prompt,
                             "remaining_auto_turns": 2,
                         },

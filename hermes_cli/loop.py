@@ -10,8 +10,10 @@ This is a loop controller, not a new autonomous framework.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import uuid
 from argparse import Namespace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,7 +42,7 @@ def _resolve_target_session(args: Namespace) -> Optional[str]:
         db.close()
 
 
-def _load_recent_jsonl(path: Path, *, session_id: str, limit: int = 5) -> List[Dict[str, Any]]:
+def _load_recent_jsonl(path: Path, *, session_id: str, goal_id: str | None = None, limit: int = 5) -> List[Dict[str, Any]]:
     if not path.exists():
         return []
     try:
@@ -54,6 +56,8 @@ def _load_recent_jsonl(path: Path, *, session_id: str, limit: int = 5) -> List[D
             except Exception:
                 continue
             if isinstance(payload, dict) and payload.get("session_id") == session_id:
+                if goal_id is not None and payload.get("goal_id") != goal_id:
+                    continue
                 rows.append(payload)
         return rows[-limit:]
     except Exception:
@@ -80,6 +84,8 @@ def record_background_review(
     result_preview: str = "",
     source: str = "bounded_loop",
     cycle: int | None = None,
+    goal_id: str | None = None,
+    run_id: str | None = None,
 ) -> Dict[str, Any]:
     payload: Dict[str, Any] = {
         "session_id": session_id,
@@ -92,6 +98,10 @@ def record_background_review(
     }
     if cycle is not None:
         payload["cycle"] = cycle
+    if goal_id is not None:
+        payload["goal_id"] = goal_id
+    if run_id is not None:
+        payload["run_id"] = run_id
     _append_jsonl_artifact(_continuation_artifact_dir() / "background_reviews.jsonl", payload)
     return payload
 
@@ -120,6 +130,49 @@ def _normalize_loop_prompt(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip()).lower()
 
 
+def _stable_goal_id(session_id: str, goal: str) -> str:
+    key = f"{session_id}\x00{_normalize_loop_prompt(goal)}"
+    return hashlib.sha256(key.encode()).hexdigest()[:12]
+
+
+def _new_run_id() -> str:
+    return uuid.uuid4().hex[:12]
+
+
+_OBSERVABLE_EVIDENCE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"```"),
+    re.compile(r"(?m)^(?:diff --git |\+\+\+ |--- )"),
+    re.compile(
+        r"(?i)(?:(?<=[\s`'\"(\[{,])|^)[\w./-]+\.(?:py|js|mjs|cjs|ts|tsx|jsx|"
+        r"md|rst|yaml|yml|json|toml|ini|cfg|xml|html|css|sh|bash|zsh|sql|"
+        r"rs|go|java|kt|swift|c|h|cpp|cc|hpp|rb|php|lua|pl|proto|dart|"
+        r"vue|svelte)\b"
+    ),
+    re.compile(
+        r"(?i)\b(?:pytest|unittest|npm|pnpm|yarn|bun|cargo|ruff|mypy|jest|"
+        r"vitest|tox|gradle|mvn|make|go\s+test|go\s+build|bash|sh\s+-c|"
+        r"git\s+(?:diff|status|log|commit|push|add|checkout|stash|branch|"
+        r"merge|rebase))\b"
+    ),
+    re.compile(r"(?i)\b\d+\s+(?:passed|failed|errors?|skipped|warnings?)\b"),
+    re.compile(r"(?m)^\s*\$\s+\S"),
+)
+
+
+def _has_observable_evidence(text: str) -> bool:
+    """Deterministic positive-signal check for concrete progress markers.
+
+    Returns True if the response contains any of: fenced code blocks, unified
+    diff headers, file paths with source/config extensions, known test/build/
+    VCS invocations, test-runner result lines, or shell-prompt style lines.
+    Used as a thin gate before any semantic verifier is trusted.
+    """
+    compact = (text or "").strip()
+    if not compact:
+        return False
+    return any(pat.search(compact) for pat in _OBSERVABLE_EVIDENCE_PATTERNS)
+
+
 def _preview_text(text: str, limit: int = 200) -> str:
     compact = re.sub(r"\s+", " ", (text or "").strip())
     if len(compact) <= limit:
@@ -146,6 +199,7 @@ def format_loop_stop_notice(stop_reason: str, reason: str = "") -> str:
         "loop_event_persist_failed": "failed to persist loop event; stopped conservatively.",
         "progress_verifier_done": reason_text or "latest continuation appears effectively complete.",
         "progress_verifier_stalled": reason_text or "latest continuation did not materially advance the goal.",
+        "missing_observable_evidence": reason_text or "continuation lacked observable evidence (no code, diff, file path, test, or command).",
     }
     detail = mapping.get(stop_reason, reason_text or stop_reason or "unknown reason")
     return f"Loop stopped: {detail} ({stop_reason or 'unknown'})"
@@ -594,11 +648,12 @@ def _build_progress_verifier_prompt(
 
 def _decide_once(goal: str, session_row: Dict[str, Any], args: Namespace) -> Dict[str, Any]:
     session_id = session_row["id"]
+    goal_id = _stable_goal_id(session_id, goal)
     artifacts_dir = _continuation_artifact_dir()
     recent_history = _recent_history_context(session_id)
     reflections = _load_recent_jsonl(artifacts_dir / "reflections.jsonl", session_id=session_id)
     gaps = _load_recent_jsonl(artifacts_dir / "affordance_gaps.jsonl", session_id=session_id)
-    background_reviews = _load_recent_jsonl(artifacts_dir / "background_reviews.jsonl", session_id=session_id)
+    background_reviews = _load_recent_jsonl(artifacts_dir / "background_reviews.jsonl", session_id=session_id, goal_id=goal_id)
     runtime = _session_runtime_config(session_row, args)
     agent = AIAgent(
         model=runtime.get("model") or "",
@@ -707,9 +762,10 @@ def verify_progress_for_session(
             "stop_reason": "session_not_found",
         }
 
+    goal_id = _stable_goal_id(session_id, goal.strip())
     artifacts_dir = _continuation_artifact_dir()
     recent_history = _recent_history_context(session_id)
-    background_reviews = _load_recent_jsonl(artifacts_dir / "background_reviews.jsonl", session_id=session_id)
+    background_reviews = _load_recent_jsonl(artifacts_dir / "background_reviews.jsonl", session_id=session_id, goal_id=goal_id)
     runtime = _session_runtime_config(session_row, Namespace(model=model, provider=provider))
     agent = AIAgent(
         model=runtime.get("model") or "",
@@ -792,6 +848,8 @@ def loop_command(args: Namespace) -> Dict[str, Any]:
             exit_code=1,
         )
 
+    goal_id = _stable_goal_id(session_id, goal)
+    run_id = _new_run_id()
     max_cycles = max(1, int(getattr(args, "max_cycles", 1) or 1))
     session_row: Dict[str, Any] | None = None
     previous_prompt_norm: str | None = None
@@ -839,6 +897,8 @@ def loop_command(args: Namespace) -> Dict[str, Any]:
                 next_prompt=last_next_prompt,
                 result_preview=last_result_preview,
                 cycle=cycle,
+                goal_id=goal_id,
+                run_id=run_id,
             )
             return _emit_result(
                 session_id=session_id,
@@ -868,6 +928,8 @@ def loop_command(args: Namespace) -> Dict[str, Any]:
                 next_prompt=next_prompt,
                 result_preview=last_result_preview,
                 cycle=cycle,
+                goal_id=goal_id,
+                run_id=run_id,
             )
             return _emit_result(
                 session_id=session_id,
@@ -895,6 +957,8 @@ def loop_command(args: Namespace) -> Dict[str, Any]:
                 next_prompt=next_prompt,
                 result_preview=last_result_preview,
                 cycle=cycle,
+                goal_id=goal_id,
+                run_id=run_id,
             )
             return _emit_result(
                 session_id=session_id,
@@ -924,6 +988,8 @@ def loop_command(args: Namespace) -> Dict[str, Any]:
                 next_prompt=next_prompt,
                 result_preview=last_result_preview,
                 cycle=cycle,
+                goal_id=goal_id,
+                run_id=run_id,
             )
             return _emit_result(
                 session_id=session_id,
@@ -949,6 +1015,8 @@ def loop_command(args: Namespace) -> Dict[str, Any]:
                 next_prompt=next_prompt,
                 result_preview=last_result_preview,
                 cycle=cycle,
+                goal_id=goal_id,
+                run_id=run_id,
             )
             return _emit_result(
                 session_id=session_id,
@@ -964,6 +1032,33 @@ def loop_command(args: Namespace) -> Dict[str, Any]:
                 result_preview=last_result_preview,
                 exit_code=0,
             )
+        if not _has_observable_evidence(final_response):
+            print("Reason:   Stopped: no observable evidence (file/test/command/code/diff) in continuation result.")
+            record_background_review(
+                session_id=session_id,
+                goal=goal,
+                progress_state="missing_observable_evidence",
+                stop_reason="missing_observable_evidence",
+                next_prompt=next_prompt,
+                result_preview=result_preview,
+                cycle=cycle,
+                goal_id=goal_id,
+                run_id=run_id,
+            )
+            return _emit_result(
+                session_id=session_id,
+                goal=goal,
+                max_cycles=max_cycles,
+                cycles_attempted=cycle,
+                cycles_completed=cycles_completed,
+                outcome="stopped",
+                stop_reason="missing_observable_evidence",
+                decision_reason=reason,
+                next_prompt=next_prompt,
+                executed=cycles_completed > 0,
+                result_preview=last_result_preview,
+                exit_code=0,
+            )
         last_result_preview = result_preview
         record_background_review(
             session_id=session_id,
@@ -972,6 +1067,8 @@ def loop_command(args: Namespace) -> Dict[str, Any]:
             next_prompt=next_prompt,
             result_preview=result_preview,
             cycle=cycle,
+            goal_id=goal_id,
+            run_id=run_id,
         )
         cycles_completed += 1
         if final_response:
@@ -987,6 +1084,8 @@ def loop_command(args: Namespace) -> Dict[str, Any]:
         next_prompt=last_next_prompt,
         result_preview=last_result_preview,
         cycle=max_cycles,
+        goal_id=goal_id,
+        run_id=run_id,
     )
     return _emit_result(
         session_id=session_id,

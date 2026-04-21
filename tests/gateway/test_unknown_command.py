@@ -96,10 +96,15 @@ def _read_loop_events(tmp_path, session_id="sess-1"):
 
 
 def _seed_loop_state(tmp_path, runner, *, session_id="sess-1", session_key=None, **state):
+    from hermes_cli.loop import _stable_goal_id
+
     session_key = session_key or build_session_key(_make_source())
     is_active = bool(state.get("active", True))
+    goal = str(state.get("goal") or "Keep going")
     payload = {
-        "goal": str(state.get("goal") or "Keep going"),
+        "goal": goal,
+        "goal_id": str(state.get("goal_id") or _stable_goal_id(session_id, goal)),
+        "run_id": str(state.get("run_id") or "run-123"),
         "remaining_auto_turns": int(state.get("remaining_auto_turns", 0) or 0),
         "last_prompt": str(state.get("last_prompt") or ""),
         "last_prompt_norm": str(state.get("last_prompt_norm") or ""),
@@ -221,9 +226,10 @@ async def test_underscored_alias_for_hyphenated_builtin_not_flagged(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_loop_built_in_command_routes_through_bounded_controller(monkeypatch):
+async def test_loop_built_in_command_routes_through_bounded_controller(monkeypatch, tmp_path):
     import gateway.run as gateway_run
 
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     runner = _make_runner()
     runner._handle_message_with_agent = AsyncMock(return_value="handled")
 
@@ -246,6 +252,15 @@ async def test_loop_built_in_command_routes_through_bounded_controller(monkeypat
     mock_decide.assert_called_once_with("sess-1", "請繼續完成後續任務")
     assert runner._loop_states[build_session_key(_make_source())]["goal"] == "請繼續完成後續任務"
     assert runner._loop_states[build_session_key(_make_source())]["remaining_auto_turns"] == 2
+    assert runner._loop_states[build_session_key(_make_source())]["goal_id"]
+    assert runner._loop_states[build_session_key(_make_source())]["run_id"]
+    checkpoint = _read_loop_checkpoint(tmp_path)
+    assert checkpoint["goal_id"] == runner._loop_states[build_session_key(_make_source())]["goal_id"]
+    assert checkpoint["run_id"] == runner._loop_states[build_session_key(_make_source())]["run_id"]
+    events = _read_loop_events(tmp_path)
+    assert events[-1]["event_type"] == "loop_started"
+    assert events[-1]["goal_id"] == checkpoint["goal_id"]
+    assert events[-1]["run_id"] == checkpoint["run_id"]
     runner._handle_message_with_agent.assert_awaited_once()
     forwarded_event = runner._handle_message_with_agent.await_args.args[0]
     assert forwarded_event.text == "Implement the next thin slice and verify it."
@@ -338,7 +353,7 @@ async def test_maybe_schedule_loop_followup_returns_internal_event(monkeypatch, 
             session_key=session_key,
             session_id="sess-1",
             source=_make_source(),
-            final_response="Implemented the next thin slice.",
+            final_response="Implemented the next thin slice in tests/foo.py.",
         )
 
     assert event is not None
@@ -346,13 +361,19 @@ async def test_maybe_schedule_loop_followup_returns_internal_event(monkeypatch, 
     assert event.internal is True
     assert event.text == "Implement the next thin slice."
     assert runner._loop_states[session_key]["remaining_auto_turns"] == 1
-    assert runner._loop_states[session_key]["last_result_preview"] == "Implemented the next thin slice."
+    assert runner._loop_states[session_key]["last_result_preview"] == "Implemented the next thin slice in tests/foo.py."
     reviews = _read_background_reviews(tmp_path)
     assert reviews[-1]["progress_state"] == "meaningful_result"
     assert reviews[-1]["source"] == "bounded_loop_gateway"
     checkpoint = _read_loop_checkpoint(tmp_path)
     assert checkpoint["remaining_auto_turns"] == 1
-    assert checkpoint["last_result_preview"] == "Implemented the next thin slice."
+    assert checkpoint["last_result_preview"] == "Implemented the next thin slice in tests/foo.py."
+    assert checkpoint["goal_id"] == runner._loop_states[session_key]["goal_id"]
+    assert checkpoint["run_id"] == runner._loop_states[session_key]["run_id"]
+    events = _read_loop_events(tmp_path)
+    assert events[-1]["event_type"] == "loop_followup_scheduled"
+    assert events[-1]["goal_id"] == checkpoint["goal_id"]
+    assert events[-1]["run_id"] == checkpoint["run_id"]
 
 
 @pytest.mark.asyncio
@@ -383,7 +404,7 @@ async def test_maybe_schedule_loop_followup_stops_on_repeated_prompt(monkeypatch
             session_key=session_key,
             session_id="sess-1",
             source=_make_source(),
-            final_response="Different new result",
+            final_response="Different new result tests/foo.py",
         )
 
     assert event is None
@@ -404,7 +425,7 @@ async def test_maybe_schedule_loop_followup_stops_on_duplicate_result_preview(mo
         goal="Keep going",
         remaining_auto_turns=2,
         last_prompt_norm="different prompt",
-        last_result_preview="Repeated summary",
+        last_result_preview="Repeated summary tests/foo.py",
     )
 
     with patch(
@@ -422,7 +443,7 @@ async def test_maybe_schedule_loop_followup_stops_on_duplicate_result_preview(mo
             session_key=session_key,
             session_id="sess-1",
             source=_make_source(),
-            final_response="Repeated summary",
+            final_response="Repeated summary tests/foo.py",
         )
 
     assert event is None
@@ -454,7 +475,7 @@ async def test_maybe_schedule_loop_followup_stops_on_semantic_stall(monkeypatch,
             session_key=session_key,
             session_id="sess-1",
             source=_make_source(),
-            final_response="Fresh result",
+            final_response="Fresh result tests/foo.py",
         )
 
     assert event is None
@@ -490,7 +511,7 @@ async def test_maybe_schedule_loop_followup_stops_on_semantic_done(monkeypatch, 
             session_key=session_key,
             session_id="sess-1",
             source=_make_source(),
-            final_response="Fresh result",
+            final_response="Fresh result tests/foo.py",
         )
 
     assert event is None
@@ -499,6 +520,43 @@ async def test_maybe_schedule_loop_followup_stops_on_semantic_done(monkeypatch, 
     reviews = _read_background_reviews(tmp_path)
     assert reviews[-1]["progress_state"] == "semantic_done"
     assert reviews[-1]["stop_reason"] == "progress_verifier_done"
+
+
+@pytest.mark.asyncio
+async def test_maybe_schedule_loop_followup_stops_on_missing_observable_evidence(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    session_key = _seed_loop_state(
+        tmp_path,
+        runner,
+        goal="Keep going",
+        remaining_auto_turns=2,
+        last_prompt_norm="different prompt",
+        last_result_preview="Older result tests/foo.py",
+    )
+
+    with patch(
+        "hermes_cli.loop.verify_progress_for_session",
+        return_value={"verdict": "progress", "reason": "looks fine", "should_continue": True},
+    ) as mock_verifier, patch(
+        "hermes_cli.loop.decide_continuation_for_session",
+        return_value={"action": "continue", "reason": "more to do", "next_prompt": "Keep going."},
+    ) as mock_decide:
+        event, stop_notice = await runner._maybe_schedule_loop_followup(
+            session_key=session_key,
+            session_id="sess-1",
+            source=_make_source(),
+            final_response="All good, I implemented and verified everything. Done.",
+        )
+
+    assert event is None
+    assert "observable evidence" in stop_notice.lower()
+    assert session_key not in runner._loop_states
+    mock_verifier.assert_not_called()
+    mock_decide.assert_not_called()
+    reviews = _read_background_reviews(tmp_path)
+    assert reviews[-1]["progress_state"] == "missing_observable_evidence"
+    assert reviews[-1]["stop_reason"] == "missing_observable_evidence"
 
 
 @pytest.mark.asyncio
