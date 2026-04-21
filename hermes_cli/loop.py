@@ -139,6 +139,13 @@ def _new_run_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
+_CONTINUATION_ASK_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"(?i)\b(?:continue|keep going|proceed|next step|next slice|carry on|pick up|finish|complete|implement)\b"
+    ),
+)
+
+
 _OBSERVABLE_EVIDENCE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"```"),
     re.compile(r"(?m)^(?:diff --git |\+\+\+ |--- )"),
@@ -580,11 +587,52 @@ def _recent_history_context(session_id: str, limit: int = 6) -> List[Dict[str, s
     return rows
 
 
+def _transcript_focus_context(
+    session_id: str,
+    *,
+    user_limit: int = 4,
+    assistant_limit: int = 4,
+    char_limit: int = 600,
+) -> Dict[str, List[Dict[str, str]]]:
+    """Extract continuation-grounding signals from the full session transcript.
+
+    Picks up to `user_limit` recent user messages that contain continuation asks
+    and up to `assistant_limit` recent assistant messages that contain observable
+    evidence of landed progress, each truncated to `char_limit` chars (vs the
+    280-char generic recent_history cap).
+    """
+    db = SessionDB()
+    try:
+        history = db.get_messages_as_conversation(session_id) or []
+    finally:
+        db.close()
+
+    user_asks: List[Dict[str, str]] = []
+    assistant_summaries: List[Dict[str, str]] = []
+    for msg in history:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "")
+        content = str(msg.get("content") or "")
+        if not role or not content:
+            continue
+        if role == "user" and any(pat.search(content) for pat in _CONTINUATION_ASK_PATTERNS):
+            user_asks.append({"role": role, "content": _preview_text(content, limit=char_limit)})
+        elif role == "assistant" and _has_observable_evidence(content):
+            assistant_summaries.append({"role": role, "content": _preview_text(content, limit=char_limit)})
+
+    return {
+        "user_continuation_asks": user_asks[-user_limit:],
+        "assistant_landed_progress": assistant_summaries[-assistant_limit:],
+    }
+
+
 def _build_decision_prompt(
     *,
     goal: str,
     session_row: Dict[str, Any],
     recent_history: List[Dict[str, str]],
+    transcript_focus: Dict[str, List[Dict[str, str]]],
     reflections: List[Dict[str, Any]],
     gaps: List[Dict[str, Any]],
     background_reviews: List[Dict[str, Any]],
@@ -594,6 +642,7 @@ def _build_decision_prompt(
         "session_id": session_row.get("id"),
         "title": session_row.get("title") or "",
         "recent_history": recent_history,
+        "transcript_focus": transcript_focus,
         "last_reflections": reflections,
         "last_affordance_gaps": gaps,
         "last_background_reviews": background_reviews,
@@ -609,7 +658,7 @@ def _build_decision_prompt(
         "- keep next_prompt concrete and directly executable\n"
         "- for continue, expected_evidence must be a short literal marker we expect to observe in the next final response\n"
         "- for wait, wake_after must use only s, m, or h units\n"
-        "- use the recent_history as the primary grounding signal\n\n"
+        "- use the recent_history and transcript_focus as the primary grounding signals\n\n"
         f"Context:\n{json.dumps(context, ensure_ascii=False, indent=2)}"
     )
 
@@ -651,6 +700,7 @@ def _decide_once(goal: str, session_row: Dict[str, Any], args: Namespace) -> Dic
     goal_id = _stable_goal_id(session_id, goal)
     artifacts_dir = _continuation_artifact_dir()
     recent_history = _recent_history_context(session_id)
+    transcript_focus = _transcript_focus_context(session_id)
     reflections = _load_recent_jsonl(artifacts_dir / "reflections.jsonl", session_id=session_id)
     gaps = _load_recent_jsonl(artifacts_dir / "affordance_gaps.jsonl", session_id=session_id)
     background_reviews = _load_recent_jsonl(artifacts_dir / "background_reviews.jsonl", session_id=session_id, goal_id=goal_id)
@@ -670,6 +720,7 @@ def _decide_once(goal: str, session_row: Dict[str, Any], args: Namespace) -> Dic
             goal=goal,
             session_row=session_row,
             recent_history=recent_history,
+            transcript_focus=transcript_focus,
             reflections=reflections,
             gaps=gaps,
             background_reviews=background_reviews,
@@ -1085,6 +1136,7 @@ def loop_command(args: Namespace) -> Dict[str, Any]:
                 stop_reason="dry_run",
                 decision_reason=reason,
                 next_prompt=next_prompt,
+                expected_evidence=expected_evidence,
                 executed=cycles_completed > 0,
                 result_preview=last_result_preview,
                 exit_code=0,

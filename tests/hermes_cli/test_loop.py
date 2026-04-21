@@ -536,7 +536,9 @@ def test_loop_command_dry_run_skips_execution(monkeypatch, capsys, tmp_path):
     assert result["outcome"] == "dry_run"
     assert result["executed"] is False
     assert result["stop_reason"] == "dry_run"
+    assert result["expected_evidence"] == "tests/foo.py"
     assert summary["outcome"] == "dry_run"
+    assert summary["expected_evidence"] == "tests/foo.py"
 
 
 def test_loop_command_honors_max_cycles(monkeypatch, capsys, tmp_path):
@@ -1358,3 +1360,132 @@ def test_verify_progress_proceeds_normally_without_goal_artifact(monkeypatch, tm
     assert result["verdict"] == "progress"
     assert result["should_continue"] is True
     assert len(_VerifierAgent.instances) == 1
+
+
+# Transcript-focus context tests
+
+
+class _RichContinuationHistoryDB(_FakeSessionDB):
+    """Session with repeated continuation asks and assistant landed-progress summaries."""
+
+    def get_messages_as_conversation(self, session_id):
+        return [
+            {"role": "user", "content": "initial goal: build the new loop slice"},
+            {"role": "assistant", "content": "I will look into this."},
+            {"role": "user", "content": "please continue implementing the feature"},
+            {
+                "role": "assistant",
+                "content": (
+                    "Updated hermes_cli/loop.py with the decision slice. "
+                    "Tests pass: 5 passed, 0 failed."
+                ),
+            },
+            {"role": "user", "content": "keep going, next step please"},
+            {
+                "role": "assistant",
+                "content": "Added tests/hermes_cli/test_loop.py with 3 new test cases covering the prompt.",
+            },
+            {"role": "user", "content": "proceed with the remaining verification slice"},
+        ]
+
+
+def test_decision_prompt_includes_user_continuation_asks(monkeypatch, tmp_path):
+    """Decision prompt transcript_focus.user_continuation_asks contains all recent continuation asks."""
+    class _CapturingAgent:
+        instances = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.calls = []
+            _CapturingAgent.instances.append(self)
+
+        def run_conversation(self, user_message, conversation_history=None, task_id=None):
+            self.calls.append({"user_message": user_message})
+            return {"final_response": json.dumps({"action": "stop", "reason": "done"})}
+
+    _CapturingAgent.instances = []
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.loop.SessionDB", _RichContinuationHistoryDB)
+    monkeypatch.setattr("hermes_cli.loop.AIAgent", _CapturingAgent)
+
+    decide_continuation_for_session("sess-1", "Keep going")
+
+    assert len(_CapturingAgent.instances) == 1
+    prompt = _CapturingAgent.instances[0].calls[0]["user_message"]
+    context = json.loads(prompt.split("Context:\n", 1)[1])
+    asks = context["transcript_focus"]["user_continuation_asks"]
+    ask_contents = [m["content"] for m in asks]
+    assert any("please continue implementing the feature" in c for c in ask_contents)
+    assert any("keep going, next step please" in c for c in ask_contents)
+    assert any("proceed with the remaining verification slice" in c for c in ask_contents)
+    # Non-matching user message should not appear in asks
+    assert not any("initial goal" in c for c in ask_contents)
+
+
+def test_decision_prompt_includes_assistant_landed_progress(monkeypatch, tmp_path):
+    """Decision prompt transcript_focus.assistant_landed_progress contains messages with observable evidence."""
+    class _CapturingAgent:
+        instances = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.calls = []
+            _CapturingAgent.instances.append(self)
+
+        def run_conversation(self, user_message, conversation_history=None, task_id=None):
+            self.calls.append({"user_message": user_message})
+            return {"final_response": json.dumps({"action": "stop", "reason": "done"})}
+
+    _CapturingAgent.instances = []
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.loop.SessionDB", _RichContinuationHistoryDB)
+    monkeypatch.setattr("hermes_cli.loop.AIAgent", _CapturingAgent)
+
+    decide_continuation_for_session("sess-1", "Keep going")
+
+    prompt = _CapturingAgent.instances[0].calls[0]["user_message"]
+    context = json.loads(prompt.split("Context:\n", 1)[1])
+    landed = context["transcript_focus"]["assistant_landed_progress"]
+    landed_contents = [m["content"] for m in landed]
+    # Both assistant messages with file paths / test results should be captured
+    assert any("hermes_cli/loop.py" in c for c in landed_contents)
+    assert any("5 passed" in c for c in landed_contents)
+    assert any("tests/hermes_cli/test_loop.py" in c for c in landed_contents)
+    # The bare "I will look into this." has no observable evidence — must not appear
+    assert not any("I will look into this" in c for c in landed_contents)
+
+
+def test_decision_prompt_transcript_focus_empty_when_no_matching_messages(monkeypatch, tmp_path):
+    """Both transcript_focus lists are empty when the transcript has no continuation signals."""
+    class _PlainHistoryDB(_FakeSessionDB):
+        def get_messages_as_conversation(self, session_id):
+            return [
+                {"role": "user", "content": "what is the weather today"},
+                {"role": "assistant", "content": "I cannot check live weather."},
+                {"role": "user", "content": "tell me a joke"},
+                {"role": "assistant", "content": "Why did the function return? Because it saw the call stack."},
+            ]
+
+    class _CapturingAgent:
+        instances = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.calls = []
+            _CapturingAgent.instances.append(self)
+
+        def run_conversation(self, user_message, conversation_history=None, task_id=None):
+            self.calls.append({"user_message": user_message})
+            return {"final_response": json.dumps({"action": "stop", "reason": "done"})}
+
+    _CapturingAgent.instances = []
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.loop.SessionDB", _PlainHistoryDB)
+    monkeypatch.setattr("hermes_cli.loop.AIAgent", _CapturingAgent)
+
+    decide_continuation_for_session("sess-1", "Keep going")
+
+    prompt = _CapturingAgent.instances[0].calls[0]["user_message"]
+    context = json.loads(prompt.split("Context:\n", 1)[1])
+    assert context["transcript_focus"]["user_continuation_asks"] == []
+    assert context["transcript_focus"]["assistant_landed_progress"] == []
