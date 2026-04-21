@@ -1804,6 +1804,7 @@ class GatewayRunner:
     def _queue_due_loop_event(self, session_key: str, state: Dict[str, Any]) -> bool:
         event = self._build_recovered_loop_event(session_key, state)
         if event is None:
+            self._mark_recovery_incomplete(session_key, state)
             return False
         state = dict(state)
         state["pending_wakeup_at"] = ""
@@ -1811,7 +1812,9 @@ class GatewayRunner:
         loop_states = getattr(self, "_loop_states", None)
         if isinstance(loop_states, dict):
             loop_states[session_key] = state
-        self._persist_loop_checkpoint(session_key, state)
+        if not self._persist_loop_checkpoint(session_key, state):
+            self._mark_recovery_incomplete(session_key, state)
+            return False
         task = asyncio.create_task(self._handle_message(event))
         background_tasks = getattr(self, "_background_tasks", None)
         if isinstance(background_tasks, set):
