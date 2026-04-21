@@ -837,3 +837,125 @@ def test_cmd_loop_stop_raises_system_exit_for_error(monkeypatch):
     monkeypatch.setattr("hermes_cli.loop.loop_stop_command", lambda args: {"exit_code": 1})
     with pytest.raises(SystemExit):
         cmd_loop_stop(Namespace(session_id="missing"))
+
+
+# Goal artifact preference tests
+
+def test_decide_continuation_prefers_goal_artifact_text_when_present(monkeypatch, tmp_path):
+    """When a matching goal artifact exists, decide uses its goal_text."""
+    _DecisionAgent.instances = []
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.loop.SessionDB", _FakeSessionDB)
+    monkeypatch.setattr("hermes_cli.loop.AIAgent", _DecisionAgent)
+
+    store = LoopStore()
+    goal_id = _stable_goal_id("sess-1", "Keep going")
+    store.write_goal_artifact(
+        session_id="sess-1",
+        goal_id=goal_id,
+        goal_text="Keep going",
+        created_by="gateway",
+    )
+
+    result = decide_continuation_for_session("sess-1", "Keep going")
+
+    assert result["action"] == "stop"
+    assert result["stop_reason"] == "model_stop"
+    assert len(_DecisionAgent.instances) == 1
+    # goal_text from the artifact should appear in the decision prompt
+    decision_prompt = _DecisionAgent.instances[0].calls[0]["user_message"]
+    assert "Keep going" in decision_prompt
+
+
+def test_decide_continuation_stops_conservatively_on_goal_artifact_goal_id_mismatch(monkeypatch, tmp_path):
+    """Mismatched artifact goal_id triggers a conservative stop before agent is called."""
+    _DecisionAgent.instances = []
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.loop.SessionDB", _FakeSessionDB)
+    monkeypatch.setattr("hermes_cli.loop.AIAgent", _DecisionAgent)
+
+    LoopStore().write_goal_artifact(
+        session_id="sess-1",
+        goal_id="completely-different-id",
+        goal_text="A different goal entirely",
+        created_by="gateway",
+    )
+
+    result = decide_continuation_for_session("sess-1", "Keep going")
+
+    assert result["action"] == "stop"
+    assert result["stop_reason"] == "goal_artifact_mismatch"
+    assert _DecisionAgent.instances == []
+
+
+def test_decide_continuation_proceeds_normally_without_goal_artifact(monkeypatch, tmp_path):
+    """No artifact present — falls through to _decide_once with original goal."""
+    _DecisionAgent.instances = []
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.loop.SessionDB", _FakeSessionDB)
+    monkeypatch.setattr("hermes_cli.loop.AIAgent", _DecisionAgent)
+
+    # No goal artifact written
+    result = decide_continuation_for_session("sess-1", "Keep going")
+
+    assert result["action"] == "stop"
+    assert result["stop_reason"] == "model_stop"
+    assert len(_DecisionAgent.instances) == 1
+
+
+def test_verify_progress_stops_conservatively_on_goal_artifact_goal_id_mismatch(monkeypatch, tmp_path):
+    """Mismatched artifact goal_id causes verifier to return stalled without calling agent."""
+    class _VerifierAgent(_DecisionAgent):
+        instances = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.calls = []
+            _VerifierAgent.instances.append(self)
+
+        def run_conversation(self, user_message, conversation_history=None, task_id=None):
+            self.calls.append({"user_message": user_message})
+            return {"final_response": json.dumps({"verdict": "progress", "reason": "ok", "should_continue": True})}
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.loop.SessionDB", _FakeSessionDB)
+    monkeypatch.setattr("hermes_cli.loop.AIAgent", _VerifierAgent)
+
+    LoopStore().write_goal_artifact(
+        session_id="sess-1",
+        goal_id="completely-different-id",
+        goal_text="A different goal entirely",
+        created_by="gateway",
+    )
+
+    result = verify_progress_for_session("sess-1", "Keep going", "response tests/foo.py")
+
+    assert result["verdict"] == "stalled"
+    assert result["should_continue"] is False
+    assert result["stop_reason"] == "goal_artifact_mismatch"
+    assert _VerifierAgent.instances == []
+
+
+def test_verify_progress_proceeds_normally_without_goal_artifact(monkeypatch, tmp_path):
+    """No artifact present — verifier proceeds with original goal."""
+    class _VerifierAgent(_DecisionAgent):
+        instances = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.calls = []
+            _VerifierAgent.instances.append(self)
+
+        def run_conversation(self, user_message, conversation_history=None, task_id=None):
+            self.calls.append({"user_message": user_message})
+            return {"final_response": json.dumps({"verdict": "progress", "reason": "ok", "should_continue": True})}
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.loop.SessionDB", _FakeSessionDB)
+    monkeypatch.setattr("hermes_cli.loop.AIAgent", _VerifierAgent)
+
+    result = verify_progress_for_session("sess-1", "Keep going", "response tests/foo.py")
+
+    assert result["verdict"] == "progress"
+    assert result["should_continue"] is True
+    assert len(_VerifierAgent.instances) == 1

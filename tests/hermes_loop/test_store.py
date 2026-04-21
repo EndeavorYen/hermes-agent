@@ -165,3 +165,104 @@ def test_loop_store_read_helpers_fail_closed_for_missing_or_malformed_data(monke
         "loop_progressed",
     ]
     assert store.list_checkpoints() == []
+
+
+def test_write_goal_artifact_persists_to_goal_json(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    store = LoopStore()
+    artifact = store.write_goal_artifact(
+        session_id="sess-1",
+        goal_id="abc123",
+        goal_text="Keep going until done",
+        success_criteria=["tests pass"],
+        constraints=["no regressions"],
+        revision=1,
+        created_by="gateway",
+        run_id="run-xyz",
+        session_key="telegram:u1:c1",
+    )
+
+    goal_path = tmp_path / "state" / "loops" / "sess-1" / "goal.json"
+    assert goal_path.exists()
+    saved = json.loads(goal_path.read_text(encoding="utf-8"))
+
+    assert saved["version"] == 1
+    assert saved["goal_id"] == "abc123"
+    assert saved["session_id"] == "sess-1"
+    assert saved["goal_text"] == "Keep going until done"
+    assert saved["success_criteria"] == ["tests pass"]
+    assert saved["constraints"] == ["no regressions"]
+    assert saved["revision"] == 1
+    assert saved["created_by"] == "gateway"
+    assert saved["run_id"] == "run-xyz"
+    assert saved["session_key"] == "telegram:u1:c1"
+    assert "created_at" in saved
+
+    assert artifact["goal_id"] == "abc123"
+    assert artifact["goal_text"] == "Keep going until done"
+
+
+def test_write_goal_artifact_optional_fields_omitted_when_none(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    store = LoopStore()
+    artifact = store.write_goal_artifact(
+        session_id="sess-2",
+        goal_id="def456",
+        goal_text="Simple goal",
+    )
+
+    assert "run_id" not in artifact
+    assert "session_key" not in artifact
+    assert artifact["success_criteria"] == []
+    assert artifact["constraints"] == []
+    assert artifact["revision"] == 1
+    assert artifact["created_by"] == "gateway"
+
+
+def test_read_goal_artifact_returns_written_artifact(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    store = LoopStore()
+    store.write_goal_artifact(
+        session_id="sess-1",
+        goal_id="abc123",
+        goal_text="Keep going until done",
+    )
+
+    artifact = store.read_goal_artifact("sess-1")
+    assert artifact is not None
+    assert artifact["goal_id"] == "abc123"
+    assert artifact["goal_text"] == "Keep going until done"
+
+
+def test_read_goal_artifact_returns_none_for_missing_or_malformed(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    store = LoopStore()
+
+    assert store.read_goal_artifact("nonexistent") is None
+
+    broken_dir = tmp_path / "state" / "loops" / "sess-broken"
+    broken_dir.mkdir(parents=True, exist_ok=True)
+    (broken_dir / "goal.json").write_text("not json", encoding="utf-8")
+    assert store.read_goal_artifact("sess-broken") is None
+
+
+def test_goal_artifact_lives_adjacent_to_checkpoint_and_events(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    store = LoopStore()
+    store.write_checkpoint(
+        session_id="sess-1",
+        session_key="telegram:u1:c1",
+        payload={"goal": "Keep going", "active": True},
+    )
+    store.append_event(session_id="sess-1", event_type="loop_started", payload={"goal": "Keep going"})
+    store.write_goal_artifact(session_id="sess-1", goal_id="abc123", goal_text="Keep going")
+
+    session_dir = tmp_path / "state" / "loops" / "sess-1"
+    assert (session_dir / "checkpoint.json").exists()
+    assert (session_dir / "events.jsonl").exists()
+    assert (session_dir / "goal.json").exists()

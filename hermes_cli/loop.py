@@ -200,6 +200,10 @@ def format_loop_stop_notice(stop_reason: str, reason: str = "") -> str:
         "progress_verifier_done": reason_text or "latest continuation appears effectively complete.",
         "progress_verifier_stalled": reason_text or "latest continuation did not materially advance the goal.",
         "missing_observable_evidence": reason_text or "continuation lacked observable evidence (no code, diff, file path, test, or command).",
+        "loop_goal_artifact_persist_failed": reason_text or "failed to persist loop goal artifact; stopped conservatively.",
+        "loop_goal_artifact_missing": reason_text or "loop goal artifact is missing; cannot trust continuation target.",
+        "loop_goal_artifact_malformed": reason_text or "loop goal artifact is malformed; cannot trust continuation target.",
+        "loop_goal_artifact_mismatch": reason_text or "loop goal artifact goal_id does not match active run; stopping conservatively.",
     }
     detail = mapping.get(stop_reason, reason_text or stop_reason or "unknown reason")
     return f"Loop stopped: {detail} ({stop_reason or 'unknown'})"
@@ -726,7 +730,26 @@ def decide_continuation_for_session(
         }
 
     args = Namespace(model=model, provider=provider)
-    decision = _decide_once(goal.strip(), session_row, args)
+    goal = goal.strip()
+    try:
+        from hermes_loop import LoopStore
+        _goal_artifact = LoopStore().read_goal_artifact(session_id)
+    except Exception:
+        _goal_artifact = None
+    if _goal_artifact is not None:
+        _artifact_goal_id = str(_goal_artifact.get("goal_id") or "").strip()
+        _artifact_goal_text = str(_goal_artifact.get("goal_text") or "").strip()
+        _expected_goal_id = _stable_goal_id(session_id, goal)
+        if _artifact_goal_id and _artifact_goal_id != _expected_goal_id:
+            return {
+                "action": "stop",
+                "reason": "Goal artifact goal_id does not match expected goal; stopping conservatively.",
+                "stop_reason": "goal_artifact_mismatch",
+                "session_id": session_id,
+            }
+        if _artifact_goal_text:
+            goal = _artifact_goal_text
+    decision = _decide_once(goal, session_row, args)
     decision.setdefault("session_id", session_id)
     return decision
 
@@ -762,7 +785,25 @@ def verify_progress_for_session(
             "stop_reason": "session_not_found",
         }
 
-    goal_id = _stable_goal_id(session_id, goal.strip())
+    goal = goal.strip()
+    goal_id = _stable_goal_id(session_id, goal)
+    try:
+        from hermes_loop import LoopStore
+        _goal_artifact = LoopStore().read_goal_artifact(session_id)
+    except Exception:
+        _goal_artifact = None
+    if _goal_artifact is not None:
+        _artifact_goal_id = str(_goal_artifact.get("goal_id") or "").strip()
+        _artifact_goal_text = str(_goal_artifact.get("goal_text") or "").strip()
+        if _artifact_goal_id and _artifact_goal_id != goal_id:
+            return {
+                "verdict": "stalled",
+                "reason": "Goal artifact goal_id does not match expected goal; stopping conservatively.",
+                "should_continue": False,
+                "stop_reason": "goal_artifact_mismatch",
+            }
+        if _artifact_goal_text:
+            goal = _artifact_goal_text
     artifacts_dir = _continuation_artifact_dir()
     recent_history = _recent_history_context(session_id)
     background_reviews = _load_recent_jsonl(artifacts_dir / "background_reviews.jsonl", session_id=session_id, goal_id=goal_id)
@@ -779,7 +820,7 @@ def verify_progress_for_session(
     )
     result = agent.run_conversation(
         _build_progress_verifier_prompt(
-            goal=goal.strip(),
+            goal=goal,
             session_row=session_row,
             recent_history=recent_history,
             background_reviews=background_reviews,

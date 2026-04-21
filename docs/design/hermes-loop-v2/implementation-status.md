@@ -52,6 +52,8 @@ It separates:
 - stable `goal_id` metadata binds same-session review loading to the active goal instead of mixing prior goal reviews
 - persisted gateway checkpoints/events now carry `goal_id` + `run_id`
 - background review artifacts now carry optional `goal_id` + `run_id` for correlation
+- persisted `goal.json` artifact now gives `goal_id` a real immutable contract target instead of metadata-only correlation
+- gateway followup/recovery and CLI decision/verifier paths now prefer the persisted goal artifact when present
 
 ## Phase coverage against `rollout-plan.md`
 
@@ -64,6 +66,7 @@ Partial only.
 Implemented:
 - minimal persistence helper
 - incremental hardening around current bounded loop code
+- minimal persisted LoopGoal artifact contract (`goal.json`) with planner/verifier/followup consultation
 
 Not yet implemented:
 - `LoopGoalRegistry`
@@ -116,7 +119,7 @@ Still incomplete:
 
 These are still real architecture gaps and should not be overclaimed as complete:
 
-1. no immutable `LoopGoal` contract with revisioned persisted goal artifacts
+1. no revisioned `LoopGoalRegistry` / supersession workflow yet
 2. no full `turn_id` / `attempt_id` artifact model
 3. no canonical `LoopRuntime.tick()` implementation
 4. no event schema with `event_id`, `state_before`, `state_after`

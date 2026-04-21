@@ -130,6 +130,13 @@ def _seed_loop_state(tmp_path, runner, *, session_id="sess-1", session_key=None,
         session_key=session_key,
         payload=payload,
     )
+    LoopStore().write_goal_artifact(
+        session_id=session_id,
+        goal_id=payload["goal_id"],
+        goal_text=goal,
+        created_by="gateway",
+        session_key=session_key,
+    )
     runner._loop_states[session_key] = {"session_id": session_id, **payload}
     return session_key
 
@@ -729,3 +736,151 @@ async def test_bare_continuation_skill_invocation_routes_through_bounded_control
     assert runner._loop_states[build_session_key(_make_source())]["remaining_auto_turns"] == 2
     forwarded_event = runner._handle_message_with_agent.await_args.args[0]
     assert forwarded_event.text == "Implement the next thin slice and verify it."
+
+
+def _read_goal_artifact(tmp_path, session_id="sess-1"):
+    path = tmp_path / "state" / "loops" / session_id / "goal.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+@pytest.mark.asyncio
+async def test_loop_start_writes_goal_artifact(monkeypatch, tmp_path):
+    import gateway.run as gateway_run
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    runner._handle_message_with_agent = AsyncMock(return_value="handled")
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    with patch(
+        "hermes_cli.loop.decide_continuation_for_session",
+        return_value={
+            "action": "continue",
+            "reason": "clear next slice",
+            "next_prompt": "Implement the next thin slice and verify it.",
+            "session_id": "sess-1",
+        },
+    ):
+        await runner._handle_message(_make_event("/loop Keep going until done"))
+
+    artifact = _read_goal_artifact(tmp_path)
+    assert artifact["goal_text"] == "Keep going until done"
+    assert artifact["goal_id"] == runner._loop_states[build_session_key(_make_source())]["goal_id"]
+    assert artifact["run_id"] == runner._loop_states[build_session_key(_make_source())]["run_id"]
+    assert artifact["created_by"] == "gateway"
+    assert artifact["version"] == 1
+    assert artifact["revision"] == 1
+
+
+@pytest.mark.asyncio
+async def test_maybe_schedule_loop_followup_stops_on_missing_goal_artifact(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    session_key = _seed_loop_state(
+        tmp_path,
+        runner,
+        goal="Keep going",
+        remaining_auto_turns=2,
+        last_prompt_norm="different prompt",
+        last_result_preview="Older result tests/foo.py",
+    )
+    # _seed_loop_state writes a goal artifact; remove it to simulate the missing-artifact case
+    (tmp_path / "state" / "loops" / "sess-1" / "goal.json").unlink()
+
+    with patch(
+        "hermes_cli.loop.verify_progress_for_session",
+        return_value={"verdict": "progress", "reason": "looks fine", "should_continue": True},
+    ) as mock_verifier:
+        event, stop_notice = await runner._maybe_schedule_loop_followup(
+            session_key=session_key,
+            session_id="sess-1",
+            source=_make_source(),
+            final_response="Fresh result tests/foo.py with evidence.",
+        )
+
+    assert event is None
+    assert "goal artifact" in stop_notice.lower()
+    assert "missing" in stop_notice.lower()
+    assert session_key not in runner._loop_states
+    mock_verifier.assert_not_called()
+    checkpoint = _read_loop_checkpoint(tmp_path)
+    assert checkpoint["active"] is False
+    assert checkpoint["stop_reason"] == "loop_goal_artifact_missing"
+
+
+@pytest.mark.asyncio
+async def test_maybe_schedule_loop_followup_stops_on_mismatched_goal_artifact(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    session_key = _seed_loop_state(
+        tmp_path,
+        runner,
+        goal="Keep going",
+        goal_id="correct-goal-id",
+        remaining_auto_turns=2,
+        last_prompt_norm="different prompt",
+        last_result_preview="Older result tests/foo.py",
+    )
+    # Write a goal artifact with a different goal_id
+    from hermes_loop.store import LoopStore
+    LoopStore().write_goal_artifact(
+        session_id="sess-1",
+        goal_id="wrong-goal-id",
+        goal_text="A completely different goal",
+    )
+
+    with patch(
+        "hermes_cli.loop.verify_progress_for_session",
+        return_value={"verdict": "progress", "reason": "looks fine", "should_continue": True},
+    ) as mock_verifier:
+        event, stop_notice = await runner._maybe_schedule_loop_followup(
+            session_key=session_key,
+            session_id="sess-1",
+            source=_make_source(),
+            final_response="Fresh result tests/foo.py with evidence.",
+        )
+
+    assert event is None
+    assert "goal artifact" in stop_notice.lower()
+    assert "mismatch" in stop_notice.lower() or "does not match" in stop_notice.lower()
+    assert session_key not in runner._loop_states
+    mock_verifier.assert_not_called()
+    checkpoint = _read_loop_checkpoint(tmp_path)
+    assert checkpoint["active"] is False
+    assert checkpoint["stop_reason"] == "loop_goal_artifact_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_maybe_schedule_loop_followup_stops_on_malformed_goal_artifact(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    session_key = _seed_loop_state(
+        tmp_path,
+        runner,
+        goal="Keep going",
+        remaining_auto_turns=2,
+        last_prompt_norm="different prompt",
+        last_result_preview="Older result tests/foo.py",
+    )
+    # Write a malformed goal artifact (missing goal_text)
+    goal_dir = tmp_path / "state" / "loops" / "sess-1"
+    goal_dir.mkdir(parents=True, exist_ok=True)
+    (goal_dir / "goal.json").write_text('{"goal_id": "abc", "goal_text": ""}', encoding="utf-8")
+
+    event, stop_notice = await runner._maybe_schedule_loop_followup(
+        session_key=session_key,
+        session_id="sess-1",
+        source=_make_source(),
+        final_response="Fresh result tests/foo.py with evidence.",
+    )
+
+    assert event is None
+    assert "goal artifact" in stop_notice.lower()
+    assert "malformed" in stop_notice.lower()
+    assert session_key not in runner._loop_states
+    checkpoint = _read_loop_checkpoint(tmp_path)
+    assert checkpoint["active"] is False
+    assert checkpoint["stop_reason"] == "loop_goal_artifact_malformed"

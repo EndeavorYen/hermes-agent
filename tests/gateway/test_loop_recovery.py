@@ -148,6 +148,13 @@ async def test_recovered_loop_state_can_drive_followup_logic(monkeypatch, tmp_pa
             "active": True,
         },
     )
+    store.write_goal_artifact(
+        session_id="sess-active",
+        goal_id="goal-active",
+        goal_text="Keep going",
+        created_by="gateway",
+        session_key=session_key,
+    )
 
     recovered = runner._hydrate_loop_states_from_store()
 
@@ -420,6 +427,13 @@ async def test_followup_stops_conservatively_when_loop_event_persist_fails(monke
             "active": True,
         },
     )
+    store.write_goal_artifact(
+        session_id="sess-active",
+        goal_id="goal-active",
+        goal_text="Keep going",
+        created_by="gateway",
+        session_key=session_key,
+    )
     runner._loop_states[session_key] = {
         "session_id": "sess-active",
         "goal": "Keep going",
@@ -470,3 +484,52 @@ async def test_followup_stops_conservatively_when_loop_event_persist_fails(monke
     checkpoint = _read_loop_checkpoint(tmp_path, "sess-active")
     assert checkpoint["active"] is False
     assert checkpoint["stop_reason"] == "loop_event_persist_failed"
+
+
+@pytest.mark.asyncio
+async def test_recovered_followup_stops_conservatively_when_goal_artifact_is_missing(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    store = LoopStore()
+    source = _make_source()
+    session_key = build_session_key(source)
+
+    store.write_checkpoint(
+        session_id="sess-active",
+        session_key=session_key,
+        payload={
+            "goal": "Keep going",
+            "goal_id": "goal-active",
+            "run_id": "run-active",
+            "remaining_auto_turns": 2,
+            "last_prompt": "Implement the next thin slice.",
+            "last_prompt_norm": "different prompt",
+            "last_result_preview": "previous result",
+            "channel_prompt": None,
+            "active": True,
+        },
+    )
+    # Intentionally do NOT write a goal artifact
+
+    recovered = runner._hydrate_loop_states_from_store()
+    assert recovered == 1
+
+    with patch(
+        "hermes_cli.loop.verify_progress_for_session",
+        return_value={"verdict": "progress", "reason": "real progress", "should_continue": True},
+    ) as mock_verifier:
+        event, stop_notice = await runner._maybe_schedule_loop_followup(
+            session_key=session_key,
+            session_id="sess-active",
+            source=source,
+            final_response="Updated tests/gateway/test_loop_recovery.py and reran pytest -q.",
+        )
+
+    assert event is None
+    assert "goal artifact" in stop_notice.lower()
+    assert "missing" in stop_notice.lower()
+    assert session_key not in runner._loop_states
+    mock_verifier.assert_not_called()
+    checkpoint = _read_loop_checkpoint(tmp_path, "sess-active")
+    assert checkpoint["active"] is False
+    assert checkpoint["stop_reason"] == "loop_goal_artifact_missing"

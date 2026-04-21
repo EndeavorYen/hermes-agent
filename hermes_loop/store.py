@@ -23,6 +23,9 @@ class LoopStore:
     def events_path(self, session_id: str) -> Path:
         return self.session_dir(session_id) / "events.jsonl"
 
+    def goal_path(self, session_id: str) -> Path:
+        return self.session_dir(session_id) / "goal.json"
+
     def write_checkpoint(
         self,
         *,
@@ -43,6 +46,42 @@ class LoopStore:
 
     def read_checkpoint(self, session_id: str) -> dict[str, Any] | None:
         return self._read_json_dict(self.checkpoint_path(session_id))
+
+    def write_goal_artifact(
+        self,
+        *,
+        session_id: str,
+        goal_id: str,
+        goal_text: str,
+        success_criteria: list[str] | None = None,
+        constraints: list[str] | None = None,
+        revision: int = 1,
+        created_by: str = "gateway",
+        run_id: str | None = None,
+        session_key: str | None = None,
+    ) -> dict[str, Any]:
+        artifact: dict[str, Any] = {
+            "version": 1,
+            "goal_id": goal_id,
+            "session_id": session_id,
+            "goal_text": goal_text,
+            "success_criteria": success_criteria if success_criteria is not None else [],
+            "constraints": constraints if constraints is not None else [],
+            "revision": revision,
+            "created_at": self._timestamp(),
+            "created_by": created_by,
+        }
+        if run_id is not None:
+            artifact["run_id"] = run_id
+        if session_key is not None:
+            artifact["session_key"] = session_key
+        path = self.goal_path(session_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(artifact, ensure_ascii=False, indent=2), encoding="utf-8")
+        return artifact
+
+    def read_goal_artifact(self, session_id: str) -> dict[str, Any] | None:
+        return self._read_json_dict(self.goal_path(session_id))
 
     def list_checkpoints(self, active_only: bool = False) -> list[dict[str, Any]]:
         if not self.root.exists():

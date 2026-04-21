@@ -1538,7 +1538,17 @@ class GatewayRunner:
             return "resource"
         if reason.startswith("progress_verifier") or reason in {"duplicate_result_preview", "repeated_next_prompt", "missing_observable_evidence"}:
             return "verification"
-        if reason in {"recovery_incomplete", "loop_checkpoint_persist_failed", "loop_event_persist_failed", "invalid_loop_checkpoint", "loop_checkpoint_mismatch"}:
+        if reason in {
+            "recovery_incomplete",
+            "loop_checkpoint_persist_failed",
+            "loop_event_persist_failed",
+            "loop_goal_artifact_persist_failed",
+            "invalid_loop_checkpoint",
+            "loop_checkpoint_mismatch",
+            "loop_goal_artifact_missing",
+            "loop_goal_artifact_malformed",
+            "loop_goal_artifact_mismatch",
+        }:
             return "runtime_error"
         return "normal"
 
@@ -1615,6 +1625,31 @@ class GatewayRunner:
             return True
         except Exception:
             logger.exception("Failed to append loop event")
+            return False
+
+    def _write_loop_goal_artifact(self, session_key: str, session_id: str, goal: str) -> bool:
+        if not (session_id or "").strip():
+            return False
+        state = getattr(self, "_loop_states", {}).get(session_key, {})
+        goal_id = str(state.get("goal_id") or "").strip()
+        run_id = str(state.get("run_id") or "").strip() or None
+        if not goal_id:
+            return False
+        try:
+            from hermes_loop import LoopStore
+
+            LoopStore().write_goal_artifact(
+                session_id=session_id,
+                goal_id=goal_id,
+                goal_text=goal,
+                revision=1,
+                created_by="gateway",
+                run_id=run_id or None,
+                session_key=session_key,
+            )
+            return True
+        except Exception:
+            logger.exception("Failed to write loop goal artifact")
             return False
 
     def _normalize_loop_checkpoint_state(
@@ -2057,6 +2092,40 @@ class GatewayRunner:
                     },
                 )
                 return None, format_loop_stop_notice("idle_timeout")
+
+        try:
+            from hermes_loop import LoopStore as _LoopStore
+            _goal_artifact = _LoopStore().read_goal_artifact(session_id)
+        except Exception:
+            _goal_artifact = None
+        _state_goal_id = str(state.get("goal_id") or "").strip()
+        if _goal_artifact is None:
+            self._clear_loop_state(
+                session_key,
+                stop_reason="loop_goal_artifact_missing",
+                event_type="loop_stopped",
+                event_payload={"goal": goal, "reason": "goal artifact missing; stopping conservatively."},
+            )
+            return None, format_loop_stop_notice("loop_goal_artifact_missing", "goal artifact missing; stopping conservatively.")
+        _artifact_goal_id = str(_goal_artifact.get("goal_id") or "").strip()
+        _artifact_goal_text = str(_goal_artifact.get("goal_text") or "").strip()
+        if not _artifact_goal_id or not _artifact_goal_text:
+            self._clear_loop_state(
+                session_key,
+                stop_reason="loop_goal_artifact_malformed",
+                event_type="loop_stopped",
+                event_payload={"goal": goal, "reason": "goal artifact malformed; stopping conservatively."},
+            )
+            return None, format_loop_stop_notice("loop_goal_artifact_malformed", "goal artifact malformed; stopping conservatively.")
+        if _state_goal_id and _artifact_goal_id != _state_goal_id:
+            self._clear_loop_state(
+                session_key,
+                stop_reason="loop_goal_artifact_mismatch",
+                event_type="loop_stopped",
+                event_payload={"goal": goal, "reason": "goal artifact goal_id does not match active run; stopping conservatively."},
+            )
+            return None, format_loop_stop_notice("loop_goal_artifact_mismatch", "goal artifact goal_id does not match active run; stopping conservatively.")
+        goal = _artifact_goal_text
 
         from hermes_cli.loop import (
             decide_continuation_for_session,
@@ -2521,6 +2590,14 @@ class GatewayRunner:
                             },
                         )
                         return "Loop stopped: failed to persist loop start event (loop_event_persist_failed)"
+                    if not self._write_loop_goal_artifact(session_key, session_entry.session_id, goal):
+                        self._stop_loop_for_persistence_failure(
+                            session_key=session_key,
+                            stop_reason="loop_goal_artifact_persist_failed",
+                            reason="failed to persist loop goal artifact; stopping conservatively.",
+                            event_payload={"goal": goal, "next_prompt": next_prompt},
+                        )
+                        return "Loop stopped: failed to persist loop goal artifact (loop_goal_artifact_persist_failed)"
                     event.text = next_prompt
                     return None
                 self._clear_loop_state(session_key)
