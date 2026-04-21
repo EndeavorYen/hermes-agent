@@ -1624,9 +1624,9 @@ class GatewayRunner:
 
     @classmethod
     def _parse_loop_start_options(cls, user_instruction: str) -> tuple[str, Dict[str, int]]:
-        remaining_auto_turns = 2
-        idle_timeout_seconds = 900
-        max_retry_budget = 2
+        remaining_auto_turns = 5
+        idle_timeout_seconds = 1800
+        max_retry_budget = 3
         goal_tokens: List[str] = []
         recognized_option_seen = False
         instruction_text = str(user_instruction or "")

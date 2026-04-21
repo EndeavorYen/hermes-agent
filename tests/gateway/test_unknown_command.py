@@ -342,18 +342,18 @@ async def test_loop_built_in_command_keeps_default_budgets_without_options(monke
     assert result == "handled"
     mock_decide.assert_called_once_with("sess-1", "finish the refactor")
     state = runner._loop_states[build_session_key(_make_source())]
-    assert state["remaining_auto_turns"] == 2
-    assert state["idle_timeout_seconds"] == 900
-    assert state["max_retry_budget"] == 2
+    assert state["remaining_auto_turns"] == 5
+    assert state["idle_timeout_seconds"] == 1800
+    assert state["max_retry_budget"] == 3
     checkpoint = _read_loop_checkpoint(tmp_path)
-    assert checkpoint["remaining_auto_turns"] == 2
-    assert checkpoint["idle_timeout_seconds"] == 900
-    assert checkpoint["max_retry_budget"] == 2
+    assert checkpoint["remaining_auto_turns"] == 5
+    assert checkpoint["idle_timeout_seconds"] == 1800
+    assert checkpoint["max_retry_budget"] == 3
     events = _read_loop_events(tmp_path)
     assert events[-1]["event_type"] == "loop_started"
-    assert events[-1]["remaining_auto_turns"] == 2
-    assert events[-1]["idle_timeout_seconds"] == 900
-    assert events[-1]["max_retry_budget"] == 2
+    assert events[-1]["remaining_auto_turns"] == 5
+    assert events[-1]["idle_timeout_seconds"] == 1800
+    assert events[-1]["max_retry_budget"] == 3
     runner._handle_message_with_agent.assert_awaited_once()
 
 
@@ -375,7 +375,7 @@ async def test_loop_built_in_command_wait_path_uses_runtime_schedule_initial(mon
         "goal": "finish the refactor",
         "goal_id": "goal-runtime-wait",
         "run_id": "run-runtime-wait",
-        "remaining_auto_turns": 2,
+        "remaining_auto_turns": 5,
         "last_prompt": "Resume the thin slice.",
         "last_prompt_norm": "resume the thin slice.",
         "last_result_preview": "",
@@ -389,8 +389,8 @@ async def test_loop_built_in_command_wait_path_uses_runtime_schedule_initial(mon
         "stop_message": "",
         "last_progress_summary": "",
         "retry_count": 0,
-        "max_retry_budget": 2,
-        "idle_timeout_seconds": 900,
+        "max_retry_budget": 3,
+        "idle_timeout_seconds": 1800,
         "last_activity_at": "2026-01-01T00:00:00+00:00",
         "pending_wakeup_at": "2026-01-01T00:05:00+00:00",
         "inflight_prompt": "",
@@ -429,9 +429,9 @@ async def test_loop_built_in_command_wait_path_uses_runtime_schedule_initial(mon
         "next_prompt": "Resume the thin slice.",
         "next_prompt_norm": "resume the thin slice.",
         "expected_evidence": "tests/wait.py",
-        "remaining_auto_turns": 2,
-        "max_retry_budget": 2,
-        "idle_timeout_seconds": 900,
+        "remaining_auto_turns": 5,
+        "max_retry_budget": 3,
+        "idle_timeout_seconds": 1800,
         "channel_prompt": None,
         "pending_wakeup_at": "2026-01-01T00:05:00+00:00",
         "deferred": True,
@@ -1373,7 +1373,7 @@ async def test_direct_continuation_skill_routes_through_bounded_controller(monke
 
     assert result == "handled"
     mock_decide.assert_called_once_with("sess-1", "請繼續")
-    assert runner._loop_states[build_session_key(_make_source())]["remaining_auto_turns"] == 2
+    assert runner._loop_states[build_session_key(_make_source())]["remaining_auto_turns"] == 5
     forwarded_event = runner._handle_message_with_agent.await_args.args[0]
     assert forwarded_event.text == "Implement the next thin slice and verify it."
 
@@ -1405,7 +1405,7 @@ async def test_bare_loop_invocation_routes_through_bounded_controller(monkeypatc
 
     assert result == "handled"
     mock_decide.assert_called_once_with("sess-1", "請繼續完成後續任務\n多和 Claude 辯論 + 討論")
-    assert runner._loop_states[build_session_key(_make_source())]["remaining_auto_turns"] == 2
+    assert runner._loop_states[build_session_key(_make_source())]["remaining_auto_turns"] == 5
     runner._handle_message_with_agent.assert_awaited_once()
     forwarded_event = runner._handle_message_with_agent.await_args.args[0]
     assert forwarded_event.text == "Implement the next thin slice and verify it."
@@ -1448,7 +1448,7 @@ async def test_bare_continuation_skill_invocation_routes_through_bounded_control
 
     assert result == "handled"
     mock_decide.assert_called_once_with("sess-1", "請繼續完成後續任務")
-    assert runner._loop_states[build_session_key(_make_source())]["remaining_auto_turns"] == 2
+    assert runner._loop_states[build_session_key(_make_source())]["remaining_auto_turns"] == 5
     forwarded_event = runner._handle_message_with_agent.await_args.args[0]
     assert forwarded_event.text == "Implement the next thin slice and verify it."
 
