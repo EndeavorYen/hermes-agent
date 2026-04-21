@@ -850,6 +850,35 @@ async def test_followup_routes_duplicate_result_preview_through_apply_validated_
 
 
 @pytest.mark.asyncio
+async def test_followup_routes_empty_continuation_result_through_apply_validated_stop(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    store = LoopStore()
+    source = _make_source()
+    session_key = build_session_key(source)
+
+    _write_store_state(store, "sess-empty", session_key, last_result_preview="previous result")
+    runner._loop_states[session_key] = _full_loop_state("sess-empty", session_key, last_result_preview="previous result")
+
+    with patch(
+        "gateway.run.LoopRuntime.apply_validated_stop",
+        return_value={"ok": True, "checkpoint": {}, "event": {}},
+    ) as mock_stop:
+        event, stop_notice = await runner._maybe_schedule_loop_followup(
+            session_key=session_key,
+            session_id="sess-empty",
+            source=source,
+            final_response="",
+        )
+
+    assert event is None
+    assert stop_notice is not None
+    assert mock_stop.called
+    assert mock_stop.call_args.kwargs["stop_reason"] == "empty_continuation_result"
+    assert session_key not in runner._loop_states
+
+
+@pytest.mark.asyncio
 async def test_followup_routes_expected_evidence_missing_through_apply_validated_stop(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     runner = _make_runner()
@@ -875,6 +904,39 @@ async def test_followup_routes_expected_evidence_missing_through_apply_validated
     assert stop_notice is not None
     assert mock_stop.called
     assert mock_stop.call_args.kwargs["stop_reason"] == "expected_evidence_missing"
+    assert session_key not in runner._loop_states
+
+
+@pytest.mark.asyncio
+async def test_followup_routes_missing_observable_evidence_through_apply_validated_stop(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    store = LoopStore()
+    source = _make_source()
+    session_key = build_session_key(source)
+
+    _write_store_state(store, "sess-moe", session_key, last_result_preview="previous result tests/foo.py")
+    runner._loop_states[session_key] = _full_loop_state(
+        "sess-moe",
+        session_key,
+        last_result_preview="previous result tests/foo.py",
+    )
+
+    with patch(
+        "gateway.run.LoopRuntime.apply_validated_stop",
+        return_value={"ok": True, "checkpoint": {}, "event": {}},
+    ) as mock_stop:
+        event, stop_notice = await runner._maybe_schedule_loop_followup(
+            session_key=session_key,
+            session_id="sess-moe",
+            source=source,
+            final_response="All good, I implemented and verified everything. Done.",
+        )
+
+    assert event is None
+    assert stop_notice is not None
+    assert mock_stop.called
+    assert mock_stop.call_args.kwargs["stop_reason"] == "missing_observable_evidence"
     assert session_key not in runner._loop_states
 
 
@@ -907,6 +969,38 @@ async def test_followup_routes_progress_verifier_stalled_through_apply_validated
     assert stop_notice is not None
     assert mock_stop.called
     assert mock_stop.call_args.kwargs["stop_reason"] == "progress_verifier_stalled"
+    assert session_key not in runner._loop_states
+
+
+@pytest.mark.asyncio
+async def test_followup_routes_progress_verifier_done_through_apply_validated_stop(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    store = LoopStore()
+    source = _make_source()
+    session_key = build_session_key(source)
+
+    _write_store_state(store, "sess-done", session_key, last_result_preview="previous result")
+    runner._loop_states[session_key] = _full_loop_state("sess-done", session_key, last_result_preview="previous result")
+
+    with patch(
+        "hermes_cli.loop.verify_progress_for_session",
+        return_value={"verdict": "done", "reason": "Semantic completion detected.", "should_continue": False},
+    ), patch(
+        "gateway.run.LoopRuntime.apply_validated_stop",
+        return_value={"ok": True, "checkpoint": {}, "event": {}},
+    ) as mock_stop:
+        event, stop_notice = await runner._maybe_schedule_loop_followup(
+            session_key=session_key,
+            session_id="sess-done",
+            source=source,
+            final_response="Updated tests/foo.py and reran pytest -q.",
+        )
+
+    assert event is None
+    assert stop_notice is not None
+    assert mock_stop.called
+    assert mock_stop.call_args.kwargs["stop_reason"] == "progress_verifier_done"
     assert session_key not in runner._loop_states
 
 

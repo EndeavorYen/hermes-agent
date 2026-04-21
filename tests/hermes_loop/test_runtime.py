@@ -658,3 +658,130 @@ def test_runtime_apply_validated_stop_progress_verifier_stalled(monkeypatch, tmp
     assert events[-1]["stop_reason"] == "progress_verifier_stalled"
     assert events[-1]["stop_class"] == "verification"
     assert events[-1]["message"] == stalled_message
+
+
+def test_runtime_apply_validated_stop_empty_continuation_result(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    store = LoopStore()
+    _write_checkpoint(
+        store,
+        session_id="sess-avs-empty",
+        session_key="telegram:sess-avs-empty",
+        goal="Finish the feature",
+        goal_id="goal-avs-empty",
+        run_id="run-avs-empty",
+        last_result_preview="Prior output.",
+        inflight_prompt="Current prompt",
+        inflight_started_at="2026-01-01T00:00:00+00:00",
+        pending_wakeup_at="2026-01-01T00:05:00+00:00",
+    )
+
+    result = LoopRuntime(store=store).apply_validated_stop(
+        "sess-avs-empty",
+        stop_reason="empty_continuation_result",
+        stop_message="continuation produced no visible result.",
+        result_preview="Prior output.",
+    )
+
+    assert result["ok"] is True
+    checkpoint = store.read_checkpoint("sess-avs-empty")
+    assert checkpoint["active"] is False
+    assert checkpoint["state"] == "stopped"
+    assert checkpoint["resumable"] is False
+    assert checkpoint["stop_reason"] == "empty_continuation_result"
+    assert checkpoint["stop_class"] == "normal"
+    assert checkpoint["stop_message"] == "continuation produced no visible result."
+    assert checkpoint["last_result_preview"] == "Prior output."
+    assert checkpoint["inflight_prompt"] == ""
+    assert checkpoint["pending_wakeup_at"] == ""
+    events = store.read_events("sess-avs-empty")
+    assert events[-1]["event_type"] == "loop_stopped"
+    assert events[-1]["stop_reason"] == "empty_continuation_result"
+    assert events[-1]["stop_class"] == "normal"
+    assert events[-1]["message"] == "continuation produced no visible result."
+    assert events[-1]["result_preview"] == "Prior output."
+
+
+def test_runtime_apply_validated_stop_missing_observable_evidence(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    store = LoopStore()
+    _write_checkpoint(
+        store,
+        session_id="sess-avs-moe",
+        session_key="telegram:sess-avs-moe",
+        goal="Migrate the schema",
+        goal_id="goal-avs-moe",
+        run_id="run-avs-moe",
+        last_result_preview="Some text output.",
+        inflight_prompt="Current prompt",
+        inflight_started_at="2026-01-01T00:00:00+00:00",
+        pending_wakeup_at="2026-01-01T00:05:00+00:00",
+    )
+
+    result = LoopRuntime(store=store).apply_validated_stop(
+        "sess-avs-moe",
+        stop_reason="missing_observable_evidence",
+        stop_message="continuation lacked observable evidence (no code, diff, file path, test, or command).",
+        result_preview="Some text output.",
+    )
+
+    assert result["ok"] is True
+    checkpoint = store.read_checkpoint("sess-avs-moe")
+    assert checkpoint["active"] is False
+    assert checkpoint["state"] == "stopped"
+    assert checkpoint["resumable"] is False
+    assert checkpoint["stop_reason"] == "missing_observable_evidence"
+    assert checkpoint["stop_class"] == "verification"
+    assert checkpoint["stop_message"] == "continuation lacked observable evidence (no code, diff, file path, test, or command)."
+    assert checkpoint["last_result_preview"] == "Some text output."
+    assert checkpoint["inflight_prompt"] == ""
+    assert checkpoint["pending_wakeup_at"] == ""
+    events = store.read_events("sess-avs-moe")
+    assert events[-1]["event_type"] == "loop_stopped"
+    assert events[-1]["stop_reason"] == "missing_observable_evidence"
+    assert events[-1]["stop_class"] == "verification"
+    assert events[-1]["message"] == "continuation lacked observable evidence (no code, diff, file path, test, or command)."
+    assert events[-1]["result_preview"] == "Some text output."
+
+
+def test_runtime_apply_validated_stop_progress_verifier_done(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    store = LoopStore()
+    _write_checkpoint(
+        store,
+        session_id="sess-avs-done",
+        session_key="telegram:sess-avs-done",
+        goal="Add the new endpoint",
+        goal_id="goal-avs-done",
+        run_id="run-avs-done",
+        last_result_preview="Endpoint implemented and tests passing.",
+        inflight_prompt="Current prompt",
+        inflight_started_at="2026-01-01T00:00:00+00:00",
+        pending_wakeup_at="2026-01-01T00:05:00+00:00",
+    )
+
+    done_message = "The endpoint is fully implemented and all tests pass."
+    result = LoopRuntime(store=store).apply_validated_stop(
+        "sess-avs-done",
+        stop_reason="progress_verifier_done",
+        stop_message=done_message,
+        result_preview="Endpoint implemented and tests passing.",
+    )
+
+    assert result["ok"] is True
+    checkpoint = store.read_checkpoint("sess-avs-done")
+    assert checkpoint["active"] is False
+    assert checkpoint["state"] == "stopped"
+    assert checkpoint["resumable"] is False
+    assert checkpoint["stop_reason"] == "progress_verifier_done"
+    assert checkpoint["stop_class"] == "verification"
+    assert checkpoint["stop_message"] == done_message
+    assert checkpoint["last_result_preview"] == "Endpoint implemented and tests passing."
+    assert checkpoint["inflight_prompt"] == ""
+    assert checkpoint["pending_wakeup_at"] == ""
+    events = store.read_events("sess-avs-done")
+    assert events[-1]["event_type"] == "loop_stopped"
+    assert events[-1]["stop_reason"] == "progress_verifier_done"
+    assert events[-1]["stop_class"] == "verification"
+    assert events[-1]["message"] == done_message
+    assert events[-1]["result_preview"] == "Endpoint implemented and tests passing."
