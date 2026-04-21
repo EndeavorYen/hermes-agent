@@ -27,7 +27,7 @@ import time
 from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Optional, Any, List
 
 # --- Agent cache tuning ---------------------------------------------------
@@ -1510,6 +1510,57 @@ class GatewayRunner:
             return
         merge_pending_message_event(adapter._pending_messages, session_key, event)
 
+    @staticmethod
+    def _loop_now_iso() -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    @staticmethod
+    def _parse_loop_iso(value: str | None) -> datetime | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed
+        except Exception:
+            return None
+
+    @classmethod
+    def _loop_stop_class(cls, stop_reason: str) -> str:
+        reason = str(stop_reason or "").strip()
+        if reason in {"operator_pause", "operator_stop"}:
+            return "user"
+        if reason in {"idle_timeout", "max_auto_turns_reached", "max_retry_budget_reached"}:
+            return "resource"
+        if reason.startswith("progress_verifier") or reason in {"duplicate_result_preview", "repeated_next_prompt"}:
+            return "verification"
+        if reason in {"recovery_incomplete", "loop_checkpoint_persist_failed", "loop_event_persist_failed", "invalid_loop_checkpoint", "loop_checkpoint_mismatch"}:
+            return "runtime_error"
+        return "normal"
+
+    @classmethod
+    def _loop_resumable_for_reason(cls, stop_reason: str) -> bool:
+        return str(stop_reason or "") in {"operator_pause", "recovery_incomplete"}
+
+    @classmethod
+    def _loop_stop_message(cls, stop_reason: str, reason: str = "") -> str:
+        try:
+            from hermes_cli.loop import format_loop_stop_notice
+            return format_loop_stop_notice(stop_reason, reason)
+        except Exception:
+            return reason or stop_reason or "Loop stopped."
+
+    @staticmethod
+    def _pending_wakeup_due(state: Dict[str, Any]) -> bool:
+        wakeup = GatewayRunner._parse_loop_iso(state.get("pending_wakeup_at"))
+        if wakeup is None:
+            return False
+        return wakeup <= datetime.now(timezone.utc)
+
     def _persist_loop_checkpoint(self, session_key: str, state: Dict[str, Any]) -> bool:
         session_id = str(state.get("session_id") or "").strip()
         if not session_id:
@@ -1528,7 +1579,19 @@ class GatewayRunner:
                     "last_result_preview": str(state.get("last_result_preview") or ""),
                     "channel_prompt": state.get("channel_prompt"),
                     "active": bool(state.get("active", True)),
+                    "state": str(state.get("state") or "waiting"),
+                    "resumable": bool(state.get("resumable", True)),
                     "stop_reason": str(state.get("stop_reason") or ""),
+                    "stop_class": str(state.get("stop_class") or ""),
+                    "stop_message": str(state.get("stop_message") or ""),
+                    "last_progress_summary": str(state.get("last_progress_summary") or ""),
+                    "retry_count": int(state.get("retry_count", 0) or 0),
+                    "max_retry_budget": int(state.get("max_retry_budget", 2) or 0),
+                    "idle_timeout_seconds": int(state.get("idle_timeout_seconds", 900) or 0),
+                    "last_activity_at": str(state.get("last_activity_at") or ""),
+                    "pending_wakeup_at": str(state.get("pending_wakeup_at") or ""),
+                    "inflight_prompt": str(state.get("inflight_prompt") or ""),
+                    "inflight_started_at": str(state.get("inflight_started_at") or ""),
                 },
             )
             return True
@@ -1578,6 +1641,19 @@ class GatewayRunner:
                 "last_result_preview": str(checkpoint.get("last_result_preview") or ""),
                 "channel_prompt": checkpoint.get("channel_prompt"),
                 "active": active,
+                "state": str(checkpoint.get("state") or ("waiting" if active else "stopped")),
+                "resumable": bool(checkpoint.get("resumable", False)),
+                "stop_reason": str(checkpoint.get("stop_reason") or ""),
+                "stop_class": str(checkpoint.get("stop_class") or ""),
+                "stop_message": str(checkpoint.get("stop_message") or ""),
+                "last_progress_summary": str(checkpoint.get("last_progress_summary") or ""),
+                "retry_count": int(checkpoint.get("retry_count", 0) or 0),
+                "max_retry_budget": int(checkpoint.get("max_retry_budget", 2) or 0),
+                "idle_timeout_seconds": int(checkpoint.get("idle_timeout_seconds", 900) or 0),
+                "last_activity_at": str(checkpoint.get("last_activity_at") or ""),
+                "pending_wakeup_at": str(checkpoint.get("pending_wakeup_at") or ""),
+                "inflight_prompt": str(checkpoint.get("inflight_prompt") or ""),
+                "inflight_started_at": str(checkpoint.get("inflight_started_at") or ""),
             }
         except Exception:
             return None
@@ -1600,7 +1676,12 @@ class GatewayRunner:
         if not checkpoint:
             return None, "missing_loop_checkpoint", "persisted loop checkpoint missing; stopping conservatively."
 
+        checkpoint_state = str(checkpoint.get("state") or "").strip()
+        checkpoint_stop_reason = str(checkpoint.get("stop_reason") or "").strip()
+        checkpoint_stop_message = str(checkpoint.get("stop_message") or "").strip()
         if not bool(checkpoint.get("active", False)):
+            if checkpoint_state in {"paused", "stopped", "failed"} or checkpoint_stop_reason:
+                return None, checkpoint_stop_reason or checkpoint_state or "inactive_loop_checkpoint", checkpoint_stop_message or "persisted loop checkpoint is no longer active."
             return None, "inactive_loop_checkpoint", "persisted loop checkpoint is inactive; stopping conservatively."
 
         canonical_state = self._normalize_loop_checkpoint_state(
@@ -1618,6 +1699,8 @@ class GatewayRunner:
                 "last_prompt",
                 "last_prompt_norm",
                 "last_result_preview",
+                "state",
+                "pending_wakeup_at",
             )
             if any(local_state.get(key) != canonical_state.get(key) for key in comparable_keys):
                 return None, "loop_checkpoint_mismatch", "persisted loop checkpoint diverged from in-memory state; stopping conservatively."
@@ -1648,6 +1731,12 @@ class GatewayRunner:
                     "last_prompt_norm": str((state or {}).get("last_prompt_norm") or ""),
                     "last_result_preview": str((state or {}).get("last_result_preview") or ""),
                     "channel_prompt": (state or {}).get("channel_prompt"),
+                    "state": "failed",
+                    "resumable": False,
+                    "stop_class": self._loop_stop_class(stop_reason),
+                    "stop_message": self._loop_stop_message(stop_reason, reason),
+                    "pending_wakeup_at": "",
+                    "last_activity_at": self._loop_now_iso(),
                 }
                 if event_payload:
                     payload.update(event_payload)
@@ -1683,22 +1772,94 @@ class GatewayRunner:
             channel_prompt=(state.get("channel_prompt") or None),
         )
 
+    def _mark_recovery_incomplete(self, session_key: str, state: Dict[str, Any]) -> None:
+        loop_states = getattr(self, "_loop_states", None)
+        if isinstance(loop_states, dict):
+            loop_states.pop(session_key, None)
+        state = dict(state)
+        state.update(
+            {
+                "active": False,
+                "state": "paused",
+                "resumable": True,
+                "stop_reason": "recovery_incomplete",
+                "stop_class": self._loop_stop_class("recovery_incomplete"),
+                "stop_message": "Recovered loop had an ambiguous interrupted turn; operator resume is required.",
+                "pending_wakeup_at": "",
+                "last_activity_at": self._loop_now_iso(),
+            }
+        )
+        self._persist_loop_checkpoint(session_key, state)
+        self._append_loop_event(
+            str(state.get("session_id") or ""),
+            "loop_stopped",
+            {
+                "goal": str(state.get("goal") or ""),
+                "stop_reason": "recovery_incomplete",
+                "stop_class": self._loop_stop_class("recovery_incomplete"),
+                "message": "Recovered loop had an ambiguous interrupted turn; operator resume is required.",
+            },
+        )
+
+    def _queue_due_loop_event(self, session_key: str, state: Dict[str, Any]) -> bool:
+        event = self._build_recovered_loop_event(session_key, state)
+        if event is None:
+            return False
+        state = dict(state)
+        state["pending_wakeup_at"] = ""
+        state["last_activity_at"] = self._loop_now_iso()
+        loop_states = getattr(self, "_loop_states", None)
+        if isinstance(loop_states, dict):
+            loop_states[session_key] = state
+        self._persist_loop_checkpoint(session_key, state)
+        task = asyncio.create_task(self._handle_message(event))
+        background_tasks = getattr(self, "_background_tasks", None)
+        if isinstance(background_tasks, set):
+            background_tasks.add(task)
+            task.add_done_callback(background_tasks.discard)
+        return True
+
     def _resume_recovered_loops(self) -> int:
         resumed = 0
         loop_states = getattr(self, "_loop_states", None)
         if not isinstance(loop_states, dict):
             return resumed
         for session_key, state in list(loop_states.items()):
-            event = self._build_recovered_loop_event(session_key, state)
-            if event is None:
+            if str(state.get("inflight_prompt") or "").strip() or str(state.get("inflight_started_at") or "").strip():
+                self._mark_recovery_incomplete(session_key, state)
                 continue
-            task = asyncio.create_task(self._handle_message(event))
-            background_tasks = getattr(self, "_background_tasks", None)
-            if isinstance(background_tasks, set):
-                background_tasks.add(task)
-                task.add_done_callback(background_tasks.discard)
-            resumed += 1
+            if self._queue_due_loop_event(session_key, state):
+                resumed += 1
         return resumed
+
+    async def _loop_checkpoint_watcher(self, interval: float = 2.0) -> None:
+        await asyncio.sleep(interval)
+        while self._running:
+            try:
+                from hermes_loop import LoopStore
+
+                checkpoints = LoopStore().list_checkpoints(active_only=False)
+                loop_states = getattr(self, "_loop_states", None)
+                if isinstance(loop_states, dict):
+                    for checkpoint in checkpoints:
+                        session_key = str(checkpoint.get("session_key") or "").strip()
+                        if not session_key:
+                            continue
+                        if not bool(checkpoint.get("active", False)):
+                            loop_states.pop(session_key, None)
+                            continue
+                        state = self._normalize_loop_checkpoint_state(checkpoint, active_only=True)
+                        if state is None:
+                            continue
+                        loop_states[session_key] = state
+                        if not self._pending_wakeup_due(state):
+                            continue
+                        if session_key in getattr(self, "_running_agents", {}):
+                            continue
+                        self._queue_due_loop_event(session_key, state)
+            except Exception:
+                logger.exception("Loop checkpoint watcher error")
+            await asyncio.sleep(interval)
 
     def _hydrate_loop_states_from_store(self) -> int:
         loop_states = getattr(self, "_loop_states", None)
@@ -1741,17 +1902,27 @@ class GatewayRunner:
             return
         checkpoint_state = dict(state)
         checkpoint_state["active"] = False
+        checkpoint_state["state"] = "paused" if self._loop_resumable_for_reason(stop_reason or "") else "stopped"
+        checkpoint_state["resumable"] = self._loop_resumable_for_reason(stop_reason or "")
         if stop_reason:
             checkpoint_state["stop_reason"] = stop_reason
+            checkpoint_state["stop_class"] = self._loop_stop_class(stop_reason)
+            checkpoint_state["stop_message"] = self._loop_stop_message(stop_reason)
+        checkpoint_state["pending_wakeup_at"] = ""
         self._persist_loop_checkpoint(session_key, checkpoint_state)
         payload = {
             "goal": str(state.get("goal") or ""),
             "remaining_auto_turns": int(state.get("remaining_auto_turns", 0) or 0),
+            "last_prompt": str(state.get("last_prompt") or ""),
             "last_prompt_norm": str(state.get("last_prompt_norm") or ""),
             "last_result_preview": str(state.get("last_result_preview") or ""),
+            "state": str(checkpoint_state.get("state") or "stopped"),
+            "resumable": bool(checkpoint_state.get("resumable", False)),
         }
         if stop_reason:
             payload["stop_reason"] = stop_reason
+            payload["stop_class"] = checkpoint_state.get("stop_class")
+            payload["message"] = checkpoint_state.get("stop_message")
         if event_payload:
             payload.update(event_payload)
         self._append_loop_event(session_id, event_type, payload)
@@ -1838,6 +2009,30 @@ class GatewayRunner:
         if not goal:
             self._clear_loop_state(session_key)
             return None, None
+        idle_timeout_seconds = int(state.get("idle_timeout_seconds", 0) or 0)
+        last_activity_at = self._parse_loop_iso(state.get("last_activity_at"))
+        if idle_timeout_seconds > 0 and last_activity_at is not None:
+            idle_age = (datetime.now(timezone.utc) - last_activity_at).total_seconds()
+            if idle_age >= idle_timeout_seconds:
+                record_background_review(
+                    session_id=session_id,
+                    goal=goal,
+                    progress_state="idle_timeout",
+                    stop_reason="idle_timeout",
+                    result_preview=str(state.get("last_result_preview") or ""),
+                    source="bounded_loop_gateway",
+                )
+                self._clear_loop_state(
+                    session_key,
+                    stop_reason="idle_timeout",
+                    event_type="loop_stopped",
+                    event_payload={
+                        "goal": goal,
+                        "reason": "loop idle timeout reached.",
+                        "result_preview": str(state.get("last_result_preview") or ""),
+                    },
+                )
+                return None, format_loop_stop_notice("idle_timeout")
 
         from hermes_cli.loop import (
             decide_continuation_for_session,
@@ -1891,6 +2086,8 @@ class GatewayRunner:
             )
             return None, format_loop_stop_notice("duplicate_result_preview")
         state["last_result_preview"] = result_preview
+        state["last_progress_summary"] = result_preview
+        state["last_activity_at"] = self._loop_now_iso()
         if not self._persist_loop_checkpoint(session_key, state):
             return None, self._stop_loop_for_persistence_failure(
                 session_key=session_key,
@@ -1910,14 +2107,54 @@ class GatewayRunner:
             source="bounded_loop_gateway",
         )
 
-        verifier = await asyncio.to_thread(
-            verify_progress_for_session,
-            session_id,
-            goal,
-            final_response,
-        )
+        verifier_retry_budget = int(state.get("max_retry_budget", 2) or 0)
+        verifier_retry_count = int(state.get("retry_count", 0) or 0)
+        while True:
+            verifier = await asyncio.to_thread(
+                verify_progress_for_session,
+                session_id,
+                goal,
+                final_response,
+            )
+            if str(verifier.get("stop_reason") or "") != "invalid_progress_verifier_payload":
+                break
+            if verifier_retry_count >= verifier_retry_budget:
+                record_background_review(
+                    session_id=session_id,
+                    goal=goal,
+                    progress_state="retry_budget_exhausted",
+                    stop_reason="max_retry_budget_reached",
+                    result_preview=result_preview,
+                    source="bounded_loop_gateway",
+                )
+                self._clear_loop_state(
+                    session_key,
+                    stop_reason="max_retry_budget_reached",
+                    event_type="loop_stopped",
+                    event_payload={
+                        "goal": goal,
+                        "reason": "loop retry budget exhausted after invalid verifier payload.",
+                        "result_preview": result_preview,
+                    },
+                )
+                return None, format_loop_stop_notice("max_retry_budget_reached")
+            verifier_retry_count += 1
+            state["retry_count"] = verifier_retry_count
+            state["last_activity_at"] = self._loop_now_iso()
+            self._persist_loop_checkpoint(session_key, state)
+            self._append_loop_event(
+                session_id,
+                "retry_scheduled",
+                {
+                    "goal": goal,
+                    "retry_count": verifier_retry_count,
+                    "max_retry_budget": verifier_retry_budget,
+                    "reason": "invalid_progress_verifier_payload",
+                },
+            )
         verifier_verdict = str(verifier.get("verdict") or "progress")
         verifier_reason = str(verifier.get("reason") or "")
+        state["retry_count"] = 0
         if verifier_verdict == "done":
             record_background_review(
                 session_id=session_id,
@@ -1937,7 +2174,7 @@ class GatewayRunner:
                     "result_preview": result_preview,
                 },
             )
-            return None, format_loop_stop_notice("model_stop", verifier_reason or "Latest continuation appears effectively complete.")
+            return None, format_loop_stop_notice("progress_verifier_done", verifier_reason or "Latest continuation appears effectively complete.")
         if verifier_verdict == "stalled" or verifier.get("should_continue") is False:
             record_background_review(
                 session_id=session_id,
@@ -1957,13 +2194,55 @@ class GatewayRunner:
                     "result_preview": result_preview,
                 },
             )
-            return None, format_loop_stop_notice("duplicate_result_preview", verifier_reason or "Latest continuation did not materially advance the goal.")
+            return None, format_loop_stop_notice("progress_verifier_stalled", verifier_reason or "Latest continuation did not materially advance the goal.")
 
-        decision = await asyncio.to_thread(
-            decide_continuation_for_session,
-            session_id,
-            goal,
-        )
+        decision_retry_budget = int(state.get("max_retry_budget", 2) or 0)
+        decision_retry_count = int(state.get("retry_count", 0) or 0)
+        while True:
+            decision = await asyncio.to_thread(
+                decide_continuation_for_session,
+                session_id,
+                goal,
+            )
+            stop_reason = str(decision.get("stop_reason") or "")
+            if decision.get("action") == "continue" or stop_reason not in {"invalid_decision_payload", "missing_next_prompt"}:
+                break
+            if decision_retry_count >= decision_retry_budget:
+                record_background_review(
+                    session_id=session_id,
+                    goal=goal,
+                    progress_state="retry_budget_exhausted",
+                    stop_reason="max_retry_budget_reached",
+                    result_preview=result_preview,
+                    source="bounded_loop_gateway",
+                )
+                self._clear_loop_state(
+                    session_key,
+                    stop_reason="max_retry_budget_reached",
+                    event_type="loop_stopped",
+                    event_payload={
+                        "goal": goal,
+                        "reason": "loop retry budget exhausted after invalid continuation decision.",
+                        "result_preview": result_preview,
+                    },
+                )
+                return None, format_loop_stop_notice("max_retry_budget_reached")
+            decision_retry_count += 1
+            state["retry_count"] = decision_retry_count
+            state["last_activity_at"] = self._loop_now_iso()
+            self._persist_loop_checkpoint(session_key, state)
+            self._append_loop_event(
+                session_id,
+                "retry_scheduled",
+                {
+                    "goal": goal,
+                    "retry_count": decision_retry_count,
+                    "max_retry_budget": decision_retry_budget,
+                    "reason": stop_reason,
+                },
+            )
+        state["retry_count"] = 0
+        decision = decision
         if decision.get("action") != "continue":
             stop_reason = str(decision.get("stop_reason") or "model_stop")
             reason = str(decision.get("reason") or "")
@@ -2037,6 +2316,16 @@ class GatewayRunner:
         state["last_prompt"] = next_prompt
         state["last_prompt_norm"] = next_prompt_norm
         state["remaining_auto_turns"] = remaining_auto_turns - 1
+        state["state"] = "waiting"
+        state["resumable"] = True
+        state["stop_reason"] = ""
+        state["stop_class"] = ""
+        state["stop_message"] = ""
+        state["retry_count"] = 0
+        state["pending_wakeup_at"] = ""
+        state["inflight_prompt"] = ""
+        state["inflight_started_at"] = ""
+        state["last_activity_at"] = self._loop_now_iso()
         loop_states[session_key] = state
         if not self._persist_loop_checkpoint(session_key, state):
             return None, self._stop_loop_for_persistence_failure(
@@ -2111,6 +2400,19 @@ class GatewayRunner:
                         "last_result_preview": "",
                         "channel_prompt": getattr(event, "channel_prompt", None),
                         "active": True,
+                        "state": "waiting",
+                        "resumable": True,
+                        "stop_reason": "",
+                        "stop_class": "",
+                        "stop_message": "",
+                        "last_progress_summary": "",
+                        "retry_count": 0,
+                        "max_retry_budget": 2,
+                        "idle_timeout_seconds": 900,
+                        "last_activity_at": self._loop_now_iso(),
+                        "pending_wakeup_at": "",
+                        "inflight_prompt": "",
+                        "inflight_started_at": "",
                     }
                     if not self._persist_loop_checkpoint(session_key, self._loop_states[session_key]):
                         self._stop_loop_for_persistence_failure(
@@ -2869,6 +3171,10 @@ class GatewayRunner:
 
         # Start background session expiry watcher for proactive memory flushing
         asyncio.create_task(self._session_expiry_watcher())
+
+        # Start background loop checkpoint watcher so operator resume/retry
+        # requests written via persisted checkpoints are picked up by the live gateway.
+        asyncio.create_task(self._loop_checkpoint_watcher())
 
         # Start background reconnection watcher for platforms that failed at startup
         if self._failed_platforms:
@@ -5117,6 +5423,19 @@ class GatewayRunner:
             run_generation,
         )
 
+        loop_states = getattr(self, "_loop_states", None)
+        _loop_inflight_marked = False
+        _loop_state_ref = None
+        if getattr(event, "internal", False) and isinstance(loop_states, dict):
+            _loop_state_ref = loop_states.get(session_key)
+            if _loop_state_ref and str(_loop_state_ref.get("last_prompt") or "").strip() == (message_text or "").strip():
+                _loop_state_ref["state"] = "executing"
+                _loop_state_ref["inflight_prompt"] = message_text
+                _loop_state_ref["inflight_started_at"] = self._loop_now_iso()
+                _loop_state_ref["last_activity_at"] = self._loop_now_iso()
+                self._persist_loop_checkpoint(session_key, _loop_state_ref)
+                _loop_inflight_marked = True
+
         try:
             # Emit agent:start hook
             hook_ctx = {
@@ -5139,6 +5458,14 @@ class GatewayRunner:
                 event_message_id=event.message_id,
                 channel_prompt=event.channel_prompt,
             )
+            if _loop_inflight_marked and isinstance(loop_states, dict):
+                _loop_state_ref = loop_states.get(session_key)
+                if _loop_state_ref:
+                    _loop_state_ref["state"] = "waiting"
+                    _loop_state_ref["inflight_prompt"] = ""
+                    _loop_state_ref["inflight_started_at"] = ""
+                    _loop_state_ref["last_activity_at"] = self._loop_now_iso()
+                    self._persist_loop_checkpoint(session_key, _loop_state_ref)
 
             # Stop persistent typing indicator now that the agent is done
             try:

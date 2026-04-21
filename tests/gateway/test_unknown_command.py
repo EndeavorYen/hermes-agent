@@ -97,6 +97,7 @@ def _read_loop_events(tmp_path, session_id="sess-1"):
 
 def _seed_loop_state(tmp_path, runner, *, session_id="sess-1", session_key=None, **state):
     session_key = session_key or build_session_key(_make_source())
+    is_active = bool(state.get("active", True))
     payload = {
         "goal": str(state.get("goal") or "Keep going"),
         "remaining_auto_turns": int(state.get("remaining_auto_turns", 0) or 0),
@@ -104,7 +105,20 @@ def _seed_loop_state(tmp_path, runner, *, session_id="sess-1", session_key=None,
         "last_prompt_norm": str(state.get("last_prompt_norm") or ""),
         "last_result_preview": str(state.get("last_result_preview") or ""),
         "channel_prompt": state.get("channel_prompt"),
-        "active": bool(state.get("active", True)),
+        "active": is_active,
+        "state": str(state.get("state") or ("waiting" if is_active else "stopped")),
+        "resumable": bool(state.get("resumable", False)),
+        "stop_reason": str(state.get("stop_reason") or ""),
+        "stop_class": str(state.get("stop_class") or ""),
+        "stop_message": str(state.get("stop_message") or ""),
+        "last_progress_summary": str(state.get("last_progress_summary") or ""),
+        "retry_count": int(state.get("retry_count", 0) or 0),
+        "max_retry_budget": int(state.get("max_retry_budget", 2) or 0),
+        "idle_timeout_seconds": int(state.get("idle_timeout_seconds", 900) or 0),
+        "last_activity_at": str(state.get("last_activity_at") or ""),
+        "pending_wakeup_at": str(state.get("pending_wakeup_at") or ""),
+        "inflight_prompt": str(state.get("inflight_prompt") or ""),
+        "inflight_started_at": str(state.get("inflight_started_at") or ""),
     }
     LoopStore().write_checkpoint(
         session_id=session_id,
@@ -444,7 +458,11 @@ async def test_maybe_schedule_loop_followup_stops_on_semantic_stall(monkeypatch,
         )
 
     assert event is None
-    assert "did not materially advance" in stop_notice.lower() or "no meaningful new result" in stop_notice.lower()
+    assert (
+        "did not materially advance" in stop_notice.lower()
+        or "no meaningful new result" in stop_notice.lower()
+        or "mostly restated prior status" in stop_notice.lower()
+    )
     assert session_key not in runner._loop_states
     reviews = _read_background_reviews(tmp_path)
     assert reviews[-1]["progress_state"] == "semantic_stall"

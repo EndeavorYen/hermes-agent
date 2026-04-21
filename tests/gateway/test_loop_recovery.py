@@ -105,6 +105,19 @@ async def test_hydrate_loop_states_from_store_recovers_only_active_well_formed_c
         "last_result_preview": "",
         "channel_prompt": "channel prompt",
         "active": True,
+        "state": "waiting",
+        "resumable": False,
+        "stop_reason": "",
+        "stop_class": "",
+        "stop_message": "",
+        "last_progress_summary": "",
+        "retry_count": 0,
+        "max_retry_budget": 2,
+        "idle_timeout_seconds": 900,
+        "last_activity_at": "",
+        "pending_wakeup_at": "",
+        "inflight_prompt": "",
+        "inflight_started_at": "",
     }
 
 
@@ -308,8 +321,21 @@ async def test_followup_stops_conservatively_when_loop_event_persist_fails(monke
         "last_prompt": "Implement the next thin slice.",
         "last_prompt_norm": "different prompt",
         "last_result_preview": "previous result",
-        "channel_prompt": None,
         "active": True,
+        "state": "waiting",
+        "resumable": False,
+        "stop_reason": "",
+        "stop_class": "",
+        "stop_message": "",
+        "last_progress_summary": "",
+        "retry_count": 0,
+        "max_retry_budget": 2,
+        "idle_timeout_seconds": 900,
+        "last_activity_at": "",
+        "pending_wakeup_at": "",
+        "inflight_prompt": "",
+        "inflight_started_at": "",
+        "channel_prompt": None,
     }
 
     with patch(
