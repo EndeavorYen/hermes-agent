@@ -2691,49 +2691,19 @@ class GatewayRunner:
             )
             return None, format_loop_stop_notice("repeated_next_prompt")
 
-        state["last_prompt"] = next_prompt
-        state["last_prompt_norm"] = next_prompt_norm
-        state["expected_evidence"] = next_expected_evidence
-        state["remaining_auto_turns"] = remaining_auto_turns - 1
-        state["state"] = "waiting"
-        state["resumable"] = True
-        state["stop_reason"] = ""
-        state["stop_class"] = ""
-        state["stop_message"] = ""
-        state["retry_count"] = 0
-        state["pending_wakeup_at"] = ""
-        state["inflight_prompt"] = ""
-        state["inflight_started_at"] = ""
-        state["last_activity_at"] = self._loop_now_iso()
-        loop_states[session_key] = state
-        if not self._persist_loop_checkpoint(session_key, state):
-            return None, self._stop_loop_for_persistence_failure(
-                session_key=session_key,
-                stop_reason="loop_checkpoint_persist_failed",
-                reason="failed to persist scheduled loop follow-up; stopping conservatively.",
-                event_payload={
-                    "goal": goal,
-                    "next_prompt": next_prompt,
-                    "result_preview": result_preview,
-                },
-            )
-        if not self._append_loop_event(
+        schedule_result = LoopRuntime().schedule_continue(
             session_id,
-            "loop_followup_scheduled",
-            {
-                "goal": goal,
-                "goal_id": str(state.get("goal_id") or ""),
-                "run_id": str(state.get("run_id") or ""),
-                "next_prompt": next_prompt,
-                "expected_evidence": next_expected_evidence,
-                "remaining_auto_turns": state["remaining_auto_turns"],
-                "result_preview": result_preview,
-            },
-        ):
+            next_prompt=next_prompt,
+            next_prompt_norm=next_prompt_norm,
+            expected_evidence=next_expected_evidence,
+            remaining_auto_turns=remaining_auto_turns - 1,
+            result_preview=result_preview,
+        )
+        if not schedule_result.get("ok"):
             return None, self._stop_loop_for_persistence_failure(
                 session_key=session_key,
-                stop_reason="loop_event_persist_failed",
-                reason="failed to persist scheduled loop event; stopping conservatively.",
+                stop_reason="loop_schedule_continue_failed",
+                reason="failed to persist scheduled loop follow-up through runtime; stopping conservatively.",
                 event_payload={
                     "goal": goal,
                     "next_prompt": next_prompt,
@@ -2741,8 +2711,11 @@ class GatewayRunner:
                 },
             )
 
+        state = dict(schedule_result.get("checkpoint") or state)
+        loop_states[session_key] = state
+
         return MessageEvent(
-            text=next_prompt,
+            text=str(state.get("last_prompt") or next_prompt),
             source=source,
             message_id=None,
             internal=True,

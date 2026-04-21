@@ -696,7 +696,10 @@ async def test_followup_stops_conservatively_when_loop_event_persist_fails(monke
     ), patch(
         "hermes_cli.loop.verify_progress_for_session",
         return_value={"verdict": "progress", "reason": "real progress", "should_continue": True},
-    ), patch.object(runner, "_append_loop_event", return_value=False):
+    ), patch(
+        "gateway.run.LoopRuntime.schedule_continue",
+        return_value={"ok": False, "error": "event_append_failed"},
+    ):
         event, stop_notice = await runner._maybe_schedule_loop_followup(
             session_key=session_key,
             session_id="sess-active",
@@ -709,7 +712,7 @@ async def test_followup_stops_conservatively_when_loop_event_persist_fails(monke
     assert session_key not in runner._loop_states
     checkpoint = _read_loop_checkpoint(tmp_path, "sess-active")
     assert checkpoint["active"] is False
-    assert checkpoint["stop_reason"] == "loop_event_persist_failed"
+    assert checkpoint["stop_reason"] == "loop_schedule_continue_failed"
 
 
 @pytest.mark.asyncio

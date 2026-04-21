@@ -126,6 +126,60 @@ class LoopRuntime:
         )
         return {"ok": True, "checkpoint": updated, "event": event}
 
+    def schedule_continue(
+        self,
+        session_id: str,
+        *,
+        next_prompt: str,
+        next_prompt_norm: str,
+        expected_evidence: str,
+        remaining_auto_turns: int,
+        result_preview: str,
+    ) -> dict[str, Any]:
+        checkpoint = self.status(session_id)
+        if checkpoint is None:
+            return self._error("not_found")
+        try:
+            updated = self._write_checkpoint(
+                session_id,
+                checkpoint,
+                {
+                    "last_prompt": str(next_prompt or ""),
+                    "last_prompt_norm": str(next_prompt_norm or ""),
+                    "expected_evidence": str(expected_evidence or ""),
+                    "remaining_auto_turns": int(remaining_auto_turns or 0),
+                    "last_result_preview": str(result_preview or ""),
+                    "last_progress_summary": str(result_preview or ""),
+                    "active": True,
+                    "state": "waiting",
+                    "resumable": True,
+                    "stop_reason": "",
+                    "stop_class": "",
+                    "stop_message": "",
+                    "retry_count": 0,
+                    "pending_wakeup_at": "",
+                    "inflight_prompt": "",
+                    "inflight_started_at": "",
+                    "last_activity_at": self._now_iso(),
+                },
+            )
+            event = self.store.append_event(
+                session_id=session_id,
+                event_type="loop_followup_scheduled",
+                payload={
+                    "goal": str(updated.get("goal") or ""),
+                    "goal_id": str(updated.get("goal_id") or ""),
+                    "run_id": str(updated.get("run_id") or ""),
+                    "next_prompt": str(next_prompt or ""),
+                    "expected_evidence": str(expected_evidence or ""),
+                    "remaining_auto_turns": int(remaining_auto_turns or 0),
+                    "result_preview": str(result_preview or ""),
+                },
+            )
+        except Exception:
+            return self._error("schedule_continue_failed", checkpoint=checkpoint)
+        return {"ok": True, "checkpoint": updated, "event": event}
+
     def _write_checkpoint(self, session_id: str, checkpoint: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
         payload = dict(checkpoint)
         payload.update(updates)

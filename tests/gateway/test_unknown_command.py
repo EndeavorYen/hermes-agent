@@ -464,7 +464,98 @@ async def test_loop_built_in_command_falls_back_to_skill_mode_on_controller_erro
 
 
 @pytest.mark.asyncio
-async def test_maybe_schedule_loop_followup_returns_internal_event(monkeypatch, tmp_path):
+async def test_maybe_schedule_loop_followup_uses_runtime_schedule_continue(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    session_key = _seed_loop_state(
+        tmp_path,
+        runner,
+        goal="Keep going",
+        remaining_auto_turns=2,
+        expected_evidence="tests/foo.py",
+        last_prompt_norm="initial prompt",
+        last_result_preview="",
+    )
+
+    runtime_result = {
+        "ok": True,
+        "checkpoint": {
+            "session_id": "sess-1",
+            "session_key": session_key,
+            "goal": "Keep going",
+            "goal_id": "goal-runtime",
+            "run_id": "run-runtime",
+            "remaining_auto_turns": 1,
+            "last_prompt": "Implement the next thin slice.",
+            "last_prompt_norm": "implement the next thin slice.",
+            "last_result_preview": "Implemented the next thin slice in tests/foo.py.",
+            "expected_evidence": "tests/bar.py",
+            "channel_prompt": None,
+            "active": True,
+            "state": "waiting",
+            "resumable": True,
+            "stop_reason": "",
+            "stop_class": "",
+            "stop_message": "",
+            "last_progress_summary": "Implemented the next thin slice in tests/foo.py.",
+            "retry_count": 0,
+            "max_retry_budget": 2,
+            "idle_timeout_seconds": 900,
+            "last_activity_at": "2026-01-01T00:00:00+00:00",
+            "pending_wakeup_at": "",
+            "inflight_prompt": "",
+            "inflight_started_at": "",
+        },
+        "event": {
+            "event_type": "loop_followup_scheduled",
+            "expected_evidence": "tests/bar.py",
+        },
+    }
+
+    with patch(
+        "hermes_cli.loop.decide_continuation_for_session",
+        return_value={
+            "action": "continue",
+            "reason": "clear next slice",
+            "next_prompt": "Implement the next thin slice.",
+            "expected_evidence": "tests/bar.py",
+        },
+    ), patch(
+        "hermes_cli.loop.verify_progress_for_session",
+        return_value={"verdict": "progress", "reason": "real progress", "should_continue": True},
+    ) as mock_verifier, patch(
+        "gateway.run.LoopRuntime.schedule_continue",
+        return_value=runtime_result,
+    ) as mock_schedule_continue:
+        event, stop_notice = await runner._maybe_schedule_loop_followup(
+            session_key=session_key,
+            session_id="sess-1",
+            source=_make_source(),
+            final_response="Implemented the next thin slice in tests/foo.py.",
+        )
+
+    assert event is not None
+    assert stop_notice is None
+    assert event.internal is True
+    assert event.text == "Implement the next thin slice."
+    mock_schedule_continue.assert_called_once_with(
+        "sess-1",
+        next_prompt="Implement the next thin slice.",
+        next_prompt_norm="implement the next thin slice.",
+        expected_evidence="tests/bar.py",
+        remaining_auto_turns=1,
+        result_preview="Implemented the next thin slice in tests/foo.py.",
+    )
+    assert runner._loop_states[session_key] == runtime_result["checkpoint"]
+    verifier_kwargs = mock_verifier.call_args.kwargs
+    assert verifier_kwargs["expected_evidence"] == "tests/foo.py"
+    reviews = _read_background_reviews(tmp_path)
+    assert reviews[-1]["progress_state"] == "meaningful_result"
+    assert reviews[-1]["source"] == "bounded_loop_gateway"
+
+
+@pytest.mark.asyncio
+async def test_maybe_schedule_loop_followup_stops_when_runtime_schedule_continue_fails(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     runner = _make_runner()
     session_key = _seed_loop_state(
@@ -488,7 +579,10 @@ async def test_maybe_schedule_loop_followup_returns_internal_event(monkeypatch, 
     ), patch(
         "hermes_cli.loop.verify_progress_for_session",
         return_value={"verdict": "progress", "reason": "real progress", "should_continue": True},
-    ) as mock_verifier:
+    ), patch(
+        "gateway.run.LoopRuntime.schedule_continue",
+        return_value={"ok": False, "error": "event_append_failed"},
+    ):
         event, stop_notice = await runner._maybe_schedule_loop_followup(
             session_key=session_key,
             session_id="sess-1",
@@ -496,29 +590,13 @@ async def test_maybe_schedule_loop_followup_returns_internal_event(monkeypatch, 
             final_response="Implemented the next thin slice in tests/foo.py.",
         )
 
-    assert event is not None
-    assert stop_notice is None
-    assert event.internal is True
-    assert event.text == "Implement the next thin slice."
-    assert runner._loop_states[session_key]["remaining_auto_turns"] == 1
-    assert runner._loop_states[session_key]["expected_evidence"] == "tests/bar.py"
-    assert runner._loop_states[session_key]["last_result_preview"] == "Implemented the next thin slice in tests/foo.py."
-    verifier_kwargs = mock_verifier.call_args.kwargs
-    assert verifier_kwargs["expected_evidence"] == "tests/foo.py"
-    reviews = _read_background_reviews(tmp_path)
-    assert reviews[-1]["progress_state"] == "meaningful_result"
-    assert reviews[-1]["source"] == "bounded_loop_gateway"
+    assert event is None
+    assert stop_notice is not None
+    assert "persist" in stop_notice.lower()
+    assert session_key not in runner._loop_states
     checkpoint = _read_loop_checkpoint(tmp_path)
-    assert checkpoint["remaining_auto_turns"] == 1
-    assert checkpoint["expected_evidence"] == "tests/bar.py"
-    assert checkpoint["last_result_preview"] == "Implemented the next thin slice in tests/foo.py."
-    assert checkpoint["goal_id"] == runner._loop_states[session_key]["goal_id"]
-    assert checkpoint["run_id"] == runner._loop_states[session_key]["run_id"]
-    events = _read_loop_events(tmp_path)
-    assert events[-1]["event_type"] == "loop_followup_scheduled"
-    assert events[-1]["goal_id"] == checkpoint["goal_id"]
-    assert events[-1]["run_id"] == checkpoint["run_id"]
-    assert events[-1]["expected_evidence"] == "tests/bar.py"
+    assert checkpoint["active"] is False
+    assert checkpoint["stop_reason"] == "loop_schedule_continue_failed"
 
 
 @pytest.mark.asyncio
