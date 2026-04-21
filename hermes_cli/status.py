@@ -18,6 +18,7 @@ from hermes_cli.models import provider_label
 from hermes_cli.nous_subscription import get_nous_subscription_features
 from hermes_cli.runtime_provider import resolve_requested_provider
 from hermes_constants import OPENROUTER_MODELS_URL
+from hermes_loop import LoopStore
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 
 def check_mark(ok: bool) -> str:
@@ -77,6 +78,23 @@ def _effective_provider_label() -> str:
         effective = "custom"
 
     return provider_label(effective)
+
+
+def _loop_summary() -> dict:
+    try:
+        checkpoints = LoopStore().list_checkpoints(active_only=False)
+    except Exception:
+        return {"total": None, "active": None, "latest_active": None}
+
+    active = [checkpoint for checkpoint in checkpoints if bool(checkpoint.get("active"))]
+    latest_active = None
+    if active:
+        latest_active = max(active, key=lambda item: str(item.get("updated_at") or ""))
+    return {
+        "total": len(checkpoints),
+        "active": len(active),
+        "latest_active": latest_active,
+    }
 
 
 from hermes_constants import is_termux as _is_termux
@@ -410,7 +428,34 @@ def show_status(args):
             print("  Active:       (error reading sessions file)")
     else:
         print("  Active:       0")
-    
+
+    # =========================================================================
+    # Autonomous Loops
+    # =========================================================================
+    print()
+    print(color("◆ Autonomous Loops", Colors.CYAN, Colors.BOLD))
+    loop_summary = _loop_summary()
+    total_loops = loop_summary["total"]
+    active_loops = loop_summary["active"]
+    latest_active = loop_summary["latest_active"]
+    if total_loops is None or active_loops is None:
+        print("  Persisted:    (unavailable)")
+        print("  Active:       (unavailable)")
+    else:
+        print(f"  Persisted:    {total_loops}")
+        print(f"  Active:       {active_loops}")
+    if latest_active:
+        goal_preview = str(latest_active.get("goal") or "").strip()
+        if len(goal_preview) > 60:
+            goal_preview = goal_preview[:57] + "..."
+        print(f"  Latest:       {latest_active.get('session_id') or '(unknown)'}")
+        print(f"    Updated:    {_format_iso_timestamp(latest_active.get('updated_at'))}")
+        if goal_preview:
+            print(f"    Goal:       {goal_preview}")
+        remaining = latest_active.get("remaining_auto_turns")
+        if remaining not in (None, ""):
+            print(f"    Remaining:  {remaining}")
+
     # =========================================================================
     # Deep checks
     # =========================================================================

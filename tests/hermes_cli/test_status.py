@@ -1,11 +1,12 @@
 from types import SimpleNamespace
 
+from hermes_loop.store import LoopStore
 from hermes_cli.status import show_status
 
 
 def test_show_status_includes_tavily_key(monkeypatch, capsys, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setenv("TAVILY_API_KEY", "tvly-1234567890abcdef")
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-1...cdef")
 
     show_status(SimpleNamespace(all=False, deep=False))
 
@@ -42,3 +43,51 @@ def test_show_status_termux_gateway_section_skips_systemctl(monkeypatch, capsys,
     assert "Manager:      Termux / manual process" in output
     assert "Start with:   hermes gateway" in output
     assert "systemd (user)" not in output
+
+
+def test_show_status_includes_loop_summary(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    store = LoopStore()
+    store.write_checkpoint(
+        session_id="sess-inactive",
+        session_key="telegram:u2:c2",
+        payload={"goal": "Stopped loop", "active": False, "updated_at": "2026-04-21T00:00:00+00:00"},
+    )
+    store.write_checkpoint(
+        session_id="sess-active",
+        session_key="telegram:u1:c1",
+        payload={
+            "goal": "Continue autonomously until a real stop condition is reached.",
+            "active": True,
+            "remaining_auto_turns": 2,
+            "updated_at": "2026-04-21T01:00:00+00:00",
+        },
+    )
+
+    show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert "◆ Autonomous Loops" in output
+    assert "Persisted:    2" in output
+    assert "Active:       1" in output
+    assert "Latest:       sess-active" in output
+    assert "Remaining:  2" in output
+
+
+def test_show_status_loop_summary_fails_closed_when_store_errors(monkeypatch, capsys, tmp_path):
+    from hermes_cli import status as status_mod
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    class _BrokenLoopStore:
+        def list_checkpoints(self, active_only=False):
+            raise OSError("boom")
+
+    monkeypatch.setattr(status_mod, "LoopStore", _BrokenLoopStore)
+
+    show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert "◆ Autonomous Loops" in output
+    assert "Persisted:    (unavailable)" in output
+    assert "Active:       (unavailable)" in output
