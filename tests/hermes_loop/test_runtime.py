@@ -369,3 +369,62 @@ def test_runtime_stop_writes_stopped_checkpoint_and_event(monkeypatch, tmp_path)
     events = store.read_events("sess-stop")
     assert events[-1]["event_type"] == "stop_requested"
     assert events[-1]["stop_reason"] == "operator_stop"
+
+
+def test_runtime_finalize_stop_writes_stopped_checkpoint_and_event(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    store = LoopStore()
+    _write_checkpoint(
+        store,
+        session_id="sess-finalize-stop",
+        session_key="telegram:sess-finalize-stop",
+        goal="Finish the refactor",
+        goal_id="goal-finalize-stop",
+        run_id="run-finalize-stop",
+        remaining_auto_turns=1,
+        last_prompt="Implement the next thin slice.",
+        last_prompt_norm="implement the next thin slice.",
+        expected_evidence="tests/foo.py",
+        last_result_preview="Old preview",
+        last_progress_summary="Old summary",
+        pending_wakeup_at="2026-01-01T00:05:00+00:00",
+        inflight_prompt="Current inflight prompt",
+        inflight_started_at="2026-01-01T00:00:00+00:00",
+    )
+
+    result = LoopRuntime(store=store).finalize_stop(
+        "sess-finalize-stop",
+        stop_reason="expected_evidence_missing",
+        stop_message="continuation did not include expected evidence marker: tests/foo.py",
+        result_preview="Updated tests/bar.py only.",
+        expected_evidence="tests/foo.py",
+    )
+
+    assert result["ok"] is True
+    checkpoint = store.read_checkpoint("sess-finalize-stop")
+    assert checkpoint["session_key"] == "telegram:sess-finalize-stop"
+    assert checkpoint["goal"] == "Finish the refactor"
+    assert checkpoint["goal_id"] == "goal-finalize-stop"
+    assert checkpoint["run_id"] == "run-finalize-stop"
+    assert checkpoint["active"] is False
+    assert checkpoint["state"] == "stopped"
+    assert checkpoint["resumable"] is False
+    assert checkpoint["stop_reason"] == "expected_evidence_missing"
+    assert checkpoint["stop_class"] == "verification"
+    assert checkpoint["stop_message"] == "continuation did not include expected evidence marker: tests/foo.py"
+    assert checkpoint["pending_wakeup_at"] == ""
+    assert checkpoint["inflight_prompt"] == ""
+    assert checkpoint["inflight_started_at"] == ""
+    assert checkpoint["last_result_preview"] == "Updated tests/bar.py only."
+    assert checkpoint["expected_evidence"] == "tests/foo.py"
+    assert checkpoint["last_activity_at"]
+    events = store.read_events("sess-finalize-stop")
+    assert events[-1]["event_type"] == "loop_stopped"
+    assert events[-1]["goal"] == "Finish the refactor"
+    assert events[-1]["goal_id"] == "goal-finalize-stop"
+    assert events[-1]["run_id"] == "run-finalize-stop"
+    assert events[-1]["stop_reason"] == "expected_evidence_missing"
+    assert events[-1]["stop_class"] == "verification"
+    assert events[-1]["message"] == "continuation did not include expected evidence marker: tests/foo.py"
+    assert events[-1]["result_preview"] == "Updated tests/bar.py only."
+    assert events[-1]["expected_evidence"] == "tests/foo.py"

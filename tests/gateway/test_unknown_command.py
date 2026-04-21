@@ -702,6 +702,121 @@ async def test_maybe_schedule_loop_followup_stops_when_runtime_schedule_continue
 
 
 @pytest.mark.asyncio
+async def test_maybe_schedule_loop_followup_expected_evidence_missing_uses_runtime_finalize_stop(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    session_key = _seed_loop_state(
+        tmp_path,
+        runner,
+        goal="Keep going",
+        goal_id="goal-runtime-stop",
+        run_id="run-runtime-stop",
+        remaining_auto_turns=2,
+        expected_evidence="tests/foo.py",
+        last_prompt_norm="initial prompt",
+        last_result_preview="previous preview",
+        pending_wakeup_at="2026-01-01T00:05:00+00:00",
+        inflight_prompt="Current inflight prompt",
+        inflight_started_at="2026-01-01T00:00:00+00:00",
+    )
+    runtime_result = {
+        "ok": True,
+        "checkpoint": {
+            "session_id": "sess-1",
+            "session_key": session_key,
+            "goal": "Keep going",
+            "goal_id": "goal-runtime-stop",
+            "run_id": "run-runtime-stop",
+            "remaining_auto_turns": 2,
+            "last_prompt": "Implement the next thin slice.",
+            "last_prompt_norm": "initial prompt",
+            "last_result_preview": "Updated tests/bar.py and reran pytest -q.",
+            "expected_evidence": "tests/foo.py",
+            "channel_prompt": None,
+            "active": False,
+            "state": "stopped",
+            "resumable": False,
+            "stop_reason": "expected_evidence_missing",
+            "stop_class": "verification",
+            "stop_message": "continuation did not include expected evidence marker: tests/foo.py",
+            "last_progress_summary": "previous preview",
+            "retry_count": 0,
+            "max_retry_budget": 2,
+            "idle_timeout_seconds": 900,
+            "last_activity_at": "2026-01-01T00:00:01+00:00",
+            "pending_wakeup_at": "",
+            "inflight_prompt": "",
+            "inflight_started_at": "",
+        },
+        "event": {
+            "event_type": "loop_stopped",
+            "stop_reason": "expected_evidence_missing",
+        },
+    }
+
+    with patch(
+        "gateway.run.LoopRuntime.finalize_stop",
+        return_value=runtime_result,
+    ) as mock_finalize_stop:
+        event, stop_notice = await runner._maybe_schedule_loop_followup(
+            session_key=session_key,
+            session_id="sess-1",
+            source=_make_source(),
+            final_response="Updated tests/bar.py and reran pytest -q.",
+        )
+
+    assert event is None
+    assert stop_notice is not None
+    assert "expected evidence" in stop_notice.lower()
+    mock_finalize_stop.assert_called_once_with(
+        "sess-1",
+        stop_reason="expected_evidence_missing",
+        stop_message="continuation did not include expected evidence marker: tests/foo.py",
+        result_preview="Updated tests/bar.py and reran pytest -q.",
+        expected_evidence="tests/foo.py",
+    )
+    assert session_key not in runner._loop_states
+    reviews = _read_background_reviews(tmp_path)
+    assert reviews[-1]["progress_state"] == "expected_evidence_missing"
+    checkpoint = _read_loop_checkpoint(tmp_path)
+    assert checkpoint["stop_reason"] == ""
+
+
+@pytest.mark.asyncio
+async def test_maybe_schedule_loop_followup_stops_conservatively_when_runtime_finalize_stop_fails(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    session_key = _seed_loop_state(
+        tmp_path,
+        runner,
+        goal="Keep going",
+        remaining_auto_turns=2,
+        expected_evidence="tests/foo.py",
+        last_prompt_norm="initial prompt",
+        last_result_preview="previous preview",
+    )
+
+    with patch(
+        "gateway.run.LoopRuntime.finalize_stop",
+        return_value={"ok": False, "error": "event_append_failed"},
+    ):
+        event, stop_notice = await runner._maybe_schedule_loop_followup(
+            session_key=session_key,
+            session_id="sess-1",
+            source=_make_source(),
+            final_response="Updated tests/bar.py and reran pytest -q.",
+        )
+
+    assert event is None
+    assert stop_notice is not None
+    assert "persist" in stop_notice.lower()
+    assert session_key not in runner._loop_states
+    checkpoint = _read_loop_checkpoint(tmp_path)
+    assert checkpoint["active"] is False
+    assert checkpoint["stop_reason"] == "loop_stop_finalize_failed"
+
+
+@pytest.mark.asyncio
 async def test_maybe_schedule_loop_followup_wait_branch_uses_runtime_schedule_wait(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     runner = _make_runner()

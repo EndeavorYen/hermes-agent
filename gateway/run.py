@@ -2295,16 +2295,23 @@ class GatewayRunner:
                 goal_id=_goal_id,
                 run_id=_run_id,
             )
-            self._clear_loop_state(
-                session_key,
+            finalize_result = LoopRuntime().finalize_stop(
+                session_id,
                 stop_reason="duplicate_result_preview",
-                event_type="loop_stopped",
-                event_payload={
-                    "goal": goal,
-                    "reason": "continuation produced no meaningful new result.",
-                    "result_preview": previous_result_preview,
-                },
+                stop_message="continuation produced no meaningful new result.",
+                result_preview=previous_result_preview,
             )
+            if not finalize_result.get("ok"):
+                return None, self._stop_loop_for_persistence_failure(
+                    session_key=session_key,
+                    stop_reason="loop_stop_finalize_failed",
+                    reason="failed to persist loop stop finalization through runtime; stopping conservatively.",
+                    event_payload={
+                        "goal": goal,
+                        "result_preview": previous_result_preview,
+                    },
+                )
+            loop_states.pop(session_key, None)
             return None, format_loop_stop_notice("duplicate_result_preview")
         if not _has_observable_evidence(final_response):
             record_background_review(
@@ -2339,20 +2346,29 @@ class GatewayRunner:
                 goal_id=_goal_id,
                 run_id=_run_id,
             )
-            self._clear_loop_state(
-                session_key,
+            expected_evidence_message = f"continuation did not include expected evidence marker: {expected_evidence}"
+            finalize_result = LoopRuntime().finalize_stop(
+                session_id,
                 stop_reason="expected_evidence_missing",
-                event_type="loop_stopped",
-                event_payload={
-                    "goal": goal,
-                    "reason": f"continuation did not include expected evidence marker: {expected_evidence}",
-                    "result_preview": result_preview,
-                    "expected_evidence": expected_evidence,
-                },
+                stop_message=expected_evidence_message,
+                result_preview=result_preview,
+                expected_evidence=expected_evidence,
             )
+            if not finalize_result.get("ok"):
+                return None, self._stop_loop_for_persistence_failure(
+                    session_key=session_key,
+                    stop_reason="loop_stop_finalize_failed",
+                    reason="failed to persist loop stop finalization through runtime; stopping conservatively.",
+                    event_payload={
+                        "goal": goal,
+                        "result_preview": result_preview,
+                        "expected_evidence": expected_evidence,
+                    },
+                )
+            loop_states.pop(session_key, None)
             return None, format_loop_stop_notice(
                 "expected_evidence_missing",
-                f"continuation did not include expected evidence marker: {expected_evidence}",
+                expected_evidence_message,
             )
         state["last_result_preview"] = result_preview
         state["last_progress_summary"] = result_preview
@@ -2464,17 +2480,25 @@ class GatewayRunner:
                 goal_id=_goal_id,
                 run_id=_run_id,
             )
-            self._clear_loop_state(
-                session_key,
+            stalled_message = verifier_reason or "Latest continuation did not materially advance the goal."
+            finalize_result = LoopRuntime().finalize_stop(
+                session_id,
                 stop_reason="progress_verifier_stalled",
-                event_type="loop_stopped",
-                event_payload={
-                    "goal": goal,
-                    "reason": verifier_reason or "Latest continuation did not materially advance the goal.",
-                    "result_preview": result_preview,
-                },
+                stop_message=stalled_message,
+                result_preview=result_preview,
             )
-            return None, format_loop_stop_notice("progress_verifier_stalled", verifier_reason or "Latest continuation did not materially advance the goal.")
+            if not finalize_result.get("ok"):
+                return None, self._stop_loop_for_persistence_failure(
+                    session_key=session_key,
+                    stop_reason="loop_stop_finalize_failed",
+                    reason="failed to persist loop stop finalization through runtime; stopping conservatively.",
+                    event_payload={
+                        "goal": goal,
+                        "result_preview": result_preview,
+                    },
+                )
+            loop_states.pop(session_key, None)
+            return None, format_loop_stop_notice("progress_verifier_stalled", stalled_message)
 
         decision_retry_budget = int(state.get("max_retry_budget", 2) or 0)
         decision_retry_count = int(state.get("retry_count", 0) or 0)

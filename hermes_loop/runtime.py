@@ -126,6 +126,63 @@ class LoopRuntime:
         )
         return {"ok": True, "checkpoint": updated, "event": event}
 
+    def finalize_stop(
+        self,
+        session_id: str,
+        *,
+        stop_reason: str,
+        stop_message: str,
+        state: str = "stopped",
+        **event_payload: Any,
+    ) -> dict[str, Any]:
+        checkpoint = self.status(session_id)
+        if checkpoint is None:
+            return self._error("not_found")
+        stop_reason_text = str(stop_reason or "").strip()
+        stop_message_text = str(stop_message or "").strip()
+        stop_state = str(state or "stopped").strip() or "stopped"
+        stop_class = self._stop_class(stop_reason_text)
+        checkpoint_updates = dict(event_payload)
+        if "result_preview" in event_payload:
+            checkpoint_updates.setdefault("last_result_preview", str(event_payload.get("result_preview") or ""))
+            checkpoint_updates.setdefault("last_progress_summary", str(event_payload.get("result_preview") or ""))
+        if "next_prompt" in event_payload:
+            checkpoint_updates.setdefault("last_prompt", str(event_payload.get("next_prompt") or ""))
+        try:
+            updated = self._write_checkpoint(
+                session_id,
+                checkpoint,
+                {
+                    "active": False,
+                    "state": stop_state,
+                    "resumable": False,
+                    "stop_reason": stop_reason_text,
+                    "stop_class": stop_class,
+                    "stop_message": stop_message_text,
+                    "pending_wakeup_at": "",
+                    "inflight_prompt": "",
+                    "inflight_started_at": "",
+                    "last_activity_at": self._now_iso(),
+                    **checkpoint_updates,
+                },
+            )
+            event = self.store.append_event(
+                session_id=session_id,
+                event_type="loop_stopped",
+                payload={
+                    "goal": str(updated.get("goal") or ""),
+                    "goal_id": str(updated.get("goal_id") or ""),
+                    "run_id": str(updated.get("run_id") or ""),
+                    "stop_reason": stop_reason_text,
+                    "stop_class": stop_class,
+                    "message": stop_message_text,
+                    **event_payload,
+                },
+            )
+        except Exception:
+            return self._error("finalize_stop_failed", checkpoint=checkpoint)
+        return {"ok": True, "checkpoint": updated, "event": event}
+
     def schedule_initial(
         self,
         *,
@@ -363,6 +420,24 @@ class LoopRuntime:
         if "resumable" in checkpoint:
             return bool(checkpoint.get("resumable"))
         return LoopRuntime._state(checkpoint) in {"paused", "waiting"}
+
+    @staticmethod
+    def _stop_class(stop_reason: str) -> str:
+        reason = str(stop_reason or "").strip()
+        if reason in {"operator_pause", "operator_stop"}:
+            return "user"
+        if reason in {"idle_timeout", "max_auto_turns_reached", "max_retry_budget_reached"}:
+            return "resource"
+        if reason.startswith("progress_verifier") or reason in {
+            "duplicate_result_preview",
+            "expected_evidence_missing",
+            "missing_observable_evidence",
+            "repeated_next_prompt",
+        }:
+            return "verification"
+        if reason.startswith("loop_") or reason in {"invalid_loop_checkpoint", "missing_loop_checkpoint", "inactive_loop_checkpoint"}:
+            return "runtime_error"
+        return "normal"
 
     @staticmethod
     def _pending_wakeup_due(pending_wakeup_at: str) -> bool:
