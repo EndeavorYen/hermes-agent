@@ -2295,7 +2295,7 @@ class GatewayRunner:
                 goal_id=_goal_id,
                 run_id=_run_id,
             )
-            finalize_result = LoopRuntime().finalize_stop(
+            finalize_result = LoopRuntime().apply_validated_stop(
                 session_id,
                 stop_reason="duplicate_result_preview",
                 stop_message="continuation produced no meaningful new result.",
@@ -2347,7 +2347,7 @@ class GatewayRunner:
                 run_id=_run_id,
             )
             expected_evidence_message = f"continuation did not include expected evidence marker: {expected_evidence}"
-            finalize_result = LoopRuntime().finalize_stop(
+            finalize_result = LoopRuntime().apply_validated_stop(
                 session_id,
                 stop_reason="expected_evidence_missing",
                 stop_message=expected_evidence_message,
@@ -2481,7 +2481,7 @@ class GatewayRunner:
                 run_id=_run_id,
             )
             stalled_message = verifier_reason or "Latest continuation did not materially advance the goal."
-            finalize_result = LoopRuntime().finalize_stop(
+            finalize_result = LoopRuntime().apply_validated_stop(
                 session_id,
                 stop_reason="progress_verifier_stalled",
                 stop_message=stalled_message,

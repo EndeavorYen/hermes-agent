@@ -184,6 +184,23 @@ class LoopRuntime:
             return self._error("finalize_stop_failed", checkpoint=checkpoint)
         return {"ok": True, "checkpoint": updated, "event": event}
 
+    def apply_validated_stop(
+        self,
+        session_id: str,
+        *,
+        stop_reason: str,
+        stop_message: str,
+        result_preview: str = "",
+        **event_payload: Any,
+    ) -> dict[str, Any]:
+        return self.finalize_stop(
+            session_id,
+            stop_reason=stop_reason,
+            stop_message=stop_message,
+            result_preview=result_preview,
+            **event_payload,
+        )
+
     def schedule_initial(
         self,
         *,

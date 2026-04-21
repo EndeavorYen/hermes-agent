@@ -763,3 +763,148 @@ async def test_recovered_followup_stops_conservatively_when_goal_artifact_is_mis
     checkpoint = _read_loop_checkpoint(tmp_path, "sess-active")
     assert checkpoint["active"] is False
     assert checkpoint["stop_reason"] == "loop_goal_artifact_missing"
+
+
+def _full_loop_state(session_id: str, session_key: str, *, last_result_preview: str = "", expected_evidence: str = "") -> dict:
+    return {
+        "session_id": session_id,
+        "goal": "Keep going",
+        "goal_id": f"goal-{session_id}",
+        "run_id": f"run-{session_id}",
+        "remaining_auto_turns": 2,
+        "last_prompt": "Implement the next thin slice.",
+        "last_prompt_norm": "implement the next thin slice.",
+        "last_result_preview": last_result_preview,
+        "expected_evidence": expected_evidence,
+        "active": True,
+        "state": "waiting",
+        "resumable": False,
+        "stop_reason": "",
+        "stop_class": "",
+        "stop_message": "",
+        "last_progress_summary": "",
+        "retry_count": 0,
+        "max_retry_budget": 2,
+        "idle_timeout_seconds": 900,
+        "last_activity_at": "",
+        "pending_wakeup_at": "",
+        "inflight_prompt": "",
+        "inflight_started_at": "",
+        "channel_prompt": None,
+    }
+
+
+def _write_store_state(store: LoopStore, session_id: str, session_key: str, *, last_result_preview: str = "", expected_evidence: str = "") -> None:
+    store.write_checkpoint(
+        session_id=session_id,
+        session_key=session_key,
+        payload={
+            "goal": "Keep going",
+            "goal_id": f"goal-{session_id}",
+            "run_id": f"run-{session_id}",
+            "remaining_auto_turns": 2,
+            "last_prompt": "Implement the next thin slice.",
+            "last_prompt_norm": "implement the next thin slice.",
+            "last_result_preview": last_result_preview,
+            "expected_evidence": expected_evidence,
+            "channel_prompt": None,
+            "active": True,
+        },
+    )
+    store.write_goal_artifact(
+        session_id=session_id,
+        goal_id=f"goal-{session_id}",
+        goal_text="Keep going",
+        created_by="gateway",
+        session_key=session_key,
+    )
+
+
+@pytest.mark.asyncio
+async def test_followup_routes_duplicate_result_preview_through_apply_validated_stop(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    store = LoopStore()
+    source = _make_source()
+    session_key = build_session_key(source)
+
+    _write_store_state(store, "sess-dup", session_key, last_result_preview="same result")
+    runner._loop_states[session_key] = _full_loop_state("sess-dup", session_key, last_result_preview="same result")
+
+    with patch(
+        "gateway.run.LoopRuntime.apply_validated_stop",
+        return_value={"ok": True, "checkpoint": {}, "event": {}},
+    ) as mock_stop:
+        event, stop_notice = await runner._maybe_schedule_loop_followup(
+            session_key=session_key,
+            session_id="sess-dup",
+            source=source,
+            final_response="same result",
+        )
+
+    assert event is None
+    assert stop_notice is not None
+    assert mock_stop.called
+    assert mock_stop.call_args.kwargs["stop_reason"] == "duplicate_result_preview"
+    assert session_key not in runner._loop_states
+
+
+@pytest.mark.asyncio
+async def test_followup_routes_expected_evidence_missing_through_apply_validated_stop(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    store = LoopStore()
+    source = _make_source()
+    session_key = build_session_key(source)
+
+    _write_store_state(store, "sess-ev", session_key, last_result_preview="", expected_evidence="EVIDENCE_MARKER")
+    runner._loop_states[session_key] = _full_loop_state("sess-ev", session_key, last_result_preview="", expected_evidence="EVIDENCE_MARKER")
+
+    with patch(
+        "gateway.run.LoopRuntime.apply_validated_stop",
+        return_value={"ok": True, "checkpoint": {}, "event": {}},
+    ) as mock_stop:
+        event, stop_notice = await runner._maybe_schedule_loop_followup(
+            session_key=session_key,
+            session_id="sess-ev",
+            source=source,
+            final_response="Updated tests/foo.py and reran pytest -q.",
+        )
+
+    assert event is None
+    assert stop_notice is not None
+    assert mock_stop.called
+    assert mock_stop.call_args.kwargs["stop_reason"] == "expected_evidence_missing"
+    assert session_key not in runner._loop_states
+
+
+@pytest.mark.asyncio
+async def test_followup_routes_progress_verifier_stalled_through_apply_validated_stop(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _make_runner()
+    store = LoopStore()
+    source = _make_source()
+    session_key = build_session_key(source)
+
+    _write_store_state(store, "sess-stall", session_key, last_result_preview="previous result")
+    runner._loop_states[session_key] = _full_loop_state("sess-stall", session_key, last_result_preview="previous result")
+
+    with patch(
+        "hermes_cli.loop.verify_progress_for_session",
+        return_value={"verdict": "stalled", "reason": "Semantic stall detected.", "should_continue": False},
+    ), patch(
+        "gateway.run.LoopRuntime.apply_validated_stop",
+        return_value={"ok": True, "checkpoint": {}, "event": {}},
+    ) as mock_stop:
+        event, stop_notice = await runner._maybe_schedule_loop_followup(
+            session_key=session_key,
+            session_id="sess-stall",
+            source=source,
+            final_response="Updated tests/foo.py and reran pytest -q.",
+        )
+
+    assert event is None
+    assert stop_notice is not None
+    assert mock_stop.called
+    assert mock_stop.call_args.kwargs["stop_reason"] == "progress_verifier_stalled"
+    assert session_key not in runner._loop_states

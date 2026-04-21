@@ -549,3 +549,112 @@ def test_runtime_finalize_stop_writes_stopped_checkpoint_and_event(monkeypatch, 
     assert events[-1]["message"] == "continuation did not include expected evidence marker: tests/foo.py"
     assert events[-1]["result_preview"] == "Updated tests/bar.py only."
     assert events[-1]["expected_evidence"] == "tests/foo.py"
+
+
+def test_runtime_apply_validated_stop_duplicate_result_preview(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    store = LoopStore()
+    _write_checkpoint(
+        store,
+        session_id="sess-avs-dup",
+        session_key="telegram:sess-avs-dup",
+        goal="Refactor the pipeline",
+        goal_id="goal-avs-dup",
+        run_id="run-avs-dup",
+        last_result_preview="Previous output.",
+        inflight_prompt="Current prompt",
+        inflight_started_at="2026-01-01T00:00:00+00:00",
+        pending_wakeup_at="2026-01-01T00:05:00+00:00",
+    )
+
+    result = LoopRuntime(store=store).apply_validated_stop(
+        "sess-avs-dup",
+        stop_reason="duplicate_result_preview",
+        stop_message="continuation produced no meaningful new result.",
+        result_preview="Previous output.",
+    )
+
+    assert result["ok"] is True
+    checkpoint = store.read_checkpoint("sess-avs-dup")
+    assert checkpoint["active"] is False
+    assert checkpoint["state"] == "stopped"
+    assert checkpoint["stop_reason"] == "duplicate_result_preview"
+    assert checkpoint["stop_class"] == "verification"
+    assert checkpoint["stop_message"] == "continuation produced no meaningful new result."
+    assert checkpoint["last_result_preview"] == "Previous output."
+    assert checkpoint["inflight_prompt"] == ""
+    assert checkpoint["pending_wakeup_at"] == ""
+    events = store.read_events("sess-avs-dup")
+    assert events[-1]["event_type"] == "loop_stopped"
+    assert events[-1]["stop_reason"] == "duplicate_result_preview"
+    assert events[-1]["stop_class"] == "verification"
+    assert events[-1]["result_preview"] == "Previous output."
+
+
+def test_runtime_apply_validated_stop_expected_evidence_missing_passes_extra_payload(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    store = LoopStore()
+    _write_checkpoint(
+        store,
+        session_id="sess-avs-ev",
+        session_key="telegram:sess-avs-ev",
+        goal="Add the test file",
+        goal_id="goal-avs-ev",
+        run_id="run-avs-ev",
+        expected_evidence="tests/foo.py",
+    )
+
+    result = LoopRuntime(store=store).apply_validated_stop(
+        "sess-avs-ev",
+        stop_reason="expected_evidence_missing",
+        stop_message="continuation did not include expected evidence marker: tests/foo.py",
+        result_preview="Updated tests/bar.py only.",
+        expected_evidence="tests/foo.py",
+    )
+
+    assert result["ok"] is True
+    checkpoint = store.read_checkpoint("sess-avs-ev")
+    assert checkpoint["active"] is False
+    assert checkpoint["stop_reason"] == "expected_evidence_missing"
+    assert checkpoint["stop_class"] == "verification"
+    assert checkpoint["expected_evidence"] == "tests/foo.py"
+    assert checkpoint["last_result_preview"] == "Updated tests/bar.py only."
+    events = store.read_events("sess-avs-ev")
+    assert events[-1]["event_type"] == "loop_stopped"
+    assert events[-1]["stop_reason"] == "expected_evidence_missing"
+    assert events[-1]["stop_class"] == "verification"
+    assert events[-1]["expected_evidence"] == "tests/foo.py"
+
+
+def test_runtime_apply_validated_stop_progress_verifier_stalled(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    store = LoopStore()
+    _write_checkpoint(
+        store,
+        session_id="sess-avs-stall",
+        session_key="telegram:sess-avs-stall",
+        goal="Migrate the schema",
+        goal_id="goal-avs-stall",
+        run_id="run-avs-stall",
+        last_result_preview="Partial migration.",
+    )
+
+    stalled_message = "Latest continuation did not materially advance the goal."
+    result = LoopRuntime(store=store).apply_validated_stop(
+        "sess-avs-stall",
+        stop_reason="progress_verifier_stalled",
+        stop_message=stalled_message,
+        result_preview="Partial migration.",
+    )
+
+    assert result["ok"] is True
+    checkpoint = store.read_checkpoint("sess-avs-stall")
+    assert checkpoint["active"] is False
+    assert checkpoint["stop_reason"] == "progress_verifier_stalled"
+    assert checkpoint["stop_class"] == "verification"
+    assert checkpoint["stop_message"] == stalled_message
+    events = store.read_events("sess-avs-stall")
+    assert events[-1]["event_type"] == "loop_stopped"
+    assert events[-1]["stop_reason"] == "progress_verifier_stalled"
+    assert events[-1]["stop_class"] == "verification"
+    assert events[-1]["message"] == stalled_message
