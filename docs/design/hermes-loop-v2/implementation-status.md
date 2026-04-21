@@ -46,6 +46,12 @@ It separates:
 - idle timeout
 - ambiguous interrupted-turn recovery -> `recovery_incomplete`
 - checkpoint watcher so persisted operator writes can affect live gateway loop state
+- deterministic observable-evidence gate for obviously unsupported self-report progress (`missing_observable_evidence`)
+
+### Artifact-boundary metadata
+- stable `goal_id` metadata binds same-session review loading to the active goal instead of mixing prior goal reviews
+- persisted gateway checkpoints/events now carry `goal_id` + `run_id`
+- background review artifacts now carry optional `goal_id` + `run_id` for correlation
 
 ## Phase coverage against `rollout-plan.md`
 
@@ -85,6 +91,7 @@ Implemented:
 - CLI list/status/pause/resume/stop
 - typed persisted stop disclosure
 - resumable flag + basic operator-facing summaries
+- persisted checkpoint/event correlation now includes `goal_id` + `run_id`
 
 Still incomplete:
 - no fully unified surface-neutral control plane
@@ -98,9 +105,10 @@ Implemented:
 - idle timeout
 - repeated prompt / duplicate result guards
 - conservative interrupted-turn recovery policy
+- deterministic observable-evidence gate for obviously unsupported self-report progress
 
 Still incomplete:
-- richer evidence-based progress gate
+- no richer `evidence_tier` / `evidence_summary` contract yet
 - broader deterministic stop taxonomy wired through a shared runtime service
 - more complete retry/recovery semantics beyond narrow payload-retry handling
 
@@ -108,11 +116,11 @@ Still incomplete:
 
 These are still real architecture gaps and should not be overclaimed as complete:
 
-1. no immutable `LoopGoal` contract with `goal_id` revisions
-2. no `run_id` / `turn_id` / `attempt_id` artifact model
+1. no immutable `LoopGoal` contract with revisioned persisted goal artifacts
+2. no full `turn_id` / `attempt_id` artifact model
 3. no canonical `LoopRuntime.tick()` implementation
 4. no event schema with `event_id`, `state_before`, `state_after`
-5. no full evidence-tier gate matching the design docs
+5. no full `evidence_tier` / `evidence_summary` verifier contract yet
 6. no truly surface-neutral runtime ownership of transitions
 
 ## Practical interpretation
