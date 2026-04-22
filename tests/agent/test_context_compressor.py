@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import patch, MagicMock
 
-from agent.context_compressor import ContextCompressor, SUMMARY_PREFIX
+from agent.context_compressor import ContextCompressor, SUMMARY_PREFIX, _summarize_tool_result
 
 
 @pytest.fixture()
@@ -53,6 +53,15 @@ class TestUpdateFromResponse:
         compressor.update_from_response({})
         assert compressor.last_prompt_tokens == 0
 
+
+class TestSummarizeToolResult:
+    def test_layer2_memory_summary_uses_action_and_payload_kind(self):
+        summary = _summarize_tool_result(
+            "layer2_memory",
+            '{"action": "write", "payload": {"candidate_events": [{"canonical_text": "需求模糊時先定驗收條件"}]}}',
+            '{"success": true}',
+        )
+        assert summary == "[layer2_memory] write candidate_events"
 
 
 class TestCompress:

@@ -1862,6 +1862,7 @@ class APIServerAdapter(BasePlatformAdapter):
             resume_job as _cron_resume,
             trigger_job as _cron_trigger,
         )
+        from cron.scheduler import tick as _cron_tick
         # Wrap as staticmethod to prevent descriptor binding — these are plain
         # module functions, not instance methods.  Without this, self._cron_*()
         # injects ``self`` as the first positional argument and every call
@@ -1874,6 +1875,7 @@ class APIServerAdapter(BasePlatformAdapter):
         _cron_pause = staticmethod(_cron_pause)
         _cron_resume = staticmethod(_cron_resume)
         _cron_trigger = staticmethod(_cron_trigger)
+        _cron_tick = staticmethod(_cron_tick)
         _CRON_AVAILABLE = True
     except ImportError:
         pass
@@ -1891,6 +1893,35 @@ class APIServerAdapter(BasePlatformAdapter):
                 {"error": "Cron module not available"}, status=501,
             )
         return None
+
+    def _kick_cron_tick(self) -> None:
+        """Best-effort immediate cron tick after a manual run trigger.
+
+        Manual ``/api/jobs/{id}/run`` should feel responsive rather than waiting
+        up to the next 60-second background ticker interval. We trigger one
+        extra background tick here; the scheduler's file lock makes overlap safe,
+        so this is low-risk even if the regular ticker fires at the same time.
+        """
+        if not self._CRON_AVAILABLE:
+            return
+
+        def _tick_once():
+            try:
+                self._cron_tick(verbose=False)
+            except Exception:
+                logger.debug("Immediate cron tick failed after manual run", exc_info=True)
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop is not None:
+            task = asyncio.create_task(asyncio.to_thread(_tick_once))
+            task.add_done_callback(lambda _t: None)
+        else:
+            import threading
+            threading.Thread(target=_tick_once, daemon=True, name="api-cron-run-kick").start()
 
     def _check_job_id(self, request: "web.Request") -> tuple:
         """Validate and extract job_id. Returns (job_id, error_response)."""
@@ -2088,6 +2119,7 @@ class APIServerAdapter(BasePlatformAdapter):
             job = self._cron_trigger(job_id)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
+            self._kick_cron_tick()
             return web.json_response({"job": job})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)

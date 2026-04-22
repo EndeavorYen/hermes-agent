@@ -205,6 +205,16 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
         target = args.get("target", "?")
         return f"[memory] {action} on {target}"
 
+    if tool_name == "layer2_memory":
+        action = args.get("action", "write")
+        payload = args.get("payload") or {}
+        if isinstance(payload, dict):
+            for key in ("candidate_events", "episodes", "observations", "context_packs"):
+                items = payload.get(key)
+                if isinstance(items, list) and items:
+                    return f"[layer2_memory] {action} {key}"
+        return f"[layer2_memory] {action}"
+
     if tool_name == "todo":
         return "[todo] updated task list"
 

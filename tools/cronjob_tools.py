@@ -28,7 +28,6 @@ from cron.jobs import (
     pause_job,
     remove_job,
     resume_job,
-    trigger_job,
     update_job,
 )
 
@@ -215,6 +214,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     }
     if job.get("script"):
         result["script"] = job["script"]
+    if isinstance(job.get("memory_pipeline"), dict):
+        result["memory_pipeline"] = job["memory_pipeline"]
     return result
 
 
@@ -234,6 +235,7 @@ def cronjob(
     base_url: Optional[str] = None,
     reason: Optional[str] = None,
     script: Optional[str] = None,
+    memory_pipeline: Optional[Dict[str, Any]] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -271,6 +273,7 @@ def cronjob(
                 provider=_normalize_optional_job_value(provider),
                 base_url=_normalize_optional_job_value(base_url, strip_trailing_slash=True),
                 script=_normalize_optional_job_value(script),
+                memory_pipeline=memory_pipeline if isinstance(memory_pipeline, dict) else None,
             )
             return json.dumps(
                 {
@@ -329,8 +332,15 @@ def cronjob(
             return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
 
         if normalized in {"run", "run_now", "trigger"}:
-            updated = trigger_job(job_id)
-            return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
+            # Immediate/manual runs execute under the shared scheduler lock so
+            # they do not race the background cron ticker.
+            from cron.scheduler import execute_job_now
+
+            executed = execute_job_now(job_id, verbose=False)
+            if not executed:
+                return tool_error(f"Failed to execute job '{job_id}'", success=False)
+            refreshed = get_job(job_id)
+            return json.dumps({"success": True, "job": _format_job(refreshed or job)}, indent=2)
 
         if normalized == "update":
             updates: Dict[str, Any] = {}
@@ -360,6 +370,8 @@ def cronjob(
                     if script_error:
                         return tool_error(script_error, success=False)
                 updates["script"] = _normalize_optional_job_value(script) if script else None
+            if memory_pipeline is not None:
+                updates["memory_pipeline"] = memory_pipeline if isinstance(memory_pipeline, dict) else None
             if repeat is not None:
                 # Normalize: treat 0 or negative as None (infinite)
                 normalized_repeat = None if repeat <= 0 else repeat
@@ -459,6 +471,10 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "string",
                 "description": f"Optional path to a Python script that runs before each cron job execution. Its stdout is injected into the prompt as context. Use for data collection and change detection. Relative paths resolve under {display_hermes_home()}/scripts/. On update, pass empty string to clear."
             },
+            "memory_pipeline": {
+                "type": "object",
+                "description": "Optional Layer-2 memory-pipeline config for special audit jobs only. Example: {\"enabled\": true, \"allow_durable_promotion_targets\": [\"memory\", \"user\"]}."
+            },
         },
         "required": ["action"]
     }
@@ -503,6 +519,7 @@ registry.register(
         base_url=args.get("base_url"),
         reason=args.get("reason"),
         script=args.get("script"),
+        memory_pipeline=args.get("memory_pipeline"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

@@ -83,6 +83,22 @@ class TestBuildToolPreview:
         assert result is not None
         assert "user" in result
 
+    def test_layer2_memory_tool_write(self):
+        result = build_tool_preview(
+            "layer2_memory",
+            {
+                "action": "write",
+                "payload": {
+                    "candidate_events": [
+                        {"canonical_text": "需求模糊時先定驗收條件"}
+                    ]
+                },
+            },
+        )
+        assert result is not None
+        assert "candidate" in result.lower()
+        assert "需求模糊時先定驗收條件" in result
+
     def test_memory_replace_missing_old_text_marked(self):
         # Avoid empty quotes "" in the preview when old_text is missing/None.
         result = build_tool_preview("memory", {"action": "replace", "target": "memory"})

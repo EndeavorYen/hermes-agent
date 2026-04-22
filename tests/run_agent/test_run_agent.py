@@ -718,6 +718,28 @@ class TestBuildSystemPrompt:
         prompt = agent_with_memory_tool._build_system_prompt()
         assert MEMORY_GUIDANCE in prompt
 
+    def test_layer2_memory_guidance_when_tool_loaded(self):
+        from agent.prompt_builder import LAYER2_MEMORY_GUIDANCE
+
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("web_search", "layer2_memory"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        prompt = agent._build_system_prompt()
+        assert LAYER2_MEMORY_GUIDANCE in prompt
+
     def test_no_memory_guidance_without_tool(self, agent):
         from agent.prompt_builder import MEMORY_GUIDANCE
 
@@ -1675,6 +1697,44 @@ class TestConcurrentToolExecution:
             mock_todo.assert_called_once()
         assert "ok" in result
 
+    def test_invoke_tool_handles_layer2_memory_directly(self, agent):
+        with patch("tools.layer2_memory_tool.layer2_memory_tool", return_value='{"success":true}') as mock_layer2:
+            result = agent._invoke_tool(
+                "layer2_memory",
+                {"action": "write", "payload": {"candidate_events": []}},
+                "task-1",
+                tool_call_id="tc-layer2",
+            )
+
+        assert json.loads(result) == {"success": True}
+        mock_layer2.assert_called_once()
+        kwargs = mock_layer2.call_args.kwargs
+        assert kwargs["action"] == "write"
+        assert kwargs["payload"] == {"candidate_events": []}
+        assert kwargs["session_id"] == agent.session_id
+        assert kwargs["tool_call_id"] == "tc-layer2"
+        assert kwargs["source_ref"].startswith("chat:")
+
+    def test_sequential_tool_path_uses_invoke_tool_for_layer2_memory(self, agent):
+        tool_call = _mock_tool_call(
+            name="layer2_memory",
+            arguments='{"action":"write","payload":{"candidate_events":[{"canonical_text":"x"}]}}',
+            call_id="c-layer2",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+
+        with patch.object(agent, "_invoke_tool", return_value='{"success": true}') as mock_invoke:
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        mock_invoke.assert_called_once_with(
+            "layer2_memory",
+            {"action": "write", "payload": {"candidate_events": [{"canonical_text": "x"}]}},
+            "task-1",
+            "c-layer2",
+        )
+        assert json.loads(messages[0]["content"]) == {"success": True}
+
     def test_invoke_tool_blocked_returns_error_and_skips_execution(self, agent, monkeypatch):
         """_invoke_tool should return error JSON when a plugin blocks the tool."""
         monkeypatch.setattr(
@@ -1870,6 +1930,45 @@ class TestRunConversation:
             result = agent.run_conversation("hello")
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
+
+    def test_learning_skill_auto_trigger_injects_ephemeral_user_context(self, agent):
+        self._setup_agent(agent)
+        resp = _mock_response(content="Captured", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = resp
+        with (
+            patch("run_agent.maybe_build_runtime_learning_skill_message", return_value="AUTO_SKILL_BLOCK") as mock_auto,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("這個教訓學起來")
+
+        assert result["final_response"] == "Captured"
+        mock_auto.assert_called_once()
+        api_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        user_messages = [m for m in api_messages if m.get("role") == "user"]
+        assert user_messages[-1]["content"].startswith("這個教訓學起來")
+        assert "AUTO_SKILL_BLOCK" in user_messages[-1]["content"]
+        persisted_users = [m for m in result["messages"] if m.get("role") == "user"]
+        assert persisted_users[-1]["content"] == "這個教訓學起來"
+
+    def test_learning_skill_auto_trigger_skips_non_matching_messages(self, agent):
+        self._setup_agent(agent)
+        resp = _mock_response(content="No trigger", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = resp
+        with (
+            patch("run_agent.maybe_build_runtime_learning_skill_message", return_value=None) as mock_auto,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("幫我總結一下")
+
+        assert result["final_response"] == "No trigger"
+        mock_auto.assert_called_once()
+        api_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        user_messages = [m for m in api_messages if m.get("role") == "user"]
+        assert user_messages[-1]["content"] == "幫我總結一下"
 
     def test_tool_calls_then_stop(self, agent):
         self._setup_agent(agent)
@@ -4385,3 +4484,280 @@ class TestMemoryProviderTurnStart:
         import inspect
         src = inspect.getsource(AIAgent.run_conversation)
         assert "on_turn_start(self._user_turn_count" in src
+
+
+class TestLayer2Recall:
+    def test_prefetch_layer2_context_returns_none_when_no_hits(self):
+        from agent.layer2_recall import prefetch_layer2_context
+
+        fake_store = MagicMock()
+        fake_store.query_candidates_for_pack.return_value = []
+
+        with patch("agent.layer2_recall.Layer2Store", return_value=fake_store):
+            assert prefetch_layer2_context() is None
+
+    def test_prefetch_layer2_context_formats_and_bounds_pack(self):
+        from agent.layer2_recall import prefetch_layer2_context
+
+        fake_store = MagicMock()
+        fake_store.query_candidates_for_pack.return_value = [
+            {
+                "canonical_text": "User prefers concise answers.",
+                "routing_destination": "user",
+                "kind": "preference",
+                "support_count": 3,
+            },
+            {
+                "canonical_text": "GitHub HTTPS pushes may need gh auth setup-git.",
+                "routing_destination": "prior",
+                "kind": "environment",
+                "support_count": 2,
+            },
+            {
+                "canonical_text": "This line should be trimmed by the char budget.",
+                "routing_destination": "prior",
+                "kind": "environment",
+                "support_count": 5,
+            },
+        ]
+        fake_store.query_episodes_for_pack.return_value = []
+        fake_store.query_observations_for_pack.return_value = []
+
+        with patch("agent.layer2_recall.Layer2Store", return_value=fake_store):
+            pack = prefetch_layer2_context(max_items=3, char_budget=120, min_support_count=2)
+
+        assert pack is not None
+        assert "- [user/preference] User prefers concise answers. (support=3)" in pack
+        assert "GitHub HTTPS pushes may need gh auth setup-git." not in pack
+        assert "This line should be trimmed" not in pack
+        fake_store.query_candidates_for_pack.assert_called_once_with(
+            destinations=["prior", "user"],
+            max_items=3,
+            min_support_count=2,
+        )
+
+    def test_prefetch_layer2_context_excludes_skill_candidates_from_runtime_pack(self):
+        from agent.layer2_recall import prefetch_layer2_context
+
+        fake_store = MagicMock()
+        fake_store.query_candidates_for_pack.return_value = []
+        fake_store.query_episodes_for_pack.return_value = []
+        fake_store.query_observations_for_pack.return_value = []
+
+        with patch("agent.layer2_recall.Layer2Store", return_value=fake_store):
+            pack = prefetch_layer2_context(max_items=3, char_budget=220, min_support_count=2)
+
+        assert pack is None
+        fake_store.query_candidates_for_pack.assert_called_once_with(
+            destinations=["prior", "user"],
+            max_items=3,
+            min_support_count=2,
+        )
+
+    def test_prefetch_layer2_context_includes_bounded_episode_and_observation_lines_after_candidates(self):
+        from agent.layer2_recall import prefetch_layer2_context
+
+        fake_store = MagicMock()
+        fake_store.query_candidates_for_pack.return_value = [
+            {
+                "canonical_text": "Repository uses uv.",
+                "routing_destination": "prior",
+                "kind": "environment",
+                "support_count": 2,
+            }
+        ]
+        fake_store.query_context_packs_for_pack.return_value = []
+        fake_store.query_episodes_for_pack.return_value = [
+            {
+                "summary_text": "Debugged CI auth failure and confirmed gh auth setup-git fixed pushes.",
+                "kind": "episode_summary",
+                "source_ref": "cron:job-1:run-2",
+            }
+        ]
+        fake_store.query_observations_for_pack.return_value = [
+            {
+                "observation_text": "gh auth status reported no stored credentials before remediation.",
+                "kind": "tool_output",
+                "source_ref": "cron:job-1:run-2",
+            }
+        ]
+
+        with patch("agent.layer2_recall.Layer2Store", return_value=fake_store):
+            pack = prefetch_layer2_context(max_items=4, char_budget=320, min_support_count=2)
+
+        assert pack is not None
+        assert pack.splitlines()[0] == "- [prior/environment] Repository uses uv. (support=2)"
+        assert "- [episodic/episode_summary] Debugged CI auth failure and confirmed gh auth setup-git fixed pushes. (source=cron:job-1:run-2)" in pack
+        assert "- [observation/tool_output] gh auth status reported no stored credentials before remediation. (source=cron:job-1:run-2)" in pack
+        fake_store.query_candidates_for_pack.assert_called_once_with(
+            destinations=["prior", "user"],
+            max_items=4,
+            min_support_count=2,
+        )
+        fake_store.query_context_packs_for_pack.assert_not_called()
+
+    def test_prefetch_layer2_context_includes_only_explicit_or_auto_selected_context_packs(self):
+        from agent.layer2_recall import prefetch_layer2_context
+
+        fake_store = MagicMock()
+        fake_store.query_candidates_for_pack.return_value = []
+        fake_store.query_context_packs_for_pack.return_value = [
+            {
+                "pack_name": "repo-digest",
+                "kind": "repo_digest",
+                "title": "Repository digest",
+                "content_text": "Repository uses uv and pytest.",
+                "source_ref": "cron:job-pack:run-1",
+            }
+        ]
+        fake_store.query_episodes_for_pack.return_value = []
+        fake_store.query_observations_for_pack.return_value = []
+
+        with patch("agent.layer2_recall.Layer2Store", return_value=fake_store):
+            pack = prefetch_layer2_context(
+                max_items=3,
+                char_budget=220,
+                explicit_pack_names=["repo-digest"],
+                query_text="how does this repo run tests?",
+            )
+
+        assert pack is not None
+        assert "[context_pack/repo_digest] repo-digest: Repository uses uv and pytest. (source=cron:job-pack:run-1)" in pack
+        fake_store.query_context_packs_for_pack.assert_called_once_with(
+            explicit_pack_names=["repo-digest"],
+            query_text="how does this repo run tests?",
+            max_items=2,
+        )
+
+
+class TestLayer2RecallInjection:
+    @pytest.fixture()
+    def memory_enabled_agent(self):
+        with (
+            patch(
+                "run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("hermes_cli.config.load_config", return_value={}),
+        ):
+            a = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=False,
+            )
+            a.client = MagicMock()
+            a._persist_session = lambda *args, **kwargs: None
+            a._save_trajectory = lambda *args, **kwargs: None
+            a._save_session_log = lambda *args, **kwargs: None
+            return a
+
+    def test_run_conversation_injects_layer2_pack_into_user_message_only(self, memory_enabled_agent):
+        api_messages = []
+
+        def _fake_api_call(api_kwargs):
+            api_messages.append(api_kwargs["messages"])
+            return _mock_response(content="done")
+
+        memory_enabled_agent._interruptible_api_call = _fake_api_call
+
+        with patch(
+            "run_agent.prefetch_layer2_context",
+            return_value="- [prior/environment] Repository uses uv. (support=2)",
+        ):
+            result = memory_enabled_agent.run_conversation("hello there")
+
+        assert result["final_response"] == "done"
+        system_message = api_messages[0][0]["content"]
+        user_message = api_messages[0][1]["content"]
+        assert "Repository uses uv" not in system_message
+        assert "<memory-context>" in user_message
+        assert "Repository uses uv" in user_message
+        assert "hello there" in user_message
+
+    def test_run_conversation_preserves_system_prompt_stability_while_layer2_pack_varies(self, memory_enabled_agent):
+        api_messages = []
+
+        def _fake_api_call(api_kwargs):
+            api_messages.append(api_kwargs["messages"])
+            return _mock_response(content="done")
+
+        memory_enabled_agent._interruptible_api_call = _fake_api_call
+
+        with patch(
+            "run_agent.prefetch_layer2_context",
+            side_effect=[
+                "- [prior/environment] First pack. (support=2)",
+                "- [user/preference] Second pack. (support=3)",
+            ],
+        ):
+            memory_enabled_agent.run_conversation("first user turn")
+            memory_enabled_agent.run_conversation("second user turn")
+
+        assert api_messages[0][0]["content"] == api_messages[1][0]["content"]
+        assert "First pack" in api_messages[0][1]["content"]
+        assert "Second pack" in api_messages[1][1]["content"]
+
+    def test_run_conversation_passes_explicit_context_pack_selection_without_default_bloat(self, memory_enabled_agent):
+        memory_enabled_agent._layer2_context_pack_names = ["repo-digest"]
+        memory_enabled_agent._layer2_auto_context_packs = False
+        captured_calls = []
+
+        def _fake_api_call(api_kwargs):
+            return _mock_response(content="done")
+
+        memory_enabled_agent._interruptible_api_call = _fake_api_call
+
+        def _fake_prefetch(**kwargs):
+            captured_calls.append(kwargs)
+            return "- [context_pack/repo_digest] repo-digest: Repository uses uv and pytest."
+
+        with patch("run_agent.prefetch_layer2_context", side_effect=_fake_prefetch):
+            result = memory_enabled_agent.run_conversation("hello there")
+
+        assert result["final_response"] == "done"
+        assert captured_calls == [
+            {
+                "query_text": "hello there",
+                "explicit_pack_names": ["repo-digest"],
+                "auto_select_context_packs": False,
+            }
+        ]
+
+    def test_run_conversation_skips_layer2_prefetch_when_skip_memory_enabled(self):
+        with (
+            patch(
+                "run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("hermes_cli.config.load_config", return_value={}),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        captured_messages = []
+
+        def _fake_api_call(api_kwargs):
+            captured_messages.append(api_kwargs["messages"])
+            return _mock_response(content="done")
+
+        agent.client = MagicMock()
+        agent._persist_session = lambda *args, **kwargs: None
+        agent._save_trajectory = lambda *args, **kwargs: None
+        agent._save_session_log = lambda *args, **kwargs: None
+        agent._interruptible_api_call = _fake_api_call
+
+        with patch("run_agent.prefetch_layer2_context") as mock_prefetch:
+            result = agent.run_conversation("hello there")
+
+        assert result["final_response"] == "done"
+        mock_prefetch.assert_not_called()
+        assert "<memory-context>" not in captured_messages[0][1]["content"]

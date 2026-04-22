@@ -9,6 +9,7 @@ from tools.cronjob_tools import (
     check_cronjob_requirements,
     cronjob,
 )
+from cron.jobs import create_job, get_job
 
 
 # =========================================================================
@@ -145,6 +146,25 @@ class TestUnifiedCronjobTool:
         assert updated["job"]["name"] == "New Name"
         assert updated["job"]["schedule"] == "every 120m"
 
+    def test_run_executes_job_immediately(self, monkeypatch):
+        created = create_job(prompt="Check server status", schedule="every 1h", name="Server Check")
+        job_id = created["id"]
+
+        calls = {"count": 0}
+
+        def _fake_execute_now(passed_job_id, adapters=None, loop=None, verbose=True):
+            assert passed_job_id == job_id
+            calls["count"] += 1
+            return True
+
+        monkeypatch.setattr("cron.scheduler.execute_job_now", _fake_execute_now)
+
+        result = json.loads(cronjob(action="run", job_id=job_id))
+        assert result["success"] is True
+        assert calls["count"] == 1
+        assert result["job"]["job_id"] == job_id
+        assert get_job(job_id) is not None
+
     def test_update_runtime_overrides_can_set_and_clear(self):
         created = json.loads(
             cronjob(
@@ -231,3 +251,21 @@ class TestUnifiedCronjobTool:
         assert updated["success"] is True
         assert updated["job"]["skills"] == []
         assert updated["job"]["skill"] is None
+
+    def test_create_with_memory_pipeline_metadata(self):
+        result = json.loads(
+            cronjob(
+                action="create",
+                prompt="Consolidate recent evidence.",
+                schedule="every 1h",
+                memory_pipeline={
+                    "enabled": True,
+                    "allow_durable_promotion_targets": ["user"],
+                },
+            )
+        )
+        assert result["success"] is True
+        assert result["job"]["memory_pipeline"] == {
+            "enabled": True,
+            "allow_durable_promotion_targets": ["user"],
+        }

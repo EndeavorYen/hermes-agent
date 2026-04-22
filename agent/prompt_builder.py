@@ -161,6 +161,13 @@ MEMORY_GUIDANCE = (
     "workflows belong in skills, not memory."
 )
 
+LAYER2_MEMORY_GUIDANCE = (
+    "Use the layer2_memory tool for candidate lessons, episodic evidence, observations, and context packs "
+    "that should be stored in Layer-2 without being promoted to durable memory yet. Default there when a lesson "
+    "is useful but still provisional. Do not fake Layer-2 by writing L2-grade items into the memory tool. "
+    "Do not include durable promotions on the chat Layer-2 path."
+)
+
 SESSION_SEARCH_GUIDANCE = (
     "When the user references something from a past conversation or you suspect "
     "relevant cross-session context exists, use session_search to recall it before "

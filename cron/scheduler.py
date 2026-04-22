@@ -77,6 +77,13 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
 }
 
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
+from cron.layer2_memory import (
+    Layer2Store,
+    apply_layer2_payload,
+    format_layer2_audit_section,
+    job_allows_layer2,
+    parse_layer2_payload,
+)
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -89,6 +96,39 @@ _hermes_home = get_hermes_home()
 # File-based lock prevents concurrent ticks from gateway + daemon + systemd timer
 _LOCK_DIR = _hermes_home / "cron"
 _LOCK_FILE = _LOCK_DIR / ".tick.lock"
+
+
+def _acquire_tick_lock(non_blocking: bool = True):
+    """Acquire the shared cron scheduler lock and return the open file handle."""
+    _LOCK_DIR.mkdir(parents=True, exist_ok=True)
+    lock_fd = open(_LOCK_FILE, "w")
+    try:
+        if fcntl:
+            mode = fcntl.LOCK_EX | (fcntl.LOCK_NB if non_blocking else 0)
+            fcntl.flock(lock_fd, mode)
+        elif msvcrt:
+            mode = msvcrt.LK_NBLCK if non_blocking else msvcrt.LK_LOCK
+            msvcrt.locking(lock_fd.fileno(), mode, 1)
+        return lock_fd
+    except (OSError, IOError):
+        lock_fd.close()
+        raise
+
+
+def _release_tick_lock(lock_fd) -> None:
+    """Release a previously acquired scheduler lock."""
+    if not lock_fd:
+        return
+    try:
+        if fcntl:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        elif msvcrt:
+            try:
+                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
+            except (OSError, IOError):
+                pass
+    finally:
+        lock_fd.close()
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
@@ -646,6 +686,14 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         "Never combine [SILENT] with content — either report your "
         "findings normally, or say [SILENT] and nothing more.]\n\n"
     )
+    if job_allows_layer2(job):
+        cron_hint += (
+            "[SYSTEM: This cron job is opted into the Layer-2 memory pipeline. "
+            "If you need to propose candidate-memory events or guarded durable promotions, "
+            "append exactly one fenced block using ```hermes-layer2 with a single JSON object. "
+            "Only include raw-evidence-grounded items. Derived summaries do not count as recurrence by themselves. "
+            "The system will parse that fenced block after the run; keep any human-visible report outside the fenced block.]\n\n"
+        )
     prompt = cron_hint + prompt
     if skills is None:
         legacy = job.get("skill")
@@ -967,10 +1015,27 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # Strip leaked placeholder text that upstream may inject on empty completions.
         if final_response.strip() == "(No response generated)":
             final_response = ""
+
+        layer2_payload = None
+        if job_allows_layer2(job):
+            final_response, layer2_payload = parse_layer2_payload(final_response)
+        layer2_audit_events = []
+        if final_response.strip() and layer2_payload is not None:
+            layer2_audit_events = apply_layer2_payload(
+                job,
+                layer2_payload,
+                source_ref=f"cron:{job_id}:{_cron_session_id}",
+                store=Layer2Store(),
+                job_id=job_id,
+                session_id=_cron_session_id,
+                job_run_id=_cron_session_id,
+            )
+        layer2_audit_section = format_layer2_audit_section(layer2_audit_events)
+
         # Use a separate variable for log display; keep final_response clean
         # for delivery logic (empty response = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
-        
+
         output = f"""# Cron Job: {job_name}
 
 **Job ID:** {job_id}
@@ -985,6 +1050,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
 {logged_response}
 """
+        if layer2_audit_section:
+            output = f"{output.rstrip()}\n\n{layer2_audit_section}\n"
         
         logger.info("Job '%s' completed successfully", job_name)
         return True, output, final_response, None
@@ -1033,6 +1100,67 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)
 
 
+def execute_job(job: dict, adapters=None, loop=None, verbose: bool = True) -> bool:
+    """Execute one concrete cron job and persist output / status.
+
+    Returns True once the job has been processed (success or failure path).
+    This helper is used both by the background scheduler tick and by explicit
+    manual runs that already hold the scheduler lock.
+    """
+    try:
+        # For recurring jobs (cron/interval), advance next_run_at to the
+        # next future occurrence BEFORE execution. This way, if the process
+        # crashes mid-run, the job won't re-fire on restart.
+        advance_next_run(job["id"])
+
+        success, output, final_response, error = run_job(job)
+
+        output_file = save_job_output(job["id"], output)
+        if verbose:
+            logger.info("Output saved to: %s", output_file)
+
+        deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
+        should_deliver = bool(deliver_content)
+        if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
+            logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+            should_deliver = False
+
+        delivery_error = None
+        if should_deliver:
+            try:
+                delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+            except Exception as de:
+                delivery_error = str(de)
+                logger.error("Delivery failed for job %s: %s", job["id"], de)
+
+        if success and not final_response:
+            success = False
+            error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
+
+        mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+        return True
+
+    except Exception as e:
+        logger.error("Error processing job %s: %s", job['id'], e)
+        mark_job_run(job["id"], False, str(e))
+        return True
+
+
+def execute_job_now(job_id: str, adapters=None, loop=None, verbose: bool = True) -> bool:
+    """Execute a specific job immediately while holding the shared scheduler lock."""
+    lock_fd = None
+    try:
+        lock_fd = _acquire_tick_lock(non_blocking=False)
+        from cron.jobs import get_job
+        job = get_job(job_id)
+        if not job:
+            logger.error("execute_job_now: job %s not found", job_id)
+            return False
+        return execute_job(job, adapters=adapters, loop=loop, verbose=verbose)
+    finally:
+        _release_tick_lock(lock_fd)
+
+
 def tick(verbose: bool = True, adapters=None, loop=None) -> int:
     """
     Check and run all due jobs.
@@ -1053,15 +1181,9 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
     # Cross-platform file locking: fcntl on Unix, msvcrt on Windows
     lock_fd = None
     try:
-        lock_fd = open(_LOCK_FILE, "w")
-        if fcntl:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        elif msvcrt:
-            msvcrt.locking(lock_fd.fileno(), msvcrt.LK_NBLCK, 1)
+        lock_fd = _acquire_tick_lock(non_blocking=True)
     except (OSError, IOError):
         logger.debug("Tick skipped — another instance holds the lock")
-        if lock_fd is not None:
-            lock_fd.close()
         return 0
 
     try:
@@ -1076,60 +1198,12 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
 
         executed = 0
         for job in due_jobs:
-            try:
-                # For recurring jobs (cron/interval), advance next_run_at to the
-                # next future occurrence BEFORE execution.  This way, if the
-                # process crashes mid-run, the job won't re-fire on restart.
-                # One-shot jobs are left alone so they can retry on restart.
-                advance_next_run(job["id"])
-
-                success, output, final_response, error = run_job(job)
-
-                output_file = save_job_output(job["id"], output)
-                if verbose:
-                    logger.info("Output saved to: %s", output_file)
-
-                # Deliver the final response to the origin/target chat.
-                # If the agent responded with [SILENT], skip delivery (but
-                # output is already saved above).  Failed jobs always deliver.
-                deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
-                should_deliver = bool(deliver_content)
-                if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
-                    logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
-                    should_deliver = False
-
-                delivery_error = None
-                if should_deliver:
-                    try:
-                        delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
-                    except Exception as de:
-                        delivery_error = str(de)
-                        logger.error("Delivery failed for job %s: %s", job["id"], de)
-
-                # Treat empty final_response as a soft failure so last_status
-                # is not "ok" — the agent ran but produced nothing useful.
-                # (issue #8585)
-                if success and not final_response:
-                    success = False
-                    error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
-
-                mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+            if execute_job(job, adapters=adapters, loop=loop, verbose=verbose):
                 executed += 1
-
-            except Exception as e:
-                logger.error("Error processing job %s: %s", job['id'], e)
-                mark_job_run(job["id"], False, str(e))
 
         return executed
     finally:
-        if fcntl:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        elif msvcrt:
-            try:
-                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
-            except (OSError, IOError):
-                pass
-        lock_fd.close()
+        _release_tick_lock(lock_fd)
 
 
 if __name__ == "__main__":

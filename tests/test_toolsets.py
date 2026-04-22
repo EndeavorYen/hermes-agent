@@ -215,6 +215,10 @@ class TestToolsetConsistency:
         # silently let a platform diverge so far that nothing is shared).
         assert len(core) > 20, f"Suspiciously small shared core: {len(core)} tools"
 
+    def test_api_and_acp_platforms_expose_layer2_memory(self):
+        assert "layer2_memory" in TOOLSETS["hermes-api-server"]["tools"]
+        assert "layer2_memory" in TOOLSETS["hermes-acp"]["tools"]
+
 
 class TestPluginToolsets:
     def test_get_all_toolsets_includes_plugin_toolset(self, monkeypatch):

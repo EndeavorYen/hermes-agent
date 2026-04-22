@@ -455,12 +455,31 @@ class TestRunJob:
                 APIServerAdapter, "_CRON_AVAILABLE", True
             ), patch.object(
                 APIServerAdapter, "_cron_trigger", mock_trigger
-            ):
+            ), patch.object(
+                APIServerAdapter, "_kick_cron_tick"
+            ) as kick_mock:
                 resp = await cli.post(f"/api/jobs/{VALID_JOB_ID}/run")
                 assert resp.status == 200
                 data = await resp.json()
                 assert data["job"] == triggered_job
                 mock_trigger.assert_called_once_with(VALID_JOB_ID)
+                kick_mock.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_run_job_missing_job_does_not_kick_tick(self, adapter):
+        """If trigger returns no job, the immediate tick helper must not fire."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                APIServerAdapter, "_CRON_AVAILABLE", True
+            ), patch.object(
+                APIServerAdapter, "_cron_trigger", return_value=None
+            ), patch.object(
+                APIServerAdapter, "_kick_cron_tick"
+            ) as kick_mock:
+                resp = await cli.post(f"/api/jobs/{VALID_JOB_ID}/run")
+                assert resp.status == 404
+                kick_mock.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

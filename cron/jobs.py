@@ -61,6 +61,8 @@ def _apply_skill_fields(job: Dict[str, Any]) -> Dict[str, Any]:
     skills = _normalize_skill_list(normalized.get("skill"), normalized.get("skills"))
     normalized["skills"] = skills
     normalized["skill"] = skills[0] if skills else None
+    memory_pipeline = normalized.get("memory_pipeline")
+    normalized["memory_pipeline"] = memory_pipeline if isinstance(memory_pipeline, dict) else None
     return normalized
 
 
@@ -378,6 +380,7 @@ def create_job(
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
     script: Optional[str] = None,
+    memory_pipeline: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -458,6 +461,7 @@ def create_job(
         # Delivery configuration
         "deliver": deliver,
         "origin": origin,  # Tracks where job was created for "origin" delivery
+        "memory_pipeline": memory_pipeline if isinstance(memory_pipeline, dict) else None,
     }
 
     jobs = load_jobs()

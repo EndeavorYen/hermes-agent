@@ -80,11 +80,13 @@ from hermes_constants import OPENROUTER_BASE_URL
 
 # Agent internals extracted to agent/ package for modularity
 from agent.memory_manager import build_memory_context_block, sanitize_context
+from agent.layer2_recall import prefetch_layer2_context
+from agent.skill_commands import maybe_build_runtime_learning_skill_message
 from agent.retry_utils import jittered_backoff
 from agent.error_classifier import classify_api_error, FailoverReason
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
-    MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
+    MEMORY_GUIDANCE, LAYER2_MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
     build_nous_subscription_prompt,
 )
 from agent.model_metadata import (
@@ -1473,6 +1475,7 @@ class AIAgent:
         self._memory_store = None
         self._memory_enabled = False
         self._user_profile_enabled = False
+        self._skip_memory = bool(skip_memory)
         self._memory_nudge_interval = 10
         self._memory_flush_min_turns = 6
         self._turns_since_memory = 0
@@ -4023,6 +4026,8 @@ class AIAgent:
         tool_guidance = []
         if "memory" in self.valid_tool_names:
             tool_guidance.append(MEMORY_GUIDANCE)
+        if "layer2_memory" in self.valid_tool_names:
+            tool_guidance.append(LAYER2_MEMORY_GUIDANCE)
         if "session_search" in self.valid_tool_names:
             tool_guidance.append(SESSION_SEARCH_GUIDANCE)
         if "skill_manage" in self.valid_tool_names:
@@ -8211,9 +8216,9 @@ class AIAgent:
                      tool_call_id: Optional[str] = None) -> str:
         """Invoke a single tool and return the result string. No display logic.
 
-        Handles both agent-level tools (todo, memory, etc.) and registry-dispatched
-        tools. Used by the concurrent execution path; the sequential path retains
-        its own inline invocation for backward-compatible display handling.
+        Handles both agent-level tools (todo, memory, layer2_memory, etc.) and
+        registry-dispatched tools. Used by both concurrent and sequential
+        execution paths so agent-level routing stays consistent.
         """
         # Check plugin hooks for a block directive before executing anything.
         block_message: Optional[str] = None
@@ -8266,6 +8271,18 @@ class AIAgent:
                 except Exception:
                     pass
             return result
+        elif function_name == "layer2_memory":
+            from tools.layer2_memory_tool import layer2_memory_tool as _layer2_memory_tool
+            platform_tag = (self.platform or "chat").strip() or "chat"
+            session_tag = (self.session_id or "unknown").strip() or "unknown"
+            call_tag = (tool_call_id or "call").strip() or "call"
+            return _layer2_memory_tool(
+                action=function_args.get("action"),
+                payload=function_args.get("payload"),
+                source_ref=f"chat:{platform_tag}:{session_tag}:{call_tag}",
+                session_id=self.session_id,
+                tool_call_id=tool_call_id,
+            )
         elif self._memory_manager and self._memory_manager.has_tool(function_name):
             return self._memory_manager.handle_tool_call(function_name, function_args)
         elif function_name == "clarify":
@@ -8889,17 +8906,16 @@ class AIAgent:
                     spinner.start()
                 _spinner_result = None
                 try:
-                    function_result = handle_function_call(
-                        function_name, function_args, effective_task_id,
-                        tool_call_id=tool_call.id,
-                        session_id=self.session_id or "",
-                        enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
-                        skip_pre_tool_call_hook=True,
+                    function_result = self._invoke_tool(
+                        function_name,
+                        function_args,
+                        effective_task_id,
+                        tool_call.id,
                     )
                     _spinner_result = function_result
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
-                    logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
+                    logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
                 finally:
                     tool_duration = time.time() - tool_start_time
                     cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_spinner_result)
@@ -8909,16 +8925,15 @@ class AIAgent:
                         self._vprint(f"  {cute_msg}")
             else:
                 try:
-                    function_result = handle_function_call(
-                        function_name, function_args, effective_task_id,
-                        tool_call_id=tool_call.id,
-                        session_id=self.session_id or "",
-                        enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
-                        skip_pre_tool_call_hook=True,
+                    function_result = self._invoke_tool(
+                        function_name,
+                        function_args,
+                        effective_task_id,
+                        tool_call.id,
                     )
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
-                    logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
+                    logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
                 tool_duration = time.time() - tool_start_time
 
             result_preview = function_result if self.verbose_logging else (
@@ -9495,6 +9510,16 @@ class AIAgent:
         except Exception as exc:
             logger.warning("pre_llm_call hook failed: %s", exc)
 
+        _auto_learning_skill_message = None
+        try:
+            if isinstance(original_user_message, str):
+                _auto_learning_skill_message = maybe_build_runtime_learning_skill_message(
+                    original_user_message,
+                    task_id=effective_task_id,
+                )
+        except Exception as exc:
+            logger.debug("auto learning skill trigger failed: %s", exc)
+
         # Main conversation loop
         api_call_count = 0
         final_response = None
@@ -9542,6 +9567,19 @@ class AIAgent:
             try:
                 _query = original_user_message if isinstance(original_user_message, str) else ""
                 _ext_prefetch_cache = self._memory_manager.prefetch_all(_query) or ""
+            except Exception:
+                pass
+
+        _layer2_prefetch_cache = ""
+        if not self._skip_memory:
+            try:
+                _layer2_context_pack_names = getattr(self, "_layer2_context_pack_names", None)
+                _layer2_auto_context_packs = bool(getattr(self, "_layer2_auto_context_packs", False))
+                _layer2_prefetch_cache = prefetch_layer2_context(
+                    query_text=original_user_message if isinstance(original_user_message, str) else "",
+                    explicit_pack_names=_layer2_context_pack_names,
+                    auto_select_context_packs=_layer2_auto_context_packs,
+                ) or ""
             except Exception:
                 pass
 
@@ -9622,8 +9660,14 @@ class AIAgent:
                 # never mutated, so nothing leaks into session persistence.
                 if idx == current_turn_user_idx and msg.get("role") == "user":
                     _injections = []
+                    if _auto_learning_skill_message:
+                        _injections.append(_auto_learning_skill_message)
                     if _ext_prefetch_cache:
                         _fenced = build_memory_context_block(_ext_prefetch_cache)
+                        if _fenced:
+                            _injections.append(_fenced)
+                    if _layer2_prefetch_cache:
+                        _fenced = build_memory_context_block(_layer2_prefetch_cache)
                         if _fenced:
                             _injections.append(_fenced)
                     if _plugin_user_context:

@@ -1174,6 +1174,12 @@ class TestBuildJobPromptSilentHint:
         prompt_pos = result.index("My custom prompt")
         assert system_pos < prompt_pos
 
+    def test_layer2_pipeline_hint_present_for_opted_in_jobs(self):
+        job = {"prompt": "My custom prompt", "memory_pipeline": {"enabled": True}}
+        result = _build_job_prompt(job)
+        assert "```hermes-layer2" in result
+        assert "Derived summaries do not count as recurrence" in result
+
 
 class TestParseWakeGate:
     """Unit tests for _parse_wake_gate — pure function, no side effects."""

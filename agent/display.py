@@ -232,6 +232,26 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
             return f"-{target}: \"{old[:20]}\""
         return action
 
+    if tool_name == "layer2_memory":
+        action = args.get("action", "")
+        payload = args.get("payload") or {}
+        if isinstance(payload, dict):
+            for key in ("candidate_events", "episodes", "observations", "context_packs"):
+                items = payload.get(key)
+                if isinstance(items, list) and items:
+                    first = items[0] if isinstance(items[0], dict) else {}
+                    snippet = _oneline(
+                        first.get("canonical_text")
+                        or first.get("summary_text")
+                        or first.get("observation_text")
+                        or first.get("pack_name")
+                        or ""
+                    )
+                    if snippet:
+                        return f"{action} {key}: \"{snippet[:25]}{'...' if len(snippet) > 25 else ''}\""
+                    return f"{action} {key}"
+        return action or "write"
+
     if tool_name == "send_message":
         target = args.get("target", "?")
         msg = _oneline(args.get("message", ""))
