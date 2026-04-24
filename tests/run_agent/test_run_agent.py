@@ -4579,6 +4579,28 @@ class TestLayer2Recall:
         fake_store.apply_layer2_payload.assert_not_called()
         fake_store.upsert_context_pack.assert_not_called()
 
+    def test_prefetch_layer2_context_passes_query_and_scope_to_candidate_retrieval(self):
+        from agent.layer2_recall import prefetch_layer2_context
+
+        fake_store = MagicMock()
+        fake_store.query_candidates_for_pack.return_value = []
+
+        with patch("agent.layer2_recall.Layer2Store", return_value=fake_store):
+            assert prefetch_layer2_context(
+                query_text="uv dependency setup",
+                subject_scope="repo",
+                subject_id="hermes-agent",
+            ) is None
+
+        fake_store.query_candidates_for_pack.assert_called_once_with(
+            destinations=["prior", "user"],
+            max_items=6,
+            min_support_count=2,
+            query_text="uv dependency setup",
+            subject_scope="repo",
+            subject_id="hermes-agent",
+        )
+
     def test_prefetch_layer2_context_formats_and_bounds_pack(self):
         from agent.layer2_recall import prefetch_layer2_context
 
@@ -4617,6 +4639,9 @@ class TestLayer2Recall:
             destinations=["prior", "user"],
             max_items=3,
             min_support_count=2,
+            query_text=None,
+            subject_scope=None,
+            subject_id=None,
         )
 
     def test_prefetch_layer2_context_excludes_skill_candidates_from_runtime_pack(self):
@@ -4635,6 +4660,9 @@ class TestLayer2Recall:
             destinations=["prior", "user"],
             max_items=3,
             min_support_count=2,
+            query_text=None,
+            subject_scope=None,
+            subject_id=None,
         )
 
     def test_prefetch_layer2_context_includes_bounded_episode_and_observation_lines_after_candidates(self):
@@ -4676,6 +4704,9 @@ class TestLayer2Recall:
             destinations=["prior", "user"],
             max_items=4,
             min_support_count=2,
+            query_text=None,
+            subject_scope=None,
+            subject_id=None,
         )
         fake_store.query_context_packs_for_pack.assert_not_called()
 
@@ -4746,8 +4777,10 @@ class TestLayer2RecallInjection:
 
         memory_enabled_agent._interruptible_api_call = _fake_api_call
 
-        with patch(
-            "run_agent.prefetch_layer2_context",
+        layer2_provider = memory_enabled_agent._memory_manager.get_provider("layer2")
+        with patch.object(
+            layer2_provider,
+            "prefetch",
             return_value="- [prior/environment] Repository uses uv. (support=2)",
         ):
             result = memory_enabled_agent.run_conversation("hello there")
@@ -4760,6 +4793,10 @@ class TestLayer2RecallInjection:
         assert "Repository uses uv" in user_message
         assert "hello there" in user_message
 
+    def test_memory_enabled_agent_registers_builtin_layer2_provider(self, memory_enabled_agent):
+        assert memory_enabled_agent._memory_manager is not None
+        assert memory_enabled_agent._memory_manager.get_provider("layer2") is not None
+
     def test_run_conversation_preserves_system_prompt_stability_while_layer2_pack_varies(self, memory_enabled_agent):
         api_messages = []
 
@@ -4769,8 +4806,10 @@ class TestLayer2RecallInjection:
 
         memory_enabled_agent._interruptible_api_call = _fake_api_call
 
-        with patch(
-            "run_agent.prefetch_layer2_context",
+        layer2_provider = memory_enabled_agent._memory_manager.get_provider("layer2")
+        with patch.object(
+            layer2_provider,
+            "prefetch",
             side_effect=[
                 "- [prior/environment] First pack. (support=2)",
                 "- [user/preference] Second pack. (support=3)",
@@ -4784,8 +4823,9 @@ class TestLayer2RecallInjection:
         assert "Second pack" in api_messages[1][1]["content"]
 
     def test_run_conversation_passes_explicit_context_pack_selection_without_default_bloat(self, memory_enabled_agent):
-        memory_enabled_agent._layer2_context_pack_names = ["repo-digest"]
-        memory_enabled_agent._layer2_auto_context_packs = False
+        layer2_provider = memory_enabled_agent._memory_manager.get_provider("layer2")
+        layer2_provider._explicit_pack_names = ["repo-digest"]
+        layer2_provider._auto_select_context_packs = False
         captured_calls = []
 
         def _fake_api_call(api_kwargs):
@@ -4797,7 +4837,7 @@ class TestLayer2RecallInjection:
             captured_calls.append(kwargs)
             return "- [context_pack/repo_digest] repo-digest: Repository uses uv and pytest."
 
-        with patch("run_agent.prefetch_layer2_context", side_effect=_fake_prefetch):
+        with patch("agent.layer2_memory_provider.prefetch_layer2_context", side_effect=_fake_prefetch):
             result = memory_enabled_agent.run_conversation("hello there")
 
         assert result["final_response"] == "done"
@@ -4838,7 +4878,7 @@ class TestLayer2RecallInjection:
         agent._save_session_log = lambda *args, **kwargs: None
         agent._interruptible_api_call = _fake_api_call
 
-        with patch("run_agent.prefetch_layer2_context") as mock_prefetch:
+        with patch("agent.layer2_memory_provider.prefetch_layer2_context") as mock_prefetch:
             result = agent.run_conversation("hello there")
 
         assert result["final_response"] == "done"

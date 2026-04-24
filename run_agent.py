@@ -80,7 +80,6 @@ from hermes_constants import OPENROUTER_BASE_URL
 
 # Agent internals extracted to agent/ package for modularity
 from agent.memory_manager import build_memory_context_block, sanitize_context
-from agent.layer2_recall import prefetch_layer2_context
 from agent.skill_commands import maybe_build_runtime_learning_skill_message
 from agent.retry_utils import jittered_backoff
 from agent.error_classifier import classify_api_error, FailoverReason
@@ -1508,58 +1507,60 @@ class AIAgent:
         
 
 
-        # Memory provider plugin (external — one at a time, alongside built-in)
+        # Memory providers: built-in Layer-2 plus at most one external plugin.
         # Reads memory.provider from config to select which plugin to activate.
         self._memory_manager = None
         if not skip_memory:
             try:
-                _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
+                from agent.layer2_memory_provider import Layer2MemoryProvider as _Layer2MemoryProvider
+                from agent.memory_manager import MemoryManager as _MemoryManager
+                self._memory_manager = _MemoryManager()
+                self._memory_manager.add_provider(_Layer2MemoryProvider())
 
+                _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
                 if _mem_provider_name:
-                    from agent.memory_manager import MemoryManager as _MemoryManager
                     from plugins.memory import load_memory_provider as _load_mem
-                    self._memory_manager = _MemoryManager()
                     _mp = _load_mem(_mem_provider_name)
                     if _mp and _mp.is_available():
                         self._memory_manager.add_provider(_mp)
-                    if self._memory_manager.providers:
-                        from hermes_constants import get_hermes_home as _ghh
-                        _init_kwargs = {
-                            "session_id": self.session_id,
-                            "platform": platform or "cli",
-                            "hermes_home": str(_ghh()),
-                            "agent_context": "primary",
-                        }
-                        # Thread session title for memory provider scoping
-                        # (e.g. honcho uses this to derive chat-scoped session keys)
-                        if self._session_db:
-                            try:
-                                _st = self._session_db.get_session_title(self.session_id)
-                                if _st:
-                                    _init_kwargs["session_title"] = _st
-                            except Exception:
-                                pass
-                        # Thread gateway user identity for per-user memory scoping
-                        if self._user_id:
-                            _init_kwargs["user_id"] = self._user_id
-                        # Thread gateway session key for stable per-chat Honcho session isolation
-                        if self._gateway_session_key:
-                            _init_kwargs["gateway_session_key"] = self._gateway_session_key
-                        # Profile identity for per-profile provider scoping
-                        try:
-                            from hermes_cli.profiles import get_active_profile_name
-                            _profile = get_active_profile_name()
-                            _init_kwargs["agent_identity"] = _profile
-                            _init_kwargs["agent_workspace"] = "hermes"
-                        except Exception:
-                            pass
-                        self._memory_manager.initialize_all(**_init_kwargs)
-                        logger.info("Memory provider '%s' activated", _mem_provider_name)
                     else:
                         logger.debug("Memory provider '%s' not found or not available", _mem_provider_name)
-                        self._memory_manager = None
+
+                from hermes_constants import get_hermes_home as _ghh
+                _init_kwargs = {
+                    "session_id": self.session_id,
+                    "platform": platform or "cli",
+                    "hermes_home": str(_ghh()),
+                    "agent_context": "primary",
+                }
+                # Thread session title for memory provider scoping
+                # (e.g. honcho uses this to derive chat-scoped session keys)
+                if self._session_db:
+                    try:
+                        _st = self._session_db.get_session_title(self.session_id)
+                        if _st:
+                            _init_kwargs["session_title"] = _st
+                    except Exception:
+                        pass
+                # Thread gateway user identity for per-user memory scoping
+                if self._user_id:
+                    _init_kwargs["user_id"] = self._user_id
+                # Thread gateway session key for stable per-chat Honcho session isolation
+                if self._gateway_session_key:
+                    _init_kwargs["gateway_session_key"] = self._gateway_session_key
+                # Profile identity for per-profile provider scoping
+                try:
+                    from hermes_cli.profiles import get_active_profile_name
+                    _profile = get_active_profile_name()
+                    _init_kwargs["agent_identity"] = _profile
+                    _init_kwargs["agent_workspace"] = "hermes"
+                except Exception:
+                    pass
+                self._memory_manager.initialize_all(**_init_kwargs)
+                if _mem_provider_name:
+                    logger.info("Memory provider '%s' activated", _mem_provider_name)
             except Exception as _mpe:
-                logger.warning("Memory provider plugin init failed: %s", _mpe)
+                logger.warning("Memory provider init failed: %s", _mpe)
                 self._memory_manager = None
 
         # Inject memory provider tool schemas into the tool surface.
@@ -9596,17 +9597,6 @@ class AIAgent:
                 pass
 
         _layer2_prefetch_cache = ""
-        if not self._skip_memory:
-            try:
-                _layer2_context_pack_names = getattr(self, "_layer2_context_pack_names", None)
-                _layer2_auto_context_packs = bool(getattr(self, "_layer2_auto_context_packs", False))
-                _layer2_prefetch_cache = prefetch_layer2_context(
-                    query_text=original_user_message if isinstance(original_user_message, str) else "",
-                    explicit_pack_names=_layer2_context_pack_names,
-                    auto_select_context_packs=_layer2_auto_context_packs,
-                ) or ""
-            except Exception:
-                pass
 
         while (api_call_count < self.max_iterations and self.iteration_budget.remaining > 0) or self._budget_grace_call:
             # Reset per-turn checkpoint dedup so each iteration can take one snapshot

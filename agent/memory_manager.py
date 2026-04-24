@@ -1,18 +1,19 @@
-"""MemoryManager — orchestrates the built-in memory provider plus at most
+"""MemoryManager — orchestrates built-in memory providers plus at most
 ONE external plugin memory provider.
 
 Single integration point in run_agent.py. Replaces scattered per-backend
 code with one manager that delegates to registered providers.
 
-The BuiltinMemoryProvider is always registered first and cannot be removed.
-Only ONE external (non-builtin) provider is allowed at a time — attempting
-to register a second external provider is rejected with a warning.  This
-prevents tool schema bloat and conflicting memory backends.
+Built-in providers (for example the local Layer-2 provider) do not count
+against the external-provider limit. Only ONE external (non-builtin)
+provider is allowed at a time — attempting to register a second external
+provider is rejected with a warning. This prevents tool schema bloat and
+conflicting memory backends.
 
 Usage in run_agent.py:
     self._memory_manager = MemoryManager()
-    self._memory_manager.add_provider(BuiltinMemoryProvider(...))
-    # Only ONE of these:
+    self._memory_manager.add_provider(Layer2MemoryProvider())
+    # Only ONE external provider in addition to built-ins:
     self._memory_manager.add_provider(plugin_provider)
 
     # System prompt
@@ -101,7 +102,7 @@ class MemoryManager:
         Only **one** external (non-builtin) provider is allowed — a second
         attempt is rejected with a warning.
         """
-        is_builtin = provider.name == "builtin"
+        is_builtin = provider.name in {"builtin", "layer2"}
 
         if not is_builtin:
             if self._has_external:

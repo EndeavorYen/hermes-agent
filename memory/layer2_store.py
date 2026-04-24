@@ -612,6 +612,9 @@ class Layer2Store:
         destinations: list[str] | None = None,
         max_items: int = 6,
         min_support_count: int = 2,
+        query_text: str | None = None,
+        subject_scope: str | None = None,
+        subject_id: str | None = None,
     ) -> List[Dict[str, Any]]:
         limit = max(1, int(max_items))
         min_support = max(0, int(min_support_count))
@@ -619,6 +622,13 @@ class Layer2Store:
             value
             for value in (normalize_destination(item) for item in (destinations or []))
             if value
+        }
+        requested_scope = _clean_optional_text(subject_scope)
+        requested_subject_id = _clean_optional_text(subject_id)
+        query_terms = {
+            term
+            for term in re.split(r"[^a-z0-9]+", (query_text or "").lower())
+            if len(term) >= 2
         }
 
         with self._connect() as conn:
@@ -633,7 +643,7 @@ class Layer2Store:
                 (min_support,),
             ).fetchall()
 
-        results: List[Dict[str, Any]] = []
+        scored_results: List[tuple[int, int, int, Dict[str, Any]]] = []
         for row in rows:
             candidate = dict(row)
             candidate["proposed_target"] = normalize_destination(candidate.get("proposed_target"))
@@ -642,10 +652,32 @@ class Layer2Store:
             )
             if normalized_destinations and candidate["routing_destination"] not in normalized_destinations:
                 continue
-            results.append(candidate)
-            if len(results) >= limit:
-                break
-        return results
+            if requested_scope and _clean_optional_text(candidate.get("subject_scope")) != requested_scope:
+                continue
+            if requested_subject_id and _clean_optional_text(candidate.get("subject_id")) != requested_subject_id:
+                continue
+            haystack = " ".join(
+                filter(
+                    None,
+                    [
+                        str(candidate.get("canonical_text") or ""),
+                        str(candidate.get("kind") or ""),
+                        str(candidate.get("routing_destination") or ""),
+                    ],
+                )
+            ).lower()
+            query_score = sum(1 for term in query_terms if term in haystack)
+            if query_terms and query_score <= 0:
+                continue
+            support = int(candidate.get("support_count") or 0)
+            contradict = int(candidate.get("contradict_count") or 0)
+            net_support = support - contradict
+            scored_results.append(
+                (query_score, net_support, int(candidate.get("id") or 0), candidate)
+            )
+
+        scored_results.sort(key=lambda item: (-item[0], -item[1], -item[2]))
+        return [candidate for *_unused, candidate in scored_results[:limit]]
 
     def record_event(
         self,

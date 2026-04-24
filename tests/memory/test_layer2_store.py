@@ -27,6 +27,65 @@ def test_layer2_store_is_available_from_shared_memory_package(tmp_path):
     assert candidate["support_count"] == 1
 
 
+def test_query_candidates_for_pack_uses_query_text_and_scope_filters(tmp_path):
+    from memory.layer2_store import Layer2Store
+
+    store = Layer2Store(tmp_path / "layer2.sqlite3")
+    store.record_event(
+        event_type="create",
+        canonical_text="Repository uses uv for Python dependency management",
+        kind="env_fact",
+        proposed_target="memory",
+        source_ref="test:repo",
+        source_event_id="repo-evt-1",
+        subject_scope="repo",
+        subject_id="hermes-agent",
+    )
+    store.record_event(
+        event_type="strengthen",
+        canonical_text="Unrelated high-support user preference",
+        kind="preference",
+        proposed_target="user",
+        source_ref="test:user",
+        source_event_id="user-evt-1",
+        subject_scope="user",
+        subject_id="other-user",
+    )
+    store.record_event(
+        event_type="strengthen",
+        canonical_text="Unrelated high-support user preference",
+        kind="preference",
+        proposed_target="user",
+        source_ref="test:user",
+        source_event_id="user-evt-2",
+        subject_scope="user",
+        subject_id="other-user",
+    )
+    store.record_event(
+        event_type="strengthen",
+        canonical_text="Unrelated high-support user preference",
+        kind="preference",
+        proposed_target="user",
+        source_ref="test:user",
+        source_event_id="user-evt-3",
+        subject_scope="user",
+        subject_id="other-user",
+    )
+
+    results = store.query_candidates_for_pack(
+        destinations=["prior", "user"],
+        query_text="uv dependency setup",
+        subject_scope="repo",
+        subject_id="hermes-agent",
+        max_items=5,
+        min_support_count=1,
+    )
+
+    assert [item["canonical_text"] for item in results] == [
+        "Repository uses uv for Python dependency management"
+    ]
+
+
 def test_cron_layer2_memory_is_compatibility_facade_for_shared_store():
     import cron.layer2_memory as cron_layer2
     import memory.layer2_store as shared_layer2

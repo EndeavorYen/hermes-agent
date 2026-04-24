@@ -64,12 +64,17 @@ def prefetch_layer2_context(
     query_text: str | None = None,
     explicit_pack_names: list[str] | None = None,
     auto_select_context_packs: bool = False,
+    subject_scope: str | None = None,
+    subject_id: str | None = None,
 ) -> str | None:
     store = Layer2Store()
     candidates = store.query_candidates_for_pack(
         destinations=["prior", "user"],
         max_items=max_items,
         min_support_count=min_support_count,
+        query_text=query_text,
+        subject_scope=subject_scope,
+        subject_id=subject_id,
     )
 
     budget = max(1, int(char_budget))

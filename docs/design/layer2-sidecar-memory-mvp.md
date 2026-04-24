@@ -8,6 +8,10 @@ Implemented locally as an MVP on `feat/hermes-custom-autonomy`.
 
 Primary implementation files:
 - `memory/layer2_store.py` — shared Layer-2 store and payload application logic
+- `agent/layer2_memory_provider.py` — built-in MemoryManager provider for runtime Layer-2 recall/write routing
+- `agent/layer2_recall.py` — query/scope-aware runtime recall packet formatting
+- `tools/layer2_memory_tool.py` — chat-side candidate-only L2 write tool
+- `tools/layer2_review_tool.py` — operator review/prune/promote tooling
 - `cron/layer2_memory.py` — compatibility facade for older imports
 - `cron/scheduler.py` — cron producer/consumer integration
 - `cron/jobs.py`
@@ -205,12 +209,11 @@ This emoji mapping is a UX recommendation only. It is not yet implemented in the
 ## Deferred items
 
 Deferred beyond this MVP:
-- operator review commands/UI for listing, filtering, and adjudicating candidates
-- stronger schema/versioning for the Layer-2 payload
 - automatic promotion thresholds and recency windows
+- migration of historical recurrence analyses into Layer-2
 - richer provenance linking back to exact artifacts/messages
 - conflict-resolution policy beyond simple contradict counts
-- skill promotion, skill extraction, or any automatic skill creation from Layer-2 candidates
+- automatic skill creation from Layer-2 candidates; operator review may draft or inspect, but should not auto-install skills
 - broader rollout to non-learning jobs
 
 ## Bottom line
