@@ -714,6 +714,46 @@ class TestRunJobSessionPersistence:
         # But the output log should show the placeholder
         assert "(No response generated)" in output
 
+    def test_run_job_does_not_apply_layer2_when_fenced_payload_has_no_visible_response(self, tmp_path):
+        job = {
+            "id": "hidden-layer2-job",
+            "name": "hidden layer2 test",
+            "prompt": "emit layer2 only",
+            "memory_pipeline": {"enabled": True},
+        }
+        fake_db = MagicMock()
+        hidden_payload_only = """```hermes-layer2
+{"candidate_events":[{"action":"create","canonical_text":"Hidden write should not apply","kind":"fact","proposed_target":"memory"}]}
+```"""
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("cron.scheduler.apply_layer2_payload", side_effect=AssertionError("should not apply hidden payload")), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": hidden_payload_only}
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == ""
+        assert "Hidden write should not apply" not in output
+        assert "## Layer-2 Audit" not in output
+        assert "(No response generated)" in output
+
     def test_tick_marks_empty_response_as_error(self, tmp_path):
         """When run_job returns success=True but final_response is empty,
         tick() should mark the job as error so last_status != 'ok'.

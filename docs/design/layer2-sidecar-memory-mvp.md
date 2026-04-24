@@ -7,10 +7,12 @@
 Implemented locally as an MVP on `feat/hermes-custom-autonomy`.
 
 Primary implementation files:
-- `cron/layer2_memory.py`
-- `cron/scheduler.py`
+- `memory/layer2_store.py` — shared Layer-2 store and payload application logic
+- `cron/layer2_memory.py` — compatibility facade for older imports
+- `cron/scheduler.py` — cron producer/consumer integration
 - `cron/jobs.py`
 - `tools/cronjob_tools.py`
+- `tests/memory/test_layer2_store.py`
 - `tests/cron/test_layer2_memory.py`
 - `tests/tools/test_cronjob_tools.py`
 - `tests/cron/test_scheduler.py`

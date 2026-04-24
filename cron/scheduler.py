@@ -77,7 +77,7 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
 }
 
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
-from cron.layer2_memory import (
+from memory.layer2_store import (
     Layer2Store,
     apply_layer2_payload,
     format_layer2_audit_section,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, Optional
 
-from cron.layer2_memory import Layer2Store, apply_layer2_payload, format_layer2_audit_section
+from memory.layer2_store import Layer2Store, apply_layer2_payload, format_layer2_audit_section
 
 _ALLOWED_PAYLOAD_KEYS = {"candidate_events", "episodes", "observations", "context_packs"}
 

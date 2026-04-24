@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from cron.layer2_memory import Layer2Store
+from memory.layer2_store import Layer2Store
 
 
 def _format_candidate_line(candidate: Dict[str, Any]) -> str:

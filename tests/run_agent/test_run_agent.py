@@ -4556,6 +4556,29 @@ class TestLayer2Recall:
         with patch("agent.layer2_recall.Layer2Store", return_value=fake_store):
             assert prefetch_layer2_context() is None
 
+    def test_prefetch_layer2_context_is_read_only_for_recurrence_state(self):
+        from agent.layer2_recall import prefetch_layer2_context
+
+        fake_store = MagicMock()
+        fake_store.query_candidates_for_pack.return_value = [
+            {
+                "canonical_text": "User prefers concise answers.",
+                "routing_destination": "user",
+                "kind": "preference",
+                "support_count": 2,
+            }
+        ]
+        fake_store.query_episodes_for_pack.return_value = []
+        fake_store.query_observations_for_pack.return_value = []
+
+        with patch("agent.layer2_recall.Layer2Store", return_value=fake_store):
+            pack = prefetch_layer2_context(max_items=2, char_budget=200, min_support_count=2)
+
+        assert "User prefers concise answers" in pack
+        fake_store.record_event.assert_not_called()
+        fake_store.apply_layer2_payload.assert_not_called()
+        fake_store.upsert_context_pack.assert_not_called()
+
     def test_prefetch_layer2_context_formats_and_bounds_pack(self):
         from agent.layer2_recall import prefetch_layer2_context
 

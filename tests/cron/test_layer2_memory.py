@@ -4,7 +4,7 @@ import json
 import sqlite3
 from unittest.mock import MagicMock, patch
 
-from cron.layer2_memory import Layer2Store, apply_layer2_payload, format_layer2_audit_section, parse_layer2_payload
+from memory.layer2_store import Layer2Store, apply_layer2_payload, format_layer2_audit_section, parse_layer2_payload
 from cron.scheduler import run_job
 
 
@@ -50,7 +50,7 @@ class TestLayer2Store:
         fake_memory_store = MagicMock()
         fake_memory_store.add.return_value = {"success": True}
 
-        with patch("cron.layer2_memory.MemoryStore", return_value=fake_memory_store):
+        with patch("memory.layer2_store.MemoryStore", return_value=fake_memory_store):
             audit = apply_layer2_payload(
                 job,
                 payload,

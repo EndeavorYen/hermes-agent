@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from cron.layer2_memory import Layer2Store
+from memory.layer2_store import Layer2Store
 from tools.layer2_memory_tool import LAYER2_MEMORY_SCHEMA, layer2_memory_tool
 
 
@@ -70,7 +70,7 @@ class TestLayer2MemoryTool:
             called["memory"] = True
             raise AssertionError("memory tool should not be called")
 
-        monkeypatch.setattr("cron.layer2_memory.MemoryStore", _boom)
+        monkeypatch.setattr("memory.layer2_store.MemoryStore", _boom)
         result = json.loads(
             layer2_memory_tool(
                 action="write",
