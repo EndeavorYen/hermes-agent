@@ -1715,6 +1715,66 @@ class TestConcurrentToolExecution:
         assert kwargs["tool_call_id"] == "tc-layer2"
         assert kwargs["source_ref"].startswith("chat:")
 
+    def test_cron_agent_filters_direct_memory_write_tools(self):
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("web_search", "memory", "layer2_memory"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            cron_agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                platform="cron",
+            )
+
+        assert "web_search" in cron_agent.valid_tool_names
+        assert "memory" not in cron_agent.valid_tool_names
+        assert "layer2_memory" not in cron_agent.valid_tool_names
+        assert all(
+            tool["function"]["name"] not in {"memory", "layer2_memory"}
+            for tool in cron_agent.tools
+        )
+
+    def test_cron_invoke_layer2_memory_is_blocked_even_if_tool_is_present(self, agent):
+        agent.platform = "cron"
+        agent.valid_tool_names.add("layer2_memory")
+
+        with patch("tools.layer2_memory_tool.layer2_memory_tool", side_effect=AssertionError("should not run")):
+            result = agent._invoke_tool(
+                "layer2_memory",
+                {"action": "write", "payload": {"candidate_events": [{"canonical_text": "x"}]}},
+                "task-1",
+                tool_call_id="tc-layer2",
+            )
+
+        assert json.loads(result) == {
+            "success": False,
+            "error": "Direct Layer-2 memory writes are disabled for cron agents; use the cron memory_pipeline fenced payload path.",
+        }
+
+    def test_cron_invoke_memory_is_blocked_even_if_tool_is_present(self, agent):
+        agent.platform = "cron"
+        agent.valid_tool_names.add("memory")
+
+        with patch("tools.memory_tool.memory_tool", side_effect=AssertionError("should not run")):
+            result = agent._invoke_tool(
+                "memory",
+                {"action": "add", "target": "memory", "content": "Repository uses uv"},
+                "task-1",
+                tool_call_id="tc-memory",
+            )
+
+        assert json.loads(result) == {
+            "success": False,
+            "error": "Direct durable memory writes are disabled for cron agents; use the cron memory_pipeline promotion path.",
+        }
+
     def test_sequential_tool_path_uses_invoke_tool_for_layer2_memory(self, agent):
         tool_call = _mock_tool_call(
             name="layer2_memory",

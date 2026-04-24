@@ -1354,6 +1354,15 @@ class AIAgent:
             disabled_toolsets=disabled_toolsets,
             quiet_mode=self.quiet_mode,
         )
+        if (self.platform or "").strip().lower() == "cron" and self.tools:
+            # Cron jobs use the scheduler-owned memory_pipeline fenced payload
+            # path for Layer-2 writes. Do not expose direct memory write tools
+            # to cron agents, or non-opted jobs can bypass scheduler policy.
+            _cron_blocked_memory_tools = {"memory", "layer2_memory"}
+            self.tools = [
+                tool for tool in self.tools
+                if tool.get("function", {}).get("name") not in _cron_blocked_memory_tools
+            ]
         
         # Show tool configuration and store valid tool names for validation
         self.valid_tool_names = set()
@@ -8251,6 +8260,14 @@ class AIAgent:
                 current_session_id=self.session_id,
             )
         elif function_name == "memory":
+            if (self.platform or "").strip().lower() == "cron":
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": "Direct durable memory writes are disabled for cron agents; use the cron memory_pipeline promotion path.",
+                    },
+                    ensure_ascii=False,
+                )
             target = function_args.get("target", "memory")
             from tools.memory_tool import memory_tool as _memory_tool
             result = _memory_tool(
@@ -8272,6 +8289,14 @@ class AIAgent:
                     pass
             return result
         elif function_name == "layer2_memory":
+            if (self.platform or "").strip().lower() == "cron":
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": "Direct Layer-2 memory writes are disabled for cron agents; use the cron memory_pipeline fenced payload path.",
+                    },
+                    ensure_ascii=False,
+                )
             from tools.layer2_memory_tool import layer2_memory_tool as _layer2_memory_tool
             platform_tag = (self.platform or "chat").strip() or "chat"
             session_tag = (self.session_id or "unknown").strip() or "unknown"
