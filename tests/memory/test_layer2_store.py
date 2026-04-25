@@ -102,6 +102,75 @@ def test_cron_layer2_memory_is_compatibility_facade_for_shared_store():
     assert cron_layer2.format_layer2_audit_section is shared_layer2.format_layer2_audit_section
 
 
+def test_layer2_payload_demotes_recurrence_without_linked_observation(tmp_path):
+    from memory.layer2_store import Layer2Store, apply_layer2_payload
+
+    store = Layer2Store(tmp_path / "layer2.sqlite3")
+    audit = apply_layer2_payload(
+        {"id": "evidence-job", "memory_pipeline": {"enabled": True}},
+        {
+            "candidate_events": [
+                {
+                    "action": "create",
+                    "canonical_text": "Unbacked synthesis should not count as recurrence",
+                    "kind": "heuristic",
+                    "proposed_target": "memory",
+                    "counts_for_recurrence": True,
+                    "source_event_id": "candidate-only",
+                }
+            ]
+        },
+        source_ref="cron:evidence-job:run-1",
+        store=store,
+    )
+
+    candidate = store.get_candidate("Unbacked synthesis should not count as recurrence")
+    events = store.list_events("Unbacked synthesis should not count as recurrence")
+    assert audit[0]["audit_label"] == "unbacked_candidate_demoted"
+    assert candidate["support_count"] == 0
+    assert events[0]["counts_for_recurrence"] == 0
+    assert events[0]["support_delta"] == 0
+
+
+def test_layer2_payload_counts_recurrence_with_linked_observation(tmp_path):
+    from memory.layer2_store import Layer2Store, apply_layer2_payload
+
+    store = Layer2Store(tmp_path / "layer2.sqlite3")
+    audit = apply_layer2_payload(
+        {"id": "evidence-job", "memory_pipeline": {"enabled": True}},
+        {
+            "observations": [
+                {
+                    "observation_text": "Raw source showed the heuristic affected a later decision.",
+                    "source_event_id": "raw-evidence-1",
+                }
+            ],
+            "candidate_events": [
+                {
+                    "action": "create",
+                    "canonical_text": "Candidates should count only when linked to raw evidence",
+                    "kind": "heuristic",
+                    "proposed_target": "memory",
+                    "counts_for_recurrence": True,
+                    "source_event_id": "candidate-1",
+                    "evidence_source_event_id": "raw-evidence-1",
+                }
+            ],
+        },
+        source_ref="cron:evidence-job:run-1",
+        store=store,
+    )
+
+    candidate = store.get_candidate("Candidates should count only when linked to raw evidence")
+    events = store.list_events("Candidates should count only when linked to raw evidence")
+    labels = [item["audit_label"] for item in audit]
+    assert "observation_stored" in labels
+    assert "candidate_created" in labels
+    assert candidate["support_count"] == 1
+    assert events[0]["counts_for_recurrence"] == 1
+    assert events[0]["support_delta"] == 1
+
+
 def test_shared_layer2_payload_keeps_promotion_guardrails(tmp_path):
     from memory.layer2_store import Layer2Store, apply_layer2_payload
 
@@ -124,3 +193,69 @@ def test_shared_layer2_payload_keeps_promotion_guardrails(tmp_path):
 
     assert audit == []
     assert store.get_candidate("Do not promote without allowlist") is None
+
+
+def test_layer2_candidate_recurrence_requires_matching_observation_evidence(tmp_path):
+    from memory.layer2_store import Layer2Store, apply_layer2_payload
+
+    store = Layer2Store(tmp_path / "layer2.sqlite3")
+    audit = apply_layer2_payload(
+        {"id": "evidence-job", "memory_pipeline": {"enabled": True}},
+        {
+            "observations": [
+                {
+                    "observation_text": "Directly checked source supports the rule",
+                    "source_event_id": "obs-direct-1",
+                }
+            ],
+            "candidate_events": [
+                {
+                    "action": "create",
+                    "canonical_text": "Evidence-linked candidates can count",
+                    "kind": "heuristic",
+                    "proposed_target": "memory",
+                    "source_event_id": "cand-1",
+                    "evidence_source_event_id": "obs-direct-1",
+                    "counts_for_recurrence": True,
+                }
+            ],
+        },
+        source_ref="test:evidence-linked",
+        store=store,
+    )
+
+    candidate = store.get_candidate("Evidence-linked candidates can count")
+    events = store.list_events("Evidence-linked candidates can count")
+    assert any(item["audit_label"] == "candidate_created" for item in audit)
+    assert candidate["support_count"] == 1
+    assert events[-1]["counts_for_recurrence"] == 1
+
+
+def test_layer2_candidate_without_observation_evidence_is_demoted(tmp_path):
+    from memory.layer2_store import Layer2Store, apply_layer2_payload
+
+    store = Layer2Store(tmp_path / "layer2.sqlite3")
+    audit = apply_layer2_payload(
+        {"id": "evidence-job", "memory_pipeline": {"enabled": True}},
+        {
+            "candidate_events": [
+                {
+                    "action": "create",
+                    "canonical_text": "Unbacked candidates should not count",
+                    "kind": "heuristic",
+                    "proposed_target": "memory",
+                    "source_event_id": "cand-unbacked",
+                    "counts_for_recurrence": True,
+                }
+            ]
+        },
+        source_ref="test:evidence-linked",
+        store=store,
+    )
+
+    candidate = store.get_candidate("Unbacked candidates should not count")
+    events = store.list_events("Unbacked candidates should not count")
+    assert audit[0]["audit_label"] == "unbacked_candidate_demoted"
+    assert candidate["support_count"] == 0
+    assert events[-1]["counts_for_recurrence"] == 0
+    assert events[-1]["support_delta"] == 0

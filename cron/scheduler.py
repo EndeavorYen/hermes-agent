@@ -694,10 +694,10 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
             "Only include raw-evidence-grounded items. Derived summaries do not count as recurrence by themselves. "
             "Prefer strengthening, contradicting, pruning, or updating existing candidates over creating paraphrases. "
             "Do not cap distinct useful candidates artificially, but do not emit multiple same-meaning candidates in one run. "
-            "For recurrence-counting events, include stable source_event_id values tied to the raw evidence you checked, "
-            "and include a matching observations[] item with the same source_event_id; "
-            "without matching observation evidence the scheduler stores the candidate but forces counts_for_recurrence=false. "
-            "The scheduler also dedupes same-source repeats and same-day same-candidate replays. "
+            "For recurrence-counting events, include observations[] entries for the raw evidence checked and link each candidate "
+            "with evidence_source_event_id / evidence_source_event_ids; otherwise recurrence will be stored for audit "
+            "but demoted to counts_for_recurrence=false. "
+            "The scheduler dedupes same-source repeats and same-day same-candidate replays. "
             "The system will parse that fenced block after the run; keep any human-visible report outside the fenced block.]\n\n"
         )
     prompt = cron_hint + prompt

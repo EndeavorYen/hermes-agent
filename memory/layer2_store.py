@@ -1198,10 +1198,23 @@ def apply_layer2_payload(
             item_source_ref = _clean_optional_text(item.get("source_ref")) or source_ref
             item_source_event_id = _clean_optional_text(item.get("source_event_id")) or f"{source_ref}:candidate:{idx}"
             counts_for_recurrence = bool(item.get("counts_for_recurrence", True))
+            raw_evidence_ids = item.get("evidence_source_event_ids")
+            if raw_evidence_ids is None:
+                raw_evidence_ids = item.get("evidence_source_event_id")
+            if isinstance(raw_evidence_ids, str):
+                evidence_ids = {_clean_optional_text(raw_evidence_ids)}
+            elif isinstance(raw_evidence_ids, (list, tuple, set)):
+                evidence_ids = {_clean_optional_text(value) for value in raw_evidence_ids}
+            else:
+                # Backward-compatible form: a candidate event may use the same
+                # source_event_id as the observation it directly derives from.
+                evidence_ids = {item_source_event_id}
+            evidence_ids = {value for value in evidence_ids if value}
+            has_observation_evidence = bool(evidence_ids & observation_source_event_ids)
             demote_unbacked = (
                 counts_for_recurrence
                 and action in {"create", "strengthen", "contradict"}
-                and item_source_event_id not in observation_source_event_ids
+                and not has_observation_evidence
             )
             if demote_unbacked:
                 counts_for_recurrence = False
