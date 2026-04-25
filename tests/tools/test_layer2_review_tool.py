@@ -43,6 +43,60 @@ def test_layer2_review_lists_candidates_with_counts_and_filters(tmp_path):
     assert "Repository uses uv" in result["markdown"]
 
 
+def test_layer2_review_can_list_stale_candidates_by_status(tmp_path):
+    store = Layer2Store(tmp_path / "layer2.sqlite3")
+    store.record_event(
+        event_type="create",
+        canonical_text="Stale candidate",
+        kind="fact",
+        proposed_target="memory",
+        status="stale",
+        source_ref="test:stale",
+        source_event_id="evt-stale",
+    )
+    store.record_event(
+        event_type="create",
+        canonical_text="Active candidate",
+        kind="fact",
+        proposed_target="memory",
+        source_ref="test:active",
+        source_event_id="evt-active",
+    )
+
+    result = json.loads(layer2_review_tool(action="list_candidates", status="stale", store=store))
+
+    assert result["success"] is True
+    assert [item["canonical_text"] for item in result["candidates"]] == ["Stale candidate"]
+
+
+def test_layer2_review_inspects_candidate_event_history(tmp_path):
+    store = Layer2Store(tmp_path / "layer2.sqlite3")
+    store.record_event(
+        event_type="create",
+        canonical_text="Inspectable candidate",
+        kind="fact",
+        proposed_target="memory",
+        source_ref="test:inspect",
+        source_event_id="evt-1",
+    )
+    store.record_event(
+        event_type="strengthen",
+        canonical_text="Inspectable candidate",
+        source_ref="test:inspect",
+        source_event_id="evt-2",
+        event_ts="2026-04-26T00:00:00+00:00",
+    )
+
+    result = json.loads(
+        layer2_review_tool(action="inspect_candidate", canonical_text="Inspectable candidate", store=store)
+    )
+
+    assert result["success"] is True
+    assert result["candidate"]["canonical_text"] == "Inspectable candidate"
+    assert result["event_count"] == 2
+    assert [event["source_event_id"] for event in result["events"]] == ["evt-1", "evt-2"]
+
+
 def test_layer2_review_prunes_candidate_without_deleting_history(tmp_path):
     store = Layer2Store(tmp_path / "layer2.sqlite3")
     store.record_event(

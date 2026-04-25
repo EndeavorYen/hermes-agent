@@ -8,6 +8,12 @@ def test_layer2_store_is_available_from_shared_memory_package(tmp_path):
     audit = apply_layer2_payload(
         {"id": "shared-layer2-job", "memory_pipeline": {"enabled": True}},
         {
+            "observations": [
+                {
+                    "observation_text": "Shared Layer-2 store import works was directly observed.",
+                    "source_event_id": "evt-shared-1",
+                }
+            ],
             "candidate_events": [
                 {
                     "action": "create",
@@ -16,7 +22,7 @@ def test_layer2_store_is_available_from_shared_memory_package(tmp_path):
                     "proposed_target": "memory",
                     "source_event_id": "evt-shared-1",
                 }
-            ]
+            ],
         },
         source_ref="test:shared-layer2",
         store=store,

@@ -20,9 +20,10 @@ LAYER2_REVIEW_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["list_candidates", "prune_candidate", "promote_candidate"],
+                "enum": ["list_candidates", "inspect_candidate", "prune_candidate", "promote_candidate"],
             },
             "canonical_text": {"type": "string"},
+            "status": {"type": "string", "enum": ["active", "stale", "quarantined", "quarantine", "pruned", "promoted", "all"]},
             "target": {"type": "string", "enum": ["memory", "user"]},
             "content": {"type": "string"},
             "query_text": {"type": "string"},
@@ -68,6 +69,7 @@ def layer2_review_tool(
     subject_id: Optional[str] = None,
     max_items: int = 20,
     min_support_count: int = 0,
+    status: Optional[str] = "active",
     notes: Optional[str] = None,
     source_ref: Optional[str] = None,
     store: Optional[Layer2Store] = None,
@@ -76,8 +78,9 @@ def layer2_review_tool(
     resolved_source_ref = (source_ref or "operator:layer2_review").strip() or "operator:layer2_review"
 
     if action == "list_candidates":
-        candidates = ledger.query_candidates_for_pack(
-            destinations=["prior", "user", "skill", "none"],
+        normalized_status = "quarantine" if (status or "").strip().lower() == "quarantined" else (status or "active")
+        candidates = ledger.list_candidates_by_status(
+            status=normalized_status,
             max_items=max_items,
             min_support_count=min_support_count,
             query_text=query_text,
@@ -97,6 +100,21 @@ def layer2_review_tool(
     canonical = (canonical_text or "").strip()
     if not canonical:
         return json.dumps({"success": False, "error": "canonical_text is required."}, ensure_ascii=False)
+
+    if action == "inspect_candidate":
+        candidate = ledger.get_candidate(canonical)
+        if not candidate:
+            return json.dumps({"success": False, "error": "candidate not found."}, ensure_ascii=False)
+        events = ledger.list_events(canonical)
+        return json.dumps(
+            {
+                "success": True,
+                "candidate": candidate,
+                "events": events,
+                "event_count": len(events),
+            },
+            ensure_ascii=False,
+        )
 
     if action == "prune_candidate":
         applied = ledger.record_event(
@@ -167,6 +185,7 @@ registry.register(
         subject_id=args.get("subject_id"),
         max_items=args.get("max_items", 20),
         min_support_count=args.get("min_support_count", 0),
+        status=args.get("status", "active"),
         notes=args.get("notes"),
         source_ref=args.get("source_ref"),
         store=kw.get("store"),

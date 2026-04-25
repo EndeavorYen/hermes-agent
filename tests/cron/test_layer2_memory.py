@@ -556,6 +556,62 @@ class TestLayer2PayloadHelpers:
         assert event["session_id"] == "run-456"
         assert json.loads(event["routing_reason_codes"]) == ["cron_summary", "explicit_candidate"]
 
+    def test_recurrence_counting_candidate_requires_matching_observation_evidence(self, tmp_path):
+        store = Layer2Store(tmp_path / "layer2.sqlite3")
+        job = {"id": "job-evidence", "memory_pipeline": {"enabled": True}}
+        payload = {
+            "observations": [
+                {
+                    "observation_text": "Directly checked source showed the claim.",
+                    "source_event_id": "obs-direct-1",
+                }
+            ],
+            "candidate_events": [
+                {
+                    "action": "create",
+                    "canonical_text": "Direct evidence can strengthen recurrence",
+                    "kind": "heuristic",
+                    "proposed_target": "memory",
+                    "source_event_id": "obs-direct-1",
+                    "counts_for_recurrence": True,
+                }
+            ],
+        }
+
+        audit = apply_layer2_payload(job, payload, source_ref="cron:job-evidence:run-1", store=store)
+
+        candidate = store.get_candidate("Direct evidence can strengthen recurrence")
+        event = store.list_events("Direct evidence can strengthen recurrence")[0]
+        assert any(item["audit_label"] == "observation_stored" for item in audit)
+        assert any(item["audit_label"] == "candidate_created" for item in audit)
+        assert candidate["support_count"] == 1
+        assert event["counts_for_recurrence"] == 1
+
+    def test_unbacked_recurrence_candidate_is_stored_but_demoted(self, tmp_path):
+        store = Layer2Store(tmp_path / "layer2.sqlite3")
+        job = {"id": "job-unbacked", "memory_pipeline": {"enabled": True}}
+        payload = {
+            "candidate_events": [
+                {
+                    "action": "create",
+                    "canonical_text": "Pretty summaries should not count as recurrence",
+                    "kind": "heuristic",
+                    "proposed_target": "memory",
+                    "source_event_id": "summary-only-1",
+                    "counts_for_recurrence": True,
+                }
+            ]
+        }
+
+        audit = apply_layer2_payload(job, payload, source_ref="cron:job-unbacked:run-1", store=store)
+
+        candidate = store.get_candidate("Pretty summaries should not count as recurrence")
+        event = store.list_events("Pretty summaries should not count as recurrence")[0]
+        assert audit[0]["audit_label"] == "unbacked_candidate_demoted"
+        assert candidate["support_count"] == 0
+        assert event["counts_for_recurrence"] == 0
+        assert event["support_delta"] == 0
+
     def test_apply_layer2_payload_persists_observations_and_episodes(self, tmp_path):
         store = Layer2Store(tmp_path / "layer2.sqlite3")
         job = {
@@ -689,6 +745,12 @@ class TestLayer2PayloadHelpers:
         audit = apply_layer2_payload(
             {"id": "job-skill", "memory_pipeline": {"enabled": True}},
             {
+                "observations": [
+                    {
+                        "observation_text": "Diff review procedure was grounded in a directly checked repo workflow.",
+                        "source_event_id": "skill-evidence-1",
+                    }
+                ],
                 "candidate_events": [
                     {
                         "action": "create",
@@ -696,6 +758,7 @@ class TestLayer2PayloadHelpers:
                         "kind": "procedure",
                         "proposed_target": "skill",
                         "routing_destination": "skill",
+                        "source_event_id": "skill-evidence-1",
                         "routing_reason_codes": ["reusable_procedure", "manual_install_required"],
                     }
                 ],
@@ -765,7 +828,7 @@ class TestRunJobLayer2Integration:
         }
         response = """Human summary.
 ```hermes-layer2
-{"candidate_events":[{"action":"create","canonical_text":"User prefers concise answers","kind":"preference","proposed_target":"user","counts_for_recurrence":true}]}
+{"observations":[{"observation_text":"User directly requested concise answers in this run.","source_event_id":"obs-1"}],"candidate_events":[{"action":"create","canonical_text":"User prefers concise answers","kind":"preference","proposed_target":"user","source_event_id":"obs-1","counts_for_recurrence":true}]}
 ```"""
 
         (success, output, final_response, error), fake_db = self._run_job(
