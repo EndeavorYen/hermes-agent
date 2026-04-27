@@ -47,6 +47,16 @@ class MemoryProvider(ABC):
     def name(self) -> str:
         """Short identifier for this provider (e.g. 'builtin', 'honcho', 'hindsight')."""
 
+    @property
+    def is_external(self) -> bool:
+        """Whether this provider counts against the one-external-provider limit.
+
+        Most plugin providers are external/additive backends, so the default is
+        ``True``. Built-in/local providers should override this metadata instead
+        of relying on MemoryManager name checks.
+        """
+        return True
+
     # -- Core lifecycle (implement these) ------------------------------------
 
     @abstractmethod

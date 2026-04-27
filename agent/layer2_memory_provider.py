@@ -31,6 +31,10 @@ class Layer2MemoryProvider(MemoryProvider):
     def name(self) -> str:
         return "layer2"
 
+    @property
+    def is_external(self) -> bool:
+        return False
+
     def is_available(self) -> bool:
         return True
 

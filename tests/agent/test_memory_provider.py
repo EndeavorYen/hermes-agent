@@ -15,10 +15,11 @@ from agent.memory_manager import MemoryManager
 class FakeMemoryProvider(MemoryProvider):
     """Minimal concrete provider for testing."""
 
-    def __init__(self, name="fake", available=True, tools=None):
+    def __init__(self, name="fake", available=True, tools=None, is_external=True):
         self._name = name
         self._available = available
         self._tools = tools or []
+        self._is_external = is_external
         self.initialized = False
         self.synced_turns = []
         self.prefetch_queries = []
@@ -34,6 +35,10 @@ class FakeMemoryProvider(MemoryProvider):
     @property
     def name(self) -> str:
         return self._name
+
+    @property
+    def is_external(self) -> bool:
+        return self._is_external
 
     def is_available(self) -> bool:
         return self._available
@@ -137,16 +142,16 @@ class TestMemoryManager:
 
     def test_builtin_plus_external(self):
         mgr = MemoryManager()
-        p1 = FakeMemoryProvider("builtin")
+        p1 = FakeMemoryProvider("builtin", is_external=False)
         p2 = FakeMemoryProvider("external")
         mgr.add_provider(p1)
         mgr.add_provider(p2)
         assert [p.name for p in mgr.providers] == ["builtin", "external"]
 
     def test_second_external_rejected(self):
-        """Only one non-builtin provider is allowed."""
+        """Only one external provider is allowed."""
         mgr = MemoryManager()
-        builtin = FakeMemoryProvider("builtin")
+        builtin = FakeMemoryProvider("builtin", is_external=False)
         ext1 = FakeMemoryProvider("mem0")
         ext2 = FakeMemoryProvider("hindsight")
         mgr.add_provider(builtin)
@@ -155,9 +160,26 @@ class TestMemoryManager:
         assert [p.name for p in mgr.providers] == ["builtin", "mem0"]
         assert len(mgr.providers) == 2
 
+    def test_non_external_provider_metadata_does_not_count_against_external_limit(self):
+        """Non-external classification comes from provider metadata, not hardcoded names."""
+        mgr = MemoryManager()
+        local_provider = FakeMemoryProvider("local-ledger", is_external=False)
+        external_provider = FakeMemoryProvider("remote-memory")
+
+        mgr.add_provider(local_provider)
+        mgr.add_provider(external_provider)
+
+        assert [p.name for p in mgr.providers] == ["local-ledger", "remote-memory"]
+
+    def test_layer2_provider_declares_non_external_metadata(self):
+        """Layer-2 is local/internal via metadata rather than MemoryManager name checks."""
+        from agent.layer2_memory_provider import Layer2MemoryProvider
+
+        assert Layer2MemoryProvider().is_external is False
+
     def test_system_prompt_merges_blocks(self):
         mgr = MemoryManager()
-        p1 = FakeMemoryProvider("builtin")
+        p1 = FakeMemoryProvider("builtin", is_external=False)
         p1._prompt_block = "Block from builtin"
         p2 = FakeMemoryProvider("external")
         p2._prompt_block = "Block from external"
@@ -170,7 +192,7 @@ class TestMemoryManager:
 
     def test_system_prompt_skips_empty(self):
         mgr = MemoryManager()
-        p1 = FakeMemoryProvider("builtin")
+        p1 = FakeMemoryProvider("builtin", is_external=False)
         p1._prompt_block = "Has content"
         p2 = FakeMemoryProvider("external")
         p2._prompt_block = ""
@@ -182,7 +204,7 @@ class TestMemoryManager:
 
     def test_prefetch_merges_results(self):
         mgr = MemoryManager()
-        p1 = FakeMemoryProvider("builtin")
+        p1 = FakeMemoryProvider("builtin", is_external=False)
         p1._prefetch_result = "Memory from builtin"
         p2 = FakeMemoryProvider("external")
         p2._prefetch_result = "Memory from external"
@@ -197,7 +219,7 @@ class TestMemoryManager:
 
     def test_prefetch_skips_empty(self):
         mgr = MemoryManager()
-        p1 = FakeMemoryProvider("builtin")
+        p1 = FakeMemoryProvider("builtin", is_external=False)
         p1._prefetch_result = "Has memories"
         p2 = FakeMemoryProvider("external")
         p2._prefetch_result = ""
@@ -209,7 +231,7 @@ class TestMemoryManager:
 
     def test_queue_prefetch_all(self):
         mgr = MemoryManager()
-        p1 = FakeMemoryProvider("builtin")
+        p1 = FakeMemoryProvider("builtin", is_external=False)
         p2 = FakeMemoryProvider("external")
         mgr.add_provider(p1)
         mgr.add_provider(p2)
@@ -220,7 +242,7 @@ class TestMemoryManager:
 
     def test_sync_all(self):
         mgr = MemoryManager()
-        p1 = FakeMemoryProvider("builtin")
+        p1 = FakeMemoryProvider("builtin", is_external=False)
         p2 = FakeMemoryProvider("external")
         mgr.add_provider(p1)
         mgr.add_provider(p2)
@@ -232,7 +254,7 @@ class TestMemoryManager:
     def test_sync_failure_doesnt_block_others(self):
         """If one provider's sync fails, others still run."""
         mgr = MemoryManager()
-        p1 = FakeMemoryProvider("builtin")
+        p1 = FakeMemoryProvider("builtin", is_external=False)
         p1.sync_turn = MagicMock(side_effect=RuntimeError("boom"))
         p2 = FakeMemoryProvider("external")
         mgr.add_provider(p1)
@@ -246,7 +268,7 @@ class TestMemoryManager:
 
     def test_tool_schemas_collected(self):
         mgr = MemoryManager()
-        p1 = FakeMemoryProvider("builtin", tools=[
+        p1 = FakeMemoryProvider("builtin", is_external=False, tools=[
             {"name": "recall_builtin", "description": "Builtin recall", "parameters": {}}
         ])
         p2 = FakeMemoryProvider("external", tools=[
@@ -261,7 +283,7 @@ class TestMemoryManager:
 
     def test_tool_name_conflict_first_wins(self):
         mgr = MemoryManager()
-        p1 = FakeMemoryProvider("builtin", tools=[
+        p1 = FakeMemoryProvider("builtin", is_external=False, tools=[
             {"name": "shared_tool", "description": "From builtin", "parameters": {}}
         ])
         p2 = FakeMemoryProvider("external", tools=[
@@ -282,7 +304,7 @@ class TestMemoryManager:
 
     def test_tool_routing(self):
         mgr = MemoryManager()
-        p1 = FakeMemoryProvider("builtin", tools=[
+        p1 = FakeMemoryProvider("builtin", is_external=False, tools=[
             {"name": "builtin_tool", "description": "Builtin", "parameters": {}}
         ])
         p2 = FakeMemoryProvider("external", tools=[
@@ -322,7 +344,7 @@ class TestMemoryManager:
     def test_shutdown_all_reverse_order(self):
         mgr = MemoryManager()
         order = []
-        p1 = FakeMemoryProvider("builtin")
+        p1 = FakeMemoryProvider("builtin", is_external=False)
         p1.shutdown = lambda: order.append("builtin")
         p2 = FakeMemoryProvider("external")
         p2.shutdown = lambda: order.append("external")
@@ -334,7 +356,7 @@ class TestMemoryManager:
 
     def test_initialize_all(self):
         mgr = MemoryManager()
-        p1 = FakeMemoryProvider("builtin")
+        p1 = FakeMemoryProvider("builtin", is_external=False)
         p2 = FakeMemoryProvider("external")
         mgr.add_provider(p1)
         mgr.add_provider(p2)
@@ -349,7 +371,7 @@ class TestMemoryManager:
 
     def test_prefetch_failure_doesnt_block(self):
         mgr = MemoryManager()
-        p1 = FakeMemoryProvider("builtin")
+        p1 = FakeMemoryProvider("builtin", is_external=False)
         p1.prefetch = MagicMock(side_effect=RuntimeError("network error"))
         p2 = FakeMemoryProvider("external")
         p2._prefetch_result = "external memory"
@@ -361,7 +383,7 @@ class TestMemoryManager:
 
     def test_system_prompt_failure_doesnt_block(self):
         mgr = MemoryManager()
-        p1 = FakeMemoryProvider("builtin")
+        p1 = FakeMemoryProvider("builtin", is_external=False)
         p1.system_prompt_block = MagicMock(side_effect=RuntimeError("broken"))
         p2 = FakeMemoryProvider("external")
         p2._prompt_block = "works fine"
@@ -571,7 +593,7 @@ class TestSequentialDispatchRouting:
     def test_multiple_providers_route_to_correct_one(self):
         """Tools from different providers route to the right handler."""
         mgr = MemoryManager()
-        builtin = FakeMemoryProvider("builtin", tools=[
+        builtin = FakeMemoryProvider("builtin", is_external=False, tools=[
             {"name": "builtin_tool", "description": "Builtin", "parameters": {}},
         ])
         external = FakeMemoryProvider("hindsight", tools=[
@@ -589,7 +611,7 @@ class TestSequentialDispatchRouting:
     def test_tool_names_include_all_providers(self):
         """get_all_tool_names returns tools from all registered providers."""
         mgr = MemoryManager()
-        builtin = FakeMemoryProvider("builtin", tools=[
+        builtin = FakeMemoryProvider("builtin", is_external=False, tools=[
             {"name": "builtin_tool", "description": "B", "parameters": {}},
         ])
         external = FakeMemoryProvider("ext", tools=[
@@ -807,8 +829,8 @@ class TestMemoryContextFencing:
 class _CommitRecorder(FakeMemoryProvider):
     """Provider that records on_session_end calls for assertions."""
 
-    def __init__(self, name="recorder"):
-        super().__init__(name)
+    def __init__(self, name="recorder", is_external=True):
+        super().__init__(name, is_external=is_external)
         self.end_calls = []
 
     def on_session_end(self, messages):
@@ -818,7 +840,7 @@ class _CommitRecorder(FakeMemoryProvider):
 class TestCommitMemorySessionRouting:
     def test_on_session_end_fans_out(self):
         mgr = MemoryManager()
-        builtin = _CommitRecorder("builtin")
+        builtin = _CommitRecorder("builtin", is_external=False)
         external = _CommitRecorder("openviking")
         mgr.add_provider(builtin)
         mgr.add_provider(external)
@@ -831,7 +853,7 @@ class TestCommitMemorySessionRouting:
 
     def test_on_session_end_tolerates_failure(self):
         mgr = MemoryManager()
-        builtin = FakeMemoryProvider("builtin")
+        builtin = FakeMemoryProvider("builtin", is_external=False)
         bad = _CommitRecorder("bad-provider")
         bad.on_session_end = lambda m: (_ for _ in ()).throw(RuntimeError("boom"))
         mgr.add_provider(builtin)
@@ -930,7 +952,7 @@ class TestOnMemoryWriteBridge:
     def test_on_memory_write_tolerates_provider_failure(self):
         """If a provider's on_memory_write raises, others still get notified."""
         mgr = MemoryManager()
-        bad = FakeMemoryProvider("builtin")
+        bad = FakeMemoryProvider("builtin", is_external=False)
         bad.on_memory_write = MagicMock(side_effect=RuntimeError("boom"))
         good = FakeMemoryProvider("good")
         mgr.add_provider(bad)
