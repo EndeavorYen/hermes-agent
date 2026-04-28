@@ -7805,6 +7805,21 @@ class GatewayRunner:
 
             for media_path, is_voice in media_files:
                 try:
+                    if not Path(media_path).is_file():
+                        logger.warning(
+                            "[%s] Skipping missing post-stream media attachment: %s",
+                            adapter.name,
+                            media_path,
+                        )
+                        await adapter.send(
+                            chat_id=event.source.chat_id,
+                            content=(
+                                "⚠️ Media attachment unavailable: "
+                                f"`{Path(media_path).name or media_path}`"
+                            ),
+                            metadata=_thread_meta,
+                        )
+                        continue
                     ext = Path(media_path).suffix.lower()
                     if ext in _AUDIO_EXTS:
                         await adapter.send_voice(
