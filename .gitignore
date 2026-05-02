@@ -52,6 +52,12 @@ ignored/
 .worktrees/
 environments/benchmarks/evals/
 
+# Local agent/runtime scratch
+/.omc/
+/.plans/
+/.tmp_claude_prompt.txt
+/.hermes/plans/
+
 # Web UI build output
 hermes_cli/web_dist/
 

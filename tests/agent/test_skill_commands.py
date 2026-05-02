@@ -12,7 +12,6 @@ from agent.skill_commands import (
     build_preloaded_skills_prompt,
     build_skill_invocation_message,
     default_skill_runtime_note,
-    maybe_build_runtime_learning_skill_message,
     resolve_bare_skill_invocation,
     resolve_skill_command_key,
     scan_skill_commands,
@@ -325,60 +324,7 @@ Generate some audio.
         assert msg is None
 
 
-class TestAutoLearningSkillTrigger:
-    def test_matches_chinese_learning_phrase(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            _make_skill(tmp_path, "natural-learning-capture-routing")
-            scan_skill_commands()
-            msg = maybe_build_runtime_learning_skill_message("這個 insight 學起來", task_id="task-1")
-
-        assert msg is not None
-        assert "natural-learning-capture-routing" in msg
-        assert "auto-triggered" in msg
-
-    def test_matches_english_learning_phrase(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            _make_skill(tmp_path, "natural-learning-capture-routing")
-            scan_skill_commands()
-            msg = maybe_build_runtime_learning_skill_message("Remember this lesson please")
-
-        assert msg is not None
-        assert "natural-learning-capture-routing" in msg
-
-    def test_returns_none_for_non_trigger(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            _make_skill(tmp_path, "natural-learning-capture-routing")
-            scan_skill_commands()
-            msg = maybe_build_runtime_learning_skill_message("幫我總結一下這段內容")
-
-        assert msg is None
-
-    def test_returns_none_when_skill_cannot_be_loaded(self):
-        with patch(
-            "agent.skill_commands.build_skill_invocation_message",
-            return_value=None,
-        ):
-            msg = maybe_build_runtime_learning_skill_message("這個記起來")
-
-        assert msg is None
-
-    def test_returns_none_for_failed_load_sentinel(self):
-        with patch(
-            "agent.skill_commands.build_skill_invocation_message",
-            return_value="[Failed to load skill: natural-learning-capture-routing]",
-        ):
-            msg = maybe_build_runtime_learning_skill_message("這個記起來")
-
-        assert msg is None
-
-    def test_skips_slash_commands(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            _make_skill(tmp_path, "natural-learning-capture-routing")
-            scan_skill_commands()
-            msg = maybe_build_runtime_learning_skill_message("/natural-learning-capture-routing")
-
-        assert msg is None
-
+class TestSkillMessageHelpers:
     def test_builds_multi_skill_message(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(tmp_path, "continuation-loop-controller-slices")

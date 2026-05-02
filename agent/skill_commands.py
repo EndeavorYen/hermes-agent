@@ -7,7 +7,6 @@ can invoke skills via /skill-name commands.
 import json
 import logging
 import re
-import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -27,20 +26,6 @@ _PLAN_SLUG_RE = re.compile(r"[^a-z0-9]+")
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
-_LEARNING_TRIGGER_PHRASES = (
-    "學起來",
-    "学起来",
-    "記起來",
-    "记起来",
-    "remember this",
-    "keep that lesson",
-)
-_AUTO_LEARNING_SKILL = "/natural-learning-capture-routing"
-_AUTO_LEARNING_RUNTIME_NOTE = (
-    "This skill was auto-triggered from explicit learning-intent phrasing in the user's message. "
-    "Distill from the immediate context only. Ask at most one short disambiguating question if the "
-    "lesson is fuzzy. Do not burden the user with internal memory-layer jargon."
-)
 
 def build_plan_path(
     user_instruction: str = "",
@@ -474,37 +459,6 @@ def default_skill_runtime_note(
             note += f" Current session id: {current_session_id}. Prefer this session over guessing the most recent CLI session."
         return note
     return ""
-
-
-def _normalize_learning_trigger_text(text: str) -> str:
-    return unicodedata.normalize("NFKC", text or "").casefold()
-
-
-def maybe_build_runtime_learning_skill_message(
-    user_message: str,
-    *,
-    task_id: str | None = None,
-) -> Optional[str]:
-    """Return an auto-triggered learning-skill payload for explicit learning-intent messages."""
-    raw = (user_message or "").strip()
-    if not raw or raw.startswith("/"):
-        return None
-
-    normalized = _normalize_learning_trigger_text(raw)
-    if not any(phrase in normalized for phrase in _LEARNING_TRIGGER_PHRASES):
-        return None
-
-    msg = build_skill_invocation_message(
-        _AUTO_LEARNING_SKILL,
-        task_id=task_id,
-        runtime_note=_AUTO_LEARNING_RUNTIME_NOTE,
-    )
-    if not isinstance(msg, str):
-        return None
-    stripped_msg = msg.strip()
-    if not stripped_msg or stripped_msg.startswith("[Failed to load skill:"):
-        return None
-    return stripped_msg
 
 
 def build_skill_invocation_message(

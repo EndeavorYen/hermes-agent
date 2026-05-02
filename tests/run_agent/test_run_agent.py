@@ -2330,45 +2330,6 @@ class TestRunConversation:
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
 
-    def test_learning_skill_auto_trigger_injects_ephemeral_user_context(self, agent):
-        self._setup_agent(agent)
-        resp = _mock_response(content="Captured", finish_reason="stop")
-        agent.client.chat.completions.create.return_value = resp
-        with (
-            patch("run_agent.maybe_build_runtime_learning_skill_message", return_value="AUTO_SKILL_BLOCK") as mock_auto,
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-        ):
-            result = agent.run_conversation("這個教訓學起來")
-
-        assert result["final_response"] == "Captured"
-        mock_auto.assert_called_once()
-        api_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
-        user_messages = [m for m in api_messages if m.get("role") == "user"]
-        assert user_messages[-1]["content"].startswith("這個教訓學起來")
-        assert "AUTO_SKILL_BLOCK" in user_messages[-1]["content"]
-        persisted_users = [m for m in result["messages"] if m.get("role") == "user"]
-        assert persisted_users[-1]["content"] == "這個教訓學起來"
-
-    def test_learning_skill_auto_trigger_skips_non_matching_messages(self, agent):
-        self._setup_agent(agent)
-        resp = _mock_response(content="No trigger", finish_reason="stop")
-        agent.client.chat.completions.create.return_value = resp
-        with (
-            patch("run_agent.maybe_build_runtime_learning_skill_message", return_value=None) as mock_auto,
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-        ):
-            result = agent.run_conversation("幫我總結一下")
-
-        assert result["final_response"] == "No trigger"
-        mock_auto.assert_called_once()
-        api_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
-        user_messages = [m for m in api_messages if m.get("role") == "user"]
-        assert user_messages[-1]["content"] == "幫我總結一下"
-
     def test_tool_calls_then_stop(self, agent):
         self._setup_agent(agent)
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")

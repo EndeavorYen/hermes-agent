@@ -127,7 +127,6 @@ from tools.browser_tool import cleanup_browser
 
 # Agent internals extracted to agent/ package for modularity
 from agent.memory_manager import StreamingContextScrubber, build_memory_context_block, sanitize_context
-from agent.skill_commands import maybe_build_runtime_learning_skill_message
 from agent.retry_utils import jittered_backoff
 from agent.error_classifier import classify_api_error, FailoverReason
 from agent.prompt_builder import (
@@ -10506,16 +10505,6 @@ class AIAgent:
         except Exception as exc:
             logger.warning("pre_llm_call hook failed: %s", exc)
 
-        _auto_learning_skill_message = None
-        try:
-            if isinstance(original_user_message, str):
-                _auto_learning_skill_message = maybe_build_runtime_learning_skill_message(
-                    original_user_message,
-                    task_id=effective_task_id,
-                )
-        except Exception as exc:
-            logger.debug("auto learning skill trigger failed: %s", exc)
-
         # Main conversation loop
         api_call_count = 0
         final_response = None
@@ -10708,8 +10697,6 @@ class AIAgent:
                 # never mutated, so nothing leaks into session persistence.
                 if idx == current_turn_user_idx and msg.get("role") == "user":
                     _injections = []
-                    if _auto_learning_skill_message:
-                        _injections.append(_auto_learning_skill_message)
                     if _ext_prefetch_cache:
                         _fenced = build_memory_context_block(_ext_prefetch_cache)
                         if _fenced:
