@@ -279,6 +279,17 @@ class TestResolveDeliveryTarget:
             "thread_id": None,
         }
 
+    def test_explicit_slack_thread_target_with_thread_ts(self):
+        """deliver: 'slack:conversation_id:thread_ts' parses correctly."""
+        job = {
+            "deliver": "slack:D0AS3EE04CT:1777740958.516299",
+        }
+        assert _resolve_delivery_target(job) == {
+            "platform": "slack",
+            "chat_id": "D0AS3EE04CT",
+            "thread_id": "1777740958.516299",
+        }
+
     def test_list_form_deliver_is_normalized(self, monkeypatch):
         """deliver=['telegram'] (Python list) should resolve like 'telegram' string.
 
@@ -1641,6 +1652,14 @@ class TestRunJobSkillBacked:
 
 class TestSilentDelivery:
     """Verify that [SILENT] responses suppress delivery while still saving output."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_tick_lock(self, tmp_path):
+        lock_dir = tmp_path / "cron"
+        lock_dir.mkdir()
+        with patch("cron.scheduler._LOCK_DIR", lock_dir), \
+             patch("cron.scheduler._LOCK_FILE", lock_dir / ".tick.lock"):
+            yield
 
     def _make_job(self):
         return {

@@ -397,6 +397,33 @@ class TestSendToPlatformChunking:
             "*hello* from <https://example.com|Hermes>",
         )
 
+    def test_slack_thread_id_is_passed_to_send(self, monkeypatch):
+        _ensure_slack_mock(monkeypatch)
+
+        import gateway.platforms.slack as slack_mod
+
+        monkeypatch.setattr(slack_mod, "SLACK_AVAILABLE", True)
+        send = AsyncMock(return_value={"success": True, "message_id": "1"})
+
+        with patch("tools.send_message_tool._send_slack", send):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.SLACK,
+                    SimpleNamespace(enabled=True, token="***", extra={}),
+                    "D0AS3EE04CT",
+                    "thread hello",
+                    thread_id="1777740958.516299",
+                )
+            )
+
+        assert result["success"] is True
+        send.assert_awaited_once_with(
+            "***",
+            "D0AS3EE04CT",
+            "thread hello",
+            thread_id="1777740958.516299",
+        )
+
     def test_slack_bold_italic_formatted_before_send(self, monkeypatch):
         """Bold+italic ***text*** survives tool-layer formatting."""
         _ensure_slack_mock(monkeypatch)
@@ -870,6 +897,12 @@ class TestParseTargetRefSlack:
 
     def test_dm_id_is_explicit(self):
         assert _parse_target_ref("slack", "D123ABCDEF")[2] is True
+
+    def test_channel_id_with_thread_ts_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("slack", "D0AS3EE04CT:1777740958.516299")
+        assert chat_id == "D0AS3EE04CT"
+        assert thread_id == "1777740958.516299"
+        assert is_explicit is True
 
     def test_user_id_is_not_explicit(self):
         """Slack user IDs (U...) and workspace IDs (W...) are NOT explicit send
