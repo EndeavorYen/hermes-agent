@@ -11,7 +11,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from hermes_constants import display_hermes_home
 
@@ -149,6 +149,27 @@ def _normalize_optional_job_value(value: Optional[Any], *, strip_trailing_slash:
     return text or None
 
 
+def _normalize_deliver_param(value: Any) -> Optional[str]:
+    """Normalize a user-supplied ``deliver`` value to the canonical string form.
+
+    The cron schema documents ``deliver`` as a string (``"local"``, ``"origin"``,
+    ``"telegram"``, ``"telegram:chat_id[:thread_id]"``, or comma-separated combos).
+    Some callers — MCP clients passing arrays, scripts building the payload as a
+    list — supply ``["telegram"]``.  ``create_job``/``update_job`` store it as-is,
+    and the scheduler's ``str(deliver).split(",")`` then serializes the list to
+    the literal ``"['telegram']"`` which is not a known platform.  Flatten lists
+    / tuples at the API boundary so storage is always a string.  Returns ``None``
+    for ``None``/empty so callers can treat it as "not supplied".
+    """
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        parts = [str(p).strip() for p in value if str(p).strip()]
+        return ",".join(parts) if parts else None
+    text = str(value).strip()
+    return text or None
+
+
 def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
     """Validate a cron job script path at the API boundary.
 
@@ -216,8 +237,12 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["script"] = job["script"]
     if isinstance(job.get("memory_pipeline"), dict):
         result["memory_pipeline"] = job["memory_pipeline"]
+    if job.get("context_from"):
+        result["context_from"] = job["context_from"]
     if job.get("enabled_toolsets"):
         result["enabled_toolsets"] = job["enabled_toolsets"]
+    if job.get("workdir"):
+        result["workdir"] = job["workdir"]
     return result
 
 
@@ -238,7 +263,9 @@ def cronjob(
     reason: Optional[str] = None,
     script: Optional[str] = None,
     memory_pipeline: Optional[Dict[str, Any]] = None,
+    context_from: Optional[Union[str, List[str]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
+    workdir: Optional[str] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -264,12 +291,24 @@ def cronjob(
                 if script_error:
                     return tool_error(script_error, success=False)
 
+            # Validate context_from references existing jobs
+            if context_from:
+                from cron.jobs import get_job as _get_job
+                refs = [context_from] if isinstance(context_from, str) else context_from
+                for ref_id in refs:
+                    if not _get_job(ref_id):
+                        return tool_error(
+                            f"context_from job '{ref_id}' not found. "
+                            "Use cronjob(action='list') to see available jobs.",
+                            success=False,
+                        )
+
             job = create_job(
                 prompt=prompt or "",
                 schedule=schedule,
                 name=name,
                 repeat=repeat,
-                deliver=deliver,
+                deliver=_normalize_deliver_param(deliver),
                 origin=_origin_from_env(),
                 skills=canonical_skills,
                 model=_normalize_optional_job_value(model),
@@ -277,7 +316,9 @@ def cronjob(
                 base_url=_normalize_optional_job_value(base_url, strip_trailing_slash=True),
                 script=_normalize_optional_job_value(script),
                 memory_pipeline=memory_pipeline if isinstance(memory_pipeline, dict) else None,
+                context_from=context_from,
                 enabled_toolsets=enabled_toolsets or None,
+                workdir=_normalize_optional_job_value(workdir),
             )
             return json.dumps(
                 {
@@ -356,7 +397,7 @@ def cronjob(
             if name is not None:
                 updates["name"] = name
             if deliver is not None:
-                updates["deliver"] = deliver
+                updates["deliver"] = _normalize_deliver_param(deliver)
             if skills is not None or skill is not None:
                 canonical_skills = _canonical_skills(skill, skills)
                 updates["skills"] = canonical_skills
@@ -376,8 +417,30 @@ def cronjob(
                 updates["script"] = _normalize_optional_job_value(script) if script else None
             if memory_pipeline is not None:
                 updates["memory_pipeline"] = memory_pipeline if isinstance(memory_pipeline, dict) else None
+            if context_from is not None:
+                # Empty string / empty list clears the field; otherwise validate
+                # each referenced job exists before storing. Normalized to a list
+                # (or None) to match the shape stored by create_job().
+                if isinstance(context_from, str):
+                    refs = [context_from.strip()] if context_from.strip() else []
+                else:
+                    refs = [str(j).strip() for j in context_from if str(j).strip()]
+                if refs:
+                    from cron.jobs import get_job as _get_job
+                    for ref_id in refs:
+                        if not _get_job(ref_id):
+                            return tool_error(
+                                f"context_from job '{ref_id}' not found. "
+                                "Use cronjob(action='list') to see available jobs.",
+                                success=False,
+                            )
+                updates["context_from"] = refs or None
             if enabled_toolsets is not None:
                 updates["enabled_toolsets"] = enabled_toolsets or None
+            if workdir is not None:
+                # Empty string clears the field (restores old behaviour);
+                # otherwise pass raw — update_job() validates / normalizes.
+                updates["workdir"] = _normalize_optional_job_value(workdir) or None
             if repeat is not None:
                 # Normalize: treat 0 or negative as None (infinite)
                 normalized_repeat = None if repeat <= 0 else repeat
@@ -481,10 +544,27 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "object",
                 "description": "Optional Layer-2 memory-pipeline config for special audit jobs only. Example: {\"enabled\": true, \"allow_durable_promotion_targets\": [\"memory\", \"user\"]}."
             },
+            "context_from": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional job ID or list of job IDs whose most recent completed output is "
+                    "injected into the prompt as context before each run. "
+                    "Use this to chain cron jobs: job A collects data, job B processes it. "
+                    "Each entry must be a valid job ID (from cronjob action='list'). "
+                    "Note: injects the most recent completed output — does not wait for "
+                    "upstream jobs running in the same tick. "
+                    "On update, pass an empty array to clear."
+                ),
+            },
             "enabled_toolsets": {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": "Optional list of toolset names to restrict the job's agent to (e.g. [\"web\", \"terminal\", \"file\", \"delegation\"]). When set, only tools from these toolsets are loaded, significantly reducing input token overhead. When omitted, all default tools are loaded. Infer from the job's prompt — e.g. use \"web\" if it calls web_search, \"terminal\" if it runs scripts, \"file\" if it reads files, \"delegation\" if it calls delegate_task. On update, pass an empty array to clear."
+            },
+            "workdir": {
+                "type": "string",
+                "description": "Optional absolute path to run the job from. When set, AGENTS.md / CLAUDE.md / .cursorrules from that directory are injected into the system prompt, and the terminal/file/code_exec tools use it as their working directory — useful for running a job inside a specific project repo. Must be an absolute path that exists. When unset (default), preserves the original behaviour: no project context files, tools use the scheduler's cwd. On update, pass an empty string to clear. Jobs with workdir run sequentially (not parallel) to keep per-job directories isolated."
             },
         },
         "required": ["action"]
@@ -531,7 +611,9 @@ registry.register(
         reason=args.get("reason"),
         script=args.get("script"),
         memory_pipeline=args.get("memory_pipeline"),
+        context_from=args.get("context_from"),
         enabled_toolsets=args.get("enabled_toolsets"),
+        workdir=args.get("workdir"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,
