@@ -854,11 +854,14 @@ from tools.registry import registry, tool_error
 IMAGE_GENERATE_SCHEMA = {
     "name": "image_generate",
     "description": (
-        "Generate high-quality images from text prompts. The underlying "
-        "backend (FAL, OpenAI, etc.) and model are user-configured and not "
-        "selectable by the agent. Returns either a URL or an absolute file "
-        "path in the `image` field; display it with markdown "
-        "![description](url-or-path) and the gateway will deliver it."
+        "Generate or edit high-quality images from text prompts and optional "
+        "reference images. Use `reference_images` with `action: edit` for "
+        "uploaded-reference, image-to-image, identity-preservation, product, "
+        "or style-reference requests when the configured backend supports it. "
+        "The underlying backend (FAL, OpenAI, etc.) and model are "
+        "user-configured and not selectable by the agent. Returns either a "
+        "URL or an absolute file path in the `image` field; display it with "
+        "markdown ![description](url-or-path) and the gateway will deliver it."
     ),
     "parameters": {
         "type": "object",
@@ -872,6 +875,40 @@ IMAGE_GENERATE_SCHEMA = {
                 "enum": list(VALID_ASPECT_RATIOS),
                 "description": "The aspect ratio of the generated image. 'landscape' is 16:9 wide, 'portrait' is 16:9 tall, 'square' is 1:1.",
                 "default": DEFAULT_ASPECT_RATIO,
+            },
+            "reference_images": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional reference image local paths or sentinels. Use "
+                    "'current_turn_images' to use all images the user uploaded "
+                    "on the current turn, or 'current_turn_image:0' for the "
+                    "first uploaded image. If omitted while the current user "
+                    "turn has uploaded images, those images are used as "
+                    "references by default."
+                ),
+                "default": [],
+            },
+            "action": {
+                "type": "string",
+                "enum": ["auto", "generate", "edit"],
+                "description": (
+                    "Whether the image backend should generate from scratch, "
+                    "edit/reference existing images, or decide automatically. "
+                    "Use 'edit' for image-to-image, reference-image, or "
+                    "identity-preservation requests."
+                ),
+                "default": "auto",
+            },
+            "input_fidelity": {
+                "type": "string",
+                "enum": ["low", "high"],
+                "description": (
+                    "Reference image fidelity for backends that support it. "
+                    "Use 'high' when preserving identity, product details, "
+                    "logos, or exact visual features matters."
+                ),
+                "default": "high",
             },
         },
         "required": ["prompt"],
@@ -900,7 +937,28 @@ def _read_configured_image_provider():
     return None
 
 
-def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
+def _normalize_image_action(value: object) -> str:
+    action = str(value or "auto").strip().lower()
+    if action in {"auto", "generate", "edit"}:
+        return action
+    return "auto"
+
+
+def _normalize_input_fidelity(value: object) -> str:
+    fidelity = str(value or "high").strip().lower()
+    if fidelity in {"low", "high"}:
+        return fidelity
+    return "high"
+
+
+def _dispatch_to_plugin_provider(
+    prompt: str,
+    aspect_ratio: str,
+    *,
+    reference_images: list[str] | None = None,
+    action: str = "auto",
+    input_fidelity: str = "high",
+):
     """Route the call to a plugin-registered provider when one is selected.
 
     Returns a JSON string on dispatch, or ``None`` to fall through to the
@@ -950,7 +1008,13 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
         })
 
     try:
-        result = provider.generate(prompt=prompt, aspect_ratio=aspect_ratio)
+        result = provider.generate(
+            prompt=prompt,
+            aspect_ratio=aspect_ratio,
+            reference_images=reference_images or [],
+            action=action,
+            input_fidelity=input_fidelity,
+        )
     except Exception as exc:
         logger.warning(
             "Image gen provider '%s' raised: %s",
@@ -977,12 +1041,37 @@ def _handle_image_generate(args, **kw):
     if not prompt:
         return tool_error("prompt is required for image generation")
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
+    action = _normalize_image_action(args.get("action"))
+    input_fidelity = _normalize_input_fidelity(args.get("input_fidelity"))
+
+    try:
+        from agent.image_routing import resolve_image_reference_paths
+
+        reference_images = resolve_image_reference_paths(
+            args.get("reference_images"),
+            default_to_current=(action != "generate"),
+        )
+    except Exception as exc:
+        logger.debug("Could not resolve image references: %s", exc)
+        reference_images = []
 
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path).
-    dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio)
+    dispatched = _dispatch_to_plugin_provider(
+        prompt,
+        aspect_ratio,
+        reference_images=reference_images,
+        action=action,
+        input_fidelity=input_fidelity,
+    )
     if dispatched is not None:
         return dispatched
+
+    if reference_images:
+        return tool_error(
+            "Reference images require an image_gen provider that supports "
+            "image editing, such as 'openai' or 'openai-codex'."
+        )
 
     return image_generate_tool(
         prompt=prompt,

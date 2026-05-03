@@ -6096,8 +6096,11 @@ class GatewayRunner:
         """
         history = history or []
         message_text = event.text or ""
-        # Reset per-call buffer; set only when native routing is chosen.
+        # Reset per-call buffers; native image paths are only used for model
+        # content parts, while tool image references are available to image
+        # generation/editing tools in either native or text mode.
         self._pending_native_image_paths = []
+        self._pending_tool_image_reference_paths = []
 
         _is_shared_multi_user = is_shared_multi_user_session(
             source,
@@ -6118,6 +6121,7 @@ class GatewayRunner:
                     audio_paths.append(path)
 
             if image_paths:
+                self._pending_tool_image_reference_paths = list(image_paths)
                 # Decide routing: native (attach pixels) vs text (vision_analyze
                 # pre-run + prepend description).  See agent/image_routing.py.
                 _img_mode = self._decide_image_input_mode()
@@ -13075,7 +13079,9 @@ class GatewayRunner:
                 # content list. Consume-and-clear so subsequent turns on the same
                 # runner instance don't re-attach stale images.
                 _native_imgs = list(getattr(self, "_pending_native_image_paths", []) or [])
+                _tool_ref_imgs = list(getattr(self, "_pending_tool_image_reference_paths", []) or [])
                 self._pending_native_image_paths = []
+                self._pending_tool_image_reference_paths = []
                 if _native_imgs:
                     try:
                         from agent.image_routing import build_native_content_parts
@@ -13102,7 +13108,27 @@ class GatewayRunner:
                 else:
                     _run_message = message
 
-                result = agent.run_conversation(_run_message, conversation_history=agent_history, task_id=session_id)
+                _ref_token = None
+                _reset_refs = None
+                try:
+                    from agent.image_routing import (
+                        reset_current_image_reference_paths,
+                        set_current_image_reference_paths,
+                    )
+
+                    _ref_token = set_current_image_reference_paths(_tool_ref_imgs)
+                    _reset_refs = reset_current_image_reference_paths
+                except Exception as _ref_exc:
+                    logger.debug("Image reference context setup failed: %s", _ref_exc)
+
+                try:
+                    result = agent.run_conversation(_run_message, conversation_history=agent_history, task_id=session_id)
+                finally:
+                    if _ref_token is not None and _reset_refs is not None:
+                        try:
+                            _reset_refs(_ref_token)
+                        except Exception:
+                            pass
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 reset_current_session_key(_approval_session_token)

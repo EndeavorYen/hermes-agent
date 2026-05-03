@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import ExitStack
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.image_gen_provider import (
@@ -77,6 +79,37 @@ _SIZES = {
     "square": "1024x1024",
     "portrait": "1024x1536",
 }
+
+
+def _normalize_reference_images(value: Any) -> List[str]:
+    if value is None or value == "":
+        return []
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        return []
+    refs: List[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        path = item.strip()
+        if path:
+            refs.append(path)
+    return refs
+
+
+def _normalize_action(value: Any) -> str:
+    action = str(value or "auto").strip().lower()
+    if action in {"auto", "generate", "edit"}:
+        return action
+    return "auto"
+
+
+def _normalize_input_fidelity(value: Any) -> str:
+    fidelity = str(value or "high").strip().lower()
+    if fidelity in {"low", "high"}:
+        return fidelity
+    return "high"
 
 
 def _load_openai_config() -> Dict[str, Any]:
@@ -211,6 +244,10 @@ class OpenAIImageGenProvider(ImageGenProvider):
 
         tier_id, meta = _resolve_model()
         size = _SIZES.get(aspect, _SIZES["square"])
+        reference_images = _normalize_reference_images(kwargs.get("reference_images"))
+        action = _normalize_action(kwargs.get("action"))
+        input_fidelity = _normalize_input_fidelity(kwargs.get("input_fidelity"))
+        use_edit = bool(reference_images) and action != "generate"
 
         # gpt-image-2 returns b64_json unconditionally and REJECTS
         # ``response_format`` as an unknown parameter. Don't send it.
@@ -224,7 +261,29 @@ class OpenAIImageGenProvider(ImageGenProvider):
 
         try:
             client = openai.OpenAI()
-            response = client.images.generate(**payload)
+            if use_edit:
+                with ExitStack() as stack:
+                    files = []
+                    for ref in reference_images:
+                        ref_path = Path(ref).expanduser()
+                        if not ref_path.is_file():
+                            return error_response(
+                                error=f"Reference image not found: {ref}",
+                                error_type="invalid_argument",
+                                provider="openai",
+                                model=tier_id,
+                                prompt=prompt,
+                                aspect_ratio=aspect,
+                            )
+                        files.append(stack.enter_context(ref_path.open("rb")))
+                    edit_payload = {
+                        **payload,
+                        "image": files,
+                        "input_fidelity": input_fidelity,
+                    }
+                    response = client.images.edit(**edit_payload)
+            else:
+                response = client.images.generate(**payload)
         except Exception as exc:
             logger.debug("OpenAI image generation failed", exc_info=True)
             return error_response(
@@ -280,6 +339,9 @@ class OpenAIImageGenProvider(ImageGenProvider):
             )
 
         extra: Dict[str, Any] = {"size": size, "quality": meta["quality"]}
+        if use_edit:
+            extra["reference_image_count"] = len(reference_images)
+            extra["input_fidelity"] = input_fidelity
         if revised_prompt:
             extra["revised_prompt"] = revised_prompt
 

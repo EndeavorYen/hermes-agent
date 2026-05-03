@@ -37,6 +37,7 @@ from __future__ import annotations
 import base64
 import logging
 import mimetypes
+from contextvars import ContextVar, Token
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -44,6 +45,10 @@ logger = logging.getLogger(__name__)
 
 
 _VALID_MODES = frozenset({"auto", "native", "text"})
+_CURRENT_IMAGE_REFERENCE_PATHS: ContextVar[Tuple[str, ...]] = ContextVar(
+    "current_image_reference_paths",
+    default=(),
+)
 
 
 def _coerce_mode(raw: Any) -> str:
@@ -54,6 +59,80 @@ def _coerce_mode(raw: Any) -> str:
     if val in _VALID_MODES:
         return val
     return "auto"
+
+
+def set_current_image_reference_paths(image_paths: List[str]) -> Token[Tuple[str, ...]]:
+    """Expose current-turn user image paths to tools that can use references."""
+    clean_paths = tuple(str(p).strip() for p in (image_paths or []) if str(p).strip())
+    return _CURRENT_IMAGE_REFERENCE_PATHS.set(clean_paths)
+
+
+def reset_current_image_reference_paths(token: Token[Tuple[str, ...]]) -> None:
+    """Reset current-turn image references after a conversation turn finishes."""
+    _CURRENT_IMAGE_REFERENCE_PATHS.reset(token)
+
+
+def get_current_image_reference_paths() -> List[str]:
+    """Return current-turn image paths that tools may use as reference images."""
+    return list(_CURRENT_IMAGE_REFERENCE_PATHS.get())
+
+
+def resolve_image_reference_paths(
+    reference_images: Any,
+    *,
+    default_to_current: bool = False,
+) -> List[str]:
+    """Resolve explicit/sentinel image references to local path strings.
+
+    ``current_turn_images`` expands to all images uploaded on the active turn;
+    ``current_turn_image:N`` expands to a single zero-based item.
+    """
+    current = get_current_image_reference_paths()
+    raw_refs = reference_images
+    if raw_refs is None or raw_refs == "":
+        raw_refs = []
+    if isinstance(raw_refs, str):
+        raw_refs = [raw_refs]
+    if not isinstance(raw_refs, list):
+        raw_refs = []
+    if not raw_refs and default_to_current:
+        raw_refs = ["current_turn_images"]
+
+    resolved: List[str] = []
+    for item in raw_refs:
+        if not isinstance(item, str):
+            continue
+        value = item.strip()
+        if not value:
+            continue
+        lowered = value.lower()
+        if lowered in {
+            "current_turn_images",
+            "current_turn_image",
+            "last_uploaded_image",
+            "last_uploaded_images",
+        }:
+            resolved.extend(current)
+            continue
+        if lowered.startswith("current_turn_image:"):
+            _, _, idx_s = lowered.partition(":")
+            try:
+                idx = int(idx_s)
+            except ValueError:
+                continue
+            if 0 <= idx < len(current):
+                resolved.append(current[idx])
+            continue
+        resolved.append(value)
+
+    deduped: List[str] = []
+    seen = set()
+    for path in resolved:
+        if path in seen:
+            continue
+        seen.add(path)
+        deduped.append(path)
+    return deduped
 
 
 def _explicit_aux_vision_override(cfg: Optional[Dict[str, Any]]) -> bool:
@@ -233,4 +312,8 @@ def build_native_content_parts(
 __all__ = [
     "decide_image_input_mode",
     "build_native_content_parts",
+    "get_current_image_reference_paths",
+    "reset_current_image_reference_paths",
+    "resolve_image_reference_paths",
+    "set_current_image_reference_paths",
 ]

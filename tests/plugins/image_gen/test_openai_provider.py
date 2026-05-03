@@ -164,6 +164,34 @@ class TestGenerate:
         # gpt-image-2 rejects response_format — we must NOT send it.
         assert "response_format" not in call_kwargs
 
+    def test_reference_images_use_edit_endpoint(self, provider, tmp_path):
+        ref = tmp_path / "reference.png"
+        ref.write_bytes(bytes.fromhex(_PNG_HEX))
+
+        fake_client = MagicMock()
+        fake_client.images.edit.return_value = _fake_response(b64=_b64_png())
+
+        with _patched_openai(fake_client):
+            result = provider.generate(
+                "Create a polished social portrait from this reference.",
+                aspect_ratio="square",
+                reference_images=[str(ref)],
+                input_fidelity="high",
+            )
+
+        assert result["success"] is True
+        fake_client.images.generate.assert_not_called()
+        fake_client.images.edit.assert_called_once()
+
+        call_kwargs = fake_client.images.edit.call_args.kwargs
+        assert call_kwargs["model"] == "gpt-image-2"
+        assert call_kwargs["prompt"] == "Create a polished social portrait from this reference."
+        assert call_kwargs["size"] == "1024x1024"
+        assert call_kwargs["quality"] == "medium"
+        assert call_kwargs["input_fidelity"] == "high"
+        assert len(call_kwargs["image"]) == 1
+        assert call_kwargs["image"][0].name == str(ref)
+
     @pytest.mark.parametrize("tier,expected_quality", [
         ("gpt-image-2-low", "low"),
         ("gpt-image-2-medium", "medium"),

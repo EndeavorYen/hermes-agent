@@ -8781,7 +8781,9 @@ class HermesCLI:
         # "text"   → pre-analyze each image with vision_analyze and prepend the
         #            description as text — works with non-vision models.
         # See agent/image_routing.py for the decision table.
+        _image_reference_paths_for_tools = []
         if images:
+            _image_reference_paths_for_tools = [str(p) for p in images]
             try:
                 from agent.image_routing import (
                     build_native_content_parts,
@@ -8973,6 +8975,18 @@ class HermesCLI:
                 if _srn:
                     agent_message = _srn + "\n\n" + agent_message
                     self._pending_skills_reload_note = None
+                _ref_token = None
+                _reset_refs = None
+                try:
+                    from agent.image_routing import (
+                        reset_current_image_reference_paths,
+                        set_current_image_reference_paths,
+                    )
+
+                    _ref_token = set_current_image_reference_paths(_image_reference_paths_for_tools)
+                    _reset_refs = reset_current_image_reference_paths
+                except Exception as _ref_exc:
+                    logging.debug("image reference context setup failed: %s", _ref_exc)
                 try:
                     result = self.agent.run_conversation(
                         user_message=agent_message,
@@ -8993,6 +9007,11 @@ class HermesCLI:
                         "error": _summary,
                     }
                 finally:
+                    if _ref_token is not None and _reset_refs is not None:
+                        try:
+                            _reset_refs(_ref_token)
+                        except Exception:
+                            pass
                     # Clear thread-local callbacks so a reused thread doesn't
                     # hold stale references to a disposed CLI instance.
                     try:
