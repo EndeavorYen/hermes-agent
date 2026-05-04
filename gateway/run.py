@@ -69,6 +69,13 @@ _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT = 60 * 60
 
 
+@dataclasses.dataclass(frozen=True)
+class PreparedInboundMessage:
+    text: str
+    native_image_paths: List[str] = dataclasses.field(default_factory=list)
+    tool_image_reference_paths: List[str] = dataclasses.field(default_factory=list)
+
+
 def _coerce_gateway_timestamp(value: Any) -> Optional[float]:
     """Best-effort conversion of stored gateway timestamps to epoch seconds.
 
@@ -6081,26 +6088,35 @@ class GatewayRunner:
         source: SessionSource,
         history: List[Dict[str, Any]],
     ) -> Optional[str]:
+        prepared = await self._prepare_inbound_message(
+            event=event,
+            source=source,
+            history=history,
+        )
+        return prepared.text if prepared is not None else None
+
+    async def _prepare_inbound_message(
+        self,
+        *,
+        event: MessageEvent,
+        source: SessionSource,
+        history: List[Dict[str, Any]],
+    ) -> Optional[PreparedInboundMessage]:
         """Prepare inbound event text for the agent.
 
         Keep the normal inbound path and the queued follow-up path on the same
         preprocessing pipeline so sender attribution, image enrichment, STT,
         document notes, reply context, and @ references all behave the same.
 
-        Side effect: writes ``self._pending_native_image_paths`` to a list of
-        local image paths when the active model supports native vision AND
-        the user has images attached. The caller consumes and clears this
-        attribute at the ``run_conversation`` site to build a multimodal user
-        turn. When the list is empty, the ``_enrich_message_with_vision``
-        text path has already run and images are represented in-text.
+        Returns per-turn image paths alongside the prepared text. These paths
+        must be passed explicitly into ``_run_agent``; keeping them off the
+        runner instance avoids cross-session races when two inbound messages
+        are prepared before either agent thread consumes the images.
         """
         history = history or []
         message_text = event.text or ""
-        # Reset per-call buffers; native image paths are only used for model
-        # content parts, while tool image references are available to image
-        # generation/editing tools in either native or text mode.
-        self._pending_native_image_paths = []
-        self._pending_tool_image_reference_paths = []
+        native_image_paths: List[str] = []
+        tool_image_reference_paths: List[str] = []
 
         _is_shared_multi_user = is_shared_multi_user_session(
             source,
@@ -6121,13 +6137,13 @@ class GatewayRunner:
                     audio_paths.append(path)
 
             if image_paths:
-                self._pending_tool_image_reference_paths = list(image_paths)
+                tool_image_reference_paths = list(image_paths)
                 # Decide routing: native (attach pixels) vs text (vision_analyze
                 # pre-run + prepend description).  See agent/image_routing.py.
                 _img_mode = self._decide_image_input_mode()
                 if _img_mode == "native":
                     # Defer attachment to the run_conversation call site.
-                    self._pending_native_image_paths = list(image_paths)
+                    native_image_paths = list(image_paths)
                     logger.info(
                         "Image routing: native (model supports vision). %d image(s) will be attached inline.",
                         len(image_paths),
@@ -6264,7 +6280,11 @@ class GatewayRunner:
             except Exception as exc:
                 logger.debug("@ context reference expansion failed: %s", exc)
 
-        return message_text
+        return PreparedInboundMessage(
+            text=message_text,
+            native_image_paths=native_image_paths,
+            tool_image_reference_paths=tool_image_reference_paths,
+        )
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
@@ -6778,24 +6798,26 @@ class GatewayRunner:
                     context_prompt += f"\n\n{vc_context}"
 
         # -----------------------------------------------------------------
-        # Auto-analyze images sent by the user
+        # Prepare images sent by the user
         #
-        # If the user attached image(s), we run the vision tool eagerly so
-        # the conversation model always receives a text description.  The
-        # local file path is also included so the model can re-examine the
-        # image later with a more targeted question via vision_analyze.
+        # If the active route is native, the prepared message carries image
+        # paths that _run_agent will attach inline. Otherwise, it eagerly runs
+        # the vision tool and prepends a text description. In both modes, the
+        # current-turn image paths are available to image generation/editing
+        # tools as explicit reference images.
         #
         # We filter to image paths only (by media_type) so that non-image
         # attachments (documents, audio, etc.) are not sent to the vision
         # tool even when they appear in the same message.
         # -----------------------------------------------------------------
-        message_text = await self._prepare_inbound_message_text(
+        prepared_message = await self._prepare_inbound_message(
             event=event,
             source=source,
             history=history,
         )
-        if message_text is None:
+        if prepared_message is None:
             return
+        message_text = prepared_message.text
 
         # Bind this gateway run generation to the adapter's active-session
         # event so deferred post-delivery callbacks can be released by the
@@ -6840,6 +6862,8 @@ class GatewayRunner:
                 run_generation=run_generation,
                 event_message_id=event.message_id,
                 channel_prompt=event.channel_prompt,
+                native_image_paths=prepared_message.native_image_paths,
+                tool_image_reference_paths=prepared_message.tool_image_reference_paths,
             )
             if _loop_inflight_marked and isinstance(loop_states, dict):
                 _loop_state_ref = loop_states.get(session_key)
@@ -12072,6 +12096,8 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        native_image_paths: Optional[List[str]] = None,
+        tool_image_reference_paths: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -12097,6 +12123,9 @@ class GatewayRunner:
                 run_generation=run_generation,
                 event_message_id=event_message_id,
             )
+
+        native_image_paths_for_turn = list(native_image_paths or [])
+        tool_image_reference_paths_for_turn = list(tool_image_reference_paths or [])
 
         from run_agent import AIAgent
         import queue
@@ -13074,14 +13103,12 @@ class GatewayRunner:
             _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
             try:
-                # If _prepare_inbound_message_text buffered image paths for native
-                # attachment, wrap the user turn as an OpenAI-style multimodal
-                # content list. Consume-and-clear so subsequent turns on the same
-                # runner instance don't re-attach stale images.
-                _native_imgs = list(getattr(self, "_pending_native_image_paths", []) or [])
-                _tool_ref_imgs = list(getattr(self, "_pending_tool_image_reference_paths", []) or [])
-                self._pending_native_image_paths = []
-                self._pending_tool_image_reference_paths = []
+                # If preparation returned image paths for native attachment,
+                # wrap this user turn as an OpenAI-style multimodal content
+                # list. The paths are captured per turn so concurrent sessions
+                # cannot overwrite each other's pending image state.
+                _native_imgs = list(native_image_paths_for_turn)
+                _tool_ref_imgs = list(tool_image_reference_paths_for_turn)
                 if _native_imgs:
                     try:
                         from agent.image_routing import build_native_content_parts
@@ -13794,15 +13821,20 @@ class GatewayRunner:
                 next_message = pending
                 next_message_id = None
                 next_channel_prompt = None
+                next_native_image_paths: List[str] = []
+                next_tool_image_reference_paths: List[str] = []
                 if pending_event is not None:
                     next_source = getattr(pending_event, "source", None) or source
-                    next_message = await self._prepare_inbound_message_text(
+                    next_prepared_message = await self._prepare_inbound_message(
                         event=pending_event,
                         source=next_source,
                         history=updated_history,
                     )
-                    if next_message is None:
+                    if next_prepared_message is None:
                         return result
+                    next_message = next_prepared_message.text
+                    next_native_image_paths = next_prepared_message.native_image_paths
+                    next_tool_image_reference_paths = next_prepared_message.tool_image_reference_paths
                     next_message_id = getattr(pending_event, "message_id", None)
                     next_channel_prompt = getattr(pending_event, "channel_prompt", None)
 
@@ -13830,6 +13862,8 @@ class GatewayRunner:
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
+                    native_image_paths=next_native_image_paths,
+                    tool_image_reference_paths=next_tool_image_reference_paths,
                 )
         finally:
             # Stop progress sender, interrupt monitor, and notification task
