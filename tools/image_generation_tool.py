@@ -880,7 +880,7 @@ IMAGE_GENERATE_SCHEMA = {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "Optional reference image local paths or sentinels. Use "
+                    "Optional current-turn reference image sentinels. Use "
                     "'current_turn_images' to use all images the user uploaded "
                     "on the current turn, or 'current_turn_image:0' for the "
                     "first uploaded image. If omitted while the current user "
@@ -1050,6 +1050,12 @@ def _handle_image_generate(args, **kw):
         reference_images = resolve_image_reference_paths(
             args.get("reference_images"),
             default_to_current=(action != "generate"),
+        )
+    except ValueError as exc:
+        return tool_error(
+            str(exc),
+            success=False,
+            error_type="invalid_reference_image",
         )
     except Exception as exc:
         logger.debug("Could not resolve image references: %s", exc)

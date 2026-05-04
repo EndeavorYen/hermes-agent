@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import importlib
 import json
+import sys
+from unittest.mock import MagicMock
+
 import pytest
 
 from agent import image_gen_registry
@@ -172,3 +176,69 @@ class TestPluginDispatch:
 
         assert payload["success"] is True
         assert payload["reference_images"] == [str(ref)]
+
+    def test_handler_rejects_arbitrary_local_reference_paths(self, monkeypatch, tmp_path):
+        stubbed_deps = False
+        module_names = {
+            "hermes_cli.config",
+            "hermes_cli.plugins",
+            "tools.image_generation_tool",
+            "tools.managed_tool_gateway",
+            "tools.tool_backend_helpers",
+            "utils",
+        }
+        preexisting_modules = {name for name in module_names if name in sys.modules}
+        tools_pkg = sys.modules.get("tools")
+        had_tools_attr = bool(
+            tools_pkg is not None and hasattr(tools_pkg, "image_generation_tool")
+        )
+        hermes_pkg = sys.modules.get("hermes_cli")
+        had_hermes_plugins_attr = bool(
+            hermes_pkg is not None and hasattr(hermes_pkg, "plugins")
+        )
+        try:
+            try:
+                image_generation_tool = importlib.import_module("tools.image_generation_tool")
+            except ModuleNotFoundError as exc:
+                if exc.name not in {"fal_client", "yaml"}:
+                    raise
+                stubbed_deps = True
+                monkeypatch.setitem(sys.modules, "fal_client", MagicMock())
+                monkeypatch.setitem(sys.modules, "yaml", MagicMock())
+                image_generation_tool = importlib.import_module("tools.image_generation_tool")
+
+            from hermes_cli import plugins as plugins_module
+            from agent import image_gen_registry as registry_module
+
+            secret = tmp_path / "not-uploaded.png"
+            secret.write_bytes(b"private bytes")
+
+            monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+            (tmp_path / "config.yaml").write_text("image_gen:\n  provider: codex\n")
+
+            monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "codex")
+            monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda force=False: None)
+            monkeypatch.setattr(registry_module, "get_provider", lambda name: _FakeCodexProvider() if name == "codex" else None)
+
+            dispatched = image_generation_tool._handle_image_generate({
+                "prompt": "use this reference",
+                "reference_images": [str(secret)],
+                "action": "edit",
+            })
+            payload = json.loads(dispatched)
+
+            assert payload["success"] is False
+            assert payload["error_type"] == "invalid_reference_image"
+            assert "current-turn uploaded images" in payload["error"]
+        finally:
+            if stubbed_deps:
+                for name in module_names - preexisting_modules:
+                    sys.modules.pop(name, None)
+                if not had_tools_attr:
+                    tools_pkg = sys.modules.get("tools")
+                    if tools_pkg is not None and hasattr(tools_pkg, "image_generation_tool"):
+                        delattr(tools_pkg, "image_generation_tool")
+                if not had_hermes_plugins_attr:
+                    hermes_pkg = sys.modules.get("hermes_cli")
+                    if hermes_pkg is not None and hasattr(hermes_pkg, "plugins"):
+                        delattr(hermes_pkg, "plugins")

@@ -77,6 +77,14 @@ def get_current_image_reference_paths() -> List[str]:
     return list(_CURRENT_IMAGE_REFERENCE_PATHS.get())
 
 
+def _canonical_reference_path(path: str) -> str:
+    """Normalize a path for equality checks without reading it."""
+    try:
+        return str(Path(path).expanduser().resolve(strict=False))
+    except Exception:
+        return str(Path(path).expanduser())
+
+
 def resolve_image_reference_paths(
     reference_images: Any,
     *,
@@ -86,8 +94,19 @@ def resolve_image_reference_paths(
 
     ``current_turn_images`` expands to all images uploaded on the active turn;
     ``current_turn_image:N`` expands to a single zero-based item.
+
+    Arbitrary local paths are intentionally rejected. Tool-call arguments are
+    model-controlled, so reference images must come from the user-uploaded
+    images already attached to this turn.
     """
     current = get_current_image_reference_paths()
+    current_lookup: Dict[str, str] = {}
+    for path in current:
+        if not path:
+            continue
+        current_lookup[path] = path
+        current_lookup[_canonical_reference_path(path)] = path
+
     raw_refs = reference_images
     if raw_refs is None or raw_refs == "":
         raw_refs = []
@@ -123,7 +142,17 @@ def resolve_image_reference_paths(
             if 0 <= idx < len(current):
                 resolved.append(current[idx])
             continue
-        resolved.append(value)
+        matched_current = current_lookup.get(value) or current_lookup.get(
+            _canonical_reference_path(value)
+        )
+        if matched_current:
+            resolved.append(matched_current)
+            continue
+        raise ValueError(
+            "Reference images must be current-turn uploaded images. "
+            "Use current_turn_images or current_turn_image:N instead of "
+            f"arbitrary local paths: {value}"
+        )
 
     deduped: List[str] = []
     seen = set()
