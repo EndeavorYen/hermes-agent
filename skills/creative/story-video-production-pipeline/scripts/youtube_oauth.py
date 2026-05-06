@@ -39,7 +39,10 @@ def require_deps():
 
 def selected_scopes(args=None):
     if args is not None and getattr(args, "manage", False):
-        return MANAGE_SCOPES
+        # Request both scopes up front. With include_granted_scopes=true, Google may
+        # return previously granted upload scope together with force-ssl; oauthlib
+        # treats that as a scope change unless both are expected.
+        return DEFAULT_SCOPES + MANAGE_SCOPES
     return DEFAULT_SCOPES
 
 
