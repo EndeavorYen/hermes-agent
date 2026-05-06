@@ -93,6 +93,8 @@ Rules:
 - Read it aloud mentally; remove awkward phrasing.
 - Mark emotional beats where the narrator should slow down or pause.
 - Keep one narration chunk roughly aligned to one visual scene.
+- For children's stories, keep the plot rhythm light and quick: do not over-extend the ending with repeated morals or extra reconciliation beats. Close shortly after the emotional turn lands.
+- When polishing a user's oral story, preserve their core plot mechanics and comic turns. If the user corrects a beat (e.g. “the door was simply unlocked”), treat that as canonical instead of replacing it with a more conventional structure.
 
 Recommended script structure for short videos:
 
@@ -110,6 +112,8 @@ Convert the script into a table:
 | Scene | Time | Narration | Visual | Motion | Image Prompt | Notes |
 |---|---:|---|---|---|---|---|
 | 01 | 0:00–0:08 | ... | ... | slow push-in | ... | ... |
+
+For illustrated children's story videos, use one image per meaningful situation/setting change, not only one image per paragraph. Add a new illustration when the location changes, a house/room changes, a character takes a visually distinct action, a joke lands, or the emotional state flips. This is especially important when the user says “配圖可以多張一點，有情境切換就需要一張圖.”
 
 Timing heuristics:
 
@@ -134,6 +138,19 @@ Include:
 - Continuity notes: what must remain identical across scenes.
 
 For recurring characters, generate or select a reference image early when possible, then use it as a reference for later scenes if the image backend supports it.
+
+### Character and Story-Match Gate
+
+When a story has recurring named characters, do not proceed directly from storyboard to full batch generation. Add a consistency gate first:
+
+1. **Character lineup / cast sheet:** generate or create one reference image showing all recurring characters together, with stable names, silhouettes, clothing/accessories, relative sizes, and color accents. Example: three wolves with distinct scarf/vest/tail cues and three pigs with distinct hat/bow/overalls cues.
+2. **Per-scene cast ledger:** in the storyboard, explicitly list `characters_present`, `must_show`, `must_not_show`, and `plot_beat` for every scene. This prevents images that are aesthetically good but narratively wrong.
+3. **Keyframe preflight:** before generating all scenes, generate 2–4 high-risk keyframes using the cast sheet as reference: one group scene, one action/conflict scene, one joke/reversal scene, and one ending scene.
+4. **Vision QC before batch:** inspect the cast sheet and keyframes for: character count, recurring outfit/accessory consistency, correct house/material, correct action, child-safe tone, subtitle-safe composition, and no contradiction with the canonical plot. Regenerate failed keyframes before spending the full image budget.
+5. **Reference-based batch:** when supported, use the cast sheet and accepted keyframes as reference images for all scene generations. Repeat identity anchors in every prompt; do not rely on style alone.
+6. **Contact-sheet narrative QC:** after batch generation, build a numbered contact sheet and check every scene against the per-scene cast ledger. Mark each scene `pass`, `minor`, or `regenerate`. Regenerate any scene where the wrong characters appear, house type/action is wrong, or the punchline/plot beat is missing.
+
+This gate is mandatory when the user reports that characters changed across images or that images do not match the script. A pretty but story-wrong frame is a failed frame.
 
 ## Phase 5 — Image Generation
 
@@ -340,6 +357,49 @@ Basic ffmpeg/MoviePy verification:
 - Spot-check at least one planned inter-scene pause frame: it should usually hold the previous/owning scene image with no subtitle, not flash blank or jump early to the next scene.
 - Ensure subtitles are readable.
 
+## Phase 8.5 — YouTube Publishing Automation
+
+When the user wants Hermes to upload story-video outputs to YouTube automatically, treat publishing as a separate gated phase after render QC. Do not upload before the final MP4 has been verified and the user has approved title/description/visibility unless they explicitly authorized autonomous publishing for this project.
+
+Recommended OAuth setup for YouTube uploads:
+
+1. In Google Cloud, enable **YouTube Data API v3** for the project.
+2. Create an OAuth 2.0 **Desktop app** client and download the JSON file.
+3. If the OAuth consent screen is in Testing, add the user's Google account as a test user.
+4. Use the narrow upload scope `https://www.googleapis.com/auth/youtube.upload` rather than broad Google Workspace scopes.
+5. Prefer storing the client secret/token under `~/.hermes/` with `chmod 600`; never paste secrets into chat or save them in project artifacts.
+6. Generate an auth URL, have the user approve it in the browser, then exchange the returned `http://localhost/?code=...` redirect URL for a token. The browser may show “unable to connect” after redirect; this is expected because no local web server is listening. Ask the user to paste the complete redirected URL.
+
+A reusable OAuth helper is available at `scripts/youtube_oauth.py`. Copy or run it from the skill directory, for example:
+
+```bash
+python scripts/youtube_oauth.py auth-url --client-secret ~/.hermes/youtube_client_secret.json
+python scripts/youtube_oauth.py auth-code 'http://localhost/?code=...'
+python scripts/youtube_oauth.py check
+```
+
+OAuth pitfalls learned from live setup:
+
+- `redirect_uri_mismatch` usually means the OAuth client type/redirect URI is wrong. For this local uploader, prefer a **Desktop app** client whose JSON has top-level `installed` and usually `redirect_uris: ["http://localhost"]`; update the helper redirect URI to match exactly.
+- If the app is in Google OAuth **Testing**, add the signing-in Google account under **Audience → Test users** before retrying; otherwise Google returns `403 access_denied` / app not verified.
+- Google OAuth with PKCE requires persisting the generated `code_verifier` between `auth-url` and `auth-code`. If token exchange returns `invalid_grant: Missing code verifier`, regenerate the auth URL using a helper that stores pending state/verifier (the bundled helper writes `~/.hermes/youtube_oauth_pending.json`) and have the user authorize again.
+- OAuth codes are single-use and state-bound. If a helper is patched or the auth URL is regenerated, old redirect URLs cannot be reused.
+
+macOS/Hermes gateway pitfall: a file in `~/Downloads` can exist but still fail with `PermissionError: [Errno 1] Operation not permitted` because the background agent lacks TCC permission for Downloads. If that happens, ask the user to copy the OAuth JSON into `~/.hermes/youtube_client_secret.json` themselves, then continue from there:
+
+```bash
+mkdir -p ~/.hermes
+cp "/Users/simon/Downloads/client_secret_....json" ~/.hermes/youtube_client_secret.json
+chmod 600 ~/.hermes/youtube_client_secret.json
+```
+
+Publishing defaults for this user's story-video workflow:
+
+- Treat YouTube upload as a real external side effect: after OAuth is authenticated, still ask for explicit approval of the exact file and metadata before the first upload unless the user has already authorized autonomous publishing for that project.
+- Use `private` or `unlisted` for first automated uploads.
+- Include title, description, child-directed/audience setting, tags, language, thumbnail/cover if available, and license notes.
+- Preserve upload metadata in `production_notes.md` without storing tokens or client secrets.
+
 ## Phase 9 — Iteration Loop
 
 After each draft, review along these axes:
@@ -366,7 +426,7 @@ Record lessons in `production_notes.md`. If the workflow changes in a reusable w
 8. **Music too loud or added too early.** Voice must be dominant; for timing/debug passes, remove BGM/SFX until narration, subtitles, and image changes pass QC.
 9. **No verification pass.** Always inspect duration, audio, dimensions, and sample frames before delivery.
 10. **Overbuilding the first run.** Start with a small MVP, then improve automation after seeing failures.
-11. **Treating the skill as fixed.** This skill is meant to evolve after each production run.
+12. **Publishing automation failures are often OAuth state/config issues, not YouTube upload issues.** For local story-video uploaders, use a Desktop OAuth client, exact `http://localhost` redirect when that is what the JSON declares, add the account as a Test user while the app is in Testing, and persist PKCE `code_verifier` between auth URL generation and token exchange.
 
 ## MVP Recipe
 
@@ -386,7 +446,10 @@ Use this when the user wants to start quickly:
 
 - `references/three-little-pigs-v3-render-notes.md` — concrete v3 MVP notes for a 16:9 children’s storybook video using Meijia draft narration, estimated subtitle timing, illustrated front/back covers, and an audible-but-subordinate BGM/SFX mix.
 - `references/three-little-pigs-v4-scene-alignment-notes.md` — concrete v4/v5 notes for fixing drift with scene-by-scene narration, paragraph-level subtitle/image alignment, deliberate inter-scene silent breath gaps, stable slow zoom, and no BGM/SFX during timing QC.
+- `references/three-wolves-story-draft-notes.md` — session notes for a Traditional Chinese children's story video: light pacing, preserving the user's unlocked-door joke, using more images at situation changes, contact-sheet vision QC, and avoiding ffmpeg concat duration drift from mixed-rate MP3s.
 - `templates/scene_aligned_pauses_timeline.py` — reusable starter pattern for per-scene TTS, explicit silence pads, separate `speech_ranges`/`visual_ranges`, and duration probing with `ffprobe`.
+- `scripts/youtube_oauth.py` — reusable narrow-scope YouTube upload OAuth helper for story-video publishing (`youtube.upload` token, Desktop-app `http://localhost` redirect, PKCE pending verifier/state persistence).
+- `scripts/youtube_upload.py` — reusable YouTube upload helper using `~/.hermes/youtube_token.json`; supports title, description, privacy, made-for-kids flag, tags, category, and optional thumbnail. Thumbnail setting can briefly fail right after upload because YouTube has not indexed the new private video yet; the helper retries thumbnail upload before reporting final status.
 
 ## Verification Checklist
 
