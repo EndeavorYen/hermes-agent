@@ -434,12 +434,27 @@ chmod 600 ~/.hermes/youtube_client_secret.json
 
 Publishing defaults for this user's story-video workflow:
 
-- Treat YouTube upload as a real external side effect: after OAuth is authenticated, still ask for explicit approval of the exact file and metadata before the first upload unless the user has already authorized autonomous publishing for that project.
+- Treat YouTube upload as a real external side effect: after OAuth is authenticated, still ask for explicit approval of the exact file and metadata before the first upload unless the user has already authorized autonomous publishing for this project.
 - Use `private` or `unlisted` for first automated uploads.
 - Include title, description, child-directed/audience setting, tags, language, thumbnail/cover if available, and license notes.
-- For multiline descriptions, prefer `--description-file description.txt` or a real multiline shell string. The upload helper normalizes literal `\n` escapes into real newlines, but description files are less error-prone and should be the default for reusable pipeline publishing.
-- Preserve upload metadata in `production_notes.md` without storing tokens or client secrets.
-- After upload, verify the actual YouTube record before reporting success. Use `videos.list(part='snippet,status', id=VIDEO_ID)` with the existing OAuth token when possible and check at least: `uploadStatus`, `privacyStatus`, title, `madeForKids`/`selfDeclaredMadeForKids`, and thumbnail presence/status. Save a compact upload record JSON in the project directory; never include OAuth tokens or client secrets.
+- For multiline descriptions, prefer `--description-file description.txt` or a real multiline shell string. The upload/update helpers normalize literal `\n` escapes into real newlines, but description files are less error-prone and should be the default for reusable pipeline publishing.
+- For a professional YouTube story/podcast package, create a `youtube_metadata/` folder containing `title.txt` or metadata JSON, `description.txt`, tag list, thumbnail source image, final `thumbnail.jpg`, and a verification JSON. Write the description like a podcast episode intro: hook, episode summary, listener fit, “you will hear” bullets, format/provenance notes, and a small hashtag set. Do not leave draft labels like “test upload” unless the visibility is intentionally private and the user wants that disclosed.
+- Thumbnail/cover practice: use a clean generated illustration background with **no baked-in AI text**, overlay editable Traditional Chinese typography locally, and QC at mobile size. YouTube’s custom-thumbnail guidance recommends high resolution, JPG/GIF/PNG, 16:9 for normal video thumbnails, and safe file-size limits; keep a conservative 1280x720 or 1920x1080 JPEG export under 2 MB unless a platform-specific limit is known to be higher. For Podcast playlists, YouTube notes 1:1 artwork, but individual story videos should remain 16:9 unless publishing as playlist artwork.
+- Existing-video repairs should use `scripts/youtube_update_metadata.py` with `youtube.force-ssl`; preserve existing snippet/status fields not being changed. Example:
+
+```bash
+python scripts/youtube_update_metadata.py \
+  --video-id VIDEO_ID \
+  --title '三隻小豬｜酥雞故事 Podcast｜經典童話重述' \
+  --description-file youtube_metadata/description.txt \
+  --tags '酥雞故事 Podcast,三隻小豬,兒童故事,睡前故事,繁體中文故事' \
+  --thumbnail youtube_metadata/thumbnail.jpg \
+  --privacy private \
+  --made-for-kids true
+```
+
+- Preserve upload/update metadata in `production_notes.md` without storing tokens or client secrets.
+- After upload or repair, verify the actual YouTube record before reporting success. Use `videos.list(part='snippet,status', id=VIDEO_ID)` with the existing OAuth token when possible and check at least: `uploadStatus`, `privacyStatus`, title, `madeForKids`/`selfDeclaredMadeForKids`, `description_has_literal_backslash_n == false`, real newline count, and thumbnail presence/status. Save a compact upload/update record JSON in the project directory; never include OAuth tokens or client secrets.
 
 ## Phase 9 — Iteration Loop
 
@@ -495,6 +510,7 @@ Use this when the user wants to start quickly:
 - `templates/scene_aligned_pauses_timeline.py` — reusable starter pattern for per-scene TTS, explicit silence pads, separate `speech_ranges`/`visual_ranges`, and duration probing with `ffprobe`.
 - `scripts/youtube_oauth.py` — reusable narrow-scope YouTube upload OAuth helper for story-video publishing (`youtube.upload` token, Desktop-app `http://localhost` redirect, PKCE pending verifier/state persistence).
 - `scripts/youtube_upload.py` — reusable YouTube upload helper using `~/.hermes/youtube_token.json`; supports title, description, privacy, made-for-kids flag, tags, category, and optional thumbnail. Thumbnail setting can briefly fail right after upload because YouTube has not indexed the new private video yet; the helper retries thumbnail upload before reporting final status.
+- `scripts/youtube_update_metadata.py` — reusable existing-video repair helper using `~/.hermes/youtube_token.json`; supports title/description-file/tags/privacy/made-for-kids/language and optional thumbnail, preserves unchanged snippet/status fields, and verifies no literal `\\n` remains in the description.
 
 ## Verification Checklist
 
