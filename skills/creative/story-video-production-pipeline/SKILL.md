@@ -19,7 +19,7 @@ This skill turns a story concept into an illustrated narration video through a r
 1. Clarify the story and target format.
 2. Convert the idea into a spoken script.
 3. Break the script into scenes/shots.
-4. Generate or prepare narration audio.
+4. Generate TTS narration or ingest/clean human-recorded narration audio.
 5. Generate scene illustrations with consistent visual direction.
 6. Assemble illustrations, voiceover, subtitles, music/SFX, and simple motion into an MP4.
 7. Review, iterate, and preserve reusable assets/prompts for future episodes.
@@ -50,7 +50,7 @@ For a complete run, produce these artifacts unless the user asks for a narrower 
 2. `script.md` — final spoken narration, written to sound natural aloud.
 3. `storyboard.md` — scene table with narration chunks, visual descriptions, timing, and prompts.
 4. `visual_bible.md` — recurring characters, locations, palette, style, negative prompts, aspect ratio.
-5. `audio/voiceover.*` — generated narration audio.
+5. `audio/voiceover.*` — generated TTS narration or cleaned human narration audio.
 6. `images/scene_XX.*` — generated illustrations.
 7. `subtitles.srt` or `.vtt` — captions aligned to narration.
 8. `video/final.mp4` — assembled draft video.
@@ -166,6 +166,50 @@ Prepare TTS input separately from the full script:
 - Generate one whole voiceover for simple projects, or one file per scene when scene/paragraph alignment matters. For illustrated storybook videos, per-scene narration is the preferred default once the first rough cut shows image/subtitle drift.
 - When using per-scene narration, insert explicit silence between scene audio segments during assembly instead of concatenating speech back-to-back. This gives viewers time to absorb the picture and makes paragraph boundaries feel intentional rather than rushed.
 - For scene changes, split silence into a post-speech hold and a next-scene pre-roll where possible: e.g. 0.20–0.45s holding the current image after speech, then 0.60–0.95s showing the next image before its narration starts. If the user says the next paragraph still starts too quickly, increase the next-scene pre-roll first, not the previous-scene post-hold.
+
+### Human Narration Mode
+
+Human narration and TTS should coexist as two interchangeable voiceover modes. If the user wants to record their own reading, replace the TTS generation step with a human-recorded audio intake and cleanup step, while keeping the rest of the pipeline: storyboard, image generation, subtitles, timeline assembly, QC, and publishing.
+
+Supported modes:
+
+1. **TTS mode:** generate narration from `voiceover_text.txt` or per-scene text chunks.
+2. **Human narration mode:** user records the final script and uploads audio/video; extract and use the human voice as the canonical narration.
+3. **Hybrid mode:** use TTS for drafts/timing, then swap in human narration for final render.
+
+Recommended recording instructions for the user:
+
+- Record in a quiet room, close enough to the mic but without popping.
+- Use a consistent mic and distance for the whole story.
+- Read the exact final script when possible.
+- Leave a small pause between paragraphs/scenes; do not rush after page/scene breaks.
+- If a sentence goes wrong, pause, clap or say “重來”, then reread the sentence; this makes cleanup easier.
+- Upload WAV/M4A/MP3 audio, or a video file if audio is embedded. Prefer WAV/M4A for quality.
+
+Human narration intake checklist:
+
+- Save the original upload under `audio/source/` without overwriting it.
+- Extract audio if needed: `ffmpeg -i input.mov -vn audio/source/human_raw.wav`.
+- Normalize format for editing: mono or stereo WAV, 44.1k/48kHz.
+- Light cleanup only by default: trim leading/trailing silence, remove obvious retakes, normalize loudness, avoid heavy noise reduction that makes the voice metallic.
+- Measure duration with `ffprobe`.
+- If the user recorded one full file, align scenes by waveform/manual markers, transcript timing, or rough forced alignment.
+- If the user can record one file per scene, prefer that for easiest scene-level synchronization.
+
+Alignment strategy for human narration:
+
+- Treat the human audio as the timing source of truth; do not force it to match earlier TTS estimates.
+- Build scene `speech_ranges` from actual audio timing.
+- Keep the same visual rhythm rule: after each scene's speech, hold briefly, cut to the next scene, then allow a visible next-scene pre-roll before the next narration begins when possible.
+- If the human recording already contains natural pauses, preserve them unless they feel too long or accidental.
+- Captions should follow what was actually spoken. If the narrator paraphrased the script, update subtitles to the spoken version rather than blindly using the original script.
+
+Human narration QC:
+
+- Confirm language and voice are correct.
+- Check for clipping, room hum, mouth noise, sudden volume changes, missing lines, and accidental retakes.
+- Spot-check that scene changes happen at natural breath points.
+- If a major line is missing or unclear, ask for a pickup recording for that line/scene instead of rerecording the entire story.
 
 Voice selection notes:
 
@@ -302,7 +346,7 @@ After each draft, review along these axes:
 
 1. **Story clarity:** does a viewer understand the premise in the first 10 seconds?
 2. **Emotional pull:** is there a reason to keep watching?
-3. **Voice quality:** natural, paced, correct language/pronunciation?
+3. **Voice quality:** natural, paced, correct language/pronunciation? For human narration: clean, unclipped, complete, and free of accidental retakes?
 4. **Visual continuity:** characters and world remain consistent?
 5. **Scene rhythm:** does it feel like video, not slides?
 6. **Subtitle readability:** readable on mobile?
@@ -316,12 +360,13 @@ Record lessons in `production_notes.md`. If the workflow changes in a reusable w
 2. **Generating images before locking the visual bible.** This causes inconsistent characters and wasted generations.
 3. **One image per paragraph instead of per beat.** Story videos need visual rhythm; split at emotional/action beats.
 4. **Subtitles or images drift from narration.** Fix at the scene/paragraph level first: split narration by storyboard scene, measure each audio chunk, hold that scene image for the chunk duration, and constrain captions to that scene window. Use forced alignment only if scene-level alignment is insufficient.
-5. **Story narration feels rushed even though scenes are aligned.** Distinguish three pause types: (a) sentence micro-pauses inside a scene, (b) post-speech holds after a paragraph ends, and (c) next-scene pre-roll before the new paragraph begins. If the picture changes and narration starts immediately, the problem is insufficient pre-roll, not insufficient ending silence. Make captions disappear during these pauses so they feel intentional.
-6. **Subtitles cover the subject.** Reserve safe space in prompts or move captions.
-7. **Music too loud or added too early.** Voice must be dominant; for timing/debug passes, remove BGM/SFX until narration, subtitles, and image changes pass QC.
-8. **No verification pass.** Always inspect duration, audio, dimensions, and sample frames before delivery.
-9. **Overbuilding the first run.** Start with a small MVP, then improve automation after seeing failures.
-10. **Treating the skill as fixed.** This skill is meant to evolve after each production run.
+5. **Treating TTS as the only narration path.** Human narration should be a first-class mode: ingest the user's recording, clean it lightly, make the actual recording the timing source of truth, and continue with subtitles/image/video assembly.
+6. **Story narration feels rushed even though scenes are aligned.** Distinguish three pause types: (a) sentence micro-pauses inside a scene, (b) post-speech holds after a paragraph ends, and (c) next-scene pre-roll before the new paragraph begins. If the picture changes and narration starts immediately, the problem is insufficient pre-roll, not insufficient ending silence. Make captions disappear during these pauses so they feel intentional.
+7. **Subtitles cover the subject.** Reserve safe space in prompts or move captions.
+8. **Music too loud or added too early.** Voice must be dominant; for timing/debug passes, remove BGM/SFX until narration, subtitles, and image changes pass QC.
+9. **No verification pass.** Always inspect duration, audio, dimensions, and sample frames before delivery.
+10. **Overbuilding the first run.** Start with a small MVP, then improve automation after seeing failures.
+11. **Treating the skill as fixed.** This skill is meant to evolve after each production run.
 
 ## MVP Recipe
 
@@ -332,7 +377,7 @@ Use this when the user wants to start quickly:
 3. Split into 6–10 scenes.
 4. Create a visual bible.
 5. Generate one image prompt per scene.
-6. Generate TTS voiceover.
+6. Generate TTS voiceover, or ingest/clean the user's human-recorded narration.
 7. Generate scene images.
 8. Assemble MP4 with simple zoom/fade and subtitles.
 9. Deliver draft plus notes for next iteration.
@@ -351,7 +396,7 @@ Before telling the user the video is ready:
 - [ ] Scene count and duration match requested length.
 - [ ] Visual bible exists before image prompts.
 - [ ] All required images exist and pass basic visual QC.
-- [ ] Voiceover exists, duration is plausible, and language is correct.
+- [ ] Voiceover exists, duration is plausible, and language is correct. If human-recorded, the cleaned file is complete, unclipped, and free of obvious retakes.
 - [ ] Subtitles exist or user explicitly declined subtitles.
 - [ ] Final MP4 exists.
 - [ ] MP4 duration, dimensions, video stream, and audio stream are verified.
