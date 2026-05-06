@@ -190,6 +190,18 @@ If the user specifically wants Codex image2, use the available Codex/image gener
 
 For a new story style, generate only 1–2 keyframes first and run vision QC before spending generations on the full scene list. Prefer one calm character-introduction image and one high-stakes story image; this tests both character consistency and dramatic readability.
 
+### Style Variant Gate
+
+When the user is choosing a new visual style, do not jump straight to a full render. Produce a small style board first:
+
+1. Generate 3–4 clearly different variants with the same story beat and composition.
+2. Run vision QC for child safety, readability, artifacts, character count, and prompt match.
+3. Ask the user to choose or critique one direction.
+4. Convert the critique into explicit visual-bible rules and negative prompts before generating more assets.
+5. Preserve the chosen style rules in `production_notes.md` and, if reusable, this skill.
+
+For the current bright PICO-8 direction, the reusable rule is: vivid fantasy-console palette, clean chunky pixels, unobstructed characters, low/no dithering, no dark overlay, no grain/scanlines/vignette/haze, and local editable typography over a light panel.
+
 ## Phase 6 — Voiceover / TTS
 
 Prepare TTS input separately from the full script:
@@ -344,10 +356,12 @@ Cover/back-cover production rules:
 
 1. Generate clean illustrated card backgrounds through the same image-generation path as the story scenes when possible.
 2. Prefer no baked-in AI text in the generated image. Overlay editable Traditional Chinese title/back-cover text during assembly so typography stays controllable.
-3. Keep title/subtitle/back-cover text inside safe margins; verify readability at YouTube thumbnail size and in-video size.
-4. Match the visual bible: palette, character design, storybook texture, and child-safe tone.
-5. Use the front cover as the upload thumbnail candidate when appropriate, but keep `thumbnail.png` as a separate export so YouTube upload can attach it explicitly.
-6. Keep narration/subtitle offsets aware of cover duration: subtitles should not start during the silent cover unless intentionally designed.
+3. For this user's current story-podcast cover format, keep the reusable 16:9 template fixed unless explicitly changed: right-side story illustration, left rounded information panel, top series pill `酥雞故事 Podcast`, play icon near the panel edge, large Traditional Chinese title, white/light rounded subtitle pill, accent divider line, episode label, and small metadata line. Reuse the same geometry for front covers and adapt colors/accent only by episode/style. For bright PICO-8 / game-style episodes, prefer a light cream/mint panel over a dark translucent overlay so the cover stays vivid and unobstructed.
+4. For back covers / ending cards, keep the same family identity: matching 16:9 frame, clean illustration or softer background, editable overlay text, series label, closing moral/CTA/credits, and safe margins. Avoid changing layout families between episodes unless doing a deliberate redesign.
+5. Keep title/subtitle/back-cover text inside safe margins; verify readability at YouTube thumbnail size and in-video size.
+6. Match the visual bible: palette, character design, storybook texture, and child-safe tone. For PICO-8 / 8-bit game-style covers, use bright flat color blocks, crisp chunky pixels, and clean shapes; explicitly avoid dark overlays, heavy dithering/noise, grain, scanlines, haze, vignettes, or generated texture that makes the image look dirty. Important characters should remain unobstructed by the panel.
+7. Use the front cover as the upload thumbnail candidate when appropriate, but keep `thumbnail.png` as a separate export so YouTube upload can attach it explicitly.
+8. Keep narration/subtitle offsets aware of cover duration: subtitles should not start during the silent cover unless intentionally designed.
 
 These cards should match the visual bible and should be included in the storyboard timing so subtitle and narration offsets stay correct.
 
@@ -507,6 +521,8 @@ Use this when the user wants to start quickly:
 - `references/three-little-pigs-v4-scene-alignment-notes.md` — concrete v4/v5 notes for fixing drift with scene-by-scene narration, paragraph-level subtitle/image alignment, deliberate inter-scene silent breath gaps, stable slow zoom, and no BGM/SFX during timing QC.
 - `references/three-wolves-story-draft-notes.md` — session notes for a Traditional Chinese children's story video: light pacing, preserving the user's unlocked-door joke, using more images at situation changes, contact-sheet vision QC, and avoiding ffmpeg concat duration drift from mixed-rate MP3s.
 - `references/youtube-metadata-repair-notes.md` — YouTube description newline repair and management-scope OAuth notes, including `include_granted_scopes` returning combined `youtube.upload` + `youtube.force-ssl` scopes and the need to preserve existing snippet fields during `videos.update`.
+- `references/youtube-story-podcast-packaging-notes.md` — professional YouTube story/podcast episode packaging notes: title pattern, description structure, thumbnail workflow, 16:9 vs 1:1 artwork distinction, and existing-video update checklist.
+- `references/pico8-clean-cover-notes.md` — bright clean PICO-8 / fantasy-console cover rules learned from the user's critique: avoid dark overlays, heavy dithering/noise, grain, scanlines, haze, and obstruction; preserve the fixed story-podcast cover geometry with light editable text panels.
 - `templates/scene_aligned_pauses_timeline.py` — reusable starter pattern for per-scene TTS, explicit silence pads, separate `speech_ranges`/`visual_ranges`, and duration probing with `ffprobe`.
 - `scripts/youtube_oauth.py` — reusable narrow-scope YouTube upload OAuth helper for story-video publishing (`youtube.upload` token, Desktop-app `http://localhost` redirect, PKCE pending verifier/state persistence).
 - `scripts/youtube_upload.py` — reusable YouTube upload helper using `~/.hermes/youtube_token.json`; supports title, description, privacy, made-for-kids flag, tags, category, and optional thumbnail. Thumbnail setting can briefly fail right after upload because YouTube has not indexed the new private video yet; the helper retries thumbnail upload before reporting final status.
