@@ -49,12 +49,24 @@ For a complete run, produce these artifacts unless the user asks for a narrower 
 1. `story_brief.md` — concept, audience, tone, theme, format, constraints.
 2. `script.md` — final spoken narration, written to sound natural aloud.
 3. `storyboard.md` — scene table with narration chunks, visual descriptions, timing, and prompts.
-4. `visual_bible.md` — recurring characters, locations, palette, style, negative prompts, aspect ratio.
+4. `visual_bible.md` — recurring characters, locations, palette, style, negative prompts, aspect ratio, and book/card design rules.
 5. `audio/voiceover.*` — generated TTS narration or cleaned human narration audio.
-6. `images/scene_XX.*` — generated illustrations.
-7. `subtitles.srt` or `.vtt` — captions aligned to narration.
-8. `video/final.mp4` — assembled draft video.
-9. `production_notes.md` — what worked, what failed, and prompt/style changes for next iteration.
+6. `images/scene_XX.*` — generated scene illustrations.
+7. `images/cover.*` / `images/back_cover.*` — storybook-style front cover and back cover / ending card assets unless the user explicitly declines them.
+8. `subtitles.srt` or `.vtt` — captions aligned to narration.
+9. `video/final.mp4` — assembled draft video.
+10. `production_notes.md` — what worked, what failed, and prompt/style changes for next iteration.
+
+Recommended skill architecture for repeatable projects:
+
+- **Story layer:** brief, script, storyboard, canonical plot corrections.
+- **Visual layer:** visual bible, cast sheet, cover/back-cover/card rules, scene prompts, image QC.
+- **Voice layer:** TTS/human/hybrid source, locked voice profile, audio chunking, pause policy, loudness QC.
+- **Timeline layer:** scene ranges, speech ranges, visual ranges, pre-roll/post-hold, subtitles.
+- **Assembly layer:** stable motion, BGM/SFX as optional later layer, MP4 export.
+- **Publishing layer:** YouTube metadata, thumbnail/cover, OAuth scopes, upload/repair verification.
+
+Keep these layers separated in files/scripts so changing TTS voice, replacing a scene image, or repairing YouTube metadata does not require rewriting the whole pipeline.
 
 ## Phase 1 — Story Intake
 
@@ -69,7 +81,8 @@ Minimum intake fields:
 - **Format:** 16:9, 9:16, 1:1. If the user says screen/TV/YouTube/storybook, default to 16:9 landscape; use 9:16 only when the target is explicitly mobile shorts/Reels/TikTok.
 - **Language:** usually Traditional Chinese unless the user chooses otherwise.
 - **Visual style:** watercolor, cinematic anime, children’s book, editorial, 3D, ink, etc.
-- **Voice:** gender/age/accent/emotion/speed.
+- **Voice:** gender/age/accent/emotion/speed, plus whether the voice must remain identical across sessions/episodes.
+- **Cover/back cover:** whether the video should behave like a storybook with a front cover and back cover. Default to yes for children’s storybook videos unless the user explicitly declines.
 - **Must include / must avoid:** plot points, sensitive content, brands, likenesses, copyrighted styles.
 
 If the user says “先做 MVP”, default to:
@@ -78,7 +91,8 @@ If the user says “先做 MVP”, default to:
 - 6–10 scenes
 - 16:9 landscape for general screen/storybook viewing; 9:16 only for social short/mobile-first delivery
 - Traditional Chinese narration
-- simple low-volume background music/SFX if it helps the story
+- storybook front cover and back cover / ending card for children’s story videos
+- simple low-volume background music/SFX only after core narration + image + subtitle timing passes QC
 - subtle Ken Burns motion only
 
 ## Phase 2 — Script Writing
@@ -134,6 +148,7 @@ Include:
 - Global style line: medium, lighting, palette, detail level, lens/camera feel.
 - Character sheets: name, age, face, hair, clothing, silhouette, recurring objects.
 - Environment sheets: recurring locations and mood.
+- **Front-cover/back-cover design rules:** title-safe composition, logo/channel mark if any, editable text overlay plan, back-cover closing/credits/moral treatment, and whether cards should be generated as clean illustration assets with typography added later.
 - Negative prompts: avoid text artifacts, extra fingers, warped faces, logo/watermark, inconsistent outfit, etc.
 - Continuity notes: what must remain identical across scenes.
 
@@ -144,11 +159,13 @@ For recurring characters, generate or select a reference image early when possib
 When a story has recurring named characters, do not proceed directly from storyboard to full batch generation. Add a consistency gate first:
 
 1. **Character lineup / cast sheet:** generate or create one reference image showing all recurring characters together, with stable names, silhouettes, clothing/accessories, relative sizes, and color accents. Example: three wolves with distinct scarf/vest/tail cues and three pigs with distinct hat/bow/overalls cues.
-2. **Per-scene cast ledger:** in the storyboard, explicitly list `characters_present`, `must_show`, `must_not_show`, and `plot_beat` for every scene. This prevents images that are aesthetically good but narratively wrong.
-3. **Keyframe preflight:** before generating all scenes, generate 2–4 high-risk keyframes using the cast sheet as reference: one group scene, one action/conflict scene, one joke/reversal scene, and one ending scene.
-4. **Vision QC before batch:** inspect the cast sheet and keyframes for: character count, recurring outfit/accessory consistency, correct house/material, correct action, child-safe tone, subtitle-safe composition, and no contradiction with the canonical plot. Regenerate failed keyframes before spending the full image budget.
-5. **Reference-based batch:** when supported, use the cast sheet and accepted keyframes as reference images for all scene generations. Repeat identity anchors in every prompt; do not rely on style alone.
-6. **Contact-sheet narrative QC:** after batch generation, build a numbered contact sheet and check every scene against the per-scene cast ledger. Mark each scene `pass`, `minor`, or `regenerate`. Regenerate any scene where the wrong characters appear, house type/action is wrong, or the punchline/plot beat is missing.
+2. **Identity anchors in every prompt:** repeat the exact named character cues in every scene prompt, not only the first prompt. Use stable accessory/color anchors plus relative size/personality: e.g. `大牙=largest gray wolf, red scarf, one friendly visible tooth`, `灰耳=middle gray wolf, green vest, darker ears`, `小尾巴=smallest gray wolf, blue cape, tiny curled tail`. Do the same for pigs. Do not rely on generic labels like “three wolves” alone.
+3. **Per-scene cast ledger:** in the storyboard, explicitly list `characters_present`, `must_show`, `must_not_show`, and `plot_beat` for every scene. This prevents images that are aesthetically good but narratively wrong.
+4. **Keyframe preflight:** before generating all scenes, generate 2–4 high-risk keyframes using the cast sheet as reference: one group scene, one action/conflict scene, one joke/reversal scene, and one ending scene.
+5. **Vision QC before batch:** inspect the cast sheet and keyframes for: character count, recurring outfit/accessory consistency, correct house/material, correct action, child-safe tone, subtitle-safe composition, and no contradiction with the canonical plot. Regenerate failed keyframes before spending the full image budget.
+6. **Reference-based batch:** when supported, use the cast sheet and accepted keyframes as reference images for all scene generations. Repeat identity anchors in every prompt; do not rely on style alone.
+7. **Contact-sheet narrative QC:** after batch generation, build a numbered contact sheet and check every scene against the per-scene cast ledger. Mark each scene `pass`, `minor`, or `regenerate`. Regenerate any scene where the wrong characters appear, house type/action is wrong, or the punchline/plot beat is missing.
+8. **Continuity strengthening loop:** if the user says the characters are “better but not enough,” do not merely say it improved. Tighten the visual bible with stronger, visually checkable anchors, regenerate the weakest scenes, and preserve the improved prompt pattern in production notes or skill references.
 
 This gate is mandatory when the user reports that characters changed across images or that images do not match the script. A pretty but story-wrong frame is a failed frame.
 
@@ -179,6 +196,8 @@ Prepare TTS input separately from the full script:
 
 - Remove markdown, scene numbers, and image notes.
 - Keep punctuation that helps pacing.
+- Before rendering multiple versions/sessions, write a locked `voice_profile.json` or production-notes block with: TTS engine, exact voice ID, rate, pitch, sample rate, chunking mode (`global`, `per_scene`, `per_sentence`), pause policy, post-processing chain, and source script path. Do not silently switch voices or engines between sessions.
+- If two renders sound tonally different, first compare engine/voice/rate/pitch/sample-rate and chunking. `edge-tts zh-TW-HsiaoYuNeural` and macOS `say -v Meijia` will sound like different narrators; even the same `Meijia -r 165` can sound slightly different when rendered as one long file vs many per-sentence chunks because the synthesizer resets prosody at each chunk.
 - Add deliberate pauses using punctuation, provider-supported pause tags, or per-sentence audio chunking if available. Storybook narration should have micro-pauses between sentences, not only between big paragraphs; otherwise it still feels breathless even when scene transitions are aligned.
 - Generate one whole voiceover for simple projects, or one file per scene when scene/paragraph alignment matters. For illustrated storybook videos, per-scene narration is the preferred default once the first rough cut shows image/subtitle drift.
 - When using per-scene narration, insert explicit silence between scene audio segments during assembly instead of concatenating speech back-to-back. This gives viewers time to absorb the picture and makes paragraph boundaries feel intentional rather than rushed.
@@ -293,7 +312,9 @@ Default subtitle style:
 - High contrast: white text with dark stroke/shadow.
 - Bottom safe area, but avoid covering main subject; for storybook videos, place subtitles low enough to leave the main artwork open, while still inside TV/mobile safe margins. If the user says subtitles cover too much of the scene, move the subtitle box down before shrinking text.
 - Break captions by spoken phrase, not by arbitrary character count.
-- Keep Chinese closing punctuation with its sentence; do not allow orphan cues such as a standalone `」` or captions beginning with `」於是...`.
+- Keep Chinese closing punctuation with its sentence; do not allow orphan cues such as a standalone `」` / `』` / `）` / `】`, or captions beginning with a closing quote like `」於是...`.
+- **Mandatory quote-orphan QC:** before rendering and again after generating the final `.srt`, run an automated subtitle lint that fails if any subtitle line consists only of closing punctuation, starts with closing punctuation after a line break, or separates paired quotes across lines in a visually odd way. Merge the orphan punctuation into the previous line/cue and re-render. This was a previously fixed issue; do not regress.
+- For dialogue captions, prefer keeping the full speaker sentence together, e.g. `小尾巴說：「我們不要欺負小豬了。」` should not be split into `小尾巴說：「我們不要欺負小豬了` + `。」` or leave `」` alone. If necessary, use a dialogue-aware splitter that tracks `「...」` / `『...』` quote depth and emits the cue only after the closing quote; a slightly longer complete dialogue cue is better than strange chopped fragments.
 
 Alignment rule for illustrated story videos:
 
@@ -310,16 +331,25 @@ If the local ffmpeg build lacks `ass`, `subtitles`, or `drawtext` filters, do no
 
 When using the PIL renderer, verify the final MP4 with `ffprobe` because audio-filter duration choices can silently cut ending audio. Prefer padding/trim logic that makes video and audio durations match the intended timeline, e.g. `apad`, `amix=duration=longest`, then `atrim=0:<TOTAL>` and `-shortest`.
 
-## Phase 7.5 — Opening and Ending Cards
+## Phase 7.5 — Storybook Cover and Back Cover Cards
 
 For story videos, reserve timeline space unless the user declines:
 
-- Opening: 2–4 seconds with title, story mood, optional episode label.
-- Ending: 3–5 seconds with closing moral, credits, or CTA.
+- **Front cover:** 2–4 seconds with title, story mood, optional episode label/channel mark, and enough quiet lead-in before narration begins.
+- **Back cover / ending card:** 3–5 seconds with closing moral, credits, CTA, or channel/series identity.
+
+For children’s storybook videos, front cover and back cover are the default, not optional polish. Treat them as book-style assets that frame the episode. They should be listed in the storyboard/timeline, generated/QC’d like other key images, and included in the final contact-sheet review.
+
+Cover/back-cover production rules:
+
+1. Generate clean illustrated card backgrounds through the same image-generation path as the story scenes when possible.
+2. Prefer no baked-in AI text in the generated image. Overlay editable Traditional Chinese title/back-cover text during assembly so typography stays controllable.
+3. Keep title/subtitle/back-cover text inside safe margins; verify readability at YouTube thumbnail size and in-video size.
+4. Match the visual bible: palette, character design, storybook texture, and child-safe tone.
+5. Use the front cover as the upload thumbnail candidate when appropriate, but keep `thumbnail.png` as a separate export so YouTube upload can attach it explicitly.
+6. Keep narration/subtitle offsets aware of cover duration: subtitles should not start during the silent cover unless intentionally designed.
 
 These cards should match the visual bible and should be included in the storyboard timing so subtitle and narration offsets stay correct.
-
-For higher-quality story videos, generate opening and ending as real illustration assets through the same image-generation path as the story scenes, not as plain programmatic cards. The ending should unify the visual style and emotional closure of the episode. Generate without text/watermark, then overlay editable title/ending text during video assembly so typography stays controllable.
 
 ## Phase 8 — Video Assembly
 
@@ -328,8 +358,9 @@ Preferred simple assembly approach:
 - Use Python MoviePy or ffmpeg.
 - Set canvas to target aspect ratio.
 - For each scene, display the image for the narration segment duration plus its planned inter-scene breath gap.
-- Apply subtle motion: slow center zoom and gentle fades are the default for storybook videos.
-- Keep motion restrained for children's storybook videos; avoid shake, jitter, constant aggressive movement, and obvious directional wandering. Prefer about 2–4% slow center zoom over a scene with short fades or gentle dips between major beats. Add pan only when it clearly supports composition.
+- Apply subtle motion only when it is stable: slow center zoom and gentle fades are the default for storybook videos.
+- Keep motion restrained for children's storybook videos; avoid shake, jitter, constant aggressive movement, glitch effects, frame-to-frame random offsets, and obvious directional wandering. Prefer about 2–4% slow center zoom over a scene with short fades or gentle dips between major beats. Add pan only when it clearly supports composition.
+- **Mandatory motion stability QC:** if a render uses a custom PIL/frame loop, make the crop/scale path deterministic and subpixel-stable. Do not repeatedly resize from already-resized frames. Render each frame from the original source image with a monotonic easing function, round crop boxes consistently, and avoid per-frame randomization/noise. If the user reports trembling/jitter, disable Ken Burns motion or switch to a constant fit-to-frame hold/fade until stable zoom is verified. Do not add glitch, shake, chromatic aberration, scanline, or distortion effects unless the user explicitly asks for them. For children’s storybook videos, stability beats decorative motion.
 - Add voiceover.
 - Add subtitles.
 - Align subtitles to the actual rendered voiceover duration, not only the estimated script timing. If the voiceover starts after an opening card, offset subtitle timestamps by the opening duration.
@@ -391,6 +422,7 @@ OAuth pitfalls learned from live setup:
 - If the app is in Google OAuth **Testing**, add the signing-in Google account under **Audience → Test users** before retrying; otherwise Google returns `403 access_denied` / app not verified.
 - Google OAuth with PKCE requires persisting the generated `code_verifier` between `auth-url` and `auth-code`. If token exchange returns `invalid_grant: Missing code verifier`, regenerate the auth URL using a helper that stores pending state/verifier (the bundled helper writes `~/.hermes/youtube_oauth_pending.json`) and have the user authorize again.
 - OAuth codes are single-use and state-bound. If a helper is patched or the auth URL is regenerated, old redirect URLs cannot be reused.
+- `include_granted_scopes=true` can cause Google to return earlier upload permission together with newly requested manage permission. In `--manage` mode, request/expect both `youtube.upload` and `youtube.force-ssl`; otherwise oauthlib may reject token exchange with a scope-change error. After changing scopes, regenerate the auth URL and ask for a fresh redirect URL.
 
 macOS/Hermes gateway pitfall: a file in `~/Downloads` can exist but still fail with `PermissionError: [Errno 1] Operation not permitted` because the background agent lacks TCC permission for Downloads. If that happens, ask the user to copy the OAuth JSON into `~/.hermes/youtube_client_secret.json` themselves, then continue from there:
 
@@ -407,6 +439,7 @@ Publishing defaults for this user's story-video workflow:
 - Include title, description, child-directed/audience setting, tags, language, thumbnail/cover if available, and license notes.
 - For multiline descriptions, prefer `--description-file description.txt` or a real multiline shell string. The upload helper normalizes literal `\n` escapes into real newlines, but description files are less error-prone and should be the default for reusable pipeline publishing.
 - Preserve upload metadata in `production_notes.md` without storing tokens or client secrets.
+- After upload, verify the actual YouTube record before reporting success. Use `videos.list(part='snippet,status', id=VIDEO_ID)` with the existing OAuth token when possible and check at least: `uploadStatus`, `privacyStatus`, title, `madeForKids`/`selfDeclaredMadeForKids`, and thumbnail presence/status. Save a compact upload record JSON in the project directory; never include OAuth tokens or client secrets.
 
 ## Phase 9 — Iteration Loop
 
@@ -434,7 +467,9 @@ Record lessons in `production_notes.md`. If the workflow changes in a reusable w
 8. **Music too loud or added too early.** Voice must be dominant; for timing/debug passes, remove BGM/SFX until narration, subtitles, and image changes pass QC.
 9. **No verification pass.** Always inspect duration, audio, dimensions, and sample frames before delivery.
 10. **Overbuilding the first run.** Start with a small MVP, then improve automation after seeing failures.
-12. **Publishing automation failures are often OAuth state/config issues, not YouTube upload issues.** For local story-video uploaders, use a Desktop OAuth client, exact `http://localhost` redirect when that is what the JSON declares, add the account as a Test user while the app is in Testing, and persist PKCE `code_verifier` between auth URL generation and token exchange.
+11. **TTS tone differs between sessions.** Lock a `voice_profile.json`/notes block and compare exact engine, voice ID, rate, pitch, sample rate, chunking mode, and post-processing before assuming the model changed. Scene/sentence chunking can reset prosody even with the same voice.
+12. **Missing front cover/back cover in a storybook video.** Treat these as required story framing assets for children’s story videos; include them in storyboard, generation, QC, timeline offsets, and thumbnail/export planning.
+13. **Publishing automation failures are often OAuth state/config issues, not YouTube upload issues.** For local story-video uploaders, use a Desktop OAuth client, exact `http://localhost` redirect when that is what the JSON declares, add the account as a Test user while the app is in Testing, and persist PKCE `code_verifier` between auth URL generation and token exchange.
 
 ## MVP Recipe
 
@@ -443,18 +478,20 @@ Use this when the user wants to start quickly:
 1. Draft a `story_brief.md` with assumptions.
 2. Write a 60–120 second spoken script.
 3. Split into 6–10 scenes.
-4. Create a visual bible.
-5. Generate one image prompt per scene.
-6. Generate TTS voiceover, or ingest/clean the user's human-recorded narration.
-7. Generate scene images.
-8. Assemble MP4 with simple zoom/fade and subtitles.
-9. Deliver draft plus notes for next iteration.
+4. Create a visual bible, including front-cover/back-cover/card style rules.
+5. Generate cover/back-cover keyframes plus one or two scene keyframes; QC before full batch.
+6. Generate one image prompt per scene.
+7. Generate TTS voiceover with a locked voice profile, or ingest/clean the user's human-recorded narration.
+8. Generate scene images.
+9. Assemble MP4 with simple zoom/fade and subtitles.
+10. Deliver draft plus notes for next iteration.
 
 ## References
 
 - `references/three-little-pigs-v3-render-notes.md` — concrete v3 MVP notes for a 16:9 children’s storybook video using Meijia draft narration, estimated subtitle timing, illustrated front/back covers, and an audible-but-subordinate BGM/SFX mix.
 - `references/three-little-pigs-v4-scene-alignment-notes.md` — concrete v4/v5 notes for fixing drift with scene-by-scene narration, paragraph-level subtitle/image alignment, deliberate inter-scene silent breath gaps, stable slow zoom, and no BGM/SFX during timing QC.
 - `references/three-wolves-story-draft-notes.md` — session notes for a Traditional Chinese children's story video: light pacing, preserving the user's unlocked-door joke, using more images at situation changes, contact-sheet vision QC, and avoiding ffmpeg concat duration drift from mixed-rate MP3s.
+- `references/youtube-metadata-repair-notes.md` — YouTube description newline repair and management-scope OAuth notes, including `include_granted_scopes` returning combined `youtube.upload` + `youtube.force-ssl` scopes and the need to preserve existing snippet fields during `videos.update`.
 - `templates/scene_aligned_pauses_timeline.py` — reusable starter pattern for per-scene TTS, explicit silence pads, separate `speech_ranges`/`visual_ranges`, and duration probing with `ffprobe`.
 - `scripts/youtube_oauth.py` — reusable narrow-scope YouTube upload OAuth helper for story-video publishing (`youtube.upload` token, Desktop-app `http://localhost` redirect, PKCE pending verifier/state persistence).
 - `scripts/youtube_upload.py` — reusable YouTube upload helper using `~/.hermes/youtube_token.json`; supports title, description, privacy, made-for-kids flag, tags, category, and optional thumbnail. Thumbnail setting can briefly fail right after upload because YouTube has not indexed the new private video yet; the helper retries thumbnail upload before reporting final status.
@@ -466,8 +503,8 @@ Before telling the user the video is ready:
 - [ ] Script is spoken-language friendly.
 - [ ] Scene count and duration match requested length.
 - [ ] Visual bible exists before image prompts.
-- [ ] All required images exist and pass basic visual QC.
-- [ ] Voiceover exists, duration is plausible, and language is correct. If human-recorded, the cleaned file is complete, unclipped, and free of obvious retakes.
+- [ ] All required images exist and pass basic visual QC, including front cover and back cover / ending card for storybook videos.
+- [ ] Voiceover exists, duration is plausible, language is correct, and voice profile matches the project’s locked TTS/human narration settings. If human-recorded, the cleaned file is complete, unclipped, and free of obvious retakes.
 - [ ] Subtitles exist or user explicitly declined subtitles.
 - [ ] Final MP4 exists.
 - [ ] MP4 duration, dimensions, video stream, and audio stream are verified.
