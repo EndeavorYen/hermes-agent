@@ -378,6 +378,13 @@ python scripts/youtube_oauth.py auth-code 'http://localhost/?code=...'
 python scripts/youtube_oauth.py check
 ```
 
+For existing-video metadata repair after upload, generate a new token with the broader management scope:
+
+```bash
+python scripts/youtube_oauth.py auth-url --client-secret ~/.hermes/youtube_client_secret.json --manage
+python scripts/youtube_oauth.py auth-code 'http://localhost/?code=...'
+```
+
 OAuth pitfalls learned from live setup:
 
 - `redirect_uri_mismatch` usually means the OAuth client type/redirect URI is wrong. For this local uploader, prefer a **Desktop app** client whose JSON has top-level `installed` and usually `redirect_uris: ["http://localhost"]`; update the helper redirect URI to match exactly.
@@ -398,6 +405,7 @@ Publishing defaults for this user's story-video workflow:
 - Treat YouTube upload as a real external side effect: after OAuth is authenticated, still ask for explicit approval of the exact file and metadata before the first upload unless the user has already authorized autonomous publishing for that project.
 - Use `private` or `unlisted` for first automated uploads.
 - Include title, description, child-directed/audience setting, tags, language, thumbnail/cover if available, and license notes.
+- For multiline descriptions, prefer `--description-file description.txt` or a real multiline shell string. The upload helper normalizes literal `\n` escapes into real newlines, but description files are less error-prone and should be the default for reusable pipeline publishing.
 - Preserve upload metadata in `production_notes.md` without storing tokens or client secrets.
 
 ## Phase 9 — Iteration Loop

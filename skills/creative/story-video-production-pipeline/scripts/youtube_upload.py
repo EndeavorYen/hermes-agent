@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
-"""Upload videos to YouTube using Hermes' narrow youtube.upload OAuth token."""
+"""Upload videos to YouTube using Hermes' narrow youtube.upload OAuth token.
+
+Usage:
+  python ~/.hermes/scripts/youtube_upload.py \
+    --file /path/video.mp4 \
+    --title 'Title' \
+    --description 'Description' \
+    --privacy private \
+    --made-for-kids false \
+    --thumbnail /path/thumb.png
+"""
 from __future__ import annotations
 
 import argparse
@@ -52,11 +62,17 @@ def parse_bool(v: str) -> bool:
     raise argparse.ArgumentTypeError("expected true/false")
 
 
+def normalize_description_text(s: str) -> str:
+    """Convert common shell/chat escaped newlines into real newlines for YouTube descriptions."""
+    return s.replace("\\r\\n", "\n").replace("\\n", "\n")
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--file", required=True, help="Video file to upload")
     p.add_argument("--title", required=True)
     p.add_argument("--description", default="")
+    p.add_argument("--description-file", default="", help="Read description from a UTF-8 text file; preferred for multiline descriptions")
     p.add_argument("--privacy", choices=["private", "unlisted", "public"], default="private")
     p.add_argument("--made-for-kids", type=parse_bool, default=False)
     p.add_argument("--tags", default="", help="Comma-separated tags")
@@ -78,11 +94,19 @@ def main() -> int:
     creds = load_creds()
     youtube = build("youtube", "v3", credentials=creds)
 
+    if args.description_file:
+        desc_path = Path(args.description_file).expanduser()
+        if not desc_path.exists():
+            raise SystemExit(f"description file not found: {desc_path}")
+        description = desc_path.read_text(encoding="utf-8")
+    else:
+        description = normalize_description_text(args.description)
+
     tags = [t.strip() for t in args.tags.split(",") if t.strip()]
     body = {
         "snippet": {
             "title": args.title,
-            "description": args.description,
+            "description": description,
             "tags": tags,
             "categoryId": args.category_id,
         },
@@ -105,7 +129,7 @@ def main() -> int:
     if thumb:
         thumb_mime = mimetypes.guess_type(str(thumb))[0] or "image/png"
         last_error = None
-        for _attempt in range(1, 7):
+        for attempt in range(1, 7):
             try:
                 youtube.thumbnails().set(
                     videoId=video_id,
