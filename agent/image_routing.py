@@ -85,19 +85,136 @@ def _canonical_reference_path(path: str) -> str:
         return str(Path(path).expanduser())
 
 
+def _load_user_config() -> Dict[str, Any]:
+    """Best-effort config.yaml loader for image-reference policy."""
+    try:
+        from hermes_cli.config import read_raw_config
+
+        data = read_raw_config()
+        return data if isinstance(data, dict) else {}
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        logger.debug("image_routing: failed to load config.yaml for reference policy: %s", exc)
+        return {}
+
+
+def _local_reference_config(cfg: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if cfg is None:
+        cfg = _load_user_config()
+    if not isinstance(cfg, dict):
+        return {}
+    image_gen = cfg.get("image_gen") or {}
+    if not isinstance(image_gen, dict):
+        return {}
+    local_refs = image_gen.get("local_reference_images") or {}
+    return local_refs if isinstance(local_refs, dict) else {}
+
+
+def _image_magic_mime(header: bytes) -> Optional[str]:
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if header.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if header.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if header.startswith(b"BM"):
+        return "image/bmp"
+    if header.startswith((b"II*\x00", b"MM\x00*")):
+        return "image/tiff"
+    if len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def _is_image_path(path: Path) -> bool:
+    try:
+        with path.open("rb") as f:
+            header = f.read(32)
+    except OSError:
+        return False
+    return _image_magic_mime(header) is not None
+
+
+def _resolve_existing_image(path_value: Any) -> Optional[Path]:
+    if not isinstance(path_value, str) or not path_value.strip():
+        return None
+    try:
+        path = Path(path_value).expanduser().resolve(strict=True)
+    except Exception:
+        return None
+    if not path.is_file() or not _is_image_path(path):
+        return None
+    return path
+
+
+def _configured_named_ref_path(local_refs: Dict[str, Any], name: str) -> Optional[str]:
+    refs = local_refs.get("refs") or {}
+    if not isinstance(refs, dict):
+        return None
+    raw = refs.get(name)
+    if isinstance(raw, dict):
+        raw = raw.get("path")
+    path = _resolve_existing_image(raw)
+    return str(path) if path is not None else None
+
+
+def _configured_root_path(local_refs: Dict[str, Any], value: str) -> Optional[str]:
+    if local_refs.get("allow_absolute_paths") is not True:
+        return None
+    try:
+        candidate = Path(value).expanduser()
+    except Exception:
+        return None
+    if not candidate.is_absolute():
+        return None
+    requested = _resolve_existing_image(value)
+    if requested is None:
+        return None
+    roots = local_refs.get("roots") or []
+    if isinstance(roots, str):
+        roots = [roots]
+    if not isinstance(roots, list):
+        return None
+    for root_value in roots:
+        if not isinstance(root_value, str) or not root_value.strip():
+            continue
+        try:
+            root = Path(root_value).expanduser().resolve(strict=True)
+        except Exception:
+            continue
+        if not root.is_dir():
+            continue
+        try:
+            requested.relative_to(root)
+        except ValueError:
+            continue
+        return str(requested)
+    return None
+
+
+def _invalid_reference_error(value: str) -> ValueError:
+    return ValueError(
+        "Reference images must be current-turn uploaded images or explicitly "
+        "enabled local references. Use current_turn_images, current_turn_image:N, "
+        "or configure image_gen.local_reference_images for local_ref:<name> / "
+        f"allowlisted local paths: {value}"
+    )
+
+
 def resolve_image_reference_paths(
     reference_images: Any,
     *,
     default_to_current: bool = False,
+    cfg: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
     """Resolve explicit/sentinel image references to local path strings.
 
     ``current_turn_images`` expands to all images uploaded on the active turn;
     ``current_turn_image:N`` expands to a single zero-based item.
 
-    Arbitrary local paths are intentionally rejected. Tool-call arguments are
-    model-controlled, so reference images must come from the user-uploaded
-    images already attached to this turn.
+    Arbitrary local paths are intentionally rejected by default. Tool-call
+    arguments are model-controlled, so local references must either come from
+    current-turn user uploads or an explicit ``image_gen.local_reference_images``
+    opt-in in config.yaml.
     """
     current = get_current_image_reference_paths()
     current_lookup: Dict[str, str] = {}
@@ -106,6 +223,8 @@ def resolve_image_reference_paths(
             continue
         current_lookup[path] = path
         current_lookup[_canonical_reference_path(path)] = path
+    local_refs = _local_reference_config(cfg)
+    local_refs_enabled = local_refs.get("enabled") is True
 
     raw_refs = reference_images
     if raw_refs is None or raw_refs == "":
@@ -148,11 +267,18 @@ def resolve_image_reference_paths(
         if matched_current:
             resolved.append(matched_current)
             continue
-        raise ValueError(
-            "Reference images must be current-turn uploaded images. "
-            "Use current_turn_images or current_turn_image:N instead of "
-            f"arbitrary local paths: {value}"
-        )
+        if local_refs_enabled and lowered.startswith("local_ref:"):
+            _, _, ref_name = value.partition(":")
+            named_path = _configured_named_ref_path(local_refs, ref_name.strip())
+            if named_path:
+                resolved.append(named_path)
+                continue
+        if local_refs_enabled:
+            rooted_path = _configured_root_path(local_refs, value)
+            if rooted_path:
+                resolved.append(rooted_path)
+                continue
+        raise _invalid_reference_error(value)
 
     deduped: List[str] = []
     seen = set()

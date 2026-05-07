@@ -107,6 +107,120 @@ class TestResolveImageReferencePaths:
         with pytest.raises(ValueError, match="current-turn uploaded images"):
             resolve_image_reference_paths([str(secret)])
 
+    def test_local_ref_registry_requires_opt_in(self, tmp_path: Path):
+        ref = tmp_path / "character.png"
+        ref.write_bytes(_png_bytes())
+        cfg = {
+            "image_gen": {
+                "local_reference_images": {
+                    "enabled": False,
+                    "refs": {"character": str(ref)},
+                }
+            }
+        }
+        with pytest.raises(ValueError, match="current-turn uploaded images"):
+            resolve_image_reference_paths(["local_ref:character"], cfg=cfg)
+
+    def test_local_ref_registry_accepts_named_image_when_enabled(self, tmp_path: Path):
+        ref = tmp_path / "character.png"
+        ref.write_bytes(_png_bytes())
+        cfg = {
+            "image_gen": {
+                "local_reference_images": {
+                    "enabled": True,
+                    "refs": {"character": str(ref)},
+                }
+            }
+        }
+        assert resolve_image_reference_paths(["local_ref:character"], cfg=cfg) == [str(ref.resolve())]
+
+    def test_allowlisted_root_accepts_absolute_path_when_explicitly_enabled(self, tmp_path: Path):
+        root = tmp_path / "refs"
+        root.mkdir()
+        ref = root / "scene_02.png"
+        ref.write_bytes(_png_bytes())
+        cfg = {
+            "image_gen": {
+                "local_reference_images": {
+                    "enabled": True,
+                    "allow_absolute_paths": True,
+                    "roots": [str(root)],
+                }
+            }
+        }
+        assert resolve_image_reference_paths([str(ref)], cfg=cfg) == [str(ref.resolve())]
+
+    def test_allowlisted_root_rejects_symlink_escape(self, tmp_path: Path):
+        root = tmp_path / "refs"
+        root.mkdir()
+        outside = tmp_path / "private.png"
+        outside.write_bytes(_png_bytes())
+        link = root / "escape.png"
+        link.symlink_to(outside)
+        cfg = {
+            "image_gen": {
+                "local_reference_images": {
+                    "enabled": True,
+                    "allow_absolute_paths": True,
+                    "roots": [str(root)],
+                }
+            }
+        }
+        with pytest.raises(ValueError, match="current-turn uploaded images"):
+            resolve_image_reference_paths([str(link)], cfg=cfg)
+
+    def test_allowlisted_root_rejects_non_images(self, tmp_path: Path):
+        root = tmp_path / "refs"
+        root.mkdir()
+        ref = root / "notes.txt"
+        ref.write_text("not an image")
+        cfg = {
+            "image_gen": {
+                "local_reference_images": {
+                    "enabled": True,
+                    "allow_absolute_paths": True,
+                    "roots": [str(root)],
+                }
+            }
+        }
+        with pytest.raises(ValueError, match="current-turn uploaded images"):
+            resolve_image_reference_paths([str(ref)], cfg=cfg)
+
+    def test_allowlisted_root_rejects_disguised_non_image(self, tmp_path: Path):
+        root = tmp_path / "refs"
+        root.mkdir()
+        ref = root / "notes.png"
+        ref.write_text("not actually an image")
+        cfg = {
+            "image_gen": {
+                "local_reference_images": {
+                    "enabled": True,
+                    "allow_absolute_paths": True,
+                    "roots": [str(root)],
+                }
+            }
+        }
+        with pytest.raises(ValueError, match="current-turn uploaded images"):
+            resolve_image_reference_paths([str(ref)], cfg=cfg)
+
+    def test_allowlisted_root_rejects_relative_paths(self, tmp_path: Path, monkeypatch):
+        root = tmp_path / "refs"
+        root.mkdir()
+        ref = root / "scene_02.png"
+        ref.write_bytes(_png_bytes())
+        monkeypatch.chdir(root)
+        cfg = {
+            "image_gen": {
+                "local_reference_images": {
+                    "enabled": True,
+                    "allow_absolute_paths": True,
+                    "roots": [str(root)],
+                }
+            }
+        }
+        with pytest.raises(ValueError, match="current-turn uploaded images"):
+            resolve_image_reference_paths(["scene_02.png"], cfg=cfg)
+
 
 # ─── decide_image_input_mode ─────────────────────────────────────────────────
 

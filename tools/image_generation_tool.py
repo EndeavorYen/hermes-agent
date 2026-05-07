@@ -880,12 +880,16 @@ IMAGE_GENERATE_SCHEMA = {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "Optional current-turn reference image sentinels. Use "
+                    "Optional reference image sentinels. Use "
                     "'current_turn_images' to use all images the user uploaded "
                     "on the current turn, or 'current_turn_image:0' for the "
-                    "first uploaded image. If omitted while the current user "
-                    "turn has uploaded images, those images are used as "
-                    "references by default."
+                    "first uploaded image. When explicitly enabled in "
+                    "config.yaml, 'local_ref:<name>' may reference a named "
+                    "image_gen.local_reference_images.refs entry, and absolute "
+                    "paths are accepted only when allow_absolute_paths is true "
+                    "and the resolved file is under an allowlisted root. If "
+                    "omitted while the current user turn has uploaded images, "
+                    "those images are used as references by default."
                 ),
                 "default": [],
             },
