@@ -55,7 +55,8 @@ For a complete run, produce these artifacts unless the user asks for a narrower 
 7. `images/cover.*` / `images/back_cover.*` — storybook-style front cover and back cover / ending card assets unless the user explicitly declines them.
 8. `subtitles.srt` or `.vtt` — captions aligned to narration.
 9. `video/final.mp4` — assembled draft video.
-10. `production_notes.md` — what worked, what failed, and prompt/style changes for next iteration.
+10. `video/final_qa.md` — post-render QA, including `ffprobe` facts, sampled-frame checks, and `video_analyze` findings when the video toolset is available.
+11. `production_notes.md` — what worked, what failed, and prompt/style changes for next iteration.
 
 Recommended skill architecture for repeatable projects:
 
@@ -402,6 +403,12 @@ Basic ffmpeg/MoviePy verification:
 - Spot-check at least one planned inter-scene pause frame: it should usually hold the previous/owning scene image with no subtitle, not flash blank or jump early to the next scene.
 - Ensure subtitles are readable.
 
+Hermes-native video QA:
+
+- When the `video` toolset is available, run `video_analyze` on the final MP4 before calling it ready. Ask it to check story continuity, visible character consistency, subtitle readability, audio/video pacing, blank frames, scary/unsafe imagery, text artifacts, and whether the first/middle/ending beats match the storyboard.
+- Save the model's findings in `video/final_qa.md` alongside deterministic checks (`ffprobe`, sampled frames, contact-sheet review). Treat this as a second-pass reviewer, not a replacement for checking concrete media files.
+- If `video_analyze` flags a content mismatch, regenerate or re-edit the failing scene before publishing. If it flags only subjective style preferences, record them in `production_notes.md` and ask the user when the tradeoff is aesthetic.
+
 ## Phase 8.5 — YouTube Publishing Automation
 
 When the user wants Hermes to upload story-video outputs to YouTube automatically, treat publishing as a separate gated phase after render QC. Do not upload before the final MP4 has been verified and the user has approved title/description/visibility unless they explicitly authorized autonomous publishing for this project.
@@ -482,7 +489,7 @@ After each draft, review along these axes:
 6. **Subtitle readability:** readable on mobile?
 7. **Production efficiency:** which steps were manual and should be automated next?
 
-Record lessons in `production_notes.md`. If the workflow changes in a reusable way, update this skill.
+Record `video_analyze` output and deterministic checks in `video/final_qa.md`, then put reusable production lessons in `production_notes.md`. If the workflow changes in a reusable way, update this skill.
 
 ## Common Pitfalls
 
@@ -541,4 +548,5 @@ Before telling the user the video is ready:
 - [ ] Final MP4 exists.
 - [ ] MP4 duration, dimensions, video stream, and audio stream are verified.
 - [ ] Opening/middle/ending frames are spot-checked.
+- [ ] `video/final_qa.md` exists, and includes `video_analyze` findings when the `video` toolset was available.
 - [ ] Production notes capture reusable improvements for next run.
