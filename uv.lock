@@ -8,6 +8,10 @@ resolution-markers = [
     "python_full_version < '3.12'",
 ]
 
+[options]
+exclude-newer = "2026-05-03T17:27:07.589606Z"
+exclude-newer-span = "P7D"
+
 [[package]]
 name = "agent-client-protocol"
 version = "0.9.0"
@@ -1950,7 +1954,7 @@ wheels = [
 
 [[package]]
 name = "hermes-agent"
-version = "0.12.0"
+version = "0.13.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
