@@ -1,4 +1,5 @@
 import json
+import sqlite3
 
 
 def test_layer2_store_is_available_from_shared_memory_package(tmp_path):
@@ -130,6 +131,44 @@ def test_layer2_payload_demotes_recurrence_without_linked_observation(tmp_path):
     assert candidate["support_count"] == 0
     assert events[0]["counts_for_recurrence"] == 0
     assert events[0]["support_delta"] == 0
+
+
+def test_unbacked_strengthen_does_not_reactivate_quarantined_candidate(tmp_path):
+    from memory.layer2_store import Layer2Store
+
+    canonical_text = "Quarantined questions require fresh behavior evidence before reactivation"
+    store = Layer2Store(tmp_path / "layer2.sqlite3")
+    store.record_event(
+        event_type="create",
+        canonical_text=canonical_text,
+        kind="question",
+        proposed_target="memory",
+        source_ref="test:seed",
+        source_event_id="seed-1",
+    )
+    with sqlite3.connect(store.db_path) as conn:
+        conn.execute(
+            "UPDATE candidates SET status = 'quarantine', support_count = 8 WHERE canonical_text = ?",
+            (canonical_text,),
+        )
+
+    result = store.record_event(
+        event_type="strengthen",
+        canonical_text=canonical_text,
+        kind="question",
+        proposed_target="memory",
+        source_ref="test:professor-review",
+        source_event_id="unbacked-review-1",
+        counts_for_recurrence=False,
+    )
+
+    candidate = store.get_candidate(canonical_text)
+    events = store.list_events(canonical_text)
+    assert result["audit_label"] == "candidate_strengthened"
+    assert candidate["status"] == "quarantine"
+    assert candidate["support_count"] == 8
+    assert events[-1]["counts_for_recurrence"] == 0
+    assert events[-1]["support_delta"] == 0
 
 
 def test_layer2_payload_counts_recurrence_with_linked_observation(tmp_path):

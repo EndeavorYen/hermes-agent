@@ -896,13 +896,6 @@ class Layer2Store:
         support_delta = 1 if effective_counts_for_recurrence and event_name in {"create", "strengthen"} else 0
         contradict_delta = 1 if effective_counts_for_recurrence and event_name == "contradict" else 0
         next_status = status
-        if next_status is None:
-            if event_name == "prune":
-                next_status = "pruned"
-            elif event_name == "promote":
-                next_status = "promoted"
-            else:
-                next_status = "active"
 
         with self._connect() as conn:
             row = conn.execute(
@@ -911,6 +904,17 @@ class Layer2Store:
             ).fetchone()
             created = row is None
             candidate_id = row["id"] if row is not None else None
+            if next_status is None:
+                if event_name == "prune":
+                    next_status = "pruned"
+                elif event_name == "promote":
+                    next_status = "promoted"
+                elif row is not None:
+                    # Do not implicitly reactivate quarantined/stale/pruned candidates when a
+                    # later non-transition event merely mentions or strengthens the same text.
+                    next_status = row["status"]
+                else:
+                    next_status = "active"
             if (
                 candidate_id is not None
                 and effective_counts_for_recurrence
