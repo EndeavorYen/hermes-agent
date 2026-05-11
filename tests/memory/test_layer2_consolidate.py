@@ -127,3 +127,164 @@ def test_consolidate_prunes_old_stale_low_support_and_is_idempotent(tmp_path):
     assert candidate["status"] == "pruned"
     assert any(item["audit_label"] == "candidate_pruned" for item in first)
     assert not any(item["audit_label"] == "candidate_pruned" for item in second)
+
+
+def test_consolidate_forced_exit_quarantines_old_high_support_questions(tmp_path):
+    store = Layer2Store(tmp_path / "layer2.sqlite3")
+    question = "What forced-exit rule should govern WATCH/PROMOTE_LATER candidates?"
+    store.record_event(
+        event_type="create",
+        canonical_text=question,
+        kind="question",
+        source_event_id="evt-0",
+        job_id="nightly-professor-question-distillation",
+        event_ts="2026-04-01T00:00:00+00:00",
+    )
+    for idx in range(1, 8):
+        store.record_event(
+            event_type="strengthen",
+            canonical_text=question,
+            kind="question",
+            source_event_id=f"evt-{idx}",
+            job_id="nightly-professor-question-distillation",
+            event_ts=f"2026-04-{(idx * 2) + 1:02d}T00:00:00+00:00",
+        )
+
+    audits = consolidate_layer2(store=store, now="2026-04-20T00:00:00+00:00")
+
+    candidate = store.get_candidate(question)
+    assert candidate["support_count"] == 8
+    assert candidate["status"] == "quarantine"
+    assert any(item["audit_label"] == "question_forced_exit_quarantined" for item in audits)
+    assert store.query_candidates_for_pack(query_text="forced exit", min_support_count=2) == []
+
+
+def test_consolidate_forced_exit_quarantine_is_idempotent(tmp_path):
+    store = Layer2Store(tmp_path / "layer2.sqlite3")
+    question = "What transition table prevents endless WATCH?"
+    store.record_event(
+        event_type="create",
+        canonical_text=question,
+        kind="question",
+        source_event_id="evt-0",
+        event_ts="2026-04-01T00:00:00+00:00",
+    )
+    for idx in range(1, 8):
+        store.record_event(
+            event_type="strengthen",
+            canonical_text=question,
+            kind="question",
+            source_event_id=f"evt-{idx}",
+            event_ts=f"2026-04-{idx + 1:02d}T00:00:00+00:00",
+        )
+
+    first = consolidate_layer2(store=store, now="2026-04-20T00:00:00+00:00")
+    second = consolidate_layer2(store=store, now="2026-04-20T00:00:00+00:00")
+
+    assert store.get_candidate(question)["status"] == "quarantine"
+    assert any(item["audit_label"] == "question_forced_exit_quarantined" for item in first)
+    assert not any(item["audit_label"] == "question_forced_exit_quarantined" for item in second)
+
+
+def test_consolidate_forced_exit_only_applies_to_questions(tmp_path):
+    store = Layer2Store(tmp_path / "layer2.sqlite3")
+    observation = "Use value-of-information before additional research"
+    store.record_event(
+        event_type="create",
+        canonical_text=observation,
+        kind="observation",
+        source_event_id="evt-0",
+        event_ts="2026-04-01T00:00:00+00:00",
+    )
+    for idx in range(1, 8):
+        store.record_event(
+            event_type="strengthen",
+            canonical_text=observation,
+            kind="observation",
+            source_event_id=f"evt-{idx}",
+            event_ts=f"2026-04-{idx + 1:02d}T00:00:00+00:00",
+        )
+
+    audits = consolidate_layer2(store=store, now="2026-04-20T00:00:00+00:00")
+
+    assert store.get_candidate(observation)["support_count"] == 8
+    assert store.get_candidate(observation)["status"] == "active"
+    assert not any(item["audit_label"] == "question_forced_exit_quarantined" for item in audits)
+
+
+def test_consolidate_forced_exit_keeps_recent_high_support_questions_active(tmp_path):
+    store = Layer2Store(tmp_path / "layer2.sqlite3")
+    question = "What new evidence should trigger promotion?"
+    store.record_event(
+        event_type="create",
+        canonical_text=question,
+        kind="question",
+        source_event_id="evt-0",
+        event_ts="2026-04-10T00:00:00+00:00",
+    )
+    for idx in range(1, 8):
+        store.record_event(
+            event_type="strengthen",
+            canonical_text=question,
+            kind="question",
+            source_event_id=f"evt-{idx}",
+            event_ts=f"2026-04-{10 + idx:02d}T00:00:00+00:00",
+        )
+
+    audits = consolidate_layer2(store=store, now="2026-04-20T00:00:00+00:00")
+
+    assert store.get_candidate(question)["support_count"] == 8
+    assert store.get_candidate(question)["status"] == "active"
+    assert not any(item["audit_label"] == "question_forced_exit_quarantined" for item in audits)
+
+
+def test_consolidate_forced_exit_accepts_case_and_whitespace_kind_variants(tmp_path):
+    store = Layer2Store(tmp_path / "layer2.sqlite3")
+    question = "Which evidence exits sandbox validation?"
+    store.record_event(
+        event_type="create",
+        canonical_text=question,
+        kind=" Question ",
+        source_event_id="evt-0",
+        event_ts="2026-04-01T00:00:00+00:00",
+    )
+    for idx in range(1, 8):
+        store.record_event(
+            event_type="strengthen",
+            canonical_text=question,
+            kind="QUESTION",
+            source_event_id=f"evt-{idx}",
+            event_ts=f"2026-04-{idx + 1:02d}T00:00:00+00:00",
+        )
+
+    audits = consolidate_layer2(store=store, now="2026-04-20T00:00:00+00:00")
+
+    assert store.get_candidate(question)["status"] == "quarantine"
+    assert any(item["audit_label"] == "question_forced_exit_quarantined" for item in audits)
+
+
+def test_consolidate_forced_exit_keeps_below_threshold_questions_active(tmp_path):
+    store = Layer2Store(tmp_path / "layer2.sqlite3")
+    question = "What evidence proves this candidate changed behavior?"
+    store.record_event(
+        event_type="create",
+        canonical_text=question,
+        kind="question",
+        source_event_id="evt-0",
+        event_ts="2026-04-01T00:00:00+00:00",
+    )
+    for idx in range(1, 7):
+        store.record_event(
+            event_type="strengthen",
+            canonical_text=question,
+            kind="question",
+            source_event_id=f"evt-{idx}",
+            event_ts=f"2026-04-{(idx * 2) + 1:02d}T00:00:00+00:00",
+        )
+
+    audits = consolidate_layer2(store=store, now="2026-04-30T00:00:00+00:00")
+
+    candidate = store.get_candidate(question)
+    assert candidate["support_count"] == 7
+    assert candidate["status"] == "active"
+    assert not any(item["audit_label"] == "question_forced_exit_quarantined" for item in audits)

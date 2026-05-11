@@ -57,6 +57,8 @@ def consolidate_layer2(
     now: Optional[str | datetime] = None,
     stale_after_days: int = 14,
     prune_after_days: int = 30,
+    question_forced_exit_support_threshold: int = 8,
+    question_forced_exit_after_days: int = 14,
     job_id: str = "nightly-layer2-consolidate",
 ) -> List[Dict[str, Any]]:
     """Run deterministic, idempotent Layer-2 hygiene.
@@ -64,6 +66,7 @@ def consolidate_layer2(
     Actions:
     - merge deterministic canonical-key collisions
     - active -> quarantined if contradictions dominate support
+    - active high-support question -> quarantined if still unresolved after forced-exit TTL
     - active -> stale if low-support and unsupported for stale_after_days
     - stale -> pruned if still low-support after prune_after_days
 
@@ -81,6 +84,7 @@ def consolidate_layer2(
     now_s = _iso(now_dt)
     stale_cutoff = _iso(now_dt - timedelta(days=stale_after_days))
     prune_cutoff = _iso(now_dt - timedelta(days=prune_after_days))
+    forced_exit_cutoff = _iso(now_dt - timedelta(days=question_forced_exit_after_days))
 
     audits: List[Dict[str, Any]] = []
     audits.extend(ledger.merge_canonical_key_collisions())
@@ -117,6 +121,51 @@ def consolidate_layer2(
                     "canonical_text": row["canonical_text"],
                     "support_count": row["support_count"],
                     "contradict_count": row["contradict_count"],
+                }
+            )
+
+        # Quarantine long-running high-support questions that keep receiving
+        # attention without leaving WATCH/PROMOTE_LATER. The TTL is anchored on
+        # created_at, not last support/update time, because repeated support is
+        # the stagnation signal this rule is designed to stop. This is
+        # intentionally non-promotional: the item stops surfacing as active
+        # context until a human or later workflow supplies an executable
+        # transition table or records a new, narrower candidate.
+        rows = conn.execute(
+            """
+            SELECT * FROM candidates
+            WHERE status = 'active'
+              AND lower(trim(COALESCE(kind, ''))) = 'question'
+              AND support_count >= ?
+              AND created_at <= ?
+            ORDER BY support_count DESC, id ASC
+            """,
+            (question_forced_exit_support_threshold, forced_exit_cutoff),
+        ).fetchall()
+        for row in rows:
+            conn.execute(
+                "UPDATE candidates SET status = 'quarantine', updated_at = ? WHERE id = ?",
+                (now_s, row["id"]),
+            )
+            _event(
+                conn,
+                candidate_id=row["id"],
+                event_type="forced_exit_quarantine",
+                event_ts=now_s,
+                notes=(
+                    "high-support unresolved question exceeded forced-exit TTL; "
+                    "requires executable transition evidence before reactivation"
+                ),
+                job_id=job_id,
+            )
+            audits.append(
+                {
+                    "audit_label": "question_forced_exit_quarantined",
+                    "candidate_id": row["id"],
+                    "canonical_text": row["canonical_text"],
+                    "support_count": row["support_count"],
+                    "age_days_threshold": question_forced_exit_after_days,
+                    "support_threshold": question_forced_exit_support_threshold,
                 }
             )
 
