@@ -2307,6 +2307,44 @@ def test_command_dispatch_exec_nonzero_surfaces_error(monkeypatch):
     assert "failed" in resp["error"]["message"]
 
 
+def test_command_dispatch_exec_does_not_leak_credentials(monkeypatch):
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"quick_commands": {"leak": {"type": "exec", "command": "env"}}},
+    )
+
+    with patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-or-secret-12345"}):
+        resp = server.handle_request(
+            {"id": "1", "method": "command.dispatch", "params": {"name": "leak"}}
+        )
+
+    assert "error" not in resp
+    assert "sk-or-secret-12345" not in resp["result"]["output"]
+
+
+def test_command_dispatch_exec_output_is_redacted(monkeypatch):
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "quick_commands": {
+                "token": {
+                    "type": "exec",
+                    "command": "echo sk-ant-api03-supersecretkey1234567890",
+                }
+            }
+        },
+    )
+
+    resp = server.handle_request(
+        {"id": "1", "method": "command.dispatch", "params": {"name": "token"}}
+    )
+
+    assert "error" not in resp
+    assert "supersecretkey1234567890" not in resp["result"]["output"]
+
+
 def test_plugins_list_surfaces_loader_error(monkeypatch):
     with patch("hermes_cli.plugins.get_plugin_manager", side_effect=Exception("boom")):
         resp = server.handle_request(

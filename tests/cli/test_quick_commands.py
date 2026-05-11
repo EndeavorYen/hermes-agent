@@ -60,6 +60,30 @@ class TestCLIQuickCommands:
         # stderr fallback — should print something
         cli.console.print.assert_called_once()
 
+    def test_exec_command_does_not_leak_credentials(self):
+        cli = self._make_cli({"leak": {"type": "exec", "command": "env"}})
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-or-secret-12345"}):
+            result = cli.process_command("/leak")
+
+        assert result is True
+        cli.console.print.assert_called_once()
+        printed = self._printed_plain(cli.console.print.call_args[0][0])
+        assert "sk-or-secret-12345" not in printed
+
+    def test_exec_command_output_is_redacted(self):
+        cli = self._make_cli({
+            "token": {
+                "type": "exec",
+                "command": "echo sk-ant-api03-supersecretkey1234567890",
+            }
+        })
+        result = cli.process_command("/token")
+
+        assert result is True
+        cli.console.print.assert_called_once()
+        printed = self._printed_plain(cli.console.print.call_args[0][0])
+        assert "supersecretkey1234567890" not in printed
+
     def test_exec_command_no_output_shows_fallback(self):
         cli = self._make_cli({"empty": {"type": "exec", "command": "true"}})
         cli.process_command("/empty")
