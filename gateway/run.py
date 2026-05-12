@@ -15638,8 +15638,34 @@ class GatewayRunner:
                 except Exception as _ref_exc:
                     logger.debug("Image reference context setup failed: %s", _ref_exc)
 
+                # Native image turns need the base64 data URL for the live API call,
+                # but persisting that API-facing payload permanently contaminates the
+                # session transcript with megabytes of image bytes.  Persist the text
+                # part (including local path hints) instead, so future turns retain
+                # the attachment context without repeatedly reloading inline base64.
+                _persist_run_message = None
+                if isinstance(_run_message, list):
+                    _text_parts = [
+                        p.get("text", "")
+                        for p in _run_message
+                        if isinstance(p, dict) and p.get("type") == "text"
+                    ]
+                    _persist_run_message = "\n".join(t for t in _text_parts if t).strip() or message
+
                 try:
-                    result = agent.run_conversation(_run_message, conversation_history=agent_history, task_id=session_id)
+                    if _persist_run_message is not None:
+                        result = agent.run_conversation(
+                            _run_message,
+                            conversation_history=agent_history,
+                            task_id=session_id,
+                            persist_user_message=_persist_run_message,
+                        )
+                    else:
+                        result = agent.run_conversation(
+                            _run_message,
+                            conversation_history=agent_history,
+                            task_id=session_id,
+                        )
                 finally:
                     if _ref_token is not None and _reset_refs is not None:
                         try:

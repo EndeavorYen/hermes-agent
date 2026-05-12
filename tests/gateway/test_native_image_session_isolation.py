@@ -20,7 +20,7 @@ class _CapturingAgent:
     def __init__(self, *args, **kwargs):
         self.tools = []
 
-    def run_conversation(self, user_message, conversation_history=None, task_id=None):
+    def run_conversation(self, user_message, conversation_history=None, task_id=None, persist_user_message=None):
         from agent.image_routing import get_current_image_reference_paths
 
         type(self).runs.append(
@@ -28,6 +28,7 @@ class _CapturingAgent:
                 "user_message": user_message,
                 "conversation_history": conversation_history,
                 "task_id": task_id,
+                "persist_user_message": persist_user_message,
                 "reference_paths": get_current_image_reference_paths(),
             }
         )
@@ -167,3 +168,65 @@ async def test_native_image_paths_are_bound_to_prepared_turn_not_runner_state(
     ]
     assert any(encoded_a in url for url in image_urls)
     assert not any(encoded_b in url for url in image_urls)
+
+
+@pytest.mark.asyncio
+async def test_native_image_turn_persists_path_hint_not_base64_payload(
+    monkeypatch,
+    tmp_path,
+):
+    _install_fake_agent(monkeypatch)
+    runner = _make_runner()
+
+    image = tmp_path / "screenshot.png"
+    image.write_bytes(b"large-image-bytes")
+
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4")
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        lambda: {
+            "provider": "openrouter",
+            "api_mode": "chat_completions",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "test-key",
+        },
+    )
+
+    import hermes_cli.tools_config as tools_config
+
+    monkeypatch.setattr(tools_config, "_get_platform_tools", lambda user_config, platform_key: {"core"})
+
+    source = _source("chat-a", "user-a")
+    prepared = await runner._prepare_inbound_message(
+        event=_image_event("please inspect this", source, str(image)),
+        source=source,
+        history=[],
+    )
+    assert prepared is not None
+
+    _CapturingAgent.runs = []
+    await runner._run_agent(
+        message=prepared.text,
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="session-a",
+        session_key="agent:main:telegram:dm:chat-a",
+        native_image_paths=prepared.native_image_paths,
+        tool_image_reference_paths=prepared.tool_image_reference_paths,
+    )
+
+    run = _CapturingAgent.runs[0]
+    assert isinstance(run["user_message"], list)
+    assert any(
+        isinstance(part, dict)
+        and part.get("type") == "image_url"
+        and "base64" in part.get("image_url", {}).get("url", "")
+        for part in run["user_message"]
+    )
+    assert run["persist_user_message"] == (
+        f"please inspect this\n\n[Image attached at: {image}]"
+    )
+    assert "base64" not in run["persist_user_message"]
