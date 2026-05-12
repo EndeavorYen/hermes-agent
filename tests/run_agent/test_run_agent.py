@@ -5368,7 +5368,7 @@ class TestLayer2Recall:
                 "canonical_text": "User prefers concise answers.",
                 "routing_destination": "user",
                 "kind": "preference",
-                "support_count": 3,
+                "support_count": 6,
             },
             {
                 "canonical_text": "GitHub HTTPS pushes may need gh auth setup-git.",
@@ -5380,7 +5380,7 @@ class TestLayer2Recall:
                 "canonical_text": "This line should be trimmed by the char budget.",
                 "routing_destination": "prior",
                 "kind": "environment",
-                "support_count": 5,
+                "support_count": 2,
             },
         ]
         fake_store.query_episodes_for_pack.return_value = []
@@ -5390,7 +5390,7 @@ class TestLayer2Recall:
             pack = prefetch_layer2_context(max_items=3, char_budget=120, min_support_count=2)
 
         assert pack is not None
-        assert "- [user/preference] User prefers concise answers. (support=3)" in pack
+        assert "- [user/preference] User prefers concise answers. (support=6, reasons=net_support)" in pack
         assert "GitHub HTTPS pushes may need gh auth setup-git." not in pack
         assert "This line should be trimmed" not in pack
         fake_store.query_candidates_for_pack.assert_called_once_with(
@@ -5455,7 +5455,7 @@ class TestLayer2Recall:
             pack = prefetch_layer2_context(max_items=4, char_budget=320, min_support_count=2)
 
         assert pack is not None
-        assert pack.splitlines()[0] == "- [prior/environment] Repository uses uv. (support=2)"
+        assert pack.splitlines()[0] == "- [prior/environment] Repository uses uv. (support=2, reasons=net_support)"
         assert "- [episodic/episode_summary] Debugged CI auth failure and confirmed gh auth setup-git fixed pushes. (source=cron:job-1:run-2)" in pack
         assert "- [observation/tool_output] gh auth status reported no stored credentials before remediation. (source=cron:job-1:run-2)" in pack
         fake_store.query_candidates_for_pack.assert_called_once_with(

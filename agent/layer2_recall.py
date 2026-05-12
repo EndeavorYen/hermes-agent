@@ -4,15 +4,18 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+from memory.layer2_selector import Layer2SelectionPolicy, Layer2SelectedCandidate, select_candidates
 from memory.layer2_store import Layer2Store
 
 
-def _format_candidate_line(candidate: Dict[str, Any]) -> str:
+def _format_candidate_line(selected: Layer2SelectedCandidate) -> str:
+    candidate = selected.candidate
     destination = str(candidate.get("routing_destination") or candidate.get("proposed_target") or "prior").strip() or "prior"
     kind = str(candidate.get("kind") or "fact").strip() or "fact"
     canonical_text = str(candidate.get("canonical_text") or "").strip()
     support_count = int(candidate.get("support_count") or 0)
-    return f"- [{destination}/{kind}] {canonical_text} (support={support_count})"
+    reasons = ",".join(selected.reason_codes)
+    return f"- [{destination}/{kind}] {canonical_text} (support={support_count}, reasons={reasons})"
 
 
 def _format_episode_line(episode: Dict[str, Any]) -> str:
@@ -80,8 +83,15 @@ def prefetch_layer2_context(
     budget = max(1, int(char_budget))
     lines: list[str] = []
     total_chars = 0
-    for candidate in candidates:
-        total_chars = _append_line(lines, total_chars, budget, _format_candidate_line(candidate))
+    selected_candidates = select_candidates(
+        candidates,
+        query_text=query_text,
+        subject_scope=subject_scope,
+        subject_id=subject_id,
+        policy=Layer2SelectionPolicy(max_items=max_items, min_net_support=max(0, int(min_support_count))),
+    )
+    for selected in selected_candidates:
+        total_chars = _append_line(lines, total_chars, budget, _format_candidate_line(selected))
 
     requested_pack_names = [str(item).strip() for item in (explicit_pack_names or []) if str(item).strip()]
     should_include_context_packs = bool(requested_pack_names or auto_select_context_packs)
