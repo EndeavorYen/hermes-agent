@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
+from pathlib import Path
 from typing import Optional
 
+from hermes_time import now as _hermes_now
 from memory.layer2_store import Layer2Store
 
 
@@ -51,10 +54,25 @@ def main(argv: list[str] | None = None) -> int:
     import json
 
     parser = argparse.ArgumentParser(description="Detect whether Layer-2 needs dream validation")
-    parser.add_argument("--since", required=True)
+    parser.add_argument("--since")
+    parser.add_argument("--lookback-hours", type=float)
+    parser.add_argument("--db", type=Path)
+    parser.add_argument("--wake-gate", action="store_true")
     args = parser.parse_args(argv)
-    decision = detect_layer2_signals(since=args.since)
-    print(json.dumps(decision.__dict__, ensure_ascii=False, sort_keys=True))
+
+    since = args.since
+    if not since and args.lookback_hours is not None:
+        since = (_hermes_now() - timedelta(hours=args.lookback_hours)).isoformat()
+    if not since:
+        parser.error("--since or --lookback-hours is required")
+
+    store = Layer2Store(args.db) if args.db else None
+    decision = detect_layer2_signals(store=store, since=since)
+    payload = dict(decision.__dict__)
+    if args.wake_gate:
+        payload["wakeAgent"] = decision.should_run_dream
+    payload["since"] = since
+    print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
     return 0
 
 
