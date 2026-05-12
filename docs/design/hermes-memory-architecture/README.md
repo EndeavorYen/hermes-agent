@@ -10,7 +10,7 @@ Hermes already has several good pieces:
 - compact durable priors in `MEMORY.md` and `USER.md`
 - frozen prompt snapshots for prompt-cache stability
 - procedural memory in skills
-- a working Layer-2 sidecar memory MVP for cron pipelines
+- a working local Layer-2 provider for evidence-ledger recall, with cron as one producer
 - an existing runtime injection path for ephemeral memory context via `MemoryManager.prefetch()`
 
 What Hermes lacks is a single formal architecture that says:
@@ -39,11 +39,13 @@ This doc set defines that architecture.
 
 ## Relationship to existing docs
 
-This doc set does not delete the current cron-specific MVP spec:
+This doc set does not delete the current Layer-2 implementation spec:
 - `docs/design/layer2-sidecar-memory-mvp.md`
 
-That existing doc remains the authoritative spec for the current cron implementation slice.
-This new doc set is broader. It defines the future memory architecture that the current Layer-2 cron MVP should evolve into.
+That existing doc remains the authoritative implementation spec for the local
+Layer-2 provider and its cron/chat producer paths. This doc set is broader: it
+defines the memory architecture that the current Layer-2 provider should
+continue evolving toward.
 
 ## Current grounded baseline
 
@@ -54,6 +56,16 @@ The architecture here is grounded in the current codebase:
 - `agent/memory_provider.py`
 - `agent/prompt_builder.py`
 - `tools/skill_manager_tool.py`
+- `memory/layer2_store.py`
+- `memory/layer2_schema.py`
+- `memory/layer2_selector.py`
+- `memory/layer2_promotion.py`
+- `memory/layer2_signals.py`
+- `memory/layer2_health.py`
+- `agent/layer2_memory_provider.py`
+- `agent/layer2_recall.py`
+- `tools/layer2_memory_tool.py`
+- `tools/layer2_review_tool.py`
 - `cron/layer2_memory.py`
 - `cron/scheduler.py`
 - `cron/jobs.py`
@@ -86,7 +98,7 @@ The most important architectural choice is:
 
 This architecture should be built incrementally and upstream-friendly:
 - preserve the current cache-stable prompt model
-- preserve the current cron Layer-2 implementation as the first slice
+- preserve the current local Layer-2 provider as the first slice
 - generalize the Layer-2 ledger rather than replacing it with an imported framework
 - add associative recall before graph-heavy abstractions
 - keep skills procedural only

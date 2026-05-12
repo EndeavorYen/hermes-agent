@@ -1,6 +1,6 @@
 # Layer-2 Sidecar Memory Spec and Rollout
 
-> Status note: Layer-2 is no longer cron-owned. The current local implementation is a profile-scoped memory sidecar with cron as one producer, chat/tool writes as another producer, and runtime recall behind the `MemoryProvider` boundary. For the broader future Hermes memory architecture, see `docs/design/hermes-memory-architecture/README.md` and the doc set under that directory.
+> Status note: Layer-2 has moved beyond the cron-only MVP. It is now a local built-in MemoryProvider that uses SQLite as an evidence ledger, supports candidate-only writes, provides bounded query-scoped recall, and requires explicit policy checks before durable L1 promotion.
 
 ## Status
 
