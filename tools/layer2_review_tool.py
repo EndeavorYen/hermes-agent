@@ -6,6 +6,7 @@ import json
 from dataclasses import asdict
 from typing import Any, Dict, Optional
 
+from memory.layer2_health import build_layer2_health_report
 from memory.layer2_promotion import L1Pressure, evaluate_promotion
 from memory.layer2_store import Layer2Store, apply_layer2_payload, format_layer2_audit_section
 from tools.memory_tool import ENTRY_DELIMITER, MemoryStore
@@ -23,7 +24,13 @@ LAYER2_REVIEW_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["list_candidates", "inspect_candidate", "prune_candidate", "promote_candidate"],
+                "enum": [
+                    "list_candidates",
+                    "inspect_candidate",
+                    "prune_candidate",
+                    "promote_candidate",
+                    "health_report",
+                ],
             },
             "canonical_text": {"type": "string"},
             "status": {"type": "string", "enum": ["active", "stale", "quarantined", "quarantine", "pruned", "promoted", "all"]},
@@ -97,6 +104,19 @@ def layer2_review_tool(
 ) -> str:
     ledger = store or Layer2Store()
     resolved_source_ref = (source_ref or "operator:layer2_review").strip() or "operator:layer2_review"
+
+    if action == "health_report":
+        report = build_layer2_health_report(store=ledger, max_items=max_items)
+        return json.dumps(
+            {
+                "success": True,
+                "counts_by_status": report.counts_by_status,
+                "promotion_candidates": report.promotion_candidates,
+                "contradiction_candidates": report.contradiction_candidates,
+                "markdown": report.markdown,
+            },
+            ensure_ascii=False,
+        )
 
     if action == "list_candidates":
         normalized_status = "quarantine" if (status or "").strip().lower() == "quarantined" else (status or "active")

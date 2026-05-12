@@ -224,3 +224,38 @@ def test_layer2_review_blocks_promotion_when_l1_pressure_is_high(tmp_path, monke
     assert result["promotion_decision"]["recommended_action"] == "keep_in_layer2"
     assert added == []
     assert store.get_candidate("Repository uses uv")["status"] == "active"
+
+
+def test_layer2_review_health_report_returns_actionable_queues(tmp_path):
+    store = Layer2Store(tmp_path / "layer2.sqlite3")
+    for idx in range(4):
+        store.record_event(
+            event_type="strengthen" if idx else "create",
+            canonical_text="High value user preference",
+            kind="preference",
+            proposed_target="user",
+            source_ref=f"test:{idx}",
+            source_event_id=f"evt-user-{idx}",
+        )
+    store.record_event(
+        event_type="create",
+        canonical_text="Contradicted rule",
+        kind="heuristic",
+        proposed_target="memory",
+        source_ref="test:c1",
+        source_event_id="evt-c1",
+    )
+    store.record_event(
+        event_type="contradict",
+        canonical_text="Contradicted rule",
+        source_ref="test:c2",
+        source_event_id="evt-c2",
+    )
+
+    result = json.loads(layer2_review_tool(action="health_report", store=store, max_items=5))
+
+    assert result["success"] is True
+    assert result["counts_by_status"]["active"] == 2
+    assert result["promotion_candidates"][0]["canonical_text"] == "High value user preference"
+    assert result["contradiction_candidates"][0]["canonical_text"] == "Contradicted rule"
+    assert "## Layer-2 Health" in result["markdown"]
