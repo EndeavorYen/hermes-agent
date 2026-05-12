@@ -1,6 +1,6 @@
-# Layer-2 Sidecar Memory MVP Spec and Rollout
+# Layer-2 Sidecar Memory Spec and Rollout
 
-> Status note: this remains the authoritative spec for the current cron-specific Layer-2 MVP implementation on this branch. For the broader future Hermes memory architecture, see `docs/design/hermes-memory-architecture/README.md` and the doc set under that directory.
+> Status note: Layer-2 is no longer cron-owned. The current local implementation is a profile-scoped memory sidecar with cron as one producer, chat/tool writes as another producer, and runtime recall behind the `MemoryProvider` boundary. For the broader future Hermes memory architecture, see `docs/design/hermes-memory-architecture/README.md` and the doc set under that directory.
 
 ## Status
 
@@ -41,7 +41,8 @@ The underlying source material for a run: transcripts, artifacts, tool output, r
 A separate SQLite-backed ledger of candidate facts and candidate events.
 
 Current implementation:
-- DB path: `~/.hermes/cron/layer2_memory.sqlite3`
+- DB path: `~/.hermes/memory/layer2.sqlite3`
+- legacy migration: if the new DB is missing and `~/.hermes/cron/layer2_memory.sqlite3` exists, the legacy DB is copied once into the new memory-owned path
 - candidate row tracks `canonical_text`, `kind`, `proposed_target`, `status`, `support_count`, `contradict_count`, timestamps, and optional `promoted_ref`
 - event row tracks `event_type`, provenance, recurrence-count flag, deltas, and optional durable-write metadata
 

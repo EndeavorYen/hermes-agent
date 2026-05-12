@@ -839,7 +839,7 @@ class TestRunJobLayer2Integration:
         assert error is None
         assert final_response == "Human summary."
         assert "## Layer-2 Audit" in output
-        store = Layer2Store(tmp_path / "cron" / "layer2_memory.sqlite3")
+        store = Layer2Store(tmp_path / "memory" / "layer2.sqlite3")
         candidate = store.get_candidate("User prefers concise answers")
         assert candidate["support_count"] == 1
         assert candidate["proposed_target"] == "user"
@@ -864,7 +864,7 @@ class TestRunJobLayer2Integration:
 
         assert success is True
         assert error is None
-        store = Layer2Store(tmp_path / "cron" / "layer2_memory.sqlite3")
+        store = Layer2Store(tmp_path / "memory" / "layer2.sqlite3")
         candidate = store.get_candidate("Repository uses uv")
         event = store.list_events("Repository uses uv")[0]
         assert candidate["routing_destination"] == "prior"
@@ -892,7 +892,7 @@ class TestRunJobLayer2Integration:
         assert error is None
         assert final_response == response
         assert "## Layer-2 Audit" not in output
-        store = Layer2Store(tmp_path / "cron" / "layer2_memory.sqlite3")
+        store = Layer2Store(tmp_path / "memory" / "layer2.sqlite3")
         assert store.list_candidates() == []
 
     def test_guarded_durable_promotion_only_writes_allowed_targets(self, tmp_path, monkeypatch):
@@ -924,7 +924,7 @@ class TestRunJobLayer2Integration:
         assert user_file.exists()
         assert "User prefers concise answers" in user_file.read_text(encoding="utf-8")
         assert not memory_file.exists() or "Repository uses uv" not in memory_file.read_text(encoding="utf-8")
-        store = Layer2Store(tmp_path / "cron" / "layer2_memory.sqlite3")
+        store = Layer2Store(tmp_path / "memory" / "layer2.sqlite3")
         candidate = store.get_candidate("User prefers concise answers")
         assert candidate["status"] == "promoted"
         assert candidate["promoted_ref"] == "user:User prefers concise answers"
@@ -948,5 +948,5 @@ class TestRunJobLayer2Integration:
         assert success is True
         assert final_response == ""
         assert "## Layer-2 Audit" not in output
-        store = Layer2Store(tmp_path / "cron" / "layer2_memory.sqlite3")
+        store = Layer2Store(tmp_path / "memory" / "layer2.sqlite3")
         assert store.list_candidates() == []

@@ -2,6 +2,35 @@ import json
 import sqlite3
 
 
+def test_default_layer2_path_moves_to_memory_dir_and_migrates_legacy_cron_db(tmp_path, monkeypatch):
+    import memory.layer2_store as layer2_store
+
+    monkeypatch.setattr(layer2_store, "get_hermes_home", lambda: tmp_path)
+    legacy_path = tmp_path / "cron" / "layer2_memory.sqlite3"
+    legacy_path.parent.mkdir(parents=True)
+    with sqlite3.connect(legacy_path) as conn:
+        conn.execute(
+            "CREATE TABLE candidates ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "canonical_text TEXT NOT NULL UNIQUE, "
+            "kind TEXT, proposed_target TEXT, status TEXT NOT NULL DEFAULT 'active', "
+            "support_count INTEGER NOT NULL DEFAULT 0, "
+            "contradict_count INTEGER NOT NULL DEFAULT 0, "
+            "created_at TEXT NOT NULL, updated_at TEXT NOT NULL, promoted_ref TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO candidates (canonical_text, kind, proposed_target, status, support_count, contradict_count, created_at, updated_at) "
+            "VALUES ('Migrated L2 fact', 'env_fact', 'memory', 'active', 1, 0, "
+            "'2026-05-13T00:00:00+00:00', '2026-05-13T00:00:00+00:00')"
+        )
+
+    store = layer2_store.Layer2Store()
+
+    assert store.db_path == tmp_path / "memory" / "layer2.sqlite3"
+    assert store.get_candidate("Migrated L2 fact")["canonical_text"] == "Migrated L2 fact"
+    assert legacy_path.exists()
+
+
 def test_layer2_store_is_available_from_shared_memory_package(tmp_path):
     from memory.layer2_store import Layer2Store, apply_layer2_payload
 

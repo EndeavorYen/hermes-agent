@@ -66,6 +66,22 @@ def durable_store_target(destination: str | None) -> str | None:
     return value
 
 
+def _default_layer2_db_path() -> Path:
+    return get_hermes_home() / "memory" / "layer2.sqlite3"
+
+
+def _legacy_layer2_db_path() -> Path:
+    return get_hermes_home() / "cron" / "layer2_memory.sqlite3"
+
+
+def _copy_legacy_db_if_needed(target_path: Path) -> None:
+    legacy_path = _legacy_layer2_db_path()
+    if target_path.exists() or not legacy_path.exists() or legacy_path == target_path:
+        return
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.write_bytes(legacy_path.read_bytes())
+
+
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
     existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
     if column not in existing:
@@ -114,8 +130,10 @@ class Layer2Store:
     """SQLite-backed candidate ledger for Layer-2 memory signals."""
 
     def __init__(self, db_path: Optional[Path] = None):
-        self.db_path = Path(db_path) if db_path else get_hermes_home() / "cron" / "layer2_memory.sqlite3"
+        self.db_path = Path(db_path) if db_path else _default_layer2_db_path()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        if db_path is None:
+            _copy_legacy_db_if_needed(self.db_path)
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
