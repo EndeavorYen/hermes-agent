@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from typing import Any, Dict, Optional
 
+from memory.layer2_schema import validate_layer2_payload
 from memory.layer2_store import Layer2Store, apply_layer2_payload, format_layer2_audit_section
 
 _ALLOWED_PAYLOAD_KEYS = {"candidate_events", "episodes", "observations", "context_packs"}
@@ -52,6 +54,18 @@ def layer2_memory_tool(
 
     if not isinstance(payload, dict):
         return json.dumps({"success": False, "error": "payload must be an object."}, ensure_ascii=False)
+
+    validation = validate_layer2_payload(payload, allow_promotions=False)
+    if not validation.valid:
+        return json.dumps(
+            {
+                "success": False,
+                "error": "Layer-2 payload validation failed: promotions are not allowed on this path.",
+                "issues": [asdict(issue) for issue in validation.issues],
+            },
+            ensure_ascii=False,
+        )
+    payload = validation.payload
 
     unknown_keys = sorted(set(payload) - _ALLOWED_PAYLOAD_KEYS)
     if unknown_keys:

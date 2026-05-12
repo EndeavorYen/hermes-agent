@@ -157,6 +157,11 @@ def test_layer2_payload_demotes_recurrence_without_linked_observation(tmp_path):
     candidate = store.get_candidate("Unbacked synthesis should not count as recurrence")
     events = store.list_events("Unbacked synthesis should not count as recurrence")
     assert audit[0]["audit_label"] == "unbacked_candidate_demoted"
+    assert any(
+        item.get("audit_label") == "validation_issue"
+        and item.get("issue", {}).get("code") == "unbacked_recurrence_demoted"
+        for item in audit
+    )
     assert candidate["support_count"] == 0
     assert events[0]["counts_for_recurrence"] == 0
     assert events[0]["support_delta"] == 0

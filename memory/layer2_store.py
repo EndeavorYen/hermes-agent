@@ -13,12 +13,14 @@ import json
 import logging
 import re
 import sqlite3
+from dataclasses import asdict
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
+from memory.layer2_schema import validate_layer2_payload
 from tools.memory_tool import MemoryStore
 
 logger = logging.getLogger(__name__)
@@ -1188,6 +1190,23 @@ def apply_layer2_payload(
     if not payload or not job_allows_layer2(job):
         return []
 
+    validation = validate_layer2_payload(payload)
+    validation_issue_events = [
+        {"audit_label": "validation_issue", "issue": asdict(issue)}
+        for issue in validation.issues
+    ]
+    if not validation.valid:
+        return validation_issue_events
+    payload = validation.payload
+    validation_demoted_candidate_indices = {
+        int(issue.path.removeprefix("$.candidate_events[").removesuffix("]"))
+        for issue in validation.issues
+        if issue.code == "unbacked_recurrence_demoted"
+        and issue.path.startswith("$.candidate_events[")
+        and issue.path.endswith("]")
+        and issue.path.removeprefix("$.candidate_events[").removesuffix("]").isdigit()
+    }
+
     ledger = store or Layer2Store()
     derived = _derive_provenance(source_ref)
     resolved_job_id = _clean_optional_text(job_id) or _clean_optional_text(job.get("id")) or derived["job_id"]
@@ -1259,7 +1278,7 @@ def apply_layer2_payload(
                 prompt_snapshot_id=resolved_prompt_snapshot_id,
                 routing_reason_codes=item.get("routing_reason_codes"),
             )
-            if demote_unbacked:
+            if demote_unbacked or idx in validation_demoted_candidate_indices:
                 applied["audit_label"] = "unbacked_candidate_demoted"
                 applied["event"]["counts_for_recurrence"] = False
             audit_events.append(applied)
@@ -1409,6 +1428,7 @@ def apply_layer2_payload(
                 }
             )
 
+    audit_events.extend(validation_issue_events)
     return audit_events
 
 

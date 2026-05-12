@@ -34,6 +34,7 @@ class TestLayer2MemoryTool:
         )
         assert result["success"] is False
         assert "promotions" in result["error"].lower()
+        assert result["issues"][0]["code"] == "promotions_not_allowed"
 
     def test_records_candidate_event_with_session_provenance(self, store):
         result = json.loads(
