@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from typing import Any, Dict, Optional
 
+from memory.layer2_promotion import L1Pressure, evaluate_promotion
 from memory.layer2_store import Layer2Store, apply_layer2_payload, format_layer2_audit_section
+from tools.memory_tool import ENTRY_DELIMITER, MemoryStore
 
 
 LAYER2_REVIEW_SCHEMA = {
@@ -33,6 +36,7 @@ LAYER2_REVIEW_SCHEMA = {
             "min_support_count": {"type": "integer"},
             "notes": {"type": "string"},
             "source_ref": {"type": "string"},
+            "respect_l1_pressure": {"type": "boolean"},
         },
         "required": ["action"],
     },
@@ -58,6 +62,22 @@ def _candidate_markdown(candidates: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _l1_pressure_for_target(memory_store: MemoryStore, target: str) -> L1Pressure:
+    if hasattr(memory_store, "_char_count"):
+        current_chars = int(memory_store._char_count(target))
+    else:
+        entries = getattr(memory_store, f"{target}_entries", [])
+        current_chars = len(ENTRY_DELIMITER.join(entries)) if entries else 0
+
+    if hasattr(memory_store, "_char_limit"):
+        char_limit = int(memory_store._char_limit(target))
+    else:
+        attr = "user_char_limit" if target == "user" else "memory_char_limit"
+        char_limit = int(getattr(memory_store, attr, 0) or 0)
+
+    return L1Pressure(current_chars=current_chars, char_limit=char_limit)
+
+
 def layer2_review_tool(
     *,
     action: str,
@@ -72,6 +92,7 @@ def layer2_review_tool(
     status: Optional[str] = "active",
     notes: Optional[str] = None,
     source_ref: Optional[str] = None,
+    respect_l1_pressure: bool = True,
     store: Optional[Layer2Store] = None,
 ) -> str:
     ledger = store or Layer2Store()
@@ -133,6 +154,30 @@ def layer2_review_tool(
         if resolved_target not in {"memory", "user"}:
             return json.dumps({"success": False, "error": "target must be 'memory' or 'user'."}, ensure_ascii=False)
         durable_content = (content or canonical).strip()
+        if respect_l1_pressure:
+            candidate = ledger.get_candidate(canonical)
+            if not candidate:
+                return json.dumps({"success": False, "error": "candidate not found."}, ensure_ascii=False)
+            memory_store = MemoryStore()
+            memory_store.load_from_disk()
+            pressure = _l1_pressure_for_target(memory_store, resolved_target)
+            decision = evaluate_promotion(candidate, pressure=pressure)
+            if not decision.allowed:
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": "promotion blocked by L1 pressure policy.",
+                        "candidate": candidate,
+                        "l1_pressure": {
+                            "target": resolved_target,
+                            "current_chars": pressure.current_chars,
+                            "char_limit": pressure.char_limit,
+                            "usage_ratio": pressure.usage_ratio,
+                        },
+                        "promotion_decision": asdict(decision),
+                    },
+                    ensure_ascii=False,
+                )
         payload = {
             "promotions": [
                 {
@@ -188,6 +233,7 @@ registry.register(
         status=args.get("status", "active"),
         notes=args.get("notes"),
         source_ref=args.get("source_ref"),
+        respect_l1_pressure=args.get("respect_l1_pressure", True),
         store=kw.get("store"),
     ),
     emoji="🧾",

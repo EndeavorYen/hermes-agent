@@ -135,6 +135,13 @@ def test_layer2_review_promotes_allowlisted_candidate_to_memory_store(tmp_path, 
         source_ref="test:repo",
         source_event_id="evt-uv",
     )
+    for idx in range(2, 5):
+        store.record_event(
+            event_type="strengthen",
+            canonical_text="Repository uses uv",
+            source_ref="test:repo",
+            source_event_id=f"evt-uv-{idx}",
+        )
 
     added = []
 
@@ -163,3 +170,57 @@ def test_layer2_review_promotes_allowlisted_candidate_to_memory_store(tmp_path, 
     assert added == [("memory", "Repository uses uv")]
     assert any(event["audit_label"] == "durable_write" for event in result["audit_events"])
     assert store.get_candidate("Repository uses uv")["status"] == "promoted"
+
+
+def test_layer2_review_blocks_promotion_when_l1_pressure_is_high(tmp_path, monkeypatch):
+    store = Layer2Store(tmp_path / "layer2.sqlite3")
+    store.record_event(
+        event_type="create",
+        canonical_text="Repository uses uv",
+        kind="env_fact",
+        proposed_target="memory",
+        source_ref="test:repo",
+        source_event_id="evt-uv-1",
+    )
+    for idx in range(2, 5):
+        store.record_event(
+            event_type="strengthen",
+            canonical_text="Repository uses uv",
+            source_ref="test:repo",
+            source_event_id=f"evt-uv-{idx}",
+        )
+
+    added = []
+
+    class FakeMemoryStore:
+        def __init__(self):
+            self.memory_entries = ["x" * 2150]
+            self.user_entries = []
+            self.memory_char_limit = 2200
+            self.user_char_limit = 2200
+
+        def load_from_disk(self):
+            pass
+
+        def add(self, target, content):
+            added.append((target, content))
+            return {"success": True}
+
+    monkeypatch.setattr("tools.layer2_review_tool.MemoryStore", FakeMemoryStore)
+
+    result = json.loads(
+        layer2_review_tool(
+            action="promote_candidate",
+            store=store,
+            canonical_text="Repository uses uv",
+            target="memory",
+            content="Repository uses uv",
+            source_ref="operator:test",
+        )
+    )
+
+    assert result["success"] is False
+    assert result["promotion_decision"]["reason"] == "l1_pressure_too_high"
+    assert result["promotion_decision"]["recommended_action"] == "keep_in_layer2"
+    assert added == []
+    assert store.get_candidate("Repository uses uv")["status"] == "active"
