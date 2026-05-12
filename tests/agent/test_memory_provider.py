@@ -184,6 +184,41 @@ class TestMemoryManager:
 
         assert Layer2MemoryProvider().is_external is False
 
+    def test_builtin_layer2_provider_does_not_count_as_external_provider(self):
+        from agent.layer2_memory_provider import Layer2MemoryProvider
+
+        class FakeExternalProvider(MemoryProvider):
+            @property
+            def name(self):
+                return "fake_external"
+
+            @property
+            def is_external(self):
+                return True
+
+            def is_available(self):
+                return True
+
+            def initialize(self, session_id: str, **kwargs):
+                return None
+
+            def get_tool_schemas(self):
+                return []
+
+        manager = MemoryManager()
+        manager.add_provider(Layer2MemoryProvider())
+        manager.add_provider(FakeExternalProvider())
+
+        assert manager.get_provider("layer2") is not None
+        assert manager.get_provider("fake_external") is not None
+
+    def test_layer2_provider_is_registered_through_memory_manager_not_external_provider_slot(self):
+        import inspect
+
+        source = inspect.getsource(MemoryManager.add_provider)
+        assert 'provider.name == "builtin"' not in source
+        assert "is_external" in source
+
     def test_system_prompt_merges_blocks(self):
         mgr = MemoryManager()
         p1 = FakeMemoryProvider("builtin", is_external=False)
