@@ -734,6 +734,79 @@ class ContextCompressor(ContextEngine):
 
         return "\n\n".join(parts)
 
+    def _compression_task_config(self) -> Dict[str, Any]:
+        """Return auxiliary.compression config without hard-depending on it."""
+        try:
+            from agent.auxiliary_client import _get_auxiliary_task_config
+
+            cfg = _get_auxiliary_task_config("compression")
+        except Exception:
+            cfg = {}
+        return cfg if isinstance(cfg, dict) else {}
+
+    def _configured_aux_summary_label(self) -> str:
+        """Human-readable label for the configured compression aux route."""
+        if self.summary_model:
+            return self.summary_model
+
+        cfg = self._compression_task_config()
+        model = str(cfg.get("model") or "").strip()
+        provider = str(cfg.get("provider") or "").strip()
+        base_url = str(cfg.get("base_url") or "").strip()
+        if model:
+            return model
+        if provider and provider != "auto":
+            return provider
+        if base_url:
+            return base_url
+        return "auxiliary.compression"
+
+    def _configured_compression_route_differs_from_main(self) -> bool:
+        """True when auxiliary.compression is explicitly not the main runtime."""
+        cfg = self._compression_task_config()
+        provider = str(cfg.get("provider") or "").strip().lower()
+        model = str(cfg.get("model") or "").strip()
+        base_url = str(cfg.get("base_url") or "").strip()
+
+        if not (provider or model or base_url):
+            return False
+
+        main_provider = (self.provider or "").strip().lower()
+        main_model = (self.model or "").strip()
+        main_base_url = (self.base_url or "").strip()
+
+        if base_url and base_url.rstrip("/") != main_base_url.rstrip("/"):
+            return True
+        if model and model != main_model:
+            return True
+        if provider and provider != "auto":
+            if provider != main_provider:
+                return True
+            if not model:
+                # Explicit provider without a task model is still a task route:
+                # openai-codex, for example, requires an explicit model.
+                return True
+        return False
+
+    def _main_runtime_summary_kwargs(self, call_kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """Build call_llm kwargs that bypass auxiliary.compression config."""
+        retry_kwargs = dict(call_kwargs)
+        provider = (self.provider or "").strip()
+        if provider:
+            retry_kwargs["provider"] = provider
+        if self.model:
+            retry_kwargs["model"] = self.model
+
+        # Passing base_url always forces call_llm into provider="custom".
+        # Preserve explicit custom runtimes, but do not pass the Codex base URL
+        # when provider=openai-codex because that would bypass the Codex adapter.
+        if provider == "custom" or not provider:
+            if self.base_url:
+                retry_kwargs["base_url"] = self.base_url
+            if self.api_key:
+                retry_kwargs["api_key"] = self.api_key
+        return retry_kwargs
+
     def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]], focus_topic: str = None) -> Optional[str]:
         """Generate a structured summary of conversation turns.
 
@@ -987,6 +1060,44 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 self.summary_model = ""  # empty = use main model
                 self._summary_failure_cooldown_until = 0.0
                 return self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
+
+            # Live config usually supplies the compression model via
+            # auxiliary.compression.* rather than summary_model_override. In
+            # that case call_llm(task="compression") resolves the configured
+            # aux route internally, so self.summary_model is empty and the
+            # retry branches above cannot fire. Retry once with explicit main
+            # provider/model kwargs so _resolve_task_provider_model bypasses
+            # auxiliary.compression config for the recovery attempt.
+            if (
+                self._configured_compression_route_differs_from_main()
+                and self.model
+                and not getattr(self, "_summary_model_fallen_back", False)
+            ):
+                self._summary_model_fallen_back = True
+                _err_text = str(e).strip() or e.__class__.__name__
+                if len(_err_text) > 220:
+                    _err_text = _err_text[:217].rstrip() + "..."
+                _aux_label = self._configured_aux_summary_label()
+                self._last_aux_model_failure_error = _err_text
+                self._last_aux_model_failure_model = _aux_label
+                logging.warning(
+                    "Configured compression route '%s' failed (%s). "
+                    "Retrying on main model '%s' before giving up.",
+                    _aux_label, e, self.model,
+                )
+                try:
+                    retry_response = call_llm(**self._main_runtime_summary_kwargs(call_kwargs))
+                    content = retry_response.choices[0].message.content
+                    if not isinstance(content, str):
+                        content = str(content) if content else ""
+                    summary = redact_sensitive_text(content.strip())
+                    self._previous_summary = summary
+                    self._summary_failure_cooldown_until = 0.0
+                    self._summary_model_fallen_back = False
+                    self._last_summary_error = None
+                    return self._with_summary_prefix(summary)
+                except Exception as retry_err:
+                    e = retry_err
 
             # Transient errors (timeout, rate limit, network) — shorter cooldown
             _transient_cooldown = 60
