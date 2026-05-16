@@ -881,6 +881,15 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
         try:
             formatted = self.format_message(content)
+            if len(formatted) > self.MAX_MESSAGE_LENGTH:
+                return SendResult(
+                    success=False,
+                    error=(
+                        f"Slack edit payload too long "
+                        f"({len(formatted)} > {self.MAX_MESSAGE_LENGTH}); "
+                        "fallback delivery required"
+                    ),
+                )
             await self._get_client(chat_id).chat_update(
                 channel=chat_id,
                 ts=message_id,

@@ -1667,6 +1667,43 @@ class TestEditMessage:
         kwargs = adapter._app.client.chat_update.call_args.kwargs
         assert kwargs["text"] == "AT&amp;T &lt; 5 &gt; 3"
 
+    @pytest.mark.asyncio
+    async def test_edit_message_rejects_oversized_update_before_slack_api(self, adapter):
+        """Oversized edits should fail locally instead of hitting Slack API."""
+        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
+        content = "x" * (adapter.MAX_MESSAGE_LENGTH + 100)
+
+        result = await adapter.edit_message("C123", "1234.5678", content)
+
+        assert result.success is False
+        assert "too long" in result.error.lower()
+        adapter._app.client.chat_update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_edit_message_rejects_payload_that_grows_after_formatting(self, adapter):
+        """Length check applies after Slack mrkdwn escaping/formatting."""
+        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
+        content = "&" * adapter.MAX_MESSAGE_LENGTH
+
+        result = await adapter.edit_message("C123", "1234.5678", content)
+
+        assert result.success is False
+        assert "too long" in result.error.lower()
+        adapter._app.client.chat_update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_edit_message_allows_payload_at_formatted_limit(self, adapter):
+        """Payloads exactly at the formatted limit still reach Slack API."""
+        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
+        content = "x" * adapter.MAX_MESSAGE_LENGTH
+
+        result = await adapter.edit_message("C123", "1234.5678", content)
+
+        assert result.success is True
+        adapter._app.client.chat_update.assert_awaited_once()
+        kwargs = adapter._app.client.chat_update.call_args.kwargs
+        assert kwargs["text"] == content
+
 
 # ---------------------------------------------------------------------------
 # TestEditMessageStreamingPipeline
