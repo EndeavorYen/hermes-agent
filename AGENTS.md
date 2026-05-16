@@ -13,6 +13,19 @@ source .venv/bin/activate   # or: source venv/bin/activate
 `$HOME/.hermes/hermes-agent/venv` (for worktrees that share a venv with the
 main checkout).
 
+## Development Workflow
+
+Use TDD for feature work, bug fixes, refactors, and behavior changes:
+
+1. Write or update the smallest behavior-focused test first.
+2. Run that test and confirm it fails for the expected reason.
+3. Implement the minimal production change needed to pass.
+4. Re-run the targeted test, then the relevant wider suite.
+5. Refactor only after the tests are green, keeping the diff narrow.
+
+For documentation, config-only, generated-code, or exploratory prototype changes,
+state why TDD is not applicable before editing.
+
 ## Project Structure
 
 File counts shift constantly — don't treat the tree below as exhaustive.

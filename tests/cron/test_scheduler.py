@@ -3,6 +3,8 @@
 import json
 import logging
 import os
+import subprocess
+import sys
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
@@ -1865,6 +1867,212 @@ class TestSilentDelivery:
             tick(verbose=False)
         save_mock.assert_called_once_with("monitor-job", "# full output")
         deliver_mock.assert_not_called()
+
+
+class TestDeliveryAuditGate:
+    """Delivery audit gates run after artifact save and before normal delivery."""
+
+    def _make_job(self):
+        return {
+            "id": "audit-job",
+            "name": "audit",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+            "delivery_audit": {
+                "script": "/audit/cron_delivery_audit_gate.py",
+                "mode": "preopen",
+            },
+        }
+
+    def _blocked_gate_result(self):
+        return subprocess.CompletedProcess(
+            args=[],
+            returncode=2,
+            stdout="BLOCK: audit failed mode=preopen verdict=fail reasons=missing_required_sections",
+            stderr="",
+        )
+
+    def _passing_gate_result(self):
+        return subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout="OK: audit passed mode=preopen verdict=pass",
+            stderr="",
+        )
+
+    def test_execute_job_delivers_normal_response_when_audit_gate_passes(self, tmp_path):
+        from cron.scheduler import execute_job
+
+        output_file = tmp_path / "artifact.md"
+
+        with patch("cron.scheduler.advance_next_run"), \
+             patch("cron.scheduler.run_job", return_value=(True, "# artifact", "normal response", None)), \
+             patch("cron.scheduler.save_job_output", return_value=output_file), \
+             patch("cron.scheduler.subprocess.run", return_value=self._passing_gate_result()) as gate_run, \
+             patch("cron.scheduler._deliver_result", return_value=None) as deliver_mock, \
+             patch("cron.scheduler.mark_job_run") as mark_mock:
+            assert execute_job(self._make_job(), verbose=False) is True
+
+        gate_run.assert_called_once()
+        deliver_mock.assert_called_once()
+        assert deliver_mock.call_args.args[1] == "normal response"
+        mark_mock.assert_called_once_with("audit-job", True, None, delivery_error=None)
+
+    def test_execute_job_blocks_normal_delivery_when_audit_gate_fails(self, tmp_path):
+        from cron.scheduler import execute_job
+
+        output_file = tmp_path / "artifact.md"
+
+        with patch("cron.scheduler.advance_next_run"), \
+             patch("cron.scheduler.run_job", return_value=(True, "# artifact", "normal response", None)), \
+             patch("cron.scheduler.save_job_output", return_value=output_file), \
+             patch("cron.scheduler.subprocess.run", return_value=self._blocked_gate_result()) as gate_run, \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run") as mark_mock:
+            assert execute_job(self._make_job(), verbose=False) is True
+
+        gate_run.assert_called_once()
+        command = gate_run.call_args.args[0]
+        assert command[:3] == [
+            sys.executable,
+            "/audit/cron_delivery_audit_gate.py",
+            "preopen",
+        ]
+        assert command[3] == str(output_file)
+
+        deliver_mock.assert_called_once()
+        delivered = deliver_mock.call_args.args[1]
+        assert "normal response" not in delivered
+        assert "BLOCK: audit failed" in delivered
+
+        mark_mock.assert_called_once()
+        assert mark_mock.call_args.args[0] == "audit-job"
+        assert mark_mock.call_args.args[1] is False
+        assert "delivery audit gate failed" in mark_mock.call_args.args[2]
+        assert "missing_required_sections" in mark_mock.call_args.args[2]
+
+    def test_misconfigured_delivery_audit_fails_closed_before_normal_delivery(self, tmp_path):
+        from cron.scheduler import execute_job
+
+        output_file = tmp_path / "artifact.md"
+        job = self._make_job()
+        job["delivery_audit"] = "not-an-object"
+
+        with patch("cron.scheduler.advance_next_run"), \
+             patch("cron.scheduler.run_job", return_value=(True, "# artifact", "normal response", None)), \
+             patch("cron.scheduler.save_job_output", return_value=output_file), \
+             patch("cron.scheduler.subprocess.run") as gate_run, \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run") as mark_mock:
+            assert execute_job(job, verbose=False) is True
+
+        gate_run.assert_not_called()
+        deliver_mock.assert_called_once()
+        delivered = deliver_mock.call_args.args[1]
+        assert "normal response" not in delivered
+        assert "delivery audit gate misconfigured" in delivered
+
+        mark_mock.assert_called_once()
+        assert mark_mock.call_args.args[0] == "audit-job"
+        assert mark_mock.call_args.args[1] is False
+        assert "delivery_audit must be an object" in mark_mock.call_args.args[2]
+
+    def test_subprocess_timeout_fails_closed_before_normal_delivery(self, tmp_path):
+        from cron.scheduler import execute_job
+
+        output_file = tmp_path / "artifact.md"
+        job = self._make_job()
+        job["delivery_audit"]["timeout_seconds"] = 7
+
+        with patch("cron.scheduler.advance_next_run"), \
+             patch("cron.scheduler.run_job", return_value=(True, "# artifact", "normal response", None)), \
+             patch("cron.scheduler.save_job_output", return_value=output_file), \
+             patch("cron.scheduler.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd=["audit"], timeout=7)) as gate_run, \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run") as mark_mock:
+            assert execute_job(job, verbose=False) is True
+
+        gate_run.assert_called_once()
+        deliver_mock.assert_called_once()
+        delivered = deliver_mock.call_args.args[1]
+        assert "normal response" not in delivered
+        assert "timed out after 7s" in delivered
+
+        mark_mock.assert_called_once()
+        assert mark_mock.call_args.args[0] == "audit-job"
+        assert mark_mock.call_args.args[1] is False
+        assert "timed out after 7s" in mark_mock.call_args.args[2]
+
+    def test_non_positive_timeout_seconds_fails_closed_before_normal_delivery(self, tmp_path):
+        from cron.scheduler import execute_job
+
+        output_file = tmp_path / "artifact.md"
+        job = self._make_job()
+        job["delivery_audit"]["timeout_seconds"] = 0
+
+        with patch("cron.scheduler.advance_next_run"), \
+             patch("cron.scheduler.run_job", return_value=(True, "# artifact", "normal response", None)), \
+             patch("cron.scheduler.save_job_output", return_value=output_file), \
+             patch("cron.scheduler.subprocess.run") as gate_run, \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run") as mark_mock:
+            assert execute_job(job, verbose=False) is True
+
+        gate_run.assert_not_called()
+        deliver_mock.assert_called_once()
+        delivered = deliver_mock.call_args.args[1]
+        assert "normal response" not in delivered
+        assert "invalid timeout_seconds=0" in delivered
+
+        mark_mock.assert_called_once()
+        assert mark_mock.call_args.args[0] == "audit-job"
+        assert mark_mock.call_args.args[1] is False
+        assert "invalid timeout_seconds=0" in mark_mock.call_args.args[2]
+
+    def test_execute_job_returns_false_when_processing_path_catches_exception(self):
+        from cron.scheduler import execute_job
+
+        with patch("cron.scheduler.advance_next_run"), \
+             patch("cron.scheduler.run_job", return_value=(True, "# artifact", "normal response", None)), \
+             patch("cron.scheduler.save_job_output", side_effect=RuntimeError("save failed")), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run") as mark_mock:
+            assert execute_job(self._make_job(), verbose=False) is False
+
+        deliver_mock.assert_not_called()
+        mark_mock.assert_called_once()
+        assert mark_mock.call_args.args[0] == "audit-job"
+        assert mark_mock.call_args.args[1] is False
+        assert mark_mock.call_args.args[2] == "save failed"
+
+    def test_tick_blocks_normal_delivery_when_audit_gate_fails(self, tmp_path):
+        from cron.scheduler import tick
+
+        lock_dir = tmp_path / "cron"
+        lock_dir.mkdir()
+        output_file = tmp_path / "artifact.md"
+
+        with patch("cron.scheduler._get_lock_paths", return_value=(lock_dir, lock_dir / ".tick.lock")), \
+             patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.advance_next_run"), \
+             patch("cron.scheduler.run_job", return_value=(True, "# artifact", "normal response", None)), \
+             patch("cron.scheduler.save_job_output", return_value=output_file), \
+             patch("cron.scheduler.subprocess.run", return_value=self._blocked_gate_result()) as gate_run, \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run") as mark_mock:
+            assert tick(verbose=False) == 1
+
+        gate_run.assert_called_once()
+        deliver_mock.assert_called_once()
+        delivered = deliver_mock.call_args.args[1]
+        assert "normal response" not in delivered
+        assert "BLOCK: audit failed" in delivered
+
+        mark_mock.assert_called_once()
+        assert mark_mock.call_args.args[0] == "audit-job"
+        assert mark_mock.call_args.args[1] is False
+        assert "delivery audit gate failed" in mark_mock.call_args.args[2]
+        assert "missing_required_sections" in mark_mock.call_args.args[2]
 
 
 class TestBuildJobPromptSilentHint:

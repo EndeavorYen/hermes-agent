@@ -826,6 +826,74 @@ def _parse_wake_gate(script_output: str) -> bool:
     return gate.get("wakeAgent", True) is not False
 
 
+def _redact_cron_text(text: str) -> str:
+    """Best-effort secret redaction for cron subprocess output."""
+    try:
+        from agent.redact import redact_sensitive_text
+        return redact_sensitive_text(text)
+    except Exception:
+        return text
+
+
+def _run_delivery_audit_gate(job: dict, output_file: Path | str) -> Optional[str]:
+    """Run an optional post-output audit gate before normal cron delivery.
+
+    ``delivery_audit`` is intentionally a job-level config hook. Hermes owns
+    the timing and fail-closed semantics; domain-specific validators stay in
+    the project that knows the artifact contract.
+    """
+    audit = job.get("delivery_audit")
+    if not audit:
+        return None
+    if not isinstance(audit, dict):
+        return "delivery audit gate misconfigured: delivery_audit must be an object"
+    if audit.get("enabled") is False:
+        return None
+
+    script = str(audit.get("script") or "").strip()
+    mode = str(audit.get("mode") or "").strip()
+    if not script or not mode:
+        return "delivery audit gate misconfigured: delivery_audit.script and delivery_audit.mode are required"
+
+    command = [sys.executable, script, mode, str(output_file)]
+    previous = audit.get("previous")
+    if previous:
+        command.extend(["--previous", str(previous)])
+
+    timeout = _get_script_timeout()
+    raw_timeout = audit.get("timeout_seconds")
+    if raw_timeout is not None:
+        try:
+            configured_timeout = int(float(raw_timeout))
+            if configured_timeout <= 0:
+                return f"delivery audit gate misconfigured: invalid timeout_seconds={raw_timeout!r}"
+            timeout = configured_timeout
+        except (TypeError, ValueError):
+            return f"delivery audit gate misconfigured: invalid timeout_seconds={raw_timeout!r}"
+
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return f"delivery audit gate failed: timed out after {timeout}s"
+    except Exception as exc:
+        return f"delivery audit gate failed: {type(exc).__name__}: {exc}"
+
+    stdout = _redact_cron_text((completed.stdout or "").strip())
+    stderr = _redact_cron_text((completed.stderr or "").strip())
+    if completed.returncode == 0:
+        if stdout:
+            logger.info("Job '%s': delivery audit gate passed: %s", job.get("id", "?"), stdout)
+        return None
+
+    details = stdout or stderr or f"exit code {completed.returncode}"
+    return f"delivery audit gate failed (exit {completed.returncode}): {details}"
+
+
 def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     """Build the effective prompt for a cron job, optionally loading one or more skills first.
 
@@ -1663,6 +1731,62 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
 
 
+def _format_failed_job_delivery(job: dict, error: Optional[str]) -> str:
+    return f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
+
+
+def _is_silent_delivery_content(content: str) -> bool:
+    return SILENT_MARKER in content.strip().upper()
+
+
+def _process_job_run(job: dict, adapters=None, loop=None, verbose: bool = True) -> bool:
+    """Run one cron job end-to-end: execute, save, audit, deliver, mark."""
+    try:
+        success, output, final_response, error = run_job(job)
+
+        output_file = save_job_output(job["id"], output)
+        if verbose:
+            logger.info("Output saved to: %s", output_file)
+
+        deliver_content = final_response if success else _format_failed_job_delivery(job, error)
+        should_deliver = bool(deliver_content)
+        if should_deliver and success and _is_silent_delivery_content(deliver_content):
+            logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+            should_deliver = False
+
+        if should_deliver and success:
+            audit_error = _run_delivery_audit_gate(job, output_file)
+            if audit_error:
+                logger.error("Job '%s': %s", job["id"], audit_error)
+                success = False
+                error = audit_error
+                deliver_content = _format_failed_job_delivery(job, error)
+                should_deliver = bool(deliver_content)
+
+        delivery_error = None
+        if should_deliver:
+            try:
+                delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+            except Exception as de:
+                delivery_error = str(de)
+                logger.error("Delivery failed for job %s: %s", job["id"], de)
+
+        # Treat empty final_response as a soft failure so last_status
+        # is not "ok" — the agent ran but produced nothing useful.
+        # (issue #8585)
+        if success and not final_response:
+            success = False
+            error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
+
+        mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+        return True
+
+    except Exception as e:
+        logger.error("Error processing job %s: %s", job['id'], e)
+        mark_job_run(job["id"], False, str(e))
+        return False
+
+
 def execute_job(job: dict, adapters=None, loop=None, verbose: bool = True) -> bool:
     """Execute one concrete cron job and persist output / status.
 
@@ -1676,37 +1800,12 @@ def execute_job(job: dict, adapters=None, loop=None, verbose: bool = True) -> bo
         # crashes mid-run, the job won't re-fire on restart.
         advance_next_run(job["id"])
 
-        success, output, final_response, error = run_job(job)
-
-        output_file = save_job_output(job["id"], output)
-        if verbose:
-            logger.info("Output saved to: %s", output_file)
-
-        deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
-        should_deliver = bool(deliver_content)
-        if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
-            logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
-            should_deliver = False
-
-        delivery_error = None
-        if should_deliver:
-            try:
-                delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
-            except Exception as de:
-                delivery_error = str(de)
-                logger.error("Delivery failed for job %s: %s", job["id"], de)
-
-        if success and not final_response:
-            success = False
-            error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
-
-        mark_job_run(job["id"], success, error, delivery_error=delivery_error)
-        return True
+        return _process_job_run(job, adapters=adapters, loop=loop, verbose=verbose)
 
     except Exception as e:
         logger.error("Error processing job %s: %s", job['id'], e)
         mark_job_run(job["id"], False, str(e))
-        return True
+        return False
 
 
 def execute_job_now(job_id: str, adapters=None, loop=None, verbose: bool = True) -> bool:
@@ -1794,44 +1893,7 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
 
         def _process_job(job: dict) -> bool:
             """Run one due job end-to-end: execute, save, deliver, mark."""
-            try:
-                success, output, final_response, error = run_job(job)
-
-                output_file = save_job_output(job["id"], output)
-                if verbose:
-                    logger.info("Output saved to: %s", output_file)
-
-                # Deliver the final response to the origin/target chat.
-                # If the agent responded with [SILENT], skip delivery (but
-                # output is already saved above).  Failed jobs always deliver.
-                deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
-                should_deliver = bool(deliver_content)
-                if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
-                    logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
-                    should_deliver = False
-
-                delivery_error = None
-                if should_deliver:
-                    try:
-                        delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
-                    except Exception as de:
-                        delivery_error = str(de)
-                        logger.error("Delivery failed for job %s: %s", job["id"], de)
-
-                # Treat empty final_response as a soft failure so last_status
-                # is not "ok" — the agent ran but produced nothing useful.
-                # (issue #8585)
-                if success and not final_response:
-                    success = False
-                    error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
-
-                mark_job_run(job["id"], success, error, delivery_error=delivery_error)
-                return True
-
-            except Exception as e:
-                logger.error("Error processing job %s: %s", job['id'], e)
-                mark_job_run(job["id"], False, str(e))
-                return False
+            return _process_job_run(job, adapters=adapters, loop=loop, verbose=verbose)
 
         # Partition due jobs: those with a per-job workdir mutate
         # os.environ["TERMINAL_CWD"] inside run_job, which is process-global —
