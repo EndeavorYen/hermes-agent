@@ -10399,13 +10399,37 @@ class GatewayRunner:
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
             _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 
+            existing_media_files: list = []
+            for media_path, is_voice in media_files:
+                media_name = Path(media_path).name or media_path
+                is_placeholder = media_name.startswith("<") and media_name.endswith(">")
+                if Path(media_path).is_file() or not is_placeholder:
+                    existing_media_files.append((media_path, is_voice))
+                    continue
+                logger.warning(
+                    "[%s] Skipping missing post-stream media attachment: %s",
+                    adapter.name,
+                    media_path,
+                )
+                try:
+                    await adapter.send(
+                        chat_id=event.source.chat_id,
+                        content=(
+                            "⚠️ Media attachment unavailable: "
+                            f"`{media_name}`"
+                        ),
+                        metadata=_thread_meta,
+                    )
+                except Exception as e:
+                    logger.warning("[%s] Missing media fallback delivery failed: %s", adapter.name, e)
+
             # Partition out images so they can be sent as a single batch
             # (e.g. Signal's multi-attachment RPC). When [[as_document]] was
             # set, image-extension files skip the photo path and route to
             # send_document below — preserving original bytes.
             image_paths: list = []
             non_image_media: list = []
-            for media_path, is_voice in media_files:
+            for media_path, is_voice in existing_media_files:
                 ext = Path(media_path).suffix.lower()
                 if (ext in _IMAGE_EXTS
                         and not is_voice

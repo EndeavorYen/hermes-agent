@@ -2343,6 +2343,17 @@ class TestHandleMaxIterations:
         assert "error" in result.lower()
         assert "API down" in result
 
+    def test_closed_stdout_does_not_abort_summary(self, agent):
+        resp = _mock_response(content="Summary survived closed stdout.")
+        agent.client.chat.completions.create.return_value = resp
+        agent._cached_system_prompt = "You are helpful."
+        messages = [{"role": "user", "content": "do stuff"}]
+
+        with patch("builtins.print", side_effect=ValueError("I/O operation on closed file")):
+            result = agent._handle_max_iterations(messages, 60)
+
+        assert result == "Summary survived closed stdout."
+
     def test_summary_skips_reasoning_for_unsupported_openrouter_model(self, agent):
         agent.base_url = "https://openrouter.ai/api/v1"
         agent.model = "minimax/minimax-m2.5"
