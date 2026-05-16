@@ -13,6 +13,43 @@ source .venv/bin/activate   # or: source venv/bin/activate
 `$HOME/.hermes/hermes-agent/venv` (for worktrees that share a venv with the
 main checkout).
 
+## Development Workflow
+
+Use TDD for feature work, bug fixes, refactors, behavior changes, and upgrade
+ports:
+
+1. Write or update the smallest behavior-focused test first.
+2. Run that test and confirm it fails for the expected reason.
+3. Implement the minimal production change needed to pass.
+4. Re-run the targeted test, then the relevant wider suite.
+5. Refactor only after the tests are green, keeping the diff narrow.
+
+For documentation, config-only, generated-code, or exploratory prototype changes,
+state why TDD is not applicable before editing.
+
+## Release Upgrade Strategy
+
+Use upstream as the base for every Hermes release upgrade. Treat local patches as
+technical debt to audit, not behavior to preserve by default.
+
+- Start major release work from the upstream release tag or a clean branch based
+  on that tag, then intentionally port only the local changes that still earn
+  their place.
+- Classify local deltas before porting: `discard`, `upstream-equivalent`,
+  `port-as-config/plugin/skill`, `port-core-required`, or
+  `upstream-pr-candidate`.
+- Default to discarding a local patch when upstream already has an equivalent or
+  better implementation.
+- Keep a core local patch only when it has a current live-runtime contract,
+  upstream lacks an equivalent extension point, and a focused test proves the
+  behavior is still required.
+- Prefer config, plugin, skill, provider-profile, or runtime-state integration
+  over patching Hermes core.
+- Treat merge conflicts as a signal to re-evaluate the local patch. Do not solve
+  upgrades by mechanically preserving both sides.
+- For this machine's custom branch, push integration branches to `origin` only
+  unless an explicit upstream PR workflow is requested.
+
 ## Project Structure
 
 File counts shift constantly — don't treat the tree below as exhaustive.
