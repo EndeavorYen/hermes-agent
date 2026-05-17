@@ -165,6 +165,13 @@ VALID_HOOKS: Set[str] = {
     #   choice: "once" | "session" | "always" | "deny" | "timeout"
     "pre_approval_request",
     "post_approval_response",
+    # Cron pre-delivery gate. Fired after a cron artifact is saved and before
+    # normal delivery. Plugins may return:
+    #   {"action": "block", "message": "..."} -> mark job failed and deliver
+    #                                             the failure notice
+    #   {"action": "allow"} / None             -> normal delivery
+    # Kwargs: job: dict, output_file: str, content: str.
+    "cron_delivery_gate",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

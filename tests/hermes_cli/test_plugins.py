@@ -454,6 +454,30 @@ class TestPluginHooks:
         )
         assert results == [{"seen": 2, "mc": 5, "tc": 3}]
 
+    def test_cron_delivery_gate_hook_can_be_registered_without_warning(self, tmp_path, monkeypatch, caplog):
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "cron_gate_hook",
+            register_body=(
+                'ctx.register_hook("cron_delivery_gate", '
+                'lambda **kw: {"action": "block", "message": kw["job"]["id"]})'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            mgr = PluginManager()
+            mgr.discover_and_load()
+
+        assert not any("cron_delivery_gate" in record.message for record in caplog.records)
+        results = mgr.invoke_hook(
+            "cron_delivery_gate",
+            job={"id": "job-1"},
+            output_file="/tmp/artifact.md",
+            content="normal response",
+        )
+        assert results == [{"action": "block", "message": "job-1"}]
+
     def test_transform_terminal_output_hook_can_be_registered_and_invoked(self, tmp_path, monkeypatch):
         plugins_dir = tmp_path / "hermes_test" / "plugins"
         _make_plugin_dir(
