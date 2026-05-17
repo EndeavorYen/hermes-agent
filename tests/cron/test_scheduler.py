@@ -1774,6 +1774,82 @@ class TestSilentDelivery:
         deliver_mock.assert_not_called()
 
 
+class TestDeliveryGate:
+    """Delivery gates run after artifact save and before normal delivery."""
+
+    def _make_job(self):
+        return {
+            "id": "gate-job",
+            "name": "gate",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+    def test_delivery_gate_script_blocks_before_normal_delivery(self, tmp_path):
+        output_file = tmp_path / "artifact.md"
+        job = self._make_job()
+        job["delivery_gate"] = {
+            "type": "script",
+            "script": "/audit/cron_delivery_gate.py",
+            "mode": "preopen",
+        }
+        gate_result = MagicMock(
+            returncode=2,
+            stdout="BLOCK: generic gate failed",
+            stderr="",
+        )
+
+        with patch("cron.scheduler.get_due_jobs", return_value=[job]), \
+             patch("cron.scheduler.advance_next_run"), \
+             patch("cron.scheduler.run_job", return_value=(True, "# artifact", "normal response", None)), \
+             patch("cron.scheduler.save_job_output", return_value=output_file), \
+             patch("cron.scheduler.subprocess.run", return_value=gate_result) as gate_run, \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run") as mark_mock:
+            from cron.scheduler import tick
+            assert tick(verbose=False) == 1
+
+        gate_run.assert_called_once()
+        delivered = deliver_mock.call_args.args[1]
+        assert "normal response" not in delivered
+        assert "BLOCK: generic gate failed" in delivered
+        assert mark_mock.call_args.args[1] is False
+        assert "delivery gate failed" in mark_mock.call_args.args[2]
+
+    def test_cron_delivery_gate_hook_blocks_before_normal_delivery(self, tmp_path, monkeypatch):
+        output_file = tmp_path / "artifact.md"
+        job = self._make_job()
+        hook_calls = []
+
+        def fake_invoke_hook(hook_name, **kwargs):
+            hook_calls.append((hook_name, kwargs))
+            return [{"action": "block", "message": "policy blocked by plugin"}]
+
+        import cron.scheduler as scheduler
+        monkeypatch.setattr(scheduler, "invoke_hook", fake_invoke_hook, raising=False)
+
+        with patch("cron.scheduler.get_due_jobs", return_value=[job]), \
+             patch("cron.scheduler.advance_next_run"), \
+             patch("cron.scheduler.run_job", return_value=(True, "# artifact", "normal response", None)), \
+             patch("cron.scheduler.save_job_output", return_value=output_file), \
+             patch("cron.scheduler._deliver_result", return_value=None) as deliver_mock, \
+             patch("cron.scheduler.mark_job_run") as mark_mock:
+            from cron.scheduler import tick
+            assert tick(verbose=False) == 1
+
+        assert hook_calls
+        assert hook_calls[0][0] == "cron_delivery_gate"
+        assert hook_calls[0][1]["job"]["id"] == "gate-job"
+        assert hook_calls[0][1]["output_file"] == str(output_file)
+        assert hook_calls[0][1]["content"] == "normal response"
+
+        delivered = deliver_mock.call_args.args[1]
+        assert "normal response" not in delivered
+        assert "policy blocked by plugin" in delivered
+        assert mark_mock.call_args.args[1] is False
+        assert "cron delivery gate blocked" in mark_mock.call_args.args[2]
+
+
 class TestBuildJobPromptSilentHint:
     """Verify _build_job_prompt always injects [SILENT] guidance."""
 

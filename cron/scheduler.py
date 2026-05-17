@@ -28,7 +28,7 @@ except ImportError:
     except ImportError:
         msvcrt = None
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 # Add parent directory to path for imports BEFORE repo-level imports.
 # Without this, standalone invocations (e.g. after `hermes update` reloads
@@ -844,6 +844,127 @@ def _parse_wake_gate(script_output: str) -> bool:
     if not isinstance(gate, dict):
         return True
     return gate.get("wakeAgent", True) is not False
+
+
+def _redact_cron_text(text: str) -> str:
+    """Best-effort secret redaction for cron subprocess output."""
+    try:
+        from agent.redact import redact_sensitive_text
+        return redact_sensitive_text(text)
+    except Exception:
+        return text
+
+
+def _normalise_delivery_gate(raw_gate: Any) -> tuple[Optional[dict], Optional[str]]:
+    if raw_gate is None or raw_gate == "":
+        return None, None
+    if isinstance(raw_gate, dict):
+        return raw_gate, None
+    return None, "delivery gate misconfigured: delivery_gate must be an object"
+
+
+def _run_script_delivery_gate(
+    job: dict,
+    output_file: Path | str,
+    gate: dict,
+) -> Optional[str]:
+    """Run a configured script gate before normal cron delivery."""
+    if gate.get("enabled") is False:
+        return None
+
+    gate_type = str(gate.get("type") or gate.get("kind") or "script").strip().lower()
+    if gate_type != "script":
+        return f"delivery gate misconfigured: unsupported type={gate_type!r}"
+
+    script = str(gate.get("script") or "").strip()
+    mode = str(gate.get("mode") or "").strip()
+    if not script or not mode:
+        return "delivery gate misconfigured: script and mode are required"
+
+    command = [sys.executable, script, mode, str(output_file)]
+    previous = gate.get("previous")
+    if previous:
+        command.extend(["--previous", str(previous)])
+
+    timeout = _get_script_timeout()
+    raw_timeout = gate.get("timeout_seconds")
+    if raw_timeout is not None:
+        try:
+            configured_timeout = int(float(raw_timeout))
+            if configured_timeout <= 0:
+                return f"delivery gate misconfigured: invalid timeout_seconds={raw_timeout!r}"
+            timeout = configured_timeout
+        except (TypeError, ValueError):
+            return f"delivery gate misconfigured: invalid timeout_seconds={raw_timeout!r}"
+
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return f"delivery gate failed: timed out after {timeout}s"
+    except Exception as exc:
+        return f"delivery gate failed: {type(exc).__name__}: {exc}"
+
+    stdout = _redact_cron_text((completed.stdout or "").strip())
+    stderr = _redact_cron_text((completed.stderr or "").strip())
+    if completed.returncode == 0:
+        if stdout:
+            logger.info("Job '%s': delivery gate passed: %s", job.get("id", "?"), stdout)
+        return None
+
+    details = stdout or stderr or f"exit code {completed.returncode}"
+    return f"delivery gate failed (exit {completed.returncode}): {details}"
+
+
+def _run_configured_delivery_gate(job: dict, output_file: Path | str) -> Optional[str]:
+    gate, error = _normalise_delivery_gate(job.get("delivery_gate"))
+    if error:
+        return error
+    if not gate:
+        return None
+    return _run_script_delivery_gate(job, output_file, gate)
+
+
+def _run_cron_delivery_gate_hooks(
+    job: dict,
+    output_file: Path | str,
+    content: str,
+) -> Optional[str]:
+    try:
+        hook_fn = globals().get("invoke_hook")
+        if hook_fn is None:
+            from hermes_cli.plugins import invoke_hook as hook_fn
+        results = hook_fn(
+            "cron_delivery_gate",
+            job=dict(job),
+            output_file=str(output_file),
+            content=content,
+        )
+    except Exception as exc:
+        logger.warning("Cron delivery gate hooks unavailable: %s", exc)
+        return None
+
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        action = str(result.get("action") or "").strip().lower()
+        blocked = action == "block" or result.get("allowed") is False
+        if not blocked:
+            continue
+        message = result.get("message") or result.get("reason") or "blocked"
+        return f"cron delivery gate blocked: {message}"
+    return None
+
+
+def _run_delivery_gate(job: dict, output_file: Path | str, content: str) -> Optional[str]:
+    configured_error = _run_configured_delivery_gate(job, output_file)
+    if configured_error:
+        return configured_error
+    return _run_cron_delivery_gate_hooks(job, output_file, content)
 
 
 def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
@@ -1757,6 +1878,15 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
                     logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
                     should_deliver = False
+
+                if should_deliver and success:
+                    gate_error = _run_delivery_gate(job, output_file, deliver_content)
+                    if gate_error:
+                        logger.error("Job '%s': %s", job["id"], gate_error)
+                        success = False
+                        error = gate_error
+                        deliver_content = f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
+                        should_deliver = bool(deliver_content)
 
                 delivery_error = None
                 if should_deliver:

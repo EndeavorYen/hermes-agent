@@ -478,6 +478,30 @@ class TestPluginHooks:
         )
         assert results == ["echo hello|7|local|task-1|6"]
 
+    def test_cron_delivery_gate_hook_can_be_registered_without_warning(self, tmp_path, monkeypatch, caplog):
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "cron_gate_hook",
+            register_body=(
+                'ctx.register_hook("cron_delivery_gate", '
+                'lambda **kw: {"action": "block", "message": "blocked"})'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            mgr = PluginManager()
+            mgr.discover_and_load()
+
+        assert not any("cron_delivery_gate" in record.message for record in caplog.records)
+        assert mgr.invoke_hook(
+            "cron_delivery_gate",
+            job={"id": "job-1"},
+            output_file="/tmp/out.md",
+            content="body",
+        ) == [{"action": "block", "message": "blocked"}]
+
     def test_invalid_hook_name_warns(self, tmp_path, monkeypatch, caplog):
         """Registering an unknown hook name logs a warning."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"
