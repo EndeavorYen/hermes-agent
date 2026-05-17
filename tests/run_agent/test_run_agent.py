@@ -2334,6 +2334,17 @@ class TestHandleMaxIterations:
         assert len(result) > 0
         assert "summary" in result.lower()
 
+    def test_closed_stdout_does_not_abort_summary(self, agent):
+        resp = _mock_response(content="Summary survived closed stdout.")
+        agent.client.chat.completions.create.return_value = resp
+        agent._cached_system_prompt = "You are helpful."
+        messages = [{"role": "user", "content": "do stuff"}]
+
+        with patch("builtins.print", side_effect=ValueError("I/O operation on closed file")):
+            result = agent._handle_max_iterations(messages, 60)
+
+        assert result == "Summary survived closed stdout."
+
     def test_api_failure_returns_error(self, agent):
         agent.client.chat.completions.create.side_effect = Exception("API down")
         agent._cached_system_prompt = "You are helpful."
