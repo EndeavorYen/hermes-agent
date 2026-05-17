@@ -19,7 +19,10 @@ Output is saved as PNG under ``$HERMES_HOME/cache/images/``.
 
 from __future__ import annotations
 
+import base64
 import logging
+import mimetypes
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.image_gen_provider import (
@@ -78,6 +81,51 @@ _CODEX_INSTRUCTIONS = (
     "You are an assistant that must fulfill image generation requests by "
     "using the image_generation tool when provided."
 )
+
+
+def _normalize_reference_images(value: Any) -> List[str]:
+    if value is None or value == "":
+        return []
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        return []
+    refs: List[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        path = item.strip()
+        if path:
+            refs.append(path)
+    return refs
+
+
+def _normalize_action(value: Any) -> str:
+    action = str(value or "auto").strip().lower()
+    if action in {"auto", "generate", "edit"}:
+        return action
+    return "auto"
+
+
+def _guess_mime(path: Path) -> str:
+    mime, _ = mimetypes.guess_type(str(path))
+    if mime and mime.startswith("image/"):
+        return mime
+    return {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".bmp": "image/bmp",
+    }.get(path.suffix.lower(), "image/jpeg")
+
+
+def _image_path_to_data_url(path: str) -> str:
+    ref = Path(path).expanduser()
+    raw = ref.read_bytes()
+    b64 = base64.b64encode(raw).decode("ascii")
+    return f"data:{_guess_mime(ref)};base64,{b64}"
 
 
 # ---------------------------------------------------------------------------
@@ -161,9 +209,39 @@ def _build_codex_client():
         return None
 
 
-def _collect_image_b64(client: Any, *, prompt: str, size: str, quality: str) -> Optional[str]:
+def _collect_image_b64(
+    client: Any,
+    *,
+    prompt: str,
+    size: str,
+    quality: str,
+    reference_images: Optional[List[str]] = None,
+    action: str = "auto",
+) -> Optional[str]:
     """Stream a Codex Responses image_generation call and return the b64 image."""
     image_b64: Optional[str] = None
+    refs = reference_images or []
+    content: List[Dict[str, Any]] = [{"type": "input_text", "text": prompt}]
+    if action != "generate":
+        for ref in refs:
+            content.append({
+                "type": "input_image",
+                "image_url": _image_path_to_data_url(ref),
+            })
+
+    tool: Dict[str, Any] = {
+        "type": "image_generation",
+        "model": API_MODEL,
+        "size": size,
+        "quality": quality,
+        "output_format": "png",
+        "background": "opaque",
+        "partial_images": 1,
+    }
+    if refs and action != "generate":
+        tool["action"] = "edit" if action == "auto" else action
+    elif action == "generate":
+        tool["action"] = "generate"
 
     with client.responses.stream(
         model=_CODEX_CHAT_MODEL,
@@ -172,17 +250,9 @@ def _collect_image_b64(client: Any, *, prompt: str, size: str, quality: str) -> 
         input=[{
             "type": "message",
             "role": "user",
-            "content": [{"type": "input_text", "text": prompt}],
+            "content": content,
         }],
-        tools=[{
-            "type": "image_generation",
-            "model": API_MODEL,
-            "size": size,
-            "quality": quality,
-            "output_format": "png",
-            "background": "opaque",
-            "partial_images": 1,
-        }],
+        tools=[tool],
         tool_choice={
             "type": "allowed_tools",
             "mode": "required",
@@ -306,6 +376,20 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
 
         tier_id, meta = _resolve_model()
         size = _SIZES.get(aspect, _SIZES["square"])
+        reference_images = _normalize_reference_images(kwargs.get("reference_images"))
+        action = _normalize_action(kwargs.get("action"))
+
+        if action != "generate":
+            for ref in reference_images:
+                if not Path(ref).expanduser().is_file():
+                    return error_response(
+                        error=f"Reference image not found: {ref}",
+                        error_type="invalid_argument",
+                        provider="openai-codex",
+                        model=tier_id,
+                        prompt=prompt,
+                        aspect_ratio=aspect,
+                    )
 
         client = _build_codex_client()
         if client is None:
@@ -324,6 +408,8 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 prompt=prompt,
                 size=size,
                 quality=meta["quality"],
+                reference_images=reference_images,
+                action=action,
             )
         except Exception as exc:
             logger.debug("Codex image generation failed", exc_info=True)
@@ -358,13 +444,17 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
+        extra: Dict[str, Any] = {"size": size, "quality": meta["quality"]}
+        if action != "generate" and reference_images:
+            extra["reference_image_count"] = len(reference_images)
+
         return success_response(
             image=str(saved_path),
             model=tier_id,
             prompt=prompt,
             aspect_ratio=aspect,
             provider="openai-codex",
-            extra={"size": size, "quality": meta["quality"]},
+            extra=extra,
         )
 
 

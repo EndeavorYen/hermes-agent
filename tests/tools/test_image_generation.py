@@ -363,11 +363,18 @@ class TestAspectRatioNormalization:
 
 class TestRegistryIntegration:
 
-    def test_schema_exposes_only_prompt_and_aspect_ratio_to_agent(self, image_tool):
+    def test_schema_exposes_prompt_aspect_and_reference_controls(self, image_tool):
         """The agent-facing schema must stay tight — model selection is a
         user-level config choice, not an agent-level arg."""
         props = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]
-        assert set(props.keys()) == {"prompt", "aspect_ratio"}
+        assert set(props.keys()) == {
+            "prompt",
+            "aspect_ratio",
+            "reference_images",
+            "action",
+            "input_fidelity",
+        }
+        assert "model" not in props
 
     def test_aspect_ratio_enum_is_three_values(self, image_tool):
         enum = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]["aspect_ratio"]["enum"]
@@ -421,6 +428,7 @@ class TestManagedGatewayErrorTranslation:
         """403 from managed gateway → ValueError mentioning FAL_KEY + hermes tools."""
         from unittest.mock import MagicMock
 
+        monkeypatch.setattr(image_tool, "fal_client", MagicMock())
         # Simulate: managed mode active, managed submit raises 4xx.
         managed_gateway = MagicMock()
         managed_gateway.gateway_origin = "https://fal-queue-gateway.example.com"
@@ -449,6 +457,7 @@ class TestManagedGatewayErrorTranslation:
         """500s are real outages, not model-availability issues — don't rewrite them."""
         from unittest.mock import MagicMock
 
+        monkeypatch.setattr(image_tool, "fal_client", MagicMock())
         managed_gateway = MagicMock()
         monkeypatch.setattr(image_tool, "_resolve_managed_fal_gateway",
                             lambda: managed_gateway)
@@ -484,6 +493,7 @@ class TestManagedGatewayErrorTranslation:
         they should bubble up unchanged so callers can retry or diagnose."""
         from unittest.mock import MagicMock
 
+        monkeypatch.setattr(image_tool, "fal_client", MagicMock())
         managed_gateway = MagicMock()
         monkeypatch.setattr(image_tool, "_resolve_managed_fal_gateway",
                             lambda: managed_gateway)

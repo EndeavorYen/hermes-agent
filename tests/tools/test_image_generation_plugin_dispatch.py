@@ -27,10 +27,26 @@ class _FakeCodexProvider(ImageGenProvider):
             "prompt": prompt,
             "aspect_ratio": aspect_ratio,
             "provider": "codex",
+            "reference_images": kwargs.get("reference_images") or [],
+            "action": kwargs.get("action"),
+            "input_fidelity": kwargs.get("input_fidelity"),
         }
 
 
 class TestPluginDispatch:
+    def test_schema_exposes_current_turn_reference_controls(self):
+        from tools import image_generation_tool
+
+        desc = image_generation_tool.IMAGE_GENERATE_SCHEMA["description"]
+        props = image_generation_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]
+
+        assert "reference images" in desc
+        assert "reference_images" in props
+        assert props["reference_images"]["type"] == "array"
+        assert props["reference_images"]["items"]["type"] == "string"
+        assert props["action"]["enum"] == ["auto", "generate", "edit"]
+        assert props["input_fidelity"]["enum"] == ["low", "high"]
+
     def test_dispatch_routes_to_codex_provider(self, monkeypatch, tmp_path):
         from tools import image_generation_tool
         from agent import image_gen_registry as registry_module
@@ -97,3 +113,88 @@ class TestPluginDispatch:
         assert payload["success"] is True
         assert payload["provider"] == "codex"
         assert payload["aspect_ratio"] == "portrait"
+
+    def test_dispatch_forwards_reference_image_options(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from hermes_cli import plugins as plugins_module
+        from agent import image_gen_registry as registry_module
+
+        ref = tmp_path / "uploaded.png"
+        ref.write_bytes(b"uploaded")
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text("image_gen:\n  provider: codex\n")
+
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "codex")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda force=False: None)
+        monkeypatch.setattr(registry_module, "get_provider", lambda name: _FakeCodexProvider() if name == "codex" else None)
+
+        dispatched = image_generation_tool._dispatch_to_plugin_provider(
+            "make a polished portrait",
+            "portrait",
+            reference_images=[str(ref)],
+            action="edit",
+            input_fidelity="high",
+        )
+        payload = json.loads(dispatched)
+
+        assert payload["success"] is True
+        assert payload["reference_images"] == [str(ref)]
+        assert payload["action"] == "edit"
+        assert payload["input_fidelity"] == "high"
+
+    def test_handler_defaults_to_current_turn_image_references(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from hermes_cli import plugins as plugins_module
+        from agent import image_gen_registry as registry_module
+        from agent import image_routing
+
+        ref = tmp_path / "uploaded.png"
+        ref.write_bytes(b"uploaded")
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text("image_gen:\n  provider: codex\n")
+
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "codex")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda force=False: None)
+        monkeypatch.setattr(registry_module, "get_provider", lambda name: _FakeCodexProvider() if name == "codex" else None)
+
+        token = image_routing.set_current_image_reference_paths([str(ref)])
+        try:
+            dispatched = image_generation_tool._handle_image_generate({
+                "prompt": "make a viral IG portrait",
+                "aspect_ratio": "portrait",
+            })
+        finally:
+            image_routing.reset_current_image_reference_paths(token)
+
+        payload = json.loads(dispatched)
+
+        assert payload["success"] is True
+        assert payload["reference_images"] == [str(ref)]
+
+    def test_handler_rejects_arbitrary_local_reference_paths(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from hermes_cli import plugins as plugins_module
+        from agent import image_gen_registry as registry_module
+
+        secret = tmp_path / "not-uploaded.png"
+        secret.write_bytes(b"private bytes")
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text("image_gen:\n  provider: codex\n")
+
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "codex")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda force=False: None)
+        monkeypatch.setattr(registry_module, "get_provider", lambda name: _FakeCodexProvider() if name == "codex" else None)
+
+        dispatched = image_generation_tool._handle_image_generate({
+            "prompt": "use this reference",
+            "reference_images": [str(secret)],
+            "action": "edit",
+        })
+        payload = json.loads(dispatched)
+
+        assert payload["success"] is False
+        assert payload["error_type"] == "invalid_reference_image"
+        assert "current-turn uploaded images" in payload["error"]

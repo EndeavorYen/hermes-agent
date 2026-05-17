@@ -1251,6 +1251,7 @@ class GatewayRunner:
         # preserve the queue.
         self._queued_events: Dict[str, List[MessageEvent]] = {}
         self._pending_native_image_paths_by_session: Dict[str, List[str]] = {}
+        self._pending_tool_image_reference_paths_by_session: Dict[str, List[str]] = {}
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
         self._session_run_generation: Dict[str, int] = {}
         # LRU cache of live SessionSources keyed by session_key. Used by
@@ -6897,6 +6898,7 @@ class GatewayRunner:
         # Reset only this session's per-call buffer; other sessions may be
         # concurrently preparing multimodal turns on the same runner.
         self._consume_pending_native_image_paths(session_key)
+        self._consume_pending_tool_image_reference_paths(session_key)
 
         _is_shared_multi_user = is_shared_multi_user_session(
             source,
@@ -6923,6 +6925,12 @@ class GatewayRunner:
                     audio_paths.append(path)
 
             if image_paths:
+                pending_refs = getattr(self, "_pending_tool_image_reference_paths_by_session", None)
+                if pending_refs is None:
+                    pending_refs = {}
+                    self._pending_tool_image_reference_paths_by_session = pending_refs
+                pending_refs[session_key] = list(image_paths)
+
                 # Decide routing: native (attach pixels) vs text (vision_analyze
                 # pre-run + prepend description).  See agent/image_routing.py.
                 _img_mode = self._decide_image_input_mode()
@@ -7082,6 +7090,12 @@ class GatewayRunner:
         if not pending_native:
             return []
         return list(pending_native.pop(session_key, []) or [])
+
+    def _consume_pending_tool_image_reference_paths(self, session_key: str) -> List[str]:
+        pending_refs = getattr(self, "_pending_tool_image_reference_paths_by_session", None)
+        if not pending_refs:
+            return []
+        return list(pending_refs.pop(session_key, []) or [])
 
     def _cache_session_source(self, session_key: str, source) -> None:
         if not session_key or source is None:
@@ -15707,12 +15721,15 @@ class GatewayRunner:
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
+            _image_ref_token = None
+            _image_ref_reset = None
             try:
                 # If _prepare_inbound_message_text buffered image paths for native
                 # attachment, wrap the user turn as an OpenAI-style multimodal
                 # content list. Consume-and-clear so subsequent turns on the same
                 # runner instance don't re-attach stale images.
                 _native_imgs = self._consume_pending_native_image_paths(session_key)
+                _tool_image_reference_paths = self._consume_pending_tool_image_reference_paths(session_key)
                 if _native_imgs:
                     try:
                         from agent.image_routing import build_native_content_parts
@@ -15727,6 +15744,11 @@ class GatewayRunner:
                             )
                         if any(p.get("type") == "image_url" for p in _parts):
                             _run_message: Any = _parts
+                            if not _tool_image_reference_paths:
+                                _skipped_set = set(_skipped or [])
+                                _tool_image_reference_paths = [
+                                    p for p in _native_imgs if p not in _skipped_set
+                                ]
                         else:
                             # All images failed to read — fall back to plain text.
                             _run_message = message
@@ -15739,8 +15761,30 @@ class GatewayRunner:
                 else:
                     _run_message = message
 
+                if _tool_image_reference_paths:
+                    try:
+                        from agent.image_routing import (
+                            reset_current_image_reference_paths,
+                            set_current_image_reference_paths,
+                        )
+
+                        _image_ref_token = set_current_image_reference_paths(
+                            _tool_image_reference_paths
+                        )
+                        _image_ref_reset = reset_current_image_reference_paths
+                    except Exception as _img_ref_exc:
+                        logger.debug(
+                            "Could not bind current-turn image references: %s",
+                            _img_ref_exc,
+                        )
+
                 result = agent.run_conversation(_run_message, conversation_history=agent_history, task_id=session_id)
             finally:
+                if _image_ref_token is not None and _image_ref_reset is not None:
+                    try:
+                        _image_ref_reset(_image_ref_token)
+                    except Exception:
+                        pass
                 unregister_gateway_notify(_approval_session_key)
                 # Cancel any pending clarify entries so blocked agent
                 # threads don't hang past the end of the run (interrupt,

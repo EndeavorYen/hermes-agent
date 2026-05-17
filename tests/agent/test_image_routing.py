@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+from agent import image_routing
 from agent.image_routing import (
     _coerce_mode,
     _explicit_aux_vision_override,
@@ -64,6 +65,49 @@ class TestExplicitAuxVisionOverride:
     def test_base_url_set_is_explicit(self):
         cfg = {"auxiliary": {"vision": {"provider": "auto", "base_url": "http://localhost:11434"}}}
         assert _explicit_aux_vision_override(cfg) is True
+
+
+# ─── resolve_image_reference_paths ───────────────────────────────────────────
+
+
+class TestResolveImageReferencePaths:
+    def test_current_turn_sentinel_expands_uploaded_paths(self, tmp_path: Path):
+        img = tmp_path / "uploaded.png"
+        img.write_bytes(_png_bytes())
+
+        token = image_routing.set_current_image_reference_paths([str(img)])
+        try:
+            assert image_routing.resolve_image_reference_paths(["current_turn_images"]) == [str(img)]
+            assert image_routing.resolve_image_reference_paths(["current_turn_image:0"]) == [str(img)]
+        finally:
+            image_routing.reset_current_image_reference_paths(token)
+
+    def test_default_to_current_uses_current_uploads(self, tmp_path: Path):
+        img = tmp_path / "uploaded.png"
+        img.write_bytes(_png_bytes())
+
+        token = image_routing.set_current_image_reference_paths([str(img)])
+        try:
+            assert image_routing.resolve_image_reference_paths(None, default_to_current=True) == [str(img)]
+        finally:
+            image_routing.reset_current_image_reference_paths(token)
+
+    def test_explicit_path_must_be_current_turn_upload(self, tmp_path: Path):
+        uploaded = tmp_path / "uploaded.png"
+        uploaded.write_bytes(_png_bytes())
+
+        token = image_routing.set_current_image_reference_paths([str(uploaded)])
+        try:
+            assert image_routing.resolve_image_reference_paths([str(uploaded)]) == [str(uploaded)]
+        finally:
+            image_routing.reset_current_image_reference_paths(token)
+
+    def test_rejects_arbitrary_local_paths(self, tmp_path: Path):
+        secret = tmp_path / "secret.png"
+        secret.write_bytes(_png_bytes())
+
+        with pytest.raises(ValueError, match="current-turn uploaded images"):
+            image_routing.resolve_image_reference_paths([str(secret)])
 
 
 # ─── decide_image_input_mode ─────────────────────────────────────────────────

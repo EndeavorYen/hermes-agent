@@ -35,6 +35,7 @@ main model.
 from __future__ import annotations
 
 import base64
+import contextvars
 import logging
 import mimetypes
 from pathlib import Path
@@ -44,6 +45,105 @@ logger = logging.getLogger(__name__)
 
 
 _VALID_MODES = frozenset({"auto", "native", "text"})
+_current_image_reference_paths: contextvars.ContextVar[Tuple[str, ...]] = (
+    contextvars.ContextVar("current_image_reference_paths", default=())
+)
+
+
+def set_current_image_reference_paths(image_paths: List[str]):
+    """Set user-uploaded image paths that image tools may reference this turn."""
+    clean = tuple(str(path) for path in image_paths or [] if str(path).strip())
+    return _current_image_reference_paths.set(clean)
+
+
+def reset_current_image_reference_paths(token) -> None:
+    """Reset the current-turn image reference context."""
+    _current_image_reference_paths.reset(token)
+
+
+def get_current_image_reference_paths() -> List[str]:
+    """Return user-uploaded image paths available to tools on this turn."""
+    return list(_current_image_reference_paths.get() or ())
+
+
+def _canonical_reference_path(path: str) -> str:
+    """Normalize a path for equality checks without requiring it to exist."""
+    try:
+        return str(Path(path).expanduser().resolve(strict=False))
+    except Exception:
+        return str(Path(path).expanduser())
+
+
+def resolve_image_reference_paths(
+    reference_images: Any,
+    *,
+    default_to_current: bool = False,
+) -> List[str]:
+    """Resolve image_generate reference arguments to current-turn uploads.
+
+    Tool-call arguments are model-controlled. To avoid arbitrary local file
+    reads, explicit paths must match images the user uploaded on the same turn.
+    """
+    current = get_current_image_reference_paths()
+    current_lookup: Dict[str, str] = {}
+    for path in current:
+        if not path:
+            continue
+        current_lookup[path] = path
+        current_lookup[_canonical_reference_path(path)] = path
+
+    raw_refs = reference_images
+    if raw_refs is None or raw_refs == "":
+        raw_refs = ["current_turn_images"] if default_to_current and current else []
+    elif isinstance(raw_refs, str):
+        raw_refs = [raw_refs]
+    elif not isinstance(raw_refs, list):
+        raw_refs = []
+
+    resolved: List[str] = []
+    for item in raw_refs:
+        if not isinstance(item, str):
+            continue
+        value = item.strip()
+        if not value:
+            continue
+        value_lc = value.lower()
+
+        if value_lc in {"current_turn_images", "current_turn_image"}:
+            resolved.extend(current)
+            continue
+        if value_lc.startswith("current_turn_image:"):
+            try:
+                index = int(value_lc.split(":", 1)[1])
+            except ValueError as exc:
+                raise ValueError(f"Invalid current_turn_image index: {value}") from exc
+            if index < 0 or index >= len(current):
+                raise ValueError(f"current_turn_image index out of range: {value}")
+            resolved.append(current[index])
+            continue
+
+        matched_current = current_lookup.get(value) or current_lookup.get(
+            _canonical_reference_path(value)
+        )
+        if matched_current:
+            resolved.append(matched_current)
+            continue
+
+        raise ValueError(
+            "Reference images must be current-turn uploaded images. "
+            "Use current_turn_images or current_turn_image:N instead of "
+            f"arbitrary local paths: {value}"
+        )
+
+    deduped: List[str] = []
+    seen = set()
+    for path in resolved:
+        key = _canonical_reference_path(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(path)
+    return deduped
 
 
 def _coerce_mode(raw: Any) -> str:
