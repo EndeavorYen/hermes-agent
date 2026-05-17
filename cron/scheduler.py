@@ -1724,6 +1724,43 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # Strip leaked placeholder text that upstream may inject on empty completions.
         if final_response.strip() == "(No response generated)":
             final_response = ""
+        layer2_audit_section = ""
+        if final_response:
+            try:
+                from memory.layer2_store import (
+                    apply_layer2_payload,
+                    format_layer2_audit_section,
+                    job_allows_layer2,
+                    parse_layer2_payload,
+                )
+
+                if job_allows_layer2(job):
+                    cleaned_response, layer2_payload = parse_layer2_payload(final_response)
+                    visible_response = cleaned_response.strip()
+                    if layer2_payload is not None and visible_response:
+                        final_response = visible_response
+                        if not _is_silent_delivery_content(visible_response):
+                            layer2_audits = apply_layer2_payload(
+                                job,
+                                layer2_payload,
+                                source_ref=f"cron:{job_id}:{_cron_session_id}",
+                                job_id=job_id,
+                                job_run_id=_cron_session_id,
+                                session_id=_cron_session_id,
+                            )
+                            layer2_audit_section = format_layer2_audit_section(layer2_audits)
+                    elif layer2_payload is not None:
+                        logger.info(
+                            "Job '%s': ignored Layer-2 payload because visible response was empty",
+                            job_id,
+                        )
+            except Exception as layer2_exc:
+                logger.warning(
+                    "Job '%s': Layer-2 post-processing failed; leaving response untouched: %s",
+                    job_id,
+                    layer2_exc,
+                    exc_info=True,
+                )
         # Use a separate variable for log display; keep final_response clean
         # for delivery logic (empty response = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
@@ -1742,6 +1779,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
 {logged_response}
 """
+        if layer2_audit_section:
+            output = output.rstrip() + f"\n\n{layer2_audit_section}\n"
         
         logger.info("Job '%s' completed successfully", job_name)
         return True, output, final_response, None
