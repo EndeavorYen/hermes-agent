@@ -50,6 +50,29 @@ technical debt to audit, not behavior to preserve by default.
 - For this machine's custom branch, push integration branches to `origin` only
   unless an explicit upstream PR workflow is requested.
 
+### Upgrade Integration Guardrails
+
+- `upstream-equivalent` means the replacement has been verified in upstream
+  code, docs, tests, and runtime wiring when live behavior is involved. Similar
+  intent is not enough.
+- Never retire a local feature by only saying "do not port." First prove it is
+  unused, or wire the replacement path so user-facing and scheduled behavior is
+  preserved.
+- For memory, review, autonomy, loop, cron, and gateway behavior, audit live
+  usage before removal: config, jobs, scripts, tool names, runtime data, and
+  docs. Migrate callers before deleting compatibility surfaces.
+- Every kept core patch needs a current live-runtime contract, a focused test,
+  an upstream-equivalent search result, an upstream PR candidacy decision, and a
+  clear exit condition.
+- Split generic fixes from local policy. Generic Hermes bugs should become
+  small upstream PR candidates; local policy should live in config, plugins,
+  skills, provider profiles, or runtime state.
+- Compatibility shims are temporary. Document what still uses them and the
+  condition for removing them.
+- Keep branch hygiene: one behavior per candidate branch, push to `origin` only,
+  check for duplicate upstream issues or PRs before publishing, and delete
+  obsolete rehearsal or duplicate branches once replaced.
+
 ## Project Structure
 
 File counts shift constantly — don't treat the tree below as exhaustive.
