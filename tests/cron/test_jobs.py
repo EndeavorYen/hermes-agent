@@ -300,6 +300,65 @@ class TestUpdateJob:
         result = update_job("nonexistent_id", {"name": "X"})
         assert result is None
 
+    def test_concurrent_update_job_serializes_load_modify_save(self, tmp_cron_dir, monkeypatch):
+        """Concurrent CLI/API edits must not clobber each other's jobs.json writes."""
+        import cron.jobs as jobs_mod
+
+        job_a = create_job(prompt="Job A", schedule="every 1h", name="A")
+        job_b = create_job(prompt="Job B", schedule="every 1h", name="B")
+
+        original_load_jobs = jobs_mod.load_jobs
+        original_save_jobs = jobs_mod.save_jobs
+        first_load_started = threading.Event()
+        allow_first_save = threading.Event()
+        state = {"inside_cycle": False, "overlap": False, "first_seen": False}
+
+        def load_jobs_spy():
+            if state["inside_cycle"]:
+                state["overlap"] = True
+            state["inside_cycle"] = True
+            if not state["first_seen"]:
+                state["first_seen"] = True
+                first_load_started.set()
+                assert allow_first_save.wait(timeout=2), "test timed out waiting to release first update"
+            return original_load_jobs()
+
+        def save_jobs_spy(jobs):
+            try:
+                return original_save_jobs(jobs)
+            finally:
+                state["inside_cycle"] = False
+
+        monkeypatch.setattr(jobs_mod, "load_jobs", load_jobs_spy)
+        monkeypatch.setattr(jobs_mod, "save_jobs", save_jobs_spy)
+
+        errors = []
+
+        def edit(job_id: str, name: str) -> None:
+            try:
+                jobs_mod.update_job(job_id, {"name": name})
+            except Exception as exc:  # pragma: no cover
+                errors.append(exc)
+
+        first = threading.Thread(target=edit, args=(job_a["id"], "A edited"))
+        first.start()
+        assert first_load_started.wait(timeout=2), "first update did not reach load_jobs"
+
+        second = threading.Thread(target=edit, args=(job_b["id"], "B edited"))
+        second.start()
+        second.join(timeout=0.05)
+        allow_first_save.set()
+        first.join(timeout=2)
+        second.join(timeout=2)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert not errors
+        assert state["overlap"] is False
+
+        assert get_job(job_a["id"])["name"] == "A edited"
+        assert get_job(job_b["id"])["name"] == "B edited"
+
 
 class TestPauseResumeJob:
     def test_pause_sets_state(self, tmp_cron_dir):
