@@ -294,6 +294,7 @@ from agent.model_metadata import (
     save_context_length, is_local_endpoint,
     query_ollama_num_ctx,
 )
+from agent.request_budget import RequestBudget
 from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
@@ -1676,6 +1677,9 @@ class AIAgent:
         self._last_activity_desc: str = "initializing"
         self._current_tool: str | None = None
         self._api_call_count: int = 0
+        self._request_budget: Optional[RequestBudget] = None
+        self._last_request_budget: Optional[Dict[str, Any]] = None
+        self._skill_index_build_ms_pending: float = 0.0
 
         # Rate limit tracking — updated from x-ratelimit-* response headers
         # after each API call.  Accessed by /usage slash command.
@@ -6364,10 +6368,12 @@ class AIAgent:
                 )
                 if toolset
             }
+            _skill_index_start = time.perf_counter()
             skills_prompt = build_skills_system_prompt(
                 available_tools=self.valid_tool_names,
                 available_toolsets=avail_toolsets,
             )
+            self._skill_index_build_ms_pending += (time.perf_counter() - _skill_index_start) * 1000
         else:
             skills_prompt = ""
         if skills_prompt:
@@ -10951,6 +10957,7 @@ class AIAgent:
 
         # Allow _vprint during tool execution even with stream consumers
         self._executing_tools = True
+        _tool_batch_start = time.perf_counter()
         try:
             if not _should_parallelize_tool_batch(tool_calls):
                 return self._execute_tool_calls_sequential(
@@ -10961,6 +10968,16 @@ class AIAgent:
                 assistant_message, messages, effective_task_id, api_call_count
             )
         finally:
+            if self._request_budget is not None:
+                tool_names = [
+                    getattr(getattr(tc, "function", None), "name", "")
+                    for tc in (tool_calls or [])
+                ]
+                self._request_budget.add_tool_execution(
+                    ",".join(name for name in tool_names if name),
+                    time.perf_counter() - _tool_batch_start,
+                    count=len(tool_calls or []),
+                )
             self._executing_tools = False
 
     def _dispatch_delegate_task(self, function_args: dict) -> str:
@@ -12211,6 +12228,13 @@ class AIAgent:
         # ``hermes logs --session <id>`` can filter a single conversation.
         from hermes_logging import set_session_context
         set_session_context(self.session_id)
+        self._request_budget = RequestBudget(
+            session_id=self.session_id or "",
+            turn_id=str(getattr(self, "_user_turn_count", 0) + 1),
+            model=self.model or "",
+            provider=self.provider or "",
+            platform=self.platform or "cli",
+        )
 
         # Bind the skill write-origin ContextVar for this thread so tool
         # handlers (e.g. skill_manage create) can tell whether they are
@@ -12429,6 +12453,12 @@ class AIAgent:
                         logger.debug("Session DB update_system_prompt failed: %s", e)
 
         active_system_prompt = self._cached_system_prompt
+        if self._request_budget is not None:
+            self._request_budget.record_skill_index(
+                active_system_prompt or "",
+                build_ms=getattr(self, "_skill_index_build_ms_pending", 0.0),
+            )
+            self._skill_index_build_ms_pending = 0.0
 
         # ── Preflight context compression ──
         # Before entering the main loop, check if the loaded conversation
@@ -12994,6 +13024,8 @@ class AIAgent:
 
                 try:
                     self._reset_stream_delivery_tracking()
+                    if self._request_budget is not None:
+                        self._request_budget.record_tool_schema(self.tools or [])
                     api_kwargs = self._build_api_kwargs(api_messages)
                     if self._force_ascii_payload:
                         _sanitize_structure_non_ascii(api_kwargs)
@@ -13057,6 +13089,11 @@ class AIAgent:
                         if self.thinking_callback:
                             self.thinking_callback("")
 
+                    def _mark_first_model_byte():
+                        if self._request_budget is not None:
+                            self._request_budget.mark_model_first_byte()
+                        _stop_spinner()
+
                     _use_streaming = True
                     # Provider signaled "stream not supported" on a previous
                     # attempt — switch to non-streaming for the rest of this
@@ -13081,12 +13118,18 @@ class AIAgent:
                         if isinstance(getattr(self, "client", None), Mock):
                             _use_streaming = False
 
-                    if _use_streaming:
-                        response = self._interruptible_streaming_api_call(
-                            api_kwargs, on_first_delta=_stop_spinner
-                        )
-                    else:
-                        response = self._interruptible_api_call(api_kwargs)
+                    if self._request_budget is not None:
+                        self._request_budget.mark_model_request_start()
+                    try:
+                        if _use_streaming:
+                            response = self._interruptible_streaming_api_call(
+                                api_kwargs, on_first_delta=_mark_first_model_byte
+                            )
+                        else:
+                            response = self._interruptible_api_call(api_kwargs)
+                    finally:
+                        if self._request_budget is not None:
+                            self._request_budget.mark_model_request_end()
                     
                     api_duration = time.time() - api_start_time
                     
@@ -15996,6 +16039,16 @@ class AIAgent:
                 last_reasoning = msg["reasoning"]
                 break
 
+        request_budget_payload = None
+        if self._request_budget is not None:
+            request_budget_payload = self._request_budget.log_agent_turn(
+                logger=logger,
+                reason=_turn_exit_reason,
+                api_calls=api_call_count,
+            )
+            self._last_request_budget = request_budget_payload
+            self._request_budget = None
+
         # Build result with interrupt info if applicable
         result = {
             "final_response": final_response,
@@ -16022,6 +16075,7 @@ class AIAgent:
             "estimated_cost_usd": self.session_estimated_cost_usd,
             "cost_status": self.session_cost_status,
             "cost_source": self.session_cost_source,
+            "request_budget": request_budget_payload,
         }
         if self._tool_guardrail_halt_decision is not None:
             result["guardrail"] = self._tool_guardrail_halt_decision.to_metadata()

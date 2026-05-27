@@ -15,6 +15,7 @@ import re
 import socket as _socket
 import subprocess
 import sys
+import time
 import uuid
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
@@ -3182,13 +3183,29 @@ class BasePlatformAdapter(ABC):
                         _thread_metadata["notify"] = True
                     else:
                         _thread_metadata = {"notify": True}
+                    _delivery_start = time.perf_counter()
                     result = await self._send_with_retry(
                         chat_id=event.source.chat_id,
                         content=text_content,
                         reply_to=_reply_anchor,
                         metadata=_thread_metadata,
                     )
+                    _delivery_ms = (time.perf_counter() - _delivery_start) * 1000
                     _record_delivery(result)
+                    try:
+                        from agent.request_budget import log_gateway_delivery_budget
+
+                        log_gateway_delivery_budget(
+                            logger=logger,
+                            platform=_platform_name(self.platform),
+                            chat_id=event.source.chat_id,
+                            session_key=session_key,
+                            gateway_delivery_ms=_delivery_ms,
+                            response_chars=len(text_content),
+                            delivery_succeeded=bool(getattr(result, "success", False)),
+                        )
+                    except Exception:
+                        logger.debug("[%s] request budget delivery log failed", self.name, exc_info=True)
 
                     # Schedule auto-deletion of system-notice replies.
                     # Detached so the handler returns immediately; errors
