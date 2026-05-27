@@ -64,6 +64,24 @@ _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
+_DEFAULT_DEEP_LANE_TRIGGERS = (
+    "/deep",
+    "deep:",
+    "deep lane",
+    "切 deep",
+    "深任務",
+    "深挖",
+    "深度分析",
+    "長任務",
+    "長工作",
+    "完整實作",
+    "幫我實作",
+    "請實作",
+    "幫我修復",
+    "請修復",
+    "tdd",
+    "xhigh",
+)
 
 
 def _telegramize_command_mentions(text: str, platform: Any) -> str:
@@ -1895,6 +1913,182 @@ class GatewayRunner:
                 pass
 
         return model, runtime_kwargs
+
+    @staticmethod
+    def _message_matches_lane_trigger(message: str, triggers: Any) -> bool:
+        """Return True when a user message explicitly asks for a deep lane."""
+        raw_triggers = (
+            triggers if isinstance(triggers, list) else list(_DEFAULT_DEEP_LANE_TRIGGERS)
+        )
+        text = str(message or "").strip().lower()
+        if not text:
+            return False
+        for raw_trigger in raw_triggers:
+            trigger = str(raw_trigger or "").strip().lower()
+            if trigger and trigger in text:
+                return True
+        return False
+
+    def _resolve_lane_name_for_message(
+        self,
+        platform_cfg: dict,
+        default_lane: str,
+        user_message: str,
+    ) -> str:
+        """Resolve the lane name for a message from configurable trigger lists."""
+        lane_triggers = platform_cfg.get("lane_triggers")
+        legacy_triggers = platform_cfg.get("triggers")
+        if lane_triggers is None and isinstance(legacy_triggers, dict):
+            lane_triggers = legacy_triggers
+
+        if isinstance(lane_triggers, dict):
+            matched_lanes = []
+            for raw_lane_name, triggers in lane_triggers.items():
+                lane_name = str(raw_lane_name or "").strip()
+                if lane_name and self._message_matches_lane_trigger(user_message, triggers):
+                    matched_lanes.append(lane_name)
+            if matched_lanes:
+                priority = platform_cfg.get("lane_trigger_priority")
+                if not isinstance(priority, list):
+                    priority = ["full", "tools", "deep"]
+                for preferred in [str(item) for item in priority]:
+                    if preferred in matched_lanes:
+                        return preferred
+                return matched_lanes[0]
+
+        deep_triggers = platform_cfg.get(
+            "deep_triggers",
+            legacy_triggers if not isinstance(legacy_triggers, dict) else None,
+        )
+        if self._message_matches_lane_trigger(user_message, deep_triggers):
+            return "deep"
+        return default_lane
+
+    @staticmethod
+    def _resolve_lane_enabled_toolsets(
+        user_config: dict,
+        platform_key: str,
+        lane_toolsets: Any,
+        fallback_toolsets: list,
+    ) -> list:
+        """Resolve a lane's toolset list through the normal platform tool logic."""
+        if not isinstance(lane_toolsets, list) or not lane_toolsets:
+            return sorted(fallback_toolsets or [])
+
+        requested = [str(item) for item in lane_toolsets]
+        try:
+            from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS
+            from toolsets import TOOLSETS
+
+            configurable = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
+            known_small_toolsets = {
+                item
+                for item in requested
+                if item in configurable or (item in TOOLSETS and not item.startswith("hermes-"))
+            }
+            if len(known_small_toolsets) == len(requested):
+                return sorted(requested)
+        except Exception:
+            pass
+
+        synthetic_config = dict(user_config or {})
+        platform_toolsets = dict(synthetic_config.get("platform_toolsets") or {})
+        platform_toolsets[platform_key] = requested
+        synthetic_config["platform_toolsets"] = platform_toolsets
+
+        from hermes_cli.tools_config import _get_platform_tools
+
+        return sorted(_get_platform_tools(synthetic_config, platform_key))
+
+    @staticmethod
+    def _parse_lane_reasoning_config(raw_effort: Any, fallback: Optional[dict]) -> Optional[dict]:
+        """Parse a lane reasoning effort, falling back on malformed config."""
+        if raw_effort is None:
+            return fallback
+        from hermes_constants import parse_reasoning_effort
+
+        result = parse_reasoning_effort(str(raw_effort).strip())
+        if result is None:
+            logger.warning(
+                "Unknown gateway lane reasoning_effort '%s', using session default",
+                raw_effort,
+            )
+            return fallback
+        return result
+
+    def _resolve_gateway_lane_config(
+        self,
+        *,
+        user_config: dict,
+        platform_key: str,
+        user_message: str,
+        model: str,
+        runtime_kwargs: dict,
+        enabled_toolsets: list,
+        reasoning_config: Optional[dict],
+        session_key: Optional[str] = None,
+    ) -> dict:
+        """Apply optional per-platform fast/deep lane routing for a turn."""
+        route = {
+            "lane": None,
+            "model": model,
+            "runtime_kwargs": runtime_kwargs,
+            "enabled_toolsets": sorted(enabled_toolsets or []),
+            "reasoning_config": reasoning_config,
+        }
+
+        lanes_root = (user_config or {}).get("gateway_lanes") or {}
+        if not isinstance(lanes_root, dict):
+            return route
+        platform_cfg = lanes_root.get(platform_key) or {}
+        if not isinstance(platform_cfg, dict):
+            return route
+        if not is_truthy_value(platform_cfg.get("enabled", True), default=True):
+            return route
+
+        lanes = platform_cfg.get("lanes") or {}
+        if not isinstance(lanes, dict) or not lanes:
+            return route
+
+        default_lane = str(platform_cfg.get("default") or "fast").strip() or "fast"
+        lane_name = self._resolve_lane_name_for_message(
+            platform_cfg,
+            default_lane,
+            user_message,
+        )
+        lane_cfg = lanes.get(lane_name)
+        if not isinstance(lane_cfg, dict):
+            lane_name = default_lane
+            lane_cfg = lanes.get(lane_name)
+        if not isinstance(lane_cfg, dict):
+            return route
+
+        route["lane"] = lane_name
+        session_has_model_override = bool(
+            session_key
+            and (getattr(self, "_session_model_overrides", {}) or {}).get(session_key)
+        )
+        if not session_has_model_override:
+            lane_model = str(lane_cfg.get("model") or "").strip()
+            if lane_model:
+                route["model"] = lane_model
+            lane_runtime = dict(runtime_kwargs or {})
+            for key in ("provider", "base_url", "api_mode", "command", "args"):
+                if key in lane_cfg and lane_cfg.get(key) is not None:
+                    lane_runtime[key] = lane_cfg.get(key)
+            route["runtime_kwargs"] = lane_runtime
+
+        route["enabled_toolsets"] = self._resolve_lane_enabled_toolsets(
+            user_config,
+            platform_key,
+            lane_cfg.get("toolsets"),
+            route["enabled_toolsets"],
+        )
+        route["reasoning_config"] = self._parse_lane_reasoning_config(
+            lane_cfg.get("reasoning_effort"),
+            reasoning_config,
+        )
+        return route
 
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         """Build the effective model/runtime config for a single turn.
@@ -10660,6 +10854,25 @@ class GatewayRunner:
             reasoning_config = self._resolve_session_reasoning_config(source=source)
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
+            try:
+                source_session_key = self._session_key_for_source(source)
+            except Exception:
+                source_session_key = None
+            lane_route = self._resolve_gateway_lane_config(
+                user_config=user_config,
+                platform_key=platform_key,
+                user_message=prompt,
+                model=model,
+                runtime_kwargs=runtime_kwargs,
+                enabled_toolsets=enabled_toolsets,
+                reasoning_config=reasoning_config,
+                session_key=source_session_key,
+            )
+            model = lane_route["model"]
+            runtime_kwargs = lane_route["runtime_kwargs"]
+            enabled_toolsets = lane_route["enabled_toolsets"]
+            reasoning_config = lane_route["reasoning_config"]
+            self._reasoning_config = reasoning_config
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
 
             # Enrich the prompt with image descriptions so the background
@@ -15165,6 +15378,21 @@ class GatewayRunner:
             )
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
+            lane_route = self._resolve_gateway_lane_config(
+                user_config=user_config,
+                platform_key=platform_key,
+                user_message=message,
+                model=model,
+                runtime_kwargs=runtime_kwargs,
+                enabled_toolsets=enabled_toolsets,
+                reasoning_config=reasoning_config,
+                session_key=session_key,
+            )
+            model = lane_route["model"]
+            runtime_kwargs = lane_route["runtime_kwargs"]
+            effective_enabled_toolsets = lane_route["enabled_toolsets"]
+            reasoning_config = lane_route["reasoning_config"]
+            self._reasoning_config = reasoning_config
             # Set up stream consumer for token streaming or interim commentary.
             _stream_consumer = None
             _stream_delta_cb = None
@@ -15277,7 +15505,7 @@ class GatewayRunner:
             _sig = self._agent_config_signature(
                 turn_route["model"],
                 turn_route["runtime"],
-                enabled_toolsets,
+                effective_enabled_toolsets,
                 combined_ephemeral,
                 cache_keys=self._extract_cache_busting_config(user_config),
             )
@@ -15307,7 +15535,7 @@ class GatewayRunner:
                     max_iterations=max_iterations,
                     quiet_mode=True,
                     verbose_logging=False,
-                    enabled_toolsets=enabled_toolsets,
+                    enabled_toolsets=effective_enabled_toolsets,
                     disabled_toolsets=disabled_toolsets,
                     ephemeral_system_prompt=combined_ephemeral or None,
                     prefill_messages=self._prefill_messages or None,
