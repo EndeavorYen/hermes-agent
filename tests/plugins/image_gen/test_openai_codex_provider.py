@@ -183,6 +183,9 @@ class TestGenerate:
 
         assert captured["model"] == "gpt-5.4"
         assert captured["store"] is False
+        assert "visual contract" in captured["instructions"]
+        assert "preserve all concrete" in captured["instructions"]
+        assert "generic stock imagery" in captured["instructions"]
         assert captured["input"][0]["type"] == "message"
         assert captured["input"][0]["role"] == "user"
         assert captured["input"][0]["content"][0]["type"] == "input_text"

@@ -929,10 +929,11 @@ from tools.registry import registry, tool_error
 IMAGE_GENERATE_SCHEMA = {
     "name": "image_generate",
     "description": (
-        "Generate or edit high-quality images from text prompts and optional "
-        "reference images. Use reference images only for images the user "
-        "uploaded on the current turn. The underlying backend (FAL, OpenAI, "
-        "etc.) and model are user-configured and not selectable by the agent. "
+        "Generate or edit high-quality images that preserve the user's visual intent "
+        "from text prompts and optional reference images. Use reference images only "
+        "for current-turn uploads or opt-in local references configured by the user. "
+        "The underlying backend (FAL, OpenAI, etc.) and model are user-configured "
+        "and not selectable by the agent. "
         "Returns either a URL or an absolute file path in the `image` field; "
         "display it with markdown "
         "![description](url-or-path) and the gateway will deliver it."
@@ -942,7 +943,11 @@ IMAGE_GENERATE_SCHEMA = {
         "properties": {
             "prompt": {
                 "type": "string",
-                "description": "The text prompt describing the desired image. Be detailed and descriptive.",
+                "description": (
+                    "The text prompt describing the desired image. Preserve every concrete "
+                    "subject, attribute, style, composition, visible text, and constraint "
+                    "from the user's request."
+                ),
             },
             "aspect_ratio": {
                 "type": "string",
@@ -954,12 +959,14 @@ IMAGE_GENERATE_SCHEMA = {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "Optional current-turn reference image sentinels. Use "
+                    "Optional reference image sentinels. Use "
                     "'current_turn_images' for all images uploaded on this "
                     "turn, or 'current_turn_image:0' for the first uploaded "
-                    "image. If omitted while the current user turn has "
-                    "uploaded images, those images are used as references by "
-                    "default unless action is 'generate'."
+                    "image. If the user configured local reference images, "
+                    "local_ref:name and allowlisted absolute paths may also be "
+                    "accepted. If omitted while the current user turn has uploaded "
+                    "images, those images are used as references by default unless "
+                    "action is 'generate'."
                 ),
                 "default": [],
             },
@@ -968,7 +975,9 @@ IMAGE_GENERATE_SCHEMA = {
                 "enum": ["auto", "generate", "edit"],
                 "description": (
                     "Whether the backend should generate from scratch, edit "
-                    "or reference current-turn images, or decide automatically."
+                    "or reference images, or decide automatically. Use 'edit' "
+                    "when the user asks to preserve or transform supplied visual "
+                    "references."
                 ),
                 "default": "auto",
             },

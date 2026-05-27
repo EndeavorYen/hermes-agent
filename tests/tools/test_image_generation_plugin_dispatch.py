@@ -41,9 +41,11 @@ class TestPluginDispatch:
         props = image_generation_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]
 
         assert "reference images" in desc
+        assert "preserve the user's visual intent" in desc
         assert "reference_images" in props
         assert props["reference_images"]["type"] == "array"
         assert props["reference_images"]["items"]["type"] == "string"
+        assert "Preserve every concrete" in props["prompt"]["description"]
         assert props["action"]["enum"] == ["auto", "generate", "edit"]
         assert props["input_fidelity"]["enum"] == ["low", "high"]
 

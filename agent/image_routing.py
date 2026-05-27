@@ -74,17 +74,129 @@ def _canonical_reference_path(path: str) -> str:
         return str(Path(path).expanduser())
 
 
+def _load_config() -> Dict[str, Any]:
+    """Load Hermes config lazily to avoid import-time config side effects."""
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        return cfg if isinstance(cfg, dict) else {}
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        logger.debug("image_routing: failed to load config.yaml for local refs: %s", exc)
+        return {}
+
+
+def _is_valid_reference_image(path: Path) -> bool:
+    """Validate by magic bytes, not suffix, before exposing local files."""
+    try:
+        header = path.read_bytes()[:16]
+    except OSError:
+        return False
+    return (
+        header.startswith(b"\x89PNG\r\n\x1a\n")
+        or header.startswith(b"\xff\xd8\xff")
+        or header.startswith(b"GIF87a")
+        or header.startswith(b"GIF89a")
+        or (header.startswith(b"RIFF") and header[8:12] == b"WEBP")
+    )
+
+
+def _local_reference_config() -> Dict[str, Any]:
+    cfg = _load_config()
+    image_gen = cfg.get("image_gen") if isinstance(cfg, dict) else None
+    if not isinstance(image_gen, dict):
+        return {}
+    local_cfg = image_gen.get("local_reference_images") or {}
+    return local_cfg if isinstance(local_cfg, dict) else {}
+
+
+def _local_references_enabled(local_cfg: Dict[str, Any]) -> bool:
+    return bool(local_cfg.get("enabled"))
+
+
+def _validate_existing_local_image(path: Path) -> str:
+    try:
+        real = path.expanduser().resolve(strict=True)
+    except OSError as exc:
+        raise ValueError(f"Local reference image does not exist: {path}") from exc
+    if not real.is_file() or not _is_valid_reference_image(real):
+        raise ValueError(f"Local reference image must be a valid image file: {path}")
+    return str(real)
+
+
+def _resolve_configured_local_ref(value: str, local_cfg: Dict[str, Any]) -> Optional[str]:
+    if not value.lower().startswith("local_ref:"):
+        return None
+    if not _local_references_enabled(local_cfg):
+        return None
+    name = value.split(":", 1)[1].strip()
+    if not name:
+        raise ValueError("Invalid local_ref name: local_ref:")
+    refs = local_cfg.get("refs") or {}
+    if not isinstance(refs, dict) or name not in refs:
+        raise ValueError(f"Unknown local image reference: local_ref:{name}")
+    entry = refs[name]
+    path_value: Any = entry.get("path") if isinstance(entry, dict) else entry
+    if not isinstance(path_value, str) or not path_value.strip():
+        raise ValueError(f"Local image reference has no path: local_ref:{name}")
+    return _validate_existing_local_image(Path(path_value))
+
+
+def _is_relative_to(child: Path, parent: Path) -> bool:
+    try:
+        child.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def _resolve_allowlisted_absolute_path(value: str, local_cfg: Dict[str, Any]) -> Optional[str]:
+    if not _local_references_enabled(local_cfg):
+        return None
+    if not bool(local_cfg.get("allow_absolute_paths")):
+        return None
+    candidate = Path(value).expanduser()
+    # Reject relative paths before resolving: cwd inside an allowlisted root is
+    # not authorization to read model-supplied relative filenames.
+    if not candidate.is_absolute():
+        return None
+
+    roots = local_cfg.get("roots") or []
+    if not isinstance(roots, list):
+        return None
+    try:
+        real_candidate = candidate.resolve(strict=True)
+    except OSError as exc:
+        raise ValueError(f"Local reference image does not exist: {value}") from exc
+    allowed = False
+    for root in roots:
+        if not isinstance(root, str) or not root.strip():
+            continue
+        root_path = Path(root).expanduser().resolve(strict=False)
+        if real_candidate == root_path or _is_relative_to(real_candidate, root_path):
+            allowed = True
+            break
+    if not allowed:
+        return None
+    if not real_candidate.is_file() or not _is_valid_reference_image(real_candidate):
+        raise ValueError(f"Local reference image must be a valid image file: {value}")
+    return str(real_candidate)
+
+
 def resolve_image_reference_paths(
     reference_images: Any,
     *,
     default_to_current: bool = False,
 ) -> List[str]:
-    """Resolve image_generate reference arguments to current-turn uploads.
+    """Resolve image_generate reference arguments to current-turn or opt-in local refs.
 
-    Tool-call arguments are model-controlled. To avoid arbitrary local file
-    reads, explicit paths must match images the user uploaded on the same turn.
+    Tool-call arguments are model-controlled. By default, explicit paths must
+    match images the user uploaded on the same turn. Persistent local assets
+    are allowed only when explicitly enabled in config via
+    ``image_gen.local_reference_images``.
     """
     current = get_current_image_reference_paths()
+    local_cfg = _local_reference_config()
     current_lookup: Dict[str, str] = {}
     for path in current:
         if not path:
@@ -127,6 +239,16 @@ def resolve_image_reference_paths(
         )
         if matched_current:
             resolved.append(matched_current)
+            continue
+
+        local_ref = _resolve_configured_local_ref(value, local_cfg)
+        if local_ref:
+            resolved.append(local_ref)
+            continue
+
+        local_path = _resolve_allowlisted_absolute_path(value, local_cfg)
+        if local_path:
+            resolved.append(local_path)
             continue
 
         raise ValueError(

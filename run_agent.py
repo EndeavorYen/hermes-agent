@@ -475,6 +475,7 @@ _PARALLEL_SAFE_TOOLS = frozenset({
     "ha_get_state",
     "ha_list_entities",
     "ha_list_services",
+    "image_generate",
     "read_file",
     "search_files",
     "session_search",
@@ -494,6 +495,7 @@ _PATH_SCOPED_TOOLS = frozenset({"read_file", "write_file", "patch"})
 
 # Maximum number of concurrent worker threads for parallel tool execution.
 _MAX_TOOL_WORKERS = 8
+_DEFAULT_IMAGE_PARALLEL_REQUESTS = 4
 
 # Guard so the OpenRouter metadata pre-warm thread is only spawned once per
 # process, not once per AIAgent instantiation.  Without this, long-running
@@ -587,6 +589,43 @@ def _should_parallelize_tool_batch(tool_calls) -> bool:
                 return False
 
     return True
+
+
+def _image_generate_parallel_limit() -> int:
+    """Return the configured image-generation parallelism cap.
+
+    GPT Image 2 calls are slow enough that two-at-a-time is useful, but the
+    Codex-backed image provider can hit TTFB or rate-limit failures under
+    heavier bursts. Keep the default intentionally conservative.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        image_gen = cfg.get("image_gen") if isinstance(cfg, dict) else None
+        value = (
+            image_gen.get("max_parallel_requests")
+            if isinstance(image_gen, dict)
+            else None
+        )
+    except Exception:
+        value = None
+
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        limit = _DEFAULT_IMAGE_PARALLEL_REQUESTS
+    return max(1, min(limit, _MAX_TOOL_WORKERS))
+
+
+def _max_workers_for_tool_batch(runnable_calls) -> int:
+    """Return the worker cap for a concurrent tool batch."""
+    if not runnable_calls:
+        return 0
+    max_workers = _MAX_TOOL_WORKERS
+    if any(name == "image_generate" for _, _, name, _ in runnable_calls):
+        max_workers = min(max_workers, _image_generate_parallel_limit())
+    return min(len(runnable_calls), max_workers)
 
 
 def _extract_parallel_scope_path(tool_name: str, function_args: dict) -> Path | None:
@@ -11278,7 +11317,7 @@ class AIAgent:
             ]
             futures = []
             if runnable_calls:
-                max_workers = min(len(runnable_calls), _MAX_TOOL_WORKERS)
+                max_workers = _max_workers_for_tool_batch(runnable_calls)
                 with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                     for i, tc, name, args in runnable_calls:
                         # Propagate ContextVars (e.g. _approval_session_key); mirrors asyncio.to_thread.

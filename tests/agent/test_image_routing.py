@@ -109,6 +109,94 @@ class TestResolveImageReferencePaths:
         with pytest.raises(ValueError, match="current-turn uploaded images"):
             image_routing.resolve_image_reference_paths([str(secret)])
 
+    def test_resolves_configured_local_ref_when_enabled(self, tmp_path: Path):
+        img = tmp_path / "wardrobe.png"
+        img.write_bytes(_png_bytes())
+        cfg = {
+            "image_gen": {
+                "local_reference_images": {
+                    "enabled": True,
+                    "refs": {"wardrobe": {"path": str(img)}},
+                }
+            }
+        }
+
+        with patch("agent.image_routing._load_config", return_value=cfg):
+            assert image_routing.resolve_image_reference_paths(["local_ref:wardrobe"]) == [str(img)]
+
+    def test_resolves_allowlisted_absolute_path_when_enabled(self, tmp_path: Path):
+        root = tmp_path / "refs"
+        root.mkdir()
+        img = root / "scene.png"
+        img.write_bytes(_png_bytes())
+        cfg = {
+            "image_gen": {
+                "local_reference_images": {
+                    "enabled": True,
+                    "allow_absolute_paths": True,
+                    "roots": [str(root)],
+                }
+            }
+        }
+
+        with patch("agent.image_routing._load_config", return_value=cfg):
+            assert image_routing.resolve_image_reference_paths([str(img)]) == [str(img)]
+
+    def test_rejects_local_ref_when_disabled(self, tmp_path: Path):
+        img = tmp_path / "wardrobe.png"
+        img.write_bytes(_png_bytes())
+        cfg = {
+            "image_gen": {
+                "local_reference_images": {
+                    "enabled": False,
+                    "refs": {"wardrobe": {"path": str(img)}},
+                }
+            }
+        }
+
+        with patch("agent.image_routing._load_config", return_value=cfg):
+            with pytest.raises(ValueError, match="current-turn uploaded images"):
+                image_routing.resolve_image_reference_paths(["local_ref:wardrobe"])
+
+    def test_rejects_allowlisted_non_image_file(self, tmp_path: Path):
+        root = tmp_path / "refs"
+        root.mkdir()
+        fake = root / "fake.png"
+        fake.write_text("not an image", encoding="utf-8")
+        cfg = {
+            "image_gen": {
+                "local_reference_images": {
+                    "enabled": True,
+                    "allow_absolute_paths": True,
+                    "roots": [str(root)],
+                }
+            }
+        }
+
+        with patch("agent.image_routing._load_config", return_value=cfg):
+            with pytest.raises(ValueError, match="valid image"):
+                image_routing.resolve_image_reference_paths([str(fake)])
+
+    def test_rejects_relative_path_even_inside_allowlisted_root(self, tmp_path: Path, monkeypatch):
+        root = tmp_path / "refs"
+        root.mkdir()
+        img = root / "scene.png"
+        img.write_bytes(_png_bytes())
+        monkeypatch.chdir(root)
+        cfg = {
+            "image_gen": {
+                "local_reference_images": {
+                    "enabled": True,
+                    "allow_absolute_paths": True,
+                    "roots": [str(root)],
+                }
+            }
+        }
+
+        with patch("agent.image_routing._load_config", return_value=cfg):
+            with pytest.raises(ValueError, match="current-turn uploaded images"):
+                image_routing.resolve_image_reference_paths(["scene.png"])
+
 
 # ─── decide_image_input_mode ─────────────────────────────────────────────────
 
