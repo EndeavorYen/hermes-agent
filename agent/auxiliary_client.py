@@ -107,6 +107,38 @@ from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_
 logger = logging.getLogger(__name__)
 
 
+def _responses_null_output_iterable_error(exc: BaseException) -> bool:
+    """True when the OpenAI SDK trips over terminal response.output=None."""
+    text = str(exc)
+    return isinstance(exc, TypeError) and "NoneType" in text and "not iterable" in text
+
+
+def _responses_backfilled_response(
+    output_items: List[Any],
+    text_parts: List[str],
+    *,
+    has_function_calls: bool,
+    model: str = None,
+) -> Optional[Any]:
+    """Build a minimal Responses-like object from already streamed events."""
+    if output_items:
+        return SimpleNamespace(output=list(output_items), usage=None, status="completed", model=model)
+    if text_parts and not has_function_calls:
+        assembled = "".join(text_parts)
+        return SimpleNamespace(
+            output=[SimpleNamespace(
+                type="message",
+                role="assistant",
+                status="completed",
+                content=[SimpleNamespace(type="output_text", text=assembled)],
+            )],
+            usage=None,
+            status="completed",
+            model=model,
+        )
+    return None
+
+
 def _safe_isinstance(obj: Any, maybe_type: Any) -> bool:
     """Return False instead of raising when a patched symbol is not a type."""
     try:
@@ -769,56 +801,41 @@ class _CodexCompletionsAdapter:
                 pass
 
         try:
-            # Collect output items and text deltas during streaming —
-            # the Codex backend can return empty response.output from
-            # get_final_response() even when items were streamed.
-            collected_output_items: List[Any] = []
-            collected_text_deltas: List[str] = []
-            has_function_calls = False
             if total_timeout:
                 timeout_timer = threading.Timer(float(total_timeout), _close_client_on_timeout)
                 timeout_timer.daemon = True
                 timeout_timer.start()
             _check_cancelled()
-            with self._client.responses.stream(**resp_kwargs) as stream:
-                for _event in stream:
-                    _check_cancelled()
-                    _etype = getattr(_event, "type", "")
-                    if _etype == "response.output_item.done":
-                        _done = getattr(_event, "item", None)
-                        if _done is not None:
-                            collected_output_items.append(_done)
-                    elif "output_text.delta" in _etype:
-                        _delta = getattr(_event, "delta", "")
-                        if _delta:
-                            collected_text_deltas.append(_delta)
-                    elif "function_call" in _etype:
-                        has_function_calls = True
-                _check_cancelled()
-                final = stream.get_final_response()
 
-            # Backfill empty output from collected stream events
-            _output = getattr(final, "output", None)
-            if isinstance(_output, list) and not _output:
-                if collected_output_items:
-                    final.output = list(collected_output_items)
-                    logger.debug(
-                        "Codex auxiliary: backfilled %d output items from stream events",
-                        len(collected_output_items),
+            from agent.codex_runtime import _consume_codex_event_stream
+
+            stream_kwargs = dict(resp_kwargs)
+            stream_kwargs["stream"] = True
+            event_stream = self._client.responses.create(**stream_kwargs)
+            try:
+                if hasattr(event_stream, "output") and not hasattr(event_stream, "__iter__"):
+                    final = event_stream
+                else:
+                    def _interrupt_check() -> bool:
+                        _check_cancelled()
+                        return False
+
+                    final = _consume_codex_event_stream(
+                        event_stream,
+                        model=resp_kwargs.get("model"),
+                        on_event=lambda _event: _check_cancelled(),
+                        interrupt_check=_interrupt_check,
                     )
-                elif collected_text_deltas and not has_function_calls:
-                    # Only synthesize text when no tool calls were streamed —
-                    # a function_call response with incidental text should not
-                    # be collapsed into a plain-text message.
-                    assembled = "".join(collected_text_deltas)
-                    final.output = [SimpleNamespace(
-                        type="message", role="assistant", status="completed",
-                        content=[SimpleNamespace(type="output_text", text=assembled)],
-                    )]
-                    logger.debug(
-                        "Codex auxiliary: synthesized from %d deltas (%d chars)",
-                        len(collected_text_deltas), len(assembled),
-                    )
+            finally:
+                close_fn = getattr(event_stream, "close", None)
+                if callable(close_fn):
+                    try:
+                        close_fn()
+                    except Exception:
+                        pass
+
+            if final is None:
+                raise RuntimeError("Codex auxiliary Responses stream did not return a final response")
 
             # Extract text and tool calls from the Responses output.
             # Items may be SDK objects (attrs) or dicts (raw/fallback paths),
@@ -855,6 +872,7 @@ class _CodexCompletionsAdapter:
                 )
         except Exception as exc:
             if timed_out.is_set():
+                _close_client_on_timeout()
                 raise TimeoutError(_timeout_message()) from exc
             logger.debug("Codex auxiliary Responses API call failed: %s", exc)
             raise
@@ -1820,7 +1838,8 @@ def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str
 
     xAI's ``/v1/responses`` endpoint speaks the OpenAI Responses API, so we
     wrap a plain ``OpenAI`` client in ``CodexAuxiliaryClient`` to translate
-    ``chat.completions.create()`` calls into ``responses.stream()`` requests.
+    ``chat.completions.create()`` calls into ``responses.create(stream=True)``
+    requests.
 
     The caller must pass an explicit model — pinning a default for Grok
     would silently rot when xAI's allowlist drifts.  Returns ``(None, None)``
@@ -2797,8 +2816,8 @@ def resolve_provider_client(
         async_mode: If True, return an async-compatible client.
         raw_codex: If True, return a raw OpenAI client for Codex providers
             instead of wrapping in CodexAuxiliaryClient.  Use this when
-            the caller needs direct access to responses.stream() (e.g.,
-            the main agent loop).
+            the caller needs direct access to responses.create(stream=True)
+            (e.g., the main agent loop).
         explicit_base_url: Optional direct OpenAI-compatible endpoint.
         explicit_api_key: Optional API key paired with explicit_base_url.
         api_mode: API mode override.  One of "chat_completions",
@@ -2927,7 +2946,7 @@ def resolve_provider_client(
             return None, None
         if raw_codex:
             # Return the raw OpenAI client for callers that need direct
-            # access to responses.stream() (e.g., the main agent loop).
+            # access to responses.create(stream=True) (e.g., the main agent loop).
             codex_token = _read_codex_access_token()
             if not codex_token:
                 logger.warning("resolve_provider_client: openai-codex requested "
@@ -3220,7 +3239,7 @@ def resolve_provider_client(
         # Copilot GPT-5+ models (except gpt-5-mini) require the Responses
         # API — they are not accessible via /chat/completions.  Wrap the
         # plain client in CodexAuxiliaryClient so call_llm() transparently
-        # routes through responses.stream().
+        # routes through responses.create(stream=True).
         if provider == "copilot" and final_model and not raw_codex:
             try:
                 from hermes_cli.models import _should_use_copilot_responses_api

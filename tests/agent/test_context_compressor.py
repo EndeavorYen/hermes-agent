@@ -352,6 +352,55 @@ class TestSummaryFallbackToMainModel:
         assert c._last_aux_model_failure_error is not None
         assert "400" in c._last_aux_model_failure_error
 
+    def test_configured_aux_task_route_failure_retries_explicit_main(self):
+        """Live config sets auxiliary.compression.model instead of
+        ContextCompressor.summary_model. If that configured task route fails,
+        retry explicitly on the main runtime instead of dropping turns."""
+        mock_ok = MagicMock()
+        mock_ok.choices = [MagicMock()]
+        mock_ok.choices[0].message.content = "summary via explicit main"
+
+        err = Exception("Codex auxiliary Responses stream exceeded 120.0s total timeout")
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=128000):
+            c = ContextCompressor(
+                model="gpt-5.5",
+                provider="openai-codex",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="sk-main",
+                api_mode="codex_responses",
+                quiet_mode=True,
+            )
+
+        with (
+            patch(
+                "agent.auxiliary_client._get_auxiliary_task_config",
+                return_value={
+                    "provider": "openai-codex",
+                    "model": "gpt-5.4-mini",
+                    "base_url": "",
+                    "api_key": "",
+                },
+            ),
+            patch(
+                "agent.context_compressor.call_llm",
+                side_effect=[err, mock_ok],
+            ) as mock_call,
+        ):
+            result = c._generate_summary(self._msgs())
+
+        assert mock_call.call_count == 2
+        assert mock_call.call_args_list[0].kwargs.get("task") == "compression"
+        assert "provider" not in mock_call.call_args_list[0].kwargs
+        assert mock_call.call_args_list[1].kwargs["provider"] == "openai-codex"
+        assert mock_call.call_args_list[1].kwargs["model"] == "gpt-5.5"
+        assert "base_url" not in mock_call.call_args_list[1].kwargs
+        assert result is not None
+        assert "summary via explicit main" in result
+        assert c._last_aux_model_failure_model == "gpt-5.4-mini"
+        assert "120.0s total timeout" in c._last_aux_model_failure_error
+        assert c._last_summary_error is None
+
     def test_no_fallback_when_summary_model_equals_main_model(self):
         """If the aux model IS the main model, there's nowhere to fall back
         to — go straight to cooldown, don't loop retrying the same call."""

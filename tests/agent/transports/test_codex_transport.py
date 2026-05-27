@@ -453,3 +453,36 @@ class TestCodexNormalizeResponse:
         tc = nr.tool_calls[0]
         assert tc.name == "terminal"
         assert '"command"' in tc.arguments
+
+
+class TestCodexTransportTimeout:
+    def test_positive_timeout_preserved(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            timeout=600.0,
+        )
+
+        assert kw.get("timeout") == 600.0
+
+    def test_invalid_timeouts_dropped(self, transport):
+        for bad in (0, -1, float("inf"), True, False, None):
+            kw = transport.build_kwargs(
+                model="gpt-5.5",
+                messages=[{"role": "user", "content": "hi"}],
+                tools=[],
+                timeout=bad,
+            )
+
+            assert "timeout" not in kw, f"timeout={bad!r} should be dropped"
+
+    def test_request_overrides_can_supply_timeout(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            request_overrides={"timeout": 450.0},
+        )
+
+        assert kw.get("timeout") == 450.0

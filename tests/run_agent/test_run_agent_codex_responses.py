@@ -188,6 +188,27 @@ class _FakeCreateStream:
         self.closed = True
 
 
+class _IteratorTypeErrorStream:
+    """Mimic the SDK raising while parsing response.completed.output=None."""
+
+    def __init__(self, events_before_error):
+        self._events_before_error = list(events_before_error)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def __iter__(self):
+        for event in self._events_before_error:
+            yield event
+        raise TypeError("'NoneType' object is not iterable")
+
+    def get_final_response(self):  # pragma: no cover - iterator fails first
+        raise AssertionError("get_final_response should not be reached")
+
+
 def _codex_request_kwargs():
     return {
         "model": "gpt-5-codex",
@@ -308,7 +329,8 @@ def test_build_api_kwargs_codex(monkeypatch):
     assert kwargs["parallel_tool_calls"] is True
     assert isinstance(kwargs["prompt_cache_key"], str)
     assert len(kwargs["prompt_cache_key"]) > 0
-    assert "timeout" not in kwargs
+    assert isinstance(kwargs.get("timeout"), float)
+    assert kwargs["timeout"] > 0
     assert "max_tokens" not in kwargs
     assert "extra_body" not in kwargs
 
@@ -400,71 +422,98 @@ def test_build_api_kwargs_copilot_responses_omits_reasoning_for_non_reasoning_mo
 
 def test_run_codex_stream_retries_when_completed_event_missing(monkeypatch):
     agent = _build_agent(monkeypatch)
-    calls = {"stream": 0}
-
-    def _fake_stream(**kwargs):
-        calls["stream"] += 1
-        if calls["stream"] == 1:
-            return _FakeResponsesStream(
-                final_error=RuntimeError("Didn't receive a `response.completed` event.")
-            )
-        return _FakeResponsesStream(final_response=_codex_message_response("stream ok"))
-
-    agent.client = SimpleNamespace(
-        responses=SimpleNamespace(
-            stream=_fake_stream,
-            create=lambda **kwargs: _codex_message_response("fallback"),
-        )
-    )
-
-    response = agent._run_codex_stream(_codex_request_kwargs())
-    assert calls["stream"] == 2
-    assert response.output[0].content[0].text == "stream ok"
-
-
-def test_run_codex_stream_falls_back_to_create_after_stream_completion_error(monkeypatch):
-    agent = _build_agent(monkeypatch)
-    calls = {"stream": 0, "create": 0}
-
-    def _fake_stream(**kwargs):
-        calls["stream"] += 1
-        return _FakeResponsesStream(
-            final_error=RuntimeError("Didn't receive a `response.completed` event.")
-        )
+    calls = {"create": 0}
 
     def _fake_create(**kwargs):
         calls["create"] += 1
-        return _codex_message_response("create fallback ok")
+        assert kwargs["stream"] is True
+        if calls["create"] == 1:
+            return _FakeCreateStream([])
+        return _codex_message_response("stream ok")
 
     agent.client = SimpleNamespace(
-        responses=SimpleNamespace(
-            stream=_fake_stream,
-            create=_fake_create,
-        )
+        responses=SimpleNamespace(create=_fake_create)
     )
 
     response = agent._run_codex_stream(_codex_request_kwargs())
-    assert calls["stream"] == 2
+    assert calls["create"] == 2
+    assert response.output[0].content[0].text == "stream ok"
+
+
+def test_run_codex_stream_consumes_create_stream_events_without_sdk_stream(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    output_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="create stream survived")],
+    )
+    create_stream = _FakeCreateStream(
+        [
+            SimpleNamespace(type="response.output_text.delta", delta="create "),
+            SimpleNamespace(type="response.output_text.delta", delta="stream"),
+            SimpleNamespace(type="response.output_item.done", item=output_item),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    output=None,
+                    usage=SimpleNamespace(input_tokens=2, output_tokens=3, total_tokens=5),
+                    status="completed",
+                    model="gpt-5-codex",
+                ),
+            ),
+        ]
+    )
+    calls = {"create": 0}
+
+    def _fake_create(**kwargs):
+        calls["create"] += 1
+        assert kwargs["stream"] is True
+        return create_stream
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=_fake_create))
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
     assert calls["create"] == 1
-    assert response.output[0].content[0].text == "create fallback ok"
+    assert create_stream.closed is True
+    assert response.output == [output_item]
+    assert response.status == "completed"
+
+
+def test_run_codex_stream_raises_after_create_stream_terminal_missing(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    calls = {"create": 0}
+
+    def _fake_create(**kwargs):
+        calls["create"] += 1
+        assert kwargs["stream"] is True
+        return _FakeCreateStream([])
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(create=_fake_create)
+    )
+
+    with pytest.raises(RuntimeError, match="did not emit a terminal response"):
+        agent._run_codex_stream(_codex_request_kwargs())
+    assert calls["create"] == 2
 
 
 def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     agent = _build_agent(monkeypatch)
-    calls = {"stream": 0, "create": 0}
+    calls = {"create": 0}
+    output_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="streamed create ok")],
+    )
     create_stream = _FakeCreateStream(
         [
             SimpleNamespace(type="response.created"),
             SimpleNamespace(type="response.in_progress"),
-            SimpleNamespace(type="response.completed", response=_codex_message_response("streamed create ok")),
+            SimpleNamespace(type="response.output_item.done", item=output_item),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(output=None, status="completed")),
         ]
     )
-
-    def _fake_stream(**kwargs):
-        calls["stream"] += 1
-        return _FakeResponsesStream(
-            final_error=RuntimeError("Didn't receive a `response.completed` event.")
-        )
 
     def _fake_create(**kwargs):
         calls["create"] += 1
@@ -472,17 +521,63 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
         return create_stream
 
     agent.client = SimpleNamespace(
-        responses=SimpleNamespace(
-            stream=_fake_stream,
-            create=_fake_create,
-        )
+        responses=SimpleNamespace(create=_fake_create)
     )
 
     response = agent._run_codex_stream(_codex_request_kwargs())
-    assert calls["stream"] == 2
     assert calls["create"] == 1
     assert create_stream.closed is True
     assert response.output[0].content[0].text == "streamed create ok"
+
+
+def test_run_codex_stream_recovers_when_stream_iteration_parses_null_output(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    output_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="stream item survived")],
+    )
+    calls = {"create": 0}
+    create_stream = _FakeCreateStream([
+        SimpleNamespace(type="response.output_item.done", item=output_item),
+        SimpleNamespace(type="response.completed", response=SimpleNamespace(output=None, status="completed")),
+    ])
+
+    def _fake_create(**kwargs):
+        calls["create"] += 1
+        assert kwargs["stream"] is True
+        return create_stream
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(create=_fake_create),
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert calls["create"] == 1
+    assert response.output == [output_item]
+    assert response.status == "completed"
+
+
+def test_run_codex_stream_backfills_final_output_none_from_text_deltas(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    create_stream = _FakeCreateStream([
+        SimpleNamespace(type="response.output_text.delta", delta="hello "),
+        SimpleNamespace(type="response.output_text.delta", delta="there"),
+        SimpleNamespace(type="response.completed", response=SimpleNamespace(output=None, status="completed")),
+    ])
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            create=lambda **kwargs: create_stream,
+        ),
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert response.output[0].content[0].text == "hello there"
+    assert response.status == "completed"
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):
@@ -1093,6 +1188,32 @@ def test_run_conversation_codex_replay_payload_keeps_call_id(monkeypatch):
     assert function_call["call_id"] == "call_1"
     assert "id" not in function_call
     assert function_output["call_id"] == "call_1"
+
+
+def test_preflight_codex_api_kwargs_preserves_positive_timeout(monkeypatch):
+    _build_agent(monkeypatch)
+    kwargs = _codex_request_kwargs()
+    kwargs["timeout"] = 600.0
+
+    from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+
+    result = _preflight_codex_api_kwargs(kwargs)
+
+    assert result["timeout"] == 600.0
+
+
+def test_preflight_codex_api_kwargs_drops_invalid_timeout(monkeypatch):
+    _build_agent(monkeypatch)
+
+    from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+
+    for bad in (0, -1, float("inf"), True, False, "300", None):
+        kwargs = _codex_request_kwargs()
+        kwargs["timeout"] = bad
+
+        result = _preflight_codex_api_kwargs(kwargs)
+
+        assert "timeout" not in result, f"timeout={bad!r} should be dropped"
 
 
 def test_run_conversation_codex_continues_after_incomplete_interim_message(monkeypatch):
