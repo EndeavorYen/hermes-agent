@@ -10968,12 +10968,13 @@ class AIAgent:
                 assistant_message, messages, effective_task_id, api_call_count
             )
         finally:
-            if self._request_budget is not None:
+            request_budget = getattr(self, "_request_budget", None)
+            if request_budget is not None:
                 tool_names = [
                     getattr(getattr(tc, "function", None), "name", "")
                     for tc in (tool_calls or [])
                 ]
-                self._request_budget.add_tool_execution(
+                request_budget.add_tool_execution(
                     ",".join(name for name in tool_names if name),
                     time.perf_counter() - _tool_batch_start,
                     count=len(tool_calls or []),
