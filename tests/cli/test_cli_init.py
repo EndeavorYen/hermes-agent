@@ -91,6 +91,16 @@ class TestMaxTurnsResolution:
         assert isinstance(cli.max_turns, int) and cli.max_turns == 90
 
 
+class TestReasoningEffortEnvOverride:
+    def test_env_override_takes_precedence_over_config(self):
+        cli = _make_cli(
+            env_overrides={"HERMES_AGENT_REASONING_EFFORT": "xhigh"},
+            config_overrides={"agent": {"reasoning_effort": "high"}},
+        )
+
+        assert cli.reasoning_config == {"enabled": True, "effort": "xhigh"}
+
+
 class TestVerboseAndToolProgress:
     def test_default_verbose_is_bool(self):
         cli = _make_cli()

@@ -3105,8 +3105,12 @@ class HermesCLI:
         )
         
         # Reasoning config (OpenRouter reasoning effort level)
+        reasoning_effort = (
+            os.getenv("HERMES_AGENT_REASONING_EFFORT", "").strip()
+            or CLI_CONFIG["agent"].get("reasoning_effort", "")
+        )
         self.reasoning_config = _parse_reasoning_config(
-            CLI_CONFIG["agent"].get("reasoning_effort", "")
+            reasoning_effort
         )
         self.service_tier = _parse_service_tier_config(
             CLI_CONFIG["agent"].get("service_tier", "")

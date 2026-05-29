@@ -1605,6 +1605,41 @@ class TestRunJobConfigEnvVarExpansion:
         # Unresolved refs are kept verbatim — _expand_env_vars contract
         assert kwargs["model"] == "${_HERMES_TEST_CRON_UNSET_VAR}"
 
+    def test_job_reasoning_effort_overrides_global_config(self, tmp_path):
+        """A cron job can require deeper reasoning than the global default."""
+        (tmp_path / "config.yaml").write_text(
+            "model:\n"
+            "  default: gpt-5.5\n"
+            "agent:\n"
+            "  reasoning_effort: high\n",
+            encoding="utf-8",
+        )
+
+        job = {
+            "id": "xhigh-job",
+            "name": "xhigh role-pk job",
+            "prompt": "hi",
+            "reasoning_effort": "xhigh",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
+
 
 class TestRunJobSkillBacked:
     def test_run_job_preserves_skill_env_passthrough_into_worker_thread(self, tmp_path):

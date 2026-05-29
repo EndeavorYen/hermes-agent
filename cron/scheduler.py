@@ -1514,7 +1514,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
         # Reasoning config from config.yaml
         from hermes_constants import parse_reasoning_effort
-        effort = str(_cfg.get("agent", {}).get("reasoning_effort", "")).strip()
+        effort = str(job.get("reasoning_effort") or _cfg.get("agent", {}).get("reasoning_effort", "")).strip()
         reasoning_config = parse_reasoning_effort(effort)
 
         # Prefill messages from env or config.yaml
