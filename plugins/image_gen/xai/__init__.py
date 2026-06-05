@@ -71,6 +71,48 @@ _XAI_RESOLUTIONS = {"1k", "2k"}
 
 DEFAULT_RESOLUTION = "1k"
 
+_REFERENCE_KWARG_KEYS = (
+    "reference_images",
+    "input_image",
+    "input_images",
+    "image_style_references",
+)
+
+
+def _iter_reference_candidates(value: Any):
+    if value is None:
+        return
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _iter_reference_candidates(item)
+        return
+    yield value
+
+
+def _coerce_reference_label(value: Any) -> Optional[str]:
+    if isinstance(value, dict):
+        for key in ("url", "image_url", "path", "image_path"):
+            label = _coerce_reference_label(value.get(key))
+            if label:
+                return label
+        return None
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    return raw or None
+
+
+def _collect_reference_inputs(kwargs: Dict[str, Any]) -> List[str]:
+    refs: List[str] = []
+    seen = set()
+    for key in _REFERENCE_KWARG_KEYS:
+        for candidate in _iter_reference_candidates(kwargs.get(key)):
+            ref = _coerce_reference_label(candidate)
+            if ref and ref not in seen:
+                refs.append(ref)
+                seen.add(ref)
+    return refs
+
 
 # ---------------------------------------------------------------------------
 # Config
@@ -181,6 +223,21 @@ class XAIImageGenProvider(ImageGenProvider):
         xai_ar = _XAI_ASPECT_RATIOS.get(aspect, "1:1")
         resolution = _resolve_resolution()
         xai_res = resolution if resolution in _XAI_RESOLUTIONS else DEFAULT_RESOLUTION
+        reference_inputs = _collect_reference_inputs(kwargs)
+        if reference_inputs:
+            return error_response(
+                error=(
+                    "xAI Grok Imagine image generation is text-to-image only "
+                    "and does not support reference_images, input_image, or "
+                    "image_style_references. Use image_gen.provider=openai-codex "
+                    "for Responses input_image conditioning, or Krea for style references."
+                ),
+                error_type="unsupported_feature",
+                provider=provider_name,
+                model=model_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
 
         payload: Dict[str, Any] = {
             "model": model_id,

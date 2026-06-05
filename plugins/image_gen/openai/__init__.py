@@ -79,6 +79,48 @@ _SIZES = {
     "portrait": "1024x1536",
 }
 
+_REFERENCE_KWARG_KEYS = (
+    "reference_images",
+    "input_image",
+    "input_images",
+    "image_style_references",
+)
+
+
+def _iter_reference_candidates(value: Any):
+    if value is None:
+        return
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _iter_reference_candidates(item)
+        return
+    yield value
+
+
+def _coerce_reference_label(value: Any) -> Optional[str]:
+    if isinstance(value, dict):
+        for key in ("url", "image_url", "path", "image_path"):
+            label = _coerce_reference_label(value.get(key))
+            if label:
+                return label
+        return None
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    return raw or None
+
+
+def _collect_reference_inputs(kwargs: Dict[str, Any]) -> List[str]:
+    refs: List[str] = []
+    seen = set()
+    for key in _REFERENCE_KWARG_KEYS:
+        for candidate in _iter_reference_candidates(kwargs.get(key)):
+            ref = _coerce_reference_label(candidate)
+            if ref and ref not in seen:
+                refs.append(ref)
+                seen.add(ref)
+    return refs
+
 
 def _load_openai_config() -> Dict[str, Any]:
     """Read ``image_gen`` from config.yaml (returns {} on any failure)."""
@@ -200,6 +242,24 @@ class OpenAIImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
+        tier_id, meta = _resolve_model()
+        size = _SIZES.get(aspect, _SIZES["square"])
+        reference_inputs = _collect_reference_inputs(kwargs)
+        if reference_inputs:
+            return error_response(
+                error=(
+                    "OpenAI API-key image provider uses images.generate and "
+                    "does not support reference_images, input_image, or "
+                    "image_style_references. Use image_gen.provider=openai-codex "
+                    "for Responses input_image conditioning, or Krea for style references."
+                ),
+                error_type="unsupported_feature",
+                provider="openai",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+
         try:
             import openai
         except ImportError:
@@ -209,9 +269,6 @@ class OpenAIImageGenProvider(ImageGenProvider):
                 provider="openai",
                 aspect_ratio=aspect,
             )
-
-        tier_id, meta = _resolve_model()
-        size = _SIZES.get(aspect, _SIZES["square"])
 
         # gpt-image-2 returns b64_json unconditionally and REJECTS
         # ``response_format`` as an unknown parameter. Don't send it.

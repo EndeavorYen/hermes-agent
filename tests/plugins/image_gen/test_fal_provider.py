@@ -180,6 +180,31 @@ class TestFalImageGenProviderGenerate:
         assert "guidance_scale" not in seen
         assert seen.get("num_images") == 2
 
+    def test_generate_forwards_reference_image_kwargs(self, monkeypatch):
+        import tools.image_generation_tool as image_tool
+        from plugins.image_gen.fal import FalImageGenProvider
+
+        seen = {}
+
+        def fake(prompt, aspect_ratio, **kwargs):
+            seen.update(kwargs)
+            return json.dumps({"success": True, "image": "x"})
+
+        monkeypatch.setattr(image_tool, "image_generate_tool", fake)
+        monkeypatch.setattr(image_tool, "_resolve_fal_model",
+                            lambda: ("fal-ai/krea/v2/medium/text-to-image", {}))
+
+        FalImageGenProvider().generate(
+            "p",
+            reference_images=["https://x.com/ref-a.png"],
+            input_image="https://x.com/ref-b.png",
+            image_style_references=[{"url": "https://x.com/ref-c.png"}],
+        )
+
+        assert seen["reference_images"] == ["https://x.com/ref-a.png"]
+        assert seen["input_image"] == "https://x.com/ref-b.png"
+        assert seen["image_style_references"] == [{"url": "https://x.com/ref-c.png"}]
+
     def test_generate_catches_exception_from_legacy(self, monkeypatch):
         import tools.image_generation_tool as image_tool
         from plugins.image_gen.fal import FalImageGenProvider
