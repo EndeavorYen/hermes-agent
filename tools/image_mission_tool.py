@@ -445,7 +445,7 @@ def _normalize_issues(value: Any) -> List[str]:
 
 def _normalize_issue_name(value: str) -> str:
     text = value.strip().lower().replace("-", "_").replace(" ", "_")
-    if any(marker in text for marker in ("blur", "out_of_focus", "soft")):
+    if _has_blur_issue(text.replace("_", " ")):
         return "blur"
     if any(marker in text for marker in (
         "deform", "anatom", "finger", "hand", "limb", "warped", "distort",
@@ -493,8 +493,8 @@ def _has_blur_issue(lower: str) -> bool:
     )):
         return False
     return any(pattern in lower for pattern in (
-        "blurry", "blurred", "visibly blurry", "out of focus", "soft focus",
-        "not sharp",
+        "blur", "blurry", "blurred", "visibly blurry", "out of focus",
+        "soft focus", "not sharp",
     ))
 
 

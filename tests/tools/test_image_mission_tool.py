@@ -67,6 +67,29 @@ def test_visual_qc_json_failure_to_analyze_is_fatal():
     assert "qc_unavailable" in report.issues
 
 
+def test_visual_qc_treats_slight_soft_edge_as_nonfatal():
+    from tools.image_mission_tool import evaluate_visual_qc
+
+    report = evaluate_visual_qc(
+        analysis=json.dumps({
+            "quality_score": 85,
+            "adherence_score": 72,
+            "fatal_issues": [],
+            "issues": [
+                "Background is not pure white; it has visible gray radial banding/vignette.",
+                "Circle appears slightly soft at the edge rather than perfectly crisp.",
+            ],
+            "summary": "Clean simple circle, but not perfectly vector-crisp.",
+        }),
+        prompt="single red circle centered on pure white background",
+    )
+
+    assert report.passed is True
+    assert report.fatal is False
+    assert "blur" not in report.issues
+    assert report.score >= 70
+
+
 @pytest.mark.asyncio
 async def test_mission_skips_qc_failed_image_and_returns_best_candidate():
     from tools.image_mission_tool import run_image_generation_mission
