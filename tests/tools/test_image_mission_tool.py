@@ -3,6 +3,19 @@ from __future__ import annotations
 import json
 
 import pytest
+from PIL import Image
+
+
+def _write_test_image(path, *, color=(255, 255, 255), accent=(255, 0, 0)):
+    image = Image.new("RGB", (256, 256), color)
+    for x in range(72, 184):
+        for y in range(72, 184):
+            image.putpixel((x, y), accent)
+    image.save(path)
+
+
+def _write_blank_image(path):
+    Image.new("RGB", (256, 256), (255, 255, 255)).save(path)
 
 
 def test_task_budget_scales_with_prompt_complexity():
@@ -90,10 +103,64 @@ def test_visual_qc_treats_slight_soft_edge_as_nonfatal():
     assert report.score >= 70
 
 
+def test_deterministic_qc_rejects_missing_and_blank_images(tmp_path):
+    from tools.image_mission_tool import evaluate_deterministic_qc
+
+    missing = evaluate_deterministic_qc(str(tmp_path / "missing.png"), aspect_ratio="square")
+    assert missing.passed is False
+    assert missing.fatal is True
+    assert "missing_image" in missing.issues
+
+    blank_path = tmp_path / "blank.png"
+    _write_blank_image(blank_path)
+    blank = evaluate_deterministic_qc(str(blank_path), aspect_ratio="square")
+    assert blank.passed is False
+    assert blank.fatal is True
+    assert "blank_or_nearly_uniform" in blank.issues
+
+    valid_path = tmp_path / "valid.png"
+    _write_test_image(valid_path)
+    valid = evaluate_deterministic_qc(str(valid_path), aspect_ratio="square")
+    assert valid.passed is True
+    assert valid.fatal is False
+    assert valid.width == 256
+    assert valid.height == 256
+
+
+def test_visual_qc_flags_semantic_text_and_reference_failures_as_fatal():
+    from tools.image_mission_tool import evaluate_visual_qc
+
+    report = evaluate_visual_qc(
+        analysis=json.dumps({
+            "quality_score": 88,
+            "adherence_score": 35,
+            "fatal_issues": [
+                "semantic mismatch: generated a dog instead of a handbag",
+                "unreadable intended text",
+                "reference image drift: identity changed",
+            ],
+            "issues": [],
+            "summary": "The image is clean but does not match the request.",
+        }),
+        prompt="product photo of a handbag with readable SALE text using the reference identity",
+    )
+
+    assert report.passed is False
+    assert report.fatal is True
+    assert "semantic_mismatch" in report.issues
+    assert "unreadable_text" in report.issues
+    assert "reference_drift" in report.issues
+    assert report.score < 70
+
+
 @pytest.mark.asyncio
-async def test_mission_skips_qc_failed_image_and_returns_best_candidate():
+async def test_mission_skips_qc_failed_image_and_returns_best_candidate(tmp_path):
     from tools.image_mission_tool import run_image_generation_mission
 
+    bad_path = tmp_path / "bad.png"
+    good_path = tmp_path / "good.png"
+    _write_test_image(bad_path)
+    _write_test_image(good_path)
     generated_prompts: list[str] = []
 
     def fake_generate(**kwargs):
@@ -101,14 +168,14 @@ async def test_mission_skips_qc_failed_image_and_returns_best_candidate():
         if len(generated_prompts) == 1:
             return json.dumps({
                 "success": True,
-                "image": "/tmp/bad.png",
+                "image": str(bad_path),
                 "provider": "openai-codex",
                 "model": "gpt-image-2-medium",
                 "prompt": kwargs["prompt"],
             })
         return json.dumps({
             "success": True,
-            "image": "/tmp/good.png",
+            "image": str(good_path),
             "provider": "openai-codex",
             "model": "gpt-image-2-medium",
             "prompt": kwargs["prompt"],
@@ -134,7 +201,7 @@ async def test_mission_skips_qc_failed_image_and_returns_best_candidate():
     )
 
     assert result["success"] is True
-    assert result["image"] == "/tmp/good.png"
+    assert result["image"] == str(good_path)
     assert result["attempt_count"] == 2
     assert result["best"]["qc"]["score"] >= 90
     assert result["attempts"][0]["accepted"] is False
@@ -143,13 +210,118 @@ async def test_mission_skips_qc_failed_image_and_returns_best_candidate():
 
 
 @pytest.mark.asyncio
-async def test_mission_returns_qc_failed_when_all_candidates_have_fatal_issues():
+async def test_mission_runs_deterministic_before_vision_and_retries(tmp_path):
     from tools.image_mission_tool import run_image_generation_mission
 
+    blank_path = tmp_path / "blank.png"
+    good_path = tmp_path / "good.png"
+    _write_blank_image(blank_path)
+    _write_test_image(good_path)
+    seen_by_vision: list[str] = []
+
     def fake_generate(**kwargs):
+        image = blank_path if kwargs["attempt_index"] == 1 else good_path
         return json.dumps({
             "success": True,
-            "image": f"/tmp/{kwargs['attempt_index']}.png",
+            "image": str(image),
+            "provider": "openai-codex",
+            "model": "gpt-image-2-medium",
+            "prompt": kwargs["prompt"],
+        })
+
+    async def fake_qc(image_path: str, prompt: str):
+        seen_by_vision.append(image_path)
+        return json.dumps({
+            "quality_score": 95,
+            "adherence_score": 92,
+            "fatal_issues": [],
+            "issues": [],
+            "summary": "sharp and matches the prompt",
+        })
+
+    result = await run_image_generation_mission(
+        prompt="simple red square",
+        aspect_ratio="square",
+        budget="task",
+        generate_once=fake_generate,
+        inspect_image=fake_qc,
+    )
+
+    assert result["success"] is True
+    assert result["image"] == str(good_path)
+    assert seen_by_vision == [str(good_path)]
+    assert result["attempts"][0]["deterministic_qc"]["fatal"] is True
+    assert "blank_or_nearly_uniform" in result["attempts"][0]["deterministic_qc"]["issues"]
+    assert "vision_qc" not in result["attempts"][0]
+    assert result["attempts"][1]["vision_qc"]["passed"] is True
+
+
+@pytest.mark.asyncio
+async def test_mission_extends_task_budget_for_close_nonfatal_qc_misses(tmp_path):
+    from tools.image_mission_tool import run_image_generation_mission
+
+    image_paths = []
+    for index in range(1, 5):
+        path = tmp_path / f"candidate-{index}.png"
+        _write_test_image(path)
+        image_paths.append(path)
+
+    def fake_generate(**kwargs):
+        image = image_paths[kwargs["attempt_index"] - 1]
+        return json.dumps({
+            "success": True,
+            "image": str(image),
+            "provider": "openai-codex",
+            "model": "gpt-image-2-medium",
+            "prompt": kwargs["prompt"],
+        })
+
+    async def fake_qc(image_path: str, prompt: str):
+        if image_path.endswith("candidate-4.png"):
+            return json.dumps({
+                "quality_score": 91,
+                "adherence_score": 88,
+                "fatal_issues": [],
+                "issues": [],
+                "summary": "now matches the prompt",
+            })
+        return json.dumps({
+            "quality_score": 74,
+            "adherence_score": 55,
+            "fatal_issues": [],
+            "issues": ["composition close but semantic details are incomplete"],
+            "summary": "close but not quite aligned",
+        })
+
+    result = await run_image_generation_mission(
+        prompt="simple red square",
+        aspect_ratio="square",
+        budget="task",
+        generate_once=fake_generate,
+        inspect_image=fake_qc,
+    )
+
+    assert result["success"] is True
+    assert result["attempt_count"] == 4
+    assert result["max_attempts"] == 4
+    assert "qc-near-miss" in result["strategy"]["extensions"]
+
+
+@pytest.mark.asyncio
+async def test_mission_returns_qc_failed_when_all_candidates_have_fatal_issues(tmp_path):
+    from tools.image_mission_tool import run_image_generation_mission
+
+    image_paths = []
+    for index in range(1, 4):
+        path = tmp_path / f"{index}.png"
+        _write_test_image(path)
+        image_paths.append(path)
+
+    def fake_generate(**kwargs):
+        image = image_paths[kwargs["attempt_index"] - 1]
+        return json.dumps({
+            "success": True,
+            "image": str(image),
             "provider": "openai-codex",
             "model": "gpt-image-2-medium",
             "prompt": kwargs["prompt"],
@@ -181,7 +353,9 @@ def test_image_generate_mission_tool_is_registered():
     assert entry is not None
     assert entry.toolset == "image_gen"
     assert entry.is_async is True
-    assert "visual QC" in entry.schema["description"]
+    assert "hybrid QC" in entry.schema["description"]
+    assert "deterministic" in entry.schema["description"]
+    assert "semantic" in entry.schema["description"]
 
 
 def test_mission_requirements_need_generation_and_vision(monkeypatch):
@@ -203,5 +377,8 @@ def test_plain_image_generate_points_quality_sensitive_requests_to_mission_tool(
 
     description = IMAGE_GENERATE_SCHEMA["description"]
     assert "image_generate_mission" in description
+    assert "hybrid QC" in description
+    assert "semantic" in description
+    assert "reference drift" in description
     assert "blur" in description
     assert "deformed" in description
