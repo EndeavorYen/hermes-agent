@@ -162,6 +162,36 @@ def test_image_generate_empty_response_allows_identical_retry_without_hard_stop(
     assert retry.code == "allow"
 
 
+def test_image_generate_empty_response_allows_identical_retry_with_hard_stop():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            exact_failure_warn_after=2,
+            exact_failure_block_after=2,
+            same_tool_failure_halt_after=3,
+        )
+    )
+    args = {"prompt": "same image prompt", "aspect_ratio": "square"}
+    result = json.dumps({
+        "success": False,
+        "image": None,
+        "error": "Codex response contained no image_generation_call result",
+        "error_type": "empty_response",
+        "provider": "openai-codex",
+        "model": "gpt-image-2-medium",
+    })
+
+    for _ in range(3):
+        assert controller.before_call("image_generate", args).action == "allow"
+        decision = controller.after_call("image_generate", args, result, failed=True)
+        assert decision.action == "allow"
+        assert decision.code == "allow"
+
+    retry = controller.before_call("image_generate", args)
+    assert retry.action == "allow"
+    assert retry.code == "allow"
+
+
 def test_success_resets_exact_signature_failure_streak():
     controller = ToolCallGuardrailController(
         ToolCallGuardrailConfig(hard_stop_enabled=True, exact_failure_block_after=2, same_tool_failure_halt_after=99)

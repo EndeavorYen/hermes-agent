@@ -243,6 +243,27 @@ def classify_non_retryable_tool_failure(tool_name: str, result: str | None) -> t
     return None
 
 
+def classify_retryable_tool_failure(tool_name: str, result: str | None) -> tuple[str, str] | None:
+    """Return metadata for failed tool results that should remain retryable."""
+    data = safe_json_loads(result or "")
+    if not isinstance(data, dict):
+        return None
+
+    if tool_name == "image_generate" and data.get("success") is False:
+        error_type = str(data.get("error_type") or "")
+        if error_type == "empty_response" or data.get("retryable") is True:
+            return (
+                "image_generate_retryable_failure",
+                (
+                    "Image generation did not produce a deliverable image yet. "
+                    "Retrying in-turn is allowed; adjust prompt, references, "
+                    "aspect ratio, or provider path if repeated attempts fail."
+                ),
+            )
+
+    return None
+
+
 class ToolCallGuardrailController:
     """Per-turn controller for repeated failed/non-progressing tool calls."""
 
@@ -332,6 +353,13 @@ class ToolCallGuardrailController:
             failed, _ = classify_tool_failure(tool_name, result)
 
         if failed:
+            retryable = classify_retryable_tool_failure(tool_name, result)
+            if retryable is not None:
+                self._exact_failure_counts.pop(signature, None)
+                self._same_tool_failure_counts.pop(tool_name, None)
+                self._no_progress.pop(signature, None)
+                return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
+
             non_retryable = classify_non_retryable_tool_failure(tool_name, result)
             if non_retryable is not None:
                 code, message = non_retryable

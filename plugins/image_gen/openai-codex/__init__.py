@@ -195,6 +195,38 @@ def _normalize_reference_images(value: Any) -> List[str]:
     return refs[:4]
 
 
+def _invalid_reference_images(value: Any) -> List[str]:
+    if value is None:
+        return []
+    invalid: List[str] = []
+
+    def _iter_candidates(candidate_value: Any):
+        if candidate_value is None:
+            return
+        if isinstance(candidate_value, (list, tuple)):
+            for item in candidate_value:
+                yield from _iter_candidates(item)
+            return
+        yield candidate_value
+
+    for candidate in _iter_candidates(value):
+        if _coerce_image_reference(candidate):
+            continue
+        if isinstance(candidate, dict):
+            for key in ("image_url", "url", "path", "image_path"):
+                raw = candidate.get(key)
+                if isinstance(raw, str) and raw.strip():
+                    invalid.append(raw.strip())
+                    break
+            else:
+                invalid.append("<invalid reference object>")
+        elif isinstance(candidate, str) and candidate.strip():
+            invalid.append(candidate.strip())
+        else:
+            invalid.append(f"<{type(candidate).__name__}>")
+    return invalid
+
+
 def _build_responses_payload(
     *,
     prompt: str,
@@ -245,9 +277,6 @@ def _extract_image_b64(value: Any) -> Optional[str]:
             result = value.get("result")
             if isinstance(result, str) and result:
                 found = result
-        partial = value.get("partial_image_b64")
-        if isinstance(partial, str) and partial:
-            found = partial
         for child in value.values():
             nested = _extract_image_b64(child)
             if nested:
@@ -444,12 +473,24 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
 
         tier_id, meta = _resolve_model()
         size = _SIZES.get(aspect, _SIZES["square"])
-        reference_images = _normalize_reference_images([
+        raw_references = [
             kwargs.get("reference_images"),
             kwargs.get("input_image"),
             kwargs.get("input_images"),
             kwargs.get("image_style_references"),
-        ])
+        ]
+        invalid_references = _invalid_reference_images(raw_references)
+        if invalid_references:
+            preview = ", ".join(invalid_references[:3])
+            return error_response(
+                error=f"Invalid reference image input: {preview}",
+                error_type="invalid_reference_image",
+                provider="openai-codex",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+        reference_images = _normalize_reference_images(raw_references)
 
         token = _read_codex_access_token()
         if not token:
@@ -485,7 +526,7 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             )
 
         if not b64:
-            return error_response(
+            response = error_response(
                 error="Codex response contained no image_generation_call result",
                 error_type="empty_response",
                 provider="openai-codex",
@@ -493,6 +534,8 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 prompt=prompt,
                 aspect_ratio=aspect,
             )
+            response["retryable"] = True
+            return response
 
         try:
             saved_path = save_b64_image(b64, prefix=f"openai_codex_{tier_id}")

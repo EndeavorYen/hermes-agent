@@ -193,13 +193,30 @@ class TestGenerate:
         }
         assert result["reference_image_count"] == 1
 
-    def test_partial_image_event_used_when_done_missing(self):
-        """If output_item.done is missing, partial_image_b64 is accepted."""
+    def test_partial_image_event_is_not_final_image(self):
+        """Partial previews are not deliverable final images by themselves."""
         payload = {
             "type": "response.image_generation_call.partial_image",
             "partial_image_b64": _b64_png(),
         }
-        assert codex_plugin._extract_image_b64(payload) == _b64_png()
+        assert codex_plugin._extract_image_b64(payload) is None
+
+    def test_invalid_reference_path_rejected_before_generation(self, provider, monkeypatch, tmp_path):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        def _should_not_collect(*args, **kwargs):
+            raise AssertionError("generation should not start with an invalid reference image")
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _should_not_collect)
+
+        result = provider.generate(
+            "keep identity",
+            input_image=str(tmp_path / "missing-reference.png"),
+        )
+
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_reference_image"
+        assert "missing-reference.png" in result["error"]
 
     def test_sse_parser_handles_event_and_data_lines(self):
         class _Response:
@@ -238,6 +255,7 @@ class TestGenerate:
         result = provider.generate("a cat")
         assert result["success"] is False
         assert result["error_type"] == "empty_response"
+        assert result["retryable"] is True
 
     def test_stream_exception_returns_api_error(self, provider, monkeypatch):
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
