@@ -9,6 +9,7 @@ tests/tools/test_managed_media_gateways.py.
 
 from __future__ import annotations
 
+import json
 from unittest.mock import patch
 
 import pytest
@@ -136,6 +137,49 @@ class TestGptLiteralFamily:
         assert p["image_size"] == "1024x1536"
 
 
+class TestGptImage2Presets:
+    """GPT Image 2 uses preset enum sizes (not literal strings like 1.5).
+    Mapped to 4:3 variants so we stay above the 655,360 min-pixel floor
+    (16:9 presets at 1024x576 = 589,824 would be rejected)."""
+
+    def test_gpt2_landscape_uses_4_3_preset(self, image_tool):
+        p = image_tool._build_fal_payload("fal-ai/gpt-image-2", "hello", "landscape")
+        assert p["image_size"] == "landscape_4_3"
+
+    def test_gpt2_square_uses_square_hd(self, image_tool):
+        p = image_tool._build_fal_payload("fal-ai/gpt-image-2", "hello", "square")
+        assert p["image_size"] == "square_hd"
+
+    def test_gpt2_portrait_uses_4_3_preset(self, image_tool):
+        p = image_tool._build_fal_payload("fal-ai/gpt-image-2", "hello", "portrait")
+        assert p["image_size"] == "portrait_4_3"
+
+    def test_gpt2_quality_pinned_to_medium(self, image_tool):
+        p = image_tool._build_fal_payload("fal-ai/gpt-image-2", "hi", "square")
+        assert p["quality"] == "medium"
+
+    def test_gpt2_strips_byok_and_unsupported_overrides(self, image_tool):
+        """openai_api_key (BYOK) is deliberately not in supports — all users
+        route through shared FAL billing. guidance_scale/num_inference_steps
+        aren't in the model's API surface either."""
+        p = image_tool._build_fal_payload(
+            "fal-ai/gpt-image-2", "hi", "square",
+            overrides={
+                "openai_api_key": "sk-...",
+                "guidance_scale": 7.5,
+                "num_inference_steps": 50,
+            },
+        )
+        assert "openai_api_key" not in p
+        assert "guidance_scale" not in p
+        assert "num_inference_steps" not in p
+
+    def test_gpt2_strips_seed_even_if_passed(self, image_tool):
+        # seed isn't in the GPT Image 2 API surface either.
+        p = image_tool._build_fal_payload("fal-ai/gpt-image-2", "hi", "square", seed=42)
+        assert "seed" not in p
+
+
 # ---------------------------------------------------------------------------
 # Supports whitelist — the main safety property
 # ---------------------------------------------------------------------------
@@ -177,6 +221,15 @@ class TestSupportsFilter:
         p = image_tool._build_fal_payload("fal-ai/nano-banana-pro", "hi", "landscape", seed=1)
         assert "image_size" not in p
         assert p["aspect_ratio"] == "16:9"
+
+    def test_krea_model_keeps_style_references(self, image_tool):
+        p = image_tool._build_fal_payload(
+            "fal-ai/krea/v2/medium/text-to-image",
+            "hi",
+            "landscape",
+            overrides={"image_style_references": [{"url": "https://x.com/ref.png"}]},
+        )
+        assert p["image_style_references"] == [{"url": "https://x.com/ref.png"}]
 
 
 # ---------------------------------------------------------------------------
@@ -231,10 +284,11 @@ class TestGptQualityPinnedToMedium:
         assert p["quality"] == "medium"
 
     def test_non_gpt_model_never_gets_quality(self, image_tool):
-        """quality is only meaningful for gpt-image-1.5 — other models should
-        never have it in their payload."""
+        """quality is only meaningful for GPT-Image models (1.5, 2) — other
+        models should never have it in their payload."""
+        gpt_models = {"fal-ai/gpt-image-1.5", "fal-ai/gpt-image-2"}
         for mid in image_tool.FAL_MODELS:
-            if mid == "fal-ai/gpt-image-1.5":
+            if mid in gpt_models:
                 continue
             p = image_tool._build_fal_payload(mid, "hi", "square")
             assert "quality" not in p, f"{mid} unexpectedly has 'quality' in payload"
@@ -319,15 +373,79 @@ class TestAspectRatioNormalization:
 
 class TestRegistryIntegration:
 
-    def test_schema_exposes_only_prompt_and_aspect_ratio_to_agent(self, image_tool):
+    def test_schema_exposes_prompt_aspect_ratio_and_reference_images(self, image_tool):
         """The agent-facing schema must stay tight — model selection is a
         user-level config choice, not an agent-level arg."""
         props = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]
-        assert set(props.keys()) == {"prompt", "aspect_ratio"}
+        assert set(props.keys()) == {"prompt", "aspect_ratio", "reference_images"}
+        assert "source/reference image" in props["reference_images"]["description"]
+
+    def test_schema_description_includes_reference_image_guardrails(self, image_tool):
+        description = image_tool.IMAGE_GENERATE_SCHEMA["description"]
+        for required in (
+            "continuation must be scoped",
+            "plain image_generate is fallback only",
+            "Do not mix source images with generated outputs",
+            "VA generate must preserve prompt provenance and reference image provenance",
+            "Inbox requests without scope require allow_global=true",
+        ):
+            assert required in description
 
     def test_aspect_ratio_enum_is_three_values(self, image_tool):
         enum = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]["aspect_ratio"]["enum"]
         assert set(enum) == {"landscape", "square", "portrait"}
+
+    def test_default_fal_model_rejects_reference_images_instead_of_ignoring(self, image_tool, monkeypatch):
+        monkeypatch.setattr(image_tool, "fal_key_is_configured", lambda: True)
+        monkeypatch.setattr(image_tool, "_resolve_managed_fal_gateway", lambda: None)
+
+        result = image_tool.image_generate_tool(
+            prompt="match this character",
+            reference_images=["https://x.com/ref.png"],
+        )
+
+        payload = json.loads(result)
+        assert payload["success"] is False
+        assert payload["error_type"] == "unsupported_feature"
+        assert "does not support reference images" in payload["error"]
+
+    def test_fal_krea_model_maps_reference_images_to_style_references(self, image_tool, monkeypatch):
+        monkeypatch.setattr(image_tool, "fal_key_is_configured", lambda: True)
+        monkeypatch.setattr(image_tool, "_resolve_managed_fal_gateway", lambda: None)
+        monkeypatch.setattr(
+            image_tool,
+            "_resolve_fal_model",
+            lambda: (
+                "fal-ai/krea/v2/medium/text-to-image",
+                image_tool.FAL_MODELS["fal-ai/krea/v2/medium/text-to-image"],
+            ),
+        )
+
+        captured = {}
+
+        class _Handler:
+            def get(self):
+                return {"images": [{"url": "https://x.com/out.png"}]}
+
+        def fake_submit(model_id, *, arguments):
+            captured["model_id"] = model_id
+            captured["arguments"] = arguments
+            return _Handler()
+
+        monkeypatch.setattr(image_tool, "_submit_fal_request", fake_submit)
+
+        result = image_tool.image_generate_tool(
+            prompt="match this character",
+            reference_images=["https://x.com/ref-a.png"],
+            input_image="https://x.com/ref-b.png",
+        )
+
+        payload = json.loads(result)
+        assert payload["success"] is True
+        assert captured["arguments"]["image_style_references"] == [
+            {"url": "https://x.com/ref-a.png"},
+            {"url": "https://x.com/ref-b.png"},
+        ]
 
 
 # ---------------------------------------------------------------------------

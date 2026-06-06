@@ -1,10 +1,8 @@
 """Tests for ``hermes debug`` CLI command and debug utilities."""
 
 import os
-import sys
 import urllib.error
-from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -32,6 +30,9 @@ def hermes_home(tmp_path, monkeypatch):
     )
     (logs_dir / "gateway.log").write_text(
         "2026-04-12 17:00:10 INFO gateway.run: started\n"
+    )
+    (logs_dir / "desktop.log").write_text(
+        "2026-04-12 17:00:15 INFO desktop: backend spawned\n"
     )
 
     return home
@@ -137,50 +138,105 @@ class TestUploadToPastebin:
 # Log reading
 # ---------------------------------------------------------------------------
 
-class TestReadFullLog:
-    """Test _read_full_log for standalone log uploads."""
+class TestCaptureLogSnapshot:
+    """Test _capture_log_snapshot for log reading and truncation."""
 
     def test_reads_small_file(self, hermes_home):
-        from hermes_cli.debug import _read_full_log
+        from hermes_cli.debug import _capture_log_snapshot
 
-        content = _read_full_log("agent")
-        assert content is not None
-        assert "session started" in content
+        snap = _capture_log_snapshot("agent", tail_lines=10)
+        assert snap.full_text is not None
+        assert "session started" in snap.full_text
+        assert "session started" in snap.tail_text
 
     def test_returns_none_for_missing(self, tmp_path, monkeypatch):
         home = tmp_path / ".hermes"
         home.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(home))
 
-        from hermes_cli.debug import _read_full_log
-        assert _read_full_log("agent") is None
+        from hermes_cli.debug import _capture_log_snapshot
+        snap = _capture_log_snapshot("agent", tail_lines=10)
+        assert snap.full_text is None
+        assert snap.tail_text == "(file not found)"
 
-    def test_returns_none_for_empty(self, hermes_home):
-        # Truncate agent.log to empty
+    def test_empty_primary_reports_file_empty(self, hermes_home):
+        """Empty primary (no .1 fallback) surfaces as '(file empty)', not missing."""
         (hermes_home / "logs" / "agent.log").write_text("")
 
-        from hermes_cli.debug import _read_full_log
-        assert _read_full_log("agent") is None
+        from hermes_cli.debug import _capture_log_snapshot
+        snap = _capture_log_snapshot("agent", tail_lines=10)
+        assert snap.full_text is None
+        assert snap.tail_text == "(file empty)"
+
+    def test_race_truncate_after_resolve_reports_empty(self, hermes_home, monkeypatch):
+        """If the log is truncated between resolve and stat, say 'empty', not 'missing'."""
+        log_path = hermes_home / "logs" / "agent.log"
+        from hermes_cli import debug
+
+        monkeypatch.setattr(debug, "_resolve_log_path", lambda _name: log_path)
+        log_path.write_text("")
+
+        snap = debug._capture_log_snapshot("agent", tail_lines=10)
+        assert snap.path == log_path
+        assert snap.full_text is None
+        assert snap.tail_text == "(file empty)"
 
     def test_truncates_large_file(self, hermes_home):
         """Files larger than max_bytes get tail-truncated."""
-        from hermes_cli.debug import _read_full_log
+        from hermes_cli.debug import _capture_log_snapshot
 
         # Write a file larger than 1KB
         big_content = "x" * 100 + "\n"
         (hermes_home / "logs" / "agent.log").write_text(big_content * 200)
 
-        content = _read_full_log("agent", max_bytes=1024)
-        assert content is not None
-        assert "truncated" in content
+        snap = _capture_log_snapshot("agent", tail_lines=10, max_bytes=1024)
+        assert snap.full_text is not None
+        assert "truncated" in snap.full_text
+
+    def test_keeps_first_line_when_truncation_on_boundary(self, hermes_home):
+        """When truncation lands on a line boundary, keep the first full line."""
+        from hermes_cli.debug import _capture_log_snapshot
+
+        # File must exceed the initial chunk_size (8192) used by the
+        # backward-reading loop so the truncation path actually fires.
+        line = "A" * 99 + "\n"  # 100 bytes per line
+        num_lines = 200  # 20000 bytes
+        (hermes_home / "logs" / "agent.log").write_text(line * num_lines)
+
+        # max_bytes = 1000 = 100 * 10 → cut at byte 20000 - 1000 = 19000,
+        # and byte 19000 - 1 is '\n'.  Boundary hit → keep all 10 lines.
+        snap = _capture_log_snapshot("agent", tail_lines=5, max_bytes=1000)
+        assert snap.full_text is not None
+        assert "truncated" in snap.full_text
+        raw = snap.full_text.split("\n", 1)[1]
+        kept = [l for l in raw.strip().splitlines() if l.startswith("A")]
+        assert len(kept) == 10
+
+    def test_drops_partial_when_truncation_mid_line(self, hermes_home):
+        """When truncation lands mid-line, drop the partial fragment."""
+        from hermes_cli.debug import _capture_log_snapshot
+
+        line = "A" * 99 + "\n"  # 100 bytes per line
+        num_lines = 200  # 20000 bytes
+        (hermes_home / "logs" / "agent.log").write_text(line * num_lines)
+
+        # max_bytes = 950 doesn't divide evenly into 100 → mid-line cut.
+        snap = _capture_log_snapshot("agent", tail_lines=5, max_bytes=950)
+        assert snap.full_text is not None
+        assert "truncated" in snap.full_text
+        raw = snap.full_text.split("\n", 1)[1]
+        kept = [l for l in raw.strip().splitlines() if l.startswith("A")]
+        # 950 / 100 = 9.5 → 9 complete lines after dropping partial
+        assert len(kept) == 9
 
     def test_unknown_log_returns_none(self, hermes_home):
-        from hermes_cli.debug import _read_full_log
-        assert _read_full_log("nonexistent") is None
+        from hermes_cli.debug import _capture_log_snapshot
+        snap = _capture_log_snapshot("nonexistent", tail_lines=10)
+        assert snap.full_text is None
 
     def test_falls_back_to_rotated_file(self, hermes_home):
         """When gateway.log doesn't exist, falls back to gateway.log.1."""
-        from hermes_cli.debug import _read_full_log
+        from hermes_cli.debug import _capture_log_snapshot
 
         logs_dir = hermes_home / "logs"
         # Remove the primary (if any) and create a .1 rotation
@@ -189,33 +245,168 @@ class TestReadFullLog:
             "2026-04-12 10:00:00 INFO gateway.run: rotated content\n"
         )
 
-        content = _read_full_log("gateway")
-        assert content is not None
-        assert "rotated content" in content
+        snap = _capture_log_snapshot("gateway", tail_lines=10)
+        assert snap.full_text is not None
+        assert "rotated content" in snap.full_text
 
     def test_prefers_primary_over_rotated(self, hermes_home):
         """Primary log is used when it exists, even if .1 also exists."""
-        from hermes_cli.debug import _read_full_log
+        from hermes_cli.debug import _capture_log_snapshot
 
         logs_dir = hermes_home / "logs"
         (logs_dir / "gateway.log").write_text("primary content\n")
         (logs_dir / "gateway.log.1").write_text("rotated content\n")
 
-        content = _read_full_log("gateway")
-        assert "primary content" in content
-        assert "rotated" not in content
+        snap = _capture_log_snapshot("gateway", tail_lines=10)
+        assert "primary content" in snap.full_text
+        assert "rotated" not in snap.full_text
 
     def test_falls_back_when_primary_empty(self, hermes_home):
         """Empty primary log falls back to .1 rotation."""
-        from hermes_cli.debug import _read_full_log
+        from hermes_cli.debug import _capture_log_snapshot
 
         logs_dir = hermes_home / "logs"
         (logs_dir / "agent.log").write_text("")
         (logs_dir / "agent.log.1").write_text("rotated agent data\n")
 
-        content = _read_full_log("agent")
-        assert content is not None
-        assert "rotated agent data" in content
+        snap = _capture_log_snapshot("agent", tail_lines=10)
+        assert snap.full_text is not None
+        assert "rotated agent data" in snap.full_text
+
+
+# ---------------------------------------------------------------------------
+# Capture log redaction (force=True applies regardless of HERMES_REDACT_SECRETS)
+# ---------------------------------------------------------------------------
+
+# A vendor-prefixed token used across redaction tests. Long enough to clear
+# the redactor's `floor` parameter so it actually masks rather than fully blanks.
+_REDACT_FIXTURE_TOKEN = "sk-proj-A1B2C3D4E5F6G7H8I9J0aA"
+
+
+class TestCaptureLogSnapshotRedaction:
+    """Pin upload-time redaction at the _capture_log_snapshot boundary."""
+
+    @pytest.fixture
+    def hermes_home_with_secret(self, tmp_path, monkeypatch):
+        """Isolated HERMES_HOME whose agent.log contains a vendor-prefixed token."""
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        # Baseline fixture: no explicit env-var opinion. With the post-#17691
+        # default of ON, the default-path tests below exercise the
+        # secure-default behaviour. The `force=True` regression test
+        # setenvs to "false" inline to prove force=True works even when
+        # the runtime flag is disabled.
+        monkeypatch.delenv("HERMES_REDACT_SECRETS", raising=False)
+
+        logs_dir = home / "logs"
+        logs_dir.mkdir()
+        (logs_dir / "agent.log").write_text(
+            f"2026-04-12 17:00:00 INFO config: api_key={_REDACT_FIXTURE_TOKEN} loaded\n"
+        )
+        (logs_dir / "errors.log").write_text("")
+        (logs_dir / "gateway.log").write_text("")
+        return home
+
+    def test_default_redacts_tail_and_full_text(self, hermes_home_with_secret):
+        from hermes_cli.debug import _capture_log_snapshot
+
+        snap = _capture_log_snapshot("agent", tail_lines=10)
+
+        # Both views the upload uses must be sanitized.
+        assert _REDACT_FIXTURE_TOKEN not in snap.tail_text
+        assert snap.full_text is not None
+        assert _REDACT_FIXTURE_TOKEN not in snap.full_text
+
+    def test_redact_false_passes_through(self, hermes_home_with_secret):
+        from hermes_cli.debug import _capture_log_snapshot
+
+        snap = _capture_log_snapshot("agent", tail_lines=10, redact=False)
+
+        # Original token survives when the caller opts out.
+        assert _REDACT_FIXTURE_TOKEN in snap.tail_text
+        assert _REDACT_FIXTURE_TOKEN in (snap.full_text or "")
+
+    def test_force_true_works_when_redaction_disabled(
+        self, hermes_home_with_secret, monkeypatch
+    ):
+        """Regression test: redact_sensitive_text short-circuits without force=True.
+
+        If a future refactor drops `force=True` from `_redact_log_text`, this
+        test fails immediately. Without `force=True`, the redactor returns the
+        input unchanged when HERMES_REDACT_SECRETS=false, and the share-time
+        redaction feature ships silently broken for users who opted out of
+        runtime redaction (e.g. developers working on the redactor itself).
+        """
+
+        # Force the runtime flag off so we're exercising the force=True path,
+        # not the default-on path.
+        monkeypatch.setenv("HERMES_REDACT_SECRETS", "false")
+
+        from hermes_cli.debug import _capture_log_snapshot
+
+        assert os.environ.get("HERMES_REDACT_SECRETS", "") == "false"
+
+        snap = _capture_log_snapshot("agent", tail_lines=10)
+
+        assert _REDACT_FIXTURE_TOKEN not in snap.tail_text
+        assert snap.full_text is not None
+        assert _REDACT_FIXTURE_TOKEN not in snap.full_text
+
+    def test_default_redacts_email_addresses_for_public_share(
+        self, hermes_home_with_secret
+    ):
+        from hermes_cli.debug import _capture_log_snapshot
+
+        log_path = hermes_home_with_secret / "logs" / "agent.log"
+        log_path.write_text(
+            "2026-04-12 17:00:00 INFO gateway.run: "
+            "inbound message: platform=bluebubbles "
+            "user=person@example.com chat=iMessage;-;person@example.com msg='hello'\n"
+        )
+
+        snap = _capture_log_snapshot("agent", tail_lines=10)
+
+        assert "person@example.com" not in snap.tail_text
+        assert "[REDACTED_EMAIL]" in snap.tail_text
+        assert snap.full_text is not None
+        assert "person@example.com" not in snap.full_text
+
+    def test_no_redact_preserves_email_addresses(self, hermes_home_with_secret):
+        from hermes_cli.debug import _capture_log_snapshot
+
+        log_path = hermes_home_with_secret / "logs" / "agent.log"
+        log_path.write_text(
+            "2026-04-12 17:00:00 INFO gateway.run: "
+            "inbound message: platform=bluebubbles "
+            "user=person@example.com chat=iMessage;-;person@example.com msg='hello'\n"
+        )
+
+        snap = _capture_log_snapshot("agent", tail_lines=10, redact=False)
+
+        assert "person@example.com" in snap.tail_text
+        assert "person@example.com" in (snap.full_text or "")
+
+    def test_capture_default_log_snapshots_threads_redact(
+        self, hermes_home_with_secret
+    ):
+        from hermes_cli.debug import _capture_default_log_snapshots
+
+        snaps = _capture_default_log_snapshots(50)
+
+        # Default threads redact=True to all three captured logs.
+        assert _REDACT_FIXTURE_TOKEN not in snaps["agent"].tail_text
+        assert _REDACT_FIXTURE_TOKEN not in (snaps["agent"].full_text or "")
+
+    def test_capture_default_log_snapshots_no_redact_passes_through(
+        self, hermes_home_with_secret
+    ):
+        from hermes_cli.debug import _capture_default_log_snapshots
+
+        snaps = _capture_default_log_snapshots(50, redact=False)
+
+        assert _REDACT_FIXTURE_TOKEN in snaps["agent"].tail_text
+        assert _REDACT_FIXTURE_TOKEN in (snaps["agent"].full_text or "")
 
 
 # ---------------------------------------------------------------------------
@@ -263,6 +454,15 @@ class TestCollectDebugReport:
 
         assert "--- gateway.log" in report
 
+    def test_report_includes_desktop_log(self, hermes_home):
+        from hermes_cli.debug import collect_debug_report
+
+        with patch("hermes_cli.dump.run_dump"):
+            report = collect_debug_report(log_lines=50)
+
+        assert "--- desktop.log" in report
+        assert "backend spawned" in report
+
     def test_missing_logs_handled(self, tmp_path, monkeypatch):
         home = tmp_path / ".hermes"
         home.mkdir()
@@ -283,6 +483,44 @@ class TestCollectDebugReport:
 class TestRunDebugShare:
     """Test the run_debug_share CLI handler."""
 
+    def test_share_sweeps_expired_pastes(self, hermes_home, capsys):
+        """Slash-command path should sweep old pending deletes before uploading."""
+        from hermes_cli.debug import run_debug_share
+
+        args = MagicMock()
+        args.lines = 50
+        args.expire = 7
+        args.local = False
+
+        with patch("hermes_cli.dump.run_dump"), \
+             patch("hermes_cli.debug._sweep_expired_pastes", return_value=(0, 0)) as mock_sweep, \
+             patch("hermes_cli.debug.upload_to_pastebin",
+                    return_value="https://paste.rs/test"):
+            run_debug_share(args)
+
+        mock_sweep.assert_called_once()
+        assert "Debug report uploaded" in capsys.readouterr().out
+
+    def test_share_survives_sweep_failure(self, hermes_home, capsys):
+        """Expired-paste cleanup is best-effort and must not block sharing."""
+        from hermes_cli.debug import run_debug_share
+
+        args = MagicMock()
+        args.lines = 50
+        args.expire = 7
+        args.local = False
+
+        with patch("hermes_cli.dump.run_dump"), \
+             patch(
+                 "hermes_cli.debug._sweep_expired_pastes",
+                 side_effect=RuntimeError("offline"),
+             ), \
+             patch("hermes_cli.debug.upload_to_pastebin",
+                    return_value="https://paste.rs/test"):
+            run_debug_share(args)
+
+        assert "https://paste.rs/test" in capsys.readouterr().out
+
     def test_local_flag_prints_full_logs(self, hermes_home, capsys):
         """--local prints the report plus full log contents."""
         from hermes_cli.debug import run_debug_share
@@ -300,8 +538,8 @@ class TestRunDebugShare:
         assert "FULL agent.log" in out
         assert "FULL gateway.log" in out
 
-    def test_share_uploads_three_pastes(self, hermes_home, capsys):
-        """Successful share uploads report + agent.log + gateway.log."""
+    def test_share_uploads_four_pastes(self, hermes_home, capsys):
+        """Successful share uploads report + agent.log + gateway.log + desktop.log."""
         from hermes_cli.debug import run_debug_share
 
         args = MagicMock()
@@ -323,14 +561,16 @@ class TestRunDebugShare:
             run_debug_share(args)
 
         out = capsys.readouterr().out
-        # Should have 3 uploads: report, agent.log, gateway.log
-        assert call_count[0] == 3
+        # Should have 4 uploads: report, agent.log, gateway.log, desktop.log
+        assert call_count[0] == 4
         assert "paste.rs/paste1" in out  # Report
         assert "paste.rs/paste2" in out  # agent.log
         assert "paste.rs/paste3" in out  # gateway.log
+        assert "paste.rs/paste4" in out  # desktop.log
         assert "Report" in out
         assert "agent.log" in out
         assert "gateway.log" in out
+        assert "desktop.log" in out
 
         # Each log paste should start with the dump header
         agent_paste = uploaded_content[1]
@@ -339,6 +579,58 @@ class TestRunDebugShare:
         gateway_paste = uploaded_content[2]
         assert "--- hermes dump ---" in gateway_paste
         assert "--- full gateway.log ---" in gateway_paste
+        desktop_paste = uploaded_content[3]
+        assert "--- hermes dump ---" in desktop_paste
+        assert "--- full desktop.log ---" in desktop_paste
+
+    def test_share_keeps_report_and_full_log_on_same_snapshot(self, hermes_home, capsys):
+        """A mid-run rotation must not make full agent.log older than the report."""
+        from hermes_cli.debug import run_debug_share, collect_debug_report as real_collect_debug_report
+
+        logs_dir = hermes_home / "logs"
+        (logs_dir / "agent.log").write_text(
+            "2026-04-22 12:00:00 INFO agent: newest line\n"
+        )
+        (logs_dir / "agent.log.1").write_text(
+            "2026-04-10 12:00:00 INFO agent: old rotated line\n"
+        )
+
+        args = MagicMock()
+        args.lines = 50
+        args.expire = 7
+        args.local = False
+
+        uploaded_content = []
+
+        def _mock_upload(content, expiry_days=7):
+            uploaded_content.append(content)
+            return f"https://paste.rs/paste{len(uploaded_content)}"
+
+        def _wrapped_collect_debug_report(*, log_lines=200, dump_text="", log_snapshots=None):
+            report = real_collect_debug_report(
+                log_lines=log_lines,
+                dump_text=dump_text,
+                log_snapshots=log_snapshots,
+            )
+            # Simulate the live log rotating after the report is built but
+            # before the old implementation would have re-read agent.log for
+            # standalone upload.
+            (logs_dir / "agent.log").write_text("")
+            (logs_dir / "agent.log.1").write_text(
+                "2026-04-10 12:00:00 INFO agent: old rotated line\n"
+            )
+            return report
+
+        with patch("hermes_cli.dump.run_dump"), \
+             patch("hermes_cli.debug.collect_debug_report", side_effect=_wrapped_collect_debug_report), \
+             patch("hermes_cli.debug.upload_to_pastebin", side_effect=_mock_upload):
+            run_debug_share(args)
+
+        report_paste = uploaded_content[0]
+        agent_paste = uploaded_content[1]
+        assert "2026-04-22 12:00:00 INFO agent: newest line" in report_paste
+        assert "2026-04-22 12:00:00 INFO agent: newest line" in agent_paste
+        assert "old rotated line" not in agent_paste
 
     def test_share_skips_missing_logs(self, tmp_path, monkeypatch, capsys):
         """Only uploads logs that exist."""
@@ -412,6 +704,124 @@ class TestRunDebugShare:
         assert exc_info.value.code == 1
         out = capsys.readouterr()
         assert "all failed" in out.err
+
+
+# ---------------------------------------------------------------------------
+# Share-time redaction wiring + visible banner
+# ---------------------------------------------------------------------------
+
+class TestRunDebugShareRedaction:
+    """End-to-end: --no-redact flag, banner injection, default behavior."""
+
+    @pytest.fixture
+    def hermes_home_with_secret(self, tmp_path, monkeypatch):
+        """Isolated HERMES_HOME whose agent.log contains a vendor-prefixed token."""
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.delenv("HERMES_REDACT_SECRETS", raising=False)
+
+        logs_dir = home / "logs"
+        logs_dir.mkdir()
+        (logs_dir / "agent.log").write_text(
+            f"2026-04-12 17:00:00 INFO config: api_key={_REDACT_FIXTURE_TOKEN} loaded\n"
+        )
+        (logs_dir / "errors.log").write_text("")
+        (logs_dir / "gateway.log").write_text(
+            f"2026-04-12 17:00:01 INFO gateway.run: token {_REDACT_FIXTURE_TOKEN}\n"
+        )
+        return home
+
+    def test_default_share_redacts_uploaded_content(
+        self, hermes_home_with_secret, capsys
+    ):
+        """The uploaded report and full-log pastes do not contain the raw token."""
+        from hermes_cli.debug import run_debug_share
+
+        args = MagicMock()
+        args.lines = 50
+        args.expire = 7
+        args.local = False
+        args.no_redact = False
+
+        captured: list[str] = []
+
+        def fake_upload(content, expiry_days=7):
+            captured.append(content)
+            return f"https://paste.rs/{len(captured)}"
+
+        with patch("hermes_cli.dump.run_dump"), \
+             patch("hermes_cli.debug._sweep_expired_pastes", return_value=(0, 0)), \
+             patch("hermes_cli.debug.upload_to_pastebin", side_effect=fake_upload):
+            run_debug_share(args)
+
+        # At least the report plus one full log paste reached the upload path.
+        assert len(captured) >= 2
+        for content in captured:
+            assert _REDACT_FIXTURE_TOKEN not in content, (
+                "raw token leaked into upload-bound content"
+            )
+
+    def test_default_share_includes_redaction_banner(
+        self, hermes_home_with_secret, capsys
+    ):
+        """Each upload-bound paste carries the visible redaction banner."""
+        from hermes_cli.debug import run_debug_share
+
+        args = MagicMock()
+        args.lines = 50
+        args.expire = 7
+        args.local = False
+        args.no_redact = False
+
+        captured: list[str] = []
+
+        def fake_upload(content, expiry_days=7):
+            captured.append(content)
+            return f"https://paste.rs/{len(captured)}"
+
+        with patch("hermes_cli.dump.run_dump"), \
+             patch("hermes_cli.debug._sweep_expired_pastes", return_value=(0, 0)), \
+             patch("hermes_cli.debug.upload_to_pastebin", side_effect=fake_upload):
+            run_debug_share(args)
+
+        for content in captured:
+            assert "redacted at upload time" in content, (
+                "redaction banner missing from upload-bound content"
+            )
+
+    def test_no_redact_flag_disables_redaction_and_banner(
+        self, hermes_home_with_secret, capsys
+    ):
+        """--no-redact preserves original log content and omits the banner."""
+        from hermes_cli.debug import run_debug_share
+
+        args = MagicMock()
+        args.lines = 50
+        args.expire = 7
+        args.local = False
+        args.no_redact = True
+
+        captured: list[str] = []
+
+        def fake_upload(content, expiry_days=7):
+            captured.append(content)
+            return f"https://paste.rs/{len(captured)}"
+
+        with patch("hermes_cli.dump.run_dump"), \
+             patch("hermes_cli.debug._sweep_expired_pastes", return_value=(0, 0)), \
+             patch("hermes_cli.debug.upload_to_pastebin", side_effect=fake_upload):
+            run_debug_share(args)
+
+        # The agent.log paste should now contain the raw token.
+        assert any(_REDACT_FIXTURE_TOKEN in c for c in captured), (
+            "expected raw token in --no-redact upload"
+        )
+        # No banner anywhere when redaction is disabled.
+        for content in captured:
+            assert "redacted at upload time" not in content, (
+                "banner present with --no-redact"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -863,3 +1273,110 @@ class TestShareIncludesAutoDelete:
 
         out = capsys.readouterr().out
         assert "public paste service" not in out
+
+
+# ---------------------------------------------------------------------------
+# build_debug_share — structured core used by the dashboard endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestBuildDebugShare:
+    """The shared core that returns structured paste URLs (not printed text).
+
+    Backs both ``hermes debug share`` (CLI) and ``POST /api/ops/debug-share``
+    (dashboard). The dashboard renders ``urls`` as real, copyable links, so the
+    contract here is the return value, not stdout.
+    """
+
+    def test_returns_structured_urls(self, hermes_home):
+        from hermes_cli.debug import build_debug_share, DebugShareResult
+
+        count = [0]
+
+        def _upload(content, expiry_days=7):
+            count[0] += 1
+            return f"https://paste.rs/p{count[0]}"
+
+        with patch("hermes_cli.dump.run_dump"), patch(
+            "hermes_cli.debug.upload_to_pastebin", side_effect=_upload
+        ), patch("hermes_cli.debug._schedule_auto_delete"):
+            result = build_debug_share(log_lines=50, redact=True)
+
+        assert isinstance(result, DebugShareResult)
+        # All four seeded logs (agent/gateway/desktop) + the summary report.
+        assert "Report" in result.urls
+        assert "agent.log" in result.urls
+        assert "gateway.log" in result.urls
+        assert "desktop.log" in result.urls
+        assert result.failures == []
+        assert result.redacted is True
+        assert result.auto_delete_seconds == 21600
+
+    def test_skips_missing_logs_without_failure(self, hermes_home):
+        from hermes_cli.debug import build_debug_share
+
+        # Remove desktop.log so it should be neither uploaded nor reported failed.
+        (hermes_home / "logs" / "desktop.log").unlink()
+
+        with patch("hermes_cli.dump.run_dump"), patch(
+            "hermes_cli.debug.upload_to_pastebin",
+            side_effect=lambda c, expiry_days=7: "https://paste.rs/x",
+        ), patch("hermes_cli.debug._schedule_auto_delete"):
+            result = build_debug_share(log_lines=50, redact=True)
+
+        assert "desktop.log" not in result.urls
+        assert result.failures == []
+
+    def test_redaction_keeps_secrets_out_of_payload(self, hermes_home):
+        from hermes_cli.debug import build_debug_share
+
+        secret = "sk-proj-SUPERSECRETtoken1234567890"
+        (hermes_home / "logs" / "agent.log").write_text(
+            f"line one\nauthorization token={secret}\nline three\n"
+        )
+
+        uploaded = []
+
+        def _upload(content, expiry_days=7):
+            uploaded.append(content)
+            return "https://paste.rs/x"
+
+        with patch("hermes_cli.dump.run_dump"), patch(
+            "hermes_cli.debug.upload_to_pastebin", side_effect=_upload
+        ), patch("hermes_cli.debug._schedule_auto_delete"):
+            result = build_debug_share(log_lines=50, redact=True)
+
+        assert result.redacted is True
+        joined = "\n".join(uploaded)
+        assert secret not in joined, "secret leaked into upload payload"
+
+    def test_optional_log_failure_is_collected_not_raised(self, hermes_home):
+        from hermes_cli.debug import build_debug_share
+
+        count = [0]
+
+        def _upload(content, expiry_days=7):
+            count[0] += 1
+            # First call (the required Report) succeeds; a later one fails.
+            if count[0] == 2:
+                raise RuntimeError("paste service hiccup")
+            return f"https://paste.rs/p{count[0]}"
+
+        with patch("hermes_cli.dump.run_dump"), patch(
+            "hermes_cli.debug.upload_to_pastebin", side_effect=_upload
+        ), patch("hermes_cli.debug._schedule_auto_delete"):
+            result = build_debug_share(log_lines=50, redact=True)
+
+        assert "Report" in result.urls
+        assert len(result.failures) == 1
+        assert "paste service hiccup" in result.failures[0]
+
+    def test_required_report_failure_raises(self, hermes_home):
+        from hermes_cli.debug import build_debug_share
+
+        with patch("hermes_cli.dump.run_dump"), patch(
+            "hermes_cli.debug.upload_to_pastebin",
+            side_effect=RuntimeError("all paste services down"),
+        ), patch("hermes_cli.debug._schedule_auto_delete"):
+            with pytest.raises(RuntimeError, match="all paste services down"):
+                build_debug_share(log_lines=50, redact=True)

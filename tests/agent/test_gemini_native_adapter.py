@@ -234,6 +234,19 @@ def test_native_client_accepts_injected_http_client():
     assert client._http is injected
 
 
+def test_native_client_rejects_empty_api_key_with_actionable_message():
+    """Empty/whitespace api_key must raise at construction, not produce a cryptic
+    Google GFE 'Error 400 (Bad Request)!!1' HTML page on the first request."""
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    for bad in ("", "   ", None):
+        with pytest.raises(RuntimeError) as excinfo:
+            GeminiNativeClient(api_key=bad)  # type: ignore[arg-type]
+        msg = str(excinfo.value)
+        assert "GOOGLE_API_KEY" in msg and "GEMINI_API_KEY" in msg
+        assert "aistudio.google.com" in msg
+
+
 @pytest.mark.asyncio
 async def test_async_native_client_streams_without_requiring_async_iterator_from_sync_client():
     from agent.gemini_native_adapter import AsyncGeminiNativeClient
@@ -313,3 +326,27 @@ def test_stream_event_translation_keeps_identical_calls_in_distinct_parts():
     assert tool_chunks[0].choices[0].delta.tool_calls[0].index == 0
     assert tool_chunks[1].choices[0].delta.tool_calls[0].index == 1
     assert tool_chunks[0].choices[0].delta.tool_calls[0].id != tool_chunks[1].choices[0].delta.tool_calls[0].id
+
+
+def test_max_tokens_none_defaults_to_gemini_output_ceiling():
+    """max_tokens=None must send the model's full output ceiling, not omit it.
+
+    Gemini's native generateContent applies a low internal default when
+    maxOutputTokens is absent, truncating tool calls mid-stream. Hermes passes
+    None to mean "unlimited", so the adapter must translate that to the
+    published 65,535 ceiling rather than leaving the field unset.
+    """
+    from agent.gemini_native_adapter import (
+        build_gemini_request,
+        GEMINI_DEFAULT_MAX_OUTPUT_TOKENS,
+    )
+
+    req = build_gemini_request(messages=[{"role": "user", "content": "hi"}], max_tokens=None)
+    assert req["generationConfig"]["maxOutputTokens"] == GEMINI_DEFAULT_MAX_OUTPUT_TOKENS == 65535
+
+
+def test_explicit_max_tokens_is_respected():
+    from agent.gemini_native_adapter import build_gemini_request
+
+    req = build_gemini_request(messages=[{"role": "user", "content": "hi"}], max_tokens=4096)
+    assert req["generationConfig"]["maxOutputTokens"] == 4096

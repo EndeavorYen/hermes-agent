@@ -5,10 +5,8 @@ Mirrors the ``transform_terminal_output`` hook tests from Phase 1 but
 targets the generic tool-result seam that runs for every tool dispatch.
 """
 
-import json
 import os
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import hermes_cli.plugins as plugins_mod
 import model_tools
@@ -38,6 +36,10 @@ def _run_handle_function_call(
     if invoke_hook is not _UNSET:
         # Patch the symbol actually imported inside handle_function_call.
         monkeypatch.setattr("hermes_cli.plugins.invoke_hook", invoke_hook)
+        # Supplying a custom invoke_hook means the test expects hooks to
+        # fire — make has_hook agree so the has_hook gate doesn't skip the
+        # post_tool_call / transform_tool_result emit paths.
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
 
     return model_tools.handle_function_call(
         tool_name,
@@ -161,6 +163,8 @@ def test_transform_tool_result_runs_after_post_tool_call(monkeypatch):
 
 def test_transform_tool_result_integration_with_real_plugin(monkeypatch, tmp_path):
     """End-to-end: load a real plugin from HERMES_HOME and verify it rewrites results."""
+    import yaml
+
     hermes_home = Path(os.environ["HERMES_HOME"])
     plugins_dir = hermes_home / "plugins"
     plugin_dir = plugins_dir / "transform_result_canon"
@@ -172,7 +176,15 @@ def test_transform_tool_result_integration_with_real_plugin(monkeypatch, tmp_pat
         'lambda **kw: f\'CANON[{kw["tool_name"]}]\' + kw["result"])\n',
         encoding="utf-8",
     )
+    # Plugins are opt-in — must be listed in plugins.enabled to load.
+    cfg_path = hermes_home / "config.yaml"
+    cfg_path.write_text(
+        yaml.safe_dump({"plugins": {"enabled": ["transform_result_canon"]}}),
+        encoding="utf-8",
+    )
 
+    # Force a fresh plugin manager so the new config is picked up.
+    plugins_mod._plugin_manager = plugins_mod.PluginManager()
     plugins_mod.discover_plugins()
 
     out = _run_handle_function_call(
