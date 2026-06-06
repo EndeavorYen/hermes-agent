@@ -45,6 +45,7 @@ class TestModuleSurface:
             "browser_navigate",
             "vision_analyze",
             "image_generate",
+            "image_generate_mission",
             "skill_view",
         ):
             assert required in EXPOSED_TOOLS, f"missing {required!r}"

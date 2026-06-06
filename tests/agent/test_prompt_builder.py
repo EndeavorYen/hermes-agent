@@ -473,7 +473,7 @@ class TestBuildNousSubscriptionPrompt:
             ),
         )
 
-        prompt = build_nous_subscription_prompt({"image_generate"})
+        prompt = build_nous_subscription_prompt({"image_generate_mission"})
 
         assert "suggest Nous subscription as one option" in prompt
         assert "Do not mention subscription unless" in prompt
@@ -1268,5 +1268,4 @@ class TestOpenAIModelExecutionGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 
