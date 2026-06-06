@@ -207,6 +207,20 @@ class TestGenerate:
 
         assert result["revised_prompt"] == "A photo of a cat"
 
+    def test_reference_images_are_explicitly_unsupported(self, provider):
+        fake_client = MagicMock()
+
+        with _patched_openai(fake_client):
+            result = provider.generate(
+                "match this character",
+                reference_images=["https://example.com/ref.png"],
+            )
+
+        assert result["success"] is False
+        assert result["error_type"] == "unsupported_feature"
+        assert "reference_images" in result["error"]
+        fake_client.images.generate.assert_not_called()
+
     def test_api_error_returns_error_response(self, provider):
         fake_client = MagicMock()
         fake_client.images.generate.side_effect = RuntimeError("boom")

@@ -141,6 +141,21 @@ class TestGenerate:
         assert result["provider"] == "xai"
         assert result["model"] == "grok-imagine-image"
 
+    def test_reference_images_are_explicitly_unsupported(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        with patch("plugins.image_gen.xai.requests.post") as mock_post:
+            provider = XAIImageGenProvider()
+            result = provider.generate(
+                prompt="match this source",
+                reference_images=["https://example.com/ref.png"],
+            )
+
+        assert result["success"] is False
+        assert result["error_type"] == "unsupported_feature"
+        assert "reference_images" in result["error"]
+        mock_post.assert_not_called()
+
     def test_successful_url_response(self):
         """xAI URL response is cached locally — #26942 contract.
 

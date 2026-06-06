@@ -97,6 +97,52 @@ _RETRYABLE_POLL_STATUSES = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
 _TERMINAL_STATES = {"completed", "failed", "cancelled"}
 
 
+def _iter_reference_candidates(value: Any):
+    if value is None:
+        return
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _iter_reference_candidates(item)
+        return
+    yield value
+
+
+def _coerce_style_reference(value: Any) -> Optional[Dict[str, Any]]:
+    if isinstance(value, dict):
+        url_value = None
+        for key in ("url", "image_url", "path", "image_path"):
+            raw = value.get(key)
+            if isinstance(raw, str) and raw.strip():
+                url_value = raw.strip()
+                break
+        if not url_value:
+            return None
+        ref = dict(value)
+        ref["url"] = url_value
+        return ref
+    if isinstance(value, str) and value.strip():
+        return {"url": value.strip()}
+    return None
+
+
+def _normalize_image_style_references(*values: Any, limit: int = 10) -> List[Dict[str, Any]]:
+    refs: List[Dict[str, Any]] = []
+    seen = set()
+    for value in values:
+        for candidate in _iter_reference_candidates(value):
+            ref = _coerce_style_reference(candidate)
+            if not ref:
+                continue
+            dedupe_key = ref.get("url")
+            if dedupe_key in seen:
+                continue
+            refs.append(ref)
+            seen.add(dedupe_key)
+            if len(refs) >= limit:
+                return refs
+    return refs
+
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -256,10 +302,14 @@ class KreaImageGenProvider(ImageGenProvider):
         if isinstance(styles, list) and styles:
             payload["styles"] = styles
 
-        image_style_references = kwargs.get("image_style_references")
-        if isinstance(image_style_references, list) and image_style_references:
-            # Krea caps at 10 refs per request.
-            payload["image_style_references"] = image_style_references[:10]
+        image_style_references = _normalize_image_style_references(
+            kwargs.get("image_style_references"),
+            kwargs.get("reference_images"),
+            kwargs.get("input_image"),
+            kwargs.get("input_images"),
+        )
+        if image_style_references:
+            payload["image_style_references"] = image_style_references
 
         moodboards = kwargs.get("moodboards")
         if isinstance(moodboards, list) and moodboards:
@@ -524,6 +574,10 @@ class KreaImageGenProvider(ImageGenProvider):
             "resolution": DEFAULT_RESOLUTION,
             "creativity": creativity,
             "job_id": job_id,
+            "reference_image_count": len(image_style_references),
+            "reference_conditioning": (
+                "krea_image_style_references" if image_style_references else "none"
+            ),
         }
         if isinstance(job.get("completed_at"), str):
             extra["completed_at"] = job["completed_at"]

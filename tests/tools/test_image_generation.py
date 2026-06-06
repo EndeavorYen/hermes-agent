@@ -9,6 +9,7 @@ tests/tools/test_managed_media_gateways.py.
 
 from __future__ import annotations
 
+import json
 from unittest.mock import patch
 
 import pytest
@@ -221,6 +222,15 @@ class TestSupportsFilter:
         assert "image_size" not in p
         assert p["aspect_ratio"] == "16:9"
 
+    def test_krea_model_keeps_style_references(self, image_tool):
+        p = image_tool._build_fal_payload(
+            "fal-ai/krea/v2/medium/text-to-image",
+            "hi",
+            "landscape",
+            overrides={"image_style_references": [{"url": "https://x.com/ref.png"}]},
+        )
+        assert p["image_style_references"] == [{"url": "https://x.com/ref.png"}]
+
 
 # ---------------------------------------------------------------------------
 # Default merging
@@ -363,15 +373,79 @@ class TestAspectRatioNormalization:
 
 class TestRegistryIntegration:
 
-    def test_schema_exposes_only_prompt_and_aspect_ratio_to_agent(self, image_tool):
+    def test_schema_exposes_prompt_aspect_ratio_and_reference_images(self, image_tool):
         """The agent-facing schema must stay tight — model selection is a
         user-level config choice, not an agent-level arg."""
         props = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]
-        assert set(props.keys()) == {"prompt", "aspect_ratio"}
+        assert set(props.keys()) == {"prompt", "aspect_ratio", "reference_images"}
+        assert "source/reference image" in props["reference_images"]["description"]
+
+    def test_schema_description_includes_reference_image_guardrails(self, image_tool):
+        description = image_tool.IMAGE_GENERATE_SCHEMA["description"]
+        for required in (
+            "continuation must be scoped",
+            "plain image_generate is fallback only",
+            "Do not mix source images with generated outputs",
+            "VA generate must preserve prompt provenance and reference image provenance",
+            "Inbox requests without scope require allow_global=true",
+        ):
+            assert required in description
 
     def test_aspect_ratio_enum_is_three_values(self, image_tool):
         enum = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]["aspect_ratio"]["enum"]
         assert set(enum) == {"landscape", "square", "portrait"}
+
+    def test_default_fal_model_rejects_reference_images_instead_of_ignoring(self, image_tool, monkeypatch):
+        monkeypatch.setattr(image_tool, "fal_key_is_configured", lambda: True)
+        monkeypatch.setattr(image_tool, "_resolve_managed_fal_gateway", lambda: None)
+
+        result = image_tool.image_generate_tool(
+            prompt="match this character",
+            reference_images=["https://x.com/ref.png"],
+        )
+
+        payload = json.loads(result)
+        assert payload["success"] is False
+        assert payload["error_type"] == "unsupported_feature"
+        assert "does not support reference images" in payload["error"]
+
+    def test_fal_krea_model_maps_reference_images_to_style_references(self, image_tool, monkeypatch):
+        monkeypatch.setattr(image_tool, "fal_key_is_configured", lambda: True)
+        monkeypatch.setattr(image_tool, "_resolve_managed_fal_gateway", lambda: None)
+        monkeypatch.setattr(
+            image_tool,
+            "_resolve_fal_model",
+            lambda: (
+                "fal-ai/krea/v2/medium/text-to-image",
+                image_tool.FAL_MODELS["fal-ai/krea/v2/medium/text-to-image"],
+            ),
+        )
+
+        captured = {}
+
+        class _Handler:
+            def get(self):
+                return {"images": [{"url": "https://x.com/out.png"}]}
+
+        def fake_submit(model_id, *, arguments):
+            captured["model_id"] = model_id
+            captured["arguments"] = arguments
+            return _Handler()
+
+        monkeypatch.setattr(image_tool, "_submit_fal_request", fake_submit)
+
+        result = image_tool.image_generate_tool(
+            prompt="match this character",
+            reference_images=["https://x.com/ref-a.png"],
+            input_image="https://x.com/ref-b.png",
+        )
+
+        payload = json.loads(result)
+        assert payload["success"] is True
+        assert captured["arguments"]["image_style_references"] == [
+            {"url": "https://x.com/ref-a.png"},
+            {"url": "https://x.com/ref-b.png"},
+        ]
 
 
 # ---------------------------------------------------------------------------

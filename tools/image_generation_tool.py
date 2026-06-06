@@ -26,7 +26,7 @@ import os
 import datetime
 import threading
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 # fal_client is imported lazily — see _load_fal_client(). Pulling it
 # eagerly added ~64 ms to every CLI cold start because
@@ -614,13 +614,18 @@ def image_generate_tool(
     num_images: Optional[int] = None,
     output_format: Optional[str] = None,
     seed: Optional[int] = None,
+    reference_images: Optional[Any] = None,
+    input_image: Optional[Any] = None,
+    input_images: Optional[Any] = None,
+    image_style_references: Optional[Any] = None,
 ) -> str:
     """Generate an image from a text prompt using the configured FAL model.
 
-    The agent-facing schema exposes only ``prompt`` and ``aspect_ratio``; the
-    remaining kwargs are overrides for direct Python callers and are filtered
-    per-model via the ``supports`` whitelist (unsupported overrides are
-    silently dropped so legacy callers don't break when switching models).
+    The agent-facing schema exposes ``prompt``, ``aspect_ratio``, and optional
+    ``reference_images``. Remaining kwargs are overrides for direct Python
+    callers and are filtered per-model via the ``supports`` whitelist
+    (unsupported scalar overrides are silently dropped so legacy callers don't
+    break when switching models).
 
     Returns a JSON string with ``{"success": bool, "image": url | None,
     "error": str, "error_type": str}``.
@@ -637,6 +642,10 @@ def image_generate_tool(
             "num_images": num_images,
             "output_format": output_format,
             "seed": seed,
+            "reference_images": reference_images,
+            "input_image": input_image,
+            "input_images": input_images,
+            "image_style_references": image_style_references,
         },
         "error": None,
         "success": False,
@@ -670,6 +679,30 @@ def image_generate_tool(
             overrides["num_images"] = num_images
         if output_format is not None:
             overrides["output_format"] = output_format
+
+        style_reference_images = _normalize_image_style_references(
+            reference_images,
+            input_image,
+            input_images,
+            image_style_references,
+        )
+        if style_reference_images:
+            if "image_style_references" not in meta["supports"]:
+                return json.dumps({
+                    "success": False,
+                    "image": None,
+                    "error": (
+                        f"FAL model '{model_id}' does not support reference images. "
+                        "Choose a Krea style-reference FAL model, the Krea provider, "
+                        "or the openai-codex provider for reference conditioning."
+                    ),
+                    "error_type": "unsupported_feature",
+                    "model": model_id,
+                    "prompt": prompt,
+                    "aspect_ratio": aspect_lc,
+                    "provider": "fal",
+                }, indent=2, ensure_ascii=False)
+            overrides["image_style_references"] = style_reference_images
 
         arguments = _build_fal_payload(
             model_id, prompt, aspect_lc, seed=seed, overrides=overrides,
@@ -726,6 +759,10 @@ def image_generate_tool(
         response_data = {
             "success": True,
             "image": formatted_images[0]["url"] if formatted_images else None,
+            "reference_image_count": len(style_reference_images),
+            "reference_conditioning": (
+                "fal_image_style_references" if style_reference_images else "none"
+            ),
         }
 
         debug_call_data["success"] = True
@@ -891,7 +928,12 @@ IMAGE_GENERATE_SCHEMA = {
         "backend (FAL, OpenAI, etc.) and model are user-configured and not "
         "selectable by the agent. Returns either a URL or an absolute file "
         "path in the `image` field; display it with markdown "
-        "![description](url-or-path) and the gateway will deliver it."
+        "![description](url-or-path) and the gateway will deliver it. "
+        "Guardrails: continuation must be scoped; plain image_generate is "
+        "fallback only when no scoped continuation/reference path is available; "
+        "Do not mix source images with generated outputs; VA generate must "
+        "preserve prompt provenance and reference image provenance; Inbox "
+        "requests without scope require allow_global=true."
     ),
     "parameters": {
         "type": "object",
@@ -905,6 +947,11 @@ IMAGE_GENERATE_SCHEMA = {
                 "enum": list(VALID_ASPECT_RATIOS),
                 "description": "The aspect ratio of the generated image. 'landscape' is 16:9 wide, 'portrait' is 16:9 tall, 'square' is 1:1.",
                 "default": DEFAULT_ASPECT_RATIO,
+            },
+            "reference_images": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional source/reference image URLs, data URLs, or local paths for backends that support reference conditioning. These are inputs, not generated outputs.",
             },
         },
         "required": ["prompt"],
@@ -951,7 +998,63 @@ def _read_configured_image_provider():
     return None
 
 
-def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
+def _normalize_image_generate_refs(value):
+    if value is None:
+        return None
+    refs = []
+    seen = set()
+    for candidate in _iter_image_reference_candidates(value):
+        ref = _coerce_image_reference_url(candidate)
+        if ref and ref not in seen:
+            refs.append(ref)
+            seen.add(ref)
+    return refs or None
+
+
+def _iter_image_reference_candidates(value):
+    if value is None:
+        return
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _iter_image_reference_candidates(item)
+        return
+    yield value
+
+
+def _coerce_image_reference_url(value):
+    if isinstance(value, dict):
+        for key in ("url", "image_url", "path", "image_path"):
+            ref = _coerce_image_reference_url(value.get(key))
+            if ref:
+                return ref
+        return None
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    return raw or None
+
+
+def _normalize_image_style_references(*values: Any, limit: int = 10) -> List[Dict[str, Any]]:
+    refs: List[Dict[str, Any]] = []
+    seen = set()
+    for value in values:
+        for candidate in _iter_image_reference_candidates(value):
+            ref_url = _coerce_image_reference_url(candidate)
+            if not ref_url or ref_url in seen:
+                continue
+            if isinstance(candidate, dict):
+                ref = dict(candidate)
+                ref["url"] = ref_url
+            else:
+                ref = {"url": ref_url}
+            refs.append(ref)
+            seen.add(ref_url)
+            if len(refs) >= limit:
+                return refs
+    return refs
+
+
+def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str, **extra_args):
     """Route the call to a plugin-registered provider when one is selected.
 
     Returns a JSON string on dispatch, or ``None`` to fall through to the
@@ -1005,9 +1108,18 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
         })
 
     try:
-        kwargs = {"prompt": prompt, "aspect_ratio": aspect_ratio}
+        kwargs: Dict[str, Any] = {"prompt": prompt, "aspect_ratio": aspect_ratio}
         if configured_model:
             kwargs["model"] = configured_model
+        for key in (
+            "reference_images",
+            "input_image",
+            "input_images",
+            "image_style_references",
+        ):
+            value = _normalize_image_generate_refs(extra_args.get(key))
+            if value:
+                kwargs[key] = value
         result = provider.generate(**kwargs)
     except Exception as exc:
         logger.warning(
@@ -1035,16 +1147,31 @@ def _handle_image_generate(args, **kw):
     if not prompt:
         return tool_error("prompt is required for image generation")
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
+    reference_images = _normalize_image_generate_refs(args.get("reference_images"))
+    input_image = _normalize_image_generate_refs(args.get("input_image"))
+    input_images = _normalize_image_generate_refs(args.get("input_images"))
+    image_style_references = _normalize_image_generate_refs(args.get("image_style_references"))
 
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path).
-    dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio)
+    dispatched = _dispatch_to_plugin_provider(
+        prompt,
+        aspect_ratio,
+        reference_images=reference_images,
+        input_image=input_image,
+        input_images=input_images,
+        image_style_references=image_style_references,
+    )
     if dispatched is not None:
         return dispatched
 
     return image_generate_tool(
         prompt=prompt,
         aspect_ratio=aspect_ratio,
+        reference_images=reference_images,
+        input_image=input_image,
+        input_images=input_images,
+        image_style_references=image_style_references,
     )
 
 
