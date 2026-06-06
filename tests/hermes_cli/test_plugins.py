@@ -391,6 +391,32 @@ class TestPluginHooks:
             "hermes.observer.v1"
         ]
 
+    def test_invoke_hook_preserves_callbacks_without_observer_kwargs(self, tmp_path, monkeypatch):
+        """Observer metadata must not break older explicit-signature hooks."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "legacy_signature_plugin",
+            register_body=(
+                "def handle_pre_gateway_dispatch(event, gateway, session_store):\n"
+                "        return {'action': 'allow'}\n"
+                "    ctx.register_hook('pre_gateway_dispatch', handle_pre_gateway_dispatch)"
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        results = mgr.invoke_hook(
+            "pre_gateway_dispatch",
+            event=object(),
+            gateway=object(),
+            session_store=object(),
+        )
+
+        assert results == [{"action": "allow"}]
+
     def test_hook_exception_does_not_propagate(self, tmp_path, monkeypatch):
         """A hook callback that raises does NOT crash the caller."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"

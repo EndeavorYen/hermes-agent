@@ -72,6 +72,30 @@ except ImportError:  # pragma: no cover – yaml is optional at import time
 logger = logging.getLogger(__name__)
 
 
+def _filter_hook_kwargs(callback: Callable[..., Any], kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        signature = inspect.signature(callback)
+    except (TypeError, ValueError):
+        return kwargs
+
+    if any(
+        param.kind is inspect.Parameter.VAR_KEYWORD
+        for param in signature.parameters.values()
+    ):
+        return kwargs
+
+    accepted = {
+        name
+        for name, param in signature.parameters.items()
+        if param.kind
+        in {
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        }
+    }
+    return {name: value for name, value in kwargs.items() if name in accepted}
+
+
 # ---------------------------------------------------------------------------
 # Plugin developer debug logging
 # ---------------------------------------------------------------------------
@@ -1559,7 +1583,7 @@ class PluginManager:
         results: List[Any] = []
         for cb in callbacks:
             try:
-                ret = cb(**kwargs)
+                ret = cb(**_filter_hook_kwargs(cb, kwargs))
                 if ret is not None:
                     results.append(ret)
             except Exception as exc:
