@@ -1,0 +1,7 @@
+name: raphael
+version: 0.1.0
+description: Read-only Raphael Advisor MVP status command.
+author: local
+kind: standalone
+provides_hooks: []
+provides_tools: []
