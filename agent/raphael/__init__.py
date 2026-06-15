@@ -3,6 +3,8 @@ from agent.raphael.models import (
     RaphaelEvent,
     RaphaelState,
     RiskLevel,
+    SkillTrace,
+    SkillTraceSummary,
     StatusCard,
 )
 
@@ -11,5 +13,7 @@ __all__ = [
     "RaphaelEvent",
     "RaphaelState",
     "RiskLevel",
+    "SkillTrace",
+    "SkillTraceSummary",
     "StatusCard",
 ]
