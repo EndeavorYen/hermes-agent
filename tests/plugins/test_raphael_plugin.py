@@ -100,6 +100,30 @@ def test_enabled_plugin_registers_raphael_status_command(monkeypatch, tmp_path):
     }
 
 
+def test_enabled_status_command_does_not_initialize_runtime_scaffold(
+    monkeypatch, tmp_path
+):
+    import hermes_cli.plugins as plugins_mod
+
+    hermes_home = tmp_path / "hermes_home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _write_config(
+        hermes_home,
+        {
+            "plugins": {"enabled": ["raphael"]},
+            "raphael": {"enabled": True},
+        },
+    )
+
+    plugins_mod._plugin_manager = plugins_mod.PluginManager()
+    plugins_mod.discover_plugins()
+    handler = plugins_mod.get_plugin_command_handler("raphael-status")
+
+    assert handler is not None
+    assert "Raphael Advisor" in handler("")
+    assert sorted(path.name for path in hermes_home.iterdir()) == ["config.yaml"]
+
+
 def test_disabled_status_does_not_read_or_create_state(
     monkeypatch, tmp_path
 ):

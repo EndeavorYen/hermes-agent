@@ -634,17 +634,17 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
 def _load_config_oauth_section() -> dict:
     """Return the ``dashboard.oauth`` block from config.yaml, or ``{}``.
 
-    Robust to load_config() raising, the ``dashboard`` key being absent or
-    non-dict, and ``oauth`` being present but not a dict — each falls through
-    to ``{}`` so callers can rely on ``.get(...)``.
+    Robust to raw config reads raising, the ``dashboard`` key being absent
+    or non-dict, and ``oauth`` being present but not a dict — each falls
+    through to ``{}`` so callers can rely on ``.get(...)``.
     """
     try:
-        from hermes_cli.config import cfg_get, load_config
+        from hermes_cli.config import _expand_env_vars, cfg_get, read_raw_config
 
-        cfg = load_config()
+        cfg = _expand_env_vars(read_raw_config())
     except Exception as exc:  # noqa: BLE001 — broad catch is intentional
         logger.debug(
-            "dashboard-auth-self-hosted: load_config() raised %s; "
+            "dashboard-auth-self-hosted: read_raw_config() raised %s; "
             "falling back to env-only configuration",
             exc,
         )

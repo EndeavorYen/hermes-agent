@@ -542,19 +542,19 @@ def _load_config_oauth_section() -> dict:
     """Return the ``dashboard.oauth`` block from ``config.yaml`` if it
     exists and is a dict; otherwise an empty dict.
 
-    Robust to (a) load_config() raising (malformed YAML, IO error,
+    Robust to (a) raw config reads raising (malformed YAML, IO error,
     config.yaml absent — common in fresh installs), (b) the
     ``dashboard`` key being absent or non-dict, and (c) the ``oauth``
     sub-key being present but not a dict (user typo). Each shape falls
     through to ``{}`` so register() can rely on `.get(...)` access.
     """
     try:
-        from hermes_cli.config import cfg_get, load_config
+        from hermes_cli.config import _expand_env_vars, cfg_get, read_raw_config
 
-        cfg = load_config()
+        cfg = _expand_env_vars(read_raw_config())
     except Exception as exc:  # noqa: BLE001 — broad catch is intentional
         logger.debug(
-            "dashboard-auth-nous: load_config() raised %s; "
+            "dashboard-auth-nous: read_raw_config() raised %s; "
             "falling back to env-only configuration",
             exc,
         )

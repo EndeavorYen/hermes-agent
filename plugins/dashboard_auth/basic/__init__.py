@@ -335,16 +335,16 @@ class BasicAuthProvider(DashboardAuthProvider):
 def _load_config_basic_auth_section() -> dict:
     """Return ``dashboard.basic_auth`` from config.yaml, or ``{}``.
 
-    Robust to load_config() raising, the keys being absent, or the value
+    Robust to raw config reads raising, the keys being absent, or the value
     not being a dict — every shape falls through to ``{}``.
     """
     try:
-        from hermes_cli.config import cfg_get, load_config
+        from hermes_cli.config import _expand_env_vars, cfg_get, read_raw_config
 
-        cfg = load_config()
+        cfg = _expand_env_vars(read_raw_config())
     except Exception as exc:  # noqa: BLE001 — broad catch is intentional
         logger.debug(
-            "dashboard-auth-basic: load_config() raised %s; "
+            "dashboard-auth-basic: read_raw_config() raised %s; "
             "falling back to env-only configuration",
             exc,
         )
