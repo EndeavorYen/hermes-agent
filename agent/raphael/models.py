@@ -46,7 +46,7 @@ def _require_schema(payload: Mapping[str, Any], expected: str, label: str) -> No
 @dataclass(frozen=True)
 class StatusCard:
     card_id: str
-    severity: RiskLevel
+    severity: str
     title: str
     summary: str
     observed_at: datetime
@@ -56,7 +56,7 @@ class StatusCard:
     evidence_refs: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "severity", RiskLevel(self.severity))
+        object.__setattr__(self, "severity", str(self.severity))
         object.__setattr__(self, "observed_at", _ensure_utc(self.observed_at))
         object.__setattr__(self, "expires_at", _ensure_utc(self.expires_at))
         object.__setattr__(self, "evidence_refs", tuple(self.evidence_refs))
@@ -64,7 +64,7 @@ class StatusCard:
     def to_dict(self) -> dict[str, Any]:
         return {
             "card_id": self.card_id,
-            "severity": self.severity.value,
+            "severity": self.severity,
             "title": self.title,
             "summary": self.summary,
             "observed_at": _datetime_to_iso(self.observed_at),
@@ -78,7 +78,7 @@ class StatusCard:
     def from_dict(cls, payload: Mapping[str, Any]) -> StatusCard:
         return cls(
             card_id=payload["card_id"],
-            severity=RiskLevel(payload["severity"]),
+            severity=payload["severity"],
             title=payload["title"],
             summary=payload["summary"],
             observed_at=_datetime_from_iso(payload["observed_at"]),
@@ -117,6 +117,7 @@ class ActionProposal:
             "evidence_refs": list(self.evidence_refs),
             "created_at": _datetime_to_iso(self.created_at),
             "status": self.status,
+            "requires_approval": self.requires_approval,
         }
 
     @classmethod

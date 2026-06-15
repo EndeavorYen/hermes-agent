@@ -17,7 +17,7 @@ def test_status_card_round_trips_with_utc_iso_datetimes():
     expires_at = observed_at + timedelta(hours=2)
     card = StatusCard(
         card_id="card-1",
-        severity=RiskLevel.R1_5,
+        severity="warning",
         title="Market volatility",
         summary="Intraday volatility moved above the advisory threshold.",
         observed_at=observed_at,
@@ -31,7 +31,7 @@ def test_status_card_round_trips_with_utc_iso_datetimes():
 
     assert payload == {
         "card_id": "card-1",
-        "severity": "R1.5",
+        "severity": "warning",
         "title": "Market volatility",
         "summary": "Intraday volatility moved above the advisory threshold.",
         "observed_at": "2026-06-16T08:30:00+00:00",
@@ -65,6 +65,7 @@ def test_r2_action_proposal_requires_approval_and_round_trips_pending_status():
         "evidence_refs": ["card-1"],
         "created_at": "2026-06-16T09:00:00+00:00",
         "status": "pending",
+        "requires_approval": True,
     }
     assert ActionProposal.from_dict(payload) == proposal
 
@@ -118,3 +119,22 @@ def test_event_round_trips_with_schema_version():
         "details": {"path": "state.json"},
     }
     assert RaphaelEvent.from_dict(payload) == event
+
+
+def test_status_card_accepts_warning_severity_from_phase_one_schema():
+    payload = {
+        "card_id": "card-2",
+        "severity": "warning",
+        "title": "Gateway warning",
+        "summary": "Slack socket errors were observed.",
+        "observed_at": "2026-06-16T08:30:00+00:00",
+        "expires_at": "2026-06-16T10:30:00+00:00",
+        "source": "raphael-test",
+        "confidence": 0.82,
+        "evidence_refs": ["gateway.log:latest"],
+    }
+
+    card = StatusCard.from_dict(payload)
+
+    assert card.severity == "warning"
+    assert card.to_dict()["severity"] == "warning"
