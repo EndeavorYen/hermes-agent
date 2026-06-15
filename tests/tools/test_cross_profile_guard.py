@@ -13,6 +13,7 @@ This file tests that the tool surfaces:
 from __future__ import annotations
 
 import json
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -23,14 +24,24 @@ def fake_hermes(tmp_path, monkeypatch):
     """Build a two-profile Hermes layout and point HERMES_HOME at
     the hermes-security profile (matching the original-incident shape).
     """
-    root = tmp_path / "fake-hermes"
+    with tempfile.TemporaryDirectory(prefix="fake-hermes-", dir="/private/tmp") as tmp:
+        root = Path(tmp) / "home"
+        root.mkdir()
+        yield _build_fake_hermes(root, monkeypatch)
+
+
+def _build_fake_hermes(root: Path, monkeypatch):
     (root / "skills" / "shared-skill").mkdir(parents=True)
     (root / "skills" / "shared-skill" / "SKILL.md").write_text(
         "---\nname: shared-skill\ndescription: default copy.\n---\n"
     )
+    (root / "raphael").mkdir(parents=True)
+    (root / "raphael" / "state.json").write_text("{}")
 
     sec_home = root / "profiles" / "hermes-security"
     (sec_home / "skills").mkdir(parents=True)
+    (sec_home / "raphael").mkdir(parents=True)
+    (sec_home / "raphael" / "state.json").write_text("{}")
 
     coder_home = root / "profiles" / "coder"
     (coder_home / "skills").mkdir(parents=True)
@@ -82,6 +93,22 @@ class TestWriteFileCrossProfileGuard:
         # File untouched.
         assert target.read_text() == original
 
+    def test_cross_profile_raphael_write_blocked_by_default(self, fake_hermes):
+        """Raphael runtime state belongs to the active profile."""
+        from tools.file_tools import write_file_tool
+
+        target = fake_hermes["root"] / "raphael" / "state.json"
+        original = target.read_text()
+        result_json = write_file_tool(
+            str(target), '{"schema_version":"raphael.state.v1"}'
+        )
+        result = json.loads(result_json)
+        assert result.get("error"), "Cross-profile Raphael write should be refused"
+        assert "cross-profile" in result["error"].lower()
+        assert "raphael" in result["error"]
+        assert "cross_profile=True" in result["error"]
+        assert target.read_text() == original
+
     def test_cross_profile_True_bypass(self, fake_hermes):
         """Explicit override after user direction must succeed."""
         from tools.file_tools import write_file_tool
@@ -95,7 +122,7 @@ class TestWriteFileCrossProfileGuard:
 
     def test_non_hermes_path_unaffected(self, fake_hermes, tmp_path):
         from tools.file_tools import write_file_tool
-        target = tmp_path / "outside" / "main.py"
+        target = fake_hermes["root"].parent / "outside" / "main.py"
         target.parent.mkdir()
         result_json = write_file_tool(str(target), "print('hello')")
         result = json.loads(result_json)

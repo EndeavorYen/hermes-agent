@@ -331,7 +331,7 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
     Three detectors run in order:
 
     * cross-profile (#TBD) — writes that hit another profile's
-      ``skills/plugins/cron/memories`` directory.
+      ``skills/plugins/cron/memories/raphael`` directory.
     * sandbox-mirror (#32049) — writes that hit the
       ``…/sandboxes/<backend>/<task>/home/.hermes/…`` mirror created by a
       non-local terminal backend (Docker, Daytona, etc.), where the host
@@ -1046,17 +1046,17 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
 
     ``cross_profile`` opts out of the soft cross-Hermes-profile guard. The
     guard fires only on writes that land in another profile's
-    skills/plugins/cron/memories directory; everything else is unaffected.
+    skills/plugins/cron/memories/raphael directory; everything else is unaffected.
     Pass ``True`` after explicit user direction — same shape as ``force``
     on the terminal tool.
     """
-    sensitive_err = _check_sensitive_path(path, task_id)
-    if sensitive_err:
-        return tool_error(sensitive_err)
     if not cross_profile:
         cross_warning = _check_cross_profile_path(path, task_id)
         if cross_warning:
             return tool_error(cross_warning)
+    sensitive_err = _check_sensitive_path(path, task_id)
+    if sensitive_err:
+        return tool_error(sensitive_err)
     if _is_internal_file_status_text(content):
         return tool_error(
             "Refusing to write internal read_file status text as file content. "
@@ -1124,10 +1124,10 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
     """Patch a file using replace mode or V4A patch format.
 
     ``cross_profile`` opts out of the soft cross-Hermes-profile guard for
-    targets under another profile's skills/plugins/cron/memories
+    targets under another profile's skills/plugins/cron/memories/raphael
     directory. Same shape as ``write_file``'s flag.
     """
-    # Check sensitive paths for both replace (explicit path) and V4A patch (extract paths)
+    # Check guarded paths for both replace (explicit path) and V4A patch (extract paths)
     _paths_to_check = []
     if path:
         _paths_to_check.append(path)
@@ -1152,13 +1152,13 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 )
             _paths_to_check.append(v4a_path)
     for _p in _paths_to_check:
-        sensitive_err = _check_sensitive_path(_p, task_id)
-        if sensitive_err:
-            return tool_error(sensitive_err)
         if not cross_profile:
             cross_warning = _check_cross_profile_path(_p, task_id)
             if cross_warning:
                 return tool_error(cross_warning)
+        sensitive_err = _check_sensitive_path(_p, task_id)
+        if sensitive_err:
+            return tool_error(sensitive_err)
     try:
         # Resolve paths for locking.  Ordered + deduplicated so concurrent
         # callers lock in the same order — prevents deadlock on overlapping

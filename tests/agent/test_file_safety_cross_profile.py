@@ -1,7 +1,7 @@
 """Tests for the cross-Hermes-profile write guard in agent/file_safety.
 
 The guard fires when a tool tries to write into another Hermes profile's
-skills/plugins/cron/memories directory. It's a soft guard — defense in
+skills/plugins/cron/memories/raphael directory. It's a soft guard — defense in
 depth, NOT a security boundary — but it prevents the agent from silently
 corrupting a profile that belongs to a different session.
 
@@ -32,12 +32,15 @@ def fake_hermes(tmp_path, monkeypatch):
           plugins/foo/__init__.py
           cron/<state>
           memories/MEMORY.md
+          raphael/state.json
           profiles/
             hermes-security/
               skills/foo/SKILL.md       # named profile
               plugins/...
+              raphael/state.json
             coder/
               skills/foo/SKILL.md       # another named profile
+              raphael/state.json
     """
     root = tmp_path / "fake-hermes"
     (root / "skills" / "foo").mkdir(parents=True)
@@ -45,15 +48,21 @@ def fake_hermes(tmp_path, monkeypatch):
     (root / "plugins" / "foo").mkdir(parents=True)
     (root / "memories").mkdir(parents=True)
     (root / "cron").mkdir(parents=True)
+    (root / "raphael").mkdir(parents=True)
+    (root / "raphael" / "state.json").write_text("{}")
 
     sec_home = root / "profiles" / "hermes-security"
     (sec_home / "skills" / "foo").mkdir(parents=True)
     (sec_home / "skills" / "foo" / "SKILL.md").write_text("# sec skill\n")
     (sec_home / "plugins").mkdir(parents=True)
+    (sec_home / "raphael").mkdir(parents=True)
+    (sec_home / "raphael" / "state.json").write_text("{}")
 
     coder_home = root / "profiles" / "coder"
     (coder_home / "skills" / "foo").mkdir(parents=True)
     (coder_home / "skills" / "foo" / "SKILL.md").write_text("# coder skill\n")
+    (coder_home / "raphael").mkdir(parents=True)
+    (coder_home / "raphael" / "state.json").write_text("{}")
 
     # Monkeypatch the resolver functions used by file_safety so each test
     # can choose which profile is "active".
@@ -152,7 +161,7 @@ class TestClassifyCrossProfileTarget:
         assert result is not None
         assert result["target_profile"] == "coder"
 
-    @pytest.mark.parametrize("area", ["skills", "plugins", "cron", "memories"])
+    @pytest.mark.parametrize("area", ["skills", "plugins", "cron", "memories", "raphael"])
     def test_all_profile_scoped_areas_classified(self, fake_hermes, monkeypatch, area):
         _set_active_home(monkeypatch, fake_hermes["security_home"])
         from agent.file_safety import classify_cross_profile_target

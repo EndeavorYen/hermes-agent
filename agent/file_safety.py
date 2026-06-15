@@ -313,10 +313,10 @@ def get_read_block_error(path: str) -> Optional[str]:
 #
 # Hermes profiles are separate HERMES_HOME dirs under
 # ``<root>/profiles/<name>/``. Each profile has its own skills/, plugins/,
-# cron/, memories/. When an agent runs under one profile, writing into
+# cron/, memories/, raphael/. When an agent runs under one profile, writing into
 # ANOTHER profile's directories is almost always wrong — those skills /
-# plugins / cron jobs / memories affect a different session the user runs
-# from a different shell.
+# plugins / cron jobs / memories / Raphael state affect a different session
+# the user runs from a different shell.
 #
 # Soft guard, NOT a security boundary: the agent runs as the same OS user
 # and has unrestricted terminal access, so this returns a warning the model
@@ -333,7 +333,7 @@ def get_read_block_error(path: str) -> Optional[str]:
 # Profile-scoped directories under HERMES_HOME / <root> / <root>/profiles/<X>/
 # that should be guarded. Adding a new area here extends the guard with no
 # other code change.
-PROFILE_SCOPED_AREAS = ("skills", "plugins", "cron", "memories")
+PROFILE_SCOPED_AREAS = ("skills", "plugins", "cron", "memories", "raphael")
 
 
 def _resolve_active_profile_name() -> str:
@@ -363,7 +363,7 @@ def _resolve_active_profile_name() -> str:
 
 def classify_cross_profile_target(path: str) -> Optional[dict]:
     """Classify a write target as cross-profile if it lands in another
-    profile's scoped area (skills/plugins/cron/memories).
+    profile's scoped area (skills/plugins/cron/memories/raphael).
 
     Returns ``None`` when the target is outside Hermes scope, or is inside
     the ACTIVE profile, or doesn't hit a profile-scoped area. Otherwise
