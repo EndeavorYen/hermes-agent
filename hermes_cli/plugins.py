@@ -211,8 +211,8 @@ def _get_disabled_plugins() -> set:
     ``plugins.enabled``.
     """
     try:
-        from hermes_cli.config import load_config
-        config = load_config()
+        from hermes_cli.config import read_raw_config
+        config = read_raw_config()
         disabled = cfg_get(config, "plugins", "disabled", default=[])
         return set(disabled) if isinstance(disabled, list) else set()
     except Exception:
@@ -234,8 +234,8 @@ def _get_enabled_plugins() -> Optional[set]:
     * ``set(...)`` — the concrete allow-list.
     """
     try:
-        from hermes_cli.config import load_config
-        config = load_config()
+        from hermes_cli.config import read_raw_config
+        config = read_raw_config()
         plugins_cfg = config.get("plugins")
         if not isinstance(plugins_cfg, dict):
             return None

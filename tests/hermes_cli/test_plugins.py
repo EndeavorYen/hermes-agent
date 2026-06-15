@@ -84,6 +84,40 @@ def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",
 class TestPluginDiscovery:
     """Tests for plugin discovery from directories and entry points."""
 
+    def test_plugin_allowlist_read_does_not_initialize_runtime_files(
+        self, tmp_path, monkeypatch
+    ):
+        """Reading plugin config should not create SOUL.md or runtime dirs."""
+        from hermes_cli.plugins import _get_enabled_plugins
+
+        hermes_home = tmp_path / "plugin_config_home"
+        hermes_home.mkdir(exist_ok=True)
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["hello_plugin"]}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        assert _get_enabled_plugins() == {"hello_plugin"}
+        assert sorted(path.name for path in hermes_home.iterdir()) == ["config.yaml"]
+
+    def test_plugin_denylist_read_does_not_initialize_runtime_files(
+        self, tmp_path, monkeypatch
+    ):
+        """Reading disabled plugins should also stay side-effect free."""
+        from hermes_cli.plugins import _get_disabled_plugins
+
+        hermes_home = tmp_path / "plugin_config_home"
+        hermes_home.mkdir(exist_ok=True)
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"disabled": ["blocked_plugin"]}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        assert _get_disabled_plugins() == {"blocked_plugin"}
+        assert sorted(path.name for path in hermes_home.iterdir()) == ["config.yaml"]
+
     def test_discover_user_plugins(self, tmp_path, monkeypatch):
         """Plugins in ~/.hermes/plugins/ are discovered."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"
