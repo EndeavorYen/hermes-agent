@@ -1596,3 +1596,47 @@ Plan complete and saved to `docs/superpowers/plans/2026-06-16-raphael-phase-1-ad
 **2. Inline Execution** - Execute tasks in this session using `superpowers:executing-plans`, with checkpoints after each commit.
 
 Choose one execution mode before starting Task 1.
+
+## Execution Status - 2026-06-16
+
+Status: Phase 1 Advisor MVP implemented and reviewed.
+
+Implementation commits:
+
+- `02ab3aad1` `feat: add Raphael advisor config defaults`
+- `390ede8f5` `feat: guard Raphael state across profiles`
+- `9af28cdda` `feat: add Raphael advisor data models`
+- `869450f84` `fix: validate Raphael model schemas`
+- `6930c684f` `fix: align Raphael status card serialization`
+- `5c344420a` `feat: classify Raphael advisor action risk`
+- `6c113b7cf` `feat: add Raphael profile state helpers`
+- `2942daad6` `fix: use shared atomic write for Raphael state`
+- `c74e7e3f4` `feat: render Raphael advisor status`
+- `b1d84616a` `feat: add read-only Raphael advisor plugin`
+- `18636034d` `fix: recognize Raphael config root key`
+- `8a19cfbb7` `fix: keep plugin allowlist reads side-effect free`
+- `ff7ca5df0` `fix: keep dashboard auth discovery side-effect free`
+- `508f83deb` `test: align dashboard auth config reader tests`
+- `63ae1f70b` `docs: mention Raphael in cross-profile tool schemas`
+
+Review:
+
+- First final review requested changes for stale dashboard auth tests that patched `load_config()` after production moved to `read_raw_config()`.
+- Follow-up commit `508f83deb` aligned the tests with the new side-effect-free config reader.
+- Second final review approved the implementation and confirmed the Phase 1 scope, read-only behavior, no forbidden mutation surface, and no unrelated image/image2 worktree changes.
+
+Verification evidence:
+
+- Focused Raphael suite: `77 passed, 1 warning`.
+- Plugin/dashboard auth suite: `263 passed, 1 warning`.
+- Adjacent plugin/config/gateway suite: `105 passed`.
+- Dashboard auth provider suite: `142 passed`.
+- Cross-profile guard focused suite: `13 passed`.
+- Mutation scan only found risk-classifier constants and tests for forbidden action names.
+- Isolated `/raphael-status` smoke under `/private/tmp/hermes-raphael-final-smoke-508f83d` rendered the expected advisor output and left only `config.yaml`; it did not create `SOUL.md`, `memories/`, `cron/`, or `raphael/state.json`.
+- Phase commit-range whitespace check: `rtk git diff --check 419fbe617^..HEAD` produced no output.
+
+Remaining notes:
+
+- Existing image/image2 dirty files are unrelated and intentionally untouched.
+- Phase 2 should start with a new plan for Skill Trace MVP; do not fold it into this Phase 1 implementation.
