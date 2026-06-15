@@ -3990,8 +3990,8 @@ _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
-    "auxiliary", "custom_providers", "context", "memory", "gateway",
-    "sessions", "streaming", "updates",
+    "auxiliary", "custom_providers", "context", "memory", "raphael",
+    "gateway", "sessions", "streaming", "updates",
 }
 
 # Valid fields inside a custom_providers list entry
