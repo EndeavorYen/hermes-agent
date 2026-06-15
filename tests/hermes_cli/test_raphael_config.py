@@ -17,6 +17,16 @@ def test_raphael_defaults_disabled_and_guarded():
     assert raphael["tool_install_enabled"] is False
 
 
+def test_raphael_skill_trace_defaults_enabled_and_bounded():
+    skill_trace = DEFAULT_CONFIG["raphael"]["skill_trace"]
+
+    assert skill_trace == {
+        "enabled": True,
+        "max_summary_rows": 20,
+        "max_trace_events": 500,
+    }
+
+
 def test_load_config_deep_merges_raphael_defaults(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
@@ -32,6 +42,23 @@ def test_load_config_deep_merges_raphael_defaults(tmp_path):
     assert config["raphael"]["mode"] == "advisor"
     assert config["raphael"]["status_card_ttl_seconds"] == 900
     assert config["raphael"]["public_delivery_enabled"] is False
+
+
+def test_load_config_deep_merges_raphael_skill_trace_defaults(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "raphael:\n"
+        "  skill_trace:\n"
+        "    max_summary_rows: 5\n",
+        encoding="utf-8",
+    )
+
+    with patch.dict("os.environ", {"HERMES_HOME": str(tmp_path)}):
+        config = load_config()
+
+    assert config["raphael"]["skill_trace"]["enabled"] is True
+    assert config["raphael"]["skill_trace"]["max_summary_rows"] == 5
+    assert config["raphael"]["skill_trace"]["max_trace_events"] == 500
 
 
 def test_raphael_is_known_root_config_key():

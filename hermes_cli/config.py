@@ -1662,6 +1662,11 @@ DEFAULT_CONFIG = {
         "cron_mutation_enabled": False,
         "memory_writes_enabled": False,
         "tool_install_enabled": False,
+        "skill_trace": {
+            "enabled": True,
+            "max_summary_rows": 20,
+            "max_trace_events": 500,
+        },
     },
 
     # Subagent delegation — override the provider:model used by delegate_task
