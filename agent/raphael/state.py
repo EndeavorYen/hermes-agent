@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
+from utils import atomic_json_write
 
 from agent.raphael.models import RaphaelEvent, RaphaelState
 
@@ -28,18 +29,7 @@ def read_state() -> RaphaelState:
 
 
 def write_state(state: RaphaelState) -> None:
-    state_dir = get_raphael_state_dir()
-    state_dir.mkdir(parents=True, exist_ok=True)
-    path = get_raphael_state_path()
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    try:
-        tmp_path.write_text(
-            json.dumps(state.to_dict(), sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        tmp_path.replace(path)
-    finally:
-        tmp_path.unlink(missing_ok=True)
+    atomic_json_write(get_raphael_state_path(), state.to_dict(), sort_keys=True)
 
 
 def append_event(event: RaphaelEvent) -> None:

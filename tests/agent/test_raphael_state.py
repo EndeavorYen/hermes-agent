@@ -79,6 +79,23 @@ def test_write_state_round_trips_status_card_without_tmp_files(tmp_path):
     assert tmp_files == []
 
 
+def test_write_state_does_not_claim_existing_fixed_tmp_file(tmp_path):
+    home = tmp_path / "hermes-home"
+    state = RaphaelState(
+        status_cards=(),
+        action_proposals=(),
+        updated_at=datetime(2026, 6, 16, 9, 5, tzinfo=timezone.utc),
+    )
+
+    with _hermes_home_env(home):
+        get_raphael_state_dir().mkdir(parents=True)
+        stale_tmp = get_raphael_state_path().with_suffix(".json.tmp")
+        stale_tmp.write_text("owned by another writer", encoding="utf-8")
+        write_state(state)
+
+    assert stale_tmp.read_text(encoding="utf-8") == "owned by another writer"
+
+
 def test_append_event_writes_jsonl_with_event_schema(tmp_path):
     home = tmp_path / "hermes-home"
     event = RaphaelEvent(
