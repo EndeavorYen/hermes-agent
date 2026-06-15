@@ -255,7 +255,7 @@ class TestConfigYamlSource:
 
     @pytest.fixture
     def patch_config(self, monkeypatch):
-        """Yield a callable that replaces ``hermes_cli.config.load_config``
+        """Yield a callable that replaces ``hermes_cli.config.read_raw_config``
         with a stub returning the given dict. Tests pass the intended
         ``dashboard.oauth`` block; the stub returns the wrapping structure."""
 
@@ -263,9 +263,7 @@ class TestConfigYamlSource:
             cfg = {}
             if oauth_block is not None:
                 cfg = {"dashboard": {"oauth": oauth_block}}
-            monkeypatch.setattr(
-                "hermes_cli.config.load_config", lambda: cfg
-            )
+            monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: cfg)
 
         return _set
 
@@ -364,7 +362,7 @@ class TestConfigYamlSource:
     def test_config_yaml_load_failure_falls_through_cleanly(
         self, monkeypatch
     ):
-        """If load_config() raises (e.g. malformed YAML, IOError), the
+        """If read_raw_config() raises (e.g. malformed YAML, IOError), the
         plugin must not crash — it falls through to the env-only path
         and either succeeds (if env is set) or surfaces the standard
         'not set' skip reason."""
@@ -374,7 +372,7 @@ class TestConfigYamlSource:
             raise OSError("config.yaml not readable")
 
         monkeypatch.setattr(
-            "hermes_cli.config.load_config", _broken_load
+            "hermes_cli.config.read_raw_config", _broken_load
         )
         ctx = MagicMock()
         # Must not raise.
@@ -389,7 +387,7 @@ class TestConfigYamlSource:
         so a malformed user config doesn't crash startup."""
         monkeypatch.delenv("HERMES_DASHBOARD_OAUTH_CLIENT_ID", raising=False)
         monkeypatch.setattr(
-            "hermes_cli.config.load_config",
+            "hermes_cli.config.read_raw_config",
             lambda: {"dashboard": {"oauth": "wrong type"}},
         )
         ctx = MagicMock()
