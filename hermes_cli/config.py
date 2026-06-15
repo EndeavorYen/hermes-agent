@@ -1648,6 +1648,22 @@ DEFAULT_CONFIG = {
         "provider": "",
     },
 
+    # Raphael advisor -- disabled-by-default local capability advisor.
+    # Phase 1 is read-only from the user-facing command surface and must not
+    # mutate skills, memory, cron, tools, or public delivery without a future
+    # approval-gated design.
+    "raphael": {
+        "enabled": False,
+        "mode": "advisor",
+        "status_card_ttl_seconds": 900,
+        "max_status_cards": 20,
+        "public_delivery_enabled": False,
+        "skill_writes_enabled": False,
+        "cron_mutation_enabled": False,
+        "memory_writes_enabled": False,
+        "tool_install_enabled": False,
+    },
+
     # Subagent delegation — override the provider:model used by delegate_task
     # so child agents can run on a different (cheaper/faster) provider and model.
     # Uses the same runtime provider resolution as CLI/gateway startup, so all
