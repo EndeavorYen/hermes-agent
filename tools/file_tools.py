@@ -1396,7 +1396,7 @@ WRITE_FILE_SCHEMA = {
             "content": {"type": "string", "description": "Complete content to write to the file"},
             "cross_profile": {
                 "type": "boolean",
-                "description": "Opt out of the cross-profile soft guard. Defaults to false. Set true ONLY after explicit user direction to edit another Hermes profile's skills/plugins/cron/memories — by default these writes are blocked with a warning because they affect a different profile than the one this session is running under.",
+                "description": "Opt out of the cross-profile soft guard. Defaults to false. Set true ONLY after explicit user direction to edit another Hermes profile's skills/plugins/cron/memories/raphael — by default these writes are blocked with a warning because they affect a different profile than the one this session is running under.",
                 "default": False,
             },
         },
@@ -1447,7 +1447,7 @@ PATCH_SCHEMA = {
             },
             "cross_profile": {
                 "type": "boolean",
-                "description": "Opt out of the cross-profile soft guard. Defaults to false. Set true ONLY after explicit user direction to edit another Hermes profile's skills/plugins/cron/memories.",
+                "description": "Opt out of the cross-profile soft guard. Defaults to false. Set true ONLY after explicit user direction to edit another Hermes profile's skills/plugins/cron/memories/raphael.",
                 "default": False,
             },
         },
