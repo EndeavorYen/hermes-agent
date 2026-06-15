@@ -21,6 +21,10 @@ def get_raphael_events_path() -> Path:
     return get_raphael_state_dir() / "events.jsonl"
 
 
+def get_raphael_skill_traces_path() -> Path:
+    return get_raphael_state_dir() / "skill_traces.jsonl"
+
+
 def read_state() -> RaphaelState:
     path = get_raphael_state_path()
     if not path.exists():
@@ -42,6 +46,7 @@ def append_event(event: RaphaelEvent) -> None:
 __all__ = [
     "append_event",
     "get_raphael_events_path",
+    "get_raphael_skill_traces_path",
     "get_raphael_state_dir",
     "get_raphael_state_path",
     "read_state",
