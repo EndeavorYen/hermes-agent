@@ -36,6 +36,13 @@ def _datetime_from_iso(value: str) -> datetime:
     return _ensure_utc(datetime.fromisoformat(normalized))
 
 
+def _require_schema(payload: Mapping[str, Any], expected: str, label: str) -> None:
+    if payload.get("schema_version") != expected:
+        raise ValueError(
+            f"Unsupported Raphael {label} schema: {payload.get('schema_version')!r}"
+        )
+
+
 @dataclass(frozen=True)
 class StatusCard:
     card_id: str
@@ -145,6 +152,16 @@ class RaphaelEvent:
             "details": dict(self.details),
         }
 
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> RaphaelEvent:
+        _require_schema(payload, EVENT_SCHEMA_VERSION, "event")
+        return cls(
+            event_id=payload["event_id"],
+            kind=payload["kind"],
+            created_at=_datetime_from_iso(payload["created_at"]),
+            details=payload.get("details", {}),
+        )
+
 
 @dataclass(frozen=True)
 class RaphaelState:
@@ -173,6 +190,7 @@ class RaphaelState:
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> RaphaelState:
+        _require_schema(payload, STATE_SCHEMA_VERSION, "state")
         return cls(
             status_cards=tuple(
                 StatusCard.from_dict(card)

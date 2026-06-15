@@ -1,12 +1,15 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from agent.raphael import (
     ActionProposal,
+    RaphaelEvent,
     RaphaelState,
     RiskLevel,
     StatusCard,
 )
-from agent.raphael.models import STATE_SCHEMA_VERSION
+from agent.raphael.models import EVENT_SCHEMA_VERSION, STATE_SCHEMA_VERSION
 
 
 def test_status_card_round_trips_with_utc_iso_datetimes():
@@ -81,3 +84,37 @@ def test_empty_state_round_trips_with_defaults():
         "updated_at": state.updated_at.isoformat(),
     }
     assert RaphaelState.from_dict(payload) == state
+
+
+@pytest.mark.parametrize("schema_version", [None, "raphael.state.v2"])
+def test_state_rejects_missing_or_wrong_schema_version(schema_version):
+    payload = {
+        "status_cards": [],
+        "action_proposals": [],
+        "updated_at": "2026-06-16T09:00:00+00:00",
+    }
+    if schema_version is not None:
+        payload["schema_version"] = schema_version
+
+    with pytest.raises(ValueError, match="Unsupported Raphael state schema"):
+        RaphaelState.from_dict(payload)
+
+
+def test_event_round_trips_with_schema_version():
+    event = RaphaelEvent(
+        event_id="event-1",
+        kind="state_written",
+        created_at=datetime(2026, 6, 16, 9, 30, tzinfo=timezone.utc),
+        details={"path": "state.json"},
+    )
+
+    payload = event.to_dict()
+
+    assert payload == {
+        "schema_version": EVENT_SCHEMA_VERSION,
+        "event_id": "event-1",
+        "kind": "state_written",
+        "created_at": "2026-06-16T09:30:00+00:00",
+        "details": {"path": "state.json"},
+    }
+    assert RaphaelEvent.from_dict(payload) == event
