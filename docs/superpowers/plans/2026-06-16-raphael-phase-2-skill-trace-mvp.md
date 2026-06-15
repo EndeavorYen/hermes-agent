@@ -10,6 +10,41 @@
 
 ---
 
+## Execution Evidence
+
+Status: implemented on `live/hermes-v2026.6.5` as Phase 2 only. No Phase 1 status behavior was mixed into the Skill Trace work.
+
+Commits:
+
+- `8d18ae4e6 feat: add Raphael skill trace config defaults`
+- `789f1ebe4 feat: add Raphael skill trace models`
+- `2705eeb1b feat: redact Raphael skill trace payloads`
+- `cf095c5ae feat: summarize Raphael skill traces`
+- `373b54afe feat: render Raphael skill trace summary`
+- `13d055b5a feat: add Raphael skills command`
+
+Fresh verification run after implementation:
+
+```text
+rtk ./venv/bin/python -m pytest tests/hermes_cli/test_raphael_config.py tests/agent/test_raphael_skill_trace_models.py tests/agent/test_raphael_redaction.py tests/agent/test_raphael_skill_trace.py tests/agent/test_raphael_skill_summary.py tests/plugins/test_raphael_plugin.py -q
+30 passed, 1 warning in 0.64s
+
+rtk ./venv/bin/python -m pytest tests/tools/test_skill_usage.py tests/agent/test_skill_commands.py tests/hermes_cli/test_plugins.py tests/test_transform_tool_result_hook.py -q
+168 passed, 1 warning in 9.72s
+
+rtk rg -n "skill_manage|skill_patch|skill_delete|create_skill_proposal|evolution|cronjob|memory_add|memory_tool|send_public|post_message|install_tool|approve|write_approval|tool_forge" agent/raphael plugins/raphael tests/agent/test_raphael_*.py tests/plugins/test_raphael_plugin.py
+Only existing Phase 1 risk-classifier constants/tests matched.
+
+rtk ./venv/bin/python -c <isolated /raphael-skills smoke>
+Raphael Skill Trace
+['config.yaml']
+
+rtk git diff --check
+No output
+```
+
+Read-only scaffold smoke used `/private/tmp/hermes-raphael-phase2-smoke` and confirmed invoking `/raphael-skills` in an otherwise clean `HERMES_HOME` left only `config.yaml`.
+
 ## Scope Locks
 
 Build only Skill Trace MVP:
