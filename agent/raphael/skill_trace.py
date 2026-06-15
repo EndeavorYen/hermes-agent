@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import Any
 
@@ -148,8 +149,57 @@ def summarize_skill_usage(
     return sorted(summaries.values(), key=sort_key)[:bounded_rows]
 
 
+def _format_outcomes(outcome_counts: dict[str, int] | Any) -> str:
+    if not outcome_counts:
+        return "none"
+    return ", ".join(
+        f"{outcome}={count}"
+        for outcome, count in sorted(dict(outcome_counts).items())
+    )
+
+
+def render_skill_summary(summaries: Sequence[SkillTraceSummary]) -> str:
+    lines = [
+        "Raphael Skill Trace",
+        "Mode: read-only skill usage summary",
+        "",
+        "Skill Usage:",
+    ]
+
+    if not summaries:
+        lines.append("No skill usage or trace events recorded.")
+    else:
+        for summary in summaries:
+            latest = (
+                summary.latest_activity_at.isoformat()
+                if summary.latest_activity_at is not None
+                else "never"
+            )
+            state = summary.state or "unknown"
+            created_by = summary.created_by or "unknown"
+            lines.append(
+                f"- {summary.skill_name}: "
+                f"use={summary.use_count} "
+                f"view={summary.view_count} "
+                f"patch={summary.patch_count} "
+                f"latest={latest} "
+                f"state={state} "
+                f"created_by={created_by} "
+                f"outcomes={_format_outcomes(summary.outcome_counts)}"
+            )
+
+    lines.extend(
+        [
+            "",
+            "Safety: Raphael Skill Trace is read-only and does not propose or modify skills.",
+        ]
+    )
+    return "\n".join(lines)
+
+
 __all__ = [
     "append_skill_trace",
     "read_skill_traces",
+    "render_skill_summary",
     "summarize_skill_usage",
 ]
