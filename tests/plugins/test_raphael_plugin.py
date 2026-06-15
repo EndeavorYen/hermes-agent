@@ -91,10 +91,16 @@ def test_enabled_plugin_registers_raphael_status_command(monkeypatch, tmp_path):
     loaded = mgr._plugins["raphael"]
     assert loaded.enabled
     assert loaded.manifest.name == "raphael"
-    assert loaded.commands_registered == ["raphael-status"]
+    assert loaded.commands_registered == ["raphael-status", "raphael-skills"]
     assert mgr._plugin_commands["raphael-status"] == {
         "handler": loaded.module.handle_status,
         "description": "Show read-only Raphael advisor status",
+        "plugin": "raphael",
+        "args_hint": "",
+    }
+    assert mgr._plugin_commands["raphael-skills"] == {
+        "handler": loaded.module.handle_skills,
+        "description": "Show read-only Raphael skill usage traces",
         "plugin": "raphael",
         "args_hint": "",
     }
@@ -124,6 +130,30 @@ def test_enabled_status_command_does_not_initialize_runtime_scaffold(
     assert sorted(path.name for path in hermes_home.iterdir()) == ["config.yaml"]
 
 
+def test_enabled_skills_command_does_not_initialize_runtime_scaffold(
+    monkeypatch, tmp_path
+):
+    import hermes_cli.plugins as plugins_mod
+
+    hermes_home = tmp_path / "hermes_home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _write_config(
+        hermes_home,
+        {
+            "plugins": {"enabled": ["raphael"]},
+            "raphael": {"enabled": True},
+        },
+    )
+
+    plugins_mod._plugin_manager = plugins_mod.PluginManager()
+    plugins_mod.discover_plugins()
+    handler = plugins_mod.get_plugin_command_handler("raphael-skills")
+
+    assert handler is not None
+    assert "Raphael Skill Trace" in handler("")
+    assert sorted(path.name for path in hermes_home.iterdir()) == ["config.yaml"]
+
+
 def test_disabled_status_does_not_read_or_create_state(
     monkeypatch, tmp_path
 ):
@@ -143,6 +173,29 @@ def test_disabled_status_does_not_read_or_create_state(
     assert (
         plugin.handle_status("")
         == "Raphael Advisor is disabled. Set raphael.enabled: true to enable /raphael-status."
+    )
+    assert not (hermes_home / "raphael").exists()
+
+
+def test_disabled_skills_does_not_read_usage_or_create_state(
+    monkeypatch, tmp_path
+):
+    hermes_home = tmp_path / "hermes_home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _write_config(
+        hermes_home,
+        {"raphael": {"enabled": True, "skill_trace": {"enabled": False}}},
+    )
+    plugin = _load_plugin_init()
+
+    def _fail_summarize_skill_usage(**_kwargs):
+        raise AssertionError("disabled Raphael skills must not read usage")
+
+    monkeypatch.setattr(plugin, "summarize_skill_usage", _fail_summarize_skill_usage)
+
+    assert (
+        plugin.handle_skills("")
+        == "Raphael Skill Trace is disabled. Set raphael.skill_trace.enabled: true to enable /raphael-skills."
     )
     assert not (hermes_home / "raphael").exists()
 
@@ -175,6 +228,8 @@ def test_non_empty_args_return_usage(monkeypatch, tmp_path):
 
     assert plugin.handle_status("extra") == "Usage: /raphael-status"
     assert plugin.handle_status("  extra  ") == "Usage: /raphael-status"
+    assert plugin.handle_skills("extra") == "Usage: /raphael-skills"
+    assert plugin.handle_skills("  extra  ") == "Usage: /raphael-skills"
 
 
 def test_max_status_cards_invalid_values_fall_back_and_minimum_is_one(
@@ -195,3 +250,41 @@ def test_max_status_cards_invalid_values_fall_back_and_minimum_is_one(
         {"raphael": {"enabled": True, "max_status_cards": 0}},
     )
     assert plugin._max_status_cards() == 1
+
+
+def test_skill_trace_limits_invalid_values_fall_back_and_minimum_is_zero(
+    monkeypatch, tmp_path
+):
+    hermes_home = tmp_path / "hermes_home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    plugin = _load_plugin_init()
+
+    _write_config(
+        hermes_home,
+        {
+            "raphael": {
+                "enabled": True,
+                "skill_trace": {
+                    "max_summary_rows": "invalid",
+                    "max_trace_events": "invalid",
+                },
+            }
+        },
+    )
+    assert plugin._max_skill_summary_rows() == 20
+    assert plugin._max_trace_events() == 500
+
+    _write_config(
+        hermes_home,
+        {
+            "raphael": {
+                "enabled": True,
+                "skill_trace": {
+                    "max_summary_rows": -1,
+                    "max_trace_events": -1,
+                },
+            }
+        },
+    )
+    assert plugin._max_skill_summary_rows() == 0
+    assert plugin._max_trace_events() == 0
