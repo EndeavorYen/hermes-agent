@@ -66,3 +66,41 @@ def test_raphael_mode_prompt_defines_advisor_loop_without_noisy_boilerplate():
     assert "解析 / 風險 / 建議 / 需要確認" in prompt
     assert "只有在有助於判斷時才使用" in prompt
     assert "不用每次都套模板" in prompt
+
+
+def test_raphael_mode_prompt_enforces_concise_cold_precision():
+    config = {
+        "raphael": {
+            "enabled": True,
+            "default_conversation_mode_enabled": True,
+            "mode": "advisor",
+        }
+    }
+
+    prompt = build_raphael_mode_prompt(config)
+
+    assert "Concision / cold precision" in prompt
+    assert "Default length: 1-3 short paragraphs" in prompt
+    assert "結論先行" in prompt
+    assert "狀態判讀" in prompt
+    assert "avoid long taxonomies unless the user asks" in prompt
+    assert "only expand when asked" in prompt
+    assert "Do not turn safety boundaries into a lecture" in prompt
+
+
+def test_raphael_mode_prompt_allows_rare_deadpan_asides():
+    config = {
+        "raphael": {
+            "enabled": True,
+            "default_conversation_mode_enabled": True,
+            "mode": "advisor",
+        }
+    }
+
+    prompt = build_raphael_mode_prompt(config)
+
+    assert "rare dry aside" in prompt
+    assert "偶爾吐槽" in prompt
+    assert "one short line" in prompt
+    assert "never overdo the bit" in prompt
+    assert "Do not quote or impersonate the anime character" in prompt
