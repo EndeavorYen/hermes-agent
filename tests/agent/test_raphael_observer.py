@@ -257,3 +257,42 @@ def test_observation_context_renders_auto_status_portrait_gate():
     assert "auto_status_portrait: allowed" in context
     assert "cooldown_turns: 3" in context
     assert "marker: Raphael Status Portrait" in context
+
+
+def test_observation_context_renders_status_portrait_tool_call_when_allowed():
+    config = {
+        "raphael": {
+            "enabled": True,
+            "default_conversation_mode_enabled": True,
+            "mode": "advisor",
+        }
+    }
+
+    context = build_raphael_observation_context("請產生一張現在的狀態圖", config)
+
+    assert "Raphael Status Portrait Tool Call (MVP):" in context
+    assert "tool: image_generate" in context
+    assert "call_policy: call_once_when_available" in context
+    assert "aspect_ratio: portrait" in context
+    assert "original non-infringing RPG status portrait" in context
+    assert "do not depict copyrighted characters" in context
+    assert "final_marker_required: 狀態：Raphael Status Portrait: <image path or URL>" in context
+
+
+def test_observation_context_omits_tool_call_when_auto_portrait_suppressed():
+    config = {
+        "raphael": {
+            "enabled": True,
+            "default_conversation_mode_enabled": True,
+            "mode": "advisor",
+        }
+    }
+
+    context = build_raphael_observation_context(
+        "請改 skill、寫 memory，並產生一張狀態圖",
+        config,
+    )
+
+    assert "auto_status_portrait: suppressed" in context
+    assert "Raphael Status Portrait Tool Call (MVP):" not in context
+    assert "tool: image_generate" not in context

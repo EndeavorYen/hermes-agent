@@ -318,6 +318,28 @@ def _render_raphael_auto_status_portrait_gate(decision: Mapping[str, Any]) -> st
     )
 
 
+def _render_raphael_status_portrait_tool_call(decision: Mapping[str, Any]) -> str:
+    if decision.get("auto_status_portrait") != "allowed":
+        return ""
+    prompt = (
+        "Create one original non-infringing RPG status portrait of an abstract "
+        "Raphael-style inner advisor presence: calm analytical expression, "
+        "cool luminous interface fragments, restrained high-contrast lighting, "
+        "status-reading posture, no copyrighted character likeness, do not "
+        "depict copyrighted characters, no anime-specific costume copying."
+    )
+    return "\n".join(
+        [
+            "Raphael Status Portrait Tool Call (MVP):",
+            "tool: image_generate",
+            "call_policy: call_once_when_available",
+            "aspect_ratio: portrait",
+            f"prompt: {prompt}",
+            "final_marker_required: 狀態：Raphael Status Portrait: <image path or URL>",
+        ]
+    )
+
+
 def build_raphael_observation_context(
     user_message: str,
     config: Mapping[str, Any] | None = None,
@@ -332,12 +354,16 @@ def build_raphael_observation_context(
     sketch = _render_raphael_turn_sketch(sketches)
     visual_decision = decide_raphael_visual_trigger(turn_observation, sketches)
     visual_gate = _render_raphael_visual_trigger_gate(visual_decision)
+    auto_portrait_decision = decide_raphael_auto_status_portrait(
+        turn_observation,
+        visual_decision,
+        conversation_history,
+    )
     auto_portrait_gate = _render_raphael_auto_status_portrait_gate(
-        decide_raphael_auto_status_portrait(
-            turn_observation,
-            visual_decision,
-            conversation_history,
-        )
+        auto_portrait_decision
+    )
+    status_portrait_tool_call = _render_raphael_status_portrait_tool_call(
+        auto_portrait_decision
     )
     blocks = [observation]
     if sketch:
@@ -346,6 +372,8 @@ def build_raphael_observation_context(
         blocks.append(visual_gate)
     if auto_portrait_gate:
         blocks.append(auto_portrait_gate)
+    if status_portrait_tool_call:
+        blocks.append(status_portrait_tool_call)
     return "\n\n".join(blocks)
 
 
