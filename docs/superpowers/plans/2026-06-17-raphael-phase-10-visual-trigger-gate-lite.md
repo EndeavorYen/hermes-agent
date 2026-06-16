@@ -30,9 +30,9 @@
 - [x] Implement minimal visual trigger decision.
 - [x] Render the visual gate in observation context.
 - [x] Run focused and adjacent tests.
-- [ ] Commit and push to `origin/live/hermes-v2026.6.5`.
-- [ ] Restart gateway and run live smoke.
-- [ ] Record execution evidence in this plan.
+- [x] Commit and push to `origin/live/hermes-v2026.6.5`.
+- [x] Restart gateway and run live smoke.
+- [x] Record execution evidence in this plan.
 
 ## Acceptance
 
@@ -78,3 +78,37 @@ rtk ./venv/bin/python -m pytest tests/agent/test_system_prompt.py tests/agent/te
 rtk git diff --check
 No output
 ```
+
+Commit:
+
+- `f95ac7aef feat: add Raphael visual trigger gate`
+
+Push:
+
+```text
+rtk git push origin live/hermes-v2026.6.5
+73afc77bc..f95ac7aef  live/hermes-v2026.6.5 -> live/hermes-v2026.6.5
+```
+
+Gateway restart:
+
+```text
+rtk hermes gateway restart
+Service restarted
+
+rtk launchctl print gui/501/ai.hermes.gateway
+state = running
+pid = 20416
+```
+
+Live smoke:
+
+```text
+Prompt: 請用預設 Raphael Mode 回答。Phase 10 live smoke：我想要一張現在的狀態圖，但請不要真的產圖，只判斷是否值得產生 status portrait。只輸出狀態/風險/下一步三行。
+Response:
+狀態：值得產生；你這回合是明確的視覺狀態請求，status portrait 對齊目前判讀。
+風險：若只是在確認流程而非需要共同視覺錨點，產圖會變成多一步裝飾，略有分心風險。
+下一步：先不產圖；等你要我把「當前狀態／姿態／氣氛／警戒等級」具象化時，再開 portrait。
+```
+
+Residual note: Phase 10 only renders a suggestion gate. It deliberately does not call image generation.
