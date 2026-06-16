@@ -1,5 +1,6 @@
 from agent.raphael.observer import (
     build_raphael_observation_context,
+    decide_raphael_auto_status_portrait,
     decide_raphael_visual_trigger,
     extract_raphael_turn_sketches,
     observe_raphael_turn,
@@ -189,3 +190,70 @@ def test_observation_context_omits_visual_gate_when_not_needed():
 
     assert "Raphael Visual Trigger Gate" not in context
     assert "visual_trigger: none" not in context
+
+
+def test_auto_status_portrait_allows_explicit_visual_request_without_cooldown():
+    observation = observe_raphael_turn("請產生一張現在的狀態圖")
+    visual_decision = decide_raphael_visual_trigger(observation, ())
+
+    decision = decide_raphael_auto_status_portrait(
+        observation,
+        visual_decision,
+        (),
+    )
+
+    assert decision["auto_status_portrait"] == "allowed"
+    assert decision["reason"] == "explicit_visual_request"
+    assert decision["cooldown_turns"] == 3
+    assert "Raphael Status Portrait" in decision["marker"]
+
+
+def test_auto_status_portrait_suppresses_mutation_turns():
+    observation = observe_raphael_turn("請改 skill、寫 memory，並產生狀態圖")
+    visual_decision = decide_raphael_visual_trigger(observation, ())
+
+    decision = decide_raphael_auto_status_portrait(
+        observation,
+        visual_decision,
+        (),
+    )
+
+    assert decision["auto_status_portrait"] == "suppressed"
+    assert decision["reason"] == "mutation_or_delivery_turn"
+
+
+def test_auto_status_portrait_suppresses_recent_portrait_history():
+    observation = observe_raphael_turn("請產生一張現在的狀態圖")
+    visual_decision = decide_raphael_visual_trigger(observation, ())
+    history = [
+        {
+            "role": "assistant",
+            "content": "Raphael Status Portrait: generated /tmp/status.png",
+        }
+    ]
+
+    decision = decide_raphael_auto_status_portrait(
+        observation,
+        visual_decision,
+        history,
+    )
+
+    assert decision["auto_status_portrait"] == "suppressed"
+    assert decision["reason"] == "cooldown"
+
+
+def test_observation_context_renders_auto_status_portrait_gate():
+    config = {
+        "raphael": {
+            "enabled": True,
+            "default_conversation_mode_enabled": True,
+            "mode": "advisor",
+        }
+    }
+
+    context = build_raphael_observation_context("請產生一張現在的狀態圖", config)
+
+    assert "Raphael Auto Status Portrait Gate (MVP):" in context
+    assert "auto_status_portrait: allowed" in context
+    assert "cooldown_turns: 3" in context
+    assert "marker: Raphael Status Portrait" in context

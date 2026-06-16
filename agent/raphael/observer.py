@@ -89,6 +89,9 @@ _VISUAL_TRANSITION_KEYWORDS = (
     "卡住",
 )
 
+_AUTO_STATUS_PORTRAIT_COOLDOWN_TURNS = 3
+_STATUS_PORTRAIT_MARKER = "Raphael Status Portrait"
+
 
 def _cfg_get(config: Mapping[str, Any], *path: str, default: Any = None) -> Any:
     current: Any = config
@@ -236,6 +239,56 @@ def decide_raphael_visual_trigger(
     }
 
 
+def _has_recent_status_portrait(
+    conversation_history: Sequence[Mapping[str, Any]] | None,
+    *,
+    max_user_turns: int = _AUTO_STATUS_PORTRAIT_COOLDOWN_TURNS,
+) -> bool:
+    if not conversation_history:
+        return False
+
+    user_turns_seen = 0
+    for message in reversed(conversation_history):
+        if not isinstance(message, Mapping):
+            continue
+        if message.get("role") == "user":
+            user_turns_seen += 1
+            if user_turns_seen >= max_user_turns:
+                return False
+        if message.get("role") != "assistant":
+            continue
+        content = message.get("content")
+        if isinstance(content, str) and _STATUS_PORTRAIT_MARKER in content:
+            return True
+    return False
+
+
+def decide_raphael_auto_status_portrait(
+    observation: RaphaelTurnObservation,
+    visual_decision: Mapping[str, Any],
+    conversation_history: Sequence[Mapping[str, Any]] | None,
+) -> dict[str, Any]:
+    if visual_decision.get("visual_trigger") != "suggest_status_portrait":
+        status = "none"
+        reason = "not_needed"
+    elif observation.task_state == "mutation_or_delivery_request":
+        status = "suppressed"
+        reason = "mutation_or_delivery_turn"
+    elif _has_recent_status_portrait(conversation_history):
+        status = "suppressed"
+        reason = "cooldown"
+    else:
+        status = "allowed"
+        reason = str(visual_decision.get("reason") or "visual_trigger")
+
+    return {
+        "auto_status_portrait": status,
+        "reason": reason,
+        "cooldown_turns": _AUTO_STATUS_PORTRAIT_COOLDOWN_TURNS,
+        "marker": _STATUS_PORTRAIT_MARKER,
+    }
+
+
 def _render_raphael_visual_trigger_gate(decision: Mapping[str, Any]) -> str:
     if decision.get("visual_trigger") == "none":
         return ""
@@ -246,6 +299,21 @@ def _render_raphael_visual_trigger_gate(decision: Mapping[str, Any]) -> str:
             f"visual_trigger: {decision.get('visual_trigger', 'none')}",
             f"reason: {decision.get('reason', 'not_needed')}",
             f"auto_call_image_tool: {auto_call}",
+        ]
+    )
+
+
+def _render_raphael_auto_status_portrait_gate(decision: Mapping[str, Any]) -> str:
+    if decision.get("auto_status_portrait") == "none":
+        return ""
+    return "\n".join(
+        [
+            "Raphael Auto Status Portrait Gate (MVP):",
+            f"auto_status_portrait: {decision.get('auto_status_portrait', 'none')}",
+            f"reason: {decision.get('reason', 'not_needed')}",
+            f"cooldown_turns: {decision.get('cooldown_turns', _AUTO_STATUS_PORTRAIT_COOLDOWN_TURNS)}",
+            f"marker: {decision.get('marker', _STATUS_PORTRAIT_MARKER)}",
+            "instruction: may call image_generate once for an original non-infringing RPG status portrait when allowed; include the marker if generated",
         ]
     )
 
@@ -262,20 +330,29 @@ def build_raphael_observation_context(
     observation = render_raphael_observation(turn_observation)
     sketches = extract_raphael_turn_sketches(conversation_history)
     sketch = _render_raphael_turn_sketch(sketches)
-    visual_gate = _render_raphael_visual_trigger_gate(
-        decide_raphael_visual_trigger(turn_observation, sketches)
+    visual_decision = decide_raphael_visual_trigger(turn_observation, sketches)
+    visual_gate = _render_raphael_visual_trigger_gate(visual_decision)
+    auto_portrait_gate = _render_raphael_auto_status_portrait_gate(
+        decide_raphael_auto_status_portrait(
+            turn_observation,
+            visual_decision,
+            conversation_history,
+        )
     )
     blocks = [observation]
     if sketch:
         blocks.append(sketch)
     if visual_gate:
         blocks.append(visual_gate)
+    if auto_portrait_gate:
+        blocks.append(auto_portrait_gate)
     return "\n\n".join(blocks)
 
 
 __all__ = [
     "RaphaelTurnObservation",
     "build_raphael_observation_context",
+    "decide_raphael_auto_status_portrait",
     "decide_raphael_visual_trigger",
     "extract_raphael_turn_sketches",
     "observe_raphael_turn",
