@@ -725,6 +725,16 @@ def run_conversation(
     except Exception as exc:
         logger.warning("pre_llm_call hook failed: %s", exc)
 
+    _raphael_observation_context = ""
+    try:
+        from agent.raphael.observer import build_raphael_observation_context
+
+        _raphael_observation_context = build_raphael_observation_context(
+            original_user_message
+        )
+    except Exception as exc:
+        logger.warning("Raphael state observer failed: %s", exc)
+
     # Main conversation loop
     api_call_count = 0
     final_response = None
@@ -947,8 +957,8 @@ def run_conversation(
             api_msg = msg.copy()
 
             # Inject ephemeral context into the current turn's user message.
-            # Sources: memory manager prefetch + plugin pre_llm_call hooks
-            # with target="user_message" (the default).  Both are
+            # Sources: memory manager prefetch, Raphael observation, and plugin
+            # pre_llm_call hooks with target="user_message" (the default). All are
             # API-call-time only — the original message in `messages` is
             # never mutated, so nothing leaks into session persistence.
             if idx == current_turn_user_idx and msg.get("role") == "user":
@@ -957,6 +967,8 @@ def run_conversation(
                     _fenced = build_memory_context_block(_ext_prefetch_cache)
                     if _fenced:
                         _injections.append(_fenced)
+                if _raphael_observation_context:
+                    _injections.append(_raphael_observation_context)
                 if _plugin_user_context:
                     _injections.append(_plugin_user_context)
                 if _injections:
