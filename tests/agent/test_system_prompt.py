@@ -55,3 +55,21 @@ class TestContextFileCwd:
     def test_configured_dir_when_terminal_cwd_set(self, monkeypatch, tmp_path):
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         assert _captured_context_cwd(_make_agent()) == tmp_path
+
+
+def test_system_prompt_stable_tier_includes_raphael_mode_when_enabled(monkeypatch):
+    agent = _make_agent(skip_context_files=True)
+
+    with (
+        patch("run_agent.load_soul_md", return_value=""),
+        patch("run_agent.build_nous_subscription_prompt", return_value=""),
+        patch("run_agent.build_environment_hints", return_value=""),
+        patch(
+            "agent.raphael.prompt.build_raphael_mode_prompt",
+            return_value="Raphael Mode\nread-only advisor layer",
+        ),
+    ):
+        parts = build_system_prompt_parts(agent)
+
+    assert "Raphael Mode" in parts["stable"]
+    assert "read-only advisor layer" in parts["stable"]

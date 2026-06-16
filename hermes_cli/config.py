@@ -1657,6 +1657,7 @@ DEFAULT_CONFIG = {
         "mode": "advisor",
         "status_card_ttl_seconds": 900,
         "max_status_cards": 20,
+        "default_conversation_mode_enabled": False,
         "public_delivery_enabled": False,
         "skill_writes_enabled": False,
         "cron_mutation_enabled": False,

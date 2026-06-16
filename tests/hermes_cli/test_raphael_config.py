@@ -10,6 +10,7 @@ def test_raphael_defaults_disabled_and_guarded():
     assert raphael["mode"] == "advisor"
     assert raphael["status_card_ttl_seconds"] == 900
     assert raphael["max_status_cards"] == 20
+    assert raphael["default_conversation_mode_enabled"] is False
     assert raphael["public_delivery_enabled"] is False
     assert raphael["skill_writes_enabled"] is False
     assert raphael["cron_mutation_enabled"] is False
@@ -41,6 +42,7 @@ def test_load_config_deep_merges_raphael_defaults(tmp_path):
     assert config["raphael"]["enabled"] is True
     assert config["raphael"]["mode"] == "advisor"
     assert config["raphael"]["status_card_ttl_seconds"] == 900
+    assert config["raphael"]["default_conversation_mode_enabled"] is False
     assert config["raphael"]["public_delivery_enabled"] is False
 
 

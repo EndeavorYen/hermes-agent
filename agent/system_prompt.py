@@ -101,6 +101,14 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
 
+    try:
+        from agent.raphael.prompt import build_raphael_mode_prompt
+        _raphael_mode_prompt = build_raphael_mode_prompt()
+        if _raphael_mode_prompt:
+            stable_parts.append(_raphael_mode_prompt)
+    except Exception:
+        pass
+
     # Universal task-completion / no-fabrication guidance.  Applied to ALL
     # models regardless of tool_use_enforcement gating — the failure modes
     # this targets (stopping after a stub; fabricating output when a real
