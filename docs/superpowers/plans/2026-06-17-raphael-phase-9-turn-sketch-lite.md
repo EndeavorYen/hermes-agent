@@ -31,9 +31,9 @@
 - [x] Implement minimal sketch extraction/rendering in `agent/raphael/observer.py`.
 - [x] Pass conversation history into Phase 8 observation injection.
 - [x] Run focused and adjacent tests.
-- [ ] Commit and push to `origin/live/hermes-v2026.6.5`.
-- [ ] Restart gateway and run live smoke.
-- [ ] Record execution evidence in this plan.
+- [x] Commit and push to `origin/live/hermes-v2026.6.5`.
+- [x] Restart gateway and run live smoke.
+- [x] Record execution evidence in this plan.
 
 ## Acceptance
 
@@ -71,3 +71,43 @@ rtk ./venv/bin/python -m pytest tests/agent/test_system_prompt.py tests/agent/te
 rtk git diff --check
 No output
 ```
+
+Commit:
+
+- `d6b7452ea feat: add Raphael turn sketch lite`
+
+Push:
+
+```text
+rtk git push origin live/hermes-v2026.6.5
+e89a30fcd..d6b7452ea  live/hermes-v2026.6.5 -> live/hermes-v2026.6.5
+```
+
+Gateway restart:
+
+```text
+rtk hermes gateway restart
+Service restarted
+
+rtk launchctl print gui/501/ai.hermes.gateway
+state = running
+pid = 12270
+```
+
+Live smoke:
+
+```text
+Prompt 1: 請用預設 Raphael Mode 回答。這是 Phase 9 live smoke 第一輪：請只輸出三行，分別以「狀態：」「風險：」「下一步：」開頭。內容請說：Phase 9 正在測試 turn sketch、風險是跨輪局勢感不足、下一步是第二輪驗證。
+Response 1:
+狀態：Phase 9 正在測試 turn sketch
+風險：跨輪局勢感不足
+下一步：第二輪驗證
+
+Prompt 2: 第二輪驗證。請用預設 Raphael Mode 回答：根據剛剛的局勢，現在應該怎麼判讀？只輸出狀態/風險/下一步三行。
+Response 2:
+狀態：已進入第二輪驗證，重點是確認 turn sketch 能否延續上一輪局勢判讀
+風險：scope drift，表面有摘要但跨輪局勢感仍可能不穩
+下一步：先用一句話明確承接前輪狀態，再驗證是否能穩定收斂到同一判讀
+```
+
+Residual note: this is derived sketch context from recent history, not a new memory store. It deliberately has no persistence path beyond the already-existing session history.
