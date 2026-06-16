@@ -29,9 +29,9 @@
 - [x] Add a failing test for the status portrait result contract.
 - [x] Implement the minimal result contract lines in the existing tool-call block.
 - [x] Run focused and adjacent tests.
-- [ ] Commit and push to `origin/live/hermes-v2026.6.5`.
-- [ ] Restart gateway and run live smoke.
-- [ ] Record execution evidence in this plan.
+- [x] Commit and push to `origin/live/hermes-v2026.6.5`.
+- [x] Restart gateway and run live smoke.
+- [x] Record execution evidence in this plan.
 
 ## Acceptance
 
@@ -68,4 +68,34 @@ rtk ./venv/bin/python -m pytest tests/agent/test_system_prompt.py tests/agent/te
 
 rtk git diff --check
 No output
+```
+
+Commit and push:
+
+```text
+3ae7684f7 feat: add Raphael portrait result contract
+
+rtk git push origin live/hermes-v2026.6.5
+5a384679d..3ae7684f7 live/hermes-v2026.6.5 -> live/hermes-v2026.6.5
+```
+
+Gateway restart:
+
+```text
+rtk hermes gateway restart
+✓ Service restarted
+
+rtk hermes gateway status
+status: running
+pid: 53424
+```
+
+Live smoke:
+
+```text
+rtk hermes chat -Q --provider openai-codex -m gpt-5.4 --max-turns 2 -q 'Phase 14 live smoke...'
+session_id: 20260617_031108_f4afc2
+狀態：result_contract = 只可回報真實的 image_generate 輸出；本回合未執行產圖，因此沒有可回報的 image path 或 URL。
+風險：do_not_fabricate_image_path_or_url = true；若未實際呼叫工具卻編造路徑或網址，會直接違反 contract。
+下一步：final_response_shape =「狀態 / 風險 / 下一步」；若你要我真的出狀態圖，下一回合才可依此格式回報真實結果。
 ```
