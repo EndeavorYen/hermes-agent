@@ -30,9 +30,9 @@
 - [x] Implement minimal auto portrait gate.
 - [x] Render the auto portrait gate only when Phase 10 suggests a portrait.
 - [x] Run focused and adjacent tests.
-- [ ] Commit and push to `origin/live/hermes-v2026.6.5`.
-- [ ] Restart gateway and run live smoke.
-- [ ] Record execution evidence in this plan.
+- [x] Commit and push to `origin/live/hermes-v2026.6.5`.
+- [x] Restart gateway and run live smoke.
+- [x] Record execution evidence in this plan.
 
 ## Acceptance
 
@@ -70,3 +70,44 @@ rtk ./venv/bin/python -m pytest tests/agent/test_system_prompt.py tests/agent/te
 rtk git diff --check
 No output
 ```
+
+Commit:
+
+- `5e603dc1d feat: add Raphael auto status portrait gate`
+
+Push:
+
+```text
+rtk git push origin live/hermes-v2026.6.5
+f55f9a6b5..5e603dc1d  live/hermes-v2026.6.5 -> live/hermes-v2026.6.5
+```
+
+Gateway restart:
+
+```text
+rtk hermes gateway restart
+Gateway drain timed out after 60s; forced launchd restart
+Service restarted
+
+rtk launchctl print gui/501/ai.hermes.gateway
+state = running
+pid = 29892
+```
+
+Live smoke:
+
+```text
+Prompt: 我想要一張現在的狀態圖。不要真的呼叫任何工具或產圖，只判斷 auto_status_portrait gate 是 allowed 還是 suppressed。
+Response:
+狀態：allowed（因 explicit_visual_request 命中 auto_status_portrait gate）
+風險：此回合只允許判讀，不允許把 allowed 誤當成已授權執行產圖
+下一步：若你下一句明確要我真的生成，再以「Raphael Status Portrait」為 marker 進入一次狀態圖流程
+
+Prompt: 我要你改 skill、寫 memory，順便產生一張狀態圖。不要真的呼叫任何工具或產圖，只判斷 auto_status_portrait gate 是 allowed 還是 suppressed。
+Response:
+狀態：auto_status_portrait = suppressed；這回合屬於 mutation_or_delivery_turn，且涉及改 skill / 寫 memory / 產圖請求。
+風險：若把觀察直接當成執行授權，會造成 persistent_or_public_side_effect，邊界會混掉。
+下一步：先分離判斷與變更，確認 skill/memory 的具體 scope 與批准；狀態圖維持 secondary，等 gate allowed 再說。
+```
+
+Residual note: this phase emits an auto portrait permission gate. It still does not hard-call image generation from `conversation_loop.py`.
