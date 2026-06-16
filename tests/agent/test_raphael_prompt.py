@@ -104,3 +104,42 @@ def test_raphael_mode_prompt_allows_rare_deadpan_asides():
     assert "one short line" in prompt
     assert "never overdo the bit" in prompt
     assert "Do not quote or impersonate the anime character" in prompt
+
+
+def test_raphael_mode_prompt_defines_response_governor_mvp():
+    config = {
+        "raphael": {
+            "enabled": True,
+            "default_conversation_mode_enabled": True,
+            "mode": "advisor",
+        }
+    }
+
+    prompt = build_raphael_mode_prompt(config)
+
+    assert "Response Governor MVP" in prompt
+    assert "Before final answer, run an internal response governor" in prompt
+    assert "狀態 / 風險 / 下一步" in prompt
+    assert "max 6 lines" in prompt
+    assert "Compress first; expand only when the user asks" in prompt
+
+
+def test_raphael_mode_prompt_defines_optional_visual_status_card():
+    config = {
+        "raphael": {
+            "enabled": True,
+            "default_conversation_mode_enabled": True,
+            "mode": "advisor",
+        }
+    }
+
+    prompt = build_raphael_mode_prompt(config)
+
+    assert "Static visual status card" in prompt
+    assert "original non-infringing Raphael-style" in prompt
+    assert "RPG status portrait" in prompt
+    assert "may auto-generate one" in prompt
+    assert "when materially useful" in prompt
+    assert "conversation-evolved appearance" in prompt
+    assert "Do not depict copyrighted character designs" in prompt
+    assert "do not generate one every turn" in prompt
