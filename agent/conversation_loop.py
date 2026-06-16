@@ -730,7 +730,8 @@ def run_conversation(
         from agent.raphael.observer import build_raphael_observation_context
 
         _raphael_observation_context = build_raphael_observation_context(
-            original_user_message
+            original_user_message,
+            conversation_history=messages[:current_turn_user_idx],
         )
     except Exception as exc:
         logger.warning("Raphael state observer failed: %s", exc)

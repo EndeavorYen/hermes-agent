@@ -1,5 +1,6 @@
 from agent.raphael.observer import (
     build_raphael_observation_context,
+    extract_raphael_turn_sketches,
     observe_raphael_turn,
     render_raphael_observation,
     should_inject_raphael_observation,
@@ -75,3 +76,53 @@ def test_observation_context_uses_raphael_default_mode_gate():
     assert not should_inject_raphael_observation(disabled_config)
     assert not should_inject_raphael_observation(non_advisor_config)
     assert build_raphael_observation_context("請產生一張狀態圖", disabled_config) == ""
+
+
+def test_extracts_recent_judgment_lines_as_turn_sketches():
+    history = [
+        {"role": "assistant", "content": "狀態：舊狀態。\n風險：舊風險。"},
+        {"role": "user", "content": "下一步？"},
+        {
+            "role": "assistant",
+            "content": (
+                "前言：略。\n"
+                "狀態：Phase 8 已完成。\n"
+                "風險：還沒有短期局勢感。\n"
+                "下一步：加入最近 turn sketch。"
+            ),
+        },
+    ]
+
+    sketches = extract_raphael_turn_sketches(history, max_items=3)
+
+    assert sketches == (
+        "狀態：Phase 8 已完成。",
+        "風險：還沒有短期局勢感。",
+        "下一步：加入最近 turn sketch。",
+    )
+
+
+def test_observation_context_includes_recent_turn_sketches():
+    config = {
+        "raphael": {
+            "enabled": True,
+            "default_conversation_mode_enabled": True,
+            "mode": "advisor",
+        }
+    }
+    history = [
+        {
+            "role": "assistant",
+            "content": "狀態：Phase 8 已完成。\n風險：缺少短期局勢感。",
+        }
+    ]
+
+    context = build_raphael_observation_context(
+        "請往下推進至 phase9",
+        config,
+        conversation_history=history,
+    )
+
+    assert "Raphael Turn Sketch (recent, derived):" in context
+    assert "- 狀態：Phase 8 已完成。" in context
+    assert "- 風險：缺少短期局勢感。" in context
