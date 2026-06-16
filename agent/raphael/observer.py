@@ -73,6 +73,22 @@ _IMPLEMENTATION_OR_PLAN_KEYWORDS = (
 
 _JUDGMENT_LINE_RE = re.compile(r"^\s*(?:[-*•]\s*)?(狀態|風險|下一步)\s*[:：]")
 
+_VISUAL_TRANSITION_KEYWORDS = (
+    "complete",
+    "completed",
+    "done",
+    "blocked",
+    "error",
+    "failed",
+    "failure",
+    "上線",
+    "完成",
+    "失敗",
+    "錯誤",
+    "阻塞",
+    "卡住",
+)
+
 
 def _cfg_get(config: Mapping[str, Any], *path: str, default: Any = None) -> Any:
     current: Any = config
@@ -199,6 +215,41 @@ def _render_raphael_turn_sketch(sketches: tuple[str, ...]) -> str:
     )
 
 
+def decide_raphael_visual_trigger(
+    observation: RaphaelTurnObservation,
+    sketches: tuple[str, ...],
+) -> dict[str, Any]:
+    if observation.visual_status_needed:
+        reason = "explicit_visual_request"
+    elif _contains_any("\n".join(sketches), _VISUAL_TRANSITION_KEYWORDS):
+        reason = "state_transition"
+    else:
+        reason = "not_needed"
+
+    visual_trigger = (
+        "suggest_status_portrait" if reason != "not_needed" else "none"
+    )
+    return {
+        "visual_trigger": visual_trigger,
+        "reason": reason,
+        "auto_call_image_tool": False,
+    }
+
+
+def _render_raphael_visual_trigger_gate(decision: Mapping[str, Any]) -> str:
+    if decision.get("visual_trigger") == "none":
+        return ""
+    auto_call = "true" if decision.get("auto_call_image_tool") is True else "false"
+    return "\n".join(
+        [
+            "Raphael Visual Trigger Gate (suggestion only):",
+            f"visual_trigger: {decision.get('visual_trigger', 'none')}",
+            f"reason: {decision.get('reason', 'not_needed')}",
+            f"auto_call_image_tool: {auto_call}",
+        ]
+    )
+
+
 def build_raphael_observation_context(
     user_message: str,
     config: Mapping[str, Any] | None = None,
@@ -207,18 +258,25 @@ def build_raphael_observation_context(
 ) -> str:
     if not should_inject_raphael_observation(config):
         return ""
-    observation = render_raphael_observation(observe_raphael_turn(user_message))
-    sketch = _render_raphael_turn_sketch(
-        extract_raphael_turn_sketches(conversation_history)
+    turn_observation = observe_raphael_turn(user_message)
+    observation = render_raphael_observation(turn_observation)
+    sketches = extract_raphael_turn_sketches(conversation_history)
+    sketch = _render_raphael_turn_sketch(sketches)
+    visual_gate = _render_raphael_visual_trigger_gate(
+        decide_raphael_visual_trigger(turn_observation, sketches)
     )
-    if not sketch:
-        return observation
-    return observation + "\n\n" + sketch
+    blocks = [observation]
+    if sketch:
+        blocks.append(sketch)
+    if visual_gate:
+        blocks.append(visual_gate)
+    return "\n\n".join(blocks)
 
 
 __all__ = [
     "RaphaelTurnObservation",
     "build_raphael_observation_context",
+    "decide_raphael_visual_trigger",
     "extract_raphael_turn_sketches",
     "observe_raphael_turn",
     "render_raphael_observation",

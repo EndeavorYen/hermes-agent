@@ -1,5 +1,6 @@
 from agent.raphael.observer import (
     build_raphael_observation_context,
+    decide_raphael_visual_trigger,
     extract_raphael_turn_sketches,
     observe_raphael_turn,
     render_raphael_observation,
@@ -126,3 +127,65 @@ def test_observation_context_includes_recent_turn_sketches():
     assert "Raphael Turn Sketch (recent, derived):" in context
     assert "- 狀態：Phase 8 已完成。" in context
     assert "- 風險：缺少短期局勢感。" in context
+
+
+def test_visual_trigger_suggests_portrait_for_explicit_visual_request():
+    observation = observe_raphael_turn("請產生一張現在的狀態圖")
+    decision = decide_raphael_visual_trigger(observation, ())
+
+    assert decision["visual_trigger"] == "suggest_status_portrait"
+    assert decision["reason"] == "explicit_visual_request"
+    assert decision["auto_call_image_tool"] is False
+
+
+def test_visual_trigger_suggests_portrait_for_milestone_sketch():
+    observation = observe_raphael_turn("接下來呢？")
+    decision = decide_raphael_visual_trigger(
+        observation,
+        ("狀態：Phase 9 已完成並上線。", "下一步：Phase 10 gate。"),
+    )
+
+    assert decision["visual_trigger"] == "suggest_status_portrait"
+    assert decision["reason"] == "state_transition"
+    assert decision["auto_call_image_tool"] is False
+
+
+def test_visual_trigger_stays_quiet_for_casual_turns():
+    observation = observe_raphael_turn("你好呀")
+    decision = decide_raphael_visual_trigger(observation, ())
+
+    assert decision["visual_trigger"] == "none"
+    assert decision["reason"] == "not_needed"
+    assert decision["auto_call_image_tool"] is False
+
+
+def test_observation_context_renders_visual_trigger_gate():
+    config = {
+        "raphael": {
+            "enabled": True,
+            "default_conversation_mode_enabled": True,
+            "mode": "advisor",
+        }
+    }
+
+    context = build_raphael_observation_context("請產生一張現在的狀態圖", config)
+
+    assert "Raphael Visual Trigger Gate (suggestion only):" in context
+    assert "visual_trigger: suggest_status_portrait" in context
+    assert "reason: explicit_visual_request" in context
+    assert "auto_call_image_tool: false" in context
+
+
+def test_observation_context_omits_visual_gate_when_not_needed():
+    config = {
+        "raphael": {
+            "enabled": True,
+            "default_conversation_mode_enabled": True,
+            "mode": "advisor",
+        }
+    }
+
+    context = build_raphael_observation_context("你好呀", config)
+
+    assert "Raphael Visual Trigger Gate" not in context
+    assert "visual_trigger: none" not in context
