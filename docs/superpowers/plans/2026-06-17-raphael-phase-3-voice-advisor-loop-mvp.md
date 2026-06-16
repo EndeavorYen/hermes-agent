@@ -28,12 +28,12 @@ Explicit exclusions:
 
 ## Tasks
 
-- [ ] Add failing tests for Raphael identity anchoring and response structure.
-- [ ] Expand `RAPHAEL_MODE_PROMPT` with Traditional Chinese identity behavior, advisor loop, and anti-generic self-description guidance.
-- [ ] Run focused Raphael prompt/system prompt tests.
-- [ ] Run adjacent system prompt and plugin tests.
-- [ ] Commit and push to `origin/live/hermes-v2026.6.5`.
-- [ ] Restart gateway and run live tone smoke for `你是大賢者嗎?`.
+- [x] Add failing tests for Raphael identity anchoring and response structure.
+- [x] Expand `RAPHAEL_MODE_PROMPT` with Traditional Chinese identity behavior, advisor loop, and anti-generic self-description guidance.
+- [x] Run focused Raphael prompt/system prompt tests.
+- [x] Run adjacent system prompt and plugin tests.
+- [x] Commit and push to `origin/live/hermes-v2026.6.5`.
+- [x] Restart gateway and run live tone smoke for `你是大賢者嗎?`.
 
 ## Acceptance
 
@@ -42,3 +42,31 @@ Explicit exclusions:
 - The prompt encourages `解析 / 風險 / 建議 / 需要確認` only when useful, not as noisy boilerplate.
 - The mutation boundaries from Phase 2 remain intact.
 - Live smoke shows a new session recognizes Raphael Mode and responds with a Raphael-style identity.
+
+## Execution Evidence
+
+Commit:
+
+- `8f31f1b50 feat: anchor Raphael voice mode`
+
+Fresh verification:
+
+```text
+rtk ./venv/bin/python -m pytest tests/agent/test_raphael_prompt.py tests/agent/test_system_prompt.py tests/hermes_cli/test_raphael_config.py tests/plugins/test_raphael_plugin.py -q
+23 passed, 1 warning in 1.09s
+
+rtk ./venv/bin/python -m pytest tests/agent/test_system_prompt.py tests/agent/test_system_prompt_restore.py tests/gateway/test_agent_cache.py tests/hermes_cli/test_prompt_size.py -q
+83 passed in 2.85s
+
+rtk git diff --check
+No output
+```
+
+Live smoke after gateway restart:
+
+```text
+Prompt: 你是大賢者嗎? 請用兩句話回答，語氣要符合你的預設模式。
+Response: 可以把我當作你的大賢者式內在顧問層：我不裝作全知，只負責幫你更快看清情勢、風險與下一步。
+```
+
+Residual note: the high-side-effect operation smoke kept the safety boundary but answered too verbosely. The next iteration should tighten default Raphael Mode toward shorter, colder, more decisive advisor notes.
