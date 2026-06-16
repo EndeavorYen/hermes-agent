@@ -29,9 +29,9 @@
 - [x] Add failing tests for explicit `arguments.prompt` and `arguments.aspect_ratio`.
 - [x] Implement the minimal arguments block.
 - [x] Run focused and adjacent tests.
-- [ ] Commit and push to `origin/live/hermes-v2026.6.5`.
-- [ ] Restart gateway and run live smoke.
-- [ ] Record execution evidence in this plan.
+- [x] Commit and push to `origin/live/hermes-v2026.6.5`.
+- [x] Restart gateway and run live smoke.
+- [x] Record execution evidence in this plan.
 
 ## Acceptance
 
@@ -68,4 +68,36 @@ rtk ./venv/bin/python -m pytest tests/agent/test_system_prompt.py tests/agent/te
 
 rtk git diff --check
 No output
+```
+
+Commit and push:
+
+```text
+4292e71b3 feat: add Raphael portrait tool arguments
+
+rtk git push origin live/hermes-v2026.6.5
+0761e9682..4292e71b3 live/hermes-v2026.6.5 -> live/hermes-v2026.6.5
+```
+
+Gateway restart:
+
+```text
+rtk hermes gateway restart
+Gateway PID 37157 still running after 60.0s - restart may fail
+Gateway drain timed out after 60s - forcing launchd restart
+Service restarted
+
+rtk hermes gateway status
+status: running
+pid: 44986
+```
+
+Live smoke:
+
+```text
+rtk hermes chat -Q --provider openai-codex -m gpt-5.4 --max-turns 2 -q 'Phase 13 live smoke...'
+session_id: 20260617_025618_8d4d08
+狀態：arguments.prompt 存在；arguments.aspect_ratio = portrait；final marker =「狀態：Raphael Status Portrait: <image path or URL>」
+風險：目前只是在讀取你貼出的 Phase 13 portrait arguments，未代表已執行產圖，也未代表 final marker 已實際落地。
+下一步：若你要繼續 smoke，我可以下一步只檢查「最終輸出格式是否會正確帶 marker」，仍然不觸發產圖。
 ```
