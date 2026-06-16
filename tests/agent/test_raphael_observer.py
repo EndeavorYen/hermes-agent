@@ -277,6 +277,8 @@ def test_observation_context_renders_status_portrait_tool_call_when_allowed():
     assert "original non-infringing RPG status portrait" in context
     assert "do not depict copyrighted characters" in context
     assert "final_marker_required: 狀態：Raphael Status Portrait: <image path or URL>" in context
+    assert "arguments.prompt:" in context
+    assert "arguments.aspect_ratio: portrait" in context
 
 
 def test_observation_context_omits_tool_call_when_auto_portrait_suppressed():
