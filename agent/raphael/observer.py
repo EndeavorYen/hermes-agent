@@ -337,6 +337,9 @@ def _render_raphael_status_portrait_tool_call(decision: Mapping[str, Any]) -> st
             f"prompt: {prompt}",
             f"arguments.prompt: {prompt}",
             "arguments.aspect_ratio: portrait",
+            "result_contract: report only real image_generate output",
+            "do_not_fabricate_image_path_or_url: true",
+            "final_response_shape: 狀態 / 風險 / 下一步",
             "final_marker_required: 狀態：Raphael Status Portrait: <image path or URL>",
         ]
     )
