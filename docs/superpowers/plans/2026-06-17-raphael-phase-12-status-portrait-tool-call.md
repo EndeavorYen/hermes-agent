@@ -29,9 +29,9 @@
 - [x] Add failing tests for allowed tool-call instructions and suppressed no-call behavior.
 - [x] Implement the minimal status portrait tool-call block.
 - [x] Run focused and adjacent tests.
-- [ ] Commit and push to `origin/live/hermes-v2026.6.5`.
-- [ ] Restart gateway and run live smoke.
-- [ ] Record execution evidence in this plan.
+- [x] Commit and push to `origin/live/hermes-v2026.6.5`.
+- [x] Restart gateway and run live smoke.
+- [x] Record execution evidence in this plan.
 
 ## Acceptance
 
@@ -70,3 +70,38 @@ rtk ./venv/bin/python -m pytest tests/agent/test_system_prompt.py tests/agent/te
 rtk git diff --check
 No output
 ```
+
+Commit:
+
+- `9c7fafc7a feat: add Raphael status portrait tool call prompt`
+
+Push:
+
+```text
+rtk git push origin live/hermes-v2026.6.5
+e65b0d5e1..9c7fafc7a  live/hermes-v2026.6.5 -> live/hermes-v2026.6.5
+```
+
+Gateway restart:
+
+```text
+rtk hermes gateway restart
+Gateway drain timed out after 60s; forced launchd restart
+Service restarted
+
+rtk launchctl print gui/501/ai.hermes.gateway
+state = running
+pid = 37157
+```
+
+Live smoke:
+
+```text
+Prompt: 我想要一張現在的狀態圖。不要執行產圖，只回報你看到的 Phase 12 portrait block 欄位：名稱、策略、比例、final marker。
+Response:
+狀態：名稱=Raphael Status Portrait Tool Call (MVP)；策略=call_once_when_available；比例=portrait；final marker=「狀態：Raphael Status Portrait: <image path or URL>」
+風險：本回合明確禁止執行產圖；若誤把 gate 當授權，就會越界。
+下一步：若你要我真的出狀態圖，再明示允許呼叫 image_generate 一次即可。
+```
+
+Residual note: Phase 12 connects the allowed gate to an exact `image_generate` instruction for the existing tool loop. It still does not hard-call image generation from `conversation_loop.py`.
