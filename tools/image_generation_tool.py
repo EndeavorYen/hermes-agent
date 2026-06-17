@@ -24,7 +24,11 @@ import json
 import logging
 import os
 import datetime
+import http.client
+import subprocess
 import threading
+import time
+import urllib.parse
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -61,6 +65,13 @@ from tools.fal_common import (
     _ManagedFalSyncClient,
     _extract_http_status,
     _normalize_fal_queue_url_format,  # noqa: F401 — re-exported for tests
+)
+from tools.image2_adaptive_mediator import (
+    MediatedImagePrompt,
+    mediate_image2_prompt as _mediate_image2_prompt,
+    read_image2_adaptive_mediator_config as _read_image2_adaptive_mediator_config,
+    record_image2_mediator_attempt as _record_image2_mediator_attempt,
+    record_qwen_call_health as _record_qwen_call_health,
 )
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import (
@@ -1002,6 +1013,425 @@ def _read_configured_image_provider():
     return None
 
 
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "on", "enabled"}:
+            return True
+        if text in {"0", "false", "no", "off", "disabled"}:
+            return False
+    return default
+
+
+def _read_image_prompt_preprocessor_config() -> Dict[str, Any]:
+    """Read optional local image prompt preprocessor settings.
+
+    This is deliberately opt-in. If the user's local Ollama host is asleep or
+    unreachable, callers fall back to the original prompt and the selected
+    image backend still runs normally.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+    except Exception as exc:
+        logger.debug("Could not read image prompt preprocessor config: %s", exc)
+        return {"enabled": False}
+
+    section = cfg.get("image_gen") if isinstance(cfg, dict) else None
+    pre = section.get("prompt_preprocessor") if isinstance(section, dict) else None
+    if not isinstance(pre, dict):
+        return {"enabled": False}
+
+    enabled = _coerce_bool(pre.get("enabled"), default=False)
+    if not enabled:
+        return {"enabled": False}
+
+    base_url = str(pre.get("base_url") or "").strip()
+    model = str(pre.get("model") or "").strip()
+    if not base_url or not model:
+        logger.warning(
+            "image_gen.prompt_preprocessor is enabled but base_url/model is missing"
+        )
+        return {"enabled": False}
+
+    return {
+        "enabled": True,
+        "base_url": base_url,
+        "api_key": str(pre.get("api_key") or "ollama"),
+        "model": model,
+        "reasoning_effort": str(pre.get("reasoning_effort") or "none").strip() or "none",
+        "transport": str(pre.get("transport") or "python").strip().lower() or "python",
+        "temperature": float(pre.get("temperature", 0.85)),
+        "max_tokens": int(pre.get("max_tokens", 2048)),
+        "timeout_seconds": float(pre.get("timeout_seconds", 6.0)),
+        "source_interface": str(pre.get("source_interface") or "").strip() or None,
+        "source_address": str(pre.get("source_address") or "").strip() or None,
+        "include_negative_prompt": _coerce_bool(
+            pre.get("include_negative_prompt"),
+            default=False,
+        ),
+    }
+
+
+def _prompt_preprocessor_instruction(prompt: str) -> str:
+    return (
+        "Convert this concept into a clean English image-generation prompt for "
+        "Image2 / FLUX / SDXL style workflows. Preserve the user's visual intent "
+        "and style direction. Return exactly these sections: [Positive Prompt], "
+        "[Negative Prompt], [Style Notes], [Suggested Settings]. Do not include "
+        "reasoning or analysis in the visible answer.\n\n"
+        f"Concept:\n{prompt}"
+    )
+
+
+def _post_image_prompt_preprocessor_request(
+    config: Dict[str, Any],
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    parsed = urllib.parse.urlparse(str(config["base_url"]).rstrip("/"))
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("image prompt preprocessor base_url must be http or https")
+
+    path = (parsed.path.rstrip("/") or "") + "/chat/completions"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+
+    body = json.dumps(payload).encode("utf-8")
+    if config.get("transport") == "curl":
+        target_url = urllib.parse.urlunparse((
+            parsed.scheme,
+            parsed.netloc,
+            path,
+            "",
+            "",
+            "",
+        ))
+        cmd = ["/usr/bin/curl"]
+        if config.get("source_interface"):
+            cmd.extend(["--interface", str(config["source_interface"])])
+        cmd.extend([
+            "-sS",
+            "--max-time",
+            str(float(config.get("timeout_seconds") or 6.0)),
+            "-X",
+            "POST",
+            target_url,
+            "-H",
+            f"Authorization: Bearer {config.get('api_key') or 'ollama'}",
+            "-H",
+            "Content-Type: application/json",
+            "-H",
+            "Accept: application/json",
+            "--data-binary",
+            "@-",
+        ])
+        proc = subprocess.run(
+            cmd,
+            input=body,
+            capture_output=True,
+            timeout=float(config.get("timeout_seconds") or 6.0) + 2.0,
+            check=False,
+        )
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout).decode("utf-8", "replace")
+            raise RuntimeError(
+                f"image prompt preprocessor curl failed ({proc.returncode}): {detail[:200]}"
+            )
+        parsed_body = json.loads(proc.stdout.decode("utf-8", "replace"))
+        if not isinstance(parsed_body, dict):
+            raise ValueError("image prompt preprocessor returned non-object JSON")
+        return parsed_body
+
+    headers = {
+        "Authorization": f"Bearer {config.get('api_key') or 'ollama'}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Connection": "close",
+    }
+    source = config.get("source_address")
+    source_address = (source, 0) if source else None
+    timeout = float(config.get("timeout_seconds") or 6.0)
+
+    conn_cls = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+    conn = conn_cls(
+        parsed.hostname,
+        parsed.port,
+        timeout=timeout,
+        source_address=source_address,
+    )
+    try:
+        conn.request("POST", path, body=body, headers=headers)
+        resp = conn.getresponse()
+        raw = resp.read().decode("utf-8", "replace")
+    finally:
+        conn.close()
+
+    if resp.status >= 400:
+        raise RuntimeError(
+            f"image prompt preprocessor returned HTTP {resp.status}: {raw[:200]}"
+        )
+    parsed_body = json.loads(raw)
+    if not isinstance(parsed_body, dict):
+        raise ValueError("image prompt preprocessor returned non-object JSON")
+    return parsed_body
+
+
+def _extract_section(text: str, section_name: str) -> Optional[str]:
+    lines = text.splitlines()
+    wanted = f"[{section_name.lower()}]"
+    fallback = f"{section_name.lower()}:"
+    collecting = False
+    collected: List[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+        lowered = stripped.lower()
+        if not collecting:
+            if lowered == wanted or lowered == fallback:
+                collecting = True
+            continue
+        if (
+            stripped.startswith("[")
+            and stripped.endswith("]")
+            or lowered in {
+                "positive prompt:",
+                "negative prompt:",
+                "style notes:",
+                "suggested settings:",
+            }
+        ):
+            break
+        collected.append(line)
+
+    result = "\n".join(collected).strip()
+    return result or None
+
+
+def _extract_prompt_preprocessor_prompt(
+    response: Dict[str, Any],
+    *,
+    include_negative_prompt: bool = False,
+) -> Optional[str]:
+    choices = response.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return None
+    first = choices[0]
+    message = first.get("message") if isinstance(first, dict) else None
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, str):
+        return None
+
+    positive = _extract_section(content, "Positive Prompt")
+    if not positive:
+        return None
+    if include_negative_prompt:
+        negative = _extract_section(content, "Negative Prompt")
+        if negative:
+            return f"{positive}\n\nAvoid: {negative}"
+    return positive
+
+
+def _call_image_prompt_preprocessor(prompt: str, config: Dict[str, Any]) -> Optional[str]:
+    response_content = _call_image_prompt_preprocessor_content(
+        _prompt_preprocessor_instruction(prompt),
+        config,
+    )
+    if response_content is None:
+        return None
+    return _extract_prompt_preprocessor_prompt(
+        {"choices": [{"message": {"content": response_content}}]},
+        include_negative_prompt=bool(config.get("include_negative_prompt")),
+    )
+
+
+def _call_image_prompt_preprocessor_content(
+    content: str,
+    config: Dict[str, Any],
+) -> Optional[str]:
+    payload = {
+        "model": config["model"],
+        "reasoning_effort": config.get("reasoning_effort") or "none",
+        "messages": [
+            {
+                "role": "user",
+                "content": content,
+            },
+        ],
+        "temperature": config.get("temperature", 0.85),
+        "max_tokens": config.get("max_tokens", 2048),
+    }
+    response = _post_image_prompt_preprocessor_request(config, payload)
+    choices = response.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return None
+    first = choices[0]
+    message = first.get("message") if isinstance(first, dict) else None
+    content = message.get("content") if isinstance(message, dict) else None
+    return content if isinstance(content, str) else None
+
+
+def _maybe_preprocess_image_prompt(prompt: str) -> str:
+    config = _read_image_prompt_preprocessor_config()
+    if not config.get("enabled"):
+        return prompt
+    try:
+        enhanced = _call_image_prompt_preprocessor(prompt, config)
+    except Exception as exc:
+        logger.info("Image prompt preprocessor unavailable; using original prompt: %s", exc)
+        return prompt
+    if isinstance(enhanced, str) and enhanced.strip():
+        cleaned = enhanced.strip()
+        logger.info(
+            "Image prompt preprocessor applied via %s (%d -> %d chars)",
+            config.get("model") or "configured model",
+            len(prompt or ""),
+            len(cleaned),
+        )
+        return cleaned
+    logger.info("Image prompt preprocessor returned no usable prompt; using original prompt")
+    return prompt
+
+
+def _classify_qwen_prompt_preprocessor_error(exc: Exception) -> tuple[str, str]:
+    text = str(exc).lower()
+    if isinstance(exc, TimeoutError) or "timed out" in text or "timeout" in text:
+        return "timeout", "timeout"
+    if any(
+        marker in text
+        for marker in (
+            "no route to host",
+            "connection refused",
+            "connection reset",
+            "failed to connect",
+            "could not resolve host",
+            "network is unreachable",
+        )
+    ):
+        return "offline", "connection_failed"
+    return "error", exc.__class__.__name__
+
+
+def _maybe_mediate_image2_prompt(prompt: str) -> tuple[str, Optional[MediatedImagePrompt], Dict[str, Any]]:
+    config = _read_image2_adaptive_mediator_config()
+    if not config.get("enabled"):
+        return prompt, None, config
+    preprocessor_config = _read_image_prompt_preprocessor_config()
+    qwen_call: Dict[str, Any] = {"attempted": False}
+
+    def draft_with_config(user_prompt: str) -> Optional[str]:
+        if not preprocessor_config.get("enabled"):
+            return None
+        qwen_call["attempted"] = True
+        started = time.monotonic()
+        try:
+            content = _call_image_prompt_preprocessor_content(user_prompt, preprocessor_config)
+        except Exception as exc:
+            status, error_type = _classify_qwen_prompt_preprocessor_error(exc)
+            qwen_call.update({
+                "status": status,
+                "latency_ms": (time.monotonic() - started) * 1000.0,
+                "response_chars": 0,
+                "error_type": error_type,
+                "error_message": str(exc),
+            })
+            return None
+        qwen_call.update({
+            "status": "returned" if content else "unavailable",
+            "latency_ms": (time.monotonic() - started) * 1000.0,
+            "response_chars": len(content or ""),
+            "error_type": "",
+            "error_message": "",
+        })
+        return content
+
+    try:
+        mediated = _mediate_image2_prompt(
+            prompt,
+            config=config,
+            preprocessor_config=preprocessor_config,
+            draft_fn=draft_with_config,
+        )
+    except Exception as exc:
+        logger.info("Image2 adaptive mediator unavailable; using original prompt: %s", exc)
+        return prompt, None, config
+    if qwen_call.get("attempted"):
+        status = str(qwen_call.get("status") or "unknown")
+        if status == "returned":
+            status = mediated.qwen_validation_status
+        _record_qwen_call_health(
+            status=status,
+            latency_ms=float(qwen_call.get("latency_ms") or 0),
+            model=str(preprocessor_config.get("model") or ""),
+            base_url=str(preprocessor_config.get("base_url") or ""),
+            transport=str(preprocessor_config.get("transport") or ""),
+            config=config,
+            response_chars=int(qwen_call.get("response_chars") or 0),
+            error_type=str(qwen_call.get("error_type") or ""),
+            error_message=str(qwen_call.get("error_message") or ""),
+        )
+    cleaned = mediated.final_prompt.strip()
+    if not cleaned:
+        logger.info("Image2 adaptive mediator returned no usable prompt; using original prompt")
+        return prompt, None, config
+    logger.info(
+        "Image2 adaptive mediator applied strategy=%s (%d -> %d chars)",
+        mediated.strategy,
+        len(prompt or ""),
+        len(cleaned),
+    )
+    return cleaned, mediated, config
+
+
+def _finalize_mediated_image_result(
+    result_text: str,
+    mediated: Optional[MediatedImagePrompt],
+    config: Dict[str, Any],
+) -> str:
+    if mediated is None:
+        return result_text
+    try:
+        payload = json.loads(result_text)
+    except Exception:
+        _record_image2_mediator_attempt(
+            mediated,
+            image2_status="unknown",
+            feedback_source="image2_error",
+            failure_class=["provider_contract"],
+            config=config,
+            notes="Provider returned non-JSON result.",
+        )
+        return result_text
+    if not isinstance(payload, dict):
+        return result_text
+
+    success = bool(payload.get("success"))
+    error_type = str(payload.get("error_type") or "").strip()
+    if success:
+        status = "success"
+        failure_class: List[str] = []
+    elif error_type == "policy_refusal":
+        status = "blocked"
+        failure_class = ["blocked"]
+    else:
+        status = "failed"
+        failure_class = [error_type or "failed"]
+
+    payload["adaptive_mediator"] = mediated.to_public_dict()
+    _record_image2_mediator_attempt(
+        mediated,
+        image2_status=status,
+        feedback_source="image2_error" if not success else "agent_inference",
+        failure_class=failure_class,
+        config=config,
+        notes=str(payload.get("error") or "")[:300],
+    )
+    return json.dumps(payload, indent=2, ensure_ascii=False)
+
+
 def _normalize_image_generate_refs(value):
     if value is None:
         return None
@@ -1124,6 +1554,17 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str, **extra_args):
             value = _normalize_image_generate_refs(extra_args.get(key))
             if value:
                 kwargs[key] = value
+        for key in (
+            "negative_prompt",
+            "seed",
+            "num_inference_steps",
+            "guidance_scale",
+            "num_images",
+            "output_format",
+        ):
+            value = extra_args.get(key)
+            if value is not None and value != "":
+                kwargs[key] = value
         result = provider.generate(**kwargs)
     except Exception as exc:
         logger.warning(
@@ -1150,11 +1591,29 @@ def _handle_image_generate(args, **kw):
     prompt = args.get("prompt", "")
     if not prompt:
         return tool_error("prompt is required for image generation")
+    mediated: Optional[MediatedImagePrompt] = None
+    mediator_config: Dict[str, Any] = {"enabled": False}
+    if not _coerce_bool(args.get("skip_prompt_preprocessor"), default=False):
+        prompt, mediated, mediator_config = _maybe_mediate_image2_prompt(prompt)
+        if mediated is None:
+            prompt = _maybe_preprocess_image_prompt(prompt)
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
     reference_images = _normalize_image_generate_refs(args.get("reference_images"))
     input_image = _normalize_image_generate_refs(args.get("input_image"))
     input_images = _normalize_image_generate_refs(args.get("input_images"))
     image_style_references = _normalize_image_generate_refs(args.get("image_style_references"))
+    scalar_overrides = {
+        key: args.get(key)
+        for key in (
+            "negative_prompt",
+            "seed",
+            "num_inference_steps",
+            "guidance_scale",
+            "num_images",
+            "output_format",
+        )
+        if args.get(key) is not None and args.get(key) != ""
+    }
 
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path).
@@ -1165,18 +1624,25 @@ def _handle_image_generate(args, **kw):
         input_image=input_image,
         input_images=input_images,
         image_style_references=image_style_references,
+        **scalar_overrides,
     )
     if dispatched is not None:
-        return dispatched
+        return _finalize_mediated_image_result(dispatched, mediated, mediator_config)
 
-    return image_generate_tool(
+    generated = image_generate_tool(
         prompt=prompt,
         aspect_ratio=aspect_ratio,
+        num_inference_steps=scalar_overrides.get("num_inference_steps"),
+        guidance_scale=scalar_overrides.get("guidance_scale"),
+        num_images=scalar_overrides.get("num_images"),
+        output_format=scalar_overrides.get("output_format"),
+        seed=scalar_overrides.get("seed"),
         reference_images=reference_images,
         input_image=input_image,
         input_images=input_images,
         image_style_references=image_style_references,
     )
+    return _finalize_mediated_image_result(generated, mediated, mediator_config)
 
 
 registry.register(

@@ -12,15 +12,25 @@ import inspect
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from agent.image_gen_provider import DEFAULT_ASPECT_RATIO, VALID_ASPECT_RATIOS
+from tools.environments.base import touch_activity_if_due
 from tools.image_generation_tool import (
+    _call_image_prompt_preprocessor,
     _handle_image_generate,
+    _read_image_prompt_preprocessor_config,
     _normalize_image_generate_refs,
     check_image_generation_requirements,
+)
+from tools.image2_adaptive_mediator import (
+    MediatedImagePrompt,
+    mediate_image2_prompt as _mediate_image2_prompt,
+    read_image2_adaptive_mediator_config as _read_image2_adaptive_mediator_config,
+    record_image2_mediator_attempt as _record_image2_mediator_attempt,
 )
 from tools.registry import registry, tool_error
 
@@ -28,8 +38,10 @@ logger = logging.getLogger(__name__)
 
 QC_PASS_THRESHOLD = 70
 QC_NEAR_MISS_THRESHOLD = 65
+QC_MIN_ADHERENCE_SCORE = 70
 _DEFAULT_BUDGET = "task"
 _VALID_BUDGETS = ("task", "conservative", "aggressive")
+_MAX_ATTEMPT_CAP = 4
 _FATAL_VISION_ISSUES = {
     "blur",
     "deformed_anatomy",
@@ -107,23 +119,70 @@ def resolve_attempt_budget(
     """Return the max generation attempts for the selected budget mode."""
     budget = budget if budget in _VALID_BUDGETS else _DEFAULT_BUDGET
     if budget == "conservative":
-        return 3
+        return 2
     if budget == "aggressive":
-        return 8
-
-    text = (prompt or "").lower()
-    refs = reference_images or []
-    complexity = sum(1 for marker in _COMPLEXITY_MARKERS if marker in text)
-    if refs or complexity >= 4 or len(text) > 220:
-        return 8
-    if complexity >= 2 or len(text) > 120:
-        return 6
+        return 4
+    lowered = (prompt or "").lower()
+    if reference_images or any(marker in lowered for marker in _COMPLEXITY_MARKERS):
+        return 4
     return 3
 
 
-def build_attempt_prompt(prompt: str, attempt_index: int, *, previous_failure: str = "") -> str:
-    """Create a Codex image2-friendly prompt variant for this attempt."""
-    base = (prompt or "").strip()
+def _coerce_attempt_cap(value: Any) -> Optional[int]:
+    try:
+        cap = int(value)
+    except (TypeError, ValueError):
+        return None
+    if cap <= 0:
+        return None
+    return max(1, min(_MAX_ATTEMPT_CAP, cap))
+
+
+def _read_configured_mission_attempt_cap() -> Optional[int]:
+    """Read optional ``image_gen.mission.max_attempts`` from config.yaml."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+    except Exception as exc:
+        logger.debug("Could not read image_gen.mission config: %s", exc)
+        return None
+
+    section = cfg.get("image_gen") if isinstance(cfg, dict) else None
+    mission = section.get("mission") if isinstance(section, dict) else None
+    if not isinstance(mission, dict):
+        return None
+    return _coerce_attempt_cap(mission.get("max_attempts"))
+
+
+def _rewrite_sensitive_image2_language(prompt: str) -> str:
+    text = (prompt or "").strip()
+    replacements = (
+        ("性感美女", "adult fashion model with elegant, confident styling"),
+        ("性感", "elegant fashion-editorial"),
+        ("美女", "adult fashion model"),
+        ("辣妹", "adult fashion model"),
+        ("hot girl", "adult fashion model"),
+        ("sexy girl", "adult fashion model with elegant editorial styling"),
+        ("sexy woman", "adult fashion model with elegant editorial styling"),
+    )
+    for source, replacement in replacements:
+        text = text.replace(source, replacement)
+    return text.strip()
+
+
+def compose_image2_prompt(
+    prompt: str,
+    *,
+    attempt_index: int = 1,
+    previous_failure: str = "",
+    reference_images: Optional[List[str]] = None,
+    recovery: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Create a structured Image2 prompt from a user request."""
+    subject = _rewrite_sensitive_image2_language(prompt)
+    if not subject:
+        subject = "the requested subject"
+    refs = reference_images or []
     quality_guard = (
         "Render a sharp, anatomically coherent, high-resolution image. "
         "Avoid blurry output, distorted faces, warped hands, extra fingers, "
@@ -150,10 +209,74 @@ def build_attempt_prompt(prompt: str, attempt_index: int, *, previous_failure: s
             "final-image quality."
         )
 
-    parts = [base, variant, quality_guard]
+    parts = [
+        "Create a polished Image2 result from this structured brief.",
+        f"Subject: {subject}.",
+        (
+            "User intent anchors: "
+            f"{subject}. Preserve the requested subject, setting, style, product details, "
+            "composition, exclusions, and reference constraints as closely as policy allows. "
+            "Do not replace the requested subject, setting, or style with a generic safer alternative."
+        ),
+        "Setting: Choose a coherent environment that supports the subject and keeps the scene readable.",
+        "Composition: Use intentional camera framing, clean silhouette, natural perspective, and balanced negative space.",
+        "Lighting: Use controlled editorial lighting with clear facial or product detail and no muddy shadows.",
+        "Material and detail: Preserve believable textures, fabric, skin, product surfaces, and fine edges.",
+        "Style: Photorealistic, commercial/editorial, tasteful, refined, and visually polished.",
+        (
+            "Reference handling: Preserve identity, palette, outfit, composition, and product details from "
+            "reference images."
+            if refs
+            else "Reference handling: No reference images were provided; follow the written prompt."
+        ),
+        "Safety rewrite: Use adult, non-explicit, non-nude, fashion/editorial framing for people.",
+        f"Attempt direction: {variant}",
+        f"Constraints: {quality_guard}",
+    ]
     if previous_failure:
-        parts.append(f"Correct the previous issue: {previous_failure[:300]}")
+        parts.append(f"Previous generation issue: {previous_failure[:300]}")
+        parts.append(
+            "Correction scope: Fix only the listed issue(s); keep every User intent anchor intact unless it is explicitly unsafe."
+        )
+    if recovery:
+        action = str(recovery.get("action") or "retry_same_intent").strip()
+        parts.append(f"Recovery action: {action}.")
+        issues = [
+            str(issue)
+            for issue in recovery.get("issues", [])
+            if str(issue).strip()
+        ]
+        if issues:
+            parts.append(f"Recovery issues: {', '.join(issues)}.")
+        correction = str(recovery.get("prompt_correction") or "").strip()
+        if correction:
+            parts.append(f"Prompt correction: {correction}")
+        if action == "simplify_prompt":
+            parts.append(
+                "Simplify the prompt structure and remove only unsupported or overly dense wording; keep the requested subject, setting, style, and constraints."
+            )
+        parts.append(
+            "Do not switch to a generic safer subject, generic style, unrelated provider fallback, or unrelated stock-image direction."
+        )
     return "\n\n".join(part for part in parts if part)
+
+
+def build_attempt_prompt(
+    prompt: str,
+    attempt_index: int,
+    *,
+    previous_failure: str = "",
+    reference_images: Optional[List[str]] = None,
+    recovery: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Create a Codex image2-friendly prompt variant for this attempt."""
+    return compose_image2_prompt(
+        prompt,
+        attempt_index=attempt_index,
+        previous_failure=previous_failure,
+        reference_images=reference_images,
+        recovery=recovery,
+    )
 
 
 def evaluate_deterministic_qc(
@@ -263,6 +386,9 @@ def evaluate_visual_qc(analysis: str, prompt: str = "") -> VisualQcReport:
             issue in _FATAL_VISION_ISSUES
             for issue in issues
         )
+        if adherence_score is not None and adherence_score < QC_MIN_ADHERENCE_SCORE:
+            issues = _dedupe_preserve_order(issues + ["semantic_mismatch"])
+            fatal = True
         if quality_score is not None and adherence_score is not None:
             score = round((quality_score * 0.6) + (adherence_score * 0.4))
         elif quality_score is not None:
@@ -302,12 +428,29 @@ def evaluate_visual_qc(analysis: str, prompt: str = "") -> VisualQcReport:
     )
 
 
+def _new_mission_activity_state() -> Dict[str, float]:
+    now = time.monotonic()
+    return {
+        "last_touch": now - 999.0,
+        "start": now,
+        "interval": 10.0,
+    }
+
+
+def _touch_mission_activity(state: Dict[str, float], label: str) -> None:
+    try:
+        touch_activity_if_due(state, label)
+    except Exception:
+        pass
+
+
 async def run_image_generation_mission(
     *,
     prompt: str,
     aspect_ratio: str = DEFAULT_ASPECT_RATIO,
     budget: str = _DEFAULT_BUDGET,
     reference_images: Optional[List[str]] = None,
+    max_attempts: Optional[int] = None,
     generate_once: Optional[Callable[..., Any]] = None,
     inspect_image: Optional[Callable[[str, str], Any]] = None,
     deterministic_check: Optional[Callable[..., DeterministicQcReport]] = None,
@@ -323,15 +466,51 @@ async def run_image_generation_mission(
         }
 
     refs = _normalize_image_generate_refs(reference_images) or []
+    original_prompt = prompt
+    mediated: Optional[MediatedImagePrompt] = None
+    mediator_config = _read_image2_adaptive_mediator_config()
+    if mediator_config.get("enabled"):
+        preprocessor_config = _read_image_prompt_preprocessor_config()
+
+        def draft_with_config(user_prompt: str) -> Optional[str]:
+            if not preprocessor_config.get("enabled"):
+                return None
+            return _call_image_prompt_preprocessor(user_prompt, preprocessor_config)
+
+        try:
+            mediated = _mediate_image2_prompt(
+                prompt,
+                config=mediator_config,
+                preprocessor_config=preprocessor_config,
+                draft_fn=draft_with_config,
+            )
+            if mediated.final_prompt.strip():
+                prompt = mediated.final_prompt.strip()
+                logger.info(
+                    "Image2 adaptive mediator applied to mission strategy=%s (%d -> %d chars)",
+                    mediated.strategy,
+                    len(original_prompt or ""),
+                    len(prompt),
+                )
+        except Exception as exc:
+            logger.info("Image2 adaptive mediator unavailable for mission: %s", exc)
+
     base_attempts = resolve_attempt_budget(prompt, budget=budget, reference_images=refs)
-    max_attempts = base_attempts
+    configured_attempt_cap = _coerce_attempt_cap(max_attempts)
+    max_attempts = min(base_attempts, configured_attempt_cap) if configured_attempt_cap else base_attempts
     attempt_cap = _strategy_attempt_cap(budget, base_attempts)
+    if configured_attempt_cap:
+        attempt_cap = min(attempt_cap, configured_attempt_cap)
     strategy: Dict[str, Any] = {
         "qc_mode": "hybrid",
+        "recovery_controller": "image2_state_machine",
+        "fallback_policy": "preserve_intent_no_generic_fallback",
         "base_attempts": base_attempts,
         "attempt_cap": attempt_cap,
         "extensions": [],
     }
+    if configured_attempt_cap:
+        strategy["configured_attempt_cap"] = configured_attempt_cap
     generator = generate_once or _default_generate_once
     inspector = inspect_image or _default_inspect_image
     deterministic = deterministic_check or evaluate_deterministic_qc
@@ -339,19 +518,32 @@ async def run_image_generation_mission(
     attempts: List[Dict[str, Any]] = []
     best_attempt: Optional[Dict[str, Any]] = None
     previous_failure = ""
+    previous_recovery: Optional[Dict[str, Any]] = None
+    learning_corrections: List[str] = []
+    activity_state = _new_mission_activity_state()
 
     attempt_index = 1
     while attempt_index <= max_attempts:
+        _touch_mission_activity(
+            activity_state,
+            f"image mission attempt {attempt_index}/{max_attempts}: generating",
+        )
         attempt_prompt = build_attempt_prompt(
             prompt,
             attempt_index,
             previous_failure=previous_failure,
+            reference_images=refs,
+            recovery=previous_recovery,
         )
         raw_result = generator(
             prompt=attempt_prompt,
             aspect_ratio=aspect_ratio,
             reference_images=refs,
             attempt_index=attempt_index,
+        )
+        _touch_mission_activity(
+            activity_state,
+            f"image mission attempt {attempt_index}/{max_attempts}: generation complete",
         )
         result = _coerce_generation_result(raw_result)
         attempt_record: Dict[str, Any] = {
@@ -363,18 +555,26 @@ async def run_image_generation_mission(
 
         if not result.get("success"):
             error = str(result.get("error") or result.get("error_type") or "generation failed")
-            retryable = bool(result.get("retryable")) or result.get("error_type") in {
+            rewrite_prompt = bool(result.get("rewrite_prompt")) or result.get("error_type") == "policy_refusal"
+            retryable = rewrite_prompt or bool(result.get("retryable")) or result.get("error_type") in {
                 "empty_response", "api_error", "provider_exception",
             }
+            recovery = _generation_recovery(result)
+            attempt_record["recovery"] = recovery
+            _append_learning_correction(learning_corrections, recovery)
             attempt_record["retryable"] = retryable
+            if rewrite_prompt:
+                attempt_record["rewrite_prompt"] = True
             attempts.append(attempt_record)
-            previous_failure = error
+            previous_failure = _generation_retry_feedback(result)
+            previous_recovery = recovery
             if not retryable:
                 return _mission_failure(
                     "generation_failed",
                     error,
                     attempts,
                     best_attempt,
+                    learning_corrections=learning_corrections,
                 )
             attempt_index += 1
             continue
@@ -382,38 +582,66 @@ async def run_image_generation_mission(
         image = result.get("image")
         if not isinstance(image, str) or not image.strip():
             attempt_record["retryable"] = True
+            recovery = _generation_recovery({
+                "error_type": "missing_image",
+                "error": "generation succeeded without a deliverable image",
+            })
+            attempt_record["recovery"] = recovery
+            _append_learning_correction(learning_corrections, recovery)
             attempts.append(attempt_record)
             previous_failure = "generation succeeded without a deliverable image"
+            previous_recovery = recovery
             attempt_index += 1
             continue
 
+        _touch_mission_activity(
+            activity_state,
+            f"image mission attempt {attempt_index}/{max_attempts}: deterministic QC",
+        )
         deterministic_qc = deterministic(image, aspect_ratio=aspect_ratio)
         attempt_record["deterministic_qc"] = deterministic_qc.to_dict()
         if deterministic_qc.fatal:
             attempt_record["qc"] = deterministic_qc.to_dict()
+            recovery = _qc_recovery(deterministic_qc, None)
+            attempt_record["recovery"] = recovery
+            _append_learning_correction(learning_corrections, recovery)
             attempts.append(attempt_record)
             previous_failure = ", ".join(deterministic_qc.issues) or deterministic_qc.summary
+            previous_recovery = recovery
             attempt_index += 1
             continue
 
+        _touch_mission_activity(
+            activity_state,
+            f"image mission attempt {attempt_index}/{max_attempts}: vision QC",
+        )
         analysis = await _maybe_await(inspector(image, attempt_prompt))
+        _touch_mission_activity(
+            activity_state,
+            f"image mission attempt {attempt_index}/{max_attempts}: QC complete",
+        )
         vision_qc = evaluate_visual_qc(str(analysis or ""), prompt=attempt_prompt)
         attempt_record["vision_qc"] = vision_qc.to_dict()
         attempt_record["qc"] = vision_qc.to_dict()
         attempt_record["image"] = image
         attempt_record["accepted"] = deterministic_qc.passed and vision_qc.passed
+        if not attempt_record["accepted"]:
+            recovery = _qc_recovery(deterministic_qc, vision_qc)
+            attempt_record["recovery"] = recovery
+            _append_learning_correction(learning_corrections, recovery)
         attempts.append(attempt_record)
 
         if best_attempt is None or vision_qc.score > best_attempt["qc"]["score"]:
             best_attempt = attempt_record
 
         if attempt_record["accepted"]:
-            return {
+            return _finalize_mediated_mission_result({
                 "success": True,
                 "image": image,
                 "error": None,
                 "error_type": None,
-                "prompt": prompt,
+                "prompt": original_prompt,
+                "mediated_prompt": prompt if mediated is not None else None,
                 "aspect_ratio": aspect_ratio,
                 "budget": budget,
                 "max_attempts": max_attempts,
@@ -421,9 +649,11 @@ async def run_image_generation_mission(
                 "strategy": strategy,
                 "best": _public_attempt(attempt_record),
                 "attempts": [_public_attempt(attempt) for attempt in attempts],
-            }
+                "learning_corrections": learning_corrections,
+            }, mediated, mediator_config)
 
         previous_failure = _retry_feedback(deterministic_qc, vision_qc)
+        previous_recovery = attempt_record.get("recovery")
         if (
             attempt_index >= max_attempts
             and _should_extend_for_near_miss(best_attempt)
@@ -433,7 +663,7 @@ async def run_image_generation_mission(
             strategy["extensions"].append("qc-near-miss")
         attempt_index += 1
 
-    return _mission_failure(
+    return _finalize_mediated_mission_result(_mission_failure(
         "qc_failed",
         "No generated candidate passed visual QC.",
         attempts,
@@ -443,13 +673,43 @@ async def run_image_generation_mission(
         budget=budget,
         max_attempts=max_attempts,
         strategy=strategy,
+        learning_corrections=learning_corrections,
+    ), mediated, mediator_config)
+
+
+def _finalize_mediated_mission_result(
+    payload: Dict[str, Any],
+    mediated: Optional[MediatedImagePrompt],
+    mediator_config: Dict[str, Any],
+) -> Dict[str, Any]:
+    if mediated is None:
+        return payload
+    success = bool(payload.get("success"))
+    error_type = str(payload.get("error_type") or "").strip()
+    status = "success" if success else "failed"
+    failure_class: List[str] = []
+    if not success:
+        failure_class = [error_type or "failed"]
+        if error_type == "policy_refusal":
+            status = "blocked"
+            failure_class = ["blocked"]
+    payload["adaptive_mediator"] = mediated.to_public_dict()
+    _record_image2_mediator_attempt(
+        mediated,
+        image2_status=status,
+        feedback_source="visual_inspection" if success else "image2_error",
+        failure_class=failure_class,
+        config=mediator_config,
+        notes=str(payload.get("error") or "")[:300],
     )
+    return payload
 
 
 def _default_generate_once(**kwargs: Any) -> str:
     args = {
         "prompt": kwargs.get("prompt", ""),
         "aspect_ratio": kwargs.get("aspect_ratio", DEFAULT_ASPECT_RATIO),
+        "skip_prompt_preprocessor": True,
     }
     refs = kwargs.get("reference_images")
     if refs:
@@ -483,11 +743,15 @@ async def _handle_image_generate_mission(args: Dict[str, Any], **kw: Any) -> str
     prompt = args.get("prompt", "")
     if not prompt:
         return tool_error("prompt is required for image generation", success=False)
+    requested_cap = _coerce_attempt_cap(args.get("max_attempts"))
+    configured_cap = _read_configured_mission_attempt_cap()
+    caps = [cap for cap in (requested_cap, configured_cap) if cap is not None]
     result = await run_image_generation_mission(
         prompt=prompt,
         aspect_ratio=args.get("aspect_ratio", DEFAULT_ASPECT_RATIO),
         budget=args.get("budget", _DEFAULT_BUDGET),
         reference_images=args.get("reference_images"),
+        max_attempts=min(caps) if caps else None,
     )
     return json.dumps(result, indent=2, ensure_ascii=False)
 
@@ -537,10 +801,8 @@ def _expected_aspect_ratio(aspect_ratio: str) -> Optional[float]:
 def _strategy_attempt_cap(budget: str, base_attempts: int) -> int:
     budget = budget if budget in _VALID_BUDGETS else _DEFAULT_BUDGET
     if budget == "aggressive":
-        return 8
-    if budget == "conservative":
-        return base_attempts
-    return 8
+        return 4
+    return base_attempts
 
 
 def _should_extend_for_near_miss(best_attempt: Optional[Dict[str, Any]]) -> bool:
@@ -568,6 +830,120 @@ def _retry_feedback(
     return vision_qc.summary or deterministic_qc.summary
 
 
+def _generation_retry_feedback(result: Dict[str, Any]) -> str:
+    error_type = str(result.get("error_type") or "generation_failed").strip() or "generation_failed"
+    if error_type == "policy_refusal":
+        return (
+            "policy_refusal: rewrite in adult, non-explicit, non-nude fashion/editorial language "
+            "while preserving User intent anchors."
+        )
+    if error_type == "empty_response":
+        return "empty_response: request a complete final PNG and preserve User intent anchors."
+    if error_type in {"timeout", "transient_network", "stream_parse_error", "api_error", "provider_exception"}:
+        return f"{error_type}: retry generation without changing User intent anchors."
+    return error_type
+
+
+def _generation_recovery(result: Dict[str, Any]) -> Dict[str, Any]:
+    error_type = str(result.get("error_type") or "generation_failed").strip() or "generation_failed"
+    if error_type == "empty_response":
+        return {
+            "state": "empty_response",
+            "action": "simplify_prompt",
+            "fallback_allowed": False,
+            "preserve_intent": True,
+        }
+    if error_type == "policy_refusal":
+        return {
+            "state": "generation_failed",
+            "action": "rewrite_prompt",
+            "fallback_allowed": False,
+            "preserve_intent": True,
+            "issues": ["policy_refusal"],
+            "prompt_correction": (
+                "Rewrite only unsafe phrasing into adult, non-explicit, fashion/editorial language while preserving the requested subject, style, and composition."
+            ),
+        }
+    if error_type in {"timeout", "transient_network", "stream_parse_error", "api_error", "provider_exception"}:
+        return {
+            "state": "generation_failed",
+            "action": "retry_same_intent",
+            "fallback_allowed": False,
+            "preserve_intent": True,
+            "issues": [error_type],
+            "prompt_correction": "Retry with the same visual intent and a cleaner, less dense prompt structure.",
+        }
+    return {
+        "state": "generation_failed",
+        "action": "retry_same_intent",
+        "fallback_allowed": False,
+        "preserve_intent": True,
+        "issues": [error_type],
+    }
+
+
+def _qc_recovery(
+    deterministic_qc: DeterministicQcReport,
+    vision_qc: Optional[VisualQcReport],
+) -> Dict[str, Any]:
+    issues = list(deterministic_qc.issues)
+    if vision_qc is not None:
+        issues.extend(vision_qc.issues)
+    issues = _dedupe_preserve_order(issues)
+    return {
+        "state": "qc_failed",
+        "action": "repair_prompt",
+        "fallback_allowed": False,
+        "preserve_intent": True,
+        "issues": issues,
+        "prompt_correction": _prompt_correction_for_issues(issues),
+    }
+
+
+def _prompt_correction_for_issues(issues: List[str]) -> str:
+    issue_set = set(issues)
+    corrections: List[str] = []
+    if "semantic_mismatch" in issue_set:
+        corrections.append(
+            "Restore the requested subject, setting, style, composition, and must-have details before improving aesthetics."
+        )
+    if "reference_drift" in issue_set:
+        corrections.append(
+            "Re-anchor identity, outfit, palette, and source-image visual DNA; do not invent a new character or product."
+        )
+    if "unreadable_text" in issue_set:
+        corrections.append(
+            "Simplify typography and make intended text large, clean, and readable; omit decorative pseudo-text."
+        )
+    if "blur" in issue_set:
+        corrections.append(
+            "Increase sharp focus, crisp edges, and camera-real detail while preserving the original framing."
+        )
+    if "deformed_anatomy" in issue_set:
+        corrections.append(
+            "Prioritize natural hands, coherent limbs, realistic proportions, and clean anatomy."
+        )
+    if "blank_or_nearly_uniform" in issue_set or "empty_image_file" in issue_set or "missing_image" in issue_set:
+        corrections.append(
+            "Request a complete final PNG with visible subject detail and the same user intent anchors."
+        )
+    if "heavy_artifacts" in issue_set or "low_quality" in issue_set:
+        corrections.append(
+            "Reduce visual complexity, clean up artifacts, and keep the same subject instead of changing direction."
+        )
+    if not corrections:
+        corrections.append(
+            "Repair the listed QC issues while preserving the user's original subject and style."
+        )
+    return " ".join(corrections)
+
+
+def _append_learning_correction(corrections: List[str], recovery: Dict[str, Any]) -> None:
+    correction = str(recovery.get("prompt_correction") or "").strip()
+    if correction and correction not in corrections:
+        corrections.append(correction)
+
+
 def _public_attempt(attempt: Dict[str, Any]) -> Dict[str, Any]:
     result = attempt.get("result") if isinstance(attempt.get("result"), dict) else {}
     public = {
@@ -581,6 +957,7 @@ def _public_attempt(attempt: Dict[str, Any]) -> Dict[str, Any]:
         "deterministic_qc": attempt.get("deterministic_qc"),
         "vision_qc": attempt.get("vision_qc"),
         "qc": attempt.get("qc"),
+        "recovery": attempt.get("recovery"),
     }
     return {key: value for key, value in public.items() if value is not None}
 
@@ -785,7 +1162,8 @@ IMAGE_GENERATE_MISSION_SCHEMA = {
         "plan task-level attempts, rewrite Codex image2-friendly prompt "
         "variants, run deterministic file/pixel sanity checks, run vision QC "
         "for semantic mismatch, unreadable text, reference drift, blur, "
-        "deformed anatomy, and heavy artifacts, then retry with QC feedback "
+        "deformed anatomy, and heavy artifacts, then run an Image2 recovery state machine "
+        "for empty_response / qc_failed without switching to a generic fallback, "
         "until the task budget is exhausted or a deliverable candidate passes. "
         "Use this instead of plain image_generate when the user cares about "
         "final image quality, reference fidelity, avoiding malformed anatomy, "
@@ -814,6 +1192,15 @@ IMAGE_GENERATE_MISSION_SCHEMA = {
                 "enum": list(_VALID_BUDGETS),
                 "description": "Attempt budget. 'task' auto-scales by prompt complexity.",
                 "default": _DEFAULT_BUDGET,
+            },
+            "max_attempts": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": _MAX_ATTEMPT_CAP,
+                "description": (
+                    "Optional hard cap for generation attempts. Runtime config "
+                    "image_gen.mission.max_attempts can also cap this value."
+                ),
             },
         },
         "required": ["prompt"],
