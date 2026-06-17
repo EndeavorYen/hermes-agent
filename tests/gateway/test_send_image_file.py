@@ -57,6 +57,55 @@ class TestExtractMediaImages:
         assert "/audio.ogg" in paths
         assert "/screenshot.png" in paths
 
+    def test_file_uri_markdown_image_extracted(self):
+        content = "狀態：完成\n\n![性感寫真](file:///Users/simon/.hermes/cache/images/out.jpg)"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/Users/simon/.hermes/cache/images/out.jpg", False)]
+        assert "file://" not in cleaned
+        assert "狀態：完成" in cleaned
+
+    def test_file_uri_markdown_image_decodes_spaces(self):
+        content = "![preview](file:///tmp/my%20image.png)"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/tmp/my image.png", False)]
+        assert cleaned == ""
+
+    def test_generated_image_only_filters_stale_image_paths(self):
+        allowed = {"/tmp/new-grok-image.jpg"}
+        media, local_files, images = BasePlatformAdapter.filter_generated_image_delivery(
+            media_files=[
+                ("/tmp/old-file-uri.jpg", False),
+                ("/tmp/new-grok-image.jpg", False),
+                ("/tmp/report.pdf", False),
+            ],
+            local_files=[
+                "/tmp/old-bare-path.png",
+                "/tmp/readme.txt",
+            ],
+            images=[
+                ("https://example.com/old-inline.png", "old"),
+            ],
+            allowed_image_paths=allowed,
+        )
+
+        assert media == [
+            ("/tmp/new-grok-image.jpg", False),
+            ("/tmp/report.pdf", False),
+        ]
+        assert local_files == ["/tmp/readme.txt"]
+        assert images == []
+
+    def test_generated_image_only_paths_start_after_marker(self):
+        content = (
+            "Old attachment: MEDIA:/tmp/old-grok-image.jpg\n"
+            "[[generated_image_only]]\n"
+            "MEDIA:/tmp/new-grok-image.jpg"
+        )
+
+        assert BasePlatformAdapter.generated_image_only_paths(content) == {
+            "/tmp/new-grok-image.jpg"
+        }
+
 
 # ---------------------------------------------------------------------------
 # Telegram send_image_file tests

@@ -49,6 +49,7 @@ from gateway.platforms.base import (
     resolve_proxy_url,
     safe_url_for_log,
     cache_document_from_bytes,
+    public_export_media_path,
 )
 
 
@@ -1388,6 +1389,7 @@ class SlackAdapter(BasePlatformAdapter):
 
                         if image_url.startswith("file://"):
                             local_path = _unquote(image_url[7:])
+                            local_path = public_export_media_path(local_path)
                             if not os.path.exists(local_path):
                                 logger.warning(
                                     "[Slack] Skipping missing image: %s", local_path

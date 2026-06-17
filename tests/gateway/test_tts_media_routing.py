@@ -224,6 +224,53 @@ async def test_streaming_delivery_routes_telegram_mp3_media_tag_to_voice_sender(
 
 
 @pytest.mark.asyncio
+async def test_streaming_delivery_public_exports_video_media_tag_before_upload(
+    tmp_path, monkeypatch
+):
+    event = _event(thread_id="topic-1")
+    media_file = _allowed_media_path(tmp_path, monkeypatch, "clip.mp4")
+    exported = tmp_path / "public_clip.mp4"
+    exported.write_bytes(b"public-video")
+    seen = []
+
+    def fake_public_export(path):
+        seen.append(path)
+        return str(exported)
+
+    monkeypatch.setattr(
+        "gateway.platforms.base.public_export_media_path",
+        fake_public_export,
+        raising=False,
+    )
+    adapter = SimpleNamespace(
+        name="test",
+        extract_media=BasePlatformAdapter.extract_media,
+        extract_images=BasePlatformAdapter.extract_images,
+        extract_local_files=BasePlatformAdapter.extract_local_files,
+        send_voice=AsyncMock(return_value=SendResult(success=True, message_id="voice")),
+        send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc")),
+        send_image_file=AsyncMock(return_value=SendResult(success=True, message_id="image")),
+        send_multiple_images=AsyncMock(return_value=None),
+        send_video=AsyncMock(return_value=SendResult(success=True, message_id="video")),
+    )
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner({"thread_id": "topic-1"}),
+        f"MEDIA:{media_file}",
+        event,
+        adapter,
+    )
+
+    assert seen == [str(media_file)]
+    adapter.send_video.assert_awaited_once_with(
+        chat_id="chat-1",
+        video_path=str(exported),
+        metadata={"thread_id": "topic-1"},
+    )
+    adapter.send_document.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_streaming_delivery_blocks_media_path_outside_allowed_roots(tmp_path, monkeypatch):
     event = _event(thread_id="topic-1")
     allowed_root = tmp_path / "media-cache"

@@ -291,7 +291,15 @@ from gateway.platforms.slack import SlackAdapter  # noqa: E402
 
 class TestSlackMultiImage:
     @pytest.fixture
-    def adapter(self):
+    def adapter(self, monkeypatch):
+        import gateway.platforms.slack as slack_mod
+
+        monkeypatch.setattr(
+            slack_mod,
+            "public_export_media_path",
+            lambda path: path,
+            raising=False,
+        )
         config = PlatformConfig(enabled=True, token="xoxb-fake")
         a = SlackAdapter(config)
         a._app = MagicMock()
@@ -316,6 +324,35 @@ class TestSlackMultiImage:
         client.files_upload_v2.assert_awaited_once()
         kwargs = client.files_upload_v2.await_args.kwargs
         assert len(kwargs["file_uploads"]) == 3
+
+    def test_local_files_are_public_exported_before_upload(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        import gateway.platforms.slack as slack_mod
+
+        source = tmp_path / "private.png"
+        source.write_bytes(b"\x89PNG" + b"\x00" * 20)
+        exported = tmp_path / "public.png"
+        exported.write_bytes(b"\x89PNG" + b"\x11" * 20)
+        seen = []
+
+        def fake_public_export(path):
+            seen.append(path)
+            return str(exported)
+
+        monkeypatch.setattr(
+            slack_mod,
+            "public_export_media_path",
+            fake_public_export,
+            raising=False,
+        )
+
+        _run(adapter.send_multiple_images("C12345", [(f"file://{source}", "")]))
+
+        assert seen == [str(source)]
+        client = adapter._get_client("C12345")
+        kwargs = client.files_upload_v2.await_args.kwargs
+        assert kwargs["file_uploads"][0]["file"] == str(exported)
 
     def test_batch_over_10_chunks(self, adapter, tmp_path):
         paths = []

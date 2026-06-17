@@ -8,17 +8,19 @@ and implement the required methods.
 import asyncio
 import inspect
 import ipaddress
+import json
 import logging
 import os
 import random
 import re
+import shutil
 import socket as _socket
 import subprocess
 import sys
 import time
 import uuid
 from abc import ABC, abstractmethod
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from utils import normalize_proxy_url
 
@@ -33,6 +35,8 @@ _AUDIO_EXTS = frozenset({'.ogg', '.opus', '.mp3', '.wav', '.m4a', '.flac'})
 # delivered as a regular document.
 _TELEGRAM_AUDIO_ATTACHMENT_EXTS = frozenset({'.mp3', '.m4a'})
 _TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
+_GENERATED_IMAGE_ONLY_DIRECTIVE = "[[generated_image_only]]"
+_IMAGE_DELIVERY_EXTS = frozenset({'.jpg', '.jpeg', '.png', '.webp', '.gif'})
 
 
 def _platform_name(platform) -> str:
@@ -792,6 +796,11 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
 # ---------------------------------------------------------------------------
 
 VIDEO_CACHE_DIR = get_hermes_dir("cache/videos", "video_cache")
+PUBLIC_EXPORT_DIR = get_hermes_dir("cache/public_exports", "public_exports")
+PUBLIC_EXPORT_PROVENANCE_DIR = get_hermes_dir(
+    "cache/public_export_provenance",
+    "public_export_provenance",
+)
 
 SUPPORTED_VIDEO_TYPES = {
     ".mp4": "video/mp4",
@@ -815,6 +824,181 @@ def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
     filepath = cache_dir / filename
     filepath.write_bytes(data)
     return str(filepath)
+
+
+_PUBLIC_EXPORT_IMAGE_EXTS = frozenset({".jpg", ".jpeg", ".png", ".webp"})
+_PUBLIC_EXPORT_VIDEO_EXTS = frozenset({".mp4", ".mov", ".webm", ".mkv", ".avi", ".3gp"})
+_PERSONAL_EXIF_TAGS = frozenset({
+    0x010E,  # ImageDescription
+    0x013B,  # Artist
+    0x8298,  # Copyright
+    0x8825,  # GPSInfo
+    0xA420,  # ImageUniqueID
+    0xA430,  # CameraOwnerName
+    0xA431,  # BodySerialNumber
+    0xA432,  # LensSpecification
+    0xA433,  # LensMake
+    0xA434,  # LensModel
+    0xA435,  # LensSerialNumber
+    0x9C9B,  # XPTitle
+    0x9C9C,  # XPComment
+    0x9C9D,  # XPAuthor
+    0x9C9E,  # XPKeywords
+    0x9C9F,  # XPSubject
+})
+
+
+def get_public_export_dir() -> Path:
+    """Return the cache directory used for externally delivered media copies."""
+    PUBLIC_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    return PUBLIC_EXPORT_DIR
+
+
+def get_public_export_provenance_dir() -> Path:
+    """Return the private provenance directory for public media exports."""
+    PUBLIC_EXPORT_PROVENANCE_DIR.mkdir(parents=True, exist_ok=True)
+    return PUBLIC_EXPORT_PROVENANCE_DIR
+
+
+def _public_export_path(source: Path) -> Path:
+    suffix = source.suffix.lower() or ".bin"
+    return get_public_export_dir() / f"public_{uuid.uuid4().hex[:12]}{suffix}"
+
+
+def _probe_video_metadata(path: Path) -> dict[str, Any]:
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        return {}
+    try:
+        proc = subprocess.run(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=width,height:format=duration",
+                "-of",
+                "json",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=True,
+        )
+        data = json.loads(proc.stdout or "{}")
+        streams = data.get("streams") if isinstance(data, dict) else []
+        stream = streams[0] if isinstance(streams, list) and streams else {}
+        fmt = data.get("format") if isinstance(data, dict) else {}
+        result: dict[str, Any] = {}
+        width = stream.get("width") if isinstance(stream, dict) else None
+        height = stream.get("height") if isinstance(stream, dict) else None
+        if isinstance(width, int) and width > 0:
+            result["width"] = width
+        if isinstance(height, int) and height > 0:
+            result["height"] = height
+        duration = fmt.get("duration") if isinstance(fmt, dict) else None
+        try:
+            duration_value = float(duration)
+        except (TypeError, ValueError):
+            duration_value = 0.0
+        if duration_value > 0:
+            result["duration"] = duration_value
+        return result
+    except Exception as exc:
+        logger.debug("ffprobe metadata failed for %s: %s", _log_safe_path(str(path)), exc)
+        return {}
+
+
+def _write_public_export_sidecar(
+    exported: Path,
+    *,
+    source: Path,
+    media_kind: str,
+    scrubbed_fields: list[str],
+) -> None:
+    sidecar = {
+        "policy": "privacy_public_export",
+        "media_kind": media_kind,
+        "source_path": str(source),
+        "export_path": str(exported),
+        "scrubbed_fields": scrubbed_fields,
+        "provenance_note": (
+            "Privacy export removes personal local metadata only; Hermes does "
+            "not remove or falsify AI provenance markers."
+        ),
+    }
+    if media_kind == "video":
+        video = _probe_video_metadata(exported)
+        if video:
+            sidecar["video"] = video
+    sidecar_path = get_public_export_provenance_dir() / f"{exported.name}.json"
+    sidecar_path.write_text(
+        json.dumps(sidecar, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _export_image_privacy_copy(source: Path, exported: Path) -> list[str]:
+    ext = source.suffix.lower()
+    if ext not in {".jpg", ".jpeg"}:
+        shutil.copyfile(source, exported)
+        return []
+
+    from PIL import Image
+
+    with Image.open(source) as image:
+        exif = image.getexif()
+        removed: list[str] = []
+        for tag in sorted(_PERSONAL_EXIF_TAGS):
+            if tag in exif:
+                removed.append(f"exif:{tag}")
+                del exif[tag]
+        save_kwargs: dict[str, Any] = {}
+        if exif:
+            save_kwargs["exif"] = exif.tobytes()
+        image.save(exported, **save_kwargs)
+        return removed
+
+
+def public_export_media_path(path: str) -> str:
+    """Create a delivery-safe public copy for local image/video media.
+
+    The export is intentionally conservative: it redacts personal EXIF fields
+    from JPEG images, avoids mutating the original cache file, and writes a
+    private sidecar for traceability. It does not remove or spoof AI provenance
+    markers.
+    """
+    source = Path(os.path.expanduser(path)).resolve(strict=False)
+    ext = source.suffix.lower()
+    if not source.is_file() or ext not in (_PUBLIC_EXPORT_IMAGE_EXTS | _PUBLIC_EXPORT_VIDEO_EXTS):
+        return path
+    try:
+        source.relative_to(get_public_export_dir().resolve(strict=False))
+        return str(source)
+    except ValueError:
+        pass
+
+    exported = _public_export_path(source)
+    media_kind = "image" if ext in _PUBLIC_EXPORT_IMAGE_EXTS else "video"
+    try:
+        if media_kind == "image":
+            scrubbed_fields = _export_image_privacy_copy(source, exported)
+        else:
+            shutil.copyfile(source, exported)
+            scrubbed_fields = []
+        _write_public_export_sidecar(
+            exported,
+            source=source,
+            media_kind=media_kind,
+            scrubbed_fields=scrubbed_fields,
+        )
+        return str(exported)
+    except Exception as exc:
+        logger.warning("Public media export failed for %s: %s", _log_safe_path(str(source)), exc)
+        return path
 
 
 # ---------------------------------------------------------------------------
@@ -1223,6 +1407,13 @@ MEDIA_TAG_CLEANUP_RE = re.compile(
     r'''(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|'''
     r'''(?:~/|/|[A-Za-z]:[/\\])\S+(?:[^\S\n]+\S+)*?\.(?:''' + _MEDIA_EXT_ALTERNATION + r'''))'''
     r'''(?=[\s`"',;:)\]}]|$)[`"']?''',
+    re.IGNORECASE,
+)
+
+FILE_URI_MARKDOWN_IMAGE_RE = re.compile(
+    r'!\[[^\]\n]*\]\(\s*(?P<url>file://[^)\s]+?\.(?:'
+    + _MEDIA_EXT_ALTERNATION
+    + r'))\s*\)',
     re.IGNORECASE,
 )
 
@@ -2545,9 +2736,10 @@ class BasePlatformAdapter(ABC):
                     alt_text[:30] if alt_text else "",
                 )
                 if image_url.startswith("file://"):
+                    image_path = public_export_media_path(_unquote(image_url[7:]))
                     img_result = await self.send_image_file(
                         chat_id=chat_id,
-                        image_path=_unquote(image_url[7:]),
+                        image_path=image_path,
                         caption=alt_text if alt_text else None,
                         metadata=metadata,
                     )
@@ -2878,6 +3070,62 @@ class BasePlatformAdapter(ABC):
         return ''.join(chars)
 
     @staticmethod
+    def generated_image_only_paths(content: str) -> set[str]:
+        marker_at = content.find(_GENERATED_IMAGE_ONLY_DIRECTIVE)
+        if marker_at < 0:
+            return set()
+        tail = content[marker_at + len(_GENERATED_IMAGE_ONLY_DIRECTIVE):]
+        scan_content = BasePlatformAdapter._mask_protected_spans(tail)
+        scan_content = BasePlatformAdapter._mask_json_string_media(scan_content)
+        paths: set[str] = set()
+        for match in MEDIA_TAG_CLEANUP_RE.finditer(scan_content):
+            path = match.group("path").strip()
+            if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
+                path = path[1:-1].strip()
+            path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
+            if Path(path).suffix.lower() in _IMAGE_DELIVERY_EXTS:
+                paths.add(os.path.expanduser(path))
+        return paths
+
+    @staticmethod
+    def filter_generated_image_delivery(
+        media_files: List[Tuple[str, bool]],
+        local_files: List[str],
+        images: List[Tuple[str, str]],
+        allowed_image_paths: set[str],
+    ) -> Tuple[List[Tuple[str, bool]], List[str], List[Tuple[str, str]]]:
+        allowed = {os.path.expanduser(path) for path in allowed_image_paths}
+        seen_images: set[str] = set()
+
+        def image_path_allowed(path: str) -> bool:
+            normalized = os.path.expanduser(path)
+            if Path(normalized).suffix.lower() not in _IMAGE_DELIVERY_EXTS:
+                return True
+            if normalized not in allowed or normalized in seen_images:
+                return False
+            seen_images.add(normalized)
+            return True
+
+        filtered_media = [
+            (path, is_voice)
+            for path, is_voice in media_files
+            if image_path_allowed(path)
+        ]
+        filtered_local = [
+            path
+            for path in local_files
+            if image_path_allowed(path)
+        ]
+        filtered_images: List[Tuple[str, str]] = []
+        for url, alt in images:
+            if not str(url).startswith("file://"):
+                continue
+            path = unquote(urlsplit(str(url)).path or "")
+            if path and image_path_allowed(path):
+                filtered_images.append((url, alt))
+        return filtered_media, filtered_local, filtered_images
+
+    @staticmethod
     def extract_media(content: str) -> Tuple[List[Tuple[str, bool]], str]:
         """
         Extract MEDIA:<path> tags and [[audio_as_voice]] directives from response text.
@@ -2913,6 +3161,7 @@ class BasePlatformAdapter(ABC):
         # ``content`` for it (so they can still react to it); here we just
         # keep it out of the user-visible cleaned text.
         cleaned = cleaned.replace("[[as_document]]", "")
+        cleaned = cleaned.replace(_GENERATED_IMAGE_ONLY_DIRECTIVE, "")
         
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
         # and quoted/backticked paths for LLM-formatted outputs. The extension
@@ -2940,6 +3189,16 @@ class BasePlatformAdapter(ABC):
                     # and dropping every other attachment in the response.
                     continue
 
+        # Slack/Discord-visible final answers often use markdown image syntax
+        # with local file URIs. Treat those exactly like MEDIA:/path so they
+        # upload as native attachments instead of leaking an unusable file:// URL.
+        for match in FILE_URI_MARKDOWN_IMAGE_RE.finditer(scan_content):
+            url = match.group("url")
+            parsed = urlsplit(url)
+            path = unquote(parsed.path or "")
+            if path:
+                media.append((os.path.expanduser(path), False))
+
         # Remove the delivered MEDIA tags from the user-visible text. Mask a
         # length-equal copy of ``cleaned`` (same union of protected regions) to
         # *locate* the real tag spans, then delete exactly those spans from the
@@ -2952,6 +3211,7 @@ class BasePlatformAdapter(ABC):
             masked_cleaned = BasePlatformAdapter._mask_protected_spans(cleaned)
             masked_cleaned = BasePlatformAdapter._mask_json_string_media(masked_cleaned)
             spans = [m.span() for m in media_pattern.finditer(masked_cleaned)]
+            spans.extend(m.span() for m in FILE_URI_MARKDOWN_IMAGE_RE.finditer(masked_cleaned))
             if spans:
                 chars = list(cleaned)
                 for start, end in sorted(spans, reverse=True):
@@ -4113,6 +4373,7 @@ class BasePlatformAdapter(ABC):
 
                 # Pre-extract snapshot for the #29346 recovery/invariant below.
                 _response_pre_extract = response
+                _generated_image_only_paths = self.generated_image_only_paths(response)
 
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
                 media_files, response = self.extract_media(response)
@@ -4138,6 +4399,14 @@ class BasePlatformAdapter(ABC):
                     local_files = self.filter_local_delivery_paths(local_files)
                     if local_files:
                         logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
+
+                if _generated_image_only_paths:
+                    media_files, local_files, images = self.filter_generated_image_delivery(
+                        media_files,
+                        local_files,
+                        images,
+                        _generated_image_only_paths,
+                    )
 
                 # A2 (#29346): extraction can reduce a non-empty response to
                 # empty text with no attachment, and the `if text_content` guard
@@ -4294,6 +4563,7 @@ class BasePlatformAdapter(ABC):
 
                 if _image_paths:
                     try:
+                        _image_paths = [public_export_media_path(p) for p in _image_paths]
                         _batch = [(f"file://{_quote(p)}", "") for p in _image_paths]
                         await self.send_multiple_images(
                             chat_id=event.source.chat_id,
@@ -4309,6 +4579,8 @@ class BasePlatformAdapter(ABC):
                         await asyncio.sleep(human_delay)
                     try:
                         ext = Path(media_path).suffix.lower()
+                        if ext in _VIDEO_EXTS:
+                            media_path = public_export_media_path(media_path)
                         if should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
                             media_result = await self.send_voice(
                                 chat_id=event.source.chat_id,
@@ -4340,6 +4612,7 @@ class BasePlatformAdapter(ABC):
                     try:
                         ext = Path(file_path).suffix.lower()
                         if ext in _VIDEO_EXTS:
+                            file_path = public_export_media_path(file_path)
                             await self.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=file_path,

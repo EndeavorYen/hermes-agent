@@ -674,6 +674,13 @@ def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
 # artifacts should be eligible for automatic append when the model omits them
 # from the final gateway reply.
 _AUTO_APPEND_MEDIA_TOOL_NAMES = {"text_to_speech", "text_to_speech_tool"}
+_AUTO_APPEND_IMAGE_TOOL_NAMES = {
+    "image_generate",
+    "image_generate_mission",
+    "visual_arsenal_generate",
+}
+_AUTO_APPEND_VIDEO_TOOL_NAMES = {"video_generate"}
+_GENERATED_IMAGE_ONLY_DIRECTIVE = "[[generated_image_only]]"
 
 
 # Extension-anchored MEDIA: matcher for tool results. Mirrors the dispatch-site
@@ -687,6 +694,153 @@ _TOOL_MEDIA_RE = re.compile(
     r'txt|csv|apk|ipa))',
     re.IGNORECASE,
 )
+
+_TOOL_IMAGE_PATH_RE = re.compile(
+    r'^(?:[A-Za-z]:[/\\]|/|~/)\S+\.(?:png|jpe?g|gif|webp)$',
+    re.IGNORECASE,
+)
+
+_TOOL_VIDEO_PATH_RE = re.compile(
+    r'^(?:[A-Za-z]:[/\\]|/|~/)\S+\.(?:mp4|mov|avi|mkv|webm|3gp)$',
+    re.IGNORECASE,
+)
+
+_TOOL_VIDEO_URL_RE = re.compile(r'^https?://\S+$', re.IGNORECASE)
+
+
+def _auto_append_media_tag_payload(tag: str) -> str:
+    tag = str(tag or "").strip()
+    if tag.startswith("MEDIA:"):
+        return tag[len("MEDIA:"):].strip()
+    return tag
+
+
+def _auto_append_video_tag_rendered_in_response(tag: str, final_response: str) -> bool:
+    """Return true when final text already contains the same deliverable video.
+
+    Platform adapters can deliver local videos from either explicit ``MEDIA:``
+    directives or model-rendered local paths / markdown. Without checking the
+    underlying payload path, a final response that already mentions
+    ``/tmp/video.mp4`` can be uploaded once by bare-path extraction and a second
+    time by an auto-appended ``MEDIA:/tmp/video.mp4``.
+    """
+    if not final_response:
+        return False
+    payload = _auto_append_media_tag_payload(tag)
+    if not payload:
+        return False
+    if tag in final_response:
+        return True
+    if not (_TOOL_VIDEO_PATH_RE.match(payload) or _TOOL_VIDEO_URL_RE.match(payload)):
+        return False
+    return payload in final_response
+
+
+def _auto_append_generated_image_pair_tag(tag: str) -> bool:
+    if tag == _GENERATED_IMAGE_ONLY_DIRECTIVE:
+        return True
+    payload = _auto_append_media_tag_payload(tag)
+    return bool(_TOOL_IMAGE_PATH_RE.match(payload))
+
+
+def _dedupe_auto_append_media_tags_for_response(
+    media_tags: List[str],
+    final_response: str,
+) -> List[str]:
+    """Deduplicate auto-appended tags against each other and final response."""
+    seen = set()
+    unique_tags: List[str] = []
+    force_generated_pair = _GENERATED_IMAGE_ONLY_DIRECTIVE in media_tags
+    for tag in media_tags:
+        if tag in seen:
+            continue
+        seen.add(tag)
+        if force_generated_pair and _auto_append_generated_image_pair_tag(tag):
+            unique_tags.append(tag)
+            continue
+        if not _auto_append_video_tag_rendered_in_response(
+            tag, final_response
+        ):
+            unique_tags.append(tag)
+    return unique_tags
+
+
+def _valid_image_tool_media_tag(image: Any, history_media_paths: set) -> Optional[str]:
+    if not isinstance(image, str):
+        return None
+    image = image.strip()
+    if not image or image in history_media_paths:
+        return None
+    if not _TOOL_IMAGE_PATH_RE.match(image):
+        return None
+    return f"MEDIA:{image}"
+
+
+def _image_tool_media_tags(content: str, history_media_paths: set) -> List[str]:
+    try:
+        payload = json.loads(content)
+    except Exception:
+        return []
+    if not isinstance(payload, dict) or payload.get("success") is not True:
+        return []
+
+    candidate_groups: List[List[Any]] = [[payload.get("image")]]
+    image_generation = payload.get("image_generation")
+    if isinstance(image_generation, dict):
+        candidate_groups.append([image_generation.get("image")])
+    output = payload.get("output")
+    if isinstance(output, dict):
+        candidate_groups.append([
+            output.get("absolute_image_path"),
+            output.get("absolute_output_image_path"),
+            output.get("image_path"),
+            output.get("imagePath"),
+        ])
+    candidate_groups.append([
+        payload.get("absolute_output_image_path"),
+        payload.get("absolute_image_path"),
+    ])
+    outputs = payload.get("outputs")
+    if isinstance(outputs, list):
+        candidate_groups.append([
+            item.get("absolute_image_path")
+            for item in outputs
+            if isinstance(item, dict)
+        ])
+
+    seen: set[str] = set()
+    for candidates in candidate_groups:
+        tags: List[str] = []
+        for candidate in candidates:
+            tag = _valid_image_tool_media_tag(candidate, history_media_paths)
+            if tag and tag not in seen:
+                seen.add(tag)
+                tags.append(tag)
+        if tags:
+            return tags
+    return []
+
+
+def _video_tool_response_fragment(content: str, history_media_paths: set) -> Optional[str]:
+    try:
+        payload = json.loads(content)
+    except Exception:
+        return None
+    if not isinstance(payload, dict) or payload.get("success") is not True:
+        return None
+    video = payload.get("video")
+    if isinstance(video, dict):
+        video = video.get("url") or video.get("uri")
+    if not isinstance(video, str):
+        return None
+    video = video.strip()
+    if not video or video in history_media_paths:
+        return None
+    if _TOOL_VIDEO_PATH_RE.match(video):
+        return f"MEDIA:{video}"
+    if _TOOL_VIDEO_URL_RE.match(video):
+        return video
+    return None
 
 
 def _collect_auto_append_media_tags(
@@ -737,17 +891,33 @@ def _collect_auto_append_media_tags(
         if msg.get("role") not in ("tool", "function"):
             continue
         call_id = str(msg.get("tool_call_id") or msg.get("call_id") or "")
-        if tool_name_by_call_id.get(call_id) not in _AUTO_APPEND_MEDIA_TOOL_NAMES:
+        tool_name = tool_name_by_call_id.get(call_id)
+        if tool_name not in (
+            _AUTO_APPEND_MEDIA_TOOL_NAMES
+            | _AUTO_APPEND_IMAGE_TOOL_NAMES
+            | _AUTO_APPEND_VIDEO_TOOL_NAMES
+        ):
             continue
         content = str(msg.get("content") or "")
-        if "MEDIA:" not in content:
+        if tool_name in _AUTO_APPEND_IMAGE_TOOL_NAMES:
+            tags = _image_tool_media_tags(content, history_media_paths)
+            if tags:
+                if _GENERATED_IMAGE_ONLY_DIRECTIVE not in media_tags:
+                    media_tags.append(_GENERATED_IMAGE_ONLY_DIRECTIVE)
+                media_tags.extend(tags)
             continue
-        for match in _TOOL_MEDIA_RE.finditer(content):
-            path = match.group(1).strip().rstrip('\",}')
-            if path and path not in history_media_paths:
-                media_tags.append(f"MEDIA:{path}")
-        if "[[audio_as_voice]]" in content:
-            has_voice_directive = True
+        if tool_name in _AUTO_APPEND_VIDEO_TOOL_NAMES:
+            fragment = _video_tool_response_fragment(content, history_media_paths)
+            if fragment:
+                media_tags.append(fragment)
+            continue
+        if tool_name in _AUTO_APPEND_MEDIA_TOOL_NAMES and "MEDIA:" in content:
+            for match in _TOOL_MEDIA_RE.finditer(content):
+                path = match.group(1).strip().rstrip('\",}')
+                if path and path not in history_media_paths:
+                    media_tags.append(f"MEDIA:{path}")
+            if "[[audio_as_voice]]" in content:
+                has_voice_directive = True
 
     return media_tags, has_voice_directive
 
@@ -12385,7 +12555,11 @@ class GatewayRunner:
             # send_multiple_images (Telegram sendPhoto recompresses to ~1280px).
             force_document_attachments = "[[as_document]]" in response
 
-            from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
+            from gateway.platforms.base import (
+                BasePlatformAdapter,
+                public_export_media_path,
+                should_send_media_as_audio,
+            )
 
             media_files, cleaned = adapter.extract_media(response)
             media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
@@ -12449,6 +12623,7 @@ class GatewayRunner:
                             metadata=_thread_meta,
                         )
                     elif ext in _VIDEO_EXTS:
+                        media_path = public_export_media_path(media_path)
                         await adapter.send_video(
                             chat_id=event.source.chat_id,
                             video_path=media_path,
@@ -12467,6 +12642,7 @@ class GatewayRunner:
                 try:
                     ext = Path(file_path).suffix.lower()
                     if ext in _VIDEO_EXTS:
+                        file_path = public_export_media_path(file_path)
                         await adapter.send_video(
                             chat_id=event.source.chat_id,
                             video_path=file_path,
@@ -12730,6 +12906,7 @@ class GatewayRunner:
                 # arrives as a voice bubble / a clip as a video rather than
                 # a generic document. Mirrors the streaming + kanban paths.
                 from gateway.platforms.base import (
+                    public_export_media_path as _public_export_media_path,
                     should_send_media_as_audio as _should_send_media_as_audio,
                 )
                 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
@@ -12744,12 +12921,14 @@ class GatewayRunner:
                                 metadata=_thread_metadata,
                             )
                         elif _ext in _VIDEO_EXTS:
+                            media_path = _public_export_media_path(media_path)
                             await adapter.send_video(
                                 chat_id=source.chat_id,
                                 video_path=media_path,
                                 metadata=_thread_metadata,
                             )
                         elif _ext in _IMAGE_EXTS:
+                            media_path = _public_export_media_path(media_path)
                             await adapter.send_image_file(
                                 chat_id=source.chat_id,
                                 image_path=media_path,
@@ -18391,22 +18570,20 @@ class GatewayRunner:
             # also the sole guard on the fallback branch taken when mid-run
             # context compression shrinks the message list below the original
             # history length, preserving the compression-safe behaviour of #160.
-            if "MEDIA:" not in final_response:
-                media_tags, has_voice_directive = _collect_auto_append_media_tags(
-                    result.get("messages", []),
-                    history_offset=len(agent_history),
-                    history_media_paths=_history_media_paths,
-                )
+            media_tags, has_voice_directive = _collect_auto_append_media_tags(
+                result.get("messages", []),
+                history_offset=len(agent_history),
+                history_media_paths=_history_media_paths,
+            )
 
-                if media_tags:
-                    seen = set()
-                    unique_tags = []
-                    for tag in media_tags:
-                        if tag not in seen:
-                            seen.add(tag)
-                            unique_tags.append(tag)
-                    if has_voice_directive:
-                        unique_tags.insert(0, "[[audio_as_voice]]")
+            if media_tags:
+                unique_tags = _dedupe_auto_append_media_tags_for_response(
+                    media_tags,
+                    final_response,
+                )
+                if has_voice_directive and "[[audio_as_voice]]" not in final_response:
+                    unique_tags.insert(0, "[[audio_as_voice]]")
+                if unique_tags:
                     final_response = final_response + "\n" + "\n".join(unique_tags)
             
             # Sync session_id: the agent may have created a new session during

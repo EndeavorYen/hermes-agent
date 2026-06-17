@@ -1,15 +1,20 @@
 """Tests for gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
 
+import json
 import os
 import time
+from types import SimpleNamespace
+from urllib.parse import quote
 from unittest.mock import patch
 
 import pytest
+from PIL import Image
 
 from gateway.platforms.base import (
     BasePlatformAdapter,
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
     MessageEvent,
+    public_export_media_path,
     safe_url_for_log,
     utf16_len,
     _log_safe_path,
@@ -47,6 +52,136 @@ class TestSafeUrlForLog:
         assert safe_url_for_log(url, max_len=3) == "..."
         assert safe_url_for_log(url, max_len=2) == ".."
         assert safe_url_for_log(url, max_len=0) == ""
+
+
+class TestPublicMediaExport:
+    def test_image_export_removes_personal_exif_without_mutating_original(self, tmp_path, monkeypatch):
+        import gateway.platforms.base as base_mod
+
+        export_dir = tmp_path / "public_exports"
+        monkeypatch.setattr(base_mod, "PUBLIC_EXPORT_DIR", export_dir)
+
+        source = tmp_path / "private.jpg"
+        image = Image.new("RGB", (16, 16), (10, 20, 30))
+        exif = Image.Exif()
+        exif[0x013B] = "private-author"  # Artist
+        exif[0x8298] = "private-copyright"  # Copyright
+        exif[0xA431] = "private-serial"  # BodySerialNumber
+        exif[0x0131] = "HermesTestSoftware"  # Software; not personal provenance
+        image.save(source, exif=exif)
+
+        exported = public_export_media_path(str(source))
+
+        assert exported != str(source)
+        assert str(exported).startswith(str(export_dir))
+
+        original_exif = Image.open(source).getexif()
+        exported_exif = Image.open(exported).getexif()
+        assert original_exif.get(0x013B) == "private-author"
+        assert exported_exif.get(0x013B) is None
+        assert exported_exif.get(0x8298) is None
+        assert exported_exif.get(0xA431) is None
+        assert exported_exif.get(0x0131) == "HermesTestSoftware"
+
+    def test_video_export_creates_public_copy_and_sidecar(self, tmp_path, monkeypatch):
+        import gateway.platforms.base as base_mod
+
+        export_dir = tmp_path / "public_exports"
+        provenance_dir = tmp_path / "private_provenance"
+        monkeypatch.setattr(base_mod, "PUBLIC_EXPORT_DIR", export_dir)
+        monkeypatch.setattr(base_mod, "PUBLIC_EXPORT_PROVENANCE_DIR", provenance_dir)
+        monkeypatch.setattr(
+            base_mod,
+            "_probe_video_metadata",
+            lambda _path: {"width": 720, "height": 1280, "duration": 8.25},
+        )
+
+        source = tmp_path / "private.mp4"
+        source.write_bytes(b"fake-mp4-bytes")
+
+        exported = public_export_media_path(str(source))
+
+        assert exported != str(source)
+        assert str(exported).startswith(str(export_dir))
+        assert os.path.exists(exported)
+        assert open(exported, "rb").read() == b"fake-mp4-bytes"
+        assert not os.path.exists(exported + ".json")
+        sidecars = list(provenance_dir.glob("*.json"))
+        assert len(sidecars) == 1
+        data = json.loads(sidecars[0].read_text())
+        assert data["source_path"] == str(source)
+        assert data["media_kind"] == "video"
+        assert data["policy"] == "privacy_public_export"
+        assert data["video"] == {"width": 720, "height": 1280, "duration": 8.25}
+
+    def test_video_probe_parses_ffprobe_dimensions(self, tmp_path, monkeypatch):
+        import gateway.platforms.base as base_mod
+
+        video = tmp_path / "sample.mp4"
+        video.write_bytes(b"fake")
+
+        def fake_run(cmd, **kwargs):
+            assert cmd[0].endswith("ffprobe")
+            assert str(video) in cmd
+            return SimpleNamespace(
+                stdout=json.dumps({
+                    "streams": [{"width": 1080, "height": 1920}],
+                    "format": {"duration": "7.75"},
+                }),
+                returncode=0,
+            )
+
+        monkeypatch.setattr(base_mod.shutil, "which", lambda name: "/usr/bin/ffprobe")
+        monkeypatch.setattr(base_mod.subprocess, "run", fake_run)
+
+        assert base_mod._probe_video_metadata(video) == {
+            "width": 1080,
+            "height": 1920,
+            "duration": 7.75,
+        }
+
+    def test_send_multiple_images_uploads_public_export_copy(self, tmp_path, monkeypatch):
+        import gateway.platforms.base as base_mod
+        from gateway.config import Platform, PlatformConfig
+
+        source = tmp_path / "private.jpg"
+        source.write_bytes(b"\xff\xd8\xffprivate")
+        exported = tmp_path / "public.jpg"
+        sent = []
+
+        class StubAdapter(BasePlatformAdapter):
+            async def connect(self):
+                return True
+
+            async def disconnect(self):
+                pass
+
+            async def send(self, *a, **kw):
+                pass
+
+            async def get_chat_info(self, *a):
+                return {}
+
+            async def send_image_file(self, chat_id, image_path, **kwargs):
+                sent.append((chat_id, image_path, kwargs))
+                from gateway.platforms.base import SendResult
+                return SendResult(success=True, message_id="sent")
+
+        monkeypatch.setattr(
+            base_mod,
+            "public_export_media_path",
+            lambda path: str(exported) if path == str(source) else path,
+        )
+
+        adapter = StubAdapter(
+            config=PlatformConfig(enabled=True, token="test"),
+            platform=Platform.SLACK,
+        )
+
+        import asyncio
+        asyncio.run(adapter.send_multiple_images("chat", [(f"file://{quote(str(source))}", "")]))
+
+        assert sent[0][1] == str(exported)
 
 
 # ---------------------------------------------------------------------------

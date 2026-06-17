@@ -306,6 +306,11 @@ class TestRunBackgroundTask:
         for _p in (_ogg, _mp4, _png, _pdf):
             with open(_p, "wb") as _fh:
                 _fh.write(b"x")
+        monkeypatch.setattr(
+            "gateway.platforms.base.public_export_media_path",
+            lambda path: path,
+            raising=False,
+        )
         # ogg flagged as voice, mp4 video, png image, pdf doc.
         media = [
             (_ogg, True),
@@ -338,16 +343,78 @@ class TestRunBackgroundTask:
             await runner._run_background_task("make stuff", source, "bg_test")
 
             mock_adapter.send_voice.assert_called_once()
-            assert mock_adapter.send_voice.call_args.kwargs["audio_path"] == _ogg
+            assert mock_adapter.send_voice.call_args.kwargs["audio_path"] == _os.path.realpath(_ogg)
             mock_adapter.send_video.assert_called_once()
-            assert mock_adapter.send_video.call_args.kwargs["video_path"] == _mp4
+            assert mock_adapter.send_video.call_args.kwargs["video_path"] == _os.path.realpath(_mp4)
             mock_adapter.send_image_file.assert_called_once()
-            assert mock_adapter.send_image_file.call_args.kwargs["image_path"] == _png
+            assert mock_adapter.send_image_file.call_args.kwargs["image_path"] == _os.path.realpath(_png)
             mock_adapter.send_document.assert_called_once()
-            assert mock_adapter.send_document.call_args.kwargs["file_path"] == _pdf
+            assert mock_adapter.send_document.call_args.kwargs["file_path"] == _os.path.realpath(_pdf)
         finally:
             import shutil as _shutil
             _shutil.rmtree(_tmpdir, ignore_errors=True)
+
+    @pytest.mark.asyncio
+    async def test_video_media_is_public_exported_before_background_upload(
+        self, monkeypatch, tmp_path
+    ):
+        from gateway import run as gateway_run
+
+        runner = _make_runner()
+        runner._resolve_session_agent_runtime = MagicMock(
+            return_value=("test-model", {"api_key": "test-key"})
+        )
+        runner._resolve_session_reasoning_config = MagicMock(return_value=None)
+        runner._load_service_tier = MagicMock(return_value=None)
+        runner._resolve_turn_agent_config = MagicMock(
+            return_value={
+                "model": "test-model",
+                "runtime": {"api_key": "test-key"},
+                "request_overrides": None,
+            }
+        )
+        runner._run_in_executor_with_context = AsyncMock(
+            return_value={"final_response": "see video", "messages": []}
+        )
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+
+        source_video = tmp_path / "render.mp4"
+        source_video.write_bytes(b"video")
+        exported_video = tmp_path / "public_render.mp4"
+        exported_video.write_bytes(b"public-video")
+        seen = []
+
+        def fake_public_export(path):
+            seen.append(path)
+            return str(exported_video)
+
+        monkeypatch.setattr(
+            "gateway.platforms.base.public_export_media_path",
+            fake_public_export,
+            raising=False,
+        )
+
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.send_video = AsyncMock()
+        mock_adapter.send_document = AsyncMock()
+        mock_adapter.extract_media = MagicMock(return_value=([(str(source_video), False)], ""))
+        mock_adapter.extract_images = MagicMock(return_value=([], ""))
+        runner.adapters[Platform.DISCORD] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        await runner._run_background_task("make video", source, "bg_test")
+
+        assert seen == [str(source_video)]
+        mock_adapter.send_video.assert_called_once()
+        assert mock_adapter.send_video.call_args.kwargs["video_path"] == str(exported_video)
+        mock_adapter.send_document.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_telegram_dm_topic_completion_preserves_reply_anchor_metadata(self, monkeypatch):

@@ -159,6 +159,221 @@ caption
         tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
         assert tags == ["MEDIA:/tmp/voice.ogg"]
         assert voice is True
+
+    def test_gateway_auto_append_keeps_current_image_generate_result(self):
+        """Slack/image replies should attach the newly generated image even if final text omits it."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {"role": "user", "content": "generate image"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_img", "function": {"name": "image_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_img",
+                "content": '{"success": true, "image": "/tmp/new-grok-image.jpg"}',
+            },
+            {"role": "assistant", "content": "Done."},
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+        assert tags == ["[[generated_image_only]]", "MEDIA:/tmp/new-grok-image.jpg"]
+        assert voice is False
+
+    def test_gateway_auto_append_keeps_current_visual_arsenal_generate_result(self):
+        """Visual Arsenal generation should attach the newly generated image."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {"role": "user", "content": "generate visual arsenal image"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_va", "function": {"name": "visual_arsenal_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_va",
+                "content": (
+                    '{"success": true, '
+                    '"image_generation": {"success": true, "image": "/tmp/va-generated.jpg"}, '
+                    '"absolute_output_image_path": "/tmp/library-copy.jpg"}'
+                ),
+            },
+            {"role": "assistant", "content": "Generated six options."},
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+        assert tags == ["[[generated_image_only]]", "MEDIA:/tmp/va-generated.jpg"]
+        assert voice is False
+
+    def test_gateway_auto_append_ignores_historical_image_generate_result(self):
+        """Old image_generate outputs must not be re-attached on later Slack replies."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        history = [
+            {"role": "user", "content": "generate old image"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "old_img", "function": {"name": "image_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "old_img",
+                "content": '{"success": true, "image": "/tmp/old-grok-image.jpg"}',
+            },
+            {"role": "assistant", "content": "Done."},
+        ]
+        new_messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "Hi."},
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(
+            history + new_messages,
+            history_offset=len(history),
+            history_media_paths={"/tmp/old-grok-image.jpg"},
+        )
+        assert tags == []
+        assert voice is False
+
+    def test_gateway_auto_append_keeps_current_video_generate_local_result(self):
+        """Slack/video replies should attach a newly generated local video file."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {"role": "user", "content": "generate video"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_video", "function": {"name": "video_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_video",
+                "content": '{"success": true, "video": "/tmp/new-grok-video.mp4"}',
+            },
+            {"role": "assistant", "content": "Done."},
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+        assert tags == ["MEDIA:/tmp/new-grok-video.mp4"]
+        assert voice is False
+
+    def test_gateway_auto_append_keeps_current_video_generate_url_result(self):
+        """xAI video URLs should be posted even when final text omits them."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {"role": "user", "content": "generate video"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_video", "function": {"name": "video_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_video",
+                "content": '{"success": true, "video": "https://cdn.x.ai/new-grok-video.mp4"}',
+            },
+            {"role": "assistant", "content": "Done."},
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+        assert tags == ["https://cdn.x.ai/new-grok-video.mp4"]
+        assert voice is False
+
+    def test_gateway_auto_append_skips_video_already_rendered_in_final_response(self):
+        """Do not attach the same local video twice when the model already displays it."""
+        from gateway.run import (
+            _collect_auto_append_media_tags,
+            _dedupe_auto_append_media_tags_for_response,
+        )
+
+        messages = [
+            {"role": "user", "content": "generate video"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_video", "function": {"name": "video_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_video",
+                "content": '{"success": true, "video": "/tmp/new-grok-video.mp4"}',
+            },
+            {
+                "role": "assistant",
+                "content": "完成：\n![video](/tmp/new-grok-video.mp4)",
+            },
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+        assert tags == ["MEDIA:/tmp/new-grok-video.mp4"]
+        assert voice is False
+        assert _dedupe_auto_append_media_tags_for_response(
+            tags, "完成：\n![video](/tmp/new-grok-video.mp4)"
+        ) == []
+
+    def test_gateway_auto_append_skips_duplicate_video_in_image_video_batch(self):
+        """Generated-image pairing must not force a duplicate video attachment."""
+        from gateway.run import _dedupe_auto_append_media_tags_for_response
+
+        tags = [
+            "[[generated_image_only]]",
+            "MEDIA:/tmp/new-grok-image.jpg",
+            "MEDIA:/tmp/new-grok-video.mp4",
+        ]
+
+        assert _dedupe_auto_append_media_tags_for_response(
+            tags,
+            "已完成圖片和影片：\n![video](/tmp/new-grok-video.mp4)",
+        ) == [
+            "[[generated_image_only]]",
+            "MEDIA:/tmp/new-grok-image.jpg",
+        ]
+
+    def test_gateway_auto_append_ignores_historical_video_generate_result(self):
+        """Old video_generate outputs must not be re-posted on later Slack replies."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        history = [
+            {"role": "user", "content": "generate old video"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "old_video", "function": {"name": "video_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "old_video",
+                "content": '{"success": true, "video": "https://cdn.x.ai/old-grok-video.mp4"}',
+            },
+            {"role": "assistant", "content": "Done."},
+        ]
+        new_messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "Hi."},
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(
+            history + new_messages,
+            history_offset=len(history),
+            history_media_paths={"https://cdn.x.ai/old-grok-video.mp4"},
+        )
+        assert tags == []
+        assert voice is False
     
     def test_media_tags_not_extracted_from_history(self):
         """MEDIA tags from previous turns should NOT be extracted again."""
