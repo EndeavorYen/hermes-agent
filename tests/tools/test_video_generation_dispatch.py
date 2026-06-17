@@ -59,6 +59,42 @@ class _RaisingProvider(VideoGenProvider):
         raise RuntimeError("boom")
 
 
+class _ModerationThenSuccessProvider(VideoGenProvider):
+    @property
+    def name(self) -> str:
+        return "moderated"
+
+    def __init__(self):
+        self.calls: List[Dict[str, Any]] = []
+
+    def default_model(self) -> Optional[str]:
+        return "model-a"
+
+    def generate(self, prompt, **kwargs):
+        self.calls.append({"prompt": prompt, **kwargs})
+        if len(self.calls) == 1:
+            return {
+                "success": False,
+                "video": None,
+                "error": "Generated video rejected by content moderation.",
+                "error_type": "content_moderation",
+                "error_code": "Client specified an invalid argument",
+                "provider": self.name,
+                "model": kwargs.get("model") or "model-a",
+                "prompt": prompt,
+            }
+        return {
+            "success": True,
+            "video": "https://example.com/compromise.mp4",
+            "model": kwargs.get("model") or "model-a",
+            "prompt": prompt,
+            "modality": "image" if kwargs.get("image_url") else "text",
+            "aspect_ratio": kwargs.get("aspect_ratio", ""),
+            "duration": kwargs.get("duration") or 0,
+            "provider": self.name,
+        }
+
+
 class TestUnifiedDispatch:
     def _run(self, args: Dict[str, Any], *, configured: Optional[str] = None) -> Dict[str, Any]:
         from tools import video_generation_tool
@@ -105,6 +141,19 @@ class TestUnifiedDispatch:
         assert result["success"] is True
         assert result["modality"] == "image"
         assert provider.last_kwargs["image_url"] == "https://example.com/img.png"
+        assert provider.last_kwargs["_aspect_ratio_override_explicit"] is False
+
+    def test_explicit_aspect_ratio_is_marked_for_provider(self):
+        provider = _RecordingProvider("rec")
+        video_gen_registry.register_provider(provider)
+        result = self._run({
+            "prompt": "animate this",
+            "image_url": "https://example.com/img.png",
+            "aspect_ratio": "9:16",
+        })
+        assert result["success"] is True
+        assert provider.last_kwargs["aspect_ratio"] == "9:16"
+        assert provider.last_kwargs["_aspect_ratio_override_explicit"] is True
 
     def test_prompt_required(self):
         provider = _RecordingProvider("rec")
@@ -118,6 +167,30 @@ class TestUnifiedDispatch:
         result = self._run({"prompt": "x"})
         assert result["success"] is False
         assert result["error_type"] == "provider_exception"
+
+    def test_content_moderation_retries_with_safe_compromise_prompt(self):
+        provider = _ModerationThenSuccessProvider()
+        video_gen_registry.register_provider(provider)
+
+        result = self._run({
+            "prompt": "性感寫真姿勢，sexy back pose, cinematic pan",
+            "image_url": "https://example.com/ref.png",
+            "duration": 8,
+        })
+
+        assert result["success"] is True
+        assert result["video"] == "https://example.com/compromise.mp4"
+        assert len(provider.calls) == 2
+        retry_prompt = provider.calls[1]["prompt"]
+        assert "safe compromise" in retry_prompt
+        assert "refined glamour" in retry_prompt
+        assert "性感" not in retry_prompt
+        assert "sexy" not in retry_prompt.lower()
+        assert provider.calls[1]["image_url"] == "https://example.com/ref.png"
+        assert result["video_mediation"]["applied"] is True
+        assert result["video_mediation"]["strategy"] == "safe_reframe_retry"
+        assert result["video_mediation"]["first_error_type"] == "content_moderation"
+        assert result["video_mediation"]["original_prompt"].startswith("性感寫真姿勢")
 
     def test_operation_field_not_in_schema(self):
         """Make sure we removed the operation field from the schema."""

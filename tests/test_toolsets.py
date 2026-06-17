@@ -229,6 +229,10 @@ class TestToolsetConsistency:
         # silently let a platform diverge so far that nothing is shared).
         assert len(core) > 20, f"Suspiciously small shared core: {len(core)} tools"
 
+    def test_hermes_slack_full_toolset_includes_video_generation(self):
+        """Slack full lane must know the Grok Imagine video generation route."""
+        assert "video_generate" in resolve_toolset("hermes-slack")
+
 
 class TestPluginToolsets:
     def test_get_all_toolsets_includes_plugin_toolset(self, monkeypatch):

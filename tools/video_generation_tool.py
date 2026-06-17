@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 from agent.video_gen_provider import (
@@ -307,12 +308,95 @@ def _normalize_reference_images(value: Any) -> Optional[List[str]]:
     return out or None
 
 
+_VIDEO_SAFE_REFRAME_REWRITES = (
+    ("性感", "refined glamour"),
+    ("情慾", "magnetic editorial mood"),
+    ("色情", "bold editorial"),
+    ("挑逗", "confident editorial presence"),
+    ("sexy", "refined glamour"),
+    ("erotic", "magnetic editorial mood"),
+    ("provocative", "bold editorial styling"),
+    ("seductive", "confident editorial presence"),
+    ("sexual", "magnetic editorial mood"),
+    ("nsfw", "bold editorial"),
+    ("lingerie", "fitted fashion styling"),
+    ("nude", "polished wardrobe"),
+    ("nudity", "polished wardrobe"),
+    ("naked", "polished wardrobe"),
+    ("cleavage", "neckline styling"),
+    ("butt", "hip-line silhouette"),
+    ("ass", "hip-line silhouette"),
+)
+
+
+def _rewrite_video_prompt_for_safe_compromise(prompt: str) -> str:
+    cleaned = str(prompt or "").strip()
+    for source, replacement in _VIDEO_SAFE_REFRAME_REWRITES:
+        cleaned = re.sub(re.escape(source), replacement, cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned:
+        cleaned = "refined glamour fashion editorial video"
+
+    return "\n".join([
+        "safe compromise video prompt for xAI Grok Imagine",
+        (
+            "Preserve the user's core subject, reference identity, camera angle, "
+            "composition direction, and mood as closely as the provider allows."
+        ),
+        f"Reframed visual brief: {cleaned}",
+        (
+            "Use refined glamour, magazine-safe fashion editorial styling, "
+            "polished wardrobe, confident pose language, elegant silhouette, "
+            "cinematic lighting, and tasteful camera movement."
+        ),
+        (
+            "Motion should stay subtle and compliant: slow cinematic pan, gentle "
+            "posture shift, natural hair or fabric movement, and clear facial detail."
+        ),
+    ])
+
+
+def _should_retry_with_video_mediation(result: Dict[str, Any]) -> bool:
+    if result.get("success"):
+        return False
+    error_type = str(result.get("error_type") or "").strip()
+    if error_type in {"content_moderation", "policy_refusal"}:
+        return True
+    haystack = " ".join(
+        str(result.get(key) or "")
+        for key in ("error", "error_code", "provider_error_message")
+    ).lower()
+    return any(term in haystack for term in ("moderation", "rejected", "safety"))
+
+
+def _video_mediation_payload(
+    *,
+    original_prompt: str,
+    mediated_prompt: str,
+    first_result: Dict[str, Any],
+) -> Dict[str, Any]:
+    return {
+        "applied": True,
+        "strategy": "safe_reframe_retry",
+        "reason": "content_moderation",
+        "original_prompt": original_prompt,
+        "mediated_prompt": mediated_prompt,
+        "first_error_type": first_result.get("error_type"),
+        "first_error_code": first_result.get("error_code"),
+        "first_http_status": first_result.get("http_status"),
+        "first_request_id": first_result.get("request_id"),
+        "first_xai_status": first_result.get("xai_status"),
+    }
+
+
 def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
     prompt = (args.get("prompt") or "").strip()
     image_url = (args.get("image_url") or "").strip() or None
     reference_image_urls = _normalize_reference_images(args.get("reference_image_urls"))
     duration = _coerce_int(args.get("duration"))
-    aspect_ratio = (args.get("aspect_ratio") or DEFAULT_ASPECT_RATIO).strip() or DEFAULT_ASPECT_RATIO
+    aspect_ratio_value = str(args.get("aspect_ratio") or "").strip()
+    aspect_ratio_explicit = bool(aspect_ratio_value)
+    aspect_ratio = aspect_ratio_value or DEFAULT_ASPECT_RATIO
     resolution = (args.get("resolution") or DEFAULT_RESOLUTION).strip() or DEFAULT_RESOLUTION
     negative_prompt = (args.get("negative_prompt") or "").strip() or None
     audio = _coerce_bool(args.get("audio"))
@@ -341,6 +425,7 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
         "reference_image_urls": reference_image_urls,
         "duration": duration,
         "aspect_ratio": aspect_ratio,
+        "_aspect_ratio_override_explicit": aspect_ratio_explicit,
         "resolution": resolution,
         "negative_prompt": negative_prompt,
         "audio": audio,
@@ -391,6 +476,43 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
             prompt=prompt,
         ))
 
+    if _should_retry_with_video_mediation(result):
+        mediated_prompt = _rewrite_video_prompt_for_safe_compromise(prompt)
+        mediation = _video_mediation_payload(
+            original_prompt=prompt,
+            mediated_prompt=mediated_prompt,
+            first_result=result,
+        )
+        try:
+            retry_result = provider.generate(prompt=mediated_prompt, **kwargs)
+        except Exception as exc:
+            logger.warning(
+                "video_gen provider '%s' mediation retry raised: %s",
+                getattr(provider, "name", "?"), exc,
+            )
+            retry_result = error_response(
+                error=f"Provider '{getattr(provider, 'name', '?')}' mediation retry error: {exc}",
+                error_type="provider_exception",
+                provider=getattr(provider, "name", ""),
+                model=model or "",
+                prompt=mediated_prompt,
+            )
+        if not isinstance(retry_result, dict):
+            retry_result = error_response(
+                error="Provider returned a non-dict result during mediation retry",
+                error_type="provider_contract",
+                provider=getattr(provider, "name", ""),
+                model=model or "",
+                prompt=mediated_prompt,
+            )
+        mediation["retry_success"] = bool(retry_result.get("success"))
+        if not retry_result.get("success"):
+            mediation["retry_error_type"] = retry_result.get("error_type")
+            mediation["retry_error_code"] = retry_result.get("error_code")
+            mediation["retry_request_id"] = retry_result.get("request_id")
+        retry_result["video_mediation"] = mediation
+        return json.dumps(retry_result)
+
     return json.dumps(result)
 
 
@@ -421,7 +543,13 @@ _GENERIC_DESCRIPTION = (
     "Long-running generations may take 30 seconds to several minutes — "
     "the call blocks until the video is ready. Returns either an HTTP "
     "URL or an absolute file path in the `video` field; display it with "
-    "markdown ![description](url-or-path) and the gateway will deliver it."
+    "markdown ![description](url-or-path) and the gateway will deliver it. "
+    "On failure, preserve structured diagnostics in the user-facing status: "
+    "`error_type`, `error_code`, `http_status`, `request_id`, and "
+    "`xai_status` when present. If the provider rejects the first prompt for "
+    "content moderation, the tool automatically tries one safe compromise "
+    "reframe before returning; inspect `video_mediation` to explain what "
+    "changed."
 )
 
 

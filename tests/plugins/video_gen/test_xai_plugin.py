@@ -32,9 +32,9 @@ def test_xai_provider_lists_text_and_current_image_video_models():
     ids = [model["id"] for model in models]
 
     assert ids[0] == "grok-imagine-video"
-    assert ids[1] == "grok-imagine-video-1.5-preview"
+    assert ids[1] == "grok-imagine-video-1.5"
     assert models[1]["modalities"] == ["image"]
-    assert models[1]["aliases"] == ["grok-imagine-video-1.5-2026-05-30"]
+    assert "grok-imagine-video-1.5-preview" in models[1]["aliases"]
 
 
 def test_xai_routes_default_models_by_modality():
@@ -49,9 +49,14 @@ def test_xai_routes_default_models_by_modality():
         "grok-imagine-video",
         modality="image",
         explicit_model=False,
-    ) == "grok-imagine-video-1.5-preview"
+    ) == "grok-imagine-video-1.5"
     assert _resolve_model_for_modality(
-        "grok-imagine-video-1.5-preview",
+        "grok-imagine-video",
+        modality="image",
+        explicit_model=True,
+    ) == "grok-imagine-video-1.5"
+    assert _resolve_model_for_modality(
+        "grok-imagine-video-1.5",
         modality="text",
         explicit_model=False,
     ) == "grok-imagine-video"
