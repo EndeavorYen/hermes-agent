@@ -143,6 +143,62 @@ class TestUnifiedDispatch:
         assert provider.last_kwargs["image_url"] == "https://example.com/img.png"
         assert provider.last_kwargs["_aspect_ratio_override_explicit"] is False
 
+    def test_video_prompt_mediator_defaults_to_medium_editorial_motion(self):
+        provider = _RecordingProvider("rec")
+        video_gen_registry.register_provider(provider)
+        result = self._run({
+            "prompt": "fashion editorial portrait, refined glamour styling",
+            "image_url": "https://example.com/img.png",
+        })
+
+        assert result["success"] is True
+        prompt = provider.last_kwargs["prompt"]
+        assert "Video prompt mediator v1" in prompt
+        assert "Motion intensity: medium" in prompt
+        assert "static slideshow" in prompt
+        assert "slow cinematic pan" not in prompt
+        assert result["video_prompt_mediation"]["motion_intensity"] == "medium"
+
+    def test_video_prompt_mediator_honors_dynamic_motion_controls(self):
+        provider = _RecordingProvider("rec")
+        video_gen_registry.register_provider(provider)
+        result = self._run({
+            "prompt": "glamour editorial beach photoshoot",
+            "image_url": "https://example.com/img.png",
+            "motion_intensity": "dynamic",
+            "camera_motion": "low-angle tracking shot",
+            "body_action": "confident walking turn with hair movement",
+        })
+
+        assert result["success"] is True
+        prompt = provider.last_kwargs["prompt"]
+        assert "Motion intensity: dynamic" in prompt
+        assert "low-angle tracking shot" in prompt
+        assert "confident walking turn with hair movement" in prompt
+        assert result["video_prompt_mediation"]["motion_intensity"] == "dynamic"
+        assert result["video_prompt_mediation"]["camera_motion"] == "low-angle tracking shot"
+        assert result["video_prompt_mediation"]["body_action"] == "confident walking turn with hair movement"
+
+    def test_video_prompt_mediator_preserves_long_core_brief_details(self):
+        provider = _RecordingProvider("rec")
+        video_gen_registry.register_provider(provider)
+        important_late_detail = "final detail: barefoot leg-forward composition"
+        long_prompt = (
+            "professional glamour editorial image-to-video, same reference identity, "
+            "mountain ridge background, black fitted dress, natural skin texture, "
+            "beautiful face, elegant body line, cinematic daylight, "
+            "avoid plastic texture, keep anatomy stable, "
+            f"{important_late_detail}"
+        )
+
+        result = self._run({
+            "prompt": long_prompt,
+            "image_url": "https://example.com/img.png",
+        })
+
+        assert result["success"] is True
+        assert important_late_detail in provider.last_kwargs["prompt"]
+
     def test_explicit_aspect_ratio_is_marked_for_provider(self):
         provider = _RecordingProvider("rec")
         video_gen_registry.register_provider(provider)
@@ -184,6 +240,8 @@ class TestUnifiedDispatch:
         retry_prompt = provider.calls[1]["prompt"]
         assert "safe compromise" in retry_prompt
         assert "refined glamour" in retry_prompt
+        assert "Motion intensity: medium" in retry_prompt
+        assert "slow cinematic pan" not in retry_prompt
         assert "性感" not in retry_prompt
         assert "sexy" not in retry_prompt.lower()
         assert provider.calls[1]["image_url"] == "https://example.com/ref.png"
@@ -191,6 +249,7 @@ class TestUnifiedDispatch:
         assert result["video_mediation"]["strategy"] == "safe_reframe_retry"
         assert result["video_mediation"]["first_error_type"] == "content_moderation"
         assert result["video_mediation"]["original_prompt"].startswith("性感寫真姿勢")
+        assert result["video_prompt_mediation"]["safe_compromise"] is True
 
     def test_operation_field_not_in_schema(self):
         """Make sure we removed the operation field from the schema."""

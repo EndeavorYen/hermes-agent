@@ -146,6 +146,33 @@ VIDEO_GENERATE_SCHEMA: Dict[str, Any] = {
                     "dependent)."
                 ),
             },
+            "motion_intensity": {
+                "type": "string",
+                "enum": ["subtle", "medium", "dynamic"],
+                "description": (
+                    "Optional Hermes prompt-mediator hint for how much visible "
+                    "motion to request. Use medium for natural editorial motion, "
+                    "dynamic for walking/turning/tracking shots, and subtle only "
+                    "when preserving a fragile reference is more important than "
+                    "movement."
+                ),
+            },
+            "camera_motion": {
+                "type": "string",
+                "description": (
+                    "Optional camera movement hint compiled into the provider "
+                    "prompt, such as orbit, push-in, low-angle tracking, or "
+                    "handheld editorial."
+                ),
+            },
+            "body_action": {
+                "type": "string",
+                "description": (
+                    "Optional subject/action hint compiled into the provider "
+                    "prompt, such as turning pose, confident walking step, hair "
+                    "movement, or dress movement."
+                ),
+            },
             "model": {
                 "type": "string",
                 "description": (
@@ -328,32 +355,194 @@ _VIDEO_SAFE_REFRAME_REWRITES = (
     ("ass", "hip-line silhouette"),
 )
 
+_VIDEO_MOTION_INTENSITIES = {"subtle", "medium", "dynamic"}
+_VIDEO_DYNAMIC_MOTION_MARKERS = (
+    "dynamic",
+    "walking",
+    "walk",
+    "turning",
+    "turn",
+    "tracking",
+    "orbit",
+    "dance",
+    "hair flip",
+    "catwalk",
+    "動態",
+    "走路",
+    "步伐",
+    "轉身",
+    "旋轉",
+)
+_VIDEO_SUBTLE_MOTION_MARKERS = (
+    "subtle",
+    "gentle",
+    "minimal",
+    "still",
+    "slow",
+    "微動",
+    "輕微",
+    "保守",
+)
 
-def _rewrite_video_prompt_for_safe_compromise(prompt: str) -> str:
+
+def _clean_video_prompt_control(value: Any) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"\s+", " ", text)
+    return text[:180].strip()
+
+
+def _clean_video_core_prompt(value: Any) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"\s+", " ", text)
+    return text[:1800].strip()
+
+
+def _resolve_video_motion_intensity(value: Any, prompt: str) -> str:
+    explicit = str(value or "").strip().lower()
+    if explicit in _VIDEO_MOTION_INTENSITIES:
+        return explicit
+
+    lowered = str(prompt or "").lower()
+    if any(marker in lowered or marker in str(prompt or "") for marker in _VIDEO_DYNAMIC_MOTION_MARKERS):
+        return "dynamic"
+    if any(marker in lowered or marker in str(prompt or "") for marker in _VIDEO_SUBTLE_MOTION_MARKERS):
+        return "subtle"
+    return "medium"
+
+
+def _default_video_camera_motion(intensity: str) -> str:
+    if intensity == "subtle":
+        return "gentle push-in with a small parallax shift"
+    if intensity == "dynamic":
+        return "controlled orbit or low-angle tracking shot with visible perspective change"
+    return "smooth editorial orbit or push-in with natural camera energy"
+
+
+def _default_video_body_action(intensity: str) -> str:
+    if intensity == "subtle":
+        return "natural breathing, slight posture shift, soft hair or fabric movement"
+    if intensity == "dynamic":
+        return "confident walking step or turning pose with hair and fabric movement"
+    return "natural shoulder and hip turn, expressive gaze shift, hair and fabric movement"
+
+
+def _video_motion_guidance(intensity: str) -> str:
+    if intensity == "subtle":
+        return (
+            "preserve the reference strongly with gentle motion, stable face, "
+            "clean anatomy, and no sudden pose changes"
+        )
+    if intensity == "dynamic":
+        return (
+            "use dynamic but controlled editorial motion, visible body/camera "
+            "change, strong leg and silhouette readability, stable face, and no "
+            "warped limbs"
+        )
+    return (
+        "use medium editorial motion with clear movement, not a static slideshow; "
+        "keep face, legs, body proportions, outfit, and framing stable"
+    )
+
+
+def _build_video_prompt_mediation(
+    prompt: str,
+    *,
+    motion_intensity: Any = None,
+    camera_motion: Any = None,
+    body_action: Any = None,
+    safe_compromise: bool = False,
+) -> Dict[str, Any]:
+    core = _clean_video_core_prompt(prompt)
+    if not core:
+        core = "refined editorial video"
+    intensity = _resolve_video_motion_intensity(motion_intensity, core)
+    camera = _clean_video_prompt_control(camera_motion) or _default_video_camera_motion(intensity)
+    action = _clean_video_prompt_control(body_action) or _default_video_body_action(intensity)
+    header = (
+        "safe compromise video prompt for xAI Grok Imagine"
+        if safe_compromise
+        else "Video prompt mediator v1"
+    )
+    mediated_prompt = "\n".join([
+        header,
+        (
+            "Preserve the user's core subject, reference identity, camera angle, "
+            "composition direction, mood, outfit, and body-line intent as closely "
+            "as the provider allows."
+        ),
+        f"Core visual brief: {core}",
+        f"Motion intensity: {intensity}. {_video_motion_guidance(intensity)}.",
+        f"Camera motion: {camera}.",
+        f"Body/action: {action}.",
+        (
+            "Quality guard: avoid plastic motion, face morphing, warped legs, "
+            "extra limbs, melting fabric, and slideshow-like stillness."
+        ),
+    ])
+    return {
+        "applied": True,
+        "strategy": "video_prompt_mediator_v1",
+        "motion_intensity": intensity,
+        "camera_motion": camera,
+        "body_action": action,
+        "safe_compromise": safe_compromise,
+        "original_prompt": prompt,
+        "mediated_prompt": mediated_prompt,
+    }
+
+
+def _attach_video_prompt_mediation(
+    result: Dict[str, Any],
+    mediation: Dict[str, Any],
+) -> Dict[str, Any]:
+    if mediation.get("applied"):
+        result["video_prompt_mediation"] = {
+            "applied": True,
+            "strategy": mediation.get("strategy"),
+            "motion_intensity": mediation.get("motion_intensity"),
+            "camera_motion": mediation.get("camera_motion"),
+            "body_action": mediation.get("body_action"),
+            "safe_compromise": bool(mediation.get("safe_compromise")),
+        }
+    return result
+
+
+def _rewrite_video_prompt_for_safe_compromise(
+    prompt: str,
+    *,
+    motion_intensity: Any = None,
+    camera_motion: Any = None,
+    body_action: Any = None,
+) -> str:
+    mediated = _build_safe_compromise_video_prompt_mediation(
+        prompt,
+        motion_intensity=motion_intensity,
+        camera_motion=camera_motion,
+        body_action=body_action,
+    )
+    return str(mediated["mediated_prompt"])
+
+
+def _build_safe_compromise_video_prompt_mediation(
+    prompt: str,
+    *,
+    motion_intensity: Any = None,
+    camera_motion: Any = None,
+    body_action: Any = None,
+) -> Dict[str, Any]:
     cleaned = str(prompt or "").strip()
     for source, replacement in _VIDEO_SAFE_REFRAME_REWRITES:
         cleaned = re.sub(re.escape(source), replacement, cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     if not cleaned:
         cleaned = "refined glamour fashion editorial video"
-
-    return "\n".join([
-        "safe compromise video prompt for xAI Grok Imagine",
-        (
-            "Preserve the user's core subject, reference identity, camera angle, "
-            "composition direction, and mood as closely as the provider allows."
-        ),
-        f"Reframed visual brief: {cleaned}",
-        (
-            "Use refined glamour, magazine-safe fashion editorial styling, "
-            "polished wardrobe, confident pose language, elegant silhouette, "
-            "cinematic lighting, and tasteful camera movement."
-        ),
-        (
-            "Motion should stay subtle and compliant: slow cinematic pan, gentle "
-            "posture shift, natural hair or fabric movement, and clear facial detail."
-        ),
-    ])
+    return _build_video_prompt_mediation(
+        cleaned,
+        motion_intensity=motion_intensity,
+        camera_motion=camera_motion,
+        body_action=body_action,
+        safe_compromise=True,
+    )
 
 
 def _should_retry_with_video_mediation(result: Dict[str, Any]) -> bool:
@@ -402,6 +591,9 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
     audio = _coerce_bool(args.get("audio"))
     seed = _coerce_int(args.get("seed"))
     model_override = (args.get("model") or "").strip() or None
+    motion_intensity = args.get("motion_intensity")
+    camera_motion = args.get("camera_motion")
+    body_action = args.get("body_action")
 
     # Soft validation — providers do their own. Prompt is required by the
     # schema; the backend may still accept image-only on its image-to-video
@@ -417,6 +609,13 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
 
     # Resolve model: explicit arg wins, then config, then provider default.
     model = model_override or _read_configured_video_model() or provider.default_model()
+    prompt_mediation = _build_video_prompt_mediation(
+        prompt,
+        motion_intensity=motion_intensity,
+        camera_motion=camera_motion,
+        body_action=body_action,
+    )
+    provider_prompt = str(prompt_mediation["mediated_prompt"])
 
     kwargs: Dict[str, Any] = {
         "model": model,
@@ -435,7 +634,7 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
 
     try:
-        result = provider.generate(prompt=prompt, **kwargs)
+        result = provider.generate(prompt=provider_prompt, **kwargs)
     except TypeError as exc:
         # A provider that hasn't widened its signature is a bug, not a
         # caller error — log and surface a clear contract message.
@@ -452,7 +651,7 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
             error_type="provider_contract",
             provider=getattr(provider, "name", ""),
             model=model or "",
-            prompt=prompt,
+            prompt=provider_prompt,
         ))
     except Exception as exc:
         logger.warning(
@@ -464,7 +663,7 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
             error_type="provider_exception",
             provider=getattr(provider, "name", ""),
             model=model or "",
-            prompt=prompt,
+            prompt=provider_prompt,
         ))
 
     if not isinstance(result, dict):
@@ -473,11 +672,17 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
             error_type="provider_contract",
             provider=getattr(provider, "name", ""),
             model=model or "",
-            prompt=prompt,
+            prompt=provider_prompt,
         ))
 
     if _should_retry_with_video_mediation(result):
-        mediated_prompt = _rewrite_video_prompt_for_safe_compromise(prompt)
+        safe_prompt_mediation = _build_safe_compromise_video_prompt_mediation(
+            prompt,
+            motion_intensity=motion_intensity,
+            camera_motion=camera_motion,
+            body_action=body_action,
+        )
+        mediated_prompt = str(safe_prompt_mediation["mediated_prompt"])
         mediation = _video_mediation_payload(
             original_prompt=prompt,
             mediated_prompt=mediated_prompt,
@@ -511,9 +716,9 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
             mediation["retry_error_code"] = retry_result.get("error_code")
             mediation["retry_request_id"] = retry_result.get("request_id")
         retry_result["video_mediation"] = mediation
-        return json.dumps(retry_result)
+        return json.dumps(_attach_video_prompt_mediation(retry_result, safe_prompt_mediation))
 
-    return json.dumps(result)
+    return json.dumps(_attach_video_prompt_mediation(result, prompt_mediation))
 
 
 # ---------------------------------------------------------------------------
