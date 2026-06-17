@@ -124,7 +124,7 @@ def test_raphael_mode_prompt_defines_response_governor_mvp():
     assert "Compress first; expand only when the user asks" in prompt
 
 
-def test_raphael_mode_prompt_defines_optional_visual_status_card():
+def test_raphael_mode_prompt_does_not_auto_generate_visual_status_card():
     config = {
         "raphael": {
             "enabled": True,
@@ -136,10 +136,25 @@ def test_raphael_mode_prompt_defines_optional_visual_status_card():
     prompt = build_raphael_mode_prompt(config)
 
     assert "Static visual status card" in prompt
-    assert "original non-infringing Raphael-style" in prompt
     assert "RPG status portrait" in prompt
-    assert "may auto-generate one" in prompt
-    assert "when materially useful" in prompt
+    assert "Do not auto-generate" in prompt
+    assert "currently disabled" in prompt
+    assert "textual status read" in prompt
     assert "conversation-evolved appearance" in prompt
     assert "Do not depict copyrighted character designs" in prompt
-    assert "do not generate one every turn" in prompt
+
+
+def test_raphael_mode_prompt_defines_original_cool_anime_girl_visual_persona():
+    config = {
+        "raphael": {
+            "enabled": True,
+            "default_conversation_mode_enabled": True,
+            "mode": "advisor",
+        }
+    }
+
+    prompt = build_raphael_mode_prompt(config)
+
+    assert "adult anime-style cool beautiful girl" in prompt
+    assert "do not copy any named anime character" in prompt
+    assert "avoid exact costume, color layout, hairstyle, or accessory matches" in prompt

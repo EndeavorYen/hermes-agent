@@ -278,8 +278,8 @@ def decide_raphael_auto_status_portrait(
         status = "suppressed"
         reason = "cooldown"
     else:
-        status = "allowed"
-        reason = str(visual_decision.get("reason") or "visual_trigger")
+        status = "suppressed"
+        reason = "disabled_by_default"
 
     return {
         "auto_status_portrait": status,
@@ -306,6 +306,11 @@ def _render_raphael_visual_trigger_gate(decision: Mapping[str, Any]) -> str:
 def _render_raphael_auto_status_portrait_gate(decision: Mapping[str, Any]) -> str:
     if decision.get("auto_status_portrait") == "none":
         return ""
+    instruction = (
+        "instruction: may call image_generate once for an original non-infringing RPG status portrait when allowed; include the marker if generated"
+        if decision.get("auto_status_portrait") == "allowed"
+        else "instruction: do not generate Raphael images automatically; answer with text only"
+    )
     return "\n".join(
         [
             "Raphael Auto Status Portrait Gate (MVP):",
@@ -313,7 +318,7 @@ def _render_raphael_auto_status_portrait_gate(decision: Mapping[str, Any]) -> st
             f"reason: {decision.get('reason', 'not_needed')}",
             f"cooldown_turns: {decision.get('cooldown_turns', _AUTO_STATUS_PORTRAIT_COOLDOWN_TURNS)}",
             f"marker: {decision.get('marker', _STATUS_PORTRAIT_MARKER)}",
-            "instruction: may call image_generate once for an original non-infringing RPG status portrait when allowed; include the marker if generated",
+            instruction,
         ]
     )
 
