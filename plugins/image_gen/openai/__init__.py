@@ -135,6 +135,19 @@ def _load_openai_config() -> Dict[str, Any]:
         return {}
 
 
+def _env_flag(name: str) -> bool:
+    value = str(os.environ.get(name) or "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def _zimage_remote_is_active() -> bool:
+    if _env_flag("OPENAI_IMAGE_ALLOW_WHEN_ZIMAGE_ACTIVE"):
+        return False
+    cfg = _load_openai_config()
+    provider = cfg.get("provider") if isinstance(cfg, dict) else None
+    return isinstance(provider, str) and provider.strip() == "zimage_remote"
+
+
 def _resolve_model() -> Tuple[str, Dict[str, Any]]:
     """Decide which tier to use and return ``(model_id, meta)``."""
     env_override = os.environ.get("OPENAI_IMAGE_MODEL")
@@ -176,6 +189,8 @@ class OpenAIImageGenProvider(ImageGenProvider):
         return "OpenAI"
 
     def is_available(self) -> bool:
+        if _zimage_remote_is_active():
+            return False
         if not os.environ.get("OPENAI_API_KEY"):
             return False
         try:
@@ -227,6 +242,21 @@ class OpenAIImageGenProvider(ImageGenProvider):
                 error="Prompt is required and must be a non-empty string",
                 error_type="invalid_argument",
                 provider="openai",
+                aspect_ratio=aspect,
+            )
+
+        if _zimage_remote_is_active():
+            return error_response(
+                error=(
+                    "OpenAI image generation is disabled while "
+                    "image_gen.provider is zimage_remote; use image_generate "
+                    "or image_generate_mission so Hermes routes through the "
+                    "remote Z-Image worker."
+                ),
+                error_type="provider_disabled",
+                provider="openai",
+                model=DEFAULT_MODEL,
+                prompt=prompt,
                 aspect_ratio=aspect,
             )
 

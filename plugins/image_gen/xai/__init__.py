@@ -17,8 +17,11 @@ Selection precedence (first hit wins):
 
 from __future__ import annotations
 
+import base64
 import logging
+import mimetypes
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -112,6 +115,19 @@ def _collect_reference_inputs(kwargs: Dict[str, Any]) -> List[str]:
                 refs.append(ref)
                 seen.add(ref)
     return refs
+
+
+def _reference_image_payload(ref: str) -> Dict[str, str]:
+    raw = ref.strip()
+    if raw.startswith(("http://", "https://", "data:image/")):
+        return {"url": raw, "type": "image_url"}
+
+    path = Path(raw).expanduser()
+    if not path.is_file():
+        raise ValueError(f"reference image not found: {raw}")
+    mime = mimetypes.guess_type(path.name)[0] or "image/png"
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    return {"url": f"data:{mime};base64,{encoded}", "type": "image_url"}
 
 
 # ---------------------------------------------------------------------------
@@ -224,15 +240,23 @@ class XAIImageGenProvider(ImageGenProvider):
         resolution = _resolve_resolution()
         xai_res = resolution if resolution in _XAI_RESOLUTIONS else DEFAULT_RESOLUTION
         reference_inputs = _collect_reference_inputs(kwargs)
-        if reference_inputs:
+        if len(reference_inputs) > 3:
             return error_response(
-                error=(
-                    "xAI Grok Imagine image generation is text-to-image only "
-                    "and does not support reference_images, input_image, or "
-                    "image_style_references. Use image_gen.provider=openai-codex "
-                    "for Responses input_image conditioning, or Krea for style references."
-                ),
+                error="xAI Grok Imagine image editing supports up to 3 reference images.",
                 error_type="unsupported_feature",
+                provider=provider_name,
+                model=model_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+        try:
+            reference_payloads = [
+                _reference_image_payload(ref) for ref in reference_inputs
+            ]
+        except ValueError as exc:
+            return error_response(
+                error=str(exc),
+                error_type="invalid_reference_image",
                 provider=provider_name,
                 model=model_id,
                 prompt=prompt,
@@ -242,9 +266,17 @@ class XAIImageGenProvider(ImageGenProvider):
         payload: Dict[str, Any] = {
             "model": model_id,
             "prompt": prompt,
-            "aspect_ratio": xai_ar,
             "resolution": xai_res,
         }
+        endpoint = "images/edits" if reference_payloads else "images/generations"
+        if reference_payloads:
+            # xAI docs show a single `image`; keep multi-image as a flat list.
+            if len(reference_payloads) == 1:
+                payload["image"] = reference_payloads[0]
+            else:
+                payload["images"] = reference_payloads
+        else:
+            payload["aspect_ratio"] = xai_ar
 
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -256,7 +288,7 @@ class XAIImageGenProvider(ImageGenProvider):
 
         try:
             response = requests.post(
-                f"{base_url}/images/generations",
+                f"{base_url}/{endpoint}",
                 headers=headers,
                 json=payload,
                 timeout=120,

@@ -23,6 +23,7 @@ import base64
 import json
 import logging
 import mimetypes
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -105,10 +106,21 @@ def _load_image_gen_config() -> Dict[str, Any]:
         return {}
 
 
+def _env_flag(name: str) -> bool:
+    value = str(os.environ.get(name) or "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def _zimage_remote_is_active() -> bool:
+    if _env_flag("OPENAI_CODEX_IMAGE_ALLOW_WHEN_ZIMAGE_ACTIVE"):
+        return False
+    cfg = _load_image_gen_config()
+    provider = cfg.get("provider") if isinstance(cfg, dict) else None
+    return isinstance(provider, str) and provider.strip() == "zimage_remote"
+
+
 def _resolve_model() -> Tuple[str, Dict[str, Any]]:
     """Decide which tier to use and return ``(model_id, meta)``."""
-    import os
-
     env_override = os.environ.get("OPENAI_IMAGE_MODEL")
     if env_override and env_override in _MODELS:
         return env_override, _MODELS[env_override]
@@ -381,6 +393,100 @@ def _collect_image_b64(
     return image_b64
 
 
+def _http_error_text(exc: Any) -> str:
+    response = getattr(exc, "response", None)
+    if response is None:
+        return str(exc)
+    try:
+        response.read()
+    except Exception:
+        pass
+    body = getattr(response, "text", "") or ""
+    return body[:1000] or str(exc)
+
+
+def _parse_retry_after(value: Any) -> Optional[int]:
+    try:
+        seconds = int(str(value or "").strip())
+    except (TypeError, ValueError):
+        return None
+    return max(0, seconds)
+
+
+def _looks_like_policy_refusal(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "policy",
+            "safety",
+            "refus",
+            "not allowed",
+            "disallowed",
+            "moderation",
+            "violat",
+        )
+    )
+
+
+def _classify_generation_exception(exc: BaseException) -> Dict[str, Any]:
+    """Map Codex image-generation failures to stable retry/rewrite semantics."""
+    try:
+        import httpx
+    except Exception:  # pragma: no cover - provider already checks httpx
+        httpx = None  # type: ignore[assignment]
+
+    if isinstance(exc, json.JSONDecodeError):
+        return {"error_type": "stream_parse_error", "retryable": True}
+
+    if httpx is not None:
+        cause = getattr(exc, "__cause__", None)
+        if cause is not None and cause is not exc:
+            cause_classification = _classify_generation_exception(cause)
+            if cause_classification.get("error_type") != "unknown_api_error":
+                return cause_classification
+        if isinstance(exc, (httpx.TimeoutException, TimeoutError)):
+            return {"error_type": "timeout", "retryable": True}
+        if isinstance(
+            exc,
+            (
+                httpx.ConnectError,
+                httpx.NetworkError,
+                httpx.RemoteProtocolError,
+                httpx.TransportError,
+            ),
+        ):
+            return {"error_type": "transient_network", "retryable": True}
+        if isinstance(exc, httpx.HTTPStatusError):
+            status = int(getattr(exc.response, "status_code", 0) or 0)
+            text = _http_error_text(exc)
+            if status in {401, 403} and not _looks_like_policy_refusal(text):
+                return {"error_type": "auth_required", "retryable": False}
+            if status == 429:
+                retry_after = _parse_retry_after(exc.response.headers.get("retry-after"))
+                payload: Dict[str, Any] = {"error_type": "rate_limit", "retryable": False}
+                if retry_after is not None:
+                    payload["retry_after_seconds"] = retry_after
+                return payload
+            if _looks_like_policy_refusal(text):
+                return {
+                    "error_type": "policy_refusal",
+                    "retryable": False,
+                    "rewrite_prompt": True,
+                }
+            if 400 <= status < 500:
+                return {"error_type": "bad_request", "retryable": False}
+            if status >= 500:
+                return {"error_type": "transient_network", "retryable": True}
+
+    text = str(exc).lower()
+    if "timed out" in text or "timeout" in text:
+        return {"error_type": "timeout", "retryable": True}
+    if "json" in text and ("decode" in text or "parse" in text):
+        return {"error_type": "stream_parse_error", "retryable": True}
+    return {"error_type": "unknown_api_error", "retryable": False}
+
+
 # ---------------------------------------------------------------------------
 # Provider
 # ---------------------------------------------------------------------------
@@ -398,6 +504,8 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
         return "OpenAI (Codex auth)"
 
     def is_available(self) -> bool:
+        if _zimage_remote_is_active():
+            return False
         if not _read_codex_access_token():
             return False
         try:
@@ -447,6 +555,21 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 error="Prompt is required and must be a non-empty string",
                 error_type="invalid_argument",
                 provider="openai-codex",
+                aspect_ratio=aspect,
+            )
+
+        if _zimage_remote_is_active():
+            return error_response(
+                error=(
+                    "openai-codex image generation is disabled while "
+                    "image_gen.provider is zimage_remote; use image_generate "
+                    "or image_generate_mission so Hermes routes through the "
+                    "remote Z-Image worker."
+                ),
+                error_type="provider_disabled",
+                provider="openai-codex",
+                model=DEFAULT_MODEL,
+                prompt=prompt,
                 aspect_ratio=aspect,
             )
 
@@ -516,14 +639,19 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             )
         except Exception as exc:
             logger.debug("Codex image generation failed", exc_info=True)
-            return error_response(
+            classification = _classify_generation_exception(exc)
+            response = error_response(
                 error=f"OpenAI image generation via Codex auth failed: {exc}",
-                error_type="api_error",
+                error_type=str(classification.get("error_type") or "unknown_api_error"),
                 provider="openai-codex",
                 model=tier_id,
                 prompt=prompt,
                 aspect_ratio=aspect,
             )
+            for key in ("retryable", "rewrite_prompt", "retry_after_seconds"):
+                if key in classification:
+                    response[key] = classification[key]
+            return response
 
         if not b64:
             response = error_response(
@@ -542,7 +670,7 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
         except Exception as exc:
             return error_response(
                 error=f"Could not save image to cache: {exc}",
-                error_type="io_error",
+                error_type="image_save_error",
                 provider="openai-codex",
                 model=tier_id,
                 prompt=prompt,

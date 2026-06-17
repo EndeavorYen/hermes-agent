@@ -141,19 +141,77 @@ class TestGenerate:
         assert result["provider"] == "xai"
         assert result["model"] == "grok-imagine-image"
 
-    def test_reference_images_are_explicitly_unsupported(self):
+    def test_reference_images_route_to_image_edits(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {
+            "data": [{"b64_json": "dGVzdC1pbWFnZS1kYXRh"}],
+        }
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp) as mock_post:
+            with patch("plugins.image_gen.xai.save_b64_image", return_value="/tmp/test.png"):
+                provider = XAIImageGenProvider()
+                result = provider.generate(
+                    prompt="match this source",
+                    reference_images=["https://example.com/ref.png"],
+                )
+
+        assert result["success"] is True
+        url = mock_post.call_args.args[0]
+        payload = mock_post.call_args.kwargs["json"]
+        assert url.endswith("/images/edits")
+        assert payload["image"] == {
+            "url": "https://example.com/ref.png",
+            "type": "image_url",
+        }
+        assert payload["prompt"] == "match this source"
+
+    def test_reference_image_file_is_encoded_for_image_edits(self, tmp_path):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        ref = tmp_path / "ref.png"
+        ref.write_bytes(b"fake-png")
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {
+            "data": [{"b64_json": "dGVzdC1pbWFnZS1kYXRh"}],
+        }
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp) as mock_post:
+            with patch("plugins.image_gen.xai.save_b64_image", return_value="/tmp/test.png"):
+                provider = XAIImageGenProvider()
+                result = provider.generate(
+                    prompt="match this local source",
+                    reference_images=[str(ref)],
+                )
+
+        assert result["success"] is True
+        payload = mock_post.call_args.kwargs["json"]
+        assert payload["image"]["type"] == "image_url"
+        assert payload["image"]["url"].startswith("data:image/png;base64,")
+
+    def test_reference_images_are_limited_to_three(self):
         from plugins.image_gen.xai import XAIImageGenProvider
 
         with patch("plugins.image_gen.xai.requests.post") as mock_post:
             provider = XAIImageGenProvider()
             result = provider.generate(
                 prompt="match this source",
-                reference_images=["https://example.com/ref.png"],
+                reference_images=[
+                    "https://example.com/1.png",
+                    "https://example.com/2.png",
+                    "https://example.com/3.png",
+                    "https://example.com/4.png",
+                ],
             )
 
         assert result["success"] is False
         assert result["error_type"] == "unsupported_feature"
-        assert "reference_images" in result["error"]
+        assert "up to 3" in result["error"]
         mock_post.assert_not_called()
 
     def test_successful_url_response(self):

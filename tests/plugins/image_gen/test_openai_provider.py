@@ -136,6 +136,30 @@ class TestGenerate:
         assert result["success"] is False
         assert result["error_type"] == "auth_required"
 
+    def test_direct_generate_blocked_when_zimage_remote_is_active(self, provider, monkeypatch):
+        monkeypatch.setattr(openai_plugin, "_load_openai_config", lambda: {"provider": "zimage_remote"})
+        fake_client = MagicMock()
+
+        with _patched_openai(fake_client):
+            result = provider.generate("a cat")
+
+        assert result["success"] is False
+        assert result["error_type"] == "provider_disabled"
+        assert "zimage_remote" in result["error"]
+        fake_client.images.generate.assert_not_called()
+
+    def test_direct_generate_override_allows_openai_when_zimage_remote_is_active(self, provider, monkeypatch):
+        monkeypatch.setenv("OPENAI_IMAGE_ALLOW_WHEN_ZIMAGE_ACTIVE", "1")
+        monkeypatch.setattr(openai_plugin, "_load_openai_config", lambda: {"provider": "zimage_remote"})
+        fake_client = MagicMock()
+        fake_client.images.generate.return_value = _fake_response(b64=_b64_png())
+
+        with _patched_openai(fake_client):
+            result = provider.generate("a cat")
+
+        assert result["success"] is True
+        assert result["provider"] == "openai"
+
     def test_b64_saves_to_cache(self, provider, tmp_path):
         png_bytes = bytes.fromhex(_PNG_HEX)
         fake_client = MagicMock()

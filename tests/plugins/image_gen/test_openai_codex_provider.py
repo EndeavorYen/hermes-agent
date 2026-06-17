@@ -9,8 +9,10 @@ endpoint.
 from __future__ import annotations
 
 import importlib
+import json
 from pathlib import Path
 
+import httpx
 import pytest
 
 # The plugin directory uses a hyphen, which is not a valid Python identifier
@@ -100,6 +102,31 @@ class TestGenerate:
         assert result["success"] is False
         assert result["error_type"] == "auth_required"
 
+    def test_direct_generate_blocked_when_zimage_remote_is_active(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_load_image_gen_config", lambda: {"provider": "zimage_remote"})
+        monkeypatch.setattr(
+            codex_plugin,
+            "_read_codex_access_token",
+            lambda: (_ for _ in ()).throw(AssertionError("auth should not be read")),
+        )
+
+        result = provider.generate("a cat")
+
+        assert result["success"] is False
+        assert result["error_type"] == "provider_disabled"
+        assert "zimage_remote" in result["error"]
+
+    def test_direct_generate_override_allows_codex_when_zimage_remote_is_active(self, provider, monkeypatch):
+        monkeypatch.setenv("OPENAI_CODEX_IMAGE_ALLOW_WHEN_ZIMAGE_ACTIVE", "1")
+        monkeypatch.setattr(codex_plugin, "_load_image_gen_config", lambda: {"provider": "zimage_remote"})
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", lambda *a, **kw: _b64_png())
+
+        result = provider.generate("a cat")
+
+        assert result["success"] is True
+        assert result["provider"] == "openai-codex"
+
     def test_returns_invalid_argument_for_empty_prompt(self, provider, monkeypatch):
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
         result = provider.generate("   ")
@@ -123,6 +150,183 @@ class TestGenerate:
         # Filename prefix differs from the API-key plugin so cache audits can
         # tell the two backends apart.
         assert saved.name.startswith("openai_codex_")
+
+    def test_generate_classifies_policy_refusal_for_prompt_rewrite(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        def blocked(*args, **kwargs):
+            request = httpx.Request("POST", "https://chatgpt.com/backend-api/codex/responses")
+            response = httpx.Response(
+                400,
+                request=request,
+                content=json.dumps({
+                    "error": {
+                        "message": "Request was rejected by the safety policy.",
+                    },
+                }).encode("utf-8"),
+            )
+            raise httpx.HTTPStatusError("bad request", request=request, response=response)
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", blocked)
+
+        result = provider.generate("glamorous beach portrait")
+
+        assert result["success"] is False
+        assert result["error_type"] == "policy_refusal"
+        assert result["rewrite_prompt"] is True
+        assert result["retryable"] is False
+
+    def test_generate_classifies_wrapped_http_policy_refusal_for_prompt_rewrite(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        def blocked(*args, **kwargs):
+            request = httpx.Request("POST", "https://chatgpt.com/backend-api/codex/responses")
+            response = httpx.Response(
+                400,
+                request=request,
+                content=json.dumps({
+                    "error": {
+                        "message": "Request was rejected by the safety policy.",
+                    },
+                }).encode("utf-8"),
+            )
+            exc = httpx.HTTPStatusError("bad request", request=request, response=response)
+            raise RuntimeError(
+                "Codex Responses API returned HTTP 400: "
+                '{"error":{"message":"Request was rejected by the safety policy."}}'
+            ) from exc
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", blocked)
+
+        result = provider.generate("glamorous beach portrait")
+
+        assert result["success"] is False
+        assert result["error_type"] == "policy_refusal"
+        assert result["rewrite_prompt"] is True
+        assert result["retryable"] is False
+
+    def test_generate_classifies_wrapped_http_rate_limit(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        def rate_limited(*args, **kwargs):
+            request = httpx.Request("POST", "https://chatgpt.com/backend-api/codex/responses")
+            response = httpx.Response(
+                429,
+                request=request,
+                headers={"retry-after": "30"},
+                content=b"rate limit exceeded",
+            )
+            exc = httpx.HTTPStatusError("rate limited", request=request, response=response)
+            raise RuntimeError("Codex Responses API returned HTTP 429: rate limit exceeded") from exc
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", rate_limited)
+
+        result = provider.generate("a cat")
+
+        assert result["success"] is False
+        assert result["error_type"] == "rate_limit"
+        assert result["retryable"] is False
+        assert result["retry_after_seconds"] == 30
+
+    def test_generate_classifies_timeout_as_retryable(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        monkeypatch.setattr(
+            codex_plugin,
+            "_collect_image_b64",
+            lambda *a, **kw: (_ for _ in ()).throw(httpx.ReadTimeout("timed out")),
+        )
+
+        result = provider.generate("a cat")
+
+        assert result["success"] is False
+        assert result["error_type"] == "timeout"
+        assert result["retryable"] is True
+
+    def test_generate_classifies_transient_network_as_retryable(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        def network_down(*args, **kwargs):
+            request = httpx.Request("POST", "https://chatgpt.com/backend-api/codex/responses")
+            raise httpx.ConnectError("network down", request=request)
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", network_down)
+
+        result = provider.generate("a cat")
+
+        assert result["success"] is False
+        assert result["error_type"] == "transient_network"
+        assert result["retryable"] is True
+
+    def test_generate_classifies_stream_parse_errors_as_retryable(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        monkeypatch.setattr(
+            codex_plugin,
+            "_collect_image_b64",
+            lambda *a, **kw: (_ for _ in ()).throw(json.JSONDecodeError("bad sse", "not-json", 0)),
+        )
+
+        result = provider.generate("a cat")
+
+        assert result["success"] is False
+        assert result["error_type"] == "stream_parse_error"
+        assert result["retryable"] is True
+
+    def test_generate_classifies_rate_limit_without_same_turn_retry(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        def rate_limited(*args, **kwargs):
+            request = httpx.Request("POST", "https://chatgpt.com/backend-api/codex/responses")
+            response = httpx.Response(
+                429,
+                request=request,
+                headers={"retry-after": "30"},
+                content=b"rate limit exceeded",
+            )
+            raise httpx.HTTPStatusError("rate limited", request=request, response=response)
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", rate_limited)
+
+        result = provider.generate("a cat")
+
+        assert result["success"] is False
+        assert result["error_type"] == "rate_limit"
+        assert result["retryable"] is False
+        assert result["retry_after_seconds"] == 30
+
+    def test_generate_classifies_bad_request_without_retry(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        def bad_request(*args, **kwargs):
+            request = httpx.Request("POST", "https://chatgpt.com/backend-api/codex/responses")
+            response = httpx.Response(
+                400,
+                request=request,
+                content=b"invalid image request",
+            )
+            raise httpx.HTTPStatusError("bad request", request=request, response=response)
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", bad_request)
+
+        result = provider.generate("a cat")
+
+        assert result["success"] is False
+        assert result["error_type"] == "bad_request"
+        assert result["retryable"] is False
+        assert "rewrite_prompt" not in result
+
+    def test_generate_save_failure_is_image_save_error(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", lambda *a, **kw: _b64_png())
+        monkeypatch.setattr(
+            codex_plugin,
+            "save_b64_image",
+            lambda *a, **kw: (_ for _ in ()).throw(OSError("disk full")),
+        )
+
+        result = provider.generate("a cat")
+
+        assert result["success"] is False
+        assert result["error_type"] == "image_save_error"
 
     def test_codex_stream_request_shape(self, provider, monkeypatch):
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
@@ -257,7 +461,7 @@ class TestGenerate:
         assert result["error_type"] == "empty_response"
         assert result["retryable"] is True
 
-    def test_stream_exception_returns_api_error(self, provider, monkeypatch):
+    def test_stream_exception_returns_unknown_api_error(self, provider, monkeypatch):
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
 
         def _boom(*args, **kwargs):
@@ -267,7 +471,7 @@ class TestGenerate:
 
         result = provider.generate("a cat")
         assert result["success"] is False
-        assert result["error_type"] == "api_error"
+        assert result["error_type"] == "unknown_api_error"
         assert "cloudflare 403" in result["error"]
 
 
