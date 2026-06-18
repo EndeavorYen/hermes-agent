@@ -12561,6 +12561,9 @@ class GatewayRunner:
                 should_send_media_as_audio,
             )
 
+            generated_image_only_paths = BasePlatformAdapter.generated_image_only_paths(
+                response
+            )
             media_files, cleaned = adapter.extract_media(response)
             media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
             # Chain the cleaned text through each extractor (extract_media →
@@ -12573,6 +12576,15 @@ class GatewayRunner:
             _, cleaned = adapter.extract_images(cleaned)
             local_files, _ = adapter.extract_local_files(cleaned)
             local_files = BasePlatformAdapter.filter_local_delivery_paths(local_files)
+            if generated_image_only_paths:
+                media_files, local_files, _ = (
+                    BasePlatformAdapter.filter_generated_image_delivery(
+                        media_files,
+                        local_files,
+                        [],
+                        generated_image_only_paths,
+                    )
+                )
 
             _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
 
