@@ -138,8 +138,9 @@ def test_raphael_mode_prompt_does_not_auto_generate_visual_status_card():
     assert "Static visual status card" in prompt
     assert "RPG status portrait" in prompt
     assert "Do not auto-generate" in prompt
-    assert "currently disabled" in prompt
+    assert "Raphael auto status portrait output is currently disabled" in prompt
     assert "textual status read" in prompt
+    assert "does not disable explicit user-requested image generation" in prompt
     assert "conversation-evolved appearance" in prompt
     assert "Do not depict copyrighted character designs" in prompt
 

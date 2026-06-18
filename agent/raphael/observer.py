@@ -45,6 +45,30 @@ _MUTATION_OR_PUBLIC_KEYWORDS = (
 )
 
 _VISUAL_STATUS_KEYWORDS = (
+    "status card",
+    "status portrait",
+    "visual status",
+    "rpg status",
+    "raphael status",
+    "Raphael Status Portrait",
+    "狀態圖",
+    "狀態卡",
+    "狀態卡片",
+    "狀態肖像",
+    "RPG 狀態",
+    "RPG 樣貌",
+    "拉斐爾狀態",
+    "大賢者狀態",
+)
+
+_RAPHAEL_PERSONA_KEYWORDS = (
+    "raphael",
+    "拉斐爾",
+    "大賢者",
+    "內在顧問",
+)
+
+_VISUAL_REQUEST_KEYWORDS = (
     "image",
     "visual",
     "portrait",
@@ -104,7 +128,17 @@ def _cfg_get(config: Mapping[str, Any], *path: str, default: Any = None) -> Any:
 
 def _contains_any(text: str, keywords: tuple[str, ...]) -> bool:
     lowered = text.lower()
-    return any(keyword in lowered for keyword in keywords)
+    return any(keyword.lower() in lowered for keyword in keywords)
+
+
+def _looks_like_raphael_visual_status_request(text: str) -> bool:
+    lowered = text.lower()
+    if _contains_any(lowered, _VISUAL_STATUS_KEYWORDS):
+        return True
+    return _contains_any(lowered, _RAPHAEL_PERSONA_KEYWORDS) and _contains_any(
+        lowered,
+        _VISUAL_REQUEST_KEYWORDS,
+    )
 
 
 def should_inject_raphael_observation(
@@ -136,7 +170,7 @@ def should_inject_raphael_observation(
 
 def observe_raphael_turn(user_message: str) -> RaphaelTurnObservation:
     text = user_message if isinstance(user_message, str) else ""
-    visual_status_needed = _contains_any(text, _VISUAL_STATUS_KEYWORDS)
+    visual_status_needed = _looks_like_raphael_visual_status_request(text)
 
     if _contains_any(text, _MUTATION_OR_PUBLIC_KEYWORDS):
         next_move = "separate observation from mutation; confirm scope and approval"

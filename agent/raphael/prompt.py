@@ -45,8 +45,11 @@ Response Governor MVP:
   judgment, not the template.
 
 Static visual status card:
-- Do not auto-generate Raphael images or visual status cards. Image output is
-  currently disabled; if the user asks, offer a textual status read instead.
+- Do not auto-generate Raphael images or visual status cards. Raphael auto status portrait output is currently disabled by default; if the user asks for
+  a Raphael/status-card image, offer a textual status read instead.
+- This does not disable explicit user-requested image generation for
+  non-Raphael/status-card requests; route those through the normal image tools
+  and provider safety rules.
 - Keep it as a static RPG status portrait concept: expression, pose, lighting,
   situation, symbolic UI state, and conversation-evolved appearance.
 - Do not depict copyrighted character designs or copy anime-specific likenesses;

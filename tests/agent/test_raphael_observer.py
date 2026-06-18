@@ -39,6 +39,16 @@ def test_observer_flags_visual_status_request():
     assert observation.visual_status_needed is True
 
 
+def test_observer_does_not_treat_general_character_art_as_raphael_status_request():
+    observation = observe_raphael_turn(
+        "幫我畫 Velina Airgid - Zenless Zone Zero 這個角色（動漫圖）"
+    )
+
+    assert observation.task_state == "casual_or_direct"
+    assert observation.risk_signal == "low"
+    assert observation.visual_status_needed is False
+
+
 def test_render_observation_context_is_compact_and_ephemeral():
     observation = observe_raphael_turn("請產生一張狀態圖")
 
@@ -275,6 +285,25 @@ def test_observation_context_omits_status_portrait_tool_call_by_default():
     assert "Raphael Status Portrait Tool Call (MVP):" not in context
     assert "image_generate" not in context
     assert "arguments.prompt:" not in context
+
+
+def test_observation_context_does_not_block_general_user_image_generation():
+    config = {
+        "raphael": {
+            "enabled": True,
+            "default_conversation_mode_enabled": True,
+            "mode": "advisor",
+        }
+    }
+
+    context = build_raphael_observation_context(
+        "幫我畫 Velina Airgid - Zenless Zone Zero 這個角色（動漫圖）",
+        config,
+    )
+
+    assert "Raphael Auto Status Portrait Gate" not in context
+    assert "answer with text only" not in context
+    assert "disabled_by_default" not in context
 
 
 def test_observation_context_omits_tool_call_when_auto_portrait_suppressed():
