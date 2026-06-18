@@ -153,3 +153,34 @@ def test_xai_no_operation_kwarg():
     assert result["success"] is False
     # auth_required, NOT some signature error
     assert result["error_type"] in {"auth_required", "api_error"}
+
+
+def test_xai_video_aspect_normalization_plans_center_crop_not_stretch():
+    from plugins.video_gen.xai import _plan_video_aspect_normalization
+
+    plan = _plan_video_aspect_normalization(
+        width=1920,
+        height=1080,
+        target_aspect_ratio="9:16",
+    )
+
+    assert plan["action"] == "crop"
+    assert plan["width"] < 1920
+    assert plan["height"] == 1080
+    assert plan["x"] % 2 == 0
+    assert plan["y"] % 2 == 0
+    assert plan["y"] == 0
+    assert plan["filter"].startswith("crop=")
+    assert "scale=" not in plan["filter"]
+
+
+def test_xai_video_aspect_normalization_skips_close_match():
+    from plugins.video_gen.xai import _plan_video_aspect_normalization
+
+    plan = _plan_video_aspect_normalization(
+        width=720,
+        height=1280,
+        target_aspect_ratio="9:16",
+    )
+
+    assert plan["action"] == "copy"

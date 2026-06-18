@@ -26,6 +26,8 @@ import io
 import logging
 import mimetypes
 import os
+import shutil
+import subprocess
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -528,6 +530,178 @@ async def _download_video_url_to_cache(
     )
 
 
+def _parse_aspect_ratio(value: str) -> Optional[float]:
+    raw = str(value or "").strip()
+    if ":" not in raw:
+        return None
+    left, right = raw.split(":", 1)
+    try:
+        width = float(left)
+        height = float(right)
+    except ValueError:
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    return width / height
+
+
+def _even_floor(value: float) -> int:
+    return max(2, int(value) // 2 * 2)
+
+
+def _even_offset(value: float) -> int:
+    return max(0, int(value) // 2 * 2)
+
+
+def _plan_video_aspect_normalization(
+    *,
+    width: int,
+    height: int,
+    target_aspect_ratio: str,
+    tolerance: float = 0.02,
+) -> Dict[str, Any]:
+    """Plan a no-stretch centered crop to the target aspect ratio."""
+    target = _parse_aspect_ratio(target_aspect_ratio)
+    if width <= 0 or height <= 0 or not target:
+        return {"action": "copy", "reason": "missing_dimensions_or_target"}
+
+    actual = width / height
+    if abs(actual - target) / target <= tolerance:
+        return {
+            "action": "copy",
+            "reason": "aspect_ratio_within_tolerance",
+            "width": width,
+            "height": height,
+            "target_aspect_ratio": target_aspect_ratio,
+        }
+
+    if actual > target:
+        crop_height = _even_floor(height)
+        crop_width = _even_floor(crop_height * target)
+    else:
+        crop_width = _even_floor(width)
+        crop_height = _even_floor(crop_width / target)
+
+    crop_width = min(crop_width, _even_floor(width))
+    crop_height = min(crop_height, _even_floor(height))
+    x = _even_offset(max(0, (width - crop_width) // 2))
+    y = _even_offset(max(0, (height - crop_height) // 2))
+
+    return {
+        "action": "crop",
+        "width": crop_width,
+        "height": crop_height,
+        "x": x,
+        "y": y,
+        "source_width": width,
+        "source_height": height,
+        "target_aspect_ratio": target_aspect_ratio,
+        "filter": f"crop={crop_width}:{crop_height}:{x}:{y}",
+    }
+
+
+def _probe_video_dimensions(path: Path) -> Optional[Tuple[int, int]]:
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        return None
+    try:
+        proc = subprocess.run(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=width,height",
+                "-of",
+                "json",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=True,
+        )
+        import json
+
+        data = json.loads(proc.stdout or "{}")
+        streams = data.get("streams") if isinstance(data, dict) else []
+        stream = streams[0] if isinstance(streams, list) and streams else {}
+        width = stream.get("width") if isinstance(stream, dict) else None
+        height = stream.get("height") if isinstance(stream, dict) else None
+        if (
+            isinstance(width, int)
+            and isinstance(height, int)
+            and width > 0
+            and height > 0
+        ):
+            return width, height
+    except Exception as exc:
+        logger.debug("xAI video aspect probe failed for %s: %s", path, exc)
+    return None
+
+
+def _normalize_video_file_to_aspect_ratio(
+    path: Path,
+    target_aspect_ratio: str,
+) -> Tuple[Path, Dict[str, Any]]:
+    if not target_aspect_ratio:
+        return path, {"action": "copy", "reason": "no_target_aspect_ratio"}
+
+    dims = _probe_video_dimensions(path)
+    if dims is None:
+        return path, {"action": "copy", "reason": "probe_unavailable"}
+
+    plan = _plan_video_aspect_normalization(
+        width=dims[0],
+        height=dims[1],
+        target_aspect_ratio=target_aspect_ratio,
+    )
+    if plan.get("action") != "crop":
+        return path, plan
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        plan["reason"] = "ffmpeg_unavailable"
+        return path, plan
+
+    suffix = path.suffix or ".mp4"
+    ratio_slug = target_aspect_ratio.replace(":", "x")
+    output = path.with_name(f"{path.stem}_ar_{ratio_slug}{suffix}")
+    try:
+        subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-i",
+                str(path),
+                "-vf",
+                str(plan["filter"]),
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                "-c:a",
+                "copy",
+                str(output),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=180,
+            check=True,
+        )
+        plan["output_path"] = str(output)
+        return output, plan
+    except Exception as exc:
+        logger.warning("xAI video aspect normalization failed for %s: %s", path, exc)
+        plan["reason"] = "normalization_failed"
+        plan["error"] = str(exc)
+        return path, plan
+
+
 # ---------------------------------------------------------------------------
 # Provider
 # ---------------------------------------------------------------------------
@@ -776,11 +950,19 @@ class XAIVideoGenProvider(VideoGenProvider):
                 }
                 delivered_video = url
                 try:
-                    delivered_video = str(await _download_video_url_to_cache(
+                    downloaded_video = await _download_video_url_to_cache(
                         client,
                         url,
                         model=body.get("model") or resolved_model,
-                    ))
+                    )
+                    normalized_video, aspect_normalization = (
+                        _normalize_video_file_to_aspect_ratio(
+                            downloaded_video,
+                            normalized_aspect_ratio,
+                        )
+                    )
+                    delivered_video = str(normalized_video)
+                    extra["video_aspect_normalization"] = aspect_normalization
                 except Exception as exc:
                     logger.warning(
                         "xAI video download failed; returning remote URL fallback: %s",
