@@ -50,6 +50,27 @@ class _RecordingProvider(VideoGenProvider):
         }
 
 
+class _ImageOnlyProvider(_RecordingProvider):
+    """Provider catalog entry that cannot service text-only calls."""
+
+    def __init__(self):
+        super().__init__("image-only")
+        self.calls: List[Dict[str, Any]] = []
+
+    def list_models(self) -> List[Dict[str, Any]]:
+        return [{"id": "image-only-model", "modalities": ["image"]}]
+
+    def default_model(self) -> Optional[str]:
+        return "image-only-model"
+
+    def capabilities(self) -> Dict[str, Any]:
+        return {"modalities": ["image"], "min_duration": 1, "max_duration": 10}
+
+    def generate(self, prompt, **kwargs):
+        self.calls.append({"prompt": prompt, **kwargs})
+        return super().generate(prompt, **kwargs)
+
+
 class _RaisingProvider(VideoGenProvider):
     @property
     def name(self) -> str:
@@ -96,18 +117,27 @@ class _ModerationThenSuccessProvider(VideoGenProvider):
 
 
 class TestUnifiedDispatch:
-    def _run(self, args: Dict[str, Any], *, configured: Optional[str] = None) -> Dict[str, Any]:
+    def _run(
+        self,
+        args: Dict[str, Any],
+        *,
+        configured: Optional[str] = None,
+        configured_model: Optional[str] = None,
+    ) -> Dict[str, Any]:
         from tools import video_generation_tool
         import hermes_cli.plugins as plugins_module
 
         saved = video_generation_tool._read_configured_video_provider
         video_generation_tool._read_configured_video_provider = lambda: configured  # type: ignore
+        saved_model = video_generation_tool._read_configured_video_model
+        video_generation_tool._read_configured_video_model = lambda: configured_model  # type: ignore
         saved_discover = plugins_module._ensure_plugins_discovered
         plugins_module._ensure_plugins_discovered = lambda *_a, **_k: None  # type: ignore
         try:
             raw = video_generation_tool._handle_video_generate(args)
         finally:
             video_generation_tool._read_configured_video_provider = saved  # type: ignore
+            video_generation_tool._read_configured_video_model = saved_model  # type: ignore
             plugins_module._ensure_plugins_discovered = saved_discover  # type: ignore
         return json.loads(raw)
 
@@ -142,6 +172,21 @@ class TestUnifiedDispatch:
         assert result["modality"] == "image"
         assert provider.last_kwargs["image_url"] == "https://example.com/img.png"
         assert provider.last_kwargs["_aspect_ratio_override_explicit"] is False
+
+    def test_image_only_model_requires_image_url_before_provider_call(self):
+        provider = _ImageOnlyProvider()
+        video_gen_registry.register_provider(provider)
+
+        result = self._run(
+            {"prompt": "animate this generated frame"},
+            configured="image-only",
+            configured_model="image-only-model",
+        )
+
+        assert result["success"] is False
+        assert result["error_type"] == "missing_image_url"
+        assert "image_url" in result["error"]
+        assert provider.calls == []
 
     def test_video_prompt_mediator_defaults_to_medium_editorial_motion(self):
         provider = _RecordingProvider("rec")

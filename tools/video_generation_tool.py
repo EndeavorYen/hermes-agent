@@ -578,6 +578,25 @@ def _video_mediation_payload(
     }
 
 
+def _model_modalities(provider: Any, model: Optional[str]) -> set[str]:
+    """Return declared modalities for the selected provider model, if known."""
+    try:
+        models = provider.list_models() or []
+    except Exception:
+        return set()
+
+    active_model = model or provider.default_model()
+    for item in models:
+        if not isinstance(item, dict) or item.get("id") != active_model:
+            continue
+        modalities = set(item.get("modalities") or [])
+        modality = item.get("modality")
+        if modality:
+            modalities.add(str(modality))
+        return {str(value) for value in modalities if value}
+    return set()
+
+
 def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
     prompt = (args.get("prompt") or "").strip()
     image_url = (args.get("image_url") or "").strip() or None
@@ -609,6 +628,19 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
 
     # Resolve model: explicit arg wins, then config, then provider default.
     model = model_override or _read_configured_video_model() or provider.default_model()
+    modalities = _model_modalities(provider, model)
+    if "image" in modalities and "text" not in modalities and not image_url:
+        return json.dumps(error_response(
+            error=(
+                f"Model '{model}' is image-to-video only. Pass image_url "
+                "from the image you want to animate before calling video_generate."
+            ),
+            error_type="missing_image_url",
+            provider=getattr(provider, "name", ""),
+            model=model or "",
+            prompt=prompt,
+        ))
+
     prompt_mediation = _build_video_prompt_mediation(
         prompt,
         motion_intensity=motion_intensity,
