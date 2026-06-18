@@ -1851,6 +1851,10 @@ class SlackAdapter(BasePlatformAdapter):
 
         try:
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
+            logger.info(
+                "[Slack] Sending 1 video(s) in files_upload_v2: %s",
+                os.path.basename(video_path),
+            )
             last_exc = None
             for attempt in range(3):
                 try:

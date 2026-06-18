@@ -1069,6 +1069,24 @@ class TestSendVideo:
         assert call_kwargs["filename"] == "clip.mp4"
         assert call_kwargs["initial_comment"] == "Check this out"
 
+    def test_send_video_logs_files_upload(self, adapter, tmp_path, caplog):
+        video = tmp_path / "clip.mp4"
+        video.write_bytes(b"fake video data")
+
+        adapter._app.client.files_upload_v2 = AsyncMock(return_value={"ok": True})
+
+        with caplog.at_level("INFO", logger="gateway.platforms.slack"):
+            result = asyncio.run(
+                adapter.send_video(
+                    chat_id="C123",
+                    video_path=str(video),
+                )
+            )
+
+        assert result.success
+        assert "Sending 1 video(s) in files_upload_v2" in caplog.text
+        assert "clip.mp4" in caplog.text
+
     @pytest.mark.asyncio
     async def test_send_video_missing_file(self, adapter):
         result = await adapter.send_video(
