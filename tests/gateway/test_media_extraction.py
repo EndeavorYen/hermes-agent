@@ -244,6 +244,127 @@ caption
         assert tags == []
         assert voice is False
 
+    def test_history_media_paths_include_json_image_and_video_tool_outputs(self):
+        """History dedup must include producer-tool JSON paths, not only MEDIA tags."""
+        from gateway.run import _collect_history_media_paths
+
+        history = [
+            {
+                "role": "tool",
+                "tool_name": "image_generate",
+                "content": '{"success": true, "image": "/tmp/old-grok-image.jpg"}',
+            },
+            {
+                "role": "tool",
+                "tool_name": "video_generate",
+                "content": '{"success": true, "video": "https://cdn.x.ai/old-grok-video.mp4"}',
+            },
+            {
+                "role": "assistant",
+                "content": "previous attachment\nMEDIA:/tmp/old-report.pdf",
+            },
+        ]
+
+        assert _collect_history_media_paths(history) == {
+            "/tmp/old-grok-image.jpg",
+            "https://cdn.x.ai/old-grok-video.mp4",
+            "/tmp/old-report.pdf",
+        }
+
+    def test_gateway_auto_append_compression_fallback_skips_history_image_json(self):
+        """Compression fallback must not replay historical image_generate results."""
+        from gateway.run import (
+            _collect_auto_append_media_tags,
+            _collect_history_media_paths,
+        )
+
+        history = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "old_img_1", "function": {"name": "image_generate"}},
+                    {"id": "old_img_2", "function": {"name": "image_generate"}},
+                    {"id": "old_img_3", "function": {"name": "image_generate"}},
+                    {"id": "old_img_4", "function": {"name": "image_generate"}},
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "old_img_1",
+                "tool_name": "image_generate",
+                "content": '{"success": true, "image": "/tmp/old-1.jpg"}',
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "old_img_2",
+                "tool_name": "image_generate",
+                "content": '{"success": true, "image": "/tmp/old-2.jpg"}',
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "old_img_3",
+                "tool_name": "image_generate",
+                "content": '{"success": true, "image": "/tmp/old-3.jpg"}',
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "old_img_4",
+                "tool_name": "image_generate",
+                "content": '{"success": true, "image": "/tmp/old-4.jpg"}',
+            },
+            {"role": "assistant", "content": "Old batch delivered."},
+        ]
+        compressed_messages = [
+            {"role": "user", "content": "[CONTEXT COMPACTION] prior turns..."},
+            *history,
+            {"role": "user", "content": "refine the latest batch"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "new_img_1", "function": {"name": "image_generate"}},
+                    {"id": "new_img_2", "function": {"name": "image_generate"}},
+                    {"id": "new_img_3", "function": {"name": "image_generate"}},
+                    {"id": "new_img_4", "function": {"name": "image_generate"}},
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "new_img_1",
+                "content": '{"success": true, "image": "/tmp/new-1.jpg"}',
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "new_img_2",
+                "content": '{"success": true, "image": "/tmp/new-2.jpg"}',
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "new_img_3",
+                "content": '{"success": true, "image": "/tmp/new-3.jpg"}',
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "new_img_4",
+                "content": '{"success": true, "image": "/tmp/new-4.jpg"}',
+            },
+            {"role": "assistant", "content": "New batch delivered."},
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(
+            compressed_messages,
+            history_offset=100,
+            history_media_paths=_collect_history_media_paths(history),
+        )
+
+        assert tags == [
+            "[[generated_image_only]]",
+            "MEDIA:/tmp/new-1.jpg",
+            "MEDIA:/tmp/new-2.jpg",
+            "MEDIA:/tmp/new-3.jpg",
+            "MEDIA:/tmp/new-4.jpg",
+        ]
+        assert voice is False
+
     def test_gateway_auto_append_keeps_current_video_generate_local_result(self):
         """Slack/video replies should attach a newly generated local video file."""
         from gateway.run import _collect_auto_append_media_tags

@@ -843,6 +843,39 @@ def _video_tool_response_fragment(content: str, history_media_paths: set) -> Opt
     return None
 
 
+def _collect_history_media_paths(messages: List[Dict[str, Any]]) -> set[str]:
+    """Collect deliverable media payloads already present in replay history.
+
+    Compression can shrink the returned message list below the original
+    ``history_offset``. In that fallback mode, auto-append scanning must rely on
+    this path set to distinguish old producer-tool outputs from current-turn
+    outputs. Image/video producer tools usually return JSON fields rather than
+    literal MEDIA tags, so include those structured outputs too.
+    """
+    paths: set[str] = set()
+    for msg in messages or []:
+        content = str(msg.get("content") or "")
+        if not content:
+            continue
+        if "MEDIA:" in content:
+            for match in _TOOL_MEDIA_RE.finditer(content):
+                path = match.group(1).strip().rstrip('\",}')
+                if path:
+                    paths.add(path)
+        if msg.get("role") not in ("tool", "function"):
+            continue
+        for tag in _image_tool_media_tags(content, set()):
+            path = _auto_append_media_tag_payload(tag)
+            if path:
+                paths.add(path)
+        fragment = _video_tool_response_fragment(content, set())
+        if fragment:
+            path = _auto_append_media_tag_payload(fragment)
+            if path:
+                paths.add(path)
+    return paths
+
+
 def _collect_auto_append_media_tags(
     messages: List[Dict[str, Any]],
     history_offset: int = 0,
@@ -18268,22 +18301,7 @@ class GatewayRunner:
             # Collect MEDIA paths already in history so we can exclude them
             # from the current turn's extraction. This is compression-safe:
             # even if the message list shrinks, we know which paths are old.
-            _history_media_paths: set = set()
-            for _hm in agent_history:
-                if _hm.get("role") in {"tool", "function"}:
-                    _hc = _hm.get("content", "")
-                    if "MEDIA:" in _hc:
-                        _TOOL_MEDIA_RE = re.compile(
-                            r'MEDIA:((?:[A-Za-z]:[/\\]|/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
-                            r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
-                            r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
-                            r'txt|csv|apk|ipa))',
-                            re.IGNORECASE
-                        )
-                        for _match in _TOOL_MEDIA_RE.finditer(_hc):
-                            _p = _match.group(1).strip().rstrip('",}')
-                            if _p:
-                                _history_media_paths.add(_p)
+            _history_media_paths = _collect_history_media_paths(agent_history)
             
             # Register per-session gateway approval callback so dangerous
             # command approval blocks the agent thread (mirrors CLI input()).
