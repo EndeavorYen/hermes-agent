@@ -138,6 +138,15 @@ async def generate_image_candidates(
                 },
             )
         else:
+            fallback = _fallback_candidate_from_failed_mission(result)
+            if fallback is not None:
+                successful.append(fallback)
+                graph.add_asset(
+                    role=VisualArtifactRole.GENERATED_IMAGE,
+                    artifact_id=fallback["artifact_id"],
+                    local_path=fallback["image"],
+                    metadata=dict(fallback.get("metadata") or {}),
+                )
             failures.append(_public_failure(result))
 
     return {
@@ -216,6 +225,37 @@ def _mission_result_score(result: Dict[str, Any]) -> float:
         return max(0.0, min(1.0, float(raw_score) / 100.0))
     except (TypeError, ValueError):
         return 1.0
+
+
+def _fallback_candidate_from_failed_mission(result: Dict[str, Any]) -> Dict[str, Any] | None:
+    if result.get("error_type") != "qc_failed":
+        return None
+    best = result.get("best_candidate")
+    if not isinstance(best, dict):
+        return None
+    image = best.get("image")
+    if not isinstance(image, str) or not image.strip():
+        return None
+    metadata = {
+        "qc_failed_fallback": True,
+        "provider": best.get("provider"),
+        "model": best.get("model"),
+    }
+    return {
+        "artifact_id": new_artifact_id(),
+        "image": image.strip(),
+        "score": _best_candidate_score(best),
+        "metadata": metadata,
+    }
+
+
+def _best_candidate_score(best: Dict[str, Any]) -> float:
+    qc = best.get("qc") if isinstance(best.get("qc"), dict) else {}
+    raw_score = qc.get("score")
+    try:
+        return round(max(0.0, min(1.0, float(raw_score) / 100.0)), 4)
+    except (TypeError, ValueError):
+        return 0.55
 
 
 def _local_paths(graph: VisualAssetGraph, role: VisualArtifactRole) -> List[str]:

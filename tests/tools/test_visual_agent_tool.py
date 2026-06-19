@@ -4,6 +4,8 @@ import json
 
 import pytest
 
+from agent.visual.agent_mode.asset_graph import VisualAssetGraph
+from agent.visual.agent_mode.mission_planner import plan_visual_mission
 from agent.visual.agent_mode.types import VisualArtifactRole
 
 
@@ -87,3 +89,40 @@ def test_visual_agent_generate_tool_is_registered():
     assert entry.toolset == "image_gen"
     assert entry.is_async is True
     assert "visual production agent" in entry.schema["description"]
+
+
+@pytest.mark.asyncio
+async def test_generate_image_candidates_keeps_best_qc_failed_candidate(monkeypatch):
+    from tools import image_mission_tool
+    from tools import visual_agent_tool
+
+    async def fake_run_image_generation_mission(**kwargs):
+        return {
+            "success": False,
+            "error": "No generated candidate passed visual QC.",
+            "error_type": "qc_failed",
+            "best_candidate": {
+                "image": "/tmp/best-near-miss.png",
+                "qc": {"score": 72},
+                "provider": "xai",
+                "model": "grok-imagine-image-quality",
+            },
+        }
+
+    monkeypatch.setattr(
+        image_mission_tool,
+        "run_image_generation_mission",
+        fake_run_image_generation_mission,
+    )
+    mission = plan_visual_mission("Create one product image.", autonomy_level=2)
+    graph = VisualAssetGraph(mission_id=mission.mission_id)
+
+    result = await visual_agent_tool.generate_image_candidates(mission, graph)
+
+    assert result["success"] is True
+    assert result["candidate_count"] == 1
+    assert result["failure_count"] == 1
+    assert result["candidates"][0]["image"] == "/tmp/best-near-miss.png"
+    assert result["candidates"][0]["score"] == 0.72
+    assert result["candidates"][0]["metadata"]["qc_failed_fallback"] is True
+    assert graph.selected_artifact_ids(VisualArtifactRole.GENERATED_IMAGE)
