@@ -816,7 +816,7 @@ def _materialize_worker_image(
 
 
 class ZImageRemoteProvider(ImageGenProvider):
-    """Image generation backend for Simon's private Z-Image GPU worker."""
+    """Image generation backend for a private Z-Image GPU worker."""
 
     @property
     def name(self) -> str:

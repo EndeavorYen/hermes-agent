@@ -13,7 +13,7 @@ def test_feedback_parser_detects_positive_selection():
 def test_feedback_parser_detects_english_ordinal_selection():
     from agent.visual.feedback import parse_visual_feedback
 
-    feedback = parse_visual_feedback("3rd, 有長腿，加分")
+    feedback = parse_visual_feedback("3rd, stronger product angle, 加分")
     assert feedback.polarity > 0
     assert feedback.parsed["selection_hint"] == 3
 
@@ -21,7 +21,7 @@ def test_feedback_parser_detects_english_ordinal_selection():
 def test_feedback_parser_does_not_treat_generation_count_as_selection():
     from agent.visual.feedback import parse_visual_feedback
 
-    feedback = parse_visual_feedback("請用 grok imagegen-quality 產 4 張性感 cos 寫真")
+    feedback = parse_visual_feedback("請產 4 張乾淨產品攝影圖")
     assert feedback.parsed["selection_hint"] is None
 
 
@@ -43,8 +43,8 @@ def test_feedback_parser_detects_more_motion():
 def test_feedback_parser_detects_candidate_label_and_not_sexy_enough():
     from agent.visual.feedback import parse_visual_feedback
 
-    feedback = parse_visual_feedback("K5B 性感升級不夠，頂多和 K4S 持平")
-    assert feedback.parsed["candidate_hints"] == ["K5B", "K4S"]
+    feedback = parse_visual_feedback("V5 性感升級不夠，頂多和 V4 持平")
+    assert feedback.parsed["candidate_hints"] == ["V5", "V4"]
     assert "not_sexy_enough" in feedback.parsed["issues"]
 
 

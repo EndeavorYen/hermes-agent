@@ -135,6 +135,9 @@ context.d/
 visual-arsenal/
 image_cache/
 cache/images/
+cache/videos/
+video_cache/
+visual/
 hermes_image2_adaptive_memory.jsonl
 image2_mediator_memory/
 visual_signals.jsonl

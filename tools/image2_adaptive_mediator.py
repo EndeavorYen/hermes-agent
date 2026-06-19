@@ -1232,8 +1232,9 @@ def _map_user_feedback(feedback_text: str) -> Dict[str, Any]:
         )
     )
     visual_arsenal_miss = any(
-        token in lowered for token in ("visual arsenal", "arsenal")
-    ) or "武器庫" in text
+        token in lowered
+        for token in ("visual arsenal", "arsenal", "reference library", "style library")
+    ) or any(token in text for token in ("武器庫", "素材庫", "參考庫", "風格庫"))
     partial_positive_feedback = any(
         token in text
         for token in ("過關", "不錯", "還可以", "算可以", "可用", "能用")

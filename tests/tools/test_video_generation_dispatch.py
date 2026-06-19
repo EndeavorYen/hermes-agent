@@ -344,7 +344,7 @@ class TestUnifiedDispatch:
         video_gen_registry.register_provider(provider)
 
         result = self._run({
-            "prompt": "性感寫真姿勢，sexy back pose, cinematic pan",
+            "prompt": "synthetic sexy editorial pose, cinematic pan",
             "image_url": "https://example.com/ref.png",
             "duration": 8,
         })
@@ -363,7 +363,7 @@ class TestUnifiedDispatch:
         assert result["video_mediation"]["applied"] is True
         assert result["video_mediation"]["strategy"] == "safe_reframe_retry"
         assert result["video_mediation"]["first_error_type"] == "content_moderation"
-        assert result["video_mediation"]["original_prompt"].startswith("性感寫真姿勢")
+        assert result["video_mediation"]["original_prompt"].startswith("synthetic sexy editorial pose")
         assert result["video_prompt_mediation"]["safe_compromise"] is True
 
         conn = sqlite3.connect(tmp_path / "visual" / "attempt_ledger.sqlite3")

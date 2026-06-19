@@ -160,6 +160,7 @@ Done:
 - Selected image and video artifact IDs join back to `visual_artifacts`.
 - Gateway tests cover auto-appending only selected current package artifacts and skipping historical package media.
 - Natural image-plus-video requests route to Visual Agent Mode without requiring users to mention internal controls such as `visual_agent_generate`, `autonomy_level`, `candidate_budget`, or provider names.
+- Tracked visual fixtures and ignore rules have been tightened so runtime media, local model endpoints, and user-specific prompt/preference examples stay out of the repo.
 
 Latest safe CLI smoke:
 

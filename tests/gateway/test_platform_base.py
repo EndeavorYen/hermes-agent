@@ -334,7 +334,7 @@ class TestVisualFeedbackCapture:
             event = MessageEvent(
                 text=(
                     "[Thread context — prior messages in this thread (not yet in conversation history):]\n"
-                    "[thread parent] simon: 請用 grok imagegen-quality 產 4 張性感 cos 寫真。\n"
+                    "[thread parent] reviewer: 請產 4 張 reference character portrait options。\n"
                     "[End of thread context]\n\n"
                     "這張臉不像，扣分"
                 ),
@@ -391,9 +391,9 @@ class TestVisualFeedbackCapture:
             adapter.set_message_handler(handler)
             event = MessageEvent(
                 text=(
-                    "請用 grok imagegen-quality 產 4 張性感 cos 寫真。\n"
+                    "請產 4 張乾淨產品攝影圖。\n"
                     "只貼本輪新產出的圖片，不要貼舊圖。\n"
-                    "構圖要有變化，重點是漂亮臉蛋、美腿、自然性感、不要塑膠感。"
+                    "構圖要有變化，重點是清楚輪廓、自然光影、不要塑膠感。"
                 ),
                 message_type=MessageType.TEXT,
                 source=SessionSource(
@@ -412,9 +412,9 @@ class TestVisualFeedbackCapture:
             rows = conn.execute("SELECT * FROM visual_feedback").fetchall()
         assert rows == []
         assert calls == [
-            "請用 grok imagegen-quality 產 4 張性感 cos 寫真。\n"
+            "請產 4 張乾淨產品攝影圖。\n"
             "只貼本輪新產出的圖片，不要貼舊圖。\n"
-            "構圖要有變化，重點是漂亮臉蛋、美腿、自然性感、不要塑膠感。"
+            "構圖要有變化，重點是清楚輪廓、自然光影、不要塑膠感。"
         ]
 
     def test_records_per_image_feedback_against_latest_delivery_batch(self, tmp_path, monkeypatch):
@@ -441,12 +441,12 @@ class TestVisualFeedbackCapture:
         event = MessageEvent(
             text=(
                 "[Thread context — prior messages in this thread (not yet in conversation history):]\n"
-                "[thread parent] simon: 請用 grok imagegen-quality 產 4 張性感 cos 寫真。\n"
+                "[thread parent] reviewer: 請產 4 張產品攝影候選圖。\n"
                 "[End of thread context]\n\n"
-                "第 1 張 不漂亮，扣分\n"
-                "第 2 張 有美腿，持平\n"
-                "3rd, 有長腿，加分; 臉也很漂亮，加分\n"
-                "4th, 黑絲, 加分; 其餘普普"
+                "第 1 張 構圖不穩，扣分\n"
+                "第 2 張 光線改善，持平\n"
+                "3rd, product angle is stronger, 加分; 色彩也更乾淨，加分\n"
+                "4th, background clean, 加分; 其餘普普"
             ),
             message_type=MessageType.TEXT,
             source=SessionSource(
@@ -472,8 +472,8 @@ class TestVisualFeedbackCapture:
             "var_3",
             "var_4",
         ]
-        assert rows[0]["raw_text"] == "第 1 張 不漂亮，扣分"
-        assert rows[2]["raw_text"].startswith("3rd, 有長腿")
+        assert rows[0]["raw_text"] == "第 1 張 構圖不穩，扣分"
+        assert rows[2]["raw_text"].startswith("3rd, product angle")
         assert [json.loads(row["parsed_json"])["selection_hint"] for row in rows] == [
             1,
             2,

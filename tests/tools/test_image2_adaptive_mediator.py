@@ -979,14 +979,14 @@ def test_user_feedback_negative_style_words_are_not_misread_as_praise(tmp_path):
     _write_jsonl(memory_path, [{
         "timestamp": "2026-06-15T00:00:00+00:00",
         "record_type": "attempt",
-        "user_concept": "性感 cos 寫真",
+        "user_concept": "glamour character editorial",
         "strategy": "hybrid_refine",
         "image2_status": "success",
         "failure_class": [],
     }])
 
     feedback = record_image2_user_feedback(
-        "好醜，不是我的武器庫，也不是我喜歡的風格",
+        "bad style, outside the reference library",
         config={"enabled": True, "memory_path": str(memory_path)},
     )
 
@@ -1004,14 +1004,14 @@ def test_user_feedback_mixed_batch_review_preserves_failures(tmp_path):
     _write_jsonl(memory_path, [{
         "timestamp": "2026-06-15T00:00:00+00:00",
         "record_type": "attempt",
-        "user_concept": "wolf-ear cosplay catalog batch",
+        "user_concept": "fantasy character catalog batch",
         "strategy": "hybrid_refine",
         "image2_status": "success",
         "failure_class": [],
     }])
 
     feedback = record_image2_user_feedback(
-        "G4 過關；G1/G3 人設跟指定差異太大；G2 不夠漂亮性感",
+        "G4 過關；G1/G3 design drift；G2 not pretty enough and not glamorous enough",
         config={"enabled": True, "memory_path": str(memory_path)},
     )
 

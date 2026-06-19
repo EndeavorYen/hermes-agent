@@ -58,9 +58,9 @@ class TestExtractMediaImages:
         assert "/screenshot.png" in paths
 
     def test_file_uri_markdown_image_extracted(self):
-        content = "狀態：完成\n\n![性感寫真](file:///Users/simon/.hermes/cache/images/out.jpg)"
+        content = "狀態：完成\n\n![產品照片](file:///tmp/hermes-cache/images/out.jpg)"
         media, cleaned = BasePlatformAdapter.extract_media(content)
-        assert media == [("/Users/simon/.hermes/cache/images/out.jpg", False)]
+        assert media == [("/tmp/hermes-cache/images/out.jpg", False)]
         assert "file://" not in cleaned
         assert "狀態：完成" in cleaned
 

@@ -22,7 +22,7 @@
 
 ## Execution Status
 
-Status as of 2026-06-20 03:56 Asia/Taipei:
+Status as of 2026-06-20 04:18 Asia/Taipei:
 
 | Area | Status | Evidence |
 | --- | --- | --- |
@@ -33,6 +33,7 @@ Status as of 2026-06-20 03:56 Asia/Taipei:
 | Learning store slice | Done | `agent/visual/agent_mode/learning.py`, `tests/visual/agent_mode/test_learning.py` |
 | Gateway package delivery path | Done in tests | `tests/gateway/test_media_extraction.py`, `tests/gateway/platforms/test_slack_visual_delivery.py`, `tests/gateway/test_send_multiple_images.py` |
 | User-friendly natural trigger | Done in tests | Chinese image+video package requests infer `VISUAL_PACKAGE`; `visual_agent_generate` defaults to L2 auto-select |
+| Privacy gate | Done in tracked files | Runtime video/visual paths are ignored; private visual fixture wording was replaced with generic test data |
 | Live CLI image+video smoke | Done | mission `vms_915e683f14b44d7b89acb96a0602834e`, image `var_7e14ab73338344dba02533b678e7aebe`, video `var_d0d50d86318a4e588df269360a3252de` |
 | Live Slack inbound proof | Pending | Requires a Slack-triggered Hermes request so `visual_deliveries` increases in the live ledger |
 
@@ -44,6 +45,8 @@ Implemented follow-up fixes from live smoke:
 - `4cce96266` preserves image mission `visual_artifact_id` values so selected image/video IDs join back to `visual_artifacts`.
 - Natural-language trigger follow-up teaches the planner Chinese image/video/count terms and makes the package tool default to auto-select, so users do not need to say `visual_agent_generate` or `autonomy_level=2`.
 - Focused verification passed with 41 tests covering routing guidance, wrong-tool guardrails, natural tool defaults, gateway current-turn media append, and Slack selected-artifact delivery metadata.
+- Privacy follow-up removed tracked user-specific visual prompt fixtures, added runtime video/visual ignore rules, and kept feedback/parser tests on generic examples.
+- Final focused verification passed with 376 Visual Agent Mode, routing, delivery, privacy-fixture, and feedback tests after the scrub.
 - Live gateway is running from the patched checkout and Slack Socket Mode is connected, but only a real user-originated Slack request can close the final inbound proof gate. Bot-authored Slack messages and CLI handoff notices are not counted as proof because they do not exercise the same user inbound path.
 
 User-facing trigger contract:
@@ -1121,6 +1124,12 @@ Expected:
 
 - no private endpoint, local draft-model, raw prompt, generated media, or user preference data is tracked;
 - `.gitignore` continues to exclude runtime visual data.
+
+Current evidence:
+
+- `.gitignore` excludes `cache/images/`, `cache/videos/`, `video_cache/`, root `visual/`, Visual Arsenal data, mediator memories, ranking runs, preference buckets, style strategies, and hard-preference files.
+- Tracked visual tests use generic product/editorial/reference-library fixtures instead of user-specific prompt or feedback examples.
+- Focused tracked-file greps found no private LAN endpoint or local draft-model references. Remaining token-looking matches are fake test/doc examples, not real credentials.
 
 ### Gate F: Live Smoke
 

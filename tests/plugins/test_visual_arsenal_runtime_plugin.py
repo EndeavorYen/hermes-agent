@@ -429,9 +429,9 @@ def test_visual_arsenal_batch_eval_plan_uses_locked_high_score_outputs(tmp_path,
                     "role": "card",
                     "status": "locked",
                     "imagePath": "/assets/hero.png",
-                    "tags": ["wolf", "beach"],
-                    "promptCore": "photoreal adult East Asian wolf-ear beach cosplay, V-line face",
-                    "negativePrompt": "round face, generic cosplay",
+                    "tags": ["fantasy", "beach"],
+                    "promptCore": "photoreal fantasy beach editorial, angular face",
+                    "negativePrompt": "round face, generic styling",
                     "notes": "",
                     "outputs": [
                         {
@@ -439,18 +439,18 @@ def test_visual_arsenal_batch_eval_plan_uses_locked_high_score_outputs(tmp_path,
                             "title": "A kept cabana",
                             "status": "kept",
                             "imagePath": "/assets/hero.png",
-                            "prompt": "premium lace cabana hosiery, beautiful V-line face",
+                            "prompt": "premium cabana editorial, strong face direction",
                             "score": 94,
-                            "scoreNotes": "Simon: A 不錯。Keep this face and styling direction.",
+                            "scoreNotes": "Reviewer: A is strong. Keep this face and styling direction.",
                         },
                         {
                             "id": "C",
-                            "title": "C demoted ugly face",
+                            "title": "C demoted weak face",
                             "status": "rejected",
                             "imagePath": "/assets/hero.png",
-                            "prompt": "similar but bad face",
+                            "prompt": "similar but weak face direction",
                             "score": 40,
-                            "scoreNotes": "Simon: C 臉太醜不是美女。Avoid this face direction.",
+                            "scoreNotes": "Reviewer: C face direction failed the beauty target. Avoid this face direction.",
                         },
                     ],
                     "createdAt": "2026-06-01T00:00:00Z",
@@ -478,7 +478,7 @@ def test_visual_arsenal_batch_eval_plan_uses_locked_high_score_outputs(tmp_path,
     tools = _load_runtime_plugin_module("tools")
 
     result = json.loads(tools.visual_arsenal_batch_eval_plan({
-        "query": "性感 cos 寫真",
+        "query": "glamour character editorial",
         "reference_ids": ["hero", "candidate"],
         "variant_count": 3,
         "scene_variations": ["cabana close portrait", "low angle rocks", "black backdrop"],
@@ -489,7 +489,7 @@ def test_visual_arsenal_batch_eval_plan_uses_locked_high_score_outputs(tmp_path,
     assert result["batch"]["reference_ids"] == ["hero"]
     assert result["batch"]["blocked_reference_ids"] == [{"id": "candidate", "status": "candidate"}]
     assert result["batch"]["positive_examples"][0]["output_id"] == "A"
-    assert "臉太醜不是美女" in result["batch"]["avoid_lessons"][0]["notes"]
+    assert "failed the beauty target" in result["batch"]["avoid_lessons"][0]["notes"]
     assert [variant["label"] for variant in result["variants"]] == ["G1", "G2", "G3"]
     assert all(variant["reference_images"] == [str(assets / "hero.png")] for variant in result["variants"])
     assert all("generic cosplay" not in variant["prompt"] for variant in result["variants"])
@@ -511,12 +511,12 @@ def test_visual_arsenal_batch_eval_plan_adds_diversity_contract_after_pose_colla
             "schemaVersion": 1,
             "references": [{
                 "id": "hero",
-                "title": "Wolf beach reference",
+                "title": "Fantasy beach reference",
                 "role": "card",
                 "status": "locked",
                 "imagePath": "/assets/hero.png",
-                "tags": ["wolf", "beach"],
-                "promptCore": "photoreal adult East Asian wolf-ear beach cosplay, V-line face",
+                "tags": ["fantasy", "beach"],
+                "promptCore": "photoreal fantasy beach editorial, angular face",
                 "negativePrompt": "round face, generic cosplay",
                 "outputs": [
                     {
@@ -583,12 +583,12 @@ def test_visual_arsenal_batch_eval_plan_prioritizes_preferred_outputs(tmp_path, 
             "schemaVersion": 1,
             "references": [{
                 "id": "hero",
-                "title": "Wolf beach reference",
+                "title": "Fantasy beach reference",
                 "role": "card",
                 "status": "locked",
                 "imagePath": "/assets/hero.png",
-                "tags": ["wolf"],
-                "promptCore": "source wolf-ear costume",
+                "tags": ["fantasy"],
+                "promptCore": "source fantasy costume",
                 "negativePrompt": "",
                 "notes": "",
                 "outputs": [
@@ -608,7 +608,7 @@ def test_visual_arsenal_batch_eval_plan_prioritizes_preferred_outputs(tmp_path, 
                         "imagePath": "/assets/hero.png",
                         "prompt": "G4-safe catalog beauty repair",
                         "score": 86,
-                        "scoreNotes": "Simon: only G4 passed in the latest batch.",
+                        "scoreNotes": "Reviewer: only G4 passed in the latest batch.",
                     },
                 ],
             }],
@@ -682,7 +682,7 @@ def test_visual_arsenal_apply_batch_review_updates_outputs_and_run(tmp_path, mon
             "G3": "g3",
             "G4": "g4",
         },
-        "review_text": "只有 G4 過關，G1.G3 的人設跟我指定的差異太大，G2 不夠漂亮性感",
+        "review_text": "只有 G4 過關；G1 人設差異太大；G3 人設差異太大；G2 不夠漂亮、不夠性感",
     }))
 
     assert result["success"] is True
@@ -800,11 +800,11 @@ def test_visual_arsenal_apply_batch_review_classifies_background_only_variation(
     ]
 
 
-def test_visual_arsenal_apply_batch_review_classifies_mixed_k_feedback(tmp_path, monkeypatch):
+def test_visual_arsenal_apply_batch_review_classifies_mixed_labeled_feedback(tmp_path, monkeypatch):
     root = tmp_path
     assets = root / "library" / "assets"
     assets.mkdir(parents=True)
-    for name in ("k1.png", "k2.png"):
+    for name in ("v1.png", "v2.png"):
         (assets / name).write_bytes(name.encode())
     (root / "library" / "index.json").write_text(
         json.dumps({
@@ -813,10 +813,10 @@ def test_visual_arsenal_apply_batch_review_classifies_mixed_k_feedback(tmp_path,
                 "id": "hero",
                 "title": "Third reference",
                 "status": "locked",
-                "imagePath": "/assets/k1.png",
+                "imagePath": "/assets/v1.png",
                 "outputs": [
-                    {"id": "k1", "title": "K1", "status": "candidate", "imagePath": "/assets/k1.png"},
-                    {"id": "k2", "title": "K2", "status": "candidate", "imagePath": "/assets/k2.png"},
+                    {"id": "v1", "title": "V1", "status": "candidate", "imagePath": "/assets/v1.png"},
+                    {"id": "v2", "title": "V2", "status": "candidate", "imagePath": "/assets/v2.png"},
                 ],
             }],
             "runs": [],
@@ -829,29 +829,29 @@ def test_visual_arsenal_apply_batch_review_classifies_mixed_k_feedback(tmp_path,
 
     result = json.loads(tools.visual_arsenal_apply_batch_review({
         "reference_id": "hero",
-        "label_output_ids": {"K1": "k1", "K2": "k2"},
-        "review_text": "K1 臉還算像，但整體性感程度普普；K2 有腿有裸足，還算加分，可惜臉稍微不自然",
+        "label_output_ids": {"V1": "v1", "V2": "v2"},
+        "review_text": "V1 臉還算像，但整體性感程度普通；V2 有腿部線條和裸足，還算加分，可惜臉稍微不自然",
     }))
 
     assert result["success"] is True
-    assert result["updates"]["K1"]["status"] == "retry"
-    assert result["updates"]["K1"]["score"] == 58
-    assert result["updates"]["K1"]["failure_class"] == ["face_match_positive", "not_sexy_enough"]
-    assert result["updates"]["K2"]["status"] == "retry"
-    assert result["updates"]["K2"]["score"] == 62
-    assert result["updates"]["K2"]["failure_class"] == ["legs_barefoot_positive", "face_uncanny"]
+    assert result["updates"]["V1"]["status"] == "retry"
+    assert result["updates"]["V1"]["score"] == 58
+    assert result["updates"]["V1"]["failure_class"] == ["face_match_positive", "not_sexy_enough"]
+    assert result["updates"]["V2"]["status"] == "retry"
+    assert result["updates"]["V2"]["score"] == 62
+    assert result["updates"]["V2"]["failure_class"] == ["legs_barefoot_positive", "face_uncanny"]
 
     saved = json.loads((root / "library" / "index.json").read_text(encoding="utf-8"))
     saved_outputs = {item["id"]: item for item in saved["references"][0]["outputs"]}
-    assert saved_outputs["k1"]["failureClass"] == ["face_match_positive", "not_sexy_enough"]
-    assert saved_outputs["k2"]["failureClass"] == ["legs_barefoot_positive", "face_uncanny"]
+    assert saved_outputs["v1"]["failureClass"] == ["face_match_positive", "not_sexy_enough"]
+    assert saved_outputs["v2"]["failureClass"] == ["legs_barefoot_positive", "face_uncanny"]
 
 
-def test_visual_arsenal_apply_batch_review_keeps_positive_k4s_with_soft_glamour_gap(tmp_path, monkeypatch):
+def test_visual_arsenal_apply_batch_review_keeps_positive_variant_with_soft_glamour_gap(tmp_path, monkeypatch):
     root = tmp_path
     assets = root / "library" / "assets"
     assets.mkdir(parents=True)
-    (assets / "k4s.png").write_bytes(b"k4s")
+    (assets / "v4.png").write_bytes(b"v4")
     (root / "library" / "index.json").write_text(
         json.dumps({
             "schemaVersion": 1,
@@ -859,16 +859,16 @@ def test_visual_arsenal_apply_batch_review_keeps_positive_k4s_with_soft_glamour_
                 "id": "hero",
                 "title": "Third reference",
                 "status": "locked",
-                "imagePath": "/assets/k4s.png",
+                "imagePath": "/assets/v4.png",
                 "outputs": [
-                    {"id": "k4s", "title": "K4S", "status": "candidate", "imagePath": "/assets/k4s.png"},
+                    {"id": "v4", "title": "V4", "status": "candidate", "imagePath": "/assets/v4.png"},
                 ],
             }],
             "runs": [{
-                "id": "k4s",
+                "id": "v4",
                 "referenceIds": ["hero"],
                 "targetReferenceId": "hero",
-                "outputIds": ["hero::k4s"],
+                "outputIds": ["hero::v4"],
                 "status": "completed",
             }],
         })
@@ -880,27 +880,27 @@ def test_visual_arsenal_apply_batch_review_keeps_positive_k4s_with_soft_glamour_
 
     result = json.loads(tools.visual_arsenal_apply_batch_review({
         "reference_id": "hero",
-        "run_id": "k4s",
-        "label_output_ids": {"K4S": "k4s"},
-        "review_text": "K4S 很不錯，姿勢和構圖算是跳脫原本的框架，也算有點性感(普通)，但有裸足和美腿，我給予好評",
+        "run_id": "v4",
+        "label_output_ids": {"V4": "v4"},
+        "review_text": "V4 很不錯，姿勢和構圖有變化，也算有點性感(普通)，但有腿部線條和裸足，我給予好評",
     }))
 
     assert result["success"] is True
-    assert result["updates"]["K4S"]["status"] == "kept"
-    assert result["updates"]["K4S"]["score"] == 82
-    assert result["updates"]["K4S"]["failure_class"] == ["legs_barefoot_positive", "not_sexy_enough"]
+    assert result["updates"]["V4"]["status"] == "kept"
+    assert result["updates"]["V4"]["score"] == 82
+    assert result["updates"]["V4"]["failure_class"] == ["legs_barefoot_positive", "not_sexy_enough"]
 
     saved = json.loads((root / "library" / "index.json").read_text(encoding="utf-8"))
     saved_output = saved["references"][0]["outputs"][0]
     assert saved_output["status"] == "kept"
-    assert saved["runs"][0]["reviewDecision"]["selectedOutputIds"] == ["hero::k4s"]
+    assert saved["runs"][0]["reviewDecision"]["selectedOutputIds"] == ["hero::v4"]
 
 
-def test_visual_arsenal_apply_batch_review_keeps_k5b_but_tracks_ref_butt_gap(tmp_path, monkeypatch):
+def test_visual_arsenal_apply_batch_review_keeps_variant_but_tracks_reference_silhouette_gap(tmp_path, monkeypatch):
     root = tmp_path
     assets = root / "library" / "assets"
     assets.mkdir(parents=True)
-    (assets / "k5b.png").write_bytes(b"k5b")
+    (assets / "v5.png").write_bytes(b"v5")
     (root / "library" / "index.json").write_text(
         json.dumps({
             "schemaVersion": 1,
@@ -908,16 +908,16 @@ def test_visual_arsenal_apply_batch_review_keeps_k5b_but_tracks_ref_butt_gap(tmp
                 "id": "hero",
                 "title": "Third reference",
                 "status": "locked",
-                "imagePath": "/assets/k5b.png",
+                "imagePath": "/assets/v5.png",
                 "outputs": [
-                    {"id": "k5b", "title": "K5B", "status": "candidate", "imagePath": "/assets/k5b.png"},
+                    {"id": "v5", "title": "V5", "status": "candidate", "imagePath": "/assets/v5.png"},
                 ],
             }],
             "runs": [{
-                "id": "k5b",
+                "id": "v5",
                 "referenceIds": ["hero"],
                 "targetReferenceId": "hero",
-                "outputIds": ["hero::k5b"],
+                "outputIds": ["hero::v5"],
                 "status": "completed",
             }],
         })
@@ -929,17 +929,17 @@ def test_visual_arsenal_apply_batch_review_keeps_k5b_but_tracks_ref_butt_gap(tmp
 
     result = json.loads(tools.visual_arsenal_apply_batch_review({
         "reference_id": "hero",
-        "run_id": "k5b",
-        "label_output_ids": {"K5B": "k5b"},
-        "review_text": "K5B 性感升級不夠，頂多和 K4S 持平，但有不同姿勢和角度，給過。但遠不如 REF 的翹臀性感",
+        "run_id": "v5",
+        "label_output_ids": {"V5": "v5"},
+        "review_text": "V5 性感升級不夠，頂多和 V4 持平，但有不同姿勢和角度，給過。但遠不如 reference 的 butt silhouette impact",
     }))
 
     assert result["success"] is True
-    assert result["updates"]["K5B"]["status"] == "kept"
-    assert result["updates"]["K5B"]["score"] == 78
-    assert result["updates"]["K5B"]["failure_class"] == ["not_sexy_enough", "ref_butt_sexiness_gap"]
+    assert result["updates"]["V5"]["status"] == "kept"
+    assert result["updates"]["V5"]["score"] == 78
+    assert result["updates"]["V5"]["failure_class"] == ["not_sexy_enough", "ref_butt_sexiness_gap"]
 
     saved = json.loads((root / "library" / "index.json").read_text(encoding="utf-8"))
     saved_output = saved["references"][0]["outputs"][0]
     assert saved_output["status"] == "kept"
-    assert saved["runs"][0]["reviewDecision"]["selectedOutputIds"] == ["hero::k5b"]
+    assert saved["runs"][0]["reviewDecision"]["selectedOutputIds"] == ["hero::v5"]
