@@ -126,3 +126,42 @@ async def test_generate_image_candidates_keeps_best_qc_failed_candidate(monkeypa
     assert result["candidates"][0]["score"] == 0.72
     assert result["candidates"][0]["metadata"]["qc_failed_fallback"] is True
     assert graph.selected_artifact_ids(VisualArtifactRole.GENERATED_IMAGE)
+
+
+@pytest.mark.asyncio
+async def test_generate_image_candidates_uses_standalone_still_brief_for_visual_package(monkeypatch):
+    from tools import image_mission_tool
+    from tools import visual_agent_tool
+
+    seen_prompts = []
+
+    async def fake_run_image_generation_mission(**kwargs):
+        seen_prompts.append(kwargs["prompt"])
+        return {
+            "success": True,
+            "image": "/tmp/mug.png",
+            "visual_artifact_id": "var_mug",
+            "visual_request_id": "vrq_mug",
+            "visual_attempt_id": "vat_mug",
+        }
+
+    monkeypatch.setattr(
+        image_mission_tool,
+        "run_image_generation_mission",
+        fake_run_image_generation_mission,
+    )
+    mission = plan_visual_mission(
+        "Create one clean product-style image and one short video of a minimalist white ceramic mug on a wooden desk.",
+        autonomy_level=2,
+    )
+    graph = VisualAssetGraph(mission_id=mission.mission_id)
+
+    result = await visual_agent_tool.generate_image_candidates(mission, graph)
+
+    assert result["success"] is True
+    assert seen_prompts
+    prompt = seen_prompts[0].lower()
+    assert "standalone still image" in prompt
+    assert "minimalist white ceramic mug" in prompt
+    assert "short video" not in prompt
+    assert "split-screen" in prompt

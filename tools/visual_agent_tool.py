@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 from dataclasses import asdict, replace
 from typing import Any, Dict, List
 
@@ -114,7 +115,7 @@ async def generate_image_candidates(
     failures: List[Dict[str, Any]] = []
     for index in range(mission.candidate_budget):
         result = await run_image_generation_mission(
-            prompt=mission.output_goal,
+            prompt=_image_stage_prompt(mission),
             reference_images=list(mission.input_assets),
             max_attempts=mission.constraints.get("max_attempts"),
         )
@@ -225,6 +226,38 @@ def _mission_result_score(result: Dict[str, Any]) -> float:
         return max(0.0, min(1.0, float(raw_score) / 100.0))
     except (TypeError, ValueError):
         return 1.0
+
+
+def _image_stage_prompt(mission: VisualMission) -> str:
+    goal = _strip_video_delivery_terms(mission.output_goal)
+    if "video" not in mission.requested_outputs:
+        return goal
+    return (
+        "Create exactly one standalone still image for the visual package.\n"
+        "Use only the still-photo subject and scene below.\n"
+        "Never render split-screen panels, storyboards, contact sheets, UI labels, "
+        "captions, comparison panels, player controls, or embedded preview frames.\n"
+        f"Still-image brief: {goal}"
+    )
+
+
+def _strip_video_delivery_terms(text: str) -> str:
+    cleaned = re.sub(
+        r"\b(?:and|plus|with)\s+(?:one|a|an|[1-9]\d*)\s+"
+        r"(?:short\s+)?(?:video|videos|clip|clips|animation|animations)\b",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"\b(?:one|a|an|[1-9]\d*)\s+(?:short\s+)?"
+        r"(?:video|videos|clip|clips|animation|animations)\b",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+    return cleaned or text.strip()
 
 
 def _fallback_candidate_from_failed_mission(result: Dict[str, Any]) -> Dict[str, Any] | None:
