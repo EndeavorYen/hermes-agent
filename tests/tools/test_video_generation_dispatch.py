@@ -531,3 +531,12 @@ class TestUnifiedDispatch:
         from tools.video_generation_tool import VIDEO_GENERATE_SCHEMA
         assert "operation" not in VIDEO_GENERATE_SCHEMA["parameters"]["properties"]
         assert "video_url" not in VIDEO_GENERATE_SCHEMA["parameters"]["properties"]
+
+    def test_description_defers_combined_image_video_packages_to_visual_agent(self, monkeypatch):
+        from tools import video_generation_tool
+
+        monkeypatch.setattr(video_generation_tool, "_read_configured_video_provider", lambda: None)
+        description = video_generation_tool._build_dynamic_video_schema()["description"]
+        assert "visual_agent_generate" in description
+        assert "image and video" in description
+        assert "combined visual package" in description

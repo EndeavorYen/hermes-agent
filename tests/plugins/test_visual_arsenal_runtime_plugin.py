@@ -48,6 +48,20 @@ def test_slack_video_followups_inject_video_generation_context():
     assert "video_generate" in result["context"]
 
 
+def test_slack_combined_image_video_requests_prefer_visual_agent_context():
+    module = _load_runtime_plugin_module("__init__")
+
+    result = module.visual_arsenal_slack_default_context(
+        platform="slack",
+        user_message="請幫我產出一張圖片和一段影片：霧黑鋼筆產品攝影",
+    )
+
+    assert result is not None
+    assert "visual_agent_generate" in result["context"]
+    assert "combined visual package" in result["context"]
+    assert "image and video" in result["context"]
+
+
 def test_slack_default_context_stays_quiet_for_unrelated_followup():
     module = _load_runtime_plugin_module("__init__")
 

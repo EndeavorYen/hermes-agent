@@ -133,6 +133,206 @@ async def test_visual_agent_generate_natural_chinese_image_video_request_default
     assert payload["videos"] == ["/tmp/pen.mp4"]
 
 
+@pytest.mark.asyncio
+async def test_visual_agent_generate_selects_requested_image_count_by_default(monkeypatch):
+    from tools import visual_agent_tool
+
+    seen_max_selected = []
+
+    def fake_generate_image_candidates(mission, graph):
+        for index in (1, 2):
+            graph.add_asset(
+                role=VisualArtifactRole.GENERATED_IMAGE,
+                artifact_id=f"var_pen_{index}",
+                local_path=f"/tmp/pen-{index}.png",
+            )
+        return {
+            "success": True,
+            "candidates": [
+                {"artifact_id": "var_pen_1", "score": 0.91, "image": "/tmp/pen-1.png"},
+                {"artifact_id": "var_pen_2", "score": 0.88, "image": "/tmp/pen-2.png"},
+            ],
+            "candidate_count": 2,
+            "failure_count": 0,
+        }
+
+    def fake_select_image_candidates(graph, candidates, max_selected=2):
+        seen_max_selected.append(max_selected)
+        selected = candidates[:max_selected]
+        for candidate in selected:
+            graph.add_asset(
+                role=VisualArtifactRole.SELECTED_IMAGE,
+                artifact_id=candidate["artifact_id"],
+                local_path=candidate["image"],
+            )
+        return [candidate["artifact_id"] for candidate in selected]
+
+    def fake_build_video_clips(mission, graph):
+        graph.add_asset(
+            role=VisualArtifactRole.GENERATED_VIDEO,
+            artifact_id="var_pen_video",
+            local_path="/tmp/pen.mp4",
+        )
+        return {"success": True, "clips": [{"artifact_id": "var_pen_video"}]}
+
+    monkeypatch.setattr(
+        visual_agent_tool,
+        "generate_image_candidates",
+        fake_generate_image_candidates,
+    )
+    monkeypatch.setattr(
+        visual_agent_tool,
+        "select_image_candidates",
+        fake_select_image_candidates,
+    )
+    monkeypatch.setattr(
+        visual_agent_tool,
+        "build_video_clips",
+        fake_build_video_clips,
+    )
+
+    payload = json.loads(
+        await visual_agent_tool._handle_visual_agent_generate(
+            {
+                "prompt": "請幫我產出一張圖片和一段影片：一支霧黑鋼筆放在白紙上。"
+            }
+        )
+    )
+
+    assert seen_max_selected == [1]
+    assert payload["selected_image_artifact_ids"] == ["var_pen_1"]
+    assert payload["images"] == ["/tmp/pen-1.png"]
+    assert payload["videos"] == ["/tmp/pen.mp4"]
+
+
+@pytest.mark.asyncio
+async def test_visual_agent_generate_ignores_model_invented_internal_counts(monkeypatch):
+    from tools import visual_agent_tool
+
+    seen_candidate_budget = []
+    seen_max_selected = []
+
+    def fake_generate_image_candidates(mission, graph):
+        seen_candidate_budget.append(mission.candidate_budget)
+        for index in (1, 2, 3):
+            graph.add_asset(
+                role=VisualArtifactRole.GENERATED_IMAGE,
+                artifact_id=f"var_pen_{index}",
+                local_path=f"/tmp/pen-{index}.png",
+            )
+        return {
+            "success": True,
+            "candidates": [
+                {"artifact_id": "var_pen_1", "score": 0.91, "image": "/tmp/pen-1.png"},
+                {"artifact_id": "var_pen_2", "score": 0.88, "image": "/tmp/pen-2.png"},
+                {"artifact_id": "var_pen_3", "score": 0.87, "image": "/tmp/pen-3.png"},
+            ],
+            "candidate_count": 3,
+            "failure_count": 0,
+        }
+
+    def fake_select_image_candidates(graph, candidates, max_selected=2):
+        seen_max_selected.append(max_selected)
+        for candidate in candidates[:max_selected]:
+            graph.add_asset(
+                role=VisualArtifactRole.SELECTED_IMAGE,
+                artifact_id=candidate["artifact_id"],
+                local_path=candidate["image"],
+            )
+        return [candidate["artifact_id"] for candidate in candidates[:max_selected]]
+
+    monkeypatch.setattr(
+        visual_agent_tool,
+        "generate_image_candidates",
+        fake_generate_image_candidates,
+    )
+    monkeypatch.setattr(
+        visual_agent_tool,
+        "select_image_candidates",
+        fake_select_image_candidates,
+    )
+    monkeypatch.setattr(
+        visual_agent_tool,
+        "build_video_clips",
+        lambda mission, graph: {"success": False, "clips": []},
+    )
+
+    payload = json.loads(
+        await visual_agent_tool._handle_visual_agent_generate(
+            {
+                "prompt": "請幫我產出一張圖片和一段影片：一支霧黑鋼筆放在白紙上。",
+                "candidate_budget": 3,
+                "max_selected": 3,
+            }
+        )
+    )
+
+    assert seen_candidate_budget == [1]
+    assert seen_max_selected == [1]
+    assert payload["images"] == ["/tmp/pen-1.png"]
+
+
+@pytest.mark.asyncio
+async def test_visual_agent_generate_honors_user_explicit_internal_counts(monkeypatch):
+    from tools import visual_agent_tool
+
+    seen_candidate_budget = []
+    seen_max_selected = []
+
+    def fake_generate_image_candidates(mission, graph):
+        seen_candidate_budget.append(mission.candidate_budget)
+        return {
+            "success": True,
+            "candidates": [
+                {"artifact_id": "var_a", "score": 0.91, "image": "/tmp/a.png"},
+                {"artifact_id": "var_b", "score": 0.9, "image": "/tmp/b.png"},
+                {"artifact_id": "var_c", "score": 0.89, "image": "/tmp/c.png"},
+            ],
+            "candidate_count": 3,
+            "failure_count": 0,
+        }
+
+    def fake_select_image_candidates(graph, candidates, max_selected=2):
+        seen_max_selected.append(max_selected)
+        for candidate in candidates[:max_selected]:
+            graph.add_asset(
+                role=VisualArtifactRole.SELECTED_IMAGE,
+                artifact_id=candidate["artifact_id"],
+                local_path=candidate["image"],
+            )
+        return [candidate["artifact_id"] for candidate in candidates[:max_selected]]
+
+    monkeypatch.setattr(
+        visual_agent_tool,
+        "generate_image_candidates",
+        fake_generate_image_candidates,
+    )
+    monkeypatch.setattr(
+        visual_agent_tool,
+        "select_image_candidates",
+        fake_select_image_candidates,
+    )
+    monkeypatch.setattr(
+        visual_agent_tool,
+        "build_video_clips",
+        lambda mission, graph: {"success": False, "clips": []},
+    )
+
+    payload = json.loads(
+        await visual_agent_tool._handle_visual_agent_generate(
+            {
+                "prompt": "Create a pen package. candidate_budget=3 max_selected=2",
+                "candidate_budget": 3,
+                "max_selected": 2,
+            }
+        )
+    )
+
+    assert seen_candidate_budget == [3]
+    assert seen_max_selected == [2]
+    assert payload["images"] == ["/tmp/a.png", "/tmp/b.png"]
+
+
 def test_visual_agent_generate_tool_is_registered():
     import tools.visual_agent_tool  # noqa: F401
     from tools.registry import registry

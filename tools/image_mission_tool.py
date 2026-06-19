@@ -1174,7 +1174,11 @@ IMAGE_GENERATE_MISSION_SCHEMA = {
         "until the task budget is exhausted or a deliverable candidate passes. "
         "Use this instead of plain image_generate when the user cares about "
         "final image quality, reference fidelity, avoiding malformed anatomy, "
-        "readable text, or wants Hermes to try multiple approaches."
+        "readable text, or wants Hermes to try multiple approaches. Routing: "
+        "if the user asks for a combined visual package with image and video, "
+        "image-to-video, stills plus a short clip, or an assembled visual "
+        "result, use visual_agent_generate instead of separate image/video "
+        "tool calls. This tool is for image-only missions."
     ),
     "parameters": {
         "type": "object",

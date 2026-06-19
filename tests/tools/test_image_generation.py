@@ -391,6 +391,12 @@ class TestRegistryIntegration:
         ):
             assert required in description
 
+    def test_schema_description_defers_combined_image_video_packages(self, image_tool):
+        description = image_tool.IMAGE_GENERATE_SCHEMA["description"]
+        assert "visual_agent_generate" in description
+        assert "image and video" in description
+        assert "combined visual package" in description
+
     def test_aspect_ratio_enum_is_three_values(self, image_tool):
         enum = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]["aspect_ratio"]["enum"]
         assert set(enum) == {"landscape", "square", "portrait"}

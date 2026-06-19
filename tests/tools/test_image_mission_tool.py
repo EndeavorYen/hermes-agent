@@ -851,6 +851,9 @@ def test_image_generate_mission_tool_is_registered():
     assert "recovery state machine" in entry.schema["description"]
     assert "deterministic" in entry.schema["description"]
     assert "semantic" in entry.schema["description"]
+    assert "visual_agent_generate" in entry.schema["description"]
+    assert "image and video" in entry.schema["description"]
+    assert "combined visual package" in entry.schema["description"]
 
 
 def test_mission_requirements_need_generation_and_vision(monkeypatch):

@@ -1325,6 +1325,46 @@ class TestToolUseEnforcementConfig:
             assert TOOL_USE_ENFORCEMENT_GUIDANCE not in prompt
 
 
+class TestVisualAgentRoutingGuidance:
+    def _make_agent(self, *tools):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs(*tools)),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            a = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            a.client = MagicMock()
+            return a
+
+    def test_injects_when_visual_agent_tool_is_available(self):
+        from agent.prompt_builder import VISUAL_AGENT_ROUTING_GUIDANCE
+
+        agent = self._make_agent(
+            "image_generate_mission",
+            "video_generate",
+            "visual_agent_generate",
+        )
+
+        prompt = agent._build_system_prompt()
+
+        assert VISUAL_AGENT_ROUTING_GUIDANCE in prompt
+        assert "image and video" in prompt
+        assert "visual_agent_generate" in prompt
+
+    def test_skips_when_visual_agent_tool_is_absent(self):
+        from agent.prompt_builder import VISUAL_AGENT_ROUTING_GUIDANCE
+
+        agent = self._make_agent("image_generate_mission", "video_generate")
+
+        assert VISUAL_AGENT_ROUTING_GUIDANCE not in agent._build_system_prompt()
+
+
 class TestTaskCompletionGuidance:
     """Tests for the universal task-completion / no-fabrication guidance
     (config.yaml ``agent.task_completion_guidance``).

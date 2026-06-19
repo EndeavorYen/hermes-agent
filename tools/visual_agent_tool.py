@@ -49,16 +49,15 @@ VISUAL_AGENT_GENERATE_SCHEMA: Dict[str, Any] = {
             },
             "candidate_budget": {
                 "type": "integer",
-                "description": "Optional image candidate count override.",
+                "description": "Optional image candidate count override. Only set this when the user explicitly wrote candidate_budget=... in the prompt.",
             },
             "video_budget": {
                 "type": "integer",
-                "description": "Optional video clip count override.",
+                "description": "Optional video clip count override. Only set this when the user explicitly wrote video_budget=... in the prompt.",
             },
             "max_selected": {
                 "type": "integer",
-                "description": "Maximum selected image artifacts to include.",
-                "default": 2,
+                "description": "Optional maximum selected image artifacts to include. Only set this when the user explicitly wrote max_selected=... in the prompt; otherwise omit to select the number of images requested by the user.",
             },
         },
         "required": ["prompt"],
@@ -91,7 +90,7 @@ async def _handle_visual_agent_generate(args: Dict[str, Any], **_kw: Any) -> str
         select_image_candidates(
             graph,
             image_result.get("candidates") or [],
-            max_selected=_coerce_positive_int(args.get("max_selected"), default=2),
+            max_selected=_max_selected_from_args(args, prompt, mission),
         )
 
     video_result: Dict[str, Any] = {"success": False, "clips": [], "failures": []}
@@ -196,11 +195,41 @@ def _mission_from_args(args: Dict[str, Any], prompt: str) -> VisualMission:
         autonomy_level=_coerce_int(args.get("autonomy_level"), default=2),
     )
     replacements: Dict[str, Any] = {}
-    if _coerce_positive_int(args.get("candidate_budget")) is not None:
+    if (
+        _internal_param_explicit(prompt, "candidate_budget")
+        and _coerce_positive_int(args.get("candidate_budget")) is not None
+    ):
         replacements["candidate_budget"] = _coerce_positive_int(args.get("candidate_budget"))
-    if _coerce_positive_int(args.get("video_budget")) is not None:
+    if (
+        _internal_param_explicit(prompt, "video_budget")
+        and _coerce_positive_int(args.get("video_budget")) is not None
+    ):
         replacements["video_budget"] = _coerce_positive_int(args.get("video_budget"))
     return replace(mission, **replacements) if replacements else mission
+
+
+def _max_selected_from_args(
+    args: Dict[str, Any],
+    prompt: str,
+    mission: VisualMission,
+) -> int:
+    explicit = (
+        _coerce_positive_int(args.get("max_selected"))
+        if _internal_param_explicit(prompt, "max_selected")
+        else None
+    )
+    if explicit is not None:
+        return explicit
+    planned = plan_visual_mission(
+        prompt,
+        attachments=list(args.get("attachments") or []),
+        autonomy_level=mission.autonomy_level,
+    )
+    return max(1, int(planned.candidate_budget or 1))
+
+
+def _internal_param_explicit(prompt: str, name: str) -> bool:
+    return bool(re.search(rf"\b{re.escape(name.lower())}\s*=", (prompt or "").lower()))
 
 
 async def _maybe_await(value: Any) -> Any:

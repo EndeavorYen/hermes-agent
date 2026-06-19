@@ -304,6 +304,20 @@ TASK_COMPLETION_GUIDANCE = (
     "is always better than inventing a result."
 )
 
+VISUAL_AGENT_ROUTING_GUIDANCE = (
+    "# Visual agent routing\n"
+    "When the user asks for a combined visual package that includes image and "
+    "video, still images plus a short clip, image-to-video from a newly "
+    "generated still, or an assembled visual result, call "
+    "`visual_agent_generate` exactly once and let it plan, generate, select, "
+    "animate, and package the result. The user does not need to mention "
+    "`visual agent mode`, `autonomy_level`, `candidate_budget`, or "
+    "`video_budget`; infer sensible defaults from ordinary language. Use "
+    "`image_generate` or `image_generate_mission` for image-only requests, "
+    "and use `video_generate` for video-only requests or when the user "
+    "explicitly asks to animate an already-selected existing image."
+)
+
 # OpenAI GPT/Codex-specific execution guidance.  Addresses known failure modes
 # where GPT models abandon work on partial results, skip prerequisite lookups,
 # hallucinate instead of using tools, and declare "done" without verification.

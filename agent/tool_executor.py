@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import random
+import re
 import threading
 import time
 from typing import Any, Optional
@@ -177,6 +178,115 @@ def _tool_search_scoped_names(agent) -> frozenset:
     return names
 
 
+_VISUAL_PACKAGE_DIRECT_TOOL_NAMES = frozenset({
+    "image_generate",
+    "image_generate_mission",
+    "video_generate",
+})
+
+
+def _message_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                if item.get("type") == "text" and isinstance(item.get("text"), str):
+                    parts.append(item["text"])
+                elif isinstance(item.get("content"), str):
+                    parts.append(item["content"])
+        return "\n".join(parts)
+    if isinstance(content, dict):
+        for key in ("text", "content"):
+            value = content.get(key)
+            if isinstance(value, str):
+                return value
+    return ""
+
+
+def _latest_user_text(messages: list[dict[str, Any]]) -> str:
+    for msg in reversed(messages or []):
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        text = _message_text(msg.get("content")).strip()
+        if text:
+            return text
+    return ""
+
+
+def _looks_like_combined_visual_package_request(text: str) -> bool:
+    lower = (text or "").lower()
+    if not lower:
+        return False
+
+    image_terms = (
+        "image", "photo", "picture", "still", "圖片", "图片", "照片",
+        "相片", "圖", "图", "產圖", "产图", "出圖", "出图",
+    )
+    video_terms = (
+        "video", "clip", "animation", "movie", "影片", "視頻",
+        "视频", "短片", "動畫", "动画", "動圖", "动图",
+    )
+    if not any(term in lower for term in image_terms):
+        return False
+    if not any(term in lower for term in video_terms):
+        return False
+
+    existing_image_only_patterns = (
+        r"第一張.*(?:影片|視頻|视频|短片|動畫|动画)",
+        r"第[一二兩两三四五六七八九十0-9]+張.*(?:影片|視頻|视频|短片|動畫|动画)",
+        r"(?:這張|这张|那張|那张|上一張|上一张|最新|latest|first|selected|this)\s*"
+        r"(?:image|photo|picture|still|圖片|图片|照片|圖|图).*(?:video|clip|影片|視頻|视频|短片)",
+    )
+    if any(re.search(pattern, lower) for pattern in existing_image_only_patterns):
+        return False
+
+    combined_patterns = (
+        r"(?:image|photo|picture|still).{0,40}(?:and|plus|with|&|\+).{0,40}(?:video|clip|animation)",
+        r"(?:generate|create|make|produce).{0,80}(?:image|photo|picture|still).{0,80}(?:video|clip|animation)",
+        r"(?:圖片|图片|照片|相片|圖|图).{0,30}(?:和|及|與|与|\+|、).{0,30}(?:影片|視頻|视频|短片|動畫|动画)",
+        r"(?:產出|产出|生成|製作|制作|做|畫|画).{0,80}(?:圖片|图片|照片|相片|圖|图).{0,80}(?:影片|視頻|视频|短片|動畫|动画)",
+        r"(?:image-to-video|圖生影片|图生视频|圖轉影片|图转视频).{0,80}(?:new|generated|新|新產生|新生成)",
+    )
+    return any(re.search(pattern, lower) for pattern in combined_patterns)
+
+
+def _visual_package_route_guard_result(
+    function_name: str,
+    function_args: dict[str, Any],
+    messages: list[dict[str, Any]],
+    valid_tool_names: set[str] | frozenset[str],
+) -> Optional[str]:
+    if function_name not in _VISUAL_PACKAGE_DIRECT_TOOL_NAMES:
+        return None
+    if "visual_agent_generate" not in set(valid_tool_names or set()):
+        return None
+    user_text = _latest_user_text(messages)
+    if not _looks_like_combined_visual_package_request(user_text):
+        return None
+    return json.dumps(
+        {
+            "success": False,
+            "error_type": "wrong_visual_route",
+            "error": (
+                "The user asked for a combined image and video visual package. "
+                "Do not call image_generate, image_generate_mission, or "
+                "video_generate directly for this request. Retry by calling "
+                "visual_agent_generate exactly once with the user's original "
+                "prompt; omit internal parameters unless the user explicitly "
+                "provided them."
+            ),
+            "retry_with_tool": "visual_agent_generate",
+            "original_user_prompt": user_text,
+            "blocked_tool": function_name,
+        },
+        ensure_ascii=False,
+    )
+
+
 def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
     """Execute multiple tool calls concurrently using a thread pool.
 
@@ -255,7 +365,26 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # checkpoint state (dedup slot, real snapshots).
         block_result = None
         blocked_by_guardrail = False
-        if _ts_scope_block is not None:
+        route_block_result = _visual_package_route_guard_result(
+            function_name,
+            function_args,
+            messages,
+            set(getattr(agent, "valid_tool_names", set()) or set()),
+        )
+        if route_block_result is not None:
+            block_result = route_block_result
+            _emit_terminal_post_tool_call(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                result=block_result,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                status="blocked",
+                error_type="wrong_visual_route",
+                error_message="Use visual_agent_generate for combined image/video visual packages.",
+            )
+        elif _ts_scope_block is not None:
             # Out-of-scope tool_call: reject before hooks/guardrails/dispatch.
             block_result = _ts_scope_block
             _emit_terminal_post_tool_call(
@@ -741,7 +870,15 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Check plugin hooks for a block directive before executing.
         _block_msg: Optional[str] = None
         _block_error_type = "plugin_block"
-        if _ts_scope_block is not None:
+        _route_block_result = _visual_package_route_guard_result(
+            function_name,
+            function_args,
+            messages,
+            set(getattr(agent, "valid_tool_names", set()) or set()),
+        )
+        if _route_block_result is not None:
+            _block_error_type = "wrong_visual_route"
+        elif _ts_scope_block is not None:
             _block_msg = _ts_scope_block
             _block_error_type = "tool_scope_block"
         else:
@@ -760,12 +897,16 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 pass
 
         _guardrail_block_decision: ToolGuardrailDecision | None = None
-        if _block_msg is None:
+        if _route_block_result is None and _block_msg is None:
             guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
             if not guardrail_decision.allows_execution:
                 _guardrail_block_decision = guardrail_decision
 
-        _execution_blocked = _block_msg is not None or _guardrail_block_decision is not None
+        _execution_blocked = (
+            _route_block_result is not None
+            or _block_msg is not None
+            or _guardrail_block_decision is not None
+        )
 
         if _execution_blocked:
             # Tool blocked by plugin or guardrail policy — skip counters,
@@ -839,7 +980,21 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         tool_start_time = time.time()
 
-        if _block_msg is not None:
+        if _route_block_result is not None:
+            function_result = _route_block_result
+            tool_duration = 0.0
+            _emit_terminal_post_tool_call(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                result=function_result,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                status="blocked",
+                error_type="wrong_visual_route",
+                error_message="Use visual_agent_generate for combined image/video visual packages.",
+            )
+        elif _block_msg is not None:
             # Tool blocked by plugin policy — return error without executing.
             function_result = json.dumps({"error": _block_msg}, ensure_ascii=False)
             tool_duration = 0.0
