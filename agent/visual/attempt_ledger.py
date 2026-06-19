@@ -6,6 +6,7 @@ import json
 import sqlite3
 from pathlib import Path
 from typing import Any, Dict, Optional
+from urllib.parse import unquote, urlparse
 
 from agent.visual.ids import (
     new_artifact_id,
@@ -526,6 +527,71 @@ class VisualAttemptLedger:
             parsed=payload["parsed"],
         )
 
+    def build_delivery_metadata_for_urls(
+        self,
+        urls: list[str],
+    ) -> Optional[Dict[str, Any]]:
+        """Build visual delivery metadata for a batch of media URLs.
+
+        When a rendered response accidentally contains current and older
+        artifacts, the latest request represented in the batch is treated as
+        the current request. Older artifacts remain mapped so the delivery gate
+        can record them as skipped instead of silently posting them.
+        """
+        matches = []
+        visual_artifacts: Dict[str, Dict[str, str]] = {}
+        for url in urls:
+            artifact = self.find_latest_artifact_for_delivery_url(url)
+            if artifact is None:
+                continue
+            artifact_meta = {
+                "artifact_id": artifact["artifact_id"],
+                "attempt_id": artifact["attempt_id"],
+                "content_hash": artifact.get("content_hash"),
+            }
+            visual_artifacts[str(url)] = artifact_meta
+            matches.append(artifact)
+
+        if not matches:
+            return None
+
+        current_request_id = max(
+            matches,
+            key=lambda row: str(row.get("created_at") or ""),
+        )["request_id"]
+        selected_ids = [
+            row["artifact_id"]
+            for row in matches
+            if row["request_id"] == current_request_id
+        ]
+        return {
+            "visual_request_id": current_request_id,
+            "selected_visual_artifact_ids": selected_ids,
+            "visual_artifacts": visual_artifacts,
+        }
+
+    def find_latest_artifact_for_delivery_url(
+        self,
+        url: str,
+    ) -> Optional[Dict[str, Any]]:
+        candidates = _delivery_url_candidates(url)
+        if not candidates:
+            return None
+        placeholders = ",".join("?" for _ in candidates)
+        with self._connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT *
+                  FROM visual_artifacts
+                 WHERE local_path IN ({placeholders})
+                    OR source_url IN ({placeholders})
+                 ORDER BY created_at DESC, artifact_id DESC
+                 LIMIT 1
+                """,
+                tuple(candidates) + tuple(candidates),
+            ).fetchone()
+        return _decode_row(row) if row is not None else None
+
     def update_request_status(self, request_id: str, status: str) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -614,3 +680,20 @@ def _feedback_payload(parsed_feedback: Any) -> Dict[str, Any]:
         "raw_text": getattr(parsed_feedback, "raw_text", None),
         "parsed": getattr(parsed_feedback, "parsed", {}),
     }
+
+
+def _delivery_url_candidates(url: str) -> list[str]:
+    text = str(url or "").strip()
+    if not text:
+        return []
+    candidates = [text]
+    if text.lower().startswith("file://"):
+        parsed = urlparse(text)
+        local_path = unquote(parsed.path)
+        if local_path:
+            candidates.append(local_path)
+            try:
+                candidates.append(Path(local_path).as_posix())
+            except TypeError:
+                pass
+    return list(dict.fromkeys(candidates))

@@ -2911,6 +2911,33 @@ class BasePlatformAdapter(ABC):
             return None
         return metadata
 
+    def _with_visual_delivery_metadata(
+        self,
+        metadata: Optional[Dict[str, Any]],
+        image_urls: List[str],
+    ) -> Optional[Dict[str, Any]]:
+        if self._visual_delivery_metadata(metadata) is not None:
+            return metadata
+        try:
+            from agent.visual.attempt_ledger import VisualAttemptLedger
+            from agent.visual.tracking import default_visual_ledger_path
+
+            ledger = VisualAttemptLedger(default_visual_ledger_path())
+            visual_metadata = ledger.build_delivery_metadata_for_urls(image_urls)
+        except Exception as exc:  # noqa: BLE001 - delivery must stay best-effort
+            logger.debug(
+                "[%s] Visual delivery metadata lookup skipped: %s",
+                self.name,
+                exc,
+                exc_info=True,
+            )
+            return metadata
+        if not visual_metadata:
+            return metadata
+        merged = dict(metadata or {})
+        merged.update(visual_metadata)
+        return merged
+
     @staticmethod
     def _visual_selected_artifact_ids(metadata: Dict[str, Any]) -> set[str]:
         raw_selected = metadata.get("selected_visual_artifact_ids") or []
@@ -2977,6 +3004,10 @@ class BasePlatformAdapter(ABC):
         """
         from urllib.parse import unquote as _unquote
 
+        metadata = self._with_visual_delivery_metadata(
+            metadata,
+            [image_url for image_url, _ in images],
+        )
         thread_id = (metadata or {}).get("thread_id") if isinstance(metadata, dict) else None
         visual_seen_hashes: set[Tuple[str, str, str]] = set()
         for image_url, alt_text in images:

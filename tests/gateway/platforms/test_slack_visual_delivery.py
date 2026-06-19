@@ -160,6 +160,53 @@ def test_slack_skips_duplicate_visual_artifact_hash(adapter, tmp_path):
     }
 
 
+def test_slack_auto_builds_visual_metadata_from_ledger_when_missing(adapter, tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+
+    old = _write_image(tmp_path / "old.png")
+    new = _write_image(tmp_path / "new.png")
+    ledger = VisualAttemptLedger(default_visual_ledger_path())
+    ledger.initialize()
+    _record_artifact_fixture(
+        ledger,
+        request_id="vrq_old",
+        attempt_id="vat_old",
+        artifact_id="var_old",
+        local_path=str(old),
+        content_hash="sha256:old",
+        created_at="2026-06-19T01:00:00Z",
+    )
+    _record_artifact_fixture(
+        ledger,
+        request_id="vrq_new",
+        attempt_id="vat_new",
+        artifact_id="var_new",
+        local_path=str(new),
+        content_hash="sha256:new",
+        created_at="2026-06-19T02:00:00Z",
+    )
+
+    _run(
+        adapter.send_multiple_images(
+            "C12345",
+            [(old.as_uri(), "old"), (new.as_uri(), "new")],
+            metadata={"thread_id": "171000.0001"},
+        )
+    )
+
+    client = adapter._get_client("C12345")
+    client.files_upload_v2.assert_awaited_once()
+    kwargs = client.files_upload_v2.await_args.kwargs
+    assert [upload["filename"] for upload in kwargs["file_uploads"]] == ["new.png"]
+
+    rows = _delivery_rows(tmp_path)
+    assert {(row["artifact_id"], row["delivery_status"]) for row in rows} == {
+        ("var_old", "skipped_stale"),
+        ("var_new", "sent"),
+    }
+
+
 def _write_image(path: Path) -> Path:
     path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
     return path
@@ -193,3 +240,46 @@ def _delivery_rows(tmp_path):
                 """
             ).fetchall()
         ]
+
+
+def _record_artifact_fixture(
+    ledger,
+    *,
+    request_id: str,
+    attempt_id: str,
+    artifact_id: str,
+    local_path: str,
+    content_hash: str,
+    created_at: str,
+) -> None:
+    ledger.record_request(
+        request_id=request_id,
+        user_prompt="fashion editorial portrait",
+        normalized_intent={"modality": "image"},
+        modality="image",
+        operation="text_to_image",
+        created_at=created_at,
+    )
+    ledger.record_attempt(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        candidate_index=0,
+        provider="fake",
+        model="fake-image",
+        prompt_original="fashion editorial portrait",
+        prompt_mediated="fashion editorial portrait",
+        created_at=created_at,
+    )
+    ledger.record_artifact(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        artifact_id=artifact_id,
+        kind="image",
+        local_path=local_path,
+        content_hash=content_hash,
+        mime_type="image/png",
+        bytes=10,
+        is_stable=True,
+        freshness_status="fresh",
+        created_at=created_at,
+    )

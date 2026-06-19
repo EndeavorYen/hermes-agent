@@ -134,3 +134,83 @@ def test_records_feedback_against_delivered_artifact(tmp_path):
     assert feedback["platform"] == "slack"
     assert feedback["raw_text"] == "第二張不錯，保留這個方向"
     assert feedback["parsed"]["selection_hint"] == 2
+
+
+def test_builds_delivery_metadata_for_latest_request_artifacts(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+    old_request = _record_artifact_fixture(
+        ledger,
+        request_id="vrq_old",
+        attempt_id="vat_old",
+        artifact_id="var_old",
+        local_path="/tmp/old.png",
+        content_hash="sha256:old",
+        created_at="2026-06-19T01:00:00Z",
+    )
+    new_request = _record_artifact_fixture(
+        ledger,
+        request_id="vrq_new",
+        attempt_id="vat_new",
+        artifact_id="var_new",
+        local_path="/tmp/new.png",
+        content_hash="sha256:new",
+        created_at="2026-06-19T02:00:00Z",
+    )
+
+    metadata = ledger.build_delivery_metadata_for_urls(
+        ["file:///tmp/old.png", "file:///tmp/new.png"]
+    )
+
+    assert old_request == "vrq_old"
+    assert new_request == "vrq_new"
+    assert metadata["visual_request_id"] == "vrq_new"
+    assert metadata["selected_visual_artifact_ids"] == ["var_new"]
+    assert metadata["visual_artifacts"]["file:///tmp/old.png"]["artifact_id"] == "var_old"
+    assert metadata["visual_artifacts"]["file:///tmp/new.png"]["artifact_id"] == "var_new"
+
+
+def _record_artifact_fixture(
+    ledger,
+    *,
+    request_id: str,
+    attempt_id: str,
+    artifact_id: str,
+    local_path: str,
+    content_hash: str,
+    created_at: str,
+) -> str:
+    ledger.record_request(
+        request_id=request_id,
+        user_prompt="fashion editorial portrait",
+        normalized_intent={"modality": "image"},
+        modality="image",
+        operation="text_to_image",
+        created_at=created_at,
+    )
+    ledger.record_attempt(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        candidate_index=0,
+        provider="fake",
+        model="fake-image",
+        prompt_original="fashion editorial portrait",
+        prompt_mediated="fashion editorial portrait",
+        created_at=created_at,
+    )
+    ledger.record_artifact(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        artifact_id=artifact_id,
+        kind="image",
+        local_path=local_path,
+        content_hash=content_hash,
+        mime_type="image/png",
+        bytes=10,
+        is_stable=True,
+        freshness_status="fresh",
+        created_at=created_at,
+    )
+    return request_id

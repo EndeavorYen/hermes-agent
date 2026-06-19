@@ -1385,6 +1385,10 @@ class SlackAdapter(BasePlatformAdapter):
             await super().send_multiple_images(chat_id, images, metadata, human_delay)
             return
 
+        metadata = self._with_visual_delivery_metadata(
+            metadata,
+            [image_url for image_url, _ in images],
+        )
         thread_ts = self._resolve_thread_ts(None, metadata)
 
         CHUNK = 10
