@@ -68,6 +68,10 @@ the final proof.
   in `delivery_metadata`, so a package can be traced from selected artifacts
   back to source request/attempt IDs and the rank/score that chose the image
   before Slack delivery.
+- Feedback attribution follow-up groups recent selected package deliveries that
+  have no shared platform `message_id`, so image/video packages posted as
+  separate Slack messages can still receive per-artifact feedback such as
+  `第 1 張... 第 2 張...`.
 
 User-facing trigger contract:
 

@@ -164,6 +164,10 @@ Done:
   `selection_summary`, and image `ranking_decisions` so selected image/video
   artifacts can be traced back to source request IDs, attempt IDs, and the
   rank/score that chose the image for video generation.
+- Feedback attribution can group recent selected image/video package deliveries
+  even when the platform posts them as separate messages without a shared
+  message ID, so `第 1 張` / `第 2 張` style feedback maps back to the right
+  artifacts.
 - Gateway tests cover auto-appending only selected current package artifacts and skipping historical package media.
 - Natural image-plus-video requests route to Visual Agent Mode without requiring users to mention internal controls such as `visual_agent_generate`, `autonomy_level`, `candidate_budget`, or provider names.
 - Tracked visual fixtures and ignore rules have been tightened so runtime media, local model endpoints, and user-specific prompt/preference examples stay out of the repo.

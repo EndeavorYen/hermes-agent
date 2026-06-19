@@ -34,6 +34,7 @@ _JSON_COLUMNS = {
 }
 
 _BOOL_COLUMNS = {"is_stable"}
+_FEEDBACK_BATCH_WINDOW_SECONDS = 30.0
 
 
 class VisualAttemptLedger:
@@ -651,8 +652,23 @@ class VisualAttemptLedger:
             query += " AND message_id = ?"
             params.append(message_id)
         else:
-            query += " AND delivery_id = ?"
-            params.append(latest["delivery_id"])
+            delivered_at = str(latest.get("delivered_at") or "").strip()
+            if delivered_at:
+                query += """
+                   AND delivered_at IS NOT NULL
+                   AND julianday(delivered_at) >= julianday(?) - (? / 86400.0)
+                   AND julianday(delivered_at) <= julianday(?)
+                """
+                params.extend(
+                    [
+                        delivered_at,
+                        _FEEDBACK_BATCH_WINDOW_SECONDS,
+                        delivered_at,
+                    ]
+                )
+            else:
+                query += " AND delivery_id = ?"
+                params.append(latest["delivery_id"])
 
         query += " ORDER BY _rowid"
         with self._connect() as conn:

@@ -229,6 +229,79 @@ def test_finds_latest_sent_delivery_for_feedback(tmp_path):
     assert delivery["artifact_id"] == "var_new"
 
 
+def test_latest_feedback_batch_groups_recent_package_deliveries_without_message_id(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+    _record_artifact_fixture(
+        ledger,
+        request_id="vrq_old",
+        attempt_id="vat_old",
+        artifact_id="var_old",
+        local_path="/tmp/old.png",
+        content_hash="sha256:old",
+        created_at="2026-06-19T02:00:00Z",
+    )
+    ledger.record_delivery(
+        request_id="vrq_old",
+        attempt_id="vat_old",
+        artifact_id="var_old",
+        platform="slack",
+        destination_id="C123",
+        thread_id="T1",
+        delivery_status="sent",
+        delivered_at="2026-06-19T02:00:00Z",
+    )
+    _record_artifact_fixture(
+        ledger,
+        request_id="vrq_image",
+        attempt_id="vat_image",
+        artifact_id="var_image",
+        local_path="/tmp/image.png",
+        content_hash="sha256:image",
+        created_at="2026-06-19T02:05:00Z",
+    )
+    ledger.record_delivery(
+        request_id="vrq_image",
+        attempt_id="vat_image",
+        artifact_id="var_image",
+        platform="slack",
+        destination_id="C123",
+        thread_id="T1",
+        delivery_status="sent",
+        delivered_at="2026-06-19T02:05:00Z",
+    )
+    _record_artifact_fixture(
+        ledger,
+        request_id="vrq_video",
+        attempt_id="vat_video",
+        artifact_id="var_video",
+        local_path="/tmp/video.mp4",
+        content_hash="sha256:video",
+        created_at="2026-06-19T02:05:04Z",
+        kind="video",
+    )
+    ledger.record_delivery(
+        request_id="vrq_video",
+        attempt_id="vat_video",
+        artifact_id="var_video",
+        platform="slack",
+        destination_id="C123",
+        thread_id="T1",
+        delivery_status="sent",
+        delivered_at="2026-06-19T02:05:04Z",
+    )
+
+    batch = ledger.find_latest_delivery_batch_for_feedback(
+        platform="slack",
+        destination_id="C123",
+        thread_id="T1",
+    )
+
+    assert [row["artifact_id"] for row in batch] == ["var_image", "var_video"]
+
+
 def _record_artifact_fixture(
     ledger,
     *,
@@ -238,13 +311,14 @@ def _record_artifact_fixture(
     local_path: str,
     content_hash: str,
     created_at: str,
+    kind: str = "image",
 ) -> str:
     ledger.record_request(
         request_id=request_id,
         user_prompt="fashion editorial portrait",
-        normalized_intent={"modality": "image"},
-        modality="image",
-        operation="text_to_image",
+        normalized_intent={"modality": kind},
+        modality=kind,
+        operation="image_to_video" if kind == "video" else "text_to_image",
         created_at=created_at,
     )
     ledger.record_attempt(
@@ -261,10 +335,10 @@ def _record_artifact_fixture(
         request_id=request_id,
         attempt_id=attempt_id,
         artifact_id=artifact_id,
-        kind="image",
+        kind=kind,
         local_path=local_path,
         content_hash=content_hash,
-        mime_type="image/png",
+        mime_type="video/mp4" if kind == "video" else "image/png",
         bytes=10,
         is_stable=True,
         freshness_status="fresh",

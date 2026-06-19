@@ -525,6 +525,61 @@ class TestVisualFeedbackCapture:
         assert len(rows) == 1
         assert rows[0]["artifact_id"] == "var_2"
 
+    def test_records_feedback_for_recent_package_deliveries_without_message_id(self, tmp_path, monkeypatch):
+        from agent.visual.attempt_ledger import VisualAttemptLedger
+        from agent.visual.tracking import default_visual_ledger_path
+        from gateway.config import Platform
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        ledger = VisualAttemptLedger(default_visual_ledger_path())
+        ledger.initialize()
+        _record_visual_delivery_fixture(
+            ledger,
+            request_id="vrq_image",
+            attempt_id="vat_image",
+            artifact_id="var_image",
+            platform="slack",
+            destination_id="C123",
+            thread_id="171000.0001",
+            delivered_at="2026-06-19T02:05:00Z",
+        )
+        _record_visual_delivery_fixture(
+            ledger,
+            request_id="vrq_video",
+            attempt_id="vat_video",
+            artifact_id="var_video",
+            platform="slack",
+            destination_id="C123",
+            thread_id="171000.0001",
+            delivered_at="2026-06-19T02:05:04Z",
+        )
+        adapter = _stub_adapter(platform=Platform.SLACK)
+        event = MessageEvent(
+            text="第 1 張產品圖不錯，保留\n第 2 張影片動作更好，加分",
+            message_type=MessageType.TEXT,
+            source=SessionSource(
+                platform=Platform.SLACK,
+                chat_id="C123",
+                thread_id="171000.0001",
+            ),
+        )
+
+        recorded = adapter._record_inbound_visual_feedback(event)
+
+        assert recorded is True
+        with ledger._connect() as conn:
+            rows = [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM visual_feedback ORDER BY rowid"
+                ).fetchall()
+            ]
+        assert [row["artifact_id"] for row in rows] == ["var_image", "var_video"]
+        assert [json.loads(row["parsed_json"])["selection_hint"] for row in rows] == [
+            1,
+            2,
+        ]
+
     def test_ignores_plain_text_without_visual_feedback_signal(self, tmp_path, monkeypatch):
         from agent.visual.attempt_ledger import VisualAttemptLedger
         from agent.visual.tracking import default_visual_ledger_path
