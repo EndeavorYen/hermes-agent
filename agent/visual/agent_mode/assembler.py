@@ -16,10 +16,12 @@ def assemble_visual_package(
     mission: VisualMission,
     graph: VisualAssetGraph,
 ) -> VisualMissionResult:
+    asset_graph = graph.to_dict()
     image_assets = _assets_by_role(graph, VisualArtifactRole.SELECTED_IMAGE)
     video_assets = _assets_by_role(graph, VisualArtifactRole.GENERATED_VIDEO)
     image_ids = _artifact_ids(image_assets)
     video_ids = _artifact_ids(video_assets)
+    selection_summary = _selection_summary(image_assets, video_assets)
 
     if not image_ids and not video_ids:
         return VisualMissionResult(
@@ -31,6 +33,8 @@ def assemble_visual_package(
                 "visual_mission_id": mission.mission_id,
                 "selected_visual_artifact_ids": [],
                 "visual_artifacts": {},
+                "asset_graph": asset_graph,
+                "selection_summary": selection_summary,
             },
             summary="No selected visual artifacts are ready for delivery.",
             stop_reason="no_selected_artifacts",
@@ -48,6 +52,8 @@ def assemble_visual_package(
                 mission,
                 image_assets + video_assets,
             ),
+            "asset_graph": asset_graph,
+            "selection_summary": selection_summary,
         },
         summary=f"Prepared {_count_phrase(len(image_ids), 'image')} and {_count_phrase(len(video_ids), 'video')}.",
     )
@@ -68,6 +74,24 @@ def _artifact_ids(assets: List[Dict[str, Any]]) -> List[str]:
     return [asset["artifact_id"] for asset in assets]
 
 
+def _selection_summary(
+    image_assets: List[Dict[str, Any]],
+    video_assets: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    selected_image_ids = _artifact_ids(image_assets)
+    selected_video_ids = _artifact_ids(video_assets)
+    selected_assets = image_assets + video_assets
+    return {
+        "selected_image_count": len(selected_image_ids),
+        "selected_video_count": len(selected_video_ids),
+        "selected_image_artifact_ids": selected_image_ids,
+        "selected_video_artifact_ids": selected_video_ids,
+        "selected_visual_artifact_ids": selected_image_ids + selected_video_ids,
+        "source_request_ids": _unique_metadata_values(selected_assets, "request_id"),
+        "source_attempt_ids": _unique_metadata_values(selected_assets, "attempt_id"),
+    }
+
+
 def _visual_artifact_metadata(
     mission: VisualMission,
     assets: List[Dict[str, Any]],
@@ -85,6 +109,21 @@ def _visual_artifact_metadata(
             "content_hash": metadata.get("content_hash") or "",
         }
     return visual_artifacts
+
+
+def _unique_metadata_values(assets: List[Dict[str, Any]], key: str) -> List[str]:
+    values: List[str] = []
+    seen: set[str] = set()
+    for asset in assets:
+        metadata = asset.get("metadata") or {}
+        value = metadata.get(key)
+        if not value:
+            continue
+        text = str(value)
+        if text not in seen:
+            values.append(text)
+            seen.add(text)
+    return values
 
 
 def _count_phrase(count: int, noun: str) -> str:

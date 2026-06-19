@@ -160,6 +160,9 @@ Done:
 - Image package prompts are split so the image stage receives a standalone still-image brief instead of a combined image/video delivery instruction.
 - xAI video generation can be called safely from async Hermes tool handlers.
 - Selected image and video artifact IDs join back to `visual_artifacts`.
+- Package delivery metadata includes the mission `asset_graph` and a compact
+  `selection_summary` so selected image/video artifacts can be traced back to
+  source request and attempt IDs.
 - Gateway tests cover auto-appending only selected current package artifacts and skipping historical package media.
 - Natural image-plus-video requests route to Visual Agent Mode without requiring users to mention internal controls such as `visual_agent_generate`, `autonomy_level`, `candidate_budget`, or provider names.
 - Tracked visual fixtures and ignore rules have been tightened so runtime media, local model endpoints, and user-specific prompt/preference examples stay out of the repo.

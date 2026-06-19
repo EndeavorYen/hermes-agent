@@ -63,6 +63,10 @@ Current live run result after `2026-06-20T00:00:00Z`: `success: false`,
 `missing: ["no_sent_deliveries"]`. This means the verifier and ledger join logic
 are in place, but a fresh Slack-originated natural prompt is still needed for
 the final proof.
+- Self-evaluation follow-up strengthened package evidence: `assemble_visual_package`
+  now includes `asset_graph` and `selection_summary` in `delivery_metadata`, so
+  a package can be traced from selected artifacts back to source request and
+  attempt IDs before Slack delivery.
 
 User-facing trigger contract:
 

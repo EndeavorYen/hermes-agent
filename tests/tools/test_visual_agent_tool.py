@@ -78,6 +78,11 @@ async def test_visual_agent_generate_runs_image_video_package(monkeypatch):
         "var_image",
         "var_video",
     ]
+    assert payload["delivery_metadata"]["asset_graph"]["mission_id"] == payload["mission_id"]
+    assert payload["delivery_metadata"]["selection_summary"]["selected_visual_artifact_ids"] == [
+        "var_image",
+        "var_video",
+    ]
 
 
 @pytest.mark.asyncio
