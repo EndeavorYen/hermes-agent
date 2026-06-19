@@ -7,8 +7,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import MessageEvent
 from gateway.platforms.slack import SlackAdapter
+from gateway.session import SessionSource
 
 
 def _run(coro):
@@ -160,7 +162,7 @@ def test_slack_skips_duplicate_visual_artifact_hash(adapter, tmp_path):
     }
 
 
-def test_slack_auto_builds_visual_metadata_from_ledger_when_missing(adapter, tmp_path):
+def test_slack_auto_builds_visual_metadata_for_all_batch_artifacts_when_missing(adapter, tmp_path):
     from agent.visual.attempt_ledger import VisualAttemptLedger
     from agent.visual.tracking import default_visual_ledger_path
 
@@ -198,13 +200,123 @@ def test_slack_auto_builds_visual_metadata_from_ledger_when_missing(adapter, tmp
     client = adapter._get_client("C12345")
     client.files_upload_v2.assert_awaited_once()
     kwargs = client.files_upload_v2.await_args.kwargs
-    assert [upload["filename"] for upload in kwargs["file_uploads"]] == ["new.png"]
+    assert [upload["filename"] for upload in kwargs["file_uploads"]] == [
+        "old.png",
+        "new.png",
+    ]
 
     rows = _delivery_rows(tmp_path)
-    assert {(row["artifact_id"], row["delivery_status"]) for row in rows} == {
-        ("var_old", "skipped_stale"),
+    assert [(row["artifact_id"], row["delivery_status"]) for row in rows] == [
+        ("var_old", "sent"),
         ("var_new", "sent"),
-    }
+    ]
+
+
+def test_slack_delivers_all_fresh_artifacts_in_same_response_batch(adapter, tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+
+    ledger = VisualAttemptLedger(default_visual_ledger_path())
+    ledger.initialize()
+    batch = []
+    for idx in range(1, 5):
+        image = _write_image(tmp_path / f"fresh_{idx}.png")
+        artifact_id = f"var_fresh_{idx}"
+        _record_artifact_fixture(
+            ledger,
+            request_id=f"vrq_fresh_{idx}",
+            attempt_id=f"vat_fresh_{idx}",
+            artifact_id=artifact_id,
+            local_path=str(image),
+            content_hash=f"sha256:fresh-{idx}",
+            created_at=f"2026-06-19T02:00:0{idx}Z",
+        )
+        batch.append((image.as_uri(), f"fresh {idx}"))
+
+    _run(
+        adapter.send_multiple_images(
+            "C12345",
+            batch,
+            metadata={"thread_id": "171000.0001"},
+        )
+    )
+
+    client = adapter._get_client("C12345")
+    client.files_upload_v2.assert_awaited_once()
+    kwargs = client.files_upload_v2.await_args.kwargs
+    assert [upload["filename"] for upload in kwargs["file_uploads"]] == [
+        "fresh_1.png",
+        "fresh_2.png",
+        "fresh_3.png",
+        "fresh_4.png",
+    ]
+
+    rows = _delivery_rows(tmp_path)
+    assert [(row["artifact_id"], row["delivery_status"]) for row in rows] == [
+        ("var_fresh_1", "sent"),
+        ("var_fresh_2", "sent"),
+        ("var_fresh_3", "sent"),
+        ("var_fresh_4", "sent"),
+    ]
+
+
+def test_slack_records_delivery_when_local_image_is_public_exported(adapter, tmp_path, monkeypatch):
+    import gateway.platforms.base as base_mod
+    import gateway.platforms.slack as slack_mod
+
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+
+    source = _write_image(tmp_path / "source.png")
+    exported = _write_image(tmp_path / "public.png")
+    ledger = VisualAttemptLedger(default_visual_ledger_path())
+    ledger.initialize()
+    _record_artifact_fixture(
+        ledger,
+        request_id="vrq_current",
+        attempt_id="vat_current",
+        artifact_id="var_current",
+        local_path=str(source),
+        content_hash="sha256:current",
+        created_at="2026-06-19T02:00:00Z",
+    )
+    monkeypatch.setattr(
+        base_mod,
+        "public_export_media_path",
+        lambda path: str(exported) if path == str(source) else path,
+    )
+    monkeypatch.setattr(
+        slack_mod,
+        "public_export_media_path",
+        lambda path: str(exported) if path == str(source) else path,
+    )
+
+    async def handler(_event):
+        return str(source)
+
+    async def dispatch():
+        adapter.set_message_handler(handler)
+        event = MessageEvent(
+            text="make image",
+            source=SessionSource(platform=Platform.SLACK, chat_id="C12345"),
+        )
+        await adapter.handle_message(event)
+        if adapter._background_tasks:
+            await asyncio.gather(*adapter._background_tasks)
+
+    _run(dispatch())
+
+    client = adapter._get_client("C12345")
+    client.files_upload_v2.assert_awaited_once()
+    kwargs = client.files_upload_v2.await_args.kwargs
+    assert [upload["file"] for upload in kwargs["file_uploads"]] == [str(exported)]
+
+    rows = _delivery_rows(tmp_path)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["request_id"] == "vrq_current"
+    assert row["artifact_id"] == "var_current"
+    assert row["delivery_status"] == "sent"
 
 
 def _write_image(path: Path) -> Path:
@@ -235,8 +347,8 @@ def _delivery_rows(tmp_path):
                 """
                 SELECT request_id, attempt_id, artifact_id, platform,
                        destination_id, thread_id, delivery_status, error_type
-                  FROM visual_deliveries
-                 ORDER BY delivered_at, delivery_id
+                 FROM visual_deliveries
+                 ORDER BY rowid
                 """
             ).fetchall()
         ]

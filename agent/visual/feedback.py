@@ -125,13 +125,16 @@ def _detect_requested_direction(text: str, lower: str) -> Optional[str]:
 
 
 def _detect_selection_hint(text: str) -> Optional[int]:
-    match = re.search(r"第?\s*([一二兩三四五六七八九十]|\d+)\s*(?:張|個|个|號|号)", text)
+    match = re.search(r"第\s*([一二兩三四五六七八九十]|\d+)\s*(?:張|個|个|號|号)", text)
+    if match:
+        value = match.group(1)
+        if value.isdigit():
+            return int(value)
+        return _CHINESE_NUMBER.get(value)
+    match = re.search(r"\b(\d+)\s*(?:st|nd|rd|th)\b", text, re.IGNORECASE)
     if not match:
         return None
-    value = match.group(1)
-    if value.isdigit():
-        return int(value)
-    return _CHINESE_NUMBER.get(value)
+    return int(match.group(1))
 
 
 def _detect_candidate_hints(text: str) -> List[str]:
@@ -147,7 +150,7 @@ def _detect_candidate_hints(text: str) -> List[str]:
 
 def _detect_polarity(text: str, lower: str, issues: List[str]) -> float:
     score = 0.0
-    for term in ("不錯", "很好", "好評", "過關", "給過", "保留", "喜歡", "突破"):
+    for term in ("不錯", "很好", "好評", "過關", "給過", "保留", "喜歡", "突破", "加分"):
         if term in text:
             score += 0.35
     for term in ("退貨", "差評", "不好", "不行", "失敗", "醜", "扣分", "爛"):

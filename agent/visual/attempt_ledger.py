@@ -545,6 +545,7 @@ class VisualAttemptLedger:
             if artifact is None:
                 continue
             artifact_meta = {
+                "request_id": artifact["request_id"],
                 "artifact_id": artifact["artifact_id"],
                 "attempt_id": artifact["attempt_id"],
                 "content_hash": artifact.get("content_hash"),
@@ -562,7 +563,6 @@ class VisualAttemptLedger:
         selected_ids = [
             row["artifact_id"]
             for row in matches
-            if row["request_id"] == current_request_id
         ]
         return {
             "visual_request_id": current_request_id,
@@ -612,10 +612,52 @@ class VisualAttemptLedger:
         else:
             query += " AND thread_id = ?"
             params.append(thread_id)
-        query += " ORDER BY delivered_at DESC, delivery_id DESC LIMIT 1"
+        query += " ORDER BY delivered_at DESC, rowid DESC LIMIT 1"
         with self._connect() as conn:
             row = conn.execute(query, tuple(params)).fetchone()
         return _decode_row(row) if row is not None else None
+
+    def find_latest_delivery_batch_for_feedback(
+        self,
+        *,
+        platform: str,
+        destination_id: str,
+        thread_id: Optional[str] = None,
+    ) -> list[Dict[str, Any]]:
+        latest = self.find_latest_delivery_for_feedback(
+            platform=platform,
+            destination_id=destination_id,
+            thread_id=thread_id,
+        )
+        if latest is None:
+            return []
+
+        query = """
+            SELECT rowid AS _rowid, *
+              FROM visual_deliveries
+             WHERE platform = ?
+               AND destination_id = ?
+               AND delivery_status = 'sent'
+        """
+        params: list[Any] = [platform, destination_id]
+        if thread_id is None:
+            query += " AND thread_id IS NULL"
+        else:
+            query += " AND thread_id = ?"
+            params.append(thread_id)
+
+        message_id = str(latest.get("message_id") or "").strip()
+        if message_id:
+            query += " AND message_id = ?"
+            params.append(message_id)
+        else:
+            query += " AND delivery_id = ?"
+            params.append(latest["delivery_id"])
+
+        query += " ORDER BY _rowid"
+        with self._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        return [_decode_row(row) for row in rows]
 
     def update_request_status(self, request_id: str, status: str) -> None:
         with self._connect() as conn:

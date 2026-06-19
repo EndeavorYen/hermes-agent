@@ -54,6 +54,7 @@ def _record_visual_delivery_fixture(
     destination_id: str,
     thread_id: str | None,
     delivered_at: str,
+    message_id: str | None = None,
 ) -> str:
     ledger.record_request(
         request_id=request_id,
@@ -90,6 +91,7 @@ def _record_visual_delivery_fixture(
         platform=platform,
         destination_id=destination_id,
         thread_id=thread_id,
+        message_id=message_id,
         delivery_status="sent",
         delivered_at=delivered_at,
     )
@@ -302,7 +304,7 @@ class TestVisualFeedbackCapture:
         parsed = json.loads(feedback["parsed_json"])
         assert parsed["selection_hint"] == 2
 
-    def test_handle_message_records_visual_feedback_before_dispatch(self, tmp_path, monkeypatch):
+    def test_handle_message_records_pure_visual_feedback_without_dispatch(self, tmp_path, monkeypatch):
         from agent.visual.attempt_ledger import VisualAttemptLedger
         from agent.visual.tracking import default_visual_ledger_path
         from gateway.config import Platform
@@ -321,14 +323,21 @@ class TestVisualFeedbackCapture:
             delivered_at="2026-06-19T02:01:00Z",
         )
         adapter = _stub_adapter(platform=Platform.SLACK)
+        calls = []
 
         async def handler(_event):
+            calls.append(_event.text)
             return None
 
         async def dispatch():
             adapter.set_message_handler(handler)
             event = MessageEvent(
-                text="這張臉不像，扣分",
+                text=(
+                    "[Thread context — prior messages in this thread (not yet in conversation history):]\n"
+                    "[thread parent] simon: 請用 grok imagegen-quality 產 4 張性感 cos 寫真。\n"
+                    "[End of thread context]\n\n"
+                    "這張臉不像，扣分"
+                ),
                 message_type=MessageType.TEXT,
                 source=SessionSource(
                     platform=Platform.SLACK,
@@ -348,8 +357,173 @@ class TestVisualFeedbackCapture:
         feedback = dict(rows[0])
         parsed = json.loads(feedback["parsed_json"])
         assert feedback["artifact_id"] == "var_feedback"
+        assert feedback["raw_text"] == "這張臉不像，扣分"
         assert parsed["issues"] == ["reference_identity_drift"]
         assert feedback["polarity"] < 0
+        assert calls == []
+
+    def test_generation_prompt_with_visual_terms_is_not_captured_as_feedback(self, tmp_path, monkeypatch):
+        from agent.visual.attempt_ledger import VisualAttemptLedger
+        from agent.visual.tracking import default_visual_ledger_path
+        from gateway.config import Platform
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        ledger = VisualAttemptLedger(default_visual_ledger_path())
+        ledger.initialize()
+        _record_visual_delivery_fixture(
+            ledger,
+            request_id="vrq_feedback",
+            attempt_id="vat_feedback",
+            artifact_id="var_feedback",
+            platform="slack",
+            destination_id="C123",
+            thread_id="171000.0001",
+            delivered_at="2026-06-19T02:01:00Z",
+        )
+        adapter = _stub_adapter(platform=Platform.SLACK)
+        calls = []
+
+        async def handler(_event):
+            calls.append(_event.text)
+            return None
+
+        async def dispatch():
+            adapter.set_message_handler(handler)
+            event = MessageEvent(
+                text=(
+                    "請用 grok imagegen-quality 產 4 張性感 cos 寫真。\n"
+                    "只貼本輪新產出的圖片，不要貼舊圖。\n"
+                    "構圖要有變化，重點是漂亮臉蛋、美腿、自然性感、不要塑膠感。"
+                ),
+                message_type=MessageType.TEXT,
+                source=SessionSource(
+                    platform=Platform.SLACK,
+                    chat_id="C123",
+                    thread_id="171000.0001",
+                ),
+            )
+            await adapter.handle_message(event)
+            if adapter._background_tasks:
+                await asyncio.gather(*adapter._background_tasks)
+
+        asyncio.run(dispatch())
+
+        with ledger._connect() as conn:
+            rows = conn.execute("SELECT * FROM visual_feedback").fetchall()
+        assert rows == []
+        assert calls == [
+            "請用 grok imagegen-quality 產 4 張性感 cos 寫真。\n"
+            "只貼本輪新產出的圖片，不要貼舊圖。\n"
+            "構圖要有變化，重點是漂亮臉蛋、美腿、自然性感、不要塑膠感。"
+        ]
+
+    def test_records_per_image_feedback_against_latest_delivery_batch(self, tmp_path, monkeypatch):
+        from agent.visual.attempt_ledger import VisualAttemptLedger
+        from agent.visual.tracking import default_visual_ledger_path
+        from gateway.config import Platform
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        ledger = VisualAttemptLedger(default_visual_ledger_path())
+        ledger.initialize()
+        for idx in range(1, 5):
+            _record_visual_delivery_fixture(
+                ledger,
+                request_id=f"vrq_{idx}",
+                attempt_id=f"vat_{idx}",
+                artifact_id=f"var_{idx}",
+                platform="slack",
+                destination_id="C123",
+                thread_id="171000.0001",
+                message_id="171000.0002",
+                delivered_at=f"2026-06-19T02:01:0{idx}Z",
+            )
+        adapter = _stub_adapter(platform=Platform.SLACK)
+        event = MessageEvent(
+            text=(
+                "[Thread context — prior messages in this thread (not yet in conversation history):]\n"
+                "[thread parent] simon: 請用 grok imagegen-quality 產 4 張性感 cos 寫真。\n"
+                "[End of thread context]\n\n"
+                "第 1 張 不漂亮，扣分\n"
+                "第 2 張 有美腿，持平\n"
+                "3rd, 有長腿，加分; 臉也很漂亮，加分\n"
+                "4th, 黑絲, 加分; 其餘普普"
+            ),
+            message_type=MessageType.TEXT,
+            source=SessionSource(
+                platform=Platform.SLACK,
+                chat_id="C123",
+                thread_id="171000.0001",
+            ),
+        )
+
+        recorded = adapter._record_inbound_visual_feedback(event)
+
+        assert recorded is True
+        with ledger._connect() as conn:
+            rows = [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM visual_feedback ORDER BY rowid"
+                ).fetchall()
+            ]
+        assert [row["artifact_id"] for row in rows] == [
+            "var_1",
+            "var_2",
+            "var_3",
+            "var_4",
+        ]
+        assert rows[0]["raw_text"] == "第 1 張 不漂亮，扣分"
+        assert rows[2]["raw_text"].startswith("3rd, 有長腿")
+        assert [json.loads(row["parsed_json"])["selection_hint"] for row in rows] == [
+            1,
+            2,
+            3,
+            4,
+        ]
+
+    def test_records_single_selection_feedback_against_matching_batch_item(self, tmp_path, monkeypatch):
+        from agent.visual.attempt_ledger import VisualAttemptLedger
+        from agent.visual.tracking import default_visual_ledger_path
+        from gateway.config import Platform
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        ledger = VisualAttemptLedger(default_visual_ledger_path())
+        ledger.initialize()
+        for idx in range(1, 5):
+            _record_visual_delivery_fixture(
+                ledger,
+                request_id=f"vrq_{idx}",
+                attempt_id=f"vat_{idx}",
+                artifact_id=f"var_{idx}",
+                platform="slack",
+                destination_id="C123",
+                thread_id="171000.0001",
+                message_id="171000.0002",
+                delivered_at=f"2026-06-19T02:01:0{idx}Z",
+            )
+        adapter = _stub_adapter(platform=Platform.SLACK)
+        event = MessageEvent(
+            text="第 2 張不錯，保留這個方向",
+            message_type=MessageType.TEXT,
+            source=SessionSource(
+                platform=Platform.SLACK,
+                chat_id="C123",
+                thread_id="171000.0001",
+            ),
+        )
+
+        recorded = adapter._record_inbound_visual_feedback(event)
+
+        assert recorded is True
+        with ledger._connect() as conn:
+            rows = [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM visual_feedback ORDER BY rowid"
+                ).fetchall()
+            ]
+        assert len(rows) == 1
+        assert rows[0]["artifact_id"] == "var_2"
 
     def test_ignores_plain_text_without_visual_feedback_signal(self, tmp_path, monkeypatch):
         from agent.visual.attempt_ledger import VisualAttemptLedger

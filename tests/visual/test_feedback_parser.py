@@ -10,6 +10,21 @@ def test_feedback_parser_detects_positive_selection():
     assert feedback.parsed["selection_hint"] == 2
 
 
+def test_feedback_parser_detects_english_ordinal_selection():
+    from agent.visual.feedback import parse_visual_feedback
+
+    feedback = parse_visual_feedback("3rd, 有長腿，加分")
+    assert feedback.polarity > 0
+    assert feedback.parsed["selection_hint"] == 3
+
+
+def test_feedback_parser_does_not_treat_generation_count_as_selection():
+    from agent.visual.feedback import parse_visual_feedback
+
+    feedback = parse_visual_feedback("請用 grok imagegen-quality 產 4 張性感 cos 寫真")
+    assert feedback.parsed["selection_hint"] is None
+
+
 def test_feedback_parser_detects_wrong_face():
     from agent.visual.feedback import parse_visual_feedback
 

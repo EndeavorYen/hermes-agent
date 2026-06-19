@@ -136,7 +136,7 @@ def test_records_feedback_against_delivered_artifact(tmp_path):
     assert feedback["parsed"]["selection_hint"] == 2
 
 
-def test_builds_delivery_metadata_for_latest_request_artifacts(tmp_path):
+def test_builds_delivery_metadata_for_all_batch_artifacts(tmp_path):
     from agent.visual.attempt_ledger import VisualAttemptLedger
 
     ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
@@ -167,7 +167,9 @@ def test_builds_delivery_metadata_for_latest_request_artifacts(tmp_path):
     assert old_request == "vrq_old"
     assert new_request == "vrq_new"
     assert metadata["visual_request_id"] == "vrq_new"
-    assert metadata["selected_visual_artifact_ids"] == ["var_new"]
+    assert metadata["selected_visual_artifact_ids"] == ["var_old", "var_new"]
+    assert metadata["visual_artifacts"]["file:///tmp/old.png"]["request_id"] == "vrq_old"
+    assert metadata["visual_artifacts"]["file:///tmp/new.png"]["request_id"] == "vrq_new"
     assert metadata["visual_artifacts"]["file:///tmp/old.png"]["artifact_id"] == "var_old"
     assert metadata["visual_artifacts"]["file:///tmp/new.png"]["artifact_id"] == "var_new"
 

@@ -2747,7 +2747,7 @@ class BasePlatformAdapter(ABC):
             if visual_metadata is None:
                 return VisualDeliveryDecision(enabled=False, should_deliver=True)
 
-            request_id = str(visual_metadata.get("visual_request_id") or "").strip()
+            batch_request_id = str(visual_metadata.get("visual_request_id") or "").strip()
             dedupe_destination = self._visual_delivery_dedupe_destination(
                 chat_id, thread_id
             )
@@ -2758,7 +2758,7 @@ class BasePlatformAdapter(ABC):
                 decision = VisualDeliveryDecision(
                     enabled=True,
                     should_deliver=False,
-                    request_id=request_id,
+                    request_id=batch_request_id,
                     dedupe_destination=dedupe_destination,
                     skip_status="skipped_stale",
                     error_type="missing_visual_artifact_metadata",
@@ -2774,6 +2774,10 @@ class BasePlatformAdapter(ABC):
                 )
                 return decision
 
+            request_id = (
+                str(artifact_metadata.get("request_id") or "").strip()
+                or batch_request_id
+            )
             artifact_id = str(artifact_metadata.get("artifact_id") or "").strip()
             attempt_id = str(artifact_metadata.get("attempt_id") or "").strip()
             content_hash = str(artifact_metadata.get("content_hash") or "").strip()
@@ -2942,7 +2946,7 @@ class BasePlatformAdapter(ABC):
         try:
             if event is None or event.message_type != MessageType.TEXT:
                 return False
-            text = str(event.text or "").strip()
+            text = self._visual_feedback_current_text(str(event.text or ""))
             if not text or text.startswith("/"):
                 return False
 
@@ -2951,7 +2955,7 @@ class BasePlatformAdapter(ABC):
             from agent.visual.tracking import default_visual_ledger_path
 
             feedback = parse_visual_feedback(text)
-            if not self._visual_feedback_has_signal(feedback):
+            if not self._visual_feedback_has_signal(feedback, text):
                 return False
 
             source = getattr(event, "source", None)
@@ -2963,26 +2967,35 @@ class BasePlatformAdapter(ABC):
             thread_id = getattr(source, "thread_id", None)
             ledger = VisualAttemptLedger(default_visual_ledger_path())
             ledger.initialize()
-            delivery = ledger.find_latest_delivery_for_feedback(
+            delivery_batch = ledger.find_latest_delivery_batch_for_feedback(
                 platform=platform,
                 destination_id=chat_id,
                 thread_id=thread_id,
             )
-            if delivery is None and thread_id is not None:
-                delivery = ledger.find_latest_delivery_for_feedback(
+            if not delivery_batch and thread_id is not None:
+                delivery_batch = ledger.find_latest_delivery_batch_for_feedback(
                     platform=platform,
                     destination_id=chat_id,
                     thread_id=None,
                 )
-            if delivery is None:
+            if not delivery_batch:
                 return False
 
-            ledger.record_feedback_for_delivery(
-                delivery["delivery_id"],
-                raw_text=feedback.raw_text,
-                parsed_feedback=feedback,
-            )
-            return True
+            recorded = False
+            for delivery, feedback_text in self._visual_feedback_targets(
+                text,
+                delivery_batch,
+            ):
+                parsed_feedback = parse_visual_feedback(feedback_text)
+                if not self._visual_feedback_has_signal(parsed_feedback, feedback_text):
+                    continue
+                ledger.record_feedback_for_delivery(
+                    delivery["delivery_id"],
+                    raw_text=feedback_text,
+                    parsed_feedback=parsed_feedback,
+                )
+                recorded = True
+            return recorded
         except Exception as exc:  # noqa: BLE001 - feedback capture is best-effort
             logger.debug(
                 "[%s] Visual feedback capture skipped: %s",
@@ -2993,10 +3006,19 @@ class BasePlatformAdapter(ABC):
             return False
 
     @staticmethod
-    def _visual_feedback_has_signal(feedback: Any) -> bool:
+    def _visual_feedback_current_text(text: str) -> str:
+        marker = "[End of thread context]"
+        if marker in text:
+            return text.split(marker, 1)[1].strip()
+        return str(text or "").strip()
+
+    @staticmethod
+    def _visual_feedback_has_signal(feedback: Any, text: str = "") -> bool:
         parsed = getattr(feedback, "parsed", None)
         if not isinstance(parsed, dict):
             parsed = {}
+        if not BasePlatformAdapter._visual_text_has_feedback_marker(text):
+            return False
         return bool(
             getattr(feedback, "polarity", 0)
             or parsed.get("issues")
@@ -3004,6 +3026,97 @@ class BasePlatformAdapter(ABC):
             or parsed.get("candidate_hints")
             or parsed.get("requested_direction")
         )
+
+    @staticmethod
+    def _visual_text_has_feedback_marker(text: str) -> bool:
+        raw = str(text or "")
+        lower = raw.lower()
+        if re.search(r"第\s*([一二兩三四五六七八九十]|\d+)\s*(?:張|個|个|號|号)", raw):
+            return True
+        if re.search(r"\b\d+\s*(?:st|nd|rd|th)\b", raw, re.IGNORECASE):
+            return True
+        return any(
+            term in raw
+            for term in (
+                "扣分",
+                "加分",
+                "持平",
+                "不錯",
+                "很好",
+                "好評",
+                "過關",
+                "給過",
+                "最好",
+                "最佳",
+                "喜歡",
+                "保留",
+                "臉不像",
+                "面容不符合",
+                "不漂亮",
+                "不美",
+                "不自然",
+                "不夠性感",
+                "不性感",
+                "太保守",
+                "太普通",
+                "普通",
+                "普普",
+                "構圖差",
+                "光影平淡",
+                "退貨",
+                "差評",
+                "不好",
+                "不行",
+                "失敗",
+                "醜",
+                "爛",
+                "廉價感",
+            )
+        ) or any(term in lower for term in ("good", "nice", "bad", "fail"))
+
+    @staticmethod
+    def _visual_feedback_allows_agent_dispatch(event: MessageEvent) -> bool:
+        text = BasePlatformAdapter._visual_feedback_current_text(
+            str(getattr(event, "text", "") or "")
+        )
+        return bool(
+            re.search(
+                r"(?:再|重新|繼續|继续|請|帮我|幫我).{0,12}(?:產|产|生成|畫|画|出圖|出图)",
+                text,
+            )
+            or re.search(r"(?:generate|make|create|draw)\b", text, re.IGNORECASE)
+        )
+
+    @staticmethod
+    def _visual_feedback_targets(
+        text: str,
+        delivery_batch: list[Dict[str, Any]],
+    ) -> list[tuple[Dict[str, Any], str]]:
+        segments = BasePlatformAdapter._visual_feedback_segments(text)
+        if not segments:
+            return [(delivery_batch[-1], text)]
+
+        targets: list[tuple[Dict[str, Any], str]] = []
+        from agent.visual.feedback import parse_visual_feedback
+
+        for segment in segments:
+            parsed = parse_visual_feedback(segment)
+            selection = (parsed.parsed or {}).get("selection_hint")
+            if isinstance(selection, int) and 1 <= selection <= len(delivery_batch):
+                targets.append((delivery_batch[selection - 1], segment))
+        return targets or [(delivery_batch[-1], text)]
+
+    @staticmethod
+    def _visual_feedback_segments(text: str) -> list[str]:
+        raw = str(text or "").strip()
+        if not raw:
+            return []
+        marker = re.compile(
+            r"(?=(?:第\s*(?:[一二兩三四五六七八九十]|\d+)\s*(?:張|個|个|號|号)|\b\d+\s*(?:st|nd|rd|th)\b))",
+            re.IGNORECASE,
+        )
+        parts = [part.strip() for part in marker.split(raw) if part.strip()]
+        return parts if marker.search(raw) else []
 
     @staticmethod
     def _visual_selected_artifact_ids(metadata: Dict[str, Any]) -> set[str]:
@@ -4463,7 +4576,16 @@ class BasePlatformAdapter(ABC):
         # (Telegram DM topic mode) so the session key, guard checks, and
         # downstream delivery all agree on the same lane.
         self._apply_topic_recovery(event)
-        self._record_inbound_visual_feedback(event)
+        visual_feedback_recorded = self._record_inbound_visual_feedback(event)
+        if (
+            visual_feedback_recorded
+            and not self._visual_feedback_allows_agent_dispatch(event)
+        ):
+            logger.info(
+                "[%s] Recorded visual feedback without dispatching agent turn",
+                self.name,
+            )
+            return
 
         session_key = build_session_key(
             event.source,
@@ -4949,7 +5071,6 @@ class BasePlatformAdapter(ABC):
 
                 if _image_paths:
                     try:
-                        _image_paths = [public_export_media_path(p) for p in _image_paths]
                         _batch = [(f"file://{_quote(p)}", "") for p in _image_paths]
                         await self.send_multiple_images(
                             chat_id=event.source.chat_id,
