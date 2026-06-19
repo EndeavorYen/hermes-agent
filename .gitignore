@@ -123,3 +123,28 @@ scripts/out/
 # stores the published notes. They are not a build artifact and must never be
 # committed to the repo root. See the hermes-release skill.
 RELEASE_v*.md
+
+# Private visual-generation runtime state and user preference data.
+# Keep implementation, schemas, and redacted public docs in the repo; keep
+# prompts, Visual Arsenal data, scoring ledgers, and personal preference
+# evidence under ~/.hermes or another private runtime directory.
+docs/image2-adaptive-mediator.md
+docs/visual-self-reinforcing-generation.md
+docs/visual-self-reinforcing-generation-private.md
+context.d/
+visual-arsenal/
+image_cache/
+cache/images/
+hermes_image2_adaptive_memory.jsonl
+image2_mediator_memory/
+visual_signals.jsonl
+va_decisions.jsonl
+ranking_runs/
+preference_buckets/
+style_strategies/
+*_adaptive_memory.jsonl
+*_mediator_memory.jsonl
+*hard-prefs*
+*hard_prefs*
+*private-prompt*
+*private_prompt*

@@ -34,7 +34,7 @@ def test_hybrid_refine_uses_qwen_draft_but_preserves_element_locks(tmp_path):
             "memory_path": str(tmp_path / "memory.jsonl"),
             "qwen_json_contract": False,
         },
-        preprocessor_config={"enabled": True, "model": "qwen36-image-prompt"},
+        preprocessor_config={"enabled": True, "model": "test-image-prompt-draft-model"},
         draft_fn=lambda prompt: (
             "A glamorous woman in a city night scene, holding black stock flower (Anemone, matthiola), "
             "wearing a sleek evening dress with cinematic lighting."
@@ -42,7 +42,7 @@ def test_hybrid_refine_uses_qwen_draft_but_preserves_element_locks(tmp_path):
     )
 
     assert mediated.strategy == "hybrid_refine"
-    assert mediated.draft_model == "qwen36-image-prompt"
+    assert mediated.draft_model == "test-image-prompt-draft-model"
     assert "black lisianthus flowers, also known as eustoma" in mediated.final_prompt
     assert "satin evening gown" in mediated.final_prompt
     assert "rainy night in Taipei" in mediated.final_prompt
@@ -65,7 +65,7 @@ def test_rejects_non_json_qwen_draft_when_json_contract_is_required(tmp_path):
             "memory_path": str(tmp_path / "memory.jsonl"),
             "qwen_json_contract": True,
         },
-        preprocessor_config={"enabled": True, "model": "qwen36-image-prompt"},
+        preprocessor_config={"enabled": True, "model": "test-image-prompt-draft-model"},
         draft_fn=lambda prompt: "A pretty gothic portrait holding black roses.",
     )
 
@@ -111,7 +111,7 @@ def test_accepts_qwen_json_candidate_with_preserved_constraints(tmp_path):
     mediated = mediate_image2_prompt(
         "固定 reference 人物面容，在台北雨夜穿緞面晚禮服，手拿黑色洋桔梗，要性感但高級",
         config={"enabled": True, "memory_path": str(tmp_path / "memory.jsonl")},
-        preprocessor_config={"enabled": True, "model": "qwen36-image-prompt"},
+        preprocessor_config={"enabled": True, "model": "test-image-prompt-draft-model"},
         draft_fn=lambda prompt: json.dumps(qwen_json),
     )
 
@@ -149,7 +149,7 @@ def test_extracts_qwen_json_candidate_from_wrapped_response(tmp_path):
     mediated = mediate_image2_prompt(
         "手拿黑色洋桔梗，成熟時尚雜誌感",
         config={"enabled": True, "memory_path": str(tmp_path / "memory.jsonl")},
-        preprocessor_config={"enabled": True, "model": "qwen36-image-prompt"},
+        preprocessor_config={"enabled": True, "model": "test-image-prompt-draft-model"},
         draft_fn=lambda prompt: "Sure, JSON follows:\n```json\n"
         + json.dumps(qwen_json)
         + "\n```",
@@ -209,7 +209,7 @@ def test_rejects_qwen_json_candidate_that_violates_must_keep(tmp_path):
     mediated = mediate_image2_prompt(
         "手拿黑色洋桔梗，成熟時尚雜誌感",
         config={"enabled": True, "memory_path": str(tmp_path / "memory.jsonl")},
-        preprocessor_config={"enabled": True, "model": "qwen36-image-prompt"},
+        preprocessor_config={"enabled": True, "model": "test-image-prompt-draft-model"},
         draft_fn=lambda prompt: json.dumps(qwen_json),
     )
 
@@ -245,7 +245,7 @@ def test_accepts_top_level_qwen_candidate_shape_after_validation(tmp_path):
     mediated = mediate_image2_prompt(
         "在台北雨夜穿緞面晚禮服，手拿黑色洋桔梗，要成熟時尚雜誌感",
         config={"enabled": True, "memory_path": str(tmp_path / "memory.jsonl")},
-        preprocessor_config={"enabled": True, "model": "qwen36-image-prompt"},
+        preprocessor_config={"enabled": True, "model": "test-image-prompt-draft-model"},
         draft_fn=lambda prompt: json.dumps(qwen_json),
     )
 
@@ -276,7 +276,7 @@ def test_rejects_lily_substitution_for_lisianthus_lock(tmp_path):
     mediated = mediate_image2_prompt(
         "手拿黑色洋桔梗，要成熟時尚雜誌感",
         config={"enabled": True, "memory_path": str(tmp_path / "memory.jsonl")},
-        preprocessor_config={"enabled": True, "model": "qwen36-image-prompt"},
+        preprocessor_config={"enabled": True, "model": "test-image-prompt-draft-model"},
         draft_fn=lambda prompt: json.dumps(qwen_json),
     )
 
@@ -313,7 +313,7 @@ def test_rejects_qwen_candidate_with_identity_clothing_and_scene_drift(tmp_path)
     mediated = mediate_image2_prompt(
         "固定 reference 人物面容，在台北雨夜穿緞面晚禮服，手拿黑色洋桔梗，要成熟時尚雜誌感",
         config={"enabled": True, "memory_path": str(tmp_path / "memory.jsonl")},
-        preprocessor_config={"enabled": True, "model": "qwen36-image-prompt"},
+        preprocessor_config={"enabled": True, "model": "test-image-prompt-draft-model"},
         draft_fn=lambda prompt: json.dumps(qwen_json),
     )
 
@@ -358,7 +358,7 @@ def test_final_prompt_compiler_uses_stable_section_order_for_hard_locks_first(tm
     mediated = mediate_image2_prompt(
         "固定 reference 人物面容，在台北雨夜穿緞面晚禮服，手拿黑色洋桔梗，保留原本構圖和姿勢，要成熟時尚雜誌感",
         config={"enabled": True, "memory_path": str(tmp_path / "memory.jsonl")},
-        preprocessor_config={"enabled": True, "model": "qwen36-image-prompt"},
+        preprocessor_config={"enabled": True, "model": "test-image-prompt-draft-model"},
         draft_fn=lambda prompt: json.dumps(qwen_json),
     )
 
@@ -421,7 +421,7 @@ def test_qwen_request_uses_compact_filtered_memory_hints(tmp_path):
     mediate_image2_prompt(
         "手拿黑色洋桔梗，成熟時尚雜誌感",
         config={"enabled": True, "memory_path": str(memory_path)},
-        preprocessor_config={"enabled": True, "model": "qwen36-image-prompt"},
+        preprocessor_config={"enabled": True, "model": "test-image-prompt-draft-model"},
         draft_fn=draft_fn,
     )
 
@@ -477,7 +477,7 @@ def test_exact_repeat_reuses_previous_success_without_calling_qwen(tmp_path):
     mediated = mediate_image2_prompt(
         "手拿黑色洋桔梗，成熟時尚雜誌感",
         config={"enabled": True, "memory_path": str(memory_path)},
-        preprocessor_config={"enabled": True, "model": "qwen36-image-prompt"},
+        preprocessor_config={"enabled": True, "model": "test-image-prompt-draft-model"},
         draft_fn=draft_fn,
     )
 
@@ -493,7 +493,7 @@ def test_strategy_reason_records_hard_lock_routing(tmp_path):
     mediated = mediate_image2_prompt(
         "固定 reference 人物面容，在台北雨夜穿緞面晚禮服，手拿黑色洋桔梗，保留原本構圖和姿勢，要成熟時尚雜誌感",
         config={"enabled": True, "memory_path": str(tmp_path / "memory.jsonl")},
-        preprocessor_config={"enabled": True, "model": "qwen36-image-prompt"},
+        preprocessor_config={"enabled": True, "model": "test-image-prompt-draft-model"},
         draft_fn=lambda prompt: "",
     )
 
@@ -521,7 +521,7 @@ def test_recent_blocked_attempt_routes_to_safe_reframe(tmp_path):
     mediated = mediate_image2_prompt(
         "成熟時尚棚拍人物，要性感但高級",
         config={"enabled": True, "memory_path": str(memory_path)},
-        preprocessor_config={"enabled": True, "model": "qwen36-image-prompt"},
+        preprocessor_config={"enabled": True, "model": "test-image-prompt-draft-model"},
         draft_fn=lambda prompt: "should not be needed for safe reframe",
     )
 
@@ -552,7 +552,7 @@ def test_recent_object_drift_feedback_routes_to_element_lock_without_qwen(tmp_pa
     mediated = mediate_image2_prompt(
         "手拿黑色洋桔梗，要成熟時尚雜誌感",
         config={"enabled": True, "memory_path": str(memory_path)},
-        preprocessor_config={"enabled": True, "model": "qwen36-image-prompt"},
+        preprocessor_config={"enabled": True, "model": "test-image-prompt-draft-model"},
         draft_fn=draft_fn,
     )
 
@@ -581,7 +581,7 @@ def test_recent_too_tame_feedback_keeps_hybrid_refine_with_intensity_reason(tmp_
     mediated = mediate_image2_prompt(
         "成熟時尚棚拍人物，要性感但高級",
         config={"enabled": True, "memory_path": str(memory_path)},
-        preprocessor_config={"enabled": True, "model": "qwen36-image-prompt"},
+        preprocessor_config={"enabled": True, "model": "test-image-prompt-draft-model"},
         draft_fn=lambda prompt: "",
     )
 
@@ -655,8 +655,8 @@ def test_records_qwen_call_to_split_qwen_calls_jsonl_when_memory_dir_configured(
     record_qwen_call_health(
         status="accepted",
         latency_ms=100,
-        model="qwen36-image-prompt",
-        base_url="http://192.168.50.178:11434/v1",
+        model="test-image-prompt-draft-model",
+        base_url="http://example.invalid:11434/v1",
         transport="curl",
         config={"enabled": True, "memory_dir": str(memory_dir), "log_attempts": True},
     )
@@ -827,8 +827,8 @@ def test_records_qwen_call_health_event_as_jsonl(tmp_path):
     record_qwen_call_health(
         status="accepted",
         latency_ms=1234.56,
-        model="qwen36-image-prompt",
-        base_url="http://192.168.50.178:11434/v1",
+        model="test-image-prompt-draft-model",
+        base_url="http://example.invalid:11434/v1",
         transport="curl",
         config={"enabled": True, "memory_path": str(memory_path), "log_attempts": True},
         response_chars=2048,
@@ -838,8 +838,8 @@ def test_records_qwen_call_health_event_as_jsonl(tmp_path):
     assert payload["record_type"] == "qwen_call"
     assert payload["status"] == "accepted"
     assert payload["latency_ms"] == 1234.56
-    assert payload["model"] == "qwen36-image-prompt"
-    assert payload["base_url"] == "http://192.168.50.178:11434/v1"
+    assert payload["model"] == "test-image-prompt-draft-model"
+    assert payload["base_url"] == "http://example.invalid:11434/v1"
     assert payload["transport"] == "curl"
     assert payload["response_chars"] == 2048
     assert payload["error_type"] == ""
@@ -853,8 +853,8 @@ def test_records_failed_qwen_call_health_event_without_prompt_leak(tmp_path):
     record_qwen_call_health(
         status="offline",
         latency_ms=45.1,
-        model="qwen36-image-prompt",
-        base_url="http://192.168.50.178:11434/v1",
+        model="test-image-prompt-draft-model",
+        base_url="http://example.invalid:11434/v1",
         transport="curl",
         config={"enabled": True, "memory_path": str(memory_path), "log_attempts": True},
         error_type="connection_failed",
@@ -880,21 +880,21 @@ def test_qwen_health_report_prefers_call_events_and_24h_window(tmp_path):
             "record_type": "qwen_call",
             "status": "malformed",
             "latency_ms": 1000,
-            "model": "qwen36-image-prompt",
+            "model": "test-image-prompt-draft-model",
         },
         {
             "timestamp": "2026-06-15T00:00:00+00:00",
             "record_type": "qwen_call",
             "status": "accepted",
             "latency_ms": 1000,
-            "model": "qwen36-image-prompt",
+            "model": "test-image-prompt-draft-model",
         },
         {
             "timestamp": "2026-06-15T00:05:00+00:00",
             "record_type": "qwen_call",
             "status": "offline",
             "latency_ms": 3000,
-            "model": "qwen36-image-prompt",
+            "model": "test-image-prompt-draft-model",
             "error_type": "connection_failed",
         },
         {
@@ -902,7 +902,7 @@ def test_qwen_health_report_prefers_call_events_and_24h_window(tmp_path):
             "record_type": "qwen_call",
             "status": "malformed",
             "latency_ms": 5000,
-            "model": "qwen36-image-prompt",
+            "model": "test-image-prompt-draft-model",
             "error_type": "malformed_json",
         },
     ]
@@ -1158,7 +1158,7 @@ def test_compact_memory_hints_use_similar_bucket_only(tmp_path):
     mediate_image2_prompt(
         "手拿黑色洋桔梗，成熟時尚雜誌感",
         config={"enabled": True, "memory_path": str(memory_path)},
-        preprocessor_config={"enabled": True, "model": "qwen36-image-prompt"},
+        preprocessor_config={"enabled": True, "model": "test-image-prompt-draft-model"},
         draft_fn=draft_fn,
     )
 

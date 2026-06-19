@@ -241,7 +241,7 @@ async def test_mission_applies_adaptive_mediator_before_attempt_prompt(tmp_path,
         final_prompt="mediated mission concept",
         intent=Image2Intent(subject="rough concept"),
         strategy="hybrid_refine",
-        draft_model="qwen36-image-prompt",
+        draft_model="test-image-prompt-draft-model",
         draft_prompt="qwen draft",
     )
 
@@ -253,7 +253,7 @@ async def test_mission_applies_adaptive_mediator_before_attempt_prompt(tmp_path,
     monkeypatch.setattr(
         mission,
         "_read_image_prompt_preprocessor_config",
-        lambda: {"enabled": True, "model": "qwen36-image-prompt"},
+        lambda: {"enabled": True, "model": "test-image-prompt-draft-model"},
     )
     monkeypatch.setattr(
         mission,

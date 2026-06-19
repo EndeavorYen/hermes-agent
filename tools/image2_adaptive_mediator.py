@@ -366,7 +366,7 @@ def mediate_image2_prompt(
             draft_prompt = (draft_fn(draft_request) or "").strip()
             if draft_prompt:
                 draft_model = str(
-                    (preprocessor_config or {}).get("model") or "qwen36-image-prompt"
+                    (preprocessor_config or {}).get("model") or "configured-draft-model"
                 )
         except Exception as exc:
             logger.info("Image2 adaptive mediator draft unavailable: %s", exc)

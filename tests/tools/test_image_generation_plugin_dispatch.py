@@ -150,7 +150,7 @@ class TestPluginDispatch:
         monkeypatch.setattr(
             image_generation_tool,
             "_read_image_prompt_preprocessor_config",
-            lambda: {"enabled": True, "model": "qwen36-image-prompt"},
+            lambda: {"enabled": True, "model": "test-image-prompt-draft-model"},
             raising=False,
         )
         monkeypatch.setattr(
@@ -189,7 +189,7 @@ class TestPluginDispatch:
         monkeypatch.setattr(
             image_generation_tool,
             "_read_image_prompt_preprocessor_config",
-            lambda: {"enabled": True, "model": "qwen36-image-prompt"},
+            lambda: {"enabled": True, "model": "test-image-prompt-draft-model"},
             raising=False,
         )
         monkeypatch.setattr(
@@ -239,7 +239,7 @@ class TestPluginDispatch:
         monkeypatch.setattr(
             image_generation_tool,
             "_read_image_prompt_preprocessor_config",
-            lambda: {"enabled": True, "model": "qwen36-image-prompt"},
+            lambda: {"enabled": True, "model": "test-image-prompt-draft-model"},
             raising=False,
         )
         monkeypatch.setattr(
@@ -277,7 +277,7 @@ class TestPluginDispatch:
         monkeypatch.setattr(
             image_generation_tool,
             "_read_image_prompt_preprocessor_config",
-            lambda: {"enabled": True, "model": "qwen36-image-prompt"},
+            lambda: {"enabled": True, "model": "test-image-prompt-draft-model"},
             raising=False,
         )
         monkeypatch.setattr(
@@ -303,7 +303,7 @@ class TestPluginDispatch:
         monkeypatch.setattr(
             image_generation_tool,
             "_read_image_prompt_preprocessor_config",
-            lambda: {"enabled": True, "model": "qwen36-image-prompt"},
+            lambda: {"enabled": True, "model": "test-image-prompt-draft-model"},
             raising=False,
         )
         monkeypatch.setattr(
@@ -317,7 +317,7 @@ class TestPluginDispatch:
             result = image_generation_tool._maybe_preprocess_image_prompt("rough user concept")
 
         assert result == "qwen polished prompt"
-        assert "Image prompt preprocessor applied via qwen36-image-prompt" in caplog.text
+        assert "Image prompt preprocessor applied via test-image-prompt-draft-model" in caplog.text
 
     def test_adaptive_mediator_requests_qwen_json_schema(self, monkeypatch):
         from tools import image_generation_tool
@@ -354,7 +354,7 @@ class TestPluginDispatch:
         monkeypatch.setattr(
             image_generation_tool,
             "_read_image_prompt_preprocessor_config",
-            lambda: {"enabled": True, "model": "qwen36-image-prompt"},
+            lambda: {"enabled": True, "model": "test-image-prompt-draft-model"},
             raising=False,
         )
 
@@ -413,8 +413,8 @@ class TestPluginDispatch:
             "_read_image_prompt_preprocessor_config",
             lambda: {
                 "enabled": True,
-                "model": "qwen36-image-prompt",
-                "base_url": "http://192.168.50.178:11434/v1",
+                "model": "test-image-prompt-draft-model",
+                "base_url": "http://example.invalid:11434/v1",
                 "transport": "curl",
             },
             raising=False,
@@ -438,8 +438,8 @@ class TestPluginDispatch:
 
         assert mediated.qwen_validation_status == "accepted"
         assert recorded["status"] == "accepted"
-        assert recorded["model"] == "qwen36-image-prompt"
-        assert recorded["base_url"] == "http://192.168.50.178:11434/v1"
+        assert recorded["model"] == "test-image-prompt-draft-model"
+        assert recorded["base_url"] == "http://example.invalid:11434/v1"
         assert recorded["transport"] == "curl"
         assert recorded["response_chars"] == len(qwen_json)
         assert recorded["config"]["memory_path"] == "/tmp/adaptive.jsonl"
@@ -460,8 +460,8 @@ class TestPluginDispatch:
             "_read_image_prompt_preprocessor_config",
             lambda: {
                 "enabled": True,
-                "model": "qwen36-image-prompt",
-                "base_url": "http://192.168.50.178:11434/v1",
+                "model": "test-image-prompt-draft-model",
+                "base_url": "http://example.invalid:11434/v1",
                 "transport": "curl",
             },
             raising=False,
@@ -552,13 +552,13 @@ class TestPromptPreprocessorParsing:
 
         response = image_generation_tool._post_image_prompt_preprocessor_request(
             {
-                "base_url": "http://192.168.50.178:11434/v1",
+                "base_url": "http://example.invalid:11434/v1",
                 "api_key": "ollama",
                 "timeout_seconds": 6,
                 "transport": "curl",
                 "source_interface": "en1",
             },
-            {"model": "qwen36-image-prompt"},
+            {"model": "test-image-prompt-draft-model"},
         )
 
         assert response["choices"][0]["message"]["content"] == "[Positive Prompt]\nA"
