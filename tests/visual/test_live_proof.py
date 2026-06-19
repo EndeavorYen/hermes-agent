@@ -100,6 +100,54 @@ def test_live_proof_fails_when_delivery_does_not_join_to_artifact(tmp_path):
     assert proof.counts["missing_artifact_join_count"] == 1
 
 
+def test_live_proof_fails_when_same_artifact_is_delivered_twice(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.live_proof import verify_visual_agent_live_proof
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+    duplicate_image = _record_delivered_artifact(
+        ledger,
+        request_id="vrq_image",
+        attempt_id="vat_image",
+        artifact_id="var_image",
+        kind="image",
+        destination_id="D123",
+        delivered_at="2026-06-20T00:01:00Z",
+    )
+    ledger.record_delivery(
+        request_id="vrq_image",
+        attempt_id="vat_image",
+        artifact_id=duplicate_image,
+        platform="slack",
+        destination_id="D123",
+        delivery_status="sent",
+        delivered_at="2026-06-20T00:01:30Z",
+    )
+    _record_delivered_artifact(
+        ledger,
+        request_id="vrq_video",
+        attempt_id="vat_video",
+        artifact_id="var_video",
+        kind="video",
+        destination_id="D123",
+        delivered_at="2026-06-20T00:02:00Z",
+    )
+
+    proof = verify_visual_agent_live_proof(
+        ledger.path,
+        since="2026-06-20T00:00:00Z",
+        platform="slack",
+        destination_id="D123",
+    )
+
+    assert proof.success is False
+    assert proof.missing == ["duplicate_artifact_delivery"]
+    assert proof.counts["duplicate_artifact_delivery_count"] == 1
+    assert proof.duplicate_artifact_ids == [duplicate_image]
+    assert proof.to_dict()["duplicate_artifact_ids"] == [duplicate_image]
+
+
 def test_live_proof_respects_since_window(tmp_path):
     from agent.visual.attempt_ledger import VisualAttemptLedger
     from agent.visual.live_proof import verify_visual_agent_live_proof

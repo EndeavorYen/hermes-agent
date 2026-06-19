@@ -209,6 +209,7 @@ Gate F acceptance verifier:
 
 The gate passes only when the verifier reports `success: true`, at least one
 delivered image artifact, at least one delivered video artifact, and no missing
-artifact joins. As of the 2026-06-20 verifier run, the live ledger still reports
-`no_sent_deliveries` after `2026-06-20T00:00:00Z`; the code path is ready, but a
-real Slack-originated prompt is still required to close the live proof.
+artifact joins or duplicate artifact deliveries. As of the 2026-06-20 verifier
+run, the live ledger still reports `no_sent_deliveries` after
+`2026-06-20T00:00:00Z`; the code path is ready, but a real Slack-originated
+prompt is still required to close the live proof.

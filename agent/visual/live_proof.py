@@ -33,6 +33,7 @@ class VisualAgentLiveProof:
     counts: dict[str, Any]
     artifacts: list[LiveProofArtifact]
     missing_artifact_delivery_ids: list[str]
+    duplicate_artifact_ids: list[str]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -46,6 +47,7 @@ class VisualAgentLiveProof:
             "counts": dict(self.counts),
             "artifacts": [asdict(artifact) for artifact in self.artifacts],
             "missing_artifact_delivery_ids": list(self.missing_artifact_delivery_ids),
+            "duplicate_artifact_ids": list(self.duplicate_artifact_ids),
         }
 
 
@@ -86,6 +88,7 @@ def verify_visual_agent_live_proof(
             base_counts,
             [],
             [],
+            [],
         )
 
     try:
@@ -100,6 +103,7 @@ def verify_visual_agent_live_proof(
                     thread_id,
                     ["ledger_uninitialized"],
                     base_counts,
+                    [],
                     [],
                     [],
                 )
@@ -131,14 +135,20 @@ def verify_visual_agent_live_proof(
             counts,
             [],
             [],
+            [],
         )
 
     artifacts: list[LiveProofArtifact] = []
     missing_delivery_ids: list[str] = []
+    artifact_delivery_counts: dict[str, int] = {}
     kind_counts: dict[str, int] = {}
     request_ids: set[str] = set()
     for row in rows:
         request_ids.add(str(row["request_id"]))
+        artifact_id = str(row["artifact_id"])
+        artifact_delivery_counts[artifact_id] = (
+            artifact_delivery_counts.get(artifact_id, 0) + 1
+        )
         kind = row["kind"]
         if kind is None:
             missing_delivery_ids.append(str(row["delivery_id"]))
@@ -150,7 +160,7 @@ def verify_visual_agent_live_proof(
                 delivery_id=str(row["delivery_id"]),
                 request_id=str(row["request_id"]),
                 attempt_id=str(row["attempt_id"]),
-                artifact_id=str(row["artifact_id"]),
+                artifact_id=artifact_id,
                 kind=normalized_kind,
                 local_path=row["local_path"],
                 source_url=row["source_url"],
@@ -159,11 +169,17 @@ def verify_visual_agent_live_proof(
             )
         )
 
+    duplicate_artifact_ids = sorted(
+        artifact_id
+        for artifact_id, count in artifact_delivery_counts.items()
+        if count > 1
+    )
     counts = {
         "delivery_status_counts": status_counts,
         "sent_delivery_count": len(rows),
         "joined_artifact_count": len(artifacts),
         "missing_artifact_join_count": len(missing_delivery_ids),
+        "duplicate_artifact_delivery_count": len(duplicate_artifact_ids),
         "artifact_kind_counts": kind_counts,
         "request_count": len(request_ids),
     }
@@ -173,6 +189,8 @@ def verify_visual_agent_live_proof(
     else:
         if missing_delivery_ids:
             missing.append("missing_artifact_join")
+        if duplicate_artifact_ids:
+            missing.append("duplicate_artifact_delivery")
         if require_image and kind_counts.get("image", 0) < 1:
             missing.append("missing_image_delivery")
         if require_video and kind_counts.get("video", 0) < 1:
@@ -189,6 +207,7 @@ def verify_visual_agent_live_proof(
         counts,
         artifacts,
         missing_delivery_ids,
+        duplicate_artifact_ids,
     )
 
 
@@ -203,6 +222,7 @@ def _result(
     counts: dict[str, Any],
     artifacts: list[LiveProofArtifact],
     missing_delivery_ids: list[str],
+    duplicate_artifact_ids: list[str],
 ) -> VisualAgentLiveProof:
     return VisualAgentLiveProof(
         success=success,
@@ -215,6 +235,7 @@ def _result(
         counts=counts,
         artifacts=artifacts,
         missing_artifact_delivery_ids=missing_delivery_ids,
+        duplicate_artifact_ids=duplicate_artifact_ids,
     )
 
 

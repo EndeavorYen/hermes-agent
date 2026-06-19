@@ -35,7 +35,7 @@ Status as of 2026-06-20 04:18 Asia/Taipei:
 | User-friendly natural trigger | Done in tests | Chinese image+video package requests infer `VISUAL_PACKAGE`; `visual_agent_generate` defaults to L2 auto-select and ignores model-invented internal args |
 | Privacy gate | Done in tracked files | Runtime video/visual paths are ignored; private visual fixture wording was replaced with generic test data |
 | Live CLI image+video smoke | Done | mission `vms_915e683f14b44d7b89acb96a0602834e`, image `var_7e14ab73338344dba02533b678e7aebe`, video `var_d0d50d86318a4e588df269360a3252de` |
-| Live Slack inbound proof | Pending, verifier ready | Requires a Slack-triggered Hermes request so `visual_deliveries` increases in the live ledger; `scripts/visual_agent_live_proof.py` verifies the image/video delivery evidence |
+| Live Slack inbound proof | Pending, verifier ready | Requires a Slack-triggered Hermes request so `visual_deliveries` increases in the live ledger; `scripts/visual_agent_live_proof.py` verifies image/video delivery evidence, artifact joins, and duplicate delivery guards |
 
 Implemented follow-up fixes from live smoke:
 
@@ -47,6 +47,9 @@ Implemented follow-up fixes from live smoke:
 - User-friendly hardening ignores model-invented internal args such as
   `autonomy_level=1` unless the user explicitly wrote the matching `key=...`,
   so a normal image+video request stays in L2 auto-select mode.
+- Live-proof self-evaluation follow-up rejects duplicate sent deliveries for
+  the same artifact ID, so the final Slack proof cannot pass when Hermes posts
+  the same selected image or video twice.
 - Focused verification passed with 41 tests covering routing guidance, wrong-tool guardrails, natural tool defaults, gateway current-turn media append, and Slack selected-artifact delivery metadata.
 - Privacy follow-up removed tracked user-specific visual prompt fixtures, added runtime video/visual ignore rules, and kept feedback/parser tests on generic examples.
 - Final focused verification passed with 376 Visual Agent Mode, routing, delivery, privacy-fixture, and feedback tests after the scrub.
@@ -63,9 +66,9 @@ Implemented follow-up fixes from live smoke:
 ```
 
 Current live run result after `2026-06-20T00:00:00Z`: `success: false`,
-`missing: ["no_sent_deliveries"]`. This means the verifier and ledger join logic
-are in place, but a fresh Slack-originated natural prompt is still needed for
-the final proof.
+`missing: ["no_sent_deliveries"]`. This means the verifier, ledger join logic,
+and duplicate-delivery guard are in place, but a fresh Slack-originated natural
+prompt is still needed for the final proof.
 - Self-evaluation follow-up strengthened package evidence: `assemble_visual_package`
   now includes `asset_graph`, `selection_summary`, and image `ranking_decisions`
   in `delivery_metadata`, so a package can be traced from selected artifacts
