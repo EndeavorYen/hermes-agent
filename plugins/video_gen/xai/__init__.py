@@ -28,6 +28,7 @@ import mimetypes
 import os
 import shutil
 import subprocess
+import threading
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -86,6 +87,30 @@ _MODELS: Dict[str, Dict[str, Any]] = {
         ],
     },
 }
+
+
+def _run_sync_video_coro(coro_factory):
+    """Run provider async work from sync API, even inside an active event loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro_factory())
+
+    result: Dict[str, Any] = {}
+    error: List[BaseException] = []
+
+    def _runner() -> None:
+        try:
+            result["value"] = asyncio.run(coro_factory())
+        except BaseException as exc:  # noqa: BLE001 - re-raised in caller thread
+            error.append(exc)
+
+    thread = threading.Thread(target=_runner, name="xai-video-generate", daemon=True)
+    thread.start()
+    thread.join()
+    if error:
+        raise error[0]
+    return result.get("value")
 
 
 # ---------------------------------------------------------------------------
@@ -706,9 +731,8 @@ class XAIVideoGenProvider(VideoGenProvider):
         **kwargs: Any,
     ) -> Dict[str, Any]:
         try:
-            loop = asyncio.new_event_loop()
-            try:
-                return loop.run_until_complete(self._generate_async(
+            return _run_sync_video_coro(
+                lambda: self._generate_async(
                     prompt=prompt,
                     model=model,
                     explicit_model=bool(kwargs.get("_model_override_explicit")),
@@ -717,9 +741,8 @@ class XAIVideoGenProvider(VideoGenProvider):
                     duration=duration,
                     aspect_ratio=aspect_ratio,
                     resolution=resolution,
-                ))
-            finally:
-                loop.close()
+                )
+            )
         except Exception as exc:
             logger.warning("xAI video gen unexpected failure: %s", exc, exc_info=True)
             return error_response(

@@ -155,6 +155,33 @@ def test_xai_no_operation_kwarg():
     assert result["error_type"] in {"auth_required", "api_error"}
 
 
+@pytest.mark.asyncio
+async def test_xai_generate_can_run_inside_existing_event_loop(monkeypatch):
+    """The sync provider API is called from async Hermes tool handlers."""
+    import plugins.video_gen.xai as xai_plugin
+
+    monkeypatch.setattr(
+        xai_plugin,
+        "_resolve_xai_credentials",
+        lambda: ("oauth-bearer-token", "https://api.x.ai/v1"),
+    )
+    provider = xai_plugin.XAIVideoGenProvider()
+
+    async def fake_generate_async(**kwargs):
+        return {
+            "success": True,
+            "video": "https://vidgen.example/smoke.mp4",
+            "model": kwargs["model"],
+        }
+
+    monkeypatch.setattr(provider, "_generate_async", fake_generate_async)
+
+    result = provider.generate("animate the selected image", image_url="/tmp/image.png")
+
+    assert result["success"] is True
+    assert result["video"] == "https://vidgen.example/smoke.mp4"
+
+
 def test_xai_video_aspect_normalization_plans_center_crop_not_stretch():
     from plugins.video_gen.xai import _plan_video_aspect_normalization
 
