@@ -269,7 +269,10 @@ class TestUnifiedDispatch:
         assert result["success"] is False
         assert result["error_type"] == "provider_exception"
 
-    def test_content_moderation_retries_with_safe_compromise_prompt(self):
+    def test_content_moderation_retries_with_safe_compromise_prompt(self, monkeypatch, tmp_path):
+        import sqlite3
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         provider = _ModerationThenSuccessProvider()
         video_gen_registry.register_provider(provider)
 
@@ -295,6 +298,83 @@ class TestUnifiedDispatch:
         assert result["video_mediation"]["first_error_type"] == "content_moderation"
         assert result["video_mediation"]["original_prompt"].startswith("性感寫真姿勢")
         assert result["video_prompt_mediation"]["safe_compromise"] is True
+
+        conn = sqlite3.connect(tmp_path / "visual" / "attempt_ledger.sqlite3")
+        conn.row_factory = sqlite3.Row
+        attempts = conn.execute(
+            """
+            SELECT attempt_id, provider_error_type, prompt_mediated
+            FROM visual_attempts
+            WHERE request_id = ?
+            ORDER BY candidate_index ASC
+            """,
+            (result["visual_request_id"],),
+        ).fetchall()
+        assert len(attempts) == 2
+        assert attempts[0]["provider_error_type"] == "content_moderation"
+        assert "safe compromise" not in attempts[0]["prompt_mediated"]
+        assert attempts[1]["provider_error_type"] is None
+        assert "safe compromise" in attempts[1]["prompt_mediated"]
+        request = conn.execute(
+            "SELECT status FROM visual_requests WHERE request_id = ?",
+            (result["visual_request_id"],),
+        ).fetchone()
+        assert request["status"] == "completed"
+
+    def test_handle_video_generate_records_visual_attempt_for_local_artifact(self, monkeypatch, tmp_path):
+        from agent.visual.attempt_ledger import VisualAttemptLedger
+
+        video_path = tmp_path / "generated.mp4"
+        video_path.write_bytes(b"video-bytes")
+
+        class LocalVideoProvider(_RecordingProvider):
+            def generate(self, prompt, **kwargs):
+                self.last_kwargs = {"prompt": prompt, **kwargs}
+                return {
+                    "success": True,
+                    "video": str(video_path),
+                    "model": kwargs.get("model") or "model-a",
+                    "prompt": prompt,
+                    "modality": "image" if kwargs.get("image_url") else "text",
+                    "aspect_ratio": kwargs.get("aspect_ratio", ""),
+                    "duration": kwargs.get("duration") or 8,
+                    "provider": self.name,
+                }
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        provider = LocalVideoProvider("rec")
+        video_gen_registry.register_provider(provider)
+
+        result = self._run({
+            "prompt": "fashion editorial portrait",
+            "image_url": "https://example.com/ref.png",
+            "duration": 8,
+            "motion_intensity": "dynamic",
+            "camera_motion": "low-angle tracking",
+            "body_action": "confident walking turn",
+        })
+
+        assert result["success"] is True
+        assert result["visual_request_id"].startswith("vrq_")
+        assert result["visual_attempt_id"].startswith("vat_")
+        assert result["visual_artifact_id"].startswith("var_")
+
+        ledger = VisualAttemptLedger(tmp_path / "visual" / "attempt_ledger.sqlite3")
+        request = ledger.get_request(result["visual_request_id"])
+        attempt = ledger.get_attempt(result["visual_attempt_id"])
+        artifact = ledger.get_artifact(result["visual_artifact_id"])
+
+        assert request["modality"] == "video"
+        assert request["operation"] == "image_to_video"
+        assert request["user_prompt"] == "fashion editorial portrait"
+        assert attempt["provider"] == "rec"
+        assert attempt["model"] == "model-a"
+        assert attempt["parameters_requested"]["duration"] == 8
+        assert attempt["parameters_requested"]["motion_intensity"] == "dynamic"
+        assert attempt["parameters_effective"]["aspect_ratio"] == "16:9"
+        assert "Motion intensity: dynamic" in attempt["prompt_mediated"]
+        assert artifact["kind"] == "video"
+        assert artifact["content_hash"].startswith("sha256:")
 
     def test_operation_field_not_in_schema(self):
         """Make sure we removed the operation field from the schema."""

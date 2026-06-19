@@ -505,6 +505,13 @@ class VisualAttemptLedger:
             )
         return fid
 
+    def update_request_status(self, request_id: str, status: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE visual_requests SET status = ? WHERE request_id = ?",
+                (status, request_id),
+            )
+
     def get_request(self, request_id: str) -> Dict[str, Any]:
         return self._get_by_id("visual_requests", "request_id", request_id)
 

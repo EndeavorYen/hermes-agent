@@ -31,6 +31,7 @@ def record_visual_generation_attempt(
     kind: str,
     provider: Optional[str] = None,
     model: Optional[str] = None,
+    request_id: Optional[str] = None,
     candidate_index: int = 0,
     strategy_id: Optional[str] = None,
     strategy_version: Optional[str] = None,
@@ -59,6 +60,7 @@ def record_visual_generation_attempt(
             kind=kind,
             provider=provider,
             model=model,
+            request_id=request_id,
             candidate_index=candidate_index,
             strategy_id=strategy_id,
             strategy_version=strategy_version,
@@ -84,6 +86,7 @@ def _record_visual_generation_attempt(
     kind: str,
     provider: Optional[str],
     model: Optional[str],
+    request_id: Optional[str],
     candidate_index: int,
     strategy_id: Optional[str],
     strategy_version: Optional[str],
@@ -105,17 +108,23 @@ def _record_visual_generation_attempt(
         success=success,
     )
 
-    request_id = ledger.record_request(
-        user_prompt=user_prompt,
-        normalized_intent={
-            "modality": modality,
-            "operation": operation,
-            "artifact_kind": kind,
-        },
-        modality=modality,
-        operation=operation,
-        status="completed" if success else "failed",
-    )
+    if request_id:
+        ledger.update_request_status(
+            request_id,
+            "completed" if success else "failed",
+        )
+    else:
+        request_id = ledger.record_request(
+            user_prompt=user_prompt,
+            normalized_intent={
+                "modality": modality,
+                "operation": operation,
+                "artifact_kind": kind,
+            },
+            modality=modality,
+            operation=operation,
+            status="completed" if success else "failed",
+        )
     attempt_id = ledger.record_attempt(
         request_id=request_id,
         candidate_index=candidate_index,

@@ -54,6 +54,7 @@ from agent.video_gen_provider import (
     DEFAULT_RESOLUTION,
     error_response,
 )
+from agent.visual.tracking import record_visual_generation_attempt
 from tools.registry import registry, tool_error
 
 logger = logging.getLogger(__name__)
@@ -674,7 +675,7 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
             "video_gen provider '%s' rejected kwargs (signature too narrow): %s",
             getattr(provider, "name", "?"), exc,
         )
-        return json.dumps(error_response(
+        error_payload = error_response(
             error=(
                 f"Provider '{getattr(provider, 'name', '?')}' signature is "
                 f"out of date with the video_generate schema. Report this "
@@ -684,30 +685,63 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
             provider=getattr(provider, "name", ""),
             model=model or "",
             prompt=provider_prompt,
+        )
+        return json.dumps(_record_visual_video_result(
+            error_payload,
+            original_prompt=prompt,
+            provider_prompt=provider_prompt,
+            operation="image_to_video" if image_url else "text_to_video",
+            kwargs=kwargs,
+            prompt_mediation=prompt_mediation,
         ))
     except Exception as exc:
         logger.warning(
             "video_gen provider '%s' raised: %s",
             getattr(provider, "name", "?"), exc,
         )
-        return json.dumps(error_response(
+        error_payload = error_response(
             error=f"Provider '{getattr(provider, 'name', '?')}' error: {exc}",
             error_type="provider_exception",
             provider=getattr(provider, "name", ""),
             model=model or "",
             prompt=provider_prompt,
+        )
+        return json.dumps(_record_visual_video_result(
+            error_payload,
+            original_prompt=prompt,
+            provider_prompt=provider_prompt,
+            operation="image_to_video" if image_url else "text_to_video",
+            kwargs=kwargs,
+            prompt_mediation=prompt_mediation,
         ))
 
     if not isinstance(result, dict):
-        return json.dumps(error_response(
+        error_payload = error_response(
             error="Provider returned a non-dict result",
             error_type="provider_contract",
             provider=getattr(provider, "name", ""),
             model=model or "",
             prompt=provider_prompt,
+        )
+        return json.dumps(_record_visual_video_result(
+            error_payload,
+            original_prompt=prompt,
+            provider_prompt=provider_prompt,
+            operation="image_to_video" if image_url else "text_to_video",
+            kwargs=kwargs,
+            prompt_mediation=prompt_mediation,
         ))
 
     if _should_retry_with_video_mediation(result):
+        first_recorded = _record_visual_video_result(
+            result,
+            original_prompt=prompt,
+            provider_prompt=provider_prompt,
+            operation="image_to_video" if image_url else "text_to_video",
+            kwargs=kwargs,
+            prompt_mediation=prompt_mediation,
+            candidate_index=0,
+        )
         safe_prompt_mediation = _build_safe_compromise_video_prompt_mediation(
             prompt,
             motion_intensity=motion_intensity,
@@ -718,7 +752,7 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
         mediation = _video_mediation_payload(
             original_prompt=prompt,
             mediated_prompt=mediated_prompt,
-            first_result=result,
+            first_result=first_recorded,
         )
         try:
             retry_result = provider.generate(prompt=mediated_prompt, **kwargs)
@@ -748,9 +782,86 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
             mediation["retry_error_code"] = retry_result.get("error_code")
             mediation["retry_request_id"] = retry_result.get("request_id")
         retry_result["video_mediation"] = mediation
-        return json.dumps(_attach_video_prompt_mediation(retry_result, safe_prompt_mediation))
+        retry_result = _attach_video_prompt_mediation(retry_result, safe_prompt_mediation)
+        return json.dumps(_record_visual_video_result(
+            retry_result,
+            original_prompt=prompt,
+            provider_prompt=mediated_prompt,
+            operation="image_to_video" if image_url else "text_to_video",
+            kwargs=kwargs,
+            prompt_mediation=safe_prompt_mediation,
+            request_id=first_recorded.get("visual_request_id"),
+            candidate_index=1,
+        ))
 
-    return json.dumps(_attach_video_prompt_mediation(result, prompt_mediation))
+    result = _attach_video_prompt_mediation(result, prompt_mediation)
+    return json.dumps(_record_visual_video_result(
+        result,
+        original_prompt=prompt,
+        provider_prompt=provider_prompt,
+        operation="image_to_video" if image_url else "text_to_video",
+        kwargs=kwargs,
+        prompt_mediation=prompt_mediation,
+    ))
+
+
+def _record_visual_video_result(
+    payload: Dict[str, Any],
+    *,
+    original_prompt: str,
+    provider_prompt: str,
+    operation: str,
+    kwargs: Dict[str, Any],
+    prompt_mediation: Dict[str, Any],
+    request_id: Optional[str] = None,
+    candidate_index: int = 0,
+) -> Dict[str, Any]:
+    requested = {
+        "model": kwargs.get("model"),
+        "image_url": kwargs.get("image_url"),
+        "reference_image_urls": kwargs.get("reference_image_urls"),
+        "duration": kwargs.get("duration"),
+        "aspect_ratio": kwargs.get("aspect_ratio"),
+        "aspect_ratio_override_explicit": kwargs.get("_aspect_ratio_override_explicit"),
+        "resolution": kwargs.get("resolution"),
+        "negative_prompt": kwargs.get("negative_prompt"),
+        "audio": kwargs.get("audio"),
+        "seed": kwargs.get("seed"),
+        "motion_intensity": prompt_mediation.get("motion_intensity"),
+        "camera_motion": prompt_mediation.get("camera_motion"),
+        "body_action": prompt_mediation.get("body_action"),
+        "safe_compromise": bool(prompt_mediation.get("safe_compromise")),
+    }
+    requested = {key: value for key, value in requested.items() if value is not None}
+    effective = {
+        "model": payload.get("model") or kwargs.get("model"),
+        "modality": payload.get("modality"),
+        "duration": payload.get("duration"),
+        "aspect_ratio": payload.get("aspect_ratio") or kwargs.get("aspect_ratio"),
+        "resolution": payload.get("resolution") or kwargs.get("resolution"),
+    }
+    effective = {key: value for key, value in effective.items() if value is not None}
+    return record_visual_generation_attempt(
+        payload,
+        user_prompt=original_prompt,
+        prompt_original=original_prompt,
+        prompt_mediated=provider_prompt,
+        modality="video",
+        operation=operation,
+        artifact_key="video",
+        kind="video",
+        provider=payload.get("provider"),
+        model=payload.get("model") or kwargs.get("model"),
+        request_id=request_id,
+        candidate_index=candidate_index,
+        strategy_id=prompt_mediation.get("strategy"),
+        parameters_requested=requested,
+        parameters_effective=effective,
+        input_artifacts={
+            "image_url": kwargs.get("image_url"),
+            "reference_image_urls": kwargs.get("reference_image_urls") or [],
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
