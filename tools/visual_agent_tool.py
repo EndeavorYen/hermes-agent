@@ -12,7 +12,7 @@ from agent.visual.agent_mode.assembler import assemble_visual_package
 from agent.visual.agent_mode.asset_graph import VisualAssetGraph
 from agent.visual.agent_mode.clip_builder import build_video_clips as _build_video_clips
 from agent.visual.agent_mode.image_batch import select_image_candidates as _select_image_candidates
-from agent.visual.agent_mode.loop_policy import decide_next_action
+from agent.visual.agent_mode.loop_policy import VisualLoopPolicy, decide_next_action
 from agent.visual.agent_mode.mission_planner import plan_visual_mission
 from agent.visual.agent_mode.types import VisualArtifactRole, VisualMission
 from agent.visual.ids import new_artifact_id
@@ -80,12 +80,13 @@ async def _handle_visual_agent_generate(args: Dict[str, Any], **_kw: Any) -> str
         )
 
     image_result = await _maybe_await(generate_image_candidates(mission, graph))
+    confidence = _candidate_confidence(image_result.get("candidates") or [])
     action = decide_next_action(
         mission,
         candidate_count=int(image_result.get("candidate_count") or 0),
         accepted_count=int(image_result.get("candidate_count") or 0),
         failure_count=int(image_result.get("failure_count") or 0),
-        confidence=_candidate_confidence(image_result.get("candidates") or []),
+        confidence=confidence,
     )
     if action == "select_images":
         select_image_candidates(
@@ -110,6 +111,7 @@ async def _handle_visual_agent_generate(args: Dict[str, Any], **_kw: Any) -> str
         action=action,
         image_result=image_result,
         video_result=video_result,
+        confidence=confidence,
     )
     return json.dumps(payload, indent=2, ensure_ascii=False)
 
@@ -363,6 +365,7 @@ def _add_package_status(
     action: str,
     image_result: Dict[str, Any],
     video_result: Dict[str, Any],
+    confidence: float,
 ) -> None:
     images = list(payload.get("images") or [])
     videos = list(payload.get("videos") or [])
@@ -372,7 +375,10 @@ def _add_package_status(
     if "image" in mission.requested_outputs and not images:
         missing_outputs.append("image")
         if action == "ask_user":
-            stop_reasons.append("low_image_confidence")
+            if confidence < VisualLoopPolicy().low_confidence_threshold:
+                stop_reasons.append("low_image_confidence")
+            else:
+                stop_reasons.append("manual_selection_required")
         elif action == "fail":
             stop_reasons.append("image_stage_failed")
         elif not image_result.get("success"):

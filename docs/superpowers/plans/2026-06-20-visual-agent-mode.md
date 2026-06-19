@@ -75,6 +75,9 @@ the final proof.
 - Partial-success follow-up adds `package_status`, `missing_outputs`, and
   `stop_reasons` to `visual_agent_generate` results, so a failed video stage is
   reported as `partial_success` instead of looking like a complete package.
+- Assisted-mode stop-reason follow-up distinguishes `manual_selection_required`
+  from `low_image_confidence`, so L1 human confirmation is not misclassified as
+  a low-quality result.
 
 User-facing trigger contract:
 

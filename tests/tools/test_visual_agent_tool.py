@@ -284,6 +284,92 @@ async def test_visual_agent_generate_reports_partial_success_when_video_fails(mo
 
 
 @pytest.mark.asyncio
+async def test_visual_agent_generate_reports_manual_selection_when_autonomy_is_assisted(monkeypatch):
+    from tools import visual_agent_tool
+
+    def fake_generate_image_candidates(mission, graph):
+        graph.add_asset(
+            role=VisualArtifactRole.GENERATED_IMAGE,
+            artifact_id="var_candidate",
+            local_path="/tmp/candidate.png",
+        )
+        return {
+            "success": True,
+            "candidates": [
+                {
+                    "artifact_id": "var_candidate",
+                    "score": 0.93,
+                    "image": "/tmp/candidate.png",
+                }
+            ],
+            "candidate_count": 1,
+            "failure_count": 0,
+        }
+
+    monkeypatch.setattr(
+        visual_agent_tool,
+        "generate_image_candidates",
+        fake_generate_image_candidates,
+    )
+
+    payload = json.loads(
+        await visual_agent_tool._handle_visual_agent_generate(
+            {
+                "prompt": "Create one product image and one short video.",
+                "autonomy_level": 1,
+            }
+        )
+    )
+
+    assert payload["success"] is False
+    assert payload["package_status"] == "stopped"
+    assert "manual_selection_required" in payload["stop_reasons"]
+    assert "low_image_confidence" not in payload["stop_reasons"]
+    assert payload["missing_outputs"] == ["image", "video"]
+
+
+@pytest.mark.asyncio
+async def test_visual_agent_generate_reports_low_confidence_when_candidate_score_is_low(monkeypatch):
+    from tools import visual_agent_tool
+
+    def fake_generate_image_candidates(mission, graph):
+        graph.add_asset(
+            role=VisualArtifactRole.GENERATED_IMAGE,
+            artifact_id="var_candidate",
+            local_path="/tmp/candidate.png",
+        )
+        return {
+            "success": True,
+            "candidates": [
+                {
+                    "artifact_id": "var_candidate",
+                    "score": 0.42,
+                    "image": "/tmp/candidate.png",
+                }
+            ],
+            "candidate_count": 1,
+            "failure_count": 0,
+        }
+
+    monkeypatch.setattr(
+        visual_agent_tool,
+        "generate_image_candidates",
+        fake_generate_image_candidates,
+    )
+
+    payload = json.loads(
+        await visual_agent_tool._handle_visual_agent_generate(
+            {"prompt": "Create one product image and one short video."}
+        )
+    )
+
+    assert payload["success"] is False
+    assert payload["package_status"] == "stopped"
+    assert "low_image_confidence" in payload["stop_reasons"]
+    assert "manual_selection_required" not in payload["stop_reasons"]
+
+
+@pytest.mark.asyncio
 async def test_visual_agent_generate_ignores_model_invented_internal_counts(monkeypatch):
     from tools import visual_agent_tool
 
