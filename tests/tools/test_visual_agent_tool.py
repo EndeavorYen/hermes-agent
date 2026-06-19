@@ -75,6 +75,9 @@ async def test_visual_agent_generate_runs_image_video_package(monkeypatch):
     )
 
     assert payload["success"] is True
+    assert payload["package_status"] == "success"
+    assert payload["missing_outputs"] == []
+    assert payload["stop_reasons"] == []
     assert payload["mission_id"].startswith("vms_")
     assert payload["selected_image_artifact_ids"] == ["var_image"]
     assert payload["selected_video_artifact_ids"] == ["var_video"]
@@ -224,6 +227,60 @@ async def test_visual_agent_generate_selects_requested_image_count_by_default(mo
     assert payload["selected_image_artifact_ids"] == ["var_pen_1"]
     assert payload["images"] == ["/tmp/pen-1.png"]
     assert payload["videos"] == ["/tmp/pen.mp4"]
+
+
+@pytest.mark.asyncio
+async def test_visual_agent_generate_reports_partial_success_when_video_fails(monkeypatch):
+    from tools import visual_agent_tool
+
+    def fake_generate_image_candidates(mission, graph):
+        graph.add_asset(
+            role=VisualArtifactRole.GENERATED_IMAGE,
+            artifact_id="var_pen_image",
+            local_path="/tmp/pen.png",
+        )
+        return {
+            "success": True,
+            "candidates": [
+                {"artifact_id": "var_pen_image", "score": 0.91, "image": "/tmp/pen.png"}
+            ],
+            "candidate_count": 1,
+            "failure_count": 0,
+        }
+
+    def fake_build_video_clips(mission, graph):
+        return {
+            "success": False,
+            "clips": [],
+            "clip_count": 0,
+            "failure_count": 1,
+            "failures": [{"error_type": "content_moderation", "error": "blocked"}],
+        }
+
+    monkeypatch.setattr(
+        visual_agent_tool,
+        "generate_image_candidates",
+        fake_generate_image_candidates,
+    )
+    monkeypatch.setattr(
+        visual_agent_tool,
+        "build_video_clips",
+        fake_build_video_clips,
+    )
+
+    payload = json.loads(
+        await visual_agent_tool._handle_visual_agent_generate(
+            {"prompt": "Create one product image and one short video."}
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["package_status"] == "partial_success"
+    assert payload["missing_outputs"] == ["video"]
+    assert payload["stop_reasons"] == ["video_stage_failed"]
+    assert payload["images"] == ["/tmp/pen.png"]
+    assert payload["videos"] == []
+    assert payload["video_result"]["failure_count"] == 1
 
 
 @pytest.mark.asyncio

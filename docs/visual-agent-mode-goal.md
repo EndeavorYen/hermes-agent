@@ -168,6 +168,9 @@ Done:
   even when the platform posts them as separate messages without a shared
   message ID, so `第 1 張` / `第 2 張` style feedback maps back to the right
   artifacts.
+- `visual_agent_generate` reports `package_status`, `missing_outputs`, and
+  `stop_reasons`, so partial image-only success after a failed video stage is
+  visible instead of silently looking like a full package.
 - Gateway tests cover auto-appending only selected current package artifacts and skipping historical package media.
 - Natural image-plus-video requests route to Visual Agent Mode without requiring users to mention internal controls such as `visual_agent_generate`, `autonomy_level`, `candidate_budget`, or provider names.
 - Tracked visual fixtures and ignore rules have been tightened so runtime media, local model endpoints, and user-specific prompt/preference examples stay out of the repo.

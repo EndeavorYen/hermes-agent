@@ -104,8 +104,13 @@ async def _handle_visual_agent_generate(args: Dict[str, Any], **_kw: Any) -> str
     payload["videos"] = _local_paths(graph, VisualArtifactRole.GENERATED_VIDEO)
     payload["image_result"] = _public_stage_result(image_result)
     payload["video_result"] = _public_stage_result(video_result)
-    if not package.success and action in {"ask_user", "fail"}:
-        payload["stop_reason"] = action
+    _add_package_status(
+        payload,
+        mission,
+        action=action,
+        image_result=image_result,
+        video_result=video_result,
+    )
     return json.dumps(payload, indent=2, ensure_ascii=False)
 
 
@@ -349,6 +354,51 @@ def _public_failure(result: Dict[str, Any]) -> Dict[str, Any]:
         "error": result.get("error"),
         "error_type": result.get("error_type"),
     }
+
+
+def _add_package_status(
+    payload: Dict[str, Any],
+    mission: VisualMission,
+    *,
+    action: str,
+    image_result: Dict[str, Any],
+    video_result: Dict[str, Any],
+) -> None:
+    images = list(payload.get("images") or [])
+    videos = list(payload.get("videos") or [])
+    missing_outputs: List[str] = []
+    stop_reasons: List[str] = []
+
+    if "image" in mission.requested_outputs and not images:
+        missing_outputs.append("image")
+        if action == "ask_user":
+            stop_reasons.append("low_image_confidence")
+        elif action == "fail":
+            stop_reasons.append("image_stage_failed")
+        elif not image_result.get("success"):
+            stop_reasons.append("image_stage_failed")
+    if "video" in mission.requested_outputs and not videos:
+        missing_outputs.append("video")
+        if images:
+            stop_reasons.append("video_stage_failed")
+        elif not video_result.get("success"):
+            stop_reasons.append("video_stage_not_started")
+
+    if not stop_reasons and action in {"ask_user", "fail"}:
+        stop_reasons.append(action)
+
+    if not payload.get("success"):
+        package_status = "stopped"
+    elif missing_outputs:
+        package_status = "partial_success"
+    else:
+        package_status = "success"
+
+    payload["package_status"] = package_status
+    payload["missing_outputs"] = missing_outputs
+    payload["stop_reasons"] = stop_reasons
+    if stop_reasons:
+        payload["stop_reason"] = stop_reasons[0]
 
 
 def _coerce_int(value: Any, *, default: int) -> int:

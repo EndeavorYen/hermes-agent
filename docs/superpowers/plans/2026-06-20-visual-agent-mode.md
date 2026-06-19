@@ -72,6 +72,9 @@ the final proof.
   have no shared platform `message_id`, so image/video packages posted as
   separate Slack messages can still receive per-artifact feedback such as
   `第 1 張... 第 2 張...`.
+- Partial-success follow-up adds `package_status`, `missing_outputs`, and
+  `stop_reasons` to `visual_agent_generate` results, so a failed video stage is
+  reported as `partial_success` instead of looking like a complete package.
 
 User-facing trigger contract:
 
