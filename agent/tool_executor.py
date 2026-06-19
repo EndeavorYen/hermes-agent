@@ -225,6 +225,9 @@ def _looks_like_combined_visual_package_request(text: str) -> bool:
     image_terms = (
         "image", "photo", "picture", "still", "圖片", "图片", "照片",
         "相片", "圖", "图", "產圖", "产图", "出圖", "出图",
+        "視覺素材", "视觉素材", "視覺資產", "视觉资产",
+        "visual material", "visual materials", "visual asset",
+        "visual assets", "visual package", "product showcase",
     )
     video_terms = (
         "video", "clip", "animation", "movie", "影片", "視頻",
@@ -249,6 +252,8 @@ def _looks_like_combined_visual_package_request(text: str) -> bool:
         r"(?:generate|create|make|produce).{0,80}(?:image|photo|picture|still).{0,80}(?:video|clip|animation)",
         r"(?:圖片|图片|照片|相片|圖|图).{0,30}(?:和|及|與|与|\+|、).{0,30}(?:影片|視頻|视频|短片|動畫|动画)",
         r"(?:產出|产出|生成|製作|制作|做|畫|画).{0,80}(?:圖片|图片|照片|相片|圖|图).{0,80}(?:影片|視頻|视频|短片|動畫|动画)",
+        r"(?:產圖|产图|出圖|出图|畫圖|画图).{0,30}(?:產影片|产影片|產視頻|产視頻|產视频|产视频|做影片|做視頻|做视频|影片|視頻|视频|短片)",
+        r"(?:視覺素材|视觉素材|視覺資產|视觉资产|visual materials?|visual assets?|visual package|product showcase).{0,40}(?:含|包含|including|with|plus|和|及|與|与|\+|、).{0,40}(?:影片|視頻|视频|短片|video|clip|animation)",
         r"(?:image-to-video|圖生影片|图生视频|圖轉影片|图转视频).{0,80}(?:new|generated|新|新產生|新生成)",
     )
     return any(re.search(pattern, lower) for pattern in combined_patterns)

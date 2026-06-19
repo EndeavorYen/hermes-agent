@@ -37,6 +37,32 @@ def test_blocks_direct_video_tool_for_english_image_video_package():
     assert payload["retry_with_tool"] == "visual_agent_generate"
 
 
+def test_blocks_direct_image_tool_for_colloquial_chinese_package_request():
+    result = _visual_package_route_guard_result(
+        "image_generate",
+        {"prompt": "black pen product photo"},
+        [{"role": "user", "content": "幫我產圖產影片：霧黑鋼筆放在白紙上，柔和窗光。"}],
+        {"image_generate", "video_generate", "visual_agent_generate"},
+    )
+
+    payload = json.loads(result)
+    assert payload["success"] is False
+    assert payload["retry_with_tool"] == "visual_agent_generate"
+
+
+def test_blocks_direct_image_tool_for_visual_materials_with_clip_request():
+    result = _visual_package_route_guard_result(
+        "image_generate_mission",
+        {"prompt": "black pen product visuals"},
+        [{"role": "user", "content": "幫我做一組產品視覺素材，含短片：霧黑鋼筆、白紙、柔和窗光。"}],
+        {"image_generate_mission", "video_generate", "visual_agent_generate"},
+    )
+
+    payload = json.loads(result)
+    assert payload["success"] is False
+    assert payload["retry_with_tool"] == "visual_agent_generate"
+
+
 def test_allows_video_tool_for_existing_selected_image_animation():
     result = _visual_package_route_guard_result(
         "video_generate",

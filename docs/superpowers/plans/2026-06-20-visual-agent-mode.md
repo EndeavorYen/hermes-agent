@@ -67,6 +67,7 @@ the final proof.
 User-facing trigger contract:
 
 - Users should ask in ordinary language, for example: `請幫我產出一張圖片和一段影片：一支霧黑鋼筆放在白紙上，柔和窗光，乾淨產品攝影。`
+- More casual forms should also work, for example: `幫我產圖產影片：霧黑鋼筆產品攝影。` or `做一組產品視覺素材，含短片。`
 - Users should not need to mention `visual agent mode`, `visual_agent_generate`, `autonomy_level`, `candidate_budget`, `video_budget`, or provider names.
 - When a request clearly asks for a combined image/video package, Hermes should call `visual_agent_generate` exactly once and let it plan, generate, select, animate, and package the result.
 - Internal knobs remain available only for debugging or explicit advanced overrides.

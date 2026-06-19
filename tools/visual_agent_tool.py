@@ -27,7 +27,8 @@ VISUAL_AGENT_GENERATE_SCHEMA: Dict[str, Any] = {
         "create video clips, and return a package ready for delivery. "
         "Use this for natural user requests that ask for images plus videos, "
         "image-to-video packages, product showcases, character/photo sets with clips, "
-        "or Chinese requests such as 產出圖片和影片 / 做一張圖和一段短片. "
+        "visual materials that include a short clip, or Chinese requests such as "
+        "產出圖片和影片 / 產圖產影片 / 做一組視覺素材含短片. "
         "Do not require the user to mention this tool name or internal parameters."
     ),
     "parameters": {

@@ -56,6 +56,8 @@ Users should not need to know `visual_agent_generate`, `autonomy_level`, `candid
 Hermes should treat natural requests like these as Visual Agent Mode candidates:
 
 - `幫我產出一張圖片和一段影片：霧黑鋼筆放在白紙上，柔和窗光`
+- `幫我產圖產影片：霧黑鋼筆產品攝影`
+- `做一組產品視覺素材，含短片`
 - `做一組產品圖，順便產一段短片`
 - `用這張 reference 做幾張圖，再挑最好的一張產影片`
 - `Create one product image and a short video clip`

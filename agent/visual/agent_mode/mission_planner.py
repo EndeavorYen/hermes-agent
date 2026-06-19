@@ -51,6 +51,18 @@ _IMAGE_TOKENS = (
     "畫圖",
     "画图",
 )
+_VISUAL_PACKAGE_IMAGE_HINTS = (
+    "視覺素材",
+    "视觉素材",
+    "視覺資產",
+    "视觉资产",
+    "visual material",
+    "visual materials",
+    "visual asset",
+    "visual assets",
+    "visual package",
+    "product showcase",
+)
 _REPAIR_TOKENS = ("repair", "fix", "revise", "improve", "retry", "修復", "修正", "修改", "重試", "重试")
 _COUNT_WORDS = {
     "one": 1,
@@ -84,7 +96,9 @@ def plan_visual_mission(
     text = (user_prompt or "").strip()
     lowered = text.lower()
     wants_video = _contains_any(lowered, _VIDEO_TOKENS)
-    wants_image = _contains_any(lowered, _IMAGE_TOKENS)
+    wants_image = _contains_any(lowered, _IMAGE_TOKENS) or (
+        wants_video and _contains_any(lowered, _VISUAL_PACKAGE_IMAGE_HINTS)
+    )
     wants_repair = _contains_any(lowered, _REPAIR_TOKENS)
     count = _extract_requested_count(text, default=3)
     mission_type = _mission_type(
