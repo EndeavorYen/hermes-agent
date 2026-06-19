@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from typing import Any, Dict, List, Optional
 
@@ -255,6 +256,72 @@ class TestUnifiedDispatch:
         assert result["success"] is True
         assert provider.last_kwargs["aspect_ratio"] == "9:16"
         assert provider.last_kwargs["_aspect_ratio_override_explicit"] is True
+
+    def test_image_to_video_infers_aspect_from_local_image_when_not_explicit(self, tmp_path):
+        provider = _RecordingProvider("rec")
+        video_gen_registry.register_provider(provider)
+        image_path = tmp_path / "portrait.png"
+        image_path.write_bytes(
+            b"\x89PNG\r\n\x1a\n"
+            b"\x00\x00\x00\rIHDR"
+            b"\x00\x00\x02\xd0\x00\x00\x05\x00"
+            b"\x08\x02\x00\x00\x00"
+            b"\x00\x00\x00\x00"
+        )
+
+        result = self._run({
+            "prompt": "animate this",
+            "image_url": str(image_path),
+        })
+
+        assert result["success"] is True
+        assert provider.last_kwargs["aspect_ratio"] == "9:16"
+        assert provider.last_kwargs["_aspect_ratio_source"] == "input_image_probe"
+        assert provider.last_kwargs["_aspect_ratio_override_explicit"] is False
+
+    def test_explicit_aspect_ratio_still_wins_over_probe(self, tmp_path):
+        provider = _RecordingProvider("rec")
+        video_gen_registry.register_provider(provider)
+        image_path = tmp_path / "portrait.png"
+        image_path.write_bytes(
+            b"\x89PNG\r\n\x1a\n"
+            b"\x00\x00\x00\rIHDR"
+            b"\x00\x00\x02\xd0\x00\x00\x05\x00"
+            b"\x08\x02\x00\x00\x00"
+            b"\x00\x00\x00\x00"
+        )
+
+        result = self._run({
+            "prompt": "animate this",
+            "image_url": str(image_path),
+            "aspect_ratio": "16:9",
+        })
+
+        assert result["success"] is True
+        assert provider.last_kwargs["aspect_ratio"] == "16:9"
+        assert provider.last_kwargs["_aspect_ratio_source"] == "explicit"
+        assert provider.last_kwargs["_aspect_ratio_override_explicit"] is True
+
+    def test_image_to_video_infers_aspect_from_data_uri_when_not_explicit(self):
+        provider = _RecordingProvider("rec")
+        video_gen_registry.register_provider(provider)
+        raw_png = (
+            b"\x89PNG\r\n\x1a\n"
+            b"\x00\x00\x00\rIHDR"
+            b"\x00\x00\x02\xd0\x00\x00\x05\x00"
+            b"\x08\x02\x00\x00\x00"
+            b"\x00\x00\x00\x00"
+        )
+        data_uri = "data:image/png;base64," + base64.b64encode(raw_png).decode("ascii")
+
+        result = self._run({
+            "prompt": "animate this",
+            "image_url": data_uri,
+        })
+
+        assert result["success"] is True
+        assert provider.last_kwargs["aspect_ratio"] == "9:16"
+        assert provider.last_kwargs["_aspect_ratio_source"] == "input_image_probe"
 
     def test_prompt_required(self):
         provider = _RecordingProvider("rec")

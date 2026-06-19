@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+
 
 def _tiny_png(width: int = 2, height: int = 3) -> bytes:
     return (
@@ -36,3 +38,15 @@ def test_probe_missing_path_reports_unstable():
     assert meta.is_stable is False
     assert meta.freshness_status == "unknown"
 
+
+def test_probe_data_uri_png_dimensions():
+    from agent.visual.media_probe import probe_local_media
+
+    encoded = base64.b64encode(_tiny_png(width=720, height=1280)).decode("ascii")
+    meta = probe_local_media(f"data:image/png;base64,{encoded}")
+
+    assert meta.exists is True
+    assert meta.mime_type == "image/png"
+    assert meta.width == 720
+    assert meta.height == 1280
+    assert meta.sha256.startswith("sha256:")

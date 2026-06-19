@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import base64
 import mimetypes
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +27,22 @@ class MediaProbeResult:
 
 
 def probe_local_media(path: str | Path) -> MediaProbeResult:
+    data_uri = _decode_data_uri(path)
+    if data_uri is not None:
+        mime, raw = data_uri
+        width, height = _probe_image_dimensions(raw, Path("inline"))
+        return MediaProbeResult(
+            path=str(path),
+            exists=True,
+            mime_type=mime or _detect_mime(raw, Path("inline")),
+            bytes=len(raw),
+            sha256=f"sha256:{hashlib.sha256(raw).hexdigest()}",
+            width=width,
+            height=height,
+            is_stable=True,
+            freshness_status="fresh",
+        )
+
     resolved = _local_path(path)
     if resolved is None or not resolved.is_file():
         return MediaProbeResult(
@@ -49,6 +66,22 @@ def probe_local_media(path: str | Path) -> MediaProbeResult:
         is_stable=True,
         freshness_status="fresh",
     )
+
+
+def _decode_data_uri(value: str | Path) -> Optional[tuple[Optional[str], bytes]]:
+    if isinstance(value, Path):
+        return None
+    text = str(value or "").strip()
+    if not text.lower().startswith("data:image/") or "," not in text:
+        return None
+    header, encoded = text.split(",", 1)
+    if ";base64" not in header.lower():
+        return None
+    mime = header[5:].split(";", 1)[0].strip().lower() or None
+    try:
+        return mime, base64.b64decode(encoded)
+    except Exception:
+        return None
 
 
 def _local_path(value: str | Path) -> Optional[Path]:
@@ -154,4 +187,3 @@ def _pillow_dimensions(path: Path) -> Optional[tuple[int, int]]:
     except Exception:
         return None
     return None
-

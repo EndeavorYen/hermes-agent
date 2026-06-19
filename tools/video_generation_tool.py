@@ -54,6 +54,8 @@ from agent.video_gen_provider import (
     DEFAULT_RESOLUTION,
     error_response,
 )
+from agent.visual.aspect_policy import nearest_aspect_ratio
+from agent.visual.media_probe import probe_local_media
 from agent.visual.tracking import record_visual_generation_attempt
 from tools.registry import registry, tool_error
 
@@ -598,6 +600,33 @@ def _model_modalities(provider: Any, model: Optional[str]) -> set[str]:
     return set()
 
 
+def _provider_supported_aspect_ratios(provider: Any) -> List[str]:
+    try:
+        caps = provider.capabilities() or {}
+    except Exception:
+        caps = {}
+    values = caps.get("aspect_ratios") if isinstance(caps, dict) else None
+    if not isinstance(values, (list, tuple, set)):
+        values = COMMON_ASPECT_RATIOS
+    return [str(value) for value in values if str(value).strip()]
+
+
+def _infer_video_aspect_ratio_from_input_image(
+    image_url: Optional[str],
+    provider: Any,
+) -> Optional[str]:
+    if not image_url:
+        return None
+    meta = probe_local_media(image_url)
+    if not meta.exists or not meta.width or not meta.height:
+        return None
+    return nearest_aspect_ratio(
+        meta.width,
+        meta.height,
+        _provider_supported_aspect_ratios(provider),
+    )
+
+
 def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
     prompt = (args.get("prompt") or "").strip()
     image_url = (args.get("image_url") or "").strip() or None
@@ -641,6 +670,15 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
             model=model or "",
             prompt=prompt,
         ))
+    aspect_ratio_source = "explicit" if aspect_ratio_explicit else "default"
+    if image_url and not aspect_ratio_explicit:
+        inferred_aspect_ratio = _infer_video_aspect_ratio_from_input_image(
+            image_url,
+            provider,
+        )
+        if inferred_aspect_ratio:
+            aspect_ratio = inferred_aspect_ratio
+            aspect_ratio_source = "input_image_probe"
 
     prompt_mediation = _build_video_prompt_mediation(
         prompt,
@@ -658,6 +696,7 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
         "duration": duration,
         "aspect_ratio": aspect_ratio,
         "_aspect_ratio_override_explicit": aspect_ratio_explicit,
+        "_aspect_ratio_source": aspect_ratio_source,
         "resolution": resolution,
         "negative_prompt": negative_prompt,
         "audio": audio,
@@ -822,6 +861,7 @@ def _record_visual_video_result(
         "reference_image_urls": kwargs.get("reference_image_urls"),
         "duration": kwargs.get("duration"),
         "aspect_ratio": kwargs.get("aspect_ratio"),
+        "aspect_ratio_source": kwargs.get("_aspect_ratio_source"),
         "aspect_ratio_override_explicit": kwargs.get("_aspect_ratio_override_explicit"),
         "resolution": kwargs.get("resolution"),
         "negative_prompt": kwargs.get("negative_prompt"),
