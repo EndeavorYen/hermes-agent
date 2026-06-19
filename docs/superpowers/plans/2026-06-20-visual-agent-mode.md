@@ -22,7 +22,7 @@
 
 ## Execution Status
 
-Status as of 2026-06-20 02:58 Asia/Taipei:
+Status as of 2026-06-20 03:56 Asia/Taipei:
 
 | Area | Status | Evidence |
 | --- | --- | --- |
@@ -43,6 +43,15 @@ Implemented follow-up fixes from live smoke:
 - `363f32b8a` splits visual-package still-image prompts so the image model does not render split-screen still/video contact sheets.
 - `4cce96266` preserves image mission `visual_artifact_id` values so selected image/video IDs join back to `visual_artifacts`.
 - Natural-language trigger follow-up teaches the planner Chinese image/video/count terms and makes the package tool default to auto-select, so users do not need to say `visual_agent_generate` or `autonomy_level=2`.
+- Focused verification passed with 41 tests covering routing guidance, wrong-tool guardrails, natural tool defaults, gateway current-turn media append, and Slack selected-artifact delivery metadata.
+- Live gateway is running from the patched checkout and Slack Socket Mode is connected, but only a real user-originated Slack request can close the final inbound proof gate. Bot-authored Slack messages and CLI handoff notices are not counted as proof because they do not exercise the same user inbound path.
+
+User-facing trigger contract:
+
+- Users should ask in ordinary language, for example: `請幫我產出一張圖片和一段影片：一支霧黑鋼筆放在白紙上，柔和窗光，乾淨產品攝影。`
+- Users should not need to mention `visual agent mode`, `visual_agent_generate`, `autonomy_level`, `candidate_budget`, `video_budget`, or provider names.
+- When a request clearly asks for a combined image/video package, Hermes should call `visual_agent_generate` exactly once and let it plan, generate, select, animate, and package the result.
+- Internal knobs remain available only for debugging or explicit advanced overrides.
 
 ---
 
