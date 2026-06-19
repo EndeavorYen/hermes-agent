@@ -73,6 +73,7 @@ from tools.image2_adaptive_mediator import (
     record_image2_mediator_attempt as _record_image2_mediator_attempt,
     record_qwen_call_health as _record_qwen_call_health,
 )
+from agent.visual.tracking import record_visual_generation_attempt
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import (
     fal_key_is_configured,
@@ -1591,6 +1592,7 @@ def _handle_image_generate(args, **kw):
     prompt = args.get("prompt", "")
     if not prompt:
         return tool_error("prompt is required for image generation")
+    original_prompt = prompt
     mediated: Optional[MediatedImagePrompt] = None
     mediator_config: Dict[str, Any] = {"enabled": False}
     if not _coerce_bool(args.get("skip_prompt_preprocessor"), default=False):
@@ -1627,7 +1629,19 @@ def _handle_image_generate(args, **kw):
         **scalar_overrides,
     )
     if dispatched is not None:
-        return _finalize_mediated_image_result(dispatched, mediated, mediator_config)
+        finalized = _finalize_mediated_image_result(dispatched, mediated, mediator_config)
+        return _record_visual_image_result(
+            finalized,
+            original_prompt=original_prompt,
+            prompt=prompt,
+            aspect_ratio=aspect_ratio,
+            reference_images=reference_images,
+            input_image=input_image,
+            input_images=input_images,
+            image_style_references=image_style_references,
+            scalar_overrides=scalar_overrides,
+            mediated=mediated,
+        )
 
     generated = image_generate_tool(
         prompt=prompt,
@@ -1642,7 +1656,84 @@ def _handle_image_generate(args, **kw):
         input_images=input_images,
         image_style_references=image_style_references,
     )
-    return _finalize_mediated_image_result(generated, mediated, mediator_config)
+    finalized = _finalize_mediated_image_result(generated, mediated, mediator_config)
+    return _record_visual_image_result(
+        finalized,
+        original_prompt=original_prompt,
+        prompt=prompt,
+        aspect_ratio=aspect_ratio,
+        reference_images=reference_images,
+        input_image=input_image,
+        input_images=input_images,
+        image_style_references=image_style_references,
+        scalar_overrides=scalar_overrides,
+        mediated=mediated,
+    )
+
+
+def _record_visual_image_result(
+    result_text: str,
+    *,
+    original_prompt: str,
+    prompt: str,
+    aspect_ratio: str,
+    reference_images: Optional[List[str]],
+    input_image: Optional[List[str]],
+    input_images: Optional[List[str]],
+    image_style_references: Optional[List[str]],
+    scalar_overrides: Dict[str, Any],
+    mediated: Optional[MediatedImagePrompt],
+) -> str:
+    try:
+        payload = json.loads(result_text)
+    except Exception:
+        return result_text
+    if not isinstance(payload, dict):
+        return result_text
+
+    has_references = any((reference_images, input_image, input_images, image_style_references))
+    operation = "reference_image_edit" if has_references else "text_to_image"
+    requested = {
+        "aspect_ratio": aspect_ratio,
+        **scalar_overrides,
+    }
+    if reference_images:
+        requested["reference_images"] = reference_images
+    if input_image:
+        requested["input_image"] = input_image
+    if input_images:
+        requested["input_images"] = input_images
+    if image_style_references:
+        requested["image_style_references"] = image_style_references
+
+    effective = {
+        "aspect_ratio": payload.get("aspect_ratio") or aspect_ratio,
+    }
+    if payload.get("reference_conditioning"):
+        effective["reference_conditioning"] = payload.get("reference_conditioning")
+
+    tracked = record_visual_generation_attempt(
+        payload,
+        user_prompt=original_prompt,
+        prompt_original=original_prompt,
+        prompt_mediated=prompt,
+        modality="image",
+        operation=operation,
+        artifact_key="image",
+        kind="image",
+        provider=payload.get("provider"),
+        model=payload.get("model"),
+        strategy_id=getattr(mediated, "strategy", None) if mediated is not None else None,
+        parameters_requested=requested,
+        parameters_effective=effective,
+        input_artifacts={
+            "reference_images": reference_images or [],
+            "input_image": input_image or [],
+            "input_images": input_images or [],
+            "image_style_references": image_style_references or [],
+        },
+    )
+    return json.dumps(tracked, indent=2, ensure_ascii=False)
 
 
 registry.register(
