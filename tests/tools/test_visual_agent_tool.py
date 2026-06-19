@@ -80,6 +80,59 @@ async def test_visual_agent_generate_runs_image_video_package(monkeypatch):
     ]
 
 
+@pytest.mark.asyncio
+async def test_visual_agent_generate_natural_chinese_image_video_request_defaults_to_package(monkeypatch):
+    from tools import visual_agent_tool
+
+    def fake_generate_image_candidates(mission, graph):
+        graph.add_asset(
+            role=VisualArtifactRole.GENERATED_IMAGE,
+            artifact_id="var_pen_image",
+            local_path="/tmp/pen.png",
+        )
+        return {
+            "success": True,
+            "candidates": [
+                {"artifact_id": "var_pen_image", "score": 0.91, "image": "/tmp/pen.png"}
+            ],
+            "candidate_count": 1,
+            "failure_count": 0,
+        }
+
+    def fake_build_video_clips(mission, graph):
+        graph.add_asset(
+            role=VisualArtifactRole.GENERATED_VIDEO,
+            artifact_id="var_pen_video",
+            local_path="/tmp/pen.mp4",
+        )
+        return {"success": True, "clips": [{"artifact_id": "var_pen_video"}]}
+
+    monkeypatch.setattr(
+        visual_agent_tool,
+        "generate_image_candidates",
+        fake_generate_image_candidates,
+    )
+    monkeypatch.setattr(
+        visual_agent_tool,
+        "build_video_clips",
+        fake_build_video_clips,
+    )
+
+    payload = json.loads(
+        await visual_agent_tool._handle_visual_agent_generate(
+            {
+                "prompt": "請幫我產出一張圖片和一段影片：一支霧黑鋼筆放在白紙上，柔和窗光，乾淨產品攝影。"
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["selected_image_artifact_ids"] == ["var_pen_image"]
+    assert payload["selected_video_artifact_ids"] == ["var_pen_video"]
+    assert payload["images"] == ["/tmp/pen.png"]
+    assert payload["videos"] == ["/tmp/pen.mp4"]
+
+
 def test_visual_agent_generate_tool_is_registered():
     import tools.visual_agent_tool  # noqa: F401
     from tools.registry import registry
@@ -89,6 +142,8 @@ def test_visual_agent_generate_tool_is_registered():
     assert entry.toolset == "image_gen"
     assert entry.is_async is True
     assert "visual production agent" in entry.schema["description"]
+    assert "Do not require the user to mention this tool name" in entry.schema["description"]
+    assert entry.schema["parameters"]["properties"]["autonomy_level"]["default"] == 2
 
 
 @pytest.mark.asyncio

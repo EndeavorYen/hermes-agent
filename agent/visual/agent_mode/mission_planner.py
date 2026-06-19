@@ -9,7 +9,24 @@ from typing import List, Optional
 from agent.visual.agent_mode.types import VisualMission, VisualMissionType
 
 
-_VIDEO_TOKENS = ("video", "videos", "clip", "clips", "animate", "animation")
+_VIDEO_TOKENS = (
+    "video",
+    "videos",
+    "clip",
+    "clips",
+    "animate",
+    "animation",
+    "影片",
+    "视频",
+    "視頻",
+    "短片",
+    "動畫",
+    "动画",
+    "動圖",
+    "动图",
+    "動態",
+    "动态",
+)
 _IMAGE_TOKENS = (
     "image",
     "images",
@@ -19,8 +36,22 @@ _IMAGE_TOKENS = (
     "pictures",
     "portrait",
     "portraits",
+    "圖片",
+    "图片",
+    "照片",
+    "相片",
+    "圖",
+    "图",
+    "寫真",
+    "写真",
+    "產圖",
+    "产图",
+    "出圖",
+    "出图",
+    "畫圖",
+    "画图",
 )
-_REPAIR_TOKENS = ("repair", "fix", "revise", "improve", "retry")
+_REPAIR_TOKENS = ("repair", "fix", "revise", "improve", "retry", "修復", "修正", "修改", "重試", "重试")
 _COUNT_WORDS = {
     "one": 1,
     "two": 2,
@@ -28,6 +59,20 @@ _COUNT_WORDS = {
     "four": 4,
     "five": 5,
     "six": 6,
+}
+_ZH_COUNT_WORDS = {
+    "一": 1,
+    "二": 2,
+    "兩": 2,
+    "两": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+    "十": 10,
 }
 
 
@@ -86,6 +131,15 @@ def _contains_any(text: str, tokens: tuple[str, ...]) -> bool:
 
 def _extract_requested_count(text: str, *, default: int) -> int:
     lowered = text.lower()
+    zh_image_count_match = re.search(
+        r"([一二兩两三四五六七八九十]|[1-9]\d?)\s*"
+        r"(?:張|张|幅|個|个|組|组)?\s*"
+        r"(?:圖片|图片|照片|相片|圖|图|寫真|写真)",
+        text,
+    )
+    if zh_image_count_match:
+        return _count_token_to_int(zh_image_count_match.group(1))
+
     count_tokens = "|".join(["[1-9]\\d?", *_COUNT_WORDS.keys()])
     image_count_match = re.search(
         rf"\b({count_tokens})\s+(?:editorial\s+)?(?:image|images|photo|photos|picture|pictures|portrait|portraits|option|options)\b",
@@ -105,6 +159,8 @@ def _extract_requested_count(text: str, *, default: int) -> int:
 def _count_token_to_int(token: str) -> int:
     if token.isdigit():
         return max(1, min(12, int(token)))
+    if token in _ZH_COUNT_WORDS:
+        return _ZH_COUNT_WORDS[token]
     return _COUNT_WORDS[token]
 
 

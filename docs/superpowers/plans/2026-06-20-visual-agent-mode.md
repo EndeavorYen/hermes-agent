@@ -32,6 +32,7 @@ Status as of 2026-06-20 02:58 Asia/Taipei:
 | Tool surface | Done | `tools/visual_agent_tool.py`, `tests/tools/test_visual_agent_tool.py` |
 | Learning store slice | Done | `agent/visual/agent_mode/learning.py`, `tests/visual/agent_mode/test_learning.py` |
 | Gateway package delivery path | Done in tests | `tests/gateway/test_media_extraction.py`, `tests/gateway/platforms/test_slack_visual_delivery.py`, `tests/gateway/test_send_multiple_images.py` |
+| User-friendly natural trigger | Done in tests | Chinese image+video package requests infer `VISUAL_PACKAGE`; `visual_agent_generate` defaults to L2 auto-select |
 | Live CLI image+video smoke | Done | mission `vms_915e683f14b44d7b89acb96a0602834e`, image `var_7e14ab73338344dba02533b678e7aebe`, video `var_d0d50d86318a4e588df269360a3252de` |
 | Live Slack inbound proof | Pending | Requires a Slack-triggered Hermes request so `visual_deliveries` increases in the live ledger |
 
@@ -41,6 +42,7 @@ Implemented follow-up fixes from live smoke:
 - `2fb55962f` lets the xAI video provider run from async Hermes tool handlers without nested event-loop failure.
 - `363f32b8a` splits visual-package still-image prompts so the image model does not render split-screen still/video contact sheets.
 - `4cce96266` preserves image mission `visual_artifact_id` values so selected image/video IDs join back to `visual_artifacts`.
+- Natural-language trigger follow-up teaches the planner Chinese image/video/count terms and makes the package tool default to auto-select, so users do not need to say `visual_agent_generate` or `autonomy_level=2`.
 
 ---
 

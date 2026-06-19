@@ -24,7 +24,11 @@ VISUAL_AGENT_GENERATE_SCHEMA: Dict[str, Any] = {
     "description": (
         "Run Hermes as a visual production agent: plan a visual mission, "
         "generate image candidates, select current artifacts, optionally "
-        "create video clips, and return a package ready for delivery."
+        "create video clips, and return a package ready for delivery. "
+        "Use this for natural user requests that ask for images plus videos, "
+        "image-to-video packages, product showcases, character/photo sets with clips, "
+        "or Chinese requests such as 產出圖片和影片 / 做一張圖和一段短片. "
+        "Do not require the user to mention this tool name or internal parameters."
     ),
     "parameters": {
         "type": "object",
@@ -40,8 +44,8 @@ VISUAL_AGENT_GENERATE_SCHEMA: Dict[str, Any] = {
             },
             "autonomy_level": {
                 "type": "integer",
-                "description": "Autonomy level from 0 to 4. Level 2 can auto-select images.",
-                "default": 1,
+                "description": "Autonomy level from 0 to 4. Defaults to 2 so natural package requests can auto-select images for video.",
+                "default": 2,
             },
             "candidate_budget": {
                 "type": "integer",
@@ -189,7 +193,7 @@ def _mission_from_args(args: Dict[str, Any], prompt: str) -> VisualMission:
     mission = plan_visual_mission(
         prompt,
         attachments=list(args.get("attachments") or []),
-        autonomy_level=_coerce_int(args.get("autonomy_level"), default=1),
+        autonomy_level=_coerce_int(args.get("autonomy_level"), default=2),
     )
     replacements: Dict[str, Any] = {}
     if _coerce_positive_int(args.get("candidate_budget")) is not None:

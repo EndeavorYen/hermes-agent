@@ -30,3 +30,15 @@ def test_plans_image_set_for_image_only_request():
     assert mission.mission_type == VisualMissionType.IMAGE_SET
     assert mission.candidate_budget == 4
     assert mission.video_budget == 0
+
+
+def test_plans_chinese_natural_image_video_package_request():
+    mission = plan_visual_mission(
+        "請幫我產出一張圖片和一段影片：一支霧黑鋼筆放在白紙上，柔和窗光，乾淨產品攝影。"
+    )
+
+    assert mission.mission_type == VisualMissionType.VISUAL_PACKAGE
+    assert "image" in mission.requested_outputs
+    assert "video" in mission.requested_outputs
+    assert mission.candidate_budget == 1
+    assert mission.video_budget == 1

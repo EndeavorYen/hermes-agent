@@ -49,6 +49,25 @@ User uploads material and describes the desired visual result
   -> Hermes records feedback and strategy outcomes
 ```
 
+## User-Friendly Invocation
+
+Users should not need to know `visual_agent_generate`, `autonomy_level`, `candidate_budget`, or provider names.
+
+Hermes should treat natural requests like these as Visual Agent Mode candidates:
+
+- `幫我產出一張圖片和一段影片：霧黑鋼筆放在白紙上，柔和窗光`
+- `做一組產品圖，順便產一段短片`
+- `用這張 reference 做幾張圖，再挑最好的一張產影片`
+- `Create one product image and a short video clip`
+- `Make a visual package from this reference`
+
+Default behavior:
+
+- infer image/video intent from the user's wording;
+- infer simple counts such as `一張圖`, `three images`, or `四張照片`;
+- auto-select generated images for video when the user clearly asked for a package;
+- keep internal controls available for debugging, but do not require users to mention them.
+
 ## Mission Types
 
 The system should support these initial mission types:
