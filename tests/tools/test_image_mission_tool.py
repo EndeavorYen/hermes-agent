@@ -355,6 +355,49 @@ async def test_mission_skips_qc_failed_image_and_returns_best_candidate(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_mission_success_preserves_recorded_visual_artifact_ids(tmp_path):
+    from tools.image_mission_tool import run_image_generation_mission
+
+    image_path = tmp_path / "recorded.png"
+    _write_test_image(image_path)
+
+    def fake_generate(**kwargs):
+        return json.dumps({
+            "success": True,
+            "image": str(image_path),
+            "provider": "openai-codex",
+            "model": "gpt-image-2-medium",
+            "prompt": kwargs["prompt"],
+            "visual_artifact_id": "var_recorded",
+            "visual_request_id": "vrq_recorded",
+            "visual_attempt_id": "vat_recorded",
+        })
+
+    async def fake_qc(image_path: str, prompt: str):
+        return json.dumps({
+            "quality_score": 94,
+            "adherence_score": 91,
+            "fatal_issues": [],
+            "issues": [],
+            "summary": "sharp image, coherent details",
+        })
+
+    result = await run_image_generation_mission(
+        prompt="clean product photo",
+        aspect_ratio="landscape",
+        budget="task",
+        generate_once=fake_generate,
+        inspect_image=fake_qc,
+    )
+
+    assert result["success"] is True
+    assert result["visual_artifact_id"] == "var_recorded"
+    assert result["visual_request_id"] == "vrq_recorded"
+    assert result["visual_attempt_id"] == "vat_recorded"
+    assert result["best"]["visual_artifact_id"] == "var_recorded"
+
+
+@pytest.mark.asyncio
 async def test_mission_attempt_cap_limits_auto_budget(tmp_path):
     from tools.image_mission_tool import run_image_generation_mission
 

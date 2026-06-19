@@ -271,11 +271,13 @@ def _fallback_candidate_from_failed_mission(result: Dict[str, Any]) -> Dict[str,
         return None
     metadata = {
         "qc_failed_fallback": True,
+        "request_id": best.get("visual_request_id"),
+        "attempt_id": best.get("visual_attempt_id"),
         "provider": best.get("provider"),
         "model": best.get("model"),
     }
     return {
-        "artifact_id": new_artifact_id(),
+        "artifact_id": best.get("visual_artifact_id") or new_artifact_id(),
         "image": image.strip(),
         "score": _best_candidate_score(best),
         "metadata": metadata,

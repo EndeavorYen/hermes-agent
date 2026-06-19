@@ -635,6 +635,7 @@ async def run_image_generation_mission(
             best_attempt = attempt_record
 
         if attempt_record["accepted"]:
+            accepted_attempt = _public_attempt(attempt_record)
             return _finalize_mediated_mission_result({
                 "success": True,
                 "image": image,
@@ -647,9 +648,12 @@ async def run_image_generation_mission(
                 "max_attempts": max_attempts,
                 "attempt_count": len(attempts),
                 "strategy": strategy,
-                "best": _public_attempt(attempt_record),
+                "best": accepted_attempt,
                 "attempts": [_public_attempt(attempt) for attempt in attempts],
                 "learning_corrections": learning_corrections,
+                "visual_request_id": accepted_attempt.get("visual_request_id"),
+                "visual_attempt_id": accepted_attempt.get("visual_attempt_id"),
+                "visual_artifact_id": accepted_attempt.get("visual_artifact_id"),
             }, mediated, mediator_config)
 
         previous_failure = _retry_feedback(deterministic_qc, vision_qc)
@@ -954,6 +958,9 @@ def _public_attempt(attempt: Dict[str, Any]) -> Dict[str, Any]:
         "error": result.get("error"),
         "provider": result.get("provider"),
         "model": result.get("model"),
+        "visual_request_id": result.get("visual_request_id"),
+        "visual_attempt_id": result.get("visual_attempt_id"),
+        "visual_artifact_id": result.get("visual_artifact_id"),
         "deterministic_qc": attempt.get("deterministic_qc"),
         "vision_qc": attempt.get("vision_qc"),
         "qc": attempt.get("qc"),
