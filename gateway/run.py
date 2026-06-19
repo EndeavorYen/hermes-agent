@@ -680,6 +680,7 @@ _AUTO_APPEND_IMAGE_TOOL_NAMES = {
     "visual_arsenal_generate",
 }
 _AUTO_APPEND_VIDEO_TOOL_NAMES = {"video_generate"}
+_AUTO_APPEND_VISUAL_PACKAGE_TOOL_NAMES = {"visual_agent_generate"}
 _GENERATED_IMAGE_ONLY_DIRECTIVE = "[[generated_image_only]]"
 
 
@@ -843,6 +844,47 @@ def _video_tool_response_fragment(content: str, history_media_paths: set) -> Opt
     return None
 
 
+def _valid_video_tool_media_fragment(video: Any, history_media_paths: set) -> Optional[str]:
+    if not isinstance(video, str):
+        return None
+    video = video.strip()
+    if not video or video in history_media_paths:
+        return None
+    if _TOOL_VIDEO_PATH_RE.match(video):
+        return f"MEDIA:{video}"
+    if _TOOL_VIDEO_URL_RE.match(video):
+        return video
+    return None
+
+
+def _visual_package_tool_media_tags(content: str, history_media_paths: set) -> List[str]:
+    try:
+        payload = json.loads(content)
+    except Exception:
+        return []
+    if not isinstance(payload, dict) or payload.get("success") is not True:
+        return []
+
+    image_tags: List[str] = []
+    for image in payload.get("images") or []:
+        tag = _valid_image_tool_media_tag(image, history_media_paths)
+        if tag and tag not in image_tags:
+            image_tags.append(tag)
+
+    video_tags: List[str] = []
+    for video in payload.get("videos") or []:
+        tag = _valid_video_tool_media_fragment(video, history_media_paths)
+        if tag and tag not in video_tags:
+            video_tags.append(tag)
+
+    tags: List[str] = []
+    if image_tags:
+        tags.append(_GENERATED_IMAGE_ONLY_DIRECTIVE)
+        tags.extend(image_tags)
+    tags.extend(video_tags)
+    return tags
+
+
 def _collect_history_media_paths(messages: List[Dict[str, Any]]) -> set[str]:
     """Collect deliverable media payloads already present in replay history.
 
@@ -872,6 +914,10 @@ def _collect_history_media_paths(messages: List[Dict[str, Any]]) -> set[str]:
         if fragment:
             path = _auto_append_media_tag_payload(fragment)
             if path:
+                paths.add(path)
+        for tag in _visual_package_tool_media_tags(content, set()):
+            path = _auto_append_media_tag_payload(tag)
+            if path and path != _GENERATED_IMAGE_ONLY_DIRECTIVE:
                 paths.add(path)
     return paths
 
@@ -929,9 +975,13 @@ def _collect_auto_append_media_tags(
             _AUTO_APPEND_MEDIA_TOOL_NAMES
             | _AUTO_APPEND_IMAGE_TOOL_NAMES
             | _AUTO_APPEND_VIDEO_TOOL_NAMES
+            | _AUTO_APPEND_VISUAL_PACKAGE_TOOL_NAMES
         ):
             continue
         content = str(msg.get("content") or "")
+        if tool_name in _AUTO_APPEND_VISUAL_PACKAGE_TOOL_NAMES:
+            media_tags.extend(_visual_package_tool_media_tags(content, history_media_paths))
+            continue
         if tool_name in _AUTO_APPEND_IMAGE_TOOL_NAMES:
             tags = _image_tool_media_tags(content, history_media_paths)
             if tags:

@@ -413,6 +413,112 @@ caption
         assert tags == ["https://cdn.x.ai/new-grok-video.mp4"]
         assert voice is False
 
+    def test_gateway_auto_append_keeps_current_visual_agent_package_only(self):
+        """Visual Agent Mode should attach only selected current package artifacts."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {"role": "user", "content": "create a visual package"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_visual", "function": {"name": "visual_agent_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_visual",
+                "content": (
+                    '{"success": true, '
+                    '"images": ["/tmp/current.png"], '
+                    '"videos": ["/tmp/current.mp4"], '
+                    '"delivery_metadata": {'
+                    '"visual_mission_id": "vms_test", '
+                    '"selected_visual_artifact_ids": ["var_image", "var_video"]'
+                    "}}"
+                ),
+            },
+            {"role": "assistant", "content": "Package ready."},
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+
+        assert tags == [
+            "[[generated_image_only]]",
+            "MEDIA:/tmp/current.png",
+            "MEDIA:/tmp/current.mp4",
+        ]
+        assert voice is False
+
+    def test_gateway_auto_append_ignores_historical_visual_agent_package(self):
+        """Old Visual Agent Mode package artifacts must not be re-posted."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        history = [
+            {"role": "user", "content": "create an old visual package"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "old_visual", "function": {"name": "visual_agent_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "old_visual",
+                "content": (
+                    '{"success": true, '
+                    '"images": ["/tmp/old.png"], '
+                    '"videos": ["/tmp/old.mp4"]}'
+                ),
+            },
+            {"role": "assistant", "content": "Old package ready."},
+        ]
+        new_messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "Hi."},
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(
+            history + new_messages,
+            history_offset=len(history),
+        )
+
+        assert tags == []
+        assert voice is False
+
+    def test_gateway_auto_append_compression_fallback_skips_history_visual_agent_package(self):
+        """Compression fallback must dedupe old Visual Agent Mode package artifacts."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {"role": "user", "content": "create an old visual package"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "old_visual", "function": {"name": "visual_agent_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "old_visual",
+                "content": (
+                    '{"success": true, '
+                    '"images": ["/tmp/old.png"], '
+                    '"videos": ["/tmp/old.mp4"]}'
+                ),
+            },
+            {"role": "assistant", "content": "Old package ready."},
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(
+            messages,
+            history_offset=999,
+            history_media_paths={"/tmp/old.png", "/tmp/old.mp4"},
+        )
+
+        assert tags == []
+        assert voice is False
+
     def test_gateway_auto_append_skips_video_already_rendered_in_final_response(self):
         """Do not attach the same local video twice when the model already displays it."""
         from gateway.run import (
