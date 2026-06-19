@@ -505,6 +505,27 @@ class VisualAttemptLedger:
             )
         return fid
 
+    def record_feedback_for_delivery(
+        self,
+        delivery_id: str,
+        *,
+        raw_text: str,
+        parsed_feedback: Any,
+    ) -> str:
+        delivery = self.get_delivery(delivery_id)
+        payload = _feedback_payload(parsed_feedback)
+        return self.record_feedback(
+            request_id=delivery["request_id"],
+            artifact_id=delivery["artifact_id"],
+            attempt_id=delivery["attempt_id"],
+            platform=delivery["platform"],
+            feedback_type=payload["feedback_type"],
+            polarity=payload["polarity"],
+            strength=payload["strength"],
+            raw_text=raw_text or payload["raw_text"],
+            parsed=payload["parsed"],
+        )
+
     def update_request_status(self, request_id: str, status: str) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -523,6 +544,9 @@ class VisualAttemptLedger:
 
     def get_delivery(self, delivery_id: str) -> Dict[str, Any]:
         return self._get_by_id("visual_deliveries", "delivery_id", delivery_id)
+
+    def get_feedback(self, feedback_id: str) -> Dict[str, Any]:
+        return self._get_by_id("visual_feedback", "feedback_id", feedback_id)
 
     def _get_by_id(self, table: str, key: str, value: str) -> Dict[str, Any]:
         with self._connect() as conn:
@@ -563,3 +587,30 @@ def _decode_row(row: sqlite3.Row) -> Dict[str, Any]:
         else:
             result[out_key] = value
     return result
+
+
+def _feedback_payload(parsed_feedback: Any) -> Dict[str, Any]:
+    if isinstance(parsed_feedback, dict):
+        raw_text = parsed_feedback.get("raw_text")
+        parsed = parsed_feedback.get("parsed")
+        if parsed is None:
+            parsed = {
+                key: value
+                for key, value in parsed_feedback.items()
+                if key
+                not in {"feedback_type", "polarity", "strength", "raw_text"}
+            }
+        return {
+            "feedback_type": parsed_feedback.get("feedback_type") or "explicit_text",
+            "polarity": parsed_feedback.get("polarity"),
+            "strength": parsed_feedback.get("strength"),
+            "raw_text": raw_text,
+            "parsed": parsed,
+        }
+    return {
+        "feedback_type": getattr(parsed_feedback, "feedback_type", "explicit_text"),
+        "polarity": getattr(parsed_feedback, "polarity", None),
+        "strength": getattr(parsed_feedback, "strength", None),
+        "raw_text": getattr(parsed_feedback, "raw_text", None),
+        "parsed": getattr(parsed_feedback, "parsed", {}),
+    }
