@@ -184,3 +184,33 @@ def test_xai_video_aspect_normalization_skips_close_match():
     )
 
     assert plan["action"] == "copy"
+
+
+def test_xai_aspect_ratio_wrapper_uses_shared_policy(monkeypatch):
+    import agent.visual.aspect_policy as shared_policy
+    from plugins.video_gen.xai import _closest_supported_aspect_ratio
+
+    monkeypatch.setattr(
+        shared_policy,
+        "nearest_aspect_ratio",
+        lambda width, height, supported: "1:1",
+    )
+
+    assert _closest_supported_aspect_ratio(720, 1280) == "1:1"
+
+
+def test_xai_aspect_normalization_wrapper_uses_shared_policy(monkeypatch):
+    import agent.visual.aspect_policy as shared_policy
+    from plugins.video_gen.xai import _plan_video_aspect_normalization
+
+    monkeypatch.setattr(
+        shared_policy,
+        "plan_center_crop",
+        lambda **kwargs: {"action": "copy", "reason": "shared-policy"},
+    )
+
+    assert _plan_video_aspect_normalization(
+        width=1920,
+        height=1080,
+        target_aspect_ratio="9:16",
+    ) == {"action": "copy", "reason": "shared-policy"}

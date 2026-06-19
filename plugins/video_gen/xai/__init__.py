@@ -35,6 +35,7 @@ from urllib.parse import unquote, urlparse
 
 import httpx
 
+from agent.visual import aspect_policy as visual_aspect_policy
 from agent.video_gen_provider import (
     VideoGenProvider,
     error_response,
@@ -63,15 +64,6 @@ MAX_TIMEOUT_SECONDS = 1800
 VALID_ASPECT_RATIOS = {"1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"}
 VALID_RESOLUTIONS = {"480p", "720p"}
 MAX_REFERENCE_IMAGES = 7
-_ASPECT_RATIO_VALUES = {
-    "1:1": 1.0,
-    "16:9": 16 / 9,
-    "9:16": 9 / 16,
-    "4:3": 4 / 3,
-    "3:4": 3 / 4,
-    "3:2": 3 / 2,
-    "2:3": 2 / 3,
-}
 
 
 _MODELS: Dict[str, Dict[str, Any]] = {
@@ -356,13 +348,10 @@ def _image_ref_to_xai_url(value: str) -> str:
 
 
 def _closest_supported_aspect_ratio(width: int, height: int) -> Optional[str]:
-    if width <= 0 or height <= 0:
-        return None
-
-    actual = width / height
-    return min(
-        _ASPECT_RATIO_VALUES,
-        key=lambda label: abs(actual - _ASPECT_RATIO_VALUES[label]),
+    return visual_aspect_policy.nearest_aspect_ratio(
+        width,
+        height,
+        VALID_ASPECT_RATIOS,
     )
 
 
@@ -530,29 +519,6 @@ async def _download_video_url_to_cache(
     )
 
 
-def _parse_aspect_ratio(value: str) -> Optional[float]:
-    raw = str(value or "").strip()
-    if ":" not in raw:
-        return None
-    left, right = raw.split(":", 1)
-    try:
-        width = float(left)
-        height = float(right)
-    except ValueError:
-        return None
-    if width <= 0 or height <= 0:
-        return None
-    return width / height
-
-
-def _even_floor(value: float) -> int:
-    return max(2, int(value) // 2 * 2)
-
-
-def _even_offset(value: float) -> int:
-    return max(0, int(value) // 2 * 2)
-
-
 def _plan_video_aspect_normalization(
     *,
     width: int,
@@ -561,43 +527,12 @@ def _plan_video_aspect_normalization(
     tolerance: float = 0.02,
 ) -> Dict[str, Any]:
     """Plan a no-stretch centered crop to the target aspect ratio."""
-    target = _parse_aspect_ratio(target_aspect_ratio)
-    if width <= 0 or height <= 0 or not target:
-        return {"action": "copy", "reason": "missing_dimensions_or_target"}
-
-    actual = width / height
-    if abs(actual - target) / target <= tolerance:
-        return {
-            "action": "copy",
-            "reason": "aspect_ratio_within_tolerance",
-            "width": width,
-            "height": height,
-            "target_aspect_ratio": target_aspect_ratio,
-        }
-
-    if actual > target:
-        crop_height = _even_floor(height)
-        crop_width = _even_floor(crop_height * target)
-    else:
-        crop_width = _even_floor(width)
-        crop_height = _even_floor(crop_width / target)
-
-    crop_width = min(crop_width, _even_floor(width))
-    crop_height = min(crop_height, _even_floor(height))
-    x = _even_offset(max(0, (width - crop_width) // 2))
-    y = _even_offset(max(0, (height - crop_height) // 2))
-
-    return {
-        "action": "crop",
-        "width": crop_width,
-        "height": crop_height,
-        "x": x,
-        "y": y,
-        "source_width": width,
-        "source_height": height,
-        "target_aspect_ratio": target_aspect_ratio,
-        "filter": f"crop={crop_width}:{crop_height}:{x}:{y}",
-    }
+    return visual_aspect_policy.plan_center_crop(
+        width=width,
+        height=height,
+        target_aspect_ratio=target_aspect_ratio,
+        tolerance=tolerance,
+    )
 
 
 def _probe_video_dimensions(path: Path) -> Optional[Tuple[int, int]]:

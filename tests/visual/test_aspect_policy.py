@@ -29,3 +29,13 @@ def test_plan_center_crop_skips_close_match():
 
     plan = plan_center_crop(width=720, height=1280, target_aspect_ratio="9:16")
     assert plan["action"] == "copy"
+
+
+def test_nearest_aspect_accepts_xai_supported_set():
+    from agent.visual.aspect_policy import nearest_aspect_ratio
+
+    assert nearest_aspect_ratio(
+        720,
+        1280,
+        ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"],
+    ) == "9:16"
