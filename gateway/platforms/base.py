@@ -1745,6 +1745,34 @@ class SendResult:
     continuation_message_ids: tuple = ()
 
 
+@dataclass
+class VisualDeliveryDecision:
+    """Delivery gate result for a generated visual artifact."""
+
+    enabled: bool
+    should_deliver: bool
+    request_id: Optional[str] = None
+    attempt_id: Optional[str] = None
+    artifact_id: Optional[str] = None
+    content_hash: Optional[str] = None
+    dedupe_destination: Optional[str] = None
+    skip_status: Optional[str] = None
+    error_type: Optional[str] = None
+    error_message: Optional[str] = None
+
+
+_VISUAL_DELIVERY_DEDUPER: Any = None
+
+
+def _get_visual_delivery_deduper():
+    global _VISUAL_DELIVERY_DEDUPER
+    if _VISUAL_DELIVERY_DEDUPER is None:
+        from agent.visual.delivery_dedupe import ArtifactDeliveryDeduper
+
+        _VISUAL_DELIVERY_DEDUPER = ArtifactDeliveryDeduper()
+    return _VISUAL_DELIVERY_DEDUPER
+
+
 class EphemeralReply(str):
     """System-notice reply that auto-deletes after a TTL.
 
@@ -2704,6 +2732,230 @@ class BasePlatformAdapter(ABC):
         """
         pass
 
+    def _prepare_visual_delivery(
+        self,
+        media_url: str,
+        metadata: Optional[Dict[str, Any]],
+        chat_id: str,
+        *,
+        thread_id: Optional[str] = None,
+        seen_hashes: Optional[set[Tuple[str, str, str]]] = None,
+    ) -> VisualDeliveryDecision:
+        """Return whether a visual artifact may be delivered for this request."""
+        try:
+            visual_metadata = self._visual_delivery_metadata(metadata)
+            if visual_metadata is None:
+                return VisualDeliveryDecision(enabled=False, should_deliver=True)
+
+            request_id = str(visual_metadata.get("visual_request_id") or "").strip()
+            dedupe_destination = self._visual_delivery_dedupe_destination(
+                chat_id, thread_id
+            )
+            artifact_metadata = self._visual_artifact_metadata_for(
+                media_url, visual_metadata
+            )
+            if artifact_metadata is None:
+                decision = VisualDeliveryDecision(
+                    enabled=True,
+                    should_deliver=False,
+                    request_id=request_id,
+                    dedupe_destination=dedupe_destination,
+                    skip_status="skipped_stale",
+                    error_type="missing_visual_artifact_metadata",
+                    error_message="visual metadata did not include this media URL",
+                )
+                self._record_visual_delivery(
+                    decision,
+                    chat_id=chat_id,
+                    thread_id=thread_id,
+                    delivery_status=decision.skip_status,
+                    error_type=decision.error_type,
+                    error_message=decision.error_message,
+                )
+                return decision
+
+            artifact_id = str(artifact_metadata.get("artifact_id") or "").strip()
+            attempt_id = str(artifact_metadata.get("attempt_id") or "").strip()
+            content_hash = str(artifact_metadata.get("content_hash") or "").strip()
+            decision = VisualDeliveryDecision(
+                enabled=True,
+                should_deliver=True,
+                request_id=request_id,
+                attempt_id=attempt_id or None,
+                artifact_id=artifact_id or None,
+                content_hash=content_hash or None,
+                dedupe_destination=dedupe_destination,
+            )
+
+            if artifact_id not in self._visual_selected_artifact_ids(
+                visual_metadata
+            ):
+                decision.should_deliver = False
+                decision.skip_status = "skipped_stale"
+                decision.error_type = "not_selected_for_visual_request"
+                decision.error_message = "artifact was not selected for this request"
+                self._record_visual_delivery(
+                    decision,
+                    chat_id=chat_id,
+                    thread_id=thread_id,
+                    delivery_status=decision.skip_status,
+                    error_type=decision.error_type,
+                    error_message=decision.error_message,
+                )
+                return decision
+
+            if content_hash:
+                dedupe = _get_visual_delivery_deduper()
+                dedupe_key = (content_hash, dedupe_destination, request_id)
+                if dedupe.has_seen(content_hash, dedupe_destination, request_id):
+                    decision.should_deliver = False
+                    decision.skip_status = "skipped_duplicate"
+                    decision.error_type = "duplicate_visual_artifact"
+                    decision.error_message = "artifact hash already delivered"
+                elif seen_hashes is not None and dedupe_key in seen_hashes:
+                    decision.should_deliver = False
+                    decision.skip_status = "skipped_duplicate"
+                    decision.error_type = "duplicate_visual_artifact"
+                    decision.error_message = "artifact hash repeated in this batch"
+                elif seen_hashes is not None:
+                    seen_hashes.add(dedupe_key)
+
+            if not decision.should_deliver:
+                self._record_visual_delivery(
+                    decision,
+                    chat_id=chat_id,
+                    thread_id=thread_id,
+                    delivery_status=decision.skip_status,
+                    error_type=decision.error_type,
+                    error_message=decision.error_message,
+                )
+            return decision
+        except Exception as exc:  # noqa: BLE001 - delivery must stay best-effort
+            logger.debug(
+                "[%s] Visual delivery gate failed open: %s",
+                self.name,
+                exc,
+                exc_info=True,
+            )
+            return VisualDeliveryDecision(enabled=False, should_deliver=True)
+
+    def _record_visual_delivery(
+        self,
+        decision: VisualDeliveryDecision,
+        *,
+        chat_id: str,
+        thread_id: Optional[str],
+        delivery_status: Optional[str],
+        error_type: Optional[str] = None,
+        error_message: Optional[str] = None,
+        message_id: Optional[str] = None,
+    ) -> None:
+        if not decision.enabled or not delivery_status:
+            return
+        if not (decision.request_id and decision.attempt_id and decision.artifact_id):
+            return
+
+        try:
+            from agent.visual.attempt_ledger import VisualAttemptLedger
+            from agent.visual.tracking import default_visual_ledger_path
+
+            ledger = VisualAttemptLedger(default_visual_ledger_path())
+            ledger.initialize()
+            ledger.record_delivery(
+                request_id=decision.request_id,
+                attempt_id=decision.attempt_id,
+                artifact_id=decision.artifact_id,
+                platform=str(self.name).lower(),
+                destination_id=str(chat_id),
+                thread_id=thread_id,
+                message_id=message_id,
+                delivery_status=delivery_status,
+                error_type=error_type,
+                error_message=error_message,
+            )
+        except Exception as exc:  # noqa: BLE001 - shadow-mode guard
+            logger.debug(
+                "[%s] Visual delivery record skipped: %s",
+                self.name,
+                exc,
+                exc_info=True,
+            )
+
+        if delivery_status == "sent" and decision.content_hash:
+            try:
+                _get_visual_delivery_deduper().mark_if_new(
+                    decision.content_hash,
+                    decision.dedupe_destination
+                    or self._visual_delivery_dedupe_destination(chat_id, thread_id),
+                    decision.request_id or "",
+                )
+            except Exception as exc:  # noqa: BLE001 - shadow-mode guard
+                logger.debug(
+                    "[%s] Visual delivery dedupe mark skipped: %s",
+                    self.name,
+                    exc,
+                    exc_info=True,
+                )
+
+    @staticmethod
+    def _visual_delivery_metadata(
+        metadata: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        if not isinstance(metadata, dict):
+            return None
+        if not str(metadata.get("visual_request_id") or "").strip():
+            return None
+        if "selected_visual_artifact_ids" not in metadata:
+            return None
+        if not isinstance(metadata.get("visual_artifacts"), dict):
+            return None
+        return metadata
+
+    @staticmethod
+    def _visual_selected_artifact_ids(metadata: Dict[str, Any]) -> set[str]:
+        raw_selected = metadata.get("selected_visual_artifact_ids") or []
+        if isinstance(raw_selected, (str, bytes)):
+            raw_selected = [raw_selected]
+        try:
+            return {
+                str(artifact_id).strip()
+                for artifact_id in raw_selected
+                if str(artifact_id).strip()
+            }
+        except TypeError:
+            return set()
+
+    @staticmethod
+    def _visual_artifact_metadata_for(
+        media_url: str,
+        metadata: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        artifacts = metadata.get("visual_artifacts") or {}
+        if not isinstance(artifacts, dict):
+            return None
+
+        candidates = [str(media_url)]
+        if str(media_url).startswith("file://"):
+            local_path = unquote(str(media_url)[7:])
+            candidates.append(f"file://{local_path}")
+            try:
+                candidates.append(Path(local_path).as_uri())
+            except ValueError:
+                pass
+
+        for key in dict.fromkeys(candidates):
+            artifact_metadata = artifacts.get(key)
+            if isinstance(artifact_metadata, dict):
+                return artifact_metadata
+        return None
+
+    def _visual_delivery_dedupe_destination(
+        self,
+        chat_id: str,
+        thread_id: Optional[str],
+    ) -> str:
+        return f"{str(self.name).lower()}:{chat_id}:{thread_id or ''}"
+
     async def send_multiple_images(
         self,
         chat_id: str,
@@ -2725,9 +2977,20 @@ class BasePlatformAdapter(ABC):
         """
         from urllib.parse import unquote as _unquote
 
+        thread_id = (metadata or {}).get("thread_id") if isinstance(metadata, dict) else None
+        visual_seen_hashes: set[Tuple[str, str, str]] = set()
         for image_url, alt_text in images:
             if human_delay > 0:
                 await asyncio.sleep(human_delay)
+            decision = self._prepare_visual_delivery(
+                image_url,
+                metadata,
+                chat_id,
+                thread_id=thread_id,
+                seen_hashes=visual_seen_hashes,
+            )
+            if not decision.should_deliver:
+                continue
             try:
                 logger.info(
                     "[%s] Sending image: %s (alt=%s)",
@@ -2759,8 +3022,32 @@ class BasePlatformAdapter(ABC):
                     )
                 if not img_result.success:
                     logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
+                    self._record_visual_delivery(
+                        decision,
+                        chat_id=chat_id,
+                        thread_id=thread_id,
+                        delivery_status="failed",
+                        error_type="platform_send_failed",
+                        error_message=img_result.error,
+                    )
+                else:
+                    self._record_visual_delivery(
+                        decision,
+                        chat_id=chat_id,
+                        thread_id=thread_id,
+                        delivery_status="sent",
+                        message_id=img_result.message_id,
+                    )
             except Exception as img_err:
                 logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
+                self._record_visual_delivery(
+                    decision,
+                    chat_id=chat_id,
+                    thread_id=thread_id,
+                    delivery_status="failed",
+                    error_type="platform_send_exception",
+                    error_message=str(img_err),
+                )
 
     async def send_image(
         self,

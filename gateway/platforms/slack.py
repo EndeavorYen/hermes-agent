@@ -67,6 +67,23 @@ _slash_user_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
 )
 
 
+def _slack_upload_message_id(result: Any) -> Optional[str]:
+    if not isinstance(result, dict):
+        return None
+    for key in ("ts", "timestamp"):
+        value = result.get(key)
+        if value:
+            return str(value)
+    shares = result.get("file", {}).get("shares", {}) if isinstance(result.get("file"), dict) else {}
+    if isinstance(shares, dict):
+        for channel_shares in shares.values():
+            if isinstance(channel_shares, list) and channel_shares:
+                ts = channel_shares[0].get("ts") if isinstance(channel_shares[0], dict) else None
+                if ts:
+                    return str(ts)
+    return None
+
+
 @dataclass
 class _ThreadContextCache:
     """Cache entry for fetched thread context."""
@@ -1372,6 +1389,7 @@ class SlackAdapter(BasePlatformAdapter):
 
         CHUNK = 10
         chunks = [images[i : i + CHUNK] for i in range(0, len(images), CHUNK)]
+        visual_seen_hashes: set[Tuple[str, str, str]] = set()
 
         for chunk_idx, chunk in enumerate(chunks):
             if human_delay > 0 and chunk_idx > 0:
@@ -1379,11 +1397,23 @@ class SlackAdapter(BasePlatformAdapter):
 
             file_uploads: List[Dict[str, Any]] = []
             initial_comment_parts: List[str] = []
+            visual_delivery_records = []
+            fallback_images: List[Tuple[str, str]] = []
             try:
                 async with _httpx.AsyncClient(
                     timeout=30.0, follow_redirects=True
                 ) as http_client:
                     for image_url, alt_text in chunk:
+                        visual_decision = self._prepare_visual_delivery(
+                            image_url,
+                            metadata,
+                            chat_id,
+                            thread_id=thread_ts,
+                            seen_hashes=visual_seen_hashes,
+                        )
+                        if not visual_decision.should_deliver:
+                            continue
+
                         if alt_text:
                             initial_comment_parts.append(alt_text)
 
@@ -1394,6 +1424,14 @@ class SlackAdapter(BasePlatformAdapter):
                                 logger.warning(
                                     "[Slack] Skipping missing image: %s", local_path
                                 )
+                                self._record_visual_delivery(
+                                    visual_decision,
+                                    chat_id=chat_id,
+                                    thread_id=thread_ts,
+                                    delivery_status="failed",
+                                    error_type="missing_local_file",
+                                    error_message=f"Image file not found: {local_path}",
+                                )
                                 continue
                             file_uploads.append(
                                 {
@@ -1401,10 +1439,20 @@ class SlackAdapter(BasePlatformAdapter):
                                     "filename": os.path.basename(local_path),
                                 }
                             )
+                            visual_delivery_records.append(visual_decision)
+                            fallback_images.append((image_url, alt_text))
                         else:
                             if not _is_safe_url(image_url):
                                 logger.warning(
                                     "[Slack] Blocked unsafe image URL in batch"
+                                )
+                                self._record_visual_delivery(
+                                    visual_decision,
+                                    chat_id=chat_id,
+                                    thread_id=thread_ts,
+                                    delivery_status="failed",
+                                    error_type="unsafe_url",
+                                    error_message="Blocked unsafe image URL in batch",
                                 )
                                 continue
                             try:
@@ -1424,11 +1472,21 @@ class SlackAdapter(BasePlatformAdapter):
                                         "filename": f"image_{len(file_uploads)}.{ext}",
                                     }
                                 )
+                                visual_delivery_records.append(visual_decision)
+                                fallback_images.append((image_url, alt_text))
                             except Exception as dl_err:
                                 logger.warning(
                                     "[Slack] Download failed for %s: %s",
                                     safe_url_for_log(image_url),
                                     dl_err,
+                                )
+                                self._record_visual_delivery(
+                                    visual_decision,
+                                    chat_id=chat_id,
+                                    thread_id=thread_ts,
+                                    delivery_status="failed",
+                                    error_type="download_failed",
+                                    error_message=str(dl_err),
                                 )
                                 continue
 
@@ -1451,7 +1509,15 @@ class SlackAdapter(BasePlatformAdapter):
                     thread_ts=thread_ts,
                 )
                 self._record_uploaded_file_thread(chat_id, thread_ts)
-                _ = result
+                message_id = _slack_upload_message_id(result)
+                for visual_decision in visual_delivery_records:
+                    self._record_visual_delivery(
+                        visual_decision,
+                        chat_id=chat_id,
+                        thread_id=thread_ts,
+                        delivery_status="sent",
+                        message_id=message_id,
+                    )
             except Exception as e:
                 logger.warning(
                     "[Slack] Multi-image files_upload_v2 failed (chunk %d/%d), falling back to per-image: %s",
@@ -1461,7 +1527,10 @@ class SlackAdapter(BasePlatformAdapter):
                     exc_info=True,
                 )
                 await super().send_multiple_images(
-                    chat_id, chunk, metadata, human_delay=human_delay
+                    chat_id,
+                    fallback_images or chunk,
+                    metadata,
+                    human_delay=human_delay,
                 )
 
     def _record_uploaded_file_thread(

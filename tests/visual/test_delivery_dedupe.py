@@ -17,6 +17,15 @@ def test_rejects_missing_artifact_hash():
     assert dedupe.mark_if_new("", "slack:C1:T1", "vrq_1") is False
 
 
+def test_can_check_seen_without_marking():
+    from agent.visual.delivery_dedupe import ArtifactDeliveryDeduper
+
+    dedupe = ArtifactDeliveryDeduper(ttl_seconds=3600)
+    assert dedupe.has_seen("sha256:a", "slack:C1:T1", "vrq_1") is False
+    assert dedupe.mark_if_new("sha256:a", "slack:C1:T1", "vrq_1") is True
+    assert dedupe.has_seen("sha256:a", "slack:C1:T1", "vrq_1") is True
+
+
 def test_expires_old_entries_with_injected_clock():
     from agent.visual.delivery_dedupe import ArtifactDeliveryDeduper
 

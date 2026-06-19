@@ -39,6 +39,22 @@ class ArtifactDeliveryDeduper:
         self._seen[key] = now
         return True
 
+    def has_seen(
+        self,
+        artifact_hash: str,
+        destination: str,
+        request_id: str,
+    ) -> bool:
+        artifact_hash = str(artifact_hash or "").strip()
+        destination = str(destination or "").strip()
+        request_id = str(request_id or "").strip()
+        if not artifact_hash or not destination or not request_id:
+            return False
+
+        now = self._now()
+        self._prune(now)
+        return (artifact_hash, destination, request_id) in self._seen
+
     def _prune(self, now: float) -> None:
         if not self._seen:
             return
