@@ -173,3 +173,20 @@ Remaining proof before calling the MVP fully live:
 
 - Trigger one request from Slack through the running gateway and verify that Slack receives only the selected current image/video artifacts.
 - Confirm `visual_deliveries` increments for that Slack-triggered request and joins to the selected artifact IDs.
+
+Gate F acceptance verifier:
+
+```bash
+/Users/simon/.hermes/hermes-agent/venv/bin/python scripts/visual_agent_live_proof.py \
+  --ledger-path /Users/simon/.hermes/visual/attempt_ledger.sqlite3 \
+  --since <timestamp_before_slack_prompt> \
+  --platform slack \
+  --destination-id <slack_chat_id> \
+  --json
+```
+
+The gate passes only when the verifier reports `success: true`, at least one
+delivered image artifact, at least one delivered video artifact, and no missing
+artifact joins. As of the 2026-06-20 verifier run, the live ledger still reports
+`no_sent_deliveries` after `2026-06-20T00:00:00Z`; the code path is ready, but a
+real Slack-originated prompt is still required to close the live proof.

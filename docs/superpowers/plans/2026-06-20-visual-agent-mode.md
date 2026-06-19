@@ -35,7 +35,7 @@ Status as of 2026-06-20 04:18 Asia/Taipei:
 | User-friendly natural trigger | Done in tests | Chinese image+video package requests infer `VISUAL_PACKAGE`; `visual_agent_generate` defaults to L2 auto-select |
 | Privacy gate | Done in tracked files | Runtime video/visual paths are ignored; private visual fixture wording was replaced with generic test data |
 | Live CLI image+video smoke | Done | mission `vms_915e683f14b44d7b89acb96a0602834e`, image `var_7e14ab73338344dba02533b678e7aebe`, video `var_d0d50d86318a4e588df269360a3252de` |
-| Live Slack inbound proof | Pending | Requires a Slack-triggered Hermes request so `visual_deliveries` increases in the live ledger |
+| Live Slack inbound proof | Pending, verifier ready | Requires a Slack-triggered Hermes request so `visual_deliveries` increases in the live ledger; `scripts/visual_agent_live_proof.py` verifies the image/video delivery evidence |
 
 Implemented follow-up fixes from live smoke:
 
@@ -48,6 +48,21 @@ Implemented follow-up fixes from live smoke:
 - Privacy follow-up removed tracked user-specific visual prompt fixtures, added runtime video/visual ignore rules, and kept feedback/parser tests on generic examples.
 - Final focused verification passed with 376 Visual Agent Mode, routing, delivery, privacy-fixture, and feedback tests after the scrub.
 - Live gateway is running from the patched checkout and Slack Socket Mode is connected, but only a real user-originated Slack request can close the final inbound proof gate. Bot-authored Slack messages and CLI handoff notices are not counted as proof because they do not exercise the same user inbound path.
+- Gate F now has a reusable read-only verifier:
+
+```bash
+/Users/simon/.hermes/hermes-agent/venv/bin/python scripts/visual_agent_live_proof.py \
+  --ledger-path /Users/simon/.hermes/visual/attempt_ledger.sqlite3 \
+  --since <timestamp_before_slack_prompt> \
+  --platform slack \
+  --destination-id <slack_chat_id> \
+  --json
+```
+
+Current live run result after `2026-06-20T00:00:00Z`: `success: false`,
+`missing: ["no_sent_deliveries"]`. This means the verifier and ledger join logic
+are in place, but a fresh Slack-originated natural prompt is still needed for
+the final proof.
 
 User-facing trigger contract:
 
