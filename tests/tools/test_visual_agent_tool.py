@@ -315,7 +315,7 @@ async def test_visual_agent_generate_reports_manual_selection_when_autonomy_is_a
     payload = json.loads(
         await visual_agent_tool._handle_visual_agent_generate(
             {
-                "prompt": "Create one product image and one short video.",
+                "prompt": "Create one product image and one short video. autonomy_level=1",
                 "autonomy_level": 1,
             }
         )
@@ -434,6 +434,63 @@ async def test_visual_agent_generate_ignores_model_invented_internal_counts(monk
     assert seen_candidate_budget == [1]
     assert seen_max_selected == [1]
     assert payload["images"] == ["/tmp/pen-1.png"]
+
+
+@pytest.mark.asyncio
+async def test_visual_agent_generate_ignores_model_invented_autonomy_level(monkeypatch):
+    from tools import visual_agent_tool
+
+    seen_autonomy_levels = []
+
+    def fake_generate_image_candidates(mission, graph):
+        seen_autonomy_levels.append(mission.autonomy_level)
+        graph.add_asset(
+            role=VisualArtifactRole.GENERATED_IMAGE,
+            artifact_id="var_pen_image",
+            local_path="/tmp/pen.png",
+        )
+        return {
+            "success": True,
+            "candidates": [
+                {"artifact_id": "var_pen_image", "score": 0.91, "image": "/tmp/pen.png"}
+            ],
+            "candidate_count": 1,
+            "failure_count": 0,
+        }
+
+    def fake_build_video_clips(mission, graph):
+        graph.add_asset(
+            role=VisualArtifactRole.GENERATED_VIDEO,
+            artifact_id="var_pen_video",
+            local_path="/tmp/pen.mp4",
+        )
+        return {"success": True, "clips": [{"artifact_id": "var_pen_video"}]}
+
+    monkeypatch.setattr(
+        visual_agent_tool,
+        "generate_image_candidates",
+        fake_generate_image_candidates,
+    )
+    monkeypatch.setattr(
+        visual_agent_tool,
+        "build_video_clips",
+        fake_build_video_clips,
+    )
+
+    payload = json.loads(
+        await visual_agent_tool._handle_visual_agent_generate(
+            {
+                "prompt": "請幫我產出一張圖片和一段影片：一支霧黑鋼筆放在白紙上。",
+                "autonomy_level": 1,
+            }
+        )
+    )
+
+    assert seen_autonomy_levels == [2]
+    assert payload["success"] is True
+    assert payload["package_status"] == "success"
+    assert payload["selected_image_artifact_ids"] == ["var_pen_image"]
+    assert payload["selected_video_artifact_ids"] == ["var_pen_video"]
 
 
 @pytest.mark.asyncio

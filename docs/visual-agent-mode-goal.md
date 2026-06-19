@@ -68,6 +68,9 @@ Default behavior:
 - infer image/video intent from the user's wording;
 - infer simple counts such as `一張圖`, `three images`, or `四張照片`;
 - auto-select generated images for video when the user clearly asked for a package;
+- use L2 auto-select defaults for ordinary package requests;
+- ignore model-supplied internal tool arguments unless the user explicitly wrote
+  keys such as `autonomy_level=...`, `candidate_budget=...`, or `video_budget=...`;
 - keep internal controls available for debugging, but do not require users to mention them.
 
 ## Mission Types
@@ -176,6 +179,9 @@ Done:
   misreported as a quality failure.
 - Gateway tests cover auto-appending only selected current package artifacts and skipping historical package media.
 - Natural image-plus-video requests route to Visual Agent Mode without requiring users to mention internal controls such as `visual_agent_generate`, `autonomy_level`, `candidate_budget`, or provider names.
+- Model-invented internal tool args such as `autonomy_level=1` are ignored unless
+  the user's prompt explicitly contains the matching `key=...`, so ordinary
+  package prompts do not accidentally fall back into assisted mode.
 - Tracked visual fixtures and ignore rules have been tightened so runtime media, local model endpoints, and user-specific prompt/preference examples stay out of the repo.
 
 Latest safe CLI smoke:

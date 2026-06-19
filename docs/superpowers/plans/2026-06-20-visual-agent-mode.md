@@ -32,7 +32,7 @@ Status as of 2026-06-20 04:18 Asia/Taipei:
 | Tool surface | Done | `tools/visual_agent_tool.py`, `tests/tools/test_visual_agent_tool.py` |
 | Learning store slice | Done | `agent/visual/agent_mode/learning.py`, `tests/visual/agent_mode/test_learning.py` |
 | Gateway package delivery path | Done in tests | `tests/gateway/test_media_extraction.py`, `tests/gateway/platforms/test_slack_visual_delivery.py`, `tests/gateway/test_send_multiple_images.py` |
-| User-friendly natural trigger | Done in tests | Chinese image+video package requests infer `VISUAL_PACKAGE`; `visual_agent_generate` defaults to L2 auto-select |
+| User-friendly natural trigger | Done in tests | Chinese image+video package requests infer `VISUAL_PACKAGE`; `visual_agent_generate` defaults to L2 auto-select and ignores model-invented internal args |
 | Privacy gate | Done in tracked files | Runtime video/visual paths are ignored; private visual fixture wording was replaced with generic test data |
 | Live CLI image+video smoke | Done | mission `vms_915e683f14b44d7b89acb96a0602834e`, image `var_7e14ab73338344dba02533b678e7aebe`, video `var_d0d50d86318a4e588df269360a3252de` |
 | Live Slack inbound proof | Pending, verifier ready | Requires a Slack-triggered Hermes request so `visual_deliveries` increases in the live ledger; `scripts/visual_agent_live_proof.py` verifies the image/video delivery evidence |
@@ -44,6 +44,9 @@ Implemented follow-up fixes from live smoke:
 - `363f32b8a` splits visual-package still-image prompts so the image model does not render split-screen still/video contact sheets.
 - `4cce96266` preserves image mission `visual_artifact_id` values so selected image/video IDs join back to `visual_artifacts`.
 - Natural-language trigger follow-up teaches the planner Chinese image/video/count terms and makes the package tool default to auto-select, so users do not need to say `visual_agent_generate` or `autonomy_level=2`.
+- User-friendly hardening ignores model-invented internal args such as
+  `autonomy_level=1` unless the user explicitly wrote the matching `key=...`,
+  so a normal image+video request stays in L2 auto-select mode.
 - Focused verification passed with 41 tests covering routing guidance, wrong-tool guardrails, natural tool defaults, gateway current-turn media append, and Slack selected-artifact delivery metadata.
 - Privacy follow-up removed tracked user-specific visual prompt fixtures, added runtime video/visual ignore rules, and kept feedback/parser tests on generic examples.
 - Final focused verification passed with 376 Visual Agent Mode, routing, delivery, privacy-fixture, and feedback tests after the scrub.
@@ -85,7 +88,9 @@ User-facing trigger contract:
 - More casual forms should also work, for example: `幫我產圖產影片：霧黑鋼筆產品攝影。` or `做一組產品視覺素材，含短片。`
 - Users should not need to mention `visual agent mode`, `visual_agent_generate`, `autonomy_level`, `candidate_budget`, `video_budget`, or provider names.
 - When a request clearly asks for a combined image/video package, Hermes should call `visual_agent_generate` exactly once and let it plan, generate, select, animate, and package the result.
-- Internal knobs remain available only for debugging or explicit advanced overrides.
+- Internal knobs remain available only for debugging or explicit advanced
+  overrides. If the model supplies those args without the user writing the
+  corresponding `key=...` in the prompt, the tool ignores them.
 
 ---
 

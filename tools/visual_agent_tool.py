@@ -45,7 +45,7 @@ VISUAL_AGENT_GENERATE_SCHEMA: Dict[str, Any] = {
             },
             "autonomy_level": {
                 "type": "integer",
-                "description": "Autonomy level from 0 to 4. Defaults to 2 so natural package requests can auto-select images for video.",
+                "description": "Autonomy level from 0 to 4. Defaults to 2 so natural package requests can auto-select images for video. Only set this when the user explicitly wrote autonomy_level=... in the prompt.",
                 "default": 2,
             },
             "candidate_budget": {
@@ -197,10 +197,15 @@ def build_video_clips(
 
 
 def _mission_from_args(args: Dict[str, Any], prompt: str) -> VisualMission:
+    autonomy_level = (
+        _coerce_int(args.get("autonomy_level"), default=2)
+        if _internal_param_explicit(prompt, "autonomy_level")
+        else 2
+    )
     mission = plan_visual_mission(
         prompt,
         attachments=list(args.get("attachments") or []),
-        autonomy_level=_coerce_int(args.get("autonomy_level"), default=2),
+        autonomy_level=autonomy_level,
     )
     replacements: Dict[str, Any] = {}
     if (
