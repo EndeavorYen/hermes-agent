@@ -191,17 +191,22 @@ Latest safe CLI smoke:
 - selected video: `var_d0d50d86318a4e588df269360a3252de`
 - video: 1280x720, about 6.04 seconds
 
-Remaining proof before calling the MVP fully live:
+Live proof status:
 
-- Trigger one request from Slack through the running gateway and verify that Slack receives only the selected current image/video artifacts.
-- Confirm `visual_deliveries` increments for that Slack-triggered request and joins to the selected artifact IDs.
+- Slack delivery proof for local date `2026-06-20` in `Asia/Taipei` passes.
+- The proof verifies that Slack received one image artifact and one video
+  artifact, both join to `visual_artifacts`, and no duplicate artifact delivery
+  was detected.
+- The original `--since 2026-06-20T00:00:00Z` check was a UTC-window mistake:
+  local midnight in Taipei is `2026-06-19T16:00:00Z`.
 
 Gate F acceptance verifier:
 
 ```bash
 /Users/simon/.hermes/hermes-agent/venv/bin/python scripts/visual_agent_live_proof.py \
   --ledger-path /Users/simon/.hermes/visual/attempt_ledger.sqlite3 \
-  --since <timestamp_before_slack_prompt> \
+  --since-local-date <YYYY-MM-DD> \
+  --timezone Asia/Taipei \
   --platform slack \
   --destination-id <slack_chat_id> \
   --json
@@ -210,6 +215,10 @@ Gate F acceptance verifier:
 The gate passes only when the verifier reports `success: true`, at least one
 delivered image artifact, at least one delivered video artifact, and no missing
 artifact joins or duplicate artifact deliveries. As of the 2026-06-20 verifier
-run, the live ledger still reports `no_sent_deliveries` after
-`2026-06-20T00:00:00Z`; the code path is ready, but a real Slack-originated
-prompt is still required to close the live proof.
+run with `--since-local-date 2026-06-20 --timezone Asia/Taipei`, Gate F reports
+`success: true` with one image, one video, zero missing artifact joins, and zero
+duplicate artifact deliveries.
+
+Evidence boundary: current legacy `visual_requests` rows for those artifacts do
+not carry platform/channel metadata, so the proof is Slack delivery evidence
+rather than request-row source metadata.

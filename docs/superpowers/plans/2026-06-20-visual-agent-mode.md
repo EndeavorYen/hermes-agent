@@ -22,7 +22,7 @@
 
 ## Execution Status
 
-Status as of 2026-06-20 04:18 Asia/Taipei:
+Status as of 2026-06-20 05:05 Asia/Taipei:
 
 | Area | Status | Evidence |
 | --- | --- | --- |
@@ -35,7 +35,7 @@ Status as of 2026-06-20 04:18 Asia/Taipei:
 | User-friendly natural trigger | Done in tests | Chinese image+video package requests infer `VISUAL_PACKAGE`; `visual_agent_generate` defaults to L2 auto-select and ignores model-invented internal args |
 | Privacy gate | Done in tracked files | Runtime video/visual paths are ignored; private visual fixture wording was replaced with generic test data |
 | Live CLI image+video smoke | Done | mission `vms_915e683f14b44d7b89acb96a0602834e`, image `var_7e14ab73338344dba02533b678e7aebe`, video `var_d0d50d86318a4e588df269360a3252de` |
-| Live Slack inbound proof | Pending, verifier ready | Requires a Slack-triggered Hermes request so `visual_deliveries` increases in the live ledger; `scripts/visual_agent_live_proof.py` verifies image/video delivery evidence, artifact joins, and duplicate delivery guards |
+| Live Slack delivery proof | Done | `scripts/visual_agent_live_proof.py --since-local-date 2026-06-20 --timezone Asia/Taipei` reports `success: true`, 1 image, 1 video, no missing artifact joins, and no duplicate artifact deliveries |
 
 Implemented follow-up fixes from live smoke:
 
@@ -50,6 +50,9 @@ Implemented follow-up fixes from live smoke:
 - Live-proof self-evaluation follow-up rejects duplicate sent deliveries for
   the same artifact ID, so the final Slack proof cannot pass when Hermes posts
   the same selected image or video twice.
+- Live-proof timestamp follow-up adds `--since-local-date` and `--timezone`,
+  preventing local-day acceptance windows from being accidentally interpreted
+  as UTC timestamps.
 - Focused verification passed with 41 tests covering routing guidance, wrong-tool guardrails, natural tool defaults, gateway current-turn media append, and Slack selected-artifact delivery metadata.
 - Privacy follow-up removed tracked user-specific visual prompt fixtures, added runtime video/visual ignore rules, and kept feedback/parser tests on generic examples.
 - Final focused verification passed with 376 Visual Agent Mode, routing, delivery, privacy-fixture, and feedback tests after the scrub.
@@ -59,16 +62,23 @@ Implemented follow-up fixes from live smoke:
 ```bash
 /Users/simon/.hermes/hermes-agent/venv/bin/python scripts/visual_agent_live_proof.py \
   --ledger-path /Users/simon/.hermes/visual/attempt_ledger.sqlite3 \
-  --since <timestamp_before_slack_prompt> \
+  --since-local-date <YYYY-MM-DD> \
+  --timezone Asia/Taipei \
   --platform slack \
   --destination-id <slack_chat_id> \
   --json
 ```
 
-Current live run result after `2026-06-20T00:00:00Z`: `success: false`,
-`missing: ["no_sent_deliveries"]`. This means the verifier, ledger join logic,
-and duplicate-delivery guard are in place, but a fresh Slack-originated natural
-prompt is still needed for the final proof.
+Current live run result for local date `2026-06-20` in `Asia/Taipei`:
+`success: true`, `sent_delivery_count: 2`, `artifact_kind_counts:
+{"image": 1, "video": 1}`, `missing_artifact_join_count: 0`, and
+`duplicate_artifact_delivery_count: 0`. The resolved ledger timestamp is
+`2026-06-19T16:00:00Z`.
+
+Evidence boundary: the live proof verifies Slack delivery rows and artifact
+joins. Current legacy `visual_requests` rows for those artifacts do not carry
+platform/channel metadata, so the acceptance proof is Slack delivery evidence
+rather than a request-row source assertion.
 - Self-evaluation follow-up strengthened package evidence: `assemble_visual_package`
   now includes `asset_graph`, `selection_summary`, and image `ranking_decisions`
   in `delivery_metadata`, so a package can be traced from selected artifacts
@@ -1188,8 +1198,18 @@ Current evidence:
 - Tool output selected image artifact `var_7e14ab73338344dba02533b678e7aebe` and video artifact `var_d0d50d86318a4e588df269360a3252de`.
 - Ledger rows exist for both selected artifact IDs, with xAI image and `grok-imagine-video-1.5` attempts and no provider errors.
 - Video file verified at 1280x720, about 6.04 seconds.
-- `visual_deliveries` did not increment because the smoke was run through local CLI, not a Slack inbound request.
-- Final completion still requires one Slack-triggered live request proving the running gateway posts only the selected current image/video and records delivery rows.
+- Slack delivery proof for local date `2026-06-20` in `Asia/Taipei` passes with
+  image artifact `var_59ebd6bb3a6f423d9b5172edee801633` and video artifact
+  `var_fcd4e3a726874b669afcb009f909a884`.
+- The proof has `sent_delivery_count: 2`, `artifact_kind_counts: {"image": 1,
+  "video": 1}`, `missing_artifact_join_count: 0`, and
+  `duplicate_artifact_delivery_count: 0`.
+- The acceptance command uses `--since-local-date 2026-06-20 --timezone
+  Asia/Taipei`, which resolves to `2026-06-19T16:00:00Z` before querying the
+  UTC ledger timestamps.
+- Evidence boundary: current legacy `visual_requests` rows for those artifacts
+  have empty platform/channel fields, so the live proof verifies Slack delivery
+  rows and artifact joins, not request-row source metadata.
 
 ## First Execution Slice
 
