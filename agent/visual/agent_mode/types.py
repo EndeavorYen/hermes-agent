@@ -57,4 +57,3 @@ class VisualMissionResult:
     delivery_metadata: Dict[str, Any]
     summary: str
     stop_reason: Optional[str] = None
-
