@@ -20,6 +20,28 @@
 - Generated video must use aspect settings inferred from selected image dimensions unless the user explicitly overrides aspect ratio.
 - Learning stores strategy atoms and scores, not raw private prompts.
 
+## Execution Status
+
+Status as of 2026-06-20 02:58 Asia/Taipei:
+
+| Area | Status | Evidence |
+| --- | --- | --- |
+| Goal and plan documents | Done | `docs/visual-agent-mode-goal.md`, this plan |
+| Mission model and asset graph | Done | `tests/visual/agent_mode/test_mission_planner.py`, `test_asset_graph.py` |
+| Candidate, selection, clip, and assembler loop | Done | `tests/visual/agent_mode/test_loop_policy.py`, `test_image_batch.py`, `test_clip_builder.py`, `test_assembler.py` |
+| Tool surface | Done | `tools/visual_agent_tool.py`, `tests/tools/test_visual_agent_tool.py` |
+| Learning store slice | Done | `agent/visual/agent_mode/learning.py`, `tests/visual/agent_mode/test_learning.py` |
+| Gateway package delivery path | Done in tests | `tests/gateway/test_media_extraction.py`, `tests/gateway/platforms/test_slack_visual_delivery.py`, `tests/gateway/test_send_multiple_images.py` |
+| Live CLI image+video smoke | Done | mission `vms_915e683f14b44d7b89acb96a0602834e`, image `var_7e14ab73338344dba02533b678e7aebe`, video `var_d0d50d86318a4e588df269360a3252de` |
+| Live Slack inbound proof | Pending | Requires a Slack-triggered Hermes request so `visual_deliveries` increases in the live ledger |
+
+Implemented follow-up fixes from live smoke:
+
+- `6feaf6134` preserves QC fallback candidates instead of dropping every near-miss.
+- `2fb55962f` lets the xAI video provider run from async Hermes tool handlers without nested event-loop failure.
+- `363f32b8a` splits visual-package still-image prompts so the image model does not render split-screen still/video contact sheets.
+- `4cce96266` preserves image mission `visual_artifact_id` values so selected image/video IDs join back to `visual_artifacts`.
+
 ---
 
 ## Product Boundary
@@ -1100,6 +1122,15 @@ Expected:
 - one video clip is generated from the selected image when requested;
 - Slack posts only selected image/video artifacts;
 - `visual_requests`, `visual_artifacts`, `visual_deliveries`, and mission package output can be joined by artifact IDs.
+
+Current evidence:
+
+- CLI smoke passed for a safe product brief after gateway restart.
+- Tool output selected image artifact `var_7e14ab73338344dba02533b678e7aebe` and video artifact `var_d0d50d86318a4e588df269360a3252de`.
+- Ledger rows exist for both selected artifact IDs, with xAI image and `grok-imagine-video-1.5` attempts and no provider errors.
+- Video file verified at 1280x720, about 6.04 seconds.
+- `visual_deliveries` did not increment because the smoke was run through local CLI, not a Slack inbound request.
+- Final completion still requires one Slack-triggered live request proving the running gateway posts only the selected current image/video and records delivery rows.
 
 ## First Execution Slice
 

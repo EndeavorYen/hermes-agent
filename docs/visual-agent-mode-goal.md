@@ -129,3 +129,26 @@ The MVP is complete when a user can ask for a visual package from one prompt and
 
 The MVP does not need neural model training or a perfect aesthetic judge. It needs a reliable loop that improves from evidence.
 
+## Current Implementation Status
+
+As of 2026-06-20, the first Visual Agent Mode slice is implemented on `live/hermes-v2026.6.5` and pushed to `origin`.
+
+Done:
+
+- `visual_agent_generate` can plan a package, generate image candidates, select images, generate video clips, and return image/video paths.
+- Image package prompts are split so the image stage receives a standalone still-image brief instead of a combined image/video delivery instruction.
+- xAI video generation can be called safely from async Hermes tool handlers.
+- Selected image and video artifact IDs join back to `visual_artifacts`.
+- Gateway tests cover auto-appending only selected current package artifacts and skipping historical package media.
+
+Latest safe CLI smoke:
+
+- mission: `vms_915e683f14b44d7b89acb96a0602834e`
+- selected image: `var_7e14ab73338344dba02533b678e7aebe`
+- selected video: `var_d0d50d86318a4e588df269360a3252de`
+- video: 1280x720, about 6.04 seconds
+
+Remaining proof before calling the MVP fully live:
+
+- Trigger one request from Slack through the running gateway and verify that Slack receives only the selected current image/video artifacts.
+- Confirm `visual_deliveries` increments for that Slack-triggered request and joins to the selected artifact IDs.
