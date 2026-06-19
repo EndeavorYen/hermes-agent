@@ -1922,8 +1922,19 @@ class SlackAdapter(BasePlatformAdapter):
                 success=False, error=f"Video file not found: {video_path}"
             )
 
+        video_uri = _Path(video_path).expanduser().resolve().as_uri()
+        metadata = self._with_visual_delivery_metadata(metadata, [video_uri])
+        thread_ts = self._resolve_thread_ts(reply_to, metadata)
+        visual_decision = self._prepare_visual_delivery(
+            video_uri,
+            metadata,
+            chat_id,
+            thread_id=thread_ts,
+        )
+        if not visual_decision.should_deliver:
+            return SendResult(success=True, message_id=None)
+
         try:
-            thread_ts = self._resolve_thread_ts(reply_to, metadata)
             logger.info(
                 "[Slack] Sending 1 video(s) in files_upload_v2: %s",
                 os.path.basename(video_path),
@@ -1939,7 +1950,19 @@ class SlackAdapter(BasePlatformAdapter):
                         thread_ts=thread_ts,
                     )
                     self._record_uploaded_file_thread(chat_id, thread_ts)
-                    return SendResult(success=True, raw_response=result)
+                    message_id = _slack_upload_message_id(result)
+                    self._record_visual_delivery(
+                        visual_decision,
+                        chat_id=chat_id,
+                        thread_id=thread_ts,
+                        delivery_status="sent",
+                        message_id=message_id,
+                    )
+                    return SendResult(
+                        success=True,
+                        message_id=message_id,
+                        raw_response=result,
+                    )
                 except Exception as exc:
                     last_exc = exc
                     if not self._is_retryable_upload_error(exc) or attempt >= 2:
@@ -1961,6 +1984,14 @@ class SlackAdapter(BasePlatformAdapter):
                 video_path,
                 e,
                 exc_info=True,
+            )
+            self._record_visual_delivery(
+                visual_decision,
+                chat_id=chat_id,
+                thread_id=thread_ts,
+                delivery_status="failed",
+                error_type="platform_send_exception",
+                error_message=str(e),
             )
             text = f"🎬 Video: {video_path}"
             if caption:

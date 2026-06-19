@@ -319,8 +319,83 @@ def test_slack_records_delivery_when_local_image_is_public_exported(adapter, tmp
     assert row["delivery_status"] == "sent"
 
 
+def test_slack_records_video_delivery_result_for_uploaded_artifact(adapter, tmp_path):
+    video = _write_video(tmp_path / "fresh.mp4")
+    video_uri = video.as_uri()
+    metadata = _visual_metadata(
+        request_id="vrq_video",
+        selected_artifact_ids=["var_video"],
+        artifacts={
+            video_uri: {
+                "artifact_id": "var_video",
+                "attempt_id": "vat_video",
+                "content_hash": "sha256:video",
+            }
+        },
+    )
+
+    result = _run(
+        adapter.send_video(
+            "C12345",
+            str(video),
+            caption="fresh video",
+            metadata=metadata,
+        )
+    )
+
+    assert result.success is True
+    rows = _delivery_rows(tmp_path)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["request_id"] == "vrq_video"
+    assert row["attempt_id"] == "vat_video"
+    assert row["artifact_id"] == "var_video"
+    assert row["delivery_status"] == "sent"
+
+
+def test_slack_auto_builds_video_delivery_metadata_when_missing(adapter, tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+
+    video = _write_video(tmp_path / "fresh.mp4")
+    ledger = VisualAttemptLedger(default_visual_ledger_path())
+    ledger.initialize()
+    _record_artifact_fixture(
+        ledger,
+        request_id="vrq_video_auto",
+        attempt_id="vat_video_auto",
+        artifact_id="var_video_auto",
+        local_path=str(video),
+        content_hash="sha256:video-auto",
+        created_at="2026-06-19T02:00:00Z",
+        kind="video",
+    )
+
+    result = _run(
+        adapter.send_video(
+            "C12345",
+            str(video),
+            caption="fresh video",
+            metadata={"thread_id": "171000.0001"},
+        )
+    )
+
+    assert result.success is True
+    rows = _delivery_rows(tmp_path)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["request_id"] == "vrq_video_auto"
+    assert row["artifact_id"] == "var_video_auto"
+    assert row["delivery_status"] == "sent"
+
+
 def _write_image(path: Path) -> Path:
     path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+    return path
+
+
+def _write_video(path: Path) -> Path:
+    path.write_bytes(b"\x00\x00\x00 ftypisom" + b"\x00" * 16)
     return path
 
 
@@ -363,13 +438,14 @@ def _record_artifact_fixture(
     local_path: str,
     content_hash: str,
     created_at: str,
+    kind: str = "image",
 ) -> None:
     ledger.record_request(
         request_id=request_id,
         user_prompt="fashion editorial portrait",
-        normalized_intent={"modality": "image"},
-        modality="image",
-        operation="text_to_image",
+        normalized_intent={"modality": kind},
+        modality=kind,
+        operation="image_to_video" if kind == "video" else "text_to_image",
         created_at=created_at,
     )
     ledger.record_attempt(
@@ -377,7 +453,7 @@ def _record_artifact_fixture(
         attempt_id=attempt_id,
         candidate_index=0,
         provider="fake",
-        model="fake-image",
+        model="fake-video" if kind == "video" else "fake-image",
         prompt_original="fashion editorial portrait",
         prompt_mediated="fashion editorial portrait",
         created_at=created_at,
@@ -386,10 +462,10 @@ def _record_artifact_fixture(
         request_id=request_id,
         attempt_id=attempt_id,
         artifact_id=artifact_id,
-        kind="image",
+        kind=kind,
         local_path=local_path,
         content_hash=content_hash,
-        mime_type="image/png",
+        mime_type="video/mp4" if kind == "video" else "image/png",
         bytes=10,
         is_stable=True,
         freshness_status="fresh",
