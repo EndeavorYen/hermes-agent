@@ -324,6 +324,56 @@ class TestPluginDispatch:
         assert artifact["width"] == 2
         assert artifact["height"] == 3
 
+    def test_handle_image_generate_honors_visual_tracking_disabled(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from hermes_cli import plugins as plugins_module
+        from agent import image_gen_registry as registry_module
+
+        image_path = tmp_path / "generated.png"
+        image_path.write_bytes(
+            b"\x89PNG\r\n\x1a\n"
+            b"\x00\x00\x00\rIHDR"
+            b"\x00\x00\x00\x02\x00\x00\x00\x03"
+            b"\x08\x02\x00\x00\x00"
+            b"\x00\x00\x00\x00"
+        )
+
+        class LocalArtifactProvider(_FakeCodexProvider):
+            def generate(self, prompt, aspect_ratio="landscape", **kwargs):
+                return {
+                    "success": True,
+                    "image": str(image_path),
+                    "model": "local-image-model",
+                    "prompt": prompt,
+                    "aspect_ratio": aspect_ratio,
+                    "provider": "codex",
+                }
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "visual_tracking:\n  enabled: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "codex")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda *args, **kwargs: None)
+        monkeypatch.setattr(registry_module, "get_provider", lambda name: LocalArtifactProvider())
+        monkeypatch.setattr(
+            image_generation_tool,
+            "_read_image_prompt_preprocessor_config",
+            lambda: {"enabled": False},
+            raising=False,
+        )
+
+        result = image_generation_tool._handle_image_generate({
+            "prompt": "fashion editorial portrait",
+            "aspect_ratio": "portrait",
+        })
+        payload = json.loads(result)
+
+        assert payload["success"] is True
+        assert "visual_request_id" not in payload
+        assert not (tmp_path / "visual" / "attempt_ledger.sqlite3").exists()
+
     def test_handle_image_generate_falls_back_when_preprocessor_unavailable(self, monkeypatch):
         from tools import image_generation_tool
         from hermes_cli import plugins as plugins_module

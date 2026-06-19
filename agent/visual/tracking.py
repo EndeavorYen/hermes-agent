@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -13,10 +14,56 @@ from agent.visual.error_taxonomy import normalize_visual_error_type
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class VisualTrackingConfig:
+    enabled: bool = True
+    shadow_mode: bool = True
+    ledger_path: Optional[Path] = None
+
+
 def default_visual_ledger_path() -> Path:
     from hermes_constants import get_hermes_home
 
+    config = read_visual_tracking_config()
+    if config.ledger_path is not None:
+        return config.ledger_path
     return get_hermes_home() / "visual" / "attempt_ledger.sqlite3"
+
+
+def visual_tracking_enabled() -> bool:
+    return read_visual_tracking_config().enabled
+
+
+def read_visual_tracking_config() -> VisualTrackingConfig:
+    from hermes_constants import get_config_path, get_hermes_home
+
+    try:
+        import yaml  # type: ignore
+
+        config_path = get_config_path()
+        with open(config_path, encoding="utf-8") as handle:
+            raw = yaml.safe_load(handle) or {}
+    except Exception:
+        raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    section = raw.get("visual_tracking") or {}
+    if not isinstance(section, dict):
+        section = {}
+
+    ledger_value = section.get("ledger_path")
+    ledger_path: Optional[Path] = None
+    if ledger_value is not None and str(ledger_value).strip():
+        candidate = Path(str(ledger_value).strip()).expanduser()
+        if not candidate.is_absolute():
+            candidate = get_hermes_home() / candidate
+        ledger_path = candidate
+
+    return VisualTrackingConfig(
+        enabled=_coerce_bool(section.get("enabled"), default=True),
+        shadow_mode=_coerce_bool(section.get("shadow_mode"), default=True),
+        ledger_path=ledger_path,
+    )
 
 
 def record_visual_generation_attempt(
@@ -46,6 +93,8 @@ def record_visual_generation_attempt(
     results must not fail just because local evidence recording failed.
     """
     if not isinstance(payload, dict):
+        return payload
+    if not visual_tracking_enabled():
         return payload
 
     try:
@@ -182,3 +231,18 @@ def _string_or_none(value: Any) -> Optional[str]:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _coerce_bool(value: Any, *, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if text in {"0", "false", "no", "off", "disabled"}:
+        return False
+    return default

@@ -443,6 +443,89 @@ class TestUnifiedDispatch:
         assert artifact["kind"] == "video"
         assert artifact["content_hash"].startswith("sha256:")
 
+    def test_handle_video_generate_uses_configured_visual_ledger_path(self, monkeypatch, tmp_path):
+        from agent.visual.attempt_ledger import VisualAttemptLedger
+
+        video_path = tmp_path / "generated.mp4"
+        video_path.write_bytes(b"video-bytes")
+        custom_ledger_path = tmp_path / "custom" / "visual.sqlite3"
+
+        class LocalVideoProvider(_RecordingProvider):
+            def generate(self, prompt, **kwargs):
+                self.last_kwargs = {"prompt": prompt, **kwargs}
+                return {
+                    "success": True,
+                    "video": str(video_path),
+                    "model": kwargs.get("model") or "model-a",
+                    "prompt": prompt,
+                    "modality": "image" if kwargs.get("image_url") else "text",
+                    "aspect_ratio": kwargs.get("aspect_ratio", ""),
+                    "duration": kwargs.get("duration") or 8,
+                    "provider": self.name,
+                }
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "visual_tracking:\n"
+            f"  ledger_path: {custom_ledger_path}\n",
+            encoding="utf-8",
+        )
+        provider = LocalVideoProvider("rec")
+        video_gen_registry.register_provider(provider)
+
+        result = self._run({
+            "prompt": "fashion editorial portrait",
+            "image_url": "https://example.com/ref.png",
+            "duration": 8,
+        })
+
+        assert result["success"] is True
+        assert result["visual_request_id"].startswith("vrq_")
+        assert custom_ledger_path.exists()
+        assert not (tmp_path / "visual" / "attempt_ledger.sqlite3").exists()
+
+        ledger = VisualAttemptLedger(custom_ledger_path)
+        request = ledger.get_request(result["visual_request_id"])
+        assert request["modality"] == "video"
+
+    def test_handle_video_generate_survives_visual_ledger_init_failure(self, monkeypatch, tmp_path):
+        video_path = tmp_path / "generated.mp4"
+        video_path.write_bytes(b"video-bytes")
+        blocked_parent = tmp_path / "not-a-directory"
+        blocked_parent.write_text("block mkdir", encoding="utf-8")
+
+        class LocalVideoProvider(_RecordingProvider):
+            def generate(self, prompt, **kwargs):
+                self.last_kwargs = {"prompt": prompt, **kwargs}
+                return {
+                    "success": True,
+                    "video": str(video_path),
+                    "model": kwargs.get("model") or "model-a",
+                    "prompt": prompt,
+                    "modality": "image" if kwargs.get("image_url") else "text",
+                    "aspect_ratio": kwargs.get("aspect_ratio", ""),
+                    "duration": kwargs.get("duration") or 8,
+                    "provider": self.name,
+                }
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "visual_tracking:\n"
+            f"  ledger_path: {blocked_parent / 'visual.sqlite3'}\n",
+            encoding="utf-8",
+        )
+        provider = LocalVideoProvider("rec")
+        video_gen_registry.register_provider(provider)
+
+        result = self._run({
+            "prompt": "fashion editorial portrait",
+            "image_url": "https://example.com/ref.png",
+            "duration": 8,
+        })
+
+        assert result["success"] is True
+        assert "visual_request_id" not in result
+
     def test_operation_field_not_in_schema(self):
         """Make sure we removed the operation field from the schema."""
         from tools.video_generation_tool import VIDEO_GENERATE_SCHEMA
