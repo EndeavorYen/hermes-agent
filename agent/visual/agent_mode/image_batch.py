@@ -54,3 +54,48 @@ def _candidate_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     candidate["request_id"] = payload.get("visual_request_id")
     candidate["attempt_id"] = payload.get("visual_attempt_id")
     return candidate
+
+
+def select_image_candidates(
+    graph: VisualAssetGraph,
+    candidates: List[Dict[str, Any]],
+    *,
+    max_selected: int = 2,
+) -> List[str]:
+    selected_artifact_ids: List[str] = []
+    generated_assets = _generated_image_assets_by_artifact_id(graph)
+    ranked = sorted(candidates, key=_candidate_score, reverse=True)
+
+    for candidate in ranked[:max_selected]:
+        artifact_id = candidate.get("artifact_id")
+        if not artifact_id or artifact_id not in generated_assets:
+            continue
+        source = generated_assets[artifact_id]
+        selected = graph.add_asset(
+            role=VisualArtifactRole.SELECTED_IMAGE,
+            artifact_id=artifact_id,
+            local_path=source.get("local_path"),
+            source_url=source.get("source_url"),
+            metadata=dict(source.get("metadata") or {}),
+        )
+        graph.link(source["asset_id"], selected.asset_id)
+        selected_artifact_ids.append(artifact_id)
+
+    return selected_artifact_ids
+
+
+def _candidate_score(candidate: Dict[str, Any]) -> float:
+    value = candidate.get("score", candidate.get("confidence", 0.0))
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _generated_image_assets_by_artifact_id(graph: VisualAssetGraph) -> Dict[str, Dict[str, Any]]:
+    assets = graph.to_dict()["assets"]
+    return {
+        asset["artifact_id"]: asset
+        for asset in assets
+        if asset.get("role") == VisualArtifactRole.GENERATED_IMAGE.value and asset.get("artifact_id")
+    }

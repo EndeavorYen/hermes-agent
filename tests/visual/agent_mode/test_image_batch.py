@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from agent.visual.agent_mode.asset_graph import VisualAssetGraph
-from agent.visual.agent_mode.image_batch import generate_image_candidates
+from agent.visual.agent_mode.image_batch import generate_image_candidates, select_image_candidates
 from agent.visual.agent_mode.mission_planner import plan_visual_mission
 from agent.visual.agent_mode.types import VisualArtifactRole
 
@@ -55,3 +55,29 @@ def test_generate_image_candidates_keeps_failures_out_of_graph():
     assert result["candidate_count"] == 1
     assert result["failure_count"] == 1
     assert graph.selected_artifact_ids(VisualArtifactRole.GENERATED_IMAGE) == ["var_image_2"]
+
+
+def test_select_image_candidates_marks_selected_images():
+    graph = VisualAssetGraph(mission_id="vms_test")
+    graph.add_asset(
+        role=VisualArtifactRole.GENERATED_IMAGE,
+        artifact_id="var_low",
+        local_path="/tmp/low.png",
+    )
+    graph.add_asset(
+        role=VisualArtifactRole.GENERATED_IMAGE,
+        artifact_id="var_high",
+        local_path="/tmp/high.png",
+    )
+
+    selected = select_image_candidates(
+        graph,
+        [
+            {"artifact_id": "var_low", "score": 0.55},
+            {"artifact_id": "var_high", "score": 0.91},
+        ],
+        max_selected=1,
+    )
+
+    assert selected == ["var_high"]
+    assert graph.selected_artifact_ids(VisualArtifactRole.SELECTED_IMAGE) == ["var_high"]
