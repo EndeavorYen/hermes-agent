@@ -81,3 +81,12 @@ def test_select_image_candidates_marks_selected_images():
 
     assert selected == ["var_high"]
     assert graph.selected_artifact_ids(VisualArtifactRole.SELECTED_IMAGE) == ["var_high"]
+    selected_asset = [
+        asset
+        for asset in graph.to_dict()["assets"]
+        if asset.get("role") == VisualArtifactRole.SELECTED_IMAGE.value
+    ][0]
+    assert selected_asset["metadata"]["selection_rank"] == 1
+    assert selected_asset["metadata"]["selection_score"] == 0.91
+    assert selected_asset["metadata"]["selection_decision"] == "selected"
+    assert selected_asset["metadata"]["ranker_version"] == "visual-agent-score-v1"

@@ -19,7 +19,14 @@ def test_assembler_returns_selected_image_and_video_artifacts():
         role=VisualArtifactRole.SELECTED_IMAGE,
         artifact_id="var_image",
         local_path="/tmp/image.png",
-        metadata={"request_id": "vrq_image", "attempt_id": "vat_image"},
+        metadata={
+            "request_id": "vrq_image",
+            "attempt_id": "vat_image",
+            "selection_rank": 1,
+            "selection_score": 0.92,
+            "selection_decision": "selected",
+            "ranker_version": "visual-agent-score-v1",
+        },
     )
     graph.link(generated.asset_id, selected.asset_id)
     video = graph.add_asset(
@@ -47,6 +54,16 @@ def test_assembler_returns_selected_image_and_video_artifacts():
         "selected_visual_artifact_ids": ["var_image", "var_video"],
         "source_request_ids": ["vrq_image", "vrq_video"],
         "source_attempt_ids": ["vat_image", "vat_video"],
+        "ranking_decisions": [
+            {
+                "artifact_id": "var_image",
+                "kind": "image",
+                "selection_rank": 1,
+                "selection_score": 0.92,
+                "selection_decision": "selected",
+                "ranker_version": "visual-agent-score-v1",
+            }
+        ],
     }
     assert "1 image" in result.summary
     assert "1 video" in result.summary

@@ -31,6 +31,12 @@ async def test_visual_agent_generate_runs_image_video_package(monkeypatch):
             role=VisualArtifactRole.SELECTED_IMAGE,
             artifact_id="var_image",
             local_path="/tmp/image.png",
+            metadata={
+                "selection_rank": 1,
+                "selection_score": 0.9,
+                "selection_decision": "selected",
+                "ranker_version": "visual-agent-score-v1",
+            },
         )
         return ["var_image"]
 
@@ -82,6 +88,16 @@ async def test_visual_agent_generate_runs_image_video_package(monkeypatch):
     assert payload["delivery_metadata"]["selection_summary"]["selected_visual_artifact_ids"] == [
         "var_image",
         "var_video",
+    ]
+    assert payload["delivery_metadata"]["selection_summary"]["ranking_decisions"] == [
+        {
+            "artifact_id": "var_image",
+            "kind": "image",
+            "selection_rank": 1,
+            "selection_score": 0.9,
+            "selection_decision": "selected",
+            "ranker_version": "visual-agent-score-v1",
+        }
     ]
 
 

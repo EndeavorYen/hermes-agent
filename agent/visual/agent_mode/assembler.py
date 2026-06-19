@@ -89,6 +89,7 @@ def _selection_summary(
         "selected_visual_artifact_ids": selected_image_ids + selected_video_ids,
         "source_request_ids": _unique_metadata_values(selected_assets, "request_id"),
         "source_attempt_ids": _unique_metadata_values(selected_assets, "attempt_id"),
+        "ranking_decisions": _ranking_decisions(image_assets),
     }
 
 
@@ -124,6 +125,34 @@ def _unique_metadata_values(assets: List[Dict[str, Any]], key: str) -> List[str]
             values.append(text)
             seen.add(text)
     return values
+
+
+def _ranking_decisions(assets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    decisions: List[Dict[str, Any]] = []
+    for asset in assets:
+        metadata = asset.get("metadata") or {}
+        if "selection_rank" not in metadata:
+            continue
+        decisions.append(
+            {
+                "artifact_id": asset.get("artifact_id") or "",
+                "kind": _kind_from_role(asset.get("role")),
+                "selection_rank": metadata.get("selection_rank"),
+                "selection_score": metadata.get("selection_score"),
+                "selection_decision": metadata.get("selection_decision") or "selected",
+                "ranker_version": metadata.get("ranker_version") or "",
+            }
+        )
+    return decisions
+
+
+def _kind_from_role(role: Any) -> str:
+    text = str(role or "")
+    if text.endswith("image") or "image" in text:
+        return "image"
+    if text.endswith("video") or "video" in text:
+        return "video"
+    return text
 
 
 def _count_phrase(count: int, noun: str) -> str:

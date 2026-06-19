@@ -7,6 +7,8 @@ from typing import Any, Callable, Dict, List
 from agent.visual.agent_mode.asset_graph import VisualAssetGraph
 from agent.visual.agent_mode.types import VisualArtifactRole, VisualMission
 
+RANKER_VERSION = "visual-agent-score-v1"
+
 
 def generate_image_candidates(
     mission: VisualMission,
@@ -66,17 +68,26 @@ def select_image_candidates(
     generated_assets = _generated_image_assets_by_artifact_id(graph)
     ranked = sorted(candidates, key=_candidate_score, reverse=True)
 
-    for candidate in ranked[:max_selected]:
+    for selection_rank, candidate in enumerate(ranked[:max_selected], start=1):
         artifact_id = candidate.get("artifact_id")
         if not artifact_id or artifact_id not in generated_assets:
             continue
         source = generated_assets[artifact_id]
+        metadata = dict(source.get("metadata") or {})
+        metadata.update(
+            {
+                "selection_rank": selection_rank,
+                "selection_score": _candidate_score(candidate),
+                "selection_decision": "selected",
+                "ranker_version": RANKER_VERSION,
+            }
+        )
         selected = graph.add_asset(
             role=VisualArtifactRole.SELECTED_IMAGE,
             artifact_id=artifact_id,
             local_path=source.get("local_path"),
             source_url=source.get("source_url"),
-            metadata=dict(source.get("metadata") or {}),
+            metadata=metadata,
         )
         graph.link(source["asset_id"], selected.asset_id)
         selected_artifact_ids.append(artifact_id)
