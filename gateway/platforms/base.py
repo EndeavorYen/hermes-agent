@@ -2938,6 +2938,73 @@ class BasePlatformAdapter(ABC):
         merged.update(visual_metadata)
         return merged
 
+    def _record_inbound_visual_feedback(self, event: MessageEvent) -> bool:
+        try:
+            if event is None or event.message_type != MessageType.TEXT:
+                return False
+            text = str(event.text or "").strip()
+            if not text or text.startswith("/"):
+                return False
+
+            from agent.visual.attempt_ledger import VisualAttemptLedger
+            from agent.visual.feedback import parse_visual_feedback
+            from agent.visual.tracking import default_visual_ledger_path
+
+            feedback = parse_visual_feedback(text)
+            if not self._visual_feedback_has_signal(feedback):
+                return False
+
+            source = getattr(event, "source", None)
+            chat_id = str(getattr(source, "chat_id", "") or "").strip()
+            if not chat_id:
+                return False
+
+            platform = _platform_name(getattr(source, "platform", None)) or str(self.name).lower()
+            thread_id = getattr(source, "thread_id", None)
+            ledger = VisualAttemptLedger(default_visual_ledger_path())
+            ledger.initialize()
+            delivery = ledger.find_latest_delivery_for_feedback(
+                platform=platform,
+                destination_id=chat_id,
+                thread_id=thread_id,
+            )
+            if delivery is None and thread_id is not None:
+                delivery = ledger.find_latest_delivery_for_feedback(
+                    platform=platform,
+                    destination_id=chat_id,
+                    thread_id=None,
+                )
+            if delivery is None:
+                return False
+
+            ledger.record_feedback_for_delivery(
+                delivery["delivery_id"],
+                raw_text=feedback.raw_text,
+                parsed_feedback=feedback,
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001 - feedback capture is best-effort
+            logger.debug(
+                "[%s] Visual feedback capture skipped: %s",
+                self.name,
+                exc,
+                exc_info=True,
+            )
+            return False
+
+    @staticmethod
+    def _visual_feedback_has_signal(feedback: Any) -> bool:
+        parsed = getattr(feedback, "parsed", None)
+        if not isinstance(parsed, dict):
+            parsed = {}
+        return bool(
+            getattr(feedback, "polarity", 0)
+            or parsed.get("issues")
+            or parsed.get("selection_hint") is not None
+            or parsed.get("candidate_hints")
+            or parsed.get("requested_direction")
+        )
+
     @staticmethod
     def _visual_selected_artifact_ids(metadata: Dict[str, Any]) -> set[str]:
         raw_selected = metadata.get("selected_visual_artifact_ids") or []
@@ -4396,6 +4463,7 @@ class BasePlatformAdapter(ABC):
         # (Telegram DM topic mode) so the session key, guard checks, and
         # downstream delivery all agree on the same lane.
         self._apply_topic_recovery(event)
+        self._record_inbound_visual_feedback(event)
 
         session_key = build_session_key(
             event.source,

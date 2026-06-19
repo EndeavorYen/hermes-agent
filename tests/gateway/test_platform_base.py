@@ -1,5 +1,6 @@
 """Tests for gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
 
+import asyncio
 import json
 import os
 import time
@@ -14,12 +15,84 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
     MessageEvent,
+    MessageType,
     public_export_media_path,
     safe_url_for_log,
     utf16_len,
     _log_safe_path,
     _prefix_within_utf16_limit,
 )
+from gateway.session import SessionSource
+
+
+def _stub_adapter(*, platform):
+    class StubAdapter(BasePlatformAdapter):
+        async def connect(self):
+            return True
+
+        async def disconnect(self):
+            pass
+
+        async def send(self, *a, **kw):
+            pass
+
+        async def get_chat_info(self, *a):
+            return {}
+
+    from gateway.config import PlatformConfig
+
+    return StubAdapter(config=PlatformConfig(enabled=True, token="test"), platform=platform)
+
+
+def _record_visual_delivery_fixture(
+    ledger,
+    *,
+    request_id: str,
+    attempt_id: str,
+    artifact_id: str,
+    platform: str,
+    destination_id: str,
+    thread_id: str | None,
+    delivered_at: str,
+) -> str:
+    ledger.record_request(
+        request_id=request_id,
+        user_prompt="visual generation request",
+        normalized_intent={"modality": "image"},
+        modality="image",
+        operation="text_to_image",
+    )
+    ledger.record_attempt(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        candidate_index=0,
+        provider="fake",
+        model="fake-image",
+        prompt_original="visual generation request",
+        prompt_mediated="visual generation request",
+    )
+    ledger.record_artifact(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        artifact_id=artifact_id,
+        kind="image",
+        local_path=f"/tmp/{artifact_id}.png",
+        content_hash=f"sha256:{artifact_id}",
+        mime_type="image/png",
+        bytes=10,
+        is_stable=True,
+        freshness_status="fresh",
+    )
+    return ledger.record_delivery(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        artifact_id=artifact_id,
+        platform=platform,
+        destination_id=destination_id,
+        thread_id=thread_id,
+        delivery_status="sent",
+        delivered_at=delivered_at,
+    )
 
 
 class TestSecretCaptureGuidance:
@@ -182,6 +255,137 @@ class TestPublicMediaExport:
         asyncio.run(adapter.send_multiple_images("chat", [(f"file://{quote(str(source))}", "")]))
 
         assert sent[0][1] == str(exported)
+
+
+class TestVisualFeedbackCapture:
+    def test_records_visual_feedback_for_latest_delivery_in_same_thread(self, tmp_path, monkeypatch):
+        from agent.visual.attempt_ledger import VisualAttemptLedger
+        from agent.visual.tracking import default_visual_ledger_path
+        from gateway.config import Platform
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        ledger = VisualAttemptLedger(default_visual_ledger_path())
+        ledger.initialize()
+        _record_visual_delivery_fixture(
+            ledger,
+            request_id="vrq_feedback",
+            attempt_id="vat_feedback",
+            artifact_id="var_feedback",
+            platform="slack",
+            destination_id="C123",
+            thread_id="171000.0001",
+            delivered_at="2026-06-19T02:01:00Z",
+        )
+        adapter = _stub_adapter(platform=Platform.SLACK)
+        event = MessageEvent(
+            text="第二張不錯，保留這個方向",
+            message_type=MessageType.TEXT,
+            source=SessionSource(
+                platform=Platform.SLACK,
+                chat_id="C123",
+                thread_id="171000.0001",
+            ),
+        )
+
+        recorded = adapter._record_inbound_visual_feedback(event)
+
+        assert recorded is True
+        with ledger._connect() as conn:
+            rows = conn.execute("SELECT * FROM visual_feedback").fetchall()
+        assert len(rows) == 1
+        feedback = dict(rows[0])
+        assert feedback["request_id"] == "vrq_feedback"
+        assert feedback["attempt_id"] == "vat_feedback"
+        assert feedback["artifact_id"] == "var_feedback"
+        assert feedback["platform"] == "slack"
+        assert feedback["raw_text"] == "第二張不錯，保留這個方向"
+        parsed = json.loads(feedback["parsed_json"])
+        assert parsed["selection_hint"] == 2
+
+    def test_handle_message_records_visual_feedback_before_dispatch(self, tmp_path, monkeypatch):
+        from agent.visual.attempt_ledger import VisualAttemptLedger
+        from agent.visual.tracking import default_visual_ledger_path
+        from gateway.config import Platform
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        ledger = VisualAttemptLedger(default_visual_ledger_path())
+        ledger.initialize()
+        _record_visual_delivery_fixture(
+            ledger,
+            request_id="vrq_feedback",
+            attempt_id="vat_feedback",
+            artifact_id="var_feedback",
+            platform="slack",
+            destination_id="C123",
+            thread_id="171000.0001",
+            delivered_at="2026-06-19T02:01:00Z",
+        )
+        adapter = _stub_adapter(platform=Platform.SLACK)
+
+        async def handler(_event):
+            return None
+
+        async def dispatch():
+            adapter.set_message_handler(handler)
+            event = MessageEvent(
+                text="這張臉不像，扣分",
+                message_type=MessageType.TEXT,
+                source=SessionSource(
+                    platform=Platform.SLACK,
+                    chat_id="C123",
+                    thread_id="171000.0001",
+                ),
+            )
+            await adapter.handle_message(event)
+            if adapter._background_tasks:
+                await asyncio.gather(*adapter._background_tasks)
+
+        asyncio.run(dispatch())
+
+        with ledger._connect() as conn:
+            rows = conn.execute("SELECT * FROM visual_feedback").fetchall()
+        assert len(rows) == 1
+        feedback = dict(rows[0])
+        parsed = json.loads(feedback["parsed_json"])
+        assert feedback["artifact_id"] == "var_feedback"
+        assert parsed["issues"] == ["reference_identity_drift"]
+        assert feedback["polarity"] < 0
+
+    def test_ignores_plain_text_without_visual_feedback_signal(self, tmp_path, monkeypatch):
+        from agent.visual.attempt_ledger import VisualAttemptLedger
+        from agent.visual.tracking import default_visual_ledger_path
+        from gateway.config import Platform
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        ledger = VisualAttemptLedger(default_visual_ledger_path())
+        ledger.initialize()
+        _record_visual_delivery_fixture(
+            ledger,
+            request_id="vrq_feedback",
+            attempt_id="vat_feedback",
+            artifact_id="var_feedback",
+            platform="slack",
+            destination_id="C123",
+            thread_id="171000.0001",
+            delivered_at="2026-06-19T02:01:00Z",
+        )
+        adapter = _stub_adapter(platform=Platform.SLACK)
+        event = MessageEvent(
+            text="今天先這樣",
+            message_type=MessageType.TEXT,
+            source=SessionSource(
+                platform=Platform.SLACK,
+                chat_id="C123",
+                thread_id="171000.0001",
+            ),
+        )
+
+        recorded = adapter._record_inbound_visual_feedback(event)
+
+        assert recorded is False
+        with ledger._connect() as conn:
+            rows = conn.execute("SELECT * FROM visual_feedback").fetchall()
+        assert rows == []
 
 
 # ---------------------------------------------------------------------------

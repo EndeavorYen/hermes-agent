@@ -172,6 +172,61 @@ def test_builds_delivery_metadata_for_latest_request_artifacts(tmp_path):
     assert metadata["visual_artifacts"]["file:///tmp/new.png"]["artifact_id"] == "var_new"
 
 
+def test_finds_latest_sent_delivery_for_feedback(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+    _record_artifact_fixture(
+        ledger,
+        request_id="vrq_old",
+        attempt_id="vat_old",
+        artifact_id="var_old",
+        local_path="/tmp/old.png",
+        content_hash="sha256:old",
+        created_at="2026-06-19T01:00:00Z",
+    )
+    old_delivery = ledger.record_delivery(
+        request_id="vrq_old",
+        attempt_id="vat_old",
+        artifact_id="var_old",
+        platform="slack",
+        destination_id="C123",
+        thread_id="T1",
+        delivery_status="sent",
+        delivered_at="2026-06-19T01:01:00Z",
+    )
+    _record_artifact_fixture(
+        ledger,
+        request_id="vrq_new",
+        attempt_id="vat_new",
+        artifact_id="var_new",
+        local_path="/tmp/new.png",
+        content_hash="sha256:new",
+        created_at="2026-06-19T02:00:00Z",
+    )
+    new_delivery = ledger.record_delivery(
+        request_id="vrq_new",
+        attempt_id="vat_new",
+        artifact_id="var_new",
+        platform="slack",
+        destination_id="C123",
+        thread_id="T1",
+        delivery_status="sent",
+        delivered_at="2026-06-19T02:01:00Z",
+    )
+
+    delivery = ledger.find_latest_delivery_for_feedback(
+        platform="slack",
+        destination_id="C123",
+        thread_id="T1",
+    )
+
+    assert old_delivery != new_delivery
+    assert delivery["delivery_id"] == new_delivery
+    assert delivery["artifact_id"] == "var_new"
+
+
 def _record_artifact_fixture(
     ledger,
     *,

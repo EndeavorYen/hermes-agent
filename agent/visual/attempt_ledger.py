@@ -592,6 +592,31 @@ class VisualAttemptLedger:
             ).fetchone()
         return _decode_row(row) if row is not None else None
 
+    def find_latest_delivery_for_feedback(
+        self,
+        *,
+        platform: str,
+        destination_id: str,
+        thread_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        query = """
+            SELECT *
+              FROM visual_deliveries
+             WHERE platform = ?
+               AND destination_id = ?
+               AND delivery_status = 'sent'
+        """
+        params: list[Any] = [platform, destination_id]
+        if thread_id is None:
+            query += " AND thread_id IS NULL"
+        else:
+            query += " AND thread_id = ?"
+            params.append(thread_id)
+        query += " ORDER BY delivered_at DESC, delivery_id DESC LIMIT 1"
+        with self._connect() as conn:
+            row = conn.execute(query, tuple(params)).fetchone()
+        return _decode_row(row) if row is not None else None
+
     def update_request_status(self, request_id: str, status: str) -> None:
         with self._connect() as conn:
             conn.execute(
