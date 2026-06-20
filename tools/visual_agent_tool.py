@@ -14,6 +14,7 @@ from agent.visual.agent_mode.clip_builder import build_video_clips as _build_vid
 from agent.visual.agent_mode.image_batch import select_image_candidates as _select_image_candidates
 from agent.visual.agent_mode.loop_policy import VisualLoopPolicy, decide_next_action
 from agent.visual.agent_mode.mission_planner import plan_visual_mission
+from agent.visual.agent_mode.repair_policy import decide_visual_repair
 from agent.visual.agent_mode.reward import score_visual_outcome
 from agent.visual.agent_mode.types import VisualArtifactRole, VisualMission
 from agent.visual.ids import new_artifact_id
@@ -89,6 +90,32 @@ async def _handle_visual_agent_generate(args: Dict[str, Any], **_kw: Any) -> str
         failure_count=int(image_result.get("failure_count") or 0),
         confidence=confidence,
     )
+    repair_trace: List[Dict[str, Any]] = []
+    repair_attempt_count = 0
+    while action != "select_images":
+        decision = decide_visual_repair(
+            mission,
+            _stage_result_for_repair(image_result, repair_attempt_count),
+            {"confidence": confidence},
+        )
+        if decision.action != "retry":
+            if (
+                decision.reason != "stage_success"
+                and (repair_attempt_count or mission.autonomy_level >= 3)
+            ):
+                repair_trace.append(decision.to_dict())
+            break
+        repair_trace.append(decision.to_dict())
+        repair_attempt_count += 1
+        image_result = await _maybe_await(generate_image_candidates(mission, graph))
+        confidence = _candidate_confidence(image_result.get("candidates") or [])
+        action = decide_next_action(
+            mission,
+            candidate_count=int(image_result.get("candidate_count") or 0),
+            accepted_count=int(image_result.get("candidate_count") or 0),
+            failure_count=int(image_result.get("failure_count") or 0),
+            confidence=confidence,
+        )
     if action == "select_images":
         select_image_candidates(
             graph,
@@ -114,6 +141,9 @@ async def _handle_visual_agent_generate(args: Dict[str, Any], **_kw: Any) -> str
         video_result=video_result,
         confidence=confidence,
     )
+    payload.setdefault("delivery_metadata", {})["repair_trace"] = repair_trace
+    payload["delivery_metadata"]["repair_attempt_count"] = repair_attempt_count
+    _add_repair_stop_reason(payload, repair_trace)
     payload.setdefault("delivery_metadata", {})["reward_trace"] = _build_reward_trace(
         payload,
         image_result=image_result,
@@ -417,6 +447,39 @@ def _add_package_status(
     payload["stop_reasons"] = stop_reasons
     if stop_reasons:
         payload["stop_reason"] = stop_reasons[0]
+
+
+def _add_repair_stop_reason(
+    payload: Dict[str, Any],
+    repair_trace: List[Dict[str, Any]],
+) -> None:
+    if not repair_trace:
+        return
+    last = repair_trace[-1]
+    if last.get("action") not in {"stop", "ask_user"}:
+        return
+    reason = str(last.get("reason") or "").strip()
+    if not reason:
+        return
+    stop_reasons = list(payload.get("stop_reasons") or [])
+    if reason not in stop_reasons:
+        stop_reasons.append(reason)
+    payload["stop_reasons"] = stop_reasons
+    if stop_reasons and not payload.get("stop_reason"):
+        payload["stop_reason"] = stop_reasons[0]
+
+
+def _stage_result_for_repair(
+    image_result: Dict[str, Any],
+    repair_attempt_count: int,
+) -> Dict[str, Any]:
+    result = dict(image_result or {})
+    result["repair_attempt_count"] = repair_attempt_count
+    if not result.get("error_type"):
+        error_type = _first_failure_error_type(result)
+        if error_type:
+            result["error_type"] = error_type
+    return result
 
 
 def _build_reward_trace(

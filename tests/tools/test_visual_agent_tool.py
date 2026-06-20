@@ -375,6 +375,90 @@ async def test_visual_agent_generate_reports_low_confidence_when_candidate_score
 
 
 @pytest.mark.asyncio
+async def test_visual_agent_generate_retries_qc_failure_when_autonomy_allows(monkeypatch):
+    from tools import visual_agent_tool
+
+    calls = []
+
+    def fake_generate_image_candidates(mission, graph):
+        calls.append(mission.mission_id)
+        if len(calls) == 1:
+            return {
+                "success": False,
+                "candidates": [],
+                "candidate_count": 0,
+                "failure_count": 1,
+                "failures": [{"error_type": "qc_failed", "error": "near miss"}],
+            }
+        graph.add_asset(
+            role=VisualArtifactRole.GENERATED_IMAGE,
+            artifact_id="var_repaired_image",
+            local_path="/tmp/repaired.png",
+        )
+        return {
+            "success": True,
+            "candidates": [
+                {
+                    "artifact_id": "var_repaired_image",
+                    "score": 0.9,
+                    "image": "/tmp/repaired.png",
+                }
+            ],
+            "candidate_count": 1,
+            "failure_count": 0,
+        }
+
+    def fake_select_image_candidates(graph, candidates, max_selected=2):
+        candidate = candidates[0]
+        graph.add_asset(
+            role=VisualArtifactRole.SELECTED_IMAGE,
+            artifact_id=candidate["artifact_id"],
+            local_path=candidate["image"],
+        )
+        return [candidate["artifact_id"]]
+
+    def fake_build_video_clips(mission, graph):
+        graph.add_asset(
+            role=VisualArtifactRole.GENERATED_VIDEO,
+            artifact_id="var_repaired_video",
+            local_path="/tmp/repaired.mp4",
+        )
+        return {"success": True, "clips": [{"artifact_id": "var_repaired_video"}]}
+
+    monkeypatch.setattr(
+        visual_agent_tool,
+        "generate_image_candidates",
+        fake_generate_image_candidates,
+    )
+    monkeypatch.setattr(
+        visual_agent_tool,
+        "select_image_candidates",
+        fake_select_image_candidates,
+    )
+    monkeypatch.setattr(
+        visual_agent_tool,
+        "build_video_clips",
+        fake_build_video_clips,
+    )
+
+    payload = json.loads(
+        await visual_agent_tool._handle_visual_agent_generate(
+            {
+                "prompt": "Create one image and one short video. autonomy_level=3",
+                "autonomy_level": 3,
+            }
+        )
+    )
+
+    assert len(calls) == 2
+    assert payload["package_status"] == "success"
+    assert payload["stop_reasons"] == []
+    assert payload["delivery_metadata"]["repair_attempt_count"] == 1
+    assert payload["delivery_metadata"]["repair_trace"][0]["action"] == "retry"
+    assert payload["delivery_metadata"]["repair_trace"][0]["reason"] == "retryable_qc_failure"
+
+
+@pytest.mark.asyncio
 async def test_visual_agent_generate_ignores_model_invented_internal_counts(monkeypatch):
     from tools import visual_agent_tool
 

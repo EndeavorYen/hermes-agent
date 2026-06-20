@@ -27,7 +27,7 @@ Implement V2 in four phases:
 | --- | --- | --- |
 | A. Source lineage | Implemented locally | Source metadata appears in `visual_requests` and live proof |
 | B. Self-scoring | Implemented locally | Candidates have automatic score records and selected rationale |
-| C. Bounded repair | Planned | Repair attempts are recorded and budget-limited |
+| C. Bounded repair | Implemented locally | Repair attempts are recorded and budget-limited |
 | D. Operator reporting | Planned | CLI report summarizes health and strategy outcomes |
 
 Each phase ends with a self-evaluation note in this plan before continuing.
@@ -526,7 +526,7 @@ Goal: retry or reframe failed visual stages within explicit budgets and record w
 - Produces: `VisualRepairDecision`, `decide_visual_repair(mission, stage_result, reward_trace) -> VisualRepairDecision`
 - Consumes: mission autonomy level, failure type, confidence, attempt budget
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```python
 def test_repair_policy_retries_retryable_qc_failure_with_budget():
@@ -547,11 +547,11 @@ assert decision.action == "stop"
 assert decision.reason in {"content_moderation", "repair_budget_exhausted"}
 ```
 
-- [ ] **Step 2: Run red tests**
+- [x] **Step 2: Run red tests**
 
 Expected: module missing.
 
-- [ ] **Step 3: Implement policy**
+- [x] **Step 3: Implement policy**
 
 Allowed actions:
 
@@ -562,7 +562,7 @@ Allowed actions:
 
 Hard stop on content moderation unless a safe reframe is explicitly allowed.
 
-- [ ] **Step 4: Run green tests**
+- [x] **Step 4: Run green tests**
 
 Run:
 
@@ -570,7 +570,7 @@ Run:
 /Users/simon/.hermes/hermes-agent/venv/bin/python -m pytest tests/visual/agent_mode/test_repair_policy.py -q
 ```
 
-- [ ] **Step 5: Self-evaluate**
+- [x] **Step 5: Self-evaluate**
 
 Add:
 
@@ -589,7 +589,7 @@ Add:
 - Consumes: `decide_visual_repair()`
 - Produces: package keys `repair_trace`, `repair_attempt_count`, `stop_reasons`
 
-- [ ] **Step 1: Write failing test**
+- [x] **Step 1: Write failing test**
 
 Patch first image stage to fail with `qc_failed`, second stage to succeed, and assert:
 
@@ -599,17 +599,17 @@ assert payload["delivery_metadata"]["repair_trace"][0]["action"] == "retry"
 assert payload["delivery_metadata"]["repair_attempt_count"] == 1
 ```
 
-- [ ] **Step 2: Run red test**
+- [x] **Step 2: Run red test**
 
 Expected: no retry or no trace.
 
-- [ ] **Step 3: Implement bounded retry**
+- [x] **Step 3: Implement bounded retry**
 
 Only enable repair when `mission.autonomy_level >= 3`. Respect `repair_budget` default `1`, max `2`.
 
 Do not retry content moderation failures in this task.
 
-- [ ] **Step 4: Run green tests**
+- [x] **Step 4: Run green tests**
 
 Run:
 
@@ -617,7 +617,7 @@ Run:
 /Users/simon/.hermes/hermes-agent/venv/bin/python -m pytest tests/tools/test_visual_agent_tool.py tests/visual/agent_mode/test_repair_policy.py -q
 ```
 
-- [ ] **Step 5: Self-evaluate**
+- [x] **Step 5: Self-evaluate**
 
 Add:
 
@@ -625,6 +625,15 @@ Add:
 - C2 evidence: visual agent records repair trace and bounded retries.
 - Risk: live provider retries may need conservative defaults after smoke.
 ```
+
+## Phase C Self-Evaluation
+
+- C1 evidence: repair policy classifies retry, content moderation stop, exhausted budget, and autonomy-too-low cases; focused tests pass with `rtk /Users/simon/.hermes/hermes-agent/venv/bin/python -m pytest tests/visual/agent_mode/test_repair_policy.py -q`.
+- Risk: policy reasons are intentionally conservative and may need more provider-specific categories after live data.
+- C2 evidence: visual agent retries one `qc_failed` image stage when `autonomy_level >= 3`, records `delivery_metadata.repair_trace`, and exposes `repair_attempt_count`; focused tests pass with `rtk /Users/simon/.hermes/hermes-agent/venv/bin/python -m pytest tests/tools/test_visual_agent_tool.py tests/visual/agent_mode/test_repair_policy.py -q`.
+- Risk: live provider retry smoke is still needed before raising default autonomy beyond L2.
+- Gate C evidence: `rtk /Users/simon/.hermes/hermes-agent/venv/bin/python -m pytest tests/visual/agent_mode/test_repair_policy.py tests/tools/test_visual_agent_tool.py -q` passes; full `tests/visual` also passes.
+- Self-review: repair remains bounded by policy and only auto-runs at L3+, so existing L2 natural visual package requests keep their prior no-retry behavior.
 
 ---
 
