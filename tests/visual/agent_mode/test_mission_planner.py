@@ -44,6 +44,17 @@ def test_plans_chinese_natural_image_video_package_request():
     assert mission.video_budget == 1
 
 
+def test_plans_chinese_modified_still_image_count_with_descriptors():
+    mission = plan_visual_mission(
+        "一支霧黑鋼筆放在白紙上，柔和窗光，乾淨產品攝影。一張高品質靜態產品圖，以及一段短影片。"
+    )
+
+    assert mission.mission_type == VisualMissionType.VISUAL_PACKAGE
+    assert mission.requested_outputs == ["image", "video"]
+    assert mission.candidate_budget == 1
+    assert mission.video_budget == 1
+
+
 def test_plans_colloquial_chinese_generate_image_and_video_request():
     mission = plan_visual_mission(
         "幫我產圖產影片：霧黑鋼筆放在白紙上，柔和窗光，乾淨產品攝影。"

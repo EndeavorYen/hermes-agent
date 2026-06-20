@@ -148,7 +148,8 @@ def _extract_requested_count(text: str, *, default: int) -> int:
     zh_image_count_match = re.search(
         r"([一二兩两三四五六七八九十]|[1-9]\d?)\s*"
         r"(?:張|张|幅|個|个|組|组)?\s*"
-        r"(?:圖片|图片|照片|相片|圖|图|寫真|写真)",
+        r"[\w\s\-（）()，、的]{0,16}?"
+        r"(?:圖片|图片|照片|相片|產品圖|产品图|靜態圖|静态图|圖|图|寫真|写真)",
         text,
     )
     if zh_image_count_match:
