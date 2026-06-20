@@ -58,6 +58,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Do not require a delivered video artifact.",
     )
     parser.add_argument(
+        "--no-require-source-metadata",
+        action="store_true",
+        help="Do not require request source metadata; useful for historical rows.",
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Pretty-print JSON output. Kept explicit for readable operator commands.",
@@ -81,6 +86,7 @@ def main(argv: list[str] | None = None) -> int:
         thread_id=args.thread_id,
         require_image=not args.no_require_image,
         require_video=not args.no_require_video,
+        require_source_metadata=not args.no_require_source_metadata,
     )
     payload = proof.to_dict()
     if args.json:

@@ -19,6 +19,12 @@ class LiveProofArtifact:
     source_url: Optional[str]
     mime_type: Optional[str]
     delivered_at: Optional[str]
+    request_platform: Optional[str]
+    request_channel_id: Optional[str]
+    request_thread_id: Optional[str]
+    request_user_id: Optional[str]
+    request_message_id: Optional[str]
+    request_conversation_id: Optional[str]
 
 
 @dataclass(frozen=True)
@@ -34,6 +40,7 @@ class VisualAgentLiveProof:
     artifacts: list[LiveProofArtifact]
     missing_artifact_delivery_ids: list[str]
     duplicate_artifact_ids: list[str]
+    missing_request_source_delivery_ids: list[str]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -48,6 +55,9 @@ class VisualAgentLiveProof:
             "artifacts": [asdict(artifact) for artifact in self.artifacts],
             "missing_artifact_delivery_ids": list(self.missing_artifact_delivery_ids),
             "duplicate_artifact_ids": list(self.duplicate_artifact_ids),
+            "missing_request_source_delivery_ids": list(
+                self.missing_request_source_delivery_ids
+            ),
         }
 
 
@@ -60,6 +70,7 @@ def verify_visual_agent_live_proof(
     thread_id: Optional[str] = None,
     require_image: bool = True,
     require_video: bool = True,
+    require_source_metadata: bool = True,
 ) -> VisualAgentLiveProof:
     """Verify that a live visual package was delivered after *since*.
 
@@ -73,6 +84,7 @@ def verify_visual_agent_live_proof(
         "sent_delivery_count": 0,
         "joined_artifact_count": 0,
         "missing_artifact_join_count": 0,
+        "missing_request_source_metadata_count": 0,
         "artifact_kind_counts": {},
         "request_count": 0,
     }
@@ -86,6 +98,7 @@ def verify_visual_agent_live_proof(
             thread_id,
             ["ledger_missing"],
             base_counts,
+            [],
             [],
             [],
             [],
@@ -103,6 +116,7 @@ def verify_visual_agent_live_proof(
                     thread_id,
                     ["ledger_uninitialized"],
                     base_counts,
+                    [],
                     [],
                     [],
                     [],
@@ -136,10 +150,12 @@ def verify_visual_agent_live_proof(
             [],
             [],
             [],
+            [],
         )
 
     artifacts: list[LiveProofArtifact] = []
     missing_delivery_ids: list[str] = []
+    missing_source_delivery_ids: list[str] = []
     artifact_delivery_counts: dict[str, int] = {}
     kind_counts: dict[str, int] = {}
     request_ids: set[str] = set()
@@ -149,6 +165,11 @@ def verify_visual_agent_live_proof(
         artifact_delivery_counts[artifact_id] = (
             artifact_delivery_counts.get(artifact_id, 0) + 1
         )
+        if require_source_metadata and _request_source_metadata_missing(
+            row,
+            required_thread_id=thread_id,
+        ):
+            missing_source_delivery_ids.append(str(row["delivery_id"]))
         kind = row["kind"]
         if kind is None:
             missing_delivery_ids.append(str(row["delivery_id"]))
@@ -166,6 +187,12 @@ def verify_visual_agent_live_proof(
                 source_url=row["source_url"],
                 mime_type=row["mime_type"],
                 delivered_at=row["delivered_at"],
+                request_platform=row["request_platform"],
+                request_channel_id=row["request_channel_id"],
+                request_thread_id=row["request_thread_id"],
+                request_user_id=row["request_user_id"],
+                request_message_id=row["request_message_id"],
+                request_conversation_id=row["request_conversation_id"],
             )
         )
 
@@ -180,6 +207,7 @@ def verify_visual_agent_live_proof(
         "joined_artifact_count": len(artifacts),
         "missing_artifact_join_count": len(missing_delivery_ids),
         "duplicate_artifact_delivery_count": len(duplicate_artifact_ids),
+        "missing_request_source_metadata_count": len(missing_source_delivery_ids),
         "artifact_kind_counts": kind_counts,
         "request_count": len(request_ids),
     }
@@ -191,6 +219,8 @@ def verify_visual_agent_live_proof(
             missing.append("missing_artifact_join")
         if duplicate_artifact_ids:
             missing.append("duplicate_artifact_delivery")
+        if missing_source_delivery_ids:
+            missing.append("missing_request_source_metadata")
         if require_image and kind_counts.get("image", 0) < 1:
             missing.append("missing_image_delivery")
         if require_video and kind_counts.get("video", 0) < 1:
@@ -208,6 +238,7 @@ def verify_visual_agent_live_proof(
         artifacts,
         missing_delivery_ids,
         duplicate_artifact_ids,
+        missing_source_delivery_ids,
     )
 
 
@@ -223,6 +254,7 @@ def _result(
     artifacts: list[LiveProofArtifact],
     missing_delivery_ids: list[str],
     duplicate_artifact_ids: list[str],
+    missing_request_source_delivery_ids: list[str],
 ) -> VisualAgentLiveProof:
     return VisualAgentLiveProof(
         success=success,
@@ -236,6 +268,7 @@ def _result(
         artifacts=artifacts,
         missing_artifact_delivery_ids=missing_delivery_ids,
         duplicate_artifact_ids=duplicate_artifact_ids,
+        missing_request_source_delivery_ids=missing_request_source_delivery_ids,
     )
 
 
@@ -251,12 +284,13 @@ def _has_required_tables(conn: sqlite3.Connection) -> bool:
         SELECT name
           FROM sqlite_master
          WHERE type = 'table'
-           AND name IN ('visual_deliveries', 'visual_artifacts')
+           AND name IN ('visual_deliveries', 'visual_artifacts', 'visual_requests')
         """
     ).fetchall()
     return {str(row["name"]) for row in rows} == {
         "visual_deliveries",
         "visual_artifacts",
+        "visual_requests",
     }
 
 
@@ -303,9 +337,16 @@ def _fetch_sent_delivery_rows(
                a.kind,
                a.local_path,
                a.source_url,
-               a.mime_type
+               a.mime_type,
+               r.platform AS request_platform,
+               r.channel_id AS request_channel_id,
+               r.thread_id AS request_thread_id,
+               r.user_id AS request_user_id,
+               r.message_id AS request_message_id,
+               r.conversation_id AS request_conversation_id
           FROM visual_deliveries d
           LEFT JOIN visual_artifacts a ON a.artifact_id = d.artifact_id
+          LEFT JOIN visual_requests r ON r.request_id = d.request_id
          WHERE lower(d.platform) = ?
            AND d.delivery_status = 'sent'
     """
@@ -320,6 +361,26 @@ def _fetch_sent_delivery_rows(
     )
     query += " ORDER BY d.delivered_at DESC, d.delivery_id DESC"
     return conn.execute(query, tuple(params)).fetchall()
+
+
+def _request_source_metadata_missing(
+    row: sqlite3.Row,
+    *,
+    required_thread_id: Optional[str],
+) -> bool:
+    required_fields = (
+        "request_platform",
+        "request_channel_id",
+        "request_user_id",
+        "request_message_id",
+        "request_conversation_id",
+    )
+    for field in required_fields:
+        if not str(row[field] or "").strip():
+            return True
+    if required_thread_id and not str(row["request_thread_id"] or "").strip():
+        return True
+    return False
 
 
 def _append_delivery_filters(

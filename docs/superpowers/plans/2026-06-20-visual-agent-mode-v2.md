@@ -25,7 +25,7 @@ Implement V2 in four phases:
 
 | Phase | Status | Gate |
 | --- | --- | --- |
-| A. Source lineage | Planned | Source metadata appears in `visual_requests` and live proof |
+| A. Source lineage | Implemented locally | Source metadata appears in `visual_requests` and live proof |
 | B. Self-scoring | Planned | Candidates have automatic score records and selected rationale |
 | C. Bounded repair | Planned | Repair attempts are recorded and budget-limited |
 | D. Operator reporting | Planned | CLI report summarizes health and strategy outcomes |
@@ -81,7 +81,7 @@ Goal: every visual request created during a gateway turn should carry source pla
 - Produces: `VisualSourceContext`, `set_visual_source_context(context)`, `get_visual_source_context()`, `clear_visual_source_context()`
 - Consumes: no prior V2 task
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```python
 from agent.visual.source_context import (
@@ -112,7 +112,7 @@ def test_source_context_round_trips_gateway_fields():
     assert get_visual_source_context() is None
 ```
 
-- [ ] **Step 2: Run red test**
+- [x] **Step 2: Run red test**
 
 Run:
 
@@ -122,7 +122,7 @@ Run:
 
 Expected: import or attribute failure.
 
-- [ ] **Step 3: Implement context carrier**
+- [x] **Step 3: Implement context carrier**
 
 Add a frozen dataclass and a `contextvars.ContextVar` in `agent/visual/source_context.py`.
 
@@ -133,11 +133,11 @@ Required behavior:
 - `clear_visual_source_context(token)` resets with token;
 - `clear_visual_source_context()` clears unconditionally.
 
-- [ ] **Step 4: Run green test**
+- [x] **Step 4: Run green test**
 
 Run the same pytest command. Expected: pass.
 
-- [ ] **Step 5: Self-evaluate**
+- [x] **Step 5: Self-evaluate**
 
 Add a short note under `## Phase A Self-Evaluation` in this plan:
 
@@ -158,7 +158,7 @@ Add a short note under `## Phase A Self-Evaluation` in this plan:
 - Consumes: `get_visual_source_context()`
 - Produces: request rows populated with `platform`, `channel_id`, `thread_id`, `user_id`, and `conversation_id`
 
-- [ ] **Step 1: Write failing test**
+- [x] **Step 1: Write failing test**
 
 Add a test that sets `VisualSourceContext`, calls `record_visual_generation_attempt()` with a successful fake payload, then reads the request row and asserts source fields are populated.
 
@@ -172,17 +172,17 @@ assert request["user_id"] == "U123"
 assert request["conversation_id"] == "slack:D123"
 ```
 
-- [ ] **Step 2: Run red test**
+- [x] **Step 2: Run red test**
 
 Expected: fields are `None`.
 
-- [ ] **Step 3: Implement tracking integration**
+- [x] **Step 3: Implement tracking integration**
 
 In `agent/visual/tracking.py`, when recording a new request, read `get_visual_source_context()` and pass source fields into `ledger.record_request()`.
 
 Do not mutate existing explicit `request_id` behavior; if a request already exists, update status only.
 
-- [ ] **Step 4: Run green tests**
+- [x] **Step 4: Run green tests**
 
 Run:
 
@@ -190,7 +190,7 @@ Run:
 /Users/simon/.hermes/hermes-agent/venv/bin/python -m pytest tests/visual/test_source_context.py tests/visual/test_attempt_ledger.py -q
 ```
 
-- [ ] **Step 5: Self-evaluate**
+- [x] **Step 5: Self-evaluate**
 
 Add:
 
@@ -209,15 +209,15 @@ Add:
 - Consumes: `set_visual_source_context()`
 - Produces: source context active while the agent/tool turn processes a platform event
 
-- [ ] **Step 1: Write failing gateway test**
+- [x] **Step 1: Write failing gateway test**
 
 Create a fake Slack message event with `platform="slack"`, `chat_id="D123"`, `thread_id`, `user_id`, and `message_id`. Patch `record_visual_generation_attempt()` or a small hook to assert `get_visual_source_context()` returns those values during the turn.
 
-- [ ] **Step 2: Run red test**
+- [x] **Step 2: Run red test**
 
 Expected: context is `None`.
 
-- [ ] **Step 3: Implement gateway context scope**
+- [x] **Step 3: Implement gateway context scope**
 
 Wrap the message handling section that invokes the agent with:
 
@@ -231,7 +231,7 @@ finally:
 
 Do not leak context across concurrent sessions.
 
-- [ ] **Step 4: Run green tests**
+- [x] **Step 4: Run green tests**
 
 Run:
 
@@ -239,7 +239,7 @@ Run:
 /Users/simon/.hermes/hermes-agent/venv/bin/python -m pytest tests/gateway/test_media_extraction.py tests/visual/test_source_context.py -q
 ```
 
-- [ ] **Step 5: Self-evaluate**
+- [x] **Step 5: Self-evaluate**
 
 Add:
 
@@ -259,7 +259,7 @@ Add:
 - Consumes: `visual_requests` source metadata
 - Produces: missing key `missing_request_source_metadata`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Add one passing fixture with Slack source metadata and one failing fixture where deliveries join artifacts but request source fields are empty.
 
@@ -270,11 +270,11 @@ assert proof.success is False
 assert "missing_request_source_metadata" in proof.missing
 ```
 
-- [ ] **Step 2: Run red tests**
+- [x] **Step 2: Run red tests**
 
 Expected: current proof passes without source metadata.
 
-- [ ] **Step 3: Implement proof check**
+- [x] **Step 3: Implement proof check**
 
 Join `visual_requests` in `_fetch_sent_delivery_rows()` and expose:
 
@@ -286,7 +286,7 @@ Join `visual_requests` in `_fetch_sent_delivery_rows()` and expose:
 
 Fail when `require_source_metadata=True` and required fields are missing.
 
-- [ ] **Step 4: Preserve compatibility**
+- [x] **Step 4: Preserve compatibility**
 
 Add CLI option:
 
@@ -296,7 +296,7 @@ Add CLI option:
 
 Default should require source metadata after Task A3 is merged.
 
-- [ ] **Step 5: Run green tests**
+- [x] **Step 5: Run green tests**
 
 Run:
 
@@ -304,7 +304,7 @@ Run:
 /Users/simon/.hermes/hermes-agent/venv/bin/python -m pytest tests/visual/test_live_proof.py tests/visual/test_live_proof_cli.py -q
 ```
 
-- [ ] **Step 6: Self-evaluate**
+- [x] **Step 6: Self-evaluate**
 
 Add:
 
@@ -312,6 +312,19 @@ Add:
 - A4 evidence: live proof fails when delivery exists but request source metadata is missing.
 - Risk: existing historical rows need compatibility flag for audits before A3.
 ```
+
+## Phase A Self-Evaluation
+
+- A1 evidence: source context round-trip and normalization tests pass with `rtk /Users/simon/.hermes/hermes-agent/venv/bin/python -m pytest tests/visual/test_source_context.py -q`.
+- Risk: context only exists in-process until ledger and gateway wiring land.
+- A2 evidence: source metadata and `message_id` are written to request rows; focused tests pass with `rtk /Users/simon/.hermes/hermes-agent/venv/bin/python -m pytest tests/visual/test_source_context.py tests/visual/test_attempt_ledger.py -q`.
+- Risk: gateway still needs to set the context around real turns.
+- A3 evidence: gateway handler sets source context during `_run_agent` and clears it afterward; focused tests pass with `rtk /Users/simon/.hermes/hermes-agent/venv/bin/python -m pytest tests/gateway/test_visual_source_context.py tests/visual/test_source_context.py -q`.
+- Risk: live proof still needs source metadata enforcement.
+- A4 evidence: live proof joins request source metadata, fails missing source metadata by default, and supports `--no-require-source-metadata` for historical rows; focused tests pass with `rtk /Users/simon/.hermes/hermes-agent/venv/bin/python -m pytest tests/visual/test_live_proof.py tests/visual/test_live_proof_cli.py -q`.
+- Risk: historical deliveries before A3 need the compatibility flag when audited.
+- Gate A evidence: `rtk /Users/simon/.hermes/hermes-agent/venv/bin/python -m pytest tests/visual/test_source_context.py tests/visual/test_attempt_ledger.py tests/visual/test_live_proof.py tests/visual/test_live_proof_cli.py tests/gateway/test_visual_source_context.py -q` passes; full `tests/visual` also passes.
+- Self-review: A3 relies on gateway `_run_agent` preserving contextvars into its executor; current implementation uses `_run_in_executor_with_context`, so visual tools should read the source context during real agent turns.
 
 ---
 
@@ -776,4 +789,3 @@ After all gates pass:
 - [ ] Repair loops are bounded.
 - [ ] Live proof can be rerun using local date and timezone.
 - [ ] Documentation states evidence boundaries instead of overstating proof.
-

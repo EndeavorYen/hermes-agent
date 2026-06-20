@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+
 
 def test_ledger_initializes_expected_tables(tmp_path):
     from agent.visual.attempt_ledger import VisualAttemptLedger
@@ -76,6 +78,65 @@ def test_records_request_attempt_artifact_and_delivery(tmp_path):
     assert ledger.get_artifact(artifact_id)["freshness_status"] == "fresh"
     assert ledger.get_artifact(artifact_id)["is_stable"] is True
     assert ledger.get_delivery(delivery_id)["delivery_status"] == "sent"
+
+
+def test_record_request_preserves_source_message_id(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+
+    request_id = ledger.record_request(
+        user_prompt="clean product photo",
+        normalized_intent={"modality": "image"},
+        modality="image",
+        operation="text_to_image",
+        platform="slack",
+        channel_id="D123",
+        thread_id="1710000000.000100",
+        user_id="U123",
+        message_id="1710000000.000200",
+        conversation_id="slack:D123",
+    )
+
+    request = ledger.get_request(request_id)
+    assert request["message_id"] == "1710000000.000200"
+
+
+def test_initialize_migrates_existing_requests_to_message_id_column(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+
+    db = tmp_path / "visual.sqlite3"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """
+            CREATE TABLE visual_requests (
+              request_id TEXT PRIMARY KEY,
+              conversation_id TEXT,
+              user_id TEXT,
+              platform TEXT,
+              channel_id TEXT,
+              thread_id TEXT,
+              user_prompt TEXT NOT NULL,
+              normalized_intent_json TEXT NOT NULL,
+              modality TEXT NOT NULL,
+              operation TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              policy_context_json TEXT,
+              status TEXT NOT NULL
+            )
+            """
+        )
+
+    ledger = VisualAttemptLedger(db)
+    ledger.initialize()
+
+    with sqlite3.connect(db) as conn:
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(visual_requests)").fetchall()
+        }
+    assert "message_id" in columns
 
 
 def test_records_feedback_against_delivered_artifact(tmp_path):

@@ -60,6 +60,7 @@ class VisualAttemptLedger:
                   platform TEXT,
                   channel_id TEXT,
                   thread_id TEXT,
+                  message_id TEXT,
                   user_prompt TEXT NOT NULL,
                   normalized_intent_json TEXT NOT NULL,
                   modality TEXT NOT NULL,
@@ -173,6 +174,7 @@ class VisualAttemptLedger:
                 );
                 """
             )
+            _ensure_column(conn, "visual_requests", "message_id", "TEXT")
             conn.execute(
                 "INSERT OR REPLACE INTO visual_schema_meta (key, value) VALUES (?, ?)",
                 ("schema_version", str(SCHEMA_VERSION)),
@@ -197,6 +199,7 @@ class VisualAttemptLedger:
         platform: Optional[str] = None,
         channel_id: Optional[str] = None,
         thread_id: Optional[str] = None,
+        message_id: Optional[str] = None,
         policy_context: Optional[Dict[str, Any]] = None,
         status: str = "pending",
         request_id: Optional[str] = None,
@@ -208,9 +211,9 @@ class VisualAttemptLedger:
                 """
                 INSERT INTO visual_requests (
                   request_id, conversation_id, user_id, platform, channel_id,
-                  thread_id, user_prompt, normalized_intent_json, modality,
+                  thread_id, message_id, user_prompt, normalized_intent_json, modality,
                   operation, created_at, policy_context_json, status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     rid,
@@ -219,6 +222,7 @@ class VisualAttemptLedger:
                     platform,
                     channel_id,
                     thread_id,
+                    message_id,
                     user_prompt,
                     _to_json(normalized_intent),
                     modality,
@@ -712,6 +716,20 @@ class VisualAttemptLedger:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         return conn
+
+
+def _ensure_column(
+    conn: sqlite3.Connection,
+    table_name: str,
+    column_name: str,
+    column_definition: str,
+) -> None:
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    existing = {str(row["name"]) for row in rows}
+    if column_name not in existing:
+        conn.execute(
+            f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}"
+        )
 
 
 def _to_json(value: Dict[str, Any]) -> str:

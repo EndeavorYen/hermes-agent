@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional
 from agent.visual.artifact_store import ArtifactStore
 from agent.visual.attempt_ledger import VisualAttemptLedger
 from agent.visual.error_taxonomy import normalize_visual_error_type
+from agent.visual.source_context import get_visual_source_context
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +164,7 @@ def _record_visual_generation_attempt(
             "completed" if success else "failed",
         )
     else:
+        source_context = get_visual_source_context()
         request_id = ledger.record_request(
             user_prompt=user_prompt,
             normalized_intent={
@@ -172,6 +174,14 @@ def _record_visual_generation_attempt(
             },
             modality=modality,
             operation=operation,
+            conversation_id=(
+                source_context.conversation_id if source_context else None
+            ),
+            user_id=source_context.user_id if source_context else None,
+            platform=source_context.platform if source_context else None,
+            channel_id=source_context.channel_id if source_context else None,
+            thread_id=source_context.thread_id if source_context else None,
+            message_id=source_context.message_id if source_context else None,
             status="completed" if success else "failed",
         )
     attempt_id = ledger.record_attempt(

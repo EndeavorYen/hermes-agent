@@ -9725,18 +9725,31 @@ class GatewayRunner:
             }
             await self.hooks.emit("agent:start", hook_ctx)
 
-            # Run the agent
-            agent_result = await self._run_agent(
-                message=message_text,
-                context_prompt=context_prompt,
-                history=history,
-                source=source,
-                session_id=session_entry.session_id,
-                session_key=session_key,
-                run_generation=run_generation,
-                event_message_id=self._reply_anchor_for_event(event),
-                channel_prompt=event.channel_prompt,
+            # Run the agent with task-local visual source metadata so visual
+            # tools can write request provenance without platform-specific APIs.
+            from agent.visual.source_context import (
+                VisualSourceContext,
+                clear_visual_source_context,
+                set_visual_source_context,
             )
+
+            _visual_source_token = set_visual_source_context(
+                VisualSourceContext.from_gateway_event(event)
+            )
+            try:
+                agent_result = await self._run_agent(
+                    message=message_text,
+                    context_prompt=context_prompt,
+                    history=history,
+                    source=source,
+                    session_id=session_entry.session_id,
+                    session_key=session_key,
+                    run_generation=run_generation,
+                    event_message_id=self._reply_anchor_for_event(event),
+                    channel_prompt=event.channel_prompt,
+                )
+            finally:
+                clear_visual_source_context(_visual_source_token)
 
             # Stop persistent typing indicator now that the agent is done
             try:
