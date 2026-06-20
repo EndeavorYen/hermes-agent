@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import sqlite3
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -319,6 +320,41 @@ def test_slack_records_delivery_when_local_image_is_public_exported(adapter, tmp
     assert row["delivery_status"] == "sent"
 
 
+def test_slack_records_image_delivery_when_delivery_path_differs_from_artifact_path(adapter, tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+
+    stable = _write_image(tmp_path / "stable.png")
+    delivered = tmp_path / "cache.png"
+    delivered.write_bytes(stable.read_bytes())
+    ledger = VisualAttemptLedger(default_visual_ledger_path())
+    ledger.initialize()
+    _record_artifact_fixture(
+        ledger,
+        request_id="vrq_current",
+        attempt_id="vat_current",
+        artifact_id="var_current",
+        local_path=str(stable),
+        content_hash=_sha256_uri(delivered.read_bytes()),
+        created_at="2026-06-19T02:00:00Z",
+    )
+
+    _run(
+        adapter.send_multiple_images(
+            "C12345",
+            [(delivered.as_uri(), "fresh")],
+            metadata={"thread_id": "171000.0001"},
+        )
+    )
+
+    rows = _delivery_rows(tmp_path)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["request_id"] == "vrq_current"
+    assert row["artifact_id"] == "var_current"
+    assert row["delivery_status"] == "sent"
+
+
 def test_slack_records_video_delivery_result_for_uploaded_artifact(adapter, tmp_path):
     video = _write_video(tmp_path / "fresh.mp4")
     video_uri = video.as_uri()
@@ -350,6 +386,44 @@ def test_slack_records_video_delivery_result_for_uploaded_artifact(adapter, tmp_
     assert row["request_id"] == "vrq_video"
     assert row["attempt_id"] == "vat_video"
     assert row["artifact_id"] == "var_video"
+    assert row["delivery_status"] == "sent"
+
+
+def test_slack_records_video_delivery_when_delivery_path_differs_from_artifact_path(adapter, tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+
+    stable = _write_video(tmp_path / "stable.mp4")
+    delivered = tmp_path / "cache.mp4"
+    delivered.write_bytes(stable.read_bytes())
+    ledger = VisualAttemptLedger(default_visual_ledger_path())
+    ledger.initialize()
+    _record_artifact_fixture(
+        ledger,
+        request_id="vrq_video_auto",
+        attempt_id="vat_video_auto",
+        artifact_id="var_video_auto",
+        local_path=str(stable),
+        content_hash=_sha256_uri(delivered.read_bytes()),
+        created_at="2026-06-19T02:00:00Z",
+        kind="video",
+    )
+
+    result = _run(
+        adapter.send_video(
+            "C12345",
+            str(delivered),
+            caption="fresh video",
+            metadata={"thread_id": "171000.0001"},
+        )
+    )
+
+    assert result.success is True
+    rows = _delivery_rows(tmp_path)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["request_id"] == "vrq_video_auto"
+    assert row["artifact_id"] == "var_video_auto"
     assert row["delivery_status"] == "sent"
 
 
@@ -471,3 +545,7 @@ def _record_artifact_fixture(
         freshness_status="fresh",
         created_at=created_at,
     )
+
+
+def _sha256_uri(payload: bytes) -> str:
+    return "sha256:" + hashlib.sha256(payload).hexdigest()

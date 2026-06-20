@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+
 import sqlite3
 
 
@@ -235,6 +237,36 @@ def test_builds_delivery_metadata_for_all_batch_artifacts(tmp_path):
     assert metadata["visual_artifacts"]["file:///tmp/new.png"]["artifact_id"] == "var_new"
 
 
+def test_builds_delivery_metadata_by_content_hash_when_delivery_path_differs(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+    stable = tmp_path / "visual" / "stable.png"
+    delivered = tmp_path / "cache" / "generated.png"
+    stable.parent.mkdir(parents=True)
+    delivered.parent.mkdir(parents=True)
+    payload = b"\x89PNG\r\n\x1a\nsame-image-bytes"
+    stable.write_bytes(payload)
+    delivered.write_bytes(payload)
+    _record_artifact_fixture(
+        ledger,
+        request_id="vrq_current",
+        attempt_id="vat_current",
+        artifact_id="var_current",
+        local_path=str(stable),
+        content_hash=_sha256_uri(payload),
+        created_at="2026-06-19T02:00:00Z",
+    )
+
+    metadata = ledger.build_delivery_metadata_for_urls([delivered.as_uri()])
+
+    assert metadata is not None
+    assert metadata["visual_request_id"] == "vrq_current"
+    assert metadata["selected_visual_artifact_ids"] == ["var_current"]
+    assert metadata["visual_artifacts"][delivered.as_uri()]["artifact_id"] == "var_current"
+
+
 def test_finds_latest_sent_delivery_for_feedback(tmp_path):
     from agent.visual.attempt_ledger import VisualAttemptLedger
 
@@ -406,3 +438,7 @@ def _record_artifact_fixture(
         created_at=created_at,
     )
     return request_id
+
+
+def _sha256_uri(payload: bytes) -> str:
+    return "sha256:" + hashlib.sha256(payload).hexdigest()

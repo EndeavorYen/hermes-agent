@@ -595,6 +595,23 @@ class VisualAttemptLedger:
                 """,
                 tuple(candidates) + tuple(candidates),
             ).fetchone()
+        if row is not None:
+            return _decode_row(row)
+
+        content_hash = _delivery_content_hash(url)
+        if not content_hash:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                  FROM visual_artifacts
+                 WHERE content_hash = ?
+                 ORDER BY created_at DESC, artifact_id DESC
+                 LIMIT 1
+                """,
+                (content_hash,),
+            ).fetchone()
         return _decode_row(row) if row is not None else None
 
     def find_latest_delivery_for_feedback(
@@ -798,3 +815,15 @@ def _delivery_url_candidates(url: str) -> list[str]:
             except TypeError:
                 pass
     return list(dict.fromkeys(candidates))
+
+
+def _delivery_content_hash(url: str) -> Optional[str]:
+    try:
+        from agent.visual.media_probe import probe_local_media
+
+        media = probe_local_media(str(url or "").strip())
+        if media.exists and media.sha256:
+            return media.sha256
+    except Exception:
+        return None
+    return None
