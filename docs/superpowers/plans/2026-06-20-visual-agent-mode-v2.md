@@ -798,6 +798,50 @@ Required evidence:
 - no missing request source metadata;
 - source metadata matches Slack destination and thread where available.
 
+## Post-Implementation Live Validation
+
+2026-06-20 local-date runtime ledger check:
+
+```bash
+/Users/simon/.hermes/hermes-agent/venv/bin/python scripts/visual_agent_report.py \
+  --ledger-path /Users/simon/.hermes/visual/attempt_ledger.sqlite3 \
+  --since-local-date 2026-06-20 \
+  --timezone Asia/Taipei \
+  --json
+```
+
+Observed aggregate result:
+
+- requests: 52 total, 50 completed, 2 failed;
+- artifacts: 41 images, 9 videos;
+- deliveries: 2 sent, 0 duplicate artifact delivery;
+- provider errors: 1 connection error, 1 provider error;
+- source metadata: 52 of 52 current-day requests missing full request source metadata.
+
+Historical-delivery proof command:
+
+```bash
+/Users/simon/.hermes/hermes-agent/venv/bin/python scripts/visual_agent_live_proof.py \
+  --ledger-path /Users/simon/.hermes/visual/attempt_ledger.sqlite3 \
+  --since-local-date 2026-06-20 \
+  --timezone Asia/Taipei \
+  --platform slack \
+  --no-require-source-metadata \
+  --json
+```
+
+Observed result:
+
+- `success: true` for historical delivery mode;
+- artifact kind counts: 1 image, 1 video;
+- missing artifact join: 0;
+- duplicate artifact delivery: 0;
+- missing request source metadata count: 2.
+
+Strict source-metadata proof correctly fails on the same historical rows with
+`missing_request_source_metadata`. This is expected until the deployed runtime
+records new Phase A source metadata for fresh Slack visual requests.
+
 ## Documentation Updates
 
 After all gates pass:
@@ -809,9 +853,9 @@ After all gates pass:
 
 ## Final Self-Review Checklist
 
-- [ ] Every V2 completion criterion maps to a task and gate.
-- [ ] No task requires raw private prompt storage.
-- [ ] Provider health, preference, and delivery health remain separate.
-- [ ] Repair loops are bounded.
-- [ ] Live proof can be rerun using local date and timezone.
-- [ ] Documentation states evidence boundaries instead of overstating proof.
+- [x] Every V2 completion criterion maps to a task and gate.
+- [x] No task requires raw private prompt storage.
+- [x] Provider health, preference, and delivery health remain separate.
+- [x] Repair loops are bounded.
+- [x] Live proof can be rerun using local date and timezone.
+- [x] Documentation states evidence boundaries instead of overstating proof.

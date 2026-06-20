@@ -268,6 +268,47 @@ def test_live_proof_can_skip_source_metadata_for_historical_rows(tmp_path):
 
     assert proof.success is True
     assert "missing_request_source_metadata" not in proof.missing
+    assert proof.counts["missing_request_source_metadata_count"] == 2
+
+
+def test_live_proof_handles_historical_schema_without_message_id_column(tmp_path):
+    from agent.visual.live_proof import verify_visual_agent_live_proof
+
+    ledger_path = tmp_path / "visual.sqlite3"
+    _create_historical_live_proof_schema(ledger_path)
+
+    proof = verify_visual_agent_live_proof(
+        ledger_path,
+        since="2026-06-20T00:00:00Z",
+        platform="slack",
+        destination_id="D123",
+    )
+
+    assert proof.success is False
+    assert proof.counts.get("sqlite_error") is None
+    assert proof.counts["artifact_kind_counts"] == {"image": 1, "video": 1}
+    assert proof.counts["missing_request_source_metadata_count"] == 2
+    assert proof.missing == ["missing_request_source_metadata"]
+    assert [artifact.request_message_id for artifact in proof.artifacts] == [None, None]
+
+
+def test_live_proof_can_skip_source_metadata_with_historical_schema(tmp_path):
+    from agent.visual.live_proof import verify_visual_agent_live_proof
+
+    ledger_path = tmp_path / "visual.sqlite3"
+    _create_historical_live_proof_schema(ledger_path)
+
+    proof = verify_visual_agent_live_proof(
+        ledger_path,
+        since="2026-06-20T00:00:00Z",
+        platform="slack",
+        destination_id="D123",
+        require_source_metadata=False,
+    )
+
+    assert proof.success is True
+    assert proof.missing == []
+    assert proof.counts["missing_request_source_metadata_count"] == 2
 
 
 def _record_delivered_artifact(
@@ -330,3 +371,106 @@ def _record_delivered_artifact(
         delivered_at=delivered_at,
     )
     return artifact_id
+
+
+def _create_historical_live_proof_schema(path):
+    import sqlite3
+
+    with sqlite3.connect(path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE visual_requests (
+                request_id TEXT PRIMARY KEY,
+                conversation_id TEXT,
+                user_id TEXT,
+                platform TEXT,
+                channel_id TEXT,
+                thread_id TEXT,
+                user_prompt TEXT,
+                normalized_intent_json TEXT,
+                modality TEXT,
+                operation TEXT,
+                created_at TEXT,
+                policy_context_json TEXT,
+                status TEXT
+            );
+            CREATE TABLE visual_artifacts (
+                artifact_id TEXT PRIMARY KEY,
+                attempt_id TEXT,
+                request_id TEXT,
+                kind TEXT,
+                local_path TEXT,
+                source_url TEXT,
+                content_hash TEXT,
+                perceptual_hash TEXT,
+                mime_type TEXT,
+                bytes INTEGER,
+                width INTEGER,
+                height INTEGER,
+                duration_ms INTEGER,
+                frame_count INTEGER,
+                created_at TEXT,
+                expires_at TEXT,
+                is_stable INTEGER,
+                freshness_status TEXT
+            );
+            CREATE TABLE visual_deliveries (
+                delivery_id TEXT PRIMARY KEY,
+                request_id TEXT,
+                attempt_id TEXT,
+                artifact_id TEXT,
+                platform TEXT,
+                destination_id TEXT,
+                thread_id TEXT,
+                message_id TEXT,
+                delivery_status TEXT,
+                error_type TEXT,
+                error_message TEXT,
+                delivered_at TEXT
+            );
+            INSERT INTO visual_requests (
+                request_id, conversation_id, user_id, platform, channel_id,
+                thread_id, user_prompt, normalized_intent_json, modality,
+                operation, created_at, policy_context_json, status
+            ) VALUES
+                (
+                    'vrq_image', 'slack:D123', 'U123', 'slack', 'D123',
+                    NULL, 'private prompt', '{}', 'image', 'generated',
+                    '2026-06-20T00:01:00Z', '{}', 'completed'
+                ),
+                (
+                    'vrq_video', 'slack:D123', 'U123', 'slack', 'D123',
+                    NULL, 'private prompt', '{}', 'video', 'generated',
+                    '2026-06-20T00:02:00Z', '{}', 'completed'
+                );
+            INSERT INTO visual_artifacts (
+                artifact_id, attempt_id, request_id, kind, local_path,
+                source_url, mime_type, is_stable, freshness_status, created_at
+            ) VALUES
+                (
+                    'var_image', 'vat_image', 'vrq_image', 'image',
+                    '/tmp/var_image.png', NULL, 'image/png', 1, 'fresh',
+                    '2026-06-20T00:01:00Z'
+                ),
+                (
+                    'var_video', 'vat_video', 'vrq_video', 'video',
+                    '/tmp/var_video.mp4', NULL, 'video/mp4', 1, 'fresh',
+                    '2026-06-20T00:02:00Z'
+                );
+            INSERT INTO visual_deliveries (
+                delivery_id, request_id, attempt_id, artifact_id, platform,
+                destination_id, thread_id, message_id, delivery_status,
+                delivered_at
+            ) VALUES
+                (
+                    'vdl_image', 'vrq_image', 'vat_image', 'var_image',
+                    'slack', 'D123', NULL, 'msg-image', 'sent',
+                    '2026-06-20T00:03:00Z'
+                ),
+                (
+                    'vdl_video', 'vrq_video', 'vat_video', 'var_video',
+                    'slack', 'D123', NULL, 'msg-video', 'sent',
+                    '2026-06-20T00:04:00Z'
+                );
+            """
+        )

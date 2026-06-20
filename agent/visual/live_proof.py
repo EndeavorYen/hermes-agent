@@ -165,10 +165,7 @@ def verify_visual_agent_live_proof(
         artifact_delivery_counts[artifact_id] = (
             artifact_delivery_counts.get(artifact_id, 0) + 1
         )
-        if require_source_metadata and _request_source_metadata_missing(
-            row,
-            required_thread_id=thread_id,
-        ):
+        if _request_source_metadata_missing(row, required_thread_id=thread_id):
             missing_source_delivery_ids.append(str(row["delivery_id"]))
         kind = row["kind"]
         if kind is None:
@@ -219,7 +216,7 @@ def verify_visual_agent_live_proof(
             missing.append("missing_artifact_join")
         if duplicate_artifact_ids:
             missing.append("duplicate_artifact_delivery")
-        if missing_source_delivery_ids:
+        if require_source_metadata and missing_source_delivery_ids:
             missing.append("missing_request_source_metadata")
         if require_image and kind_counts.get("image", 0) < 1:
             missing.append("missing_image_delivery")
@@ -328,7 +325,28 @@ def _fetch_sent_delivery_rows(
     destination_id: Optional[str],
     thread_id: Optional[str],
 ) -> list[sqlite3.Row]:
-    query = """
+    request_columns = _table_columns(conn, "visual_requests")
+    request_selects = ",\n               ".join(
+        [
+            _optional_column_select(
+                request_columns, "platform", "r", "request_platform"
+            ),
+            _optional_column_select(
+                request_columns, "channel_id", "r", "request_channel_id"
+            ),
+            _optional_column_select(
+                request_columns, "thread_id", "r", "request_thread_id"
+            ),
+            _optional_column_select(request_columns, "user_id", "r", "request_user_id"),
+            _optional_column_select(
+                request_columns, "message_id", "r", "request_message_id"
+            ),
+            _optional_column_select(
+                request_columns, "conversation_id", "r", "request_conversation_id"
+            ),
+        ]
+    )
+    query = f"""
         SELECT d.delivery_id,
                d.request_id,
                d.attempt_id,
@@ -338,12 +356,7 @@ def _fetch_sent_delivery_rows(
                a.local_path,
                a.source_url,
                a.mime_type,
-               r.platform AS request_platform,
-               r.channel_id AS request_channel_id,
-               r.thread_id AS request_thread_id,
-               r.user_id AS request_user_id,
-               r.message_id AS request_message_id,
-               r.conversation_id AS request_conversation_id
+               {request_selects}
           FROM visual_deliveries d
           LEFT JOIN visual_artifacts a ON a.artifact_id = d.artifact_id
           LEFT JOIN visual_requests r ON r.request_id = d.request_id
@@ -361,6 +374,21 @@ def _fetch_sent_delivery_rows(
     )
     query += " ORDER BY d.delivered_at DESC, d.delivery_id DESC"
     return conn.execute(query, tuple(params)).fetchall()
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _optional_column_select(
+    columns: set[str],
+    column: str,
+    table_alias: str,
+    output_alias: str,
+) -> str:
+    if column in columns:
+        return f"{table_alias}.{column} AS {output_alias}"
+    return f"NULL AS {output_alias}"
 
 
 def _request_source_metadata_missing(

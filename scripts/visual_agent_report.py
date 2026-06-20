@@ -10,6 +10,10 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from agent.visual.tracking import default_visual_ledger_path
 from scripts.visual_agent_live_proof import _resolve_since
 
@@ -182,12 +186,18 @@ def _group_counts(
 
 
 def _missing_source_count(conn: sqlite3.Connection, since: Optional[str]) -> int:
+    required_columns = (
+        "platform",
+        "channel_id",
+        "user_id",
+        "message_id",
+        "conversation_id",
+    )
+    columns = _table_columns(conn, "visual_requests")
+    if any(column not in columns for column in required_columns):
+        return _count_rows(conn, "visual_requests", "created_at", since)
     clauses = [
-        "(platform IS NULL OR platform = '')",
-        "(channel_id IS NULL OR channel_id = '')",
-        "(user_id IS NULL OR user_id = '')",
-        "(message_id IS NULL OR message_id = '')",
-        "(conversation_id IS NULL OR conversation_id = '')",
+        f"({column} IS NULL OR {column} = '')" for column in required_columns
     ]
     query = (
         "SELECT COUNT(*) AS count FROM visual_requests WHERE ("
@@ -200,6 +210,10 @@ def _missing_source_count(conn: sqlite3.Connection, since: Optional[str]) -> int
         params.append(since)
     row = conn.execute(query, tuple(params)).fetchone()
     return int(row["count"]) if row is not None else 0
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})")}
 
 
 def _duplicate_delivery_count(
