@@ -1390,13 +1390,29 @@ def _dispatch_to_plugin_provider(
     return json.dumps(result)
 
 
+def _legacy_reference_image_urls(args: Dict[str, Any]) -> Optional[list]:
+    """Return reference image aliases used by older runtime plugins.
+
+    The public schema now uses ``reference_image_urls``. Local runtime plugins
+    installed before that rename may still send ``reference_images`` or the
+    older input/style aliases; normalize them at the handler boundary so
+    provider APIs stay unchanged.
+    """
+    if args.get("reference_image_urls") is not None:
+        return args.get("reference_image_urls")
+    for key in ("reference_images", "input_images", "image_style_references"):
+        if args.get(key) is not None:
+            return args.get(key)
+    return None
+
+
 def _handle_image_generate(args, **kw):
     prompt = args.get("prompt", "")
     if not prompt:
         return tool_error("prompt is required for image generation")
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
-    image_url = args.get("image_url")
-    reference_image_urls = args.get("reference_image_urls")
+    image_url = args.get("image_url") or args.get("input_image")
+    reference_image_urls = _legacy_reference_image_urls(args)
     task_id = kw.get("task_id")
 
     # Route to a plugin-registered provider if one is active (and it's

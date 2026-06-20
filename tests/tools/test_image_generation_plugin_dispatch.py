@@ -30,6 +30,30 @@ class _FakeCodexProvider(ImageGenProvider):
         }
 
 
+class _RecordingProvider(ImageGenProvider):
+    def __init__(self):
+        self.last_kwargs = {}
+
+    @property
+    def name(self) -> str:
+        return "recording"
+
+    def generate(self, prompt, aspect_ratio="landscape", **kwargs):
+        self.last_kwargs = {
+            "prompt": prompt,
+            "aspect_ratio": aspect_ratio,
+            **kwargs,
+        }
+        return {
+            "success": True,
+            "image": "/tmp/recording.png",
+            "model": kwargs.get("model") or "recording-model",
+            "prompt": prompt,
+            "aspect_ratio": aspect_ratio,
+            "provider": "recording",
+        }
+
+
 class TestPluginDispatch:
     def test_dispatch_routes_to_codex_provider(self, monkeypatch, tmp_path):
         from tools import image_generation_tool
@@ -97,3 +121,36 @@ class TestPluginDispatch:
         assert payload["success"] is True
         assert payload["provider"] == "codex"
         assert payload["aspect_ratio"] == "portrait"
+
+    def test_handle_accepts_reference_images_alias_for_runtime_plugins(self, monkeypatch, tmp_path):
+        """Machine-local plugins still call image_generate with reference_images.
+
+        The upstream schema uses reference_image_urls, but runtime plugins such
+        as Visual Arsenal predate that rename. Keep the handler compatible by
+        normalizing reference_images into the provider-facing field.
+        """
+        from tools import image_generation_tool
+        from agent import image_gen_registry as registry_module
+        from hermes_cli import plugins as plugins_module
+
+        provider = _RecordingProvider()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text("image_gen:\n  provider: recording\n")
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "recording")
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_model", lambda: None)
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda *a, **k: None)
+        monkeypatch.setattr(registry_module, "get_provider", lambda name: provider if name == "recording" else None)
+
+        payload = json.loads(
+            image_generation_tool._handle_image_generate(
+                {
+                    "prompt": "draw from refs",
+                    "reference_images": ["https://example.com/ref.png"],
+                }
+            )
+        )
+
+        assert payload["success"] is True
+        assert provider.last_kwargs["reference_image_urls"] == [
+            "https://example.com/ref.png"
+        ]
