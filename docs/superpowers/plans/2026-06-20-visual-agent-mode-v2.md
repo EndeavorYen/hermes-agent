@@ -28,7 +28,7 @@ Implement V2 in four phases:
 | A. Source lineage | Implemented locally | Source metadata appears in `visual_requests` and live proof |
 | B. Self-scoring | Implemented locally | Candidates have automatic score records and selected rationale |
 | C. Bounded repair | Implemented locally | Repair attempts are recorded and budget-limited |
-| D. Operator reporting | Planned | CLI report summarizes health and strategy outcomes |
+| D. Operator reporting | Implemented locally | CLI report summarizes health and strategy outcomes |
 
 Each phase ends with a self-evaluation note in this plan before continuing.
 
@@ -651,7 +651,7 @@ Goal: provide a compact report without exposing private prompts or media.
 - Consumes: `visual_requests`, `visual_attempts`, `visual_artifacts`, `visual_deliveries`, strategy store
 - Produces: JSON summary with health counts and top compact strategy outcomes
 
-- [ ] **Step 1: Write failing test**
+- [x] **Step 1: Write failing test**
 
 Create a temp ledger with:
 
@@ -670,11 +670,11 @@ assert payload["provider_errors"]["content_moderation"] == 1
 assert "raw_prompts" not in payload
 ```
 
-- [ ] **Step 2: Run red test**
+- [x] **Step 2: Run red test**
 
 Expected: script missing.
 
-- [ ] **Step 3: Implement report**
+- [x] **Step 3: Implement report**
 
 Support:
 
@@ -692,7 +692,7 @@ Report sections:
 - `source_metadata`
 - `strategy_atoms`
 
-- [ ] **Step 4: Run green tests**
+- [x] **Step 4: Run green tests**
 
 Run:
 
@@ -700,7 +700,7 @@ Run:
 /Users/simon/.hermes/hermes-agent/venv/bin/python -m pytest tests/visual/test_visual_agent_report.py -q
 ```
 
-- [ ] **Step 5: Self-evaluate**
+- [x] **Step 5: Self-evaluate**
 
 Add:
 
@@ -708,6 +708,12 @@ Add:
 - D1 evidence: report summarizes visual health without raw prompts.
 - Risk: report is JSON-first; UI can come later.
 ```
+
+## Phase D Self-Evaluation
+
+- D1 evidence: `scripts/visual_agent_report.py` summarizes request, attempt, artifact, delivery, provider error, source metadata, and strategy atom counts without selecting raw prompt columns; focused tests pass with `rtk /Users/simon/.hermes/hermes-agent/venv/bin/python -m pytest tests/visual/test_visual_agent_report.py -q`.
+- Risk: report is JSON-first and aggregate-only; richer operator UI can come later.
+- Gate D evidence: focused report tests pass. Live runtime report should be run after the next visual package so the current ledger schema has source metadata populated.
 
 ---
 

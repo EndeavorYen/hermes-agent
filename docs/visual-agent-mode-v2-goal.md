@@ -88,6 +88,46 @@ V2 is complete when Hermes can prove all of the following for a safe Slack visua
 7. A report command summarizes provider health, delivery health, scoring outcomes, and top strategy atoms.
 8. Live proof passes with no stale artifact, duplicate artifact, missing join, or missing source metadata.
 
+## Current Implementation Status
+
+As of 2026-06-20, the repo-local implementation covers the V2 evidence loop in four phases:
+
+| Workstream | Status | Evidence |
+| --- | --- | --- |
+| Source lineage | Implemented locally | Gateway visual turns set `VisualSourceContext`; new visual request rows persist platform, channel, user, message, thread, and conversation metadata; live proof fails missing source metadata by default. |
+| Self-scoring | Implemented locally | `VisualReward` separates provider health, artifact quality, delivery health, and preference score; visual packages include `delivery_metadata.reward_trace` in shadow mode. |
+| Bounded repair | Implemented locally | `VisualRepairDecision` gates retries by autonomy level, error type, and budget; `visual_agent_generate` records `repair_trace` and bounded retry attempts at L3+. |
+| Operator reporting | Implemented locally | `scripts/visual_agent_report.py` emits aggregate JSON for requests, attempts, artifacts, delivery, provider errors, source metadata, and strategy atoms without raw prompt columns. |
+
+Latest focused verification:
+
+```bash
+rtk /Users/simon/.hermes/hermes-agent/venv/bin/python -m pytest \
+  tests/visual/test_source_context.py \
+  tests/visual/test_attempt_ledger.py \
+  tests/visual/test_live_proof.py \
+  tests/visual/test_live_proof_cli.py \
+  tests/gateway/test_visual_source_context.py \
+  tests/visual/agent_mode/test_reward.py \
+  tests/visual/agent_mode/test_learning.py \
+  tests/tools/test_visual_agent_tool.py \
+  tests/visual/test_ranker.py \
+  tests/visual/agent_mode/test_repair_policy.py \
+  tests/visual/test_visual_agent_report.py -q
+```
+
+Result: `51 passed`.
+
+Latest full visual suite:
+
+```bash
+rtk /Users/simon/.hermes/hermes-agent/venv/bin/python -m pytest tests/visual -q
+```
+
+Result: `88 passed`.
+
+Remaining proof boundary: live Slack/Grok package generation still needs a fresh runtime smoke after deployment, then `scripts/visual_agent_live_proof.py` and `scripts/visual_agent_report.py` should be run against the live ledger for the same local date.
+
 ## Privacy Rules
 
 Runtime-private material stays under `~/.hermes`:
@@ -109,4 +149,3 @@ Use an incremental evidence-first approach:
 2. Add self-scoring as shadow data before changing delivery decisions.
 3. Add bounded repair only after score and error taxonomy coverage exists.
 4. Add reporting last, aggregating already-recorded evidence rather than inventing a parallel data path.
-
