@@ -19,6 +19,12 @@ _ALLOWED_EVIDENCE_KEYS = {
     "error_type",
     "feedback_polarity",
     "score_components",
+    "provider_health",
+    "artifact_quality",
+    "delivery_health",
+    "preference_score",
+    "overall_score",
+    "confidence",
 }
 
 

@@ -102,6 +102,11 @@ async def test_visual_agent_generate_runs_image_video_package(monkeypatch):
             "ranker_version": "visual-agent-score-v1",
         }
     ]
+    reward_trace = payload["delivery_metadata"]["reward_trace"]
+    assert reward_trace["mode"] == "shadow"
+    assert reward_trace["reward"]["provider_health"] == 1.0
+    assert reward_trace["reward"]["overall_score"] > 0.7
+    assert "prompt" not in json.dumps(reward_trace).lower()
 
 
 @pytest.mark.asyncio

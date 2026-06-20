@@ -14,6 +14,7 @@ from agent.visual.agent_mode.clip_builder import build_video_clips as _build_vid
 from agent.visual.agent_mode.image_batch import select_image_candidates as _select_image_candidates
 from agent.visual.agent_mode.loop_policy import VisualLoopPolicy, decide_next_action
 from agent.visual.agent_mode.mission_planner import plan_visual_mission
+from agent.visual.agent_mode.reward import score_visual_outcome
 from agent.visual.agent_mode.types import VisualArtifactRole, VisualMission
 from agent.visual.ids import new_artifact_id
 from tools.registry import registry, tool_error
@@ -109,6 +110,12 @@ async def _handle_visual_agent_generate(args: Dict[str, Any], **_kw: Any) -> str
         payload,
         mission,
         action=action,
+        image_result=image_result,
+        video_result=video_result,
+        confidence=confidence,
+    )
+    payload.setdefault("delivery_metadata", {})["reward_trace"] = _build_reward_trace(
+        payload,
         image_result=image_result,
         video_result=video_result,
         confidence=confidence,
@@ -410,6 +417,60 @@ def _add_package_status(
     payload["stop_reasons"] = stop_reasons
     if stop_reasons:
         payload["stop_reason"] = stop_reasons[0]
+
+
+def _build_reward_trace(
+    payload: Dict[str, Any],
+    *,
+    image_result: Dict[str, Any],
+    video_result: Dict[str, Any],
+    confidence: float,
+) -> Dict[str, Any]:
+    images = list(payload.get("images") or [])
+    videos = list(payload.get("videos") or [])
+    package_status = str(payload.get("package_status") or "")
+    provider_error_type = _first_failure_error_type(image_result, video_result)
+    delivery_health = {
+        "success": 1.0,
+        "partial_success": 0.5,
+    }.get(package_status, 0.0)
+    reward = score_visual_outcome(
+        {
+            "provider_error_type": provider_error_type,
+            "artifact_valid": bool(images or videos),
+            "artifact_quality": confidence if images else 0.0,
+            "delivery_health": delivery_health,
+            "preference_score": 0.5,
+            "confidence": confidence,
+        }
+    )
+    return {
+        "mode": "shadow",
+        "reward_model": "visual-reward-v0",
+        "reward": reward.to_dict(),
+        "evidence": {
+            "image_stage_success": bool(image_result.get("success")),
+            "video_stage_success": bool(video_result.get("success")),
+            "selected_image_count": len(images),
+            "selected_video_count": len(videos),
+            "package_status": package_status,
+            "has_provider_error": bool(provider_error_type),
+        },
+    }
+
+
+def _first_failure_error_type(*stage_results: Dict[str, Any]) -> str | None:
+    for result in stage_results:
+        failures = result.get("failures") if isinstance(result, dict) else None
+        if not isinstance(failures, list):
+            continue
+        for failure in failures:
+            if not isinstance(failure, dict):
+                continue
+            error_type = str(failure.get("error_type") or "").strip()
+            if error_type:
+                return error_type
+    return None
 
 
 def _coerce_int(value: Any, *, default: int) -> int:

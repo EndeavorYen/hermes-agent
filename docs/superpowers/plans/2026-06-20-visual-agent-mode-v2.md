@@ -26,7 +26,7 @@ Implement V2 in four phases:
 | Phase | Status | Gate |
 | --- | --- | --- |
 | A. Source lineage | Implemented locally | Source metadata appears in `visual_requests` and live proof |
-| B. Self-scoring | Planned | Candidates have automatic score records and selected rationale |
+| B. Self-scoring | Implemented locally | Candidates have automatic score records and selected rationale |
 | C. Bounded repair | Planned | Repair attempts are recorded and budget-limited |
 | D. Operator reporting | Planned | CLI report summarizes health and strategy outcomes |
 
@@ -342,7 +342,7 @@ Goal: produce automatic reward signals before changing delivery behavior.
 - Produces: `VisualReward`, `score_visual_outcome(evidence: dict) -> VisualReward`
 - Consumes: artifact validity, delivery status, score components, feedback polarity
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```python
 from agent.visual.agent_mode.reward import score_visual_outcome
@@ -362,11 +362,11 @@ def test_reward_separates_provider_and_preference_tracks():
     assert reward.overall_score < 1.0
 ```
 
-- [ ] **Step 2: Run red test**
+- [x] **Step 2: Run red test**
 
 Expected: module missing.
 
-- [ ] **Step 3: Implement reward model**
+- [x] **Step 3: Implement reward model**
 
 Reward fields:
 
@@ -380,7 +380,7 @@ Reward fields:
 
 Clamp all scores to `[0.0, 1.0]`.
 
-- [ ] **Step 4: Run green tests**
+- [x] **Step 4: Run green tests**
 
 Run:
 
@@ -388,7 +388,7 @@ Run:
 /Users/simon/.hermes/hermes-agent/venv/bin/python -m pytest tests/visual/agent_mode/test_reward.py -q
 ```
 
-- [ ] **Step 5: Self-evaluate**
+- [x] **Step 5: Self-evaluate**
 
 Add:
 
@@ -407,15 +407,15 @@ Add:
 - Consumes: `VisualReward`
 - Produces: safe evidence keys for provider, strategy, and reward components
 
-- [ ] **Step 1: Write failing test**
+- [x] **Step 1: Write failing test**
 
 Record an outcome with reward components and assert `top_strategies()` returns safe evidence without raw prompt text.
 
-- [ ] **Step 2: Run red test**
+- [x] **Step 2: Run red test**
 
 Expected: reward components are dropped or unavailable.
 
-- [ ] **Step 3: Implement safe reward evidence**
+- [x] **Step 3: Implement safe reward evidence**
 
 Allow compact keys:
 
@@ -428,7 +428,7 @@ Allow compact keys:
 
 Do not allow `prompt`, `raw_text`, `reference_image`, or provider raw output.
 
-- [ ] **Step 4: Run green tests**
+- [x] **Step 4: Run green tests**
 
 Run:
 
@@ -436,7 +436,7 @@ Run:
 /Users/simon/.hermes/hermes-agent/venv/bin/python -m pytest tests/visual/agent_mode/test_learning.py -q
 ```
 
-- [ ] **Step 5: Self-evaluate**
+- [x] **Step 5: Self-evaluate**
 
 Add:
 
@@ -457,7 +457,7 @@ Add:
 - Consumes: `score_visual_outcome()`
 - Produces: package `delivery_metadata["reward_trace"]`
 
-- [ ] **Step 1: Write failing test**
+- [x] **Step 1: Write failing test**
 
 Patch image/video generation to return selected artifacts and assert returned package includes:
 
@@ -466,11 +466,11 @@ assert "reward_trace" in payload["delivery_metadata"]
 assert payload["delivery_metadata"]["reward_trace"]["mode"] == "shadow"
 ```
 
-- [ ] **Step 2: Run red test**
+- [x] **Step 2: Run red test**
 
 Expected: key missing.
 
-- [ ] **Step 3: Implement shadow scoring**
+- [x] **Step 3: Implement shadow scoring**
 
 After assembling the package, compute reward trace from:
 
@@ -482,7 +482,7 @@ After assembling the package, compute reward trace from:
 
 Do not change delivery decisions in this task.
 
-- [ ] **Step 4: Run green tests**
+- [x] **Step 4: Run green tests**
 
 Run:
 
@@ -490,7 +490,7 @@ Run:
 /Users/simon/.hermes/hermes-agent/venv/bin/python -m pytest tests/tools/test_visual_agent_tool.py tests/visual/test_ranker.py -q
 ```
 
-- [ ] **Step 5: Self-evaluate**
+- [x] **Step 5: Self-evaluate**
 
 Add:
 
@@ -498,6 +498,17 @@ Add:
 - B3 evidence: package metadata includes shadow reward trace.
 - Risk: reward values need calibration before driving autonomy.
 ```
+
+## Phase B Self-Evaluation
+
+- B1 evidence: reward model separates provider health, artifact quality, delivery health, and preference score; focused tests pass with `rtk /Users/simon/.hermes/hermes-agent/venv/bin/python -m pytest tests/visual/agent_mode/test_reward.py -q`.
+- Risk: reward values are deterministic heuristics, not calibrated aesthetic truth.
+- B2 evidence: strategy store records compact reward evidence and drops prompt/raw/reference fields; focused tests pass with `rtk /Users/simon/.hermes/hermes-agent/venv/bin/python -m pytest tests/visual/agent_mode/test_learning.py -q`.
+- Risk: strategy aggregation still uses EWMA on one scalar plus latest safe evidence.
+- B3 evidence: visual package metadata includes `delivery_metadata.reward_trace` in shadow mode; focused tests pass with `rtk /Users/simon/.hermes/hermes-agent/venv/bin/python -m pytest tests/tools/test_visual_agent_tool.py tests/visual/test_ranker.py -q`.
+- Risk: reward trace is recorded but does not yet change selection or repair behavior by design.
+- Gate B evidence: `rtk /Users/simon/.hermes/hermes-agent/venv/bin/python -m pytest tests/visual/agent_mode/test_reward.py tests/visual/agent_mode/test_learning.py tests/tools/test_visual_agent_tool.py tests/visual/test_ranker.py -q` passes; full `tests/visual` also passes.
+- Self-review: B3 stores reward trace in package metadata only. It does not alter selection, delivery, or repair policy until calibration and bounded repair gates exist.
 
 ---
 
