@@ -775,7 +775,25 @@ Required evidence:
 - report emits provider, artifact, delivery, source metadata, and strategy summaries;
 - report does not include raw prompts or generated media contents.
 
-### Gate E: Live V2 Proof
+### Gate E: Self-Operated Evidence Smoke
+
+Run:
+
+```bash
+/Users/simon/.hermes/hermes-agent/venv/bin/python scripts/visual_agent_self_smoke.py --json
+```
+
+Required evidence:
+
+- `success: true`;
+- strict proof succeeds without `--no-require-source-metadata`;
+- image and video delivery counts are present;
+- duplicate artifact delivery count is 0;
+- missing request source metadata count is 0;
+- feedback capture records at least two rows;
+- output excludes raw prompts and generated media contents.
+
+### Gate F: Live V2 Proof
 
 Run after a safe Slack visual package request:
 
@@ -842,6 +860,27 @@ Strict source-metadata proof correctly fails on the same historical rows with
 `missing_request_source_metadata`. This is expected until the deployed runtime
 records new Phase A source metadata for fresh Slack visual requests.
 
+2026-06-21 self-operated evidence smoke:
+
+```bash
+/Users/simon/.hermes/hermes-agent/venv/bin/python scripts/visual_agent_self_smoke.py --json
+```
+
+Observed result:
+
+- `success: true`;
+- strict proof succeeded;
+- artifact kind counts: 1 image, 1 video;
+- sent deliveries: 2;
+- missing artifact join: 0;
+- duplicate artifact delivery: 0;
+- missing request source metadata count: 0;
+- feedback recorded: true, count 2.
+
+This validates the Hermes-owned tracking, delivery evidence, feedback capture,
+proof, and report loop in an isolated temporary Hermes home. It does not replace
+provider-specific Grok/Slack upload smoke.
+
 ## Documentation Updates
 
 After all gates pass:
@@ -858,4 +897,5 @@ After all gates pass:
 - [x] Provider health, preference, and delivery health remain separate.
 - [x] Repair loops are bounded.
 - [x] Live proof can be rerun using local date and timezone.
+- [x] Evidence-loop smoke can run without human Slack intervention.
 - [x] Documentation states evidence boundaries instead of overstating proof.

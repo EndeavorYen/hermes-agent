@@ -98,6 +98,7 @@ As of 2026-06-20, the repo-local implementation covers the V2 evidence loop in f
 | Self-scoring | Implemented locally | `VisualReward` separates provider health, artifact quality, delivery health, and preference score; visual packages include `delivery_metadata.reward_trace` in shadow mode. |
 | Bounded repair | Implemented locally | `VisualRepairDecision` gates retries by autonomy level, error type, and budget; `visual_agent_generate` records `repair_trace` and bounded retry attempts at L3+. |
 | Operator reporting | Implemented locally | `scripts/visual_agent_report.py` emits aggregate JSON for requests, attempts, artifacts, delivery, provider errors, source metadata, and strategy atoms without raw prompt columns. |
+| Self-operated smoke | Implemented locally | `scripts/visual_agent_self_smoke.py` creates an isolated synthetic image/video package, records delivery and feedback, then runs strict proof plus aggregate report without requiring a human Slack turn. |
 
 Latest focused verification:
 
@@ -113,10 +114,20 @@ rtk /Users/simon/.hermes/hermes-agent/venv/bin/python -m pytest \
   tests/tools/test_visual_agent_tool.py \
   tests/visual/test_ranker.py \
   tests/visual/agent_mode/test_repair_policy.py \
-  tests/visual/test_visual_agent_report.py -q
+  tests/visual/test_visual_agent_report.py \
+  tests/scripts/test_visual_agent_self_smoke.py -q
 ```
 
-Result: `51 passed`.
+Result: `58 passed`.
+
+Latest self-smoke verification:
+
+```bash
+rtk /Users/simon/.hermes/hermes-agent/venv/bin/python \
+  scripts/visual_agent_self_smoke.py --json
+```
+
+Required result: `success: true`, image/video delivery counts present, no duplicate delivery, no missing request source metadata, and feedback count at least 2.
 
 Latest full visual suite:
 
@@ -124,9 +135,9 @@ Latest full visual suite:
 rtk /Users/simon/.hermes/hermes-agent/venv/bin/python -m pytest tests/visual -q
 ```
 
-Result: `88 passed`.
+Result: `94 passed`.
 
-Remaining proof boundary: live Slack/Grok package generation still needs a fresh runtime smoke after deployment, then `scripts/visual_agent_live_proof.py` and `scripts/visual_agent_report.py` should be run against the live ledger for the same local date.
+Remaining proof boundary: provider-specific live Slack/Grok package generation still needs a fresh runtime smoke after deployment. The local self-smoke now verifies the Hermes-owned evidence loop without human intervention; live provider smoke verifies external provider and real Slack upload behavior.
 
 ## Privacy Rules
 
