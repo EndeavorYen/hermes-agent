@@ -450,6 +450,97 @@ caption
         ]
         assert voice is False
 
+    def test_gateway_auto_append_visual_agent_package_supersedes_prior_direct_image_result(self):
+        """When a visual package is produced, earlier direct-image byproducts must not leak out."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {"role": "user", "content": "create one image and one video"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_img", "function": {"name": "image_generate_mission"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_img",
+                "content": '{"success": true, "image": "/tmp/wrong-route.jpg"}',
+            },
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_visual", "function": {"name": "visual_agent_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_visual",
+                "content": (
+                    '{"success": true, '
+                    '"images": ["/tmp/final-package.jpg"], '
+                    '"videos": ["/tmp/final-package.mp4"]}'
+                ),
+            },
+            {"role": "assistant", "content": "Package ready."},
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+
+        assert tags == [
+            "[[generated_image_only]]",
+            "MEDIA:/tmp/final-package.jpg",
+            "MEDIA:/tmp/final-package.mp4",
+        ]
+        assert voice is False
+
+    def test_gateway_auto_append_uses_latest_visual_agent_package_in_current_turn(self):
+        """If the model retries Visual Agent Mode, only the final package should be delivered."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {"role": "user", "content": "create one image and one video"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_visual_1", "function": {"name": "visual_agent_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_visual_1",
+                "content": (
+                    '{"success": true, '
+                    '"images": ["/tmp/early-a.jpg", "/tmp/early-b.jpg"]}'
+                ),
+            },
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_visual_2", "function": {"name": "visual_agent_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_visual_2",
+                "content": (
+                    '{"success": true, '
+                    '"images": ["/tmp/final-package.jpg"], '
+                    '"videos": ["/tmp/final-package.mp4"]}'
+                ),
+            },
+            {"role": "assistant", "content": "Package ready."},
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+
+        assert tags == [
+            "[[generated_image_only]]",
+            "MEDIA:/tmp/final-package.jpg",
+            "MEDIA:/tmp/final-package.mp4",
+        ]
+        assert voice is False
+
     def test_gateway_auto_append_ignores_historical_visual_agent_package(self):
         """Old Visual Agent Mode package artifacts must not be re-posted."""
         from gateway.run import _collect_auto_append_media_tags

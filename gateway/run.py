@@ -964,6 +964,22 @@ def _collect_auto_append_media_tags(
             if call_id and name:
                 tool_name_by_call_id[str(call_id)] = name
 
+    visual_package_seen = False
+    latest_visual_package_tags: List[str] = []
+    for msg in new_messages:
+        if msg.get("role") not in ("tool", "function"):
+            continue
+        call_id = str(msg.get("tool_call_id") or msg.get("call_id") or "")
+        if tool_name_by_call_id.get(call_id) not in _AUTO_APPEND_VISUAL_PACKAGE_TOOL_NAMES:
+            continue
+        visual_package_seen = True
+        tags = _visual_package_tool_media_tags(
+            str(msg.get("content") or ""),
+            history_media_paths,
+        )
+        if tags:
+            latest_visual_package_tags = tags
+
     media_tags: List[str] = []
     has_voice_directive = False
     for msg in new_messages:
@@ -979,6 +995,8 @@ def _collect_auto_append_media_tags(
         ):
             continue
         content = str(msg.get("content") or "")
+        if visual_package_seen and tool_name not in _AUTO_APPEND_MEDIA_TOOL_NAMES:
+            continue
         if tool_name in _AUTO_APPEND_VISUAL_PACKAGE_TOOL_NAMES:
             media_tags.extend(_visual_package_tool_media_tags(content, history_media_paths))
             continue
@@ -1001,6 +1019,9 @@ def _collect_auto_append_media_tags(
                     media_tags.append(f"MEDIA:{path}")
             if "[[audio_as_voice]]" in content:
                 has_voice_directive = True
+
+    if visual_package_seen:
+        media_tags.extend(latest_visual_package_tags)
 
     return media_tags, has_voice_directive
 
