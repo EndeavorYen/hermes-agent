@@ -32,9 +32,9 @@ def test_xai_provider_lists_text_and_current_image_video_models():
     ids = [model["id"] for model in models]
 
     assert ids[0] == "grok-imagine-video"
-    assert ids[1] == "grok-imagine-video-1.5-preview"
+    assert ids[1] == "grok-imagine-video-1.5"
     assert models[1]["modalities"] == ["image"]
-    assert models[1]["aliases"] == ["grok-imagine-video-1.5-2026-05-30"]
+    assert "grok-imagine-video-1.5-preview" in models[1]["aliases"]
 
 
 def test_xai_routes_default_models_by_modality():
@@ -49,9 +49,14 @@ def test_xai_routes_default_models_by_modality():
         "grok-imagine-video",
         modality="image",
         explicit_model=False,
-    ) == "grok-imagine-video-1.5-preview"
+    ) == "grok-imagine-video-1.5"
     assert _resolve_model_for_modality(
-        "grok-imagine-video-1.5-preview",
+        "grok-imagine-video",
+        modality="image",
+        explicit_model=True,
+    ) == "grok-imagine-video-1.5"
+    assert _resolve_model_for_modality(
+        "grok-imagine-video-1.5",
         modality="text",
         explicit_model=False,
     ) == "grok-imagine-video"
@@ -148,3 +153,140 @@ def test_xai_no_operation_kwarg():
     assert result["success"] is False
     # auth_required, NOT some signature error
     assert result["error_type"] in {"auth_required", "api_error"}
+
+
+@pytest.mark.asyncio
+async def test_xai_generate_can_run_inside_existing_event_loop(monkeypatch):
+    """The sync provider API is called from async Hermes tool handlers."""
+    import plugins.video_gen.xai as xai_plugin
+
+    monkeypatch.setattr(
+        xai_plugin,
+        "_resolve_xai_credentials",
+        lambda: ("oauth-bearer-token", "https://api.x.ai/v1"),
+    )
+    provider = xai_plugin.XAIVideoGenProvider()
+
+    async def fake_generate_async(**kwargs):
+        return {
+            "success": True,
+            "video": "https://vidgen.example/smoke.mp4",
+            "model": kwargs["model"],
+        }
+
+    monkeypatch.setattr(provider, "_generate_async", fake_generate_async)
+
+    result = provider.generate("animate the selected image", image_url="/tmp/image.png")
+
+    assert result["success"] is True
+    assert result["video"] == "https://vidgen.example/smoke.mp4"
+
+
+@pytest.mark.asyncio
+async def test_xai_image_to_video_uses_image_model_without_aspect_payload(
+    monkeypatch,
+    tmp_path,
+):
+    import plugins.video_gen.xai as xai_plugin
+
+    image_path = tmp_path / "reference.png"
+    image_path.write_bytes(b"not a real png but still a local image reference")
+    submitted_payloads = []
+
+    async def fake_submit(client, payload, *, api_key, base_url):
+        submitted_payloads.append(payload)
+        return "req-123"
+
+    async def fake_poll(client, request_id, *, api_key, base_url, timeout_seconds, poll_interval):
+        return {
+            "status": "done",
+            "body": {
+                "model": "grok-imagine-video-1.5",
+                "video": {"url": "https://vidgen.example/ok.mp4", "duration": 8},
+            },
+        }
+
+    monkeypatch.setattr(
+        xai_plugin,
+        "_resolve_xai_credentials",
+        lambda: ("oauth-bearer-token", "https://api.x.ai/v1"),
+    )
+    monkeypatch.setattr(xai_plugin, "_submit", fake_submit)
+    monkeypatch.setattr(xai_plugin, "_poll", fake_poll)
+
+    result = await xai_plugin.XAIVideoGenProvider()._generate_async(
+        prompt="animate the image",
+        model="grok-imagine-video",
+        explicit_model=True,
+        image_url=str(image_path),
+        reference_image_urls=None,
+        duration=8,
+        aspect_ratio="16:9",
+        resolution="720p",
+    )
+
+    assert result["success"] is True
+    assert submitted_payloads[0]["model"] == "grok-imagine-video-1.5"
+    assert "aspect_ratio" not in submitted_payloads[0]
+    assert submitted_payloads[0]["image"]["url"].startswith("data:image/png;base64,")
+
+
+def test_xai_video_aspect_normalization_plans_center_crop_not_stretch():
+    from plugins.video_gen.xai import _plan_video_aspect_normalization
+
+    plan = _plan_video_aspect_normalization(
+        width=1920,
+        height=1080,
+        target_aspect_ratio="9:16",
+    )
+
+    assert plan["action"] == "crop"
+    assert plan["width"] < 1920
+    assert plan["height"] == 1080
+    assert plan["x"] % 2 == 0
+    assert plan["y"] % 2 == 0
+    assert plan["y"] == 0
+    assert plan["filter"].startswith("crop=")
+    assert "scale=" not in plan["filter"]
+
+
+def test_xai_video_aspect_normalization_skips_close_match():
+    from plugins.video_gen.xai import _plan_video_aspect_normalization
+
+    plan = _plan_video_aspect_normalization(
+        width=720,
+        height=1280,
+        target_aspect_ratio="9:16",
+    )
+
+    assert plan["action"] == "copy"
+
+
+def test_xai_aspect_ratio_wrapper_uses_shared_policy(monkeypatch):
+    import agent.visual.aspect_policy as shared_policy
+    from plugins.video_gen.xai import _closest_supported_aspect_ratio
+
+    monkeypatch.setattr(
+        shared_policy,
+        "nearest_aspect_ratio",
+        lambda width, height, supported: "1:1",
+    )
+
+    assert _closest_supported_aspect_ratio(720, 1280) == "1:1"
+
+
+def test_xai_aspect_normalization_wrapper_uses_shared_policy(monkeypatch):
+    import agent.visual.aspect_policy as shared_policy
+    from plugins.video_gen.xai import _plan_video_aspect_normalization
+
+    monkeypatch.setattr(
+        shared_policy,
+        "plan_center_crop",
+        lambda **kwargs: {"action": "copy", "reason": "shared-policy"},
+    )
+
+    assert _plan_video_aspect_normalization(
+        width=1920,
+        height=1080,
+        target_aspect_ratio="9:16",
+    ) == {"action": "copy", "reason": "shared-policy"}

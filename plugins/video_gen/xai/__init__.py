@@ -22,15 +22,19 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import logging
 import mimetypes
 import os
+import threading
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import unquote, urlparse
 
 import httpx
 
+from agent.visual import aspect_policy as visual_aspect_policy
 from agent.video_gen_provider import (
     VideoGenProvider,
     error_response,
@@ -46,7 +50,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1"
 DEFAULT_TEXT_TO_VIDEO_MODEL = "grok-imagine-video"
-DEFAULT_IMAGE_TO_VIDEO_MODEL = "grok-imagine-video-1.5-preview"
+DEFAULT_IMAGE_TO_VIDEO_MODEL = "grok-imagine-video-1.5"
 DEFAULT_MODEL = DEFAULT_TEXT_TO_VIDEO_MODEL
 DEFAULT_DURATION = 8
 DEFAULT_ASPECT_RATIO = "16:9"
@@ -67,15 +71,42 @@ _MODELS: Dict[str, Dict[str, Any]] = {
         "price": "see https://docs.x.ai/developers/models/grok-imagine-video",
         "modalities": ["text", "image"],
     },
-    "grok-imagine-video-1.5-preview": {
-        "display": "Grok Imagine Video 1.5 Preview",
-        "speed": "~60-240s",
-        "strengths": "Latest xAI image-to-video model.",
-        "price": "see https://docs.x.ai/developers/models/grok-imagine-video-1.5-preview",
+    "grok-imagine-video-1.5": {
+        "display": "Grok Imagine Video 1.5",
+        "speed": "~25-240s",
+        "strengths": "Generally available xAI image-to-video model.",
+        "price": "see https://docs.x.ai/developers/models/grok-imagine-video-1.5",
         "modalities": ["image"],
-        "aliases": ["grok-imagine-video-1.5-2026-05-30"],
+        "aliases": [
+            "grok-imagine-video-1.5-preview",
+            "grok-imagine-video-1.5-2026-05-30",
+        ],
     },
 }
+
+
+def _run_sync_video_coro(coro_factory):
+    """Run provider async work from sync API, even inside an active event loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro_factory())
+
+    result: Dict[str, Any] = {}
+    error: List[BaseException] = []
+
+    def _runner() -> None:
+        try:
+            result["value"] = asyncio.run(coro_factory())
+        except BaseException as exc:  # noqa: BLE001 - re-raised in caller thread
+            error.append(exc)
+
+    thread = threading.Thread(target=_runner, name="xai-video-generate", daemon=True)
+    thread.start()
+    thread.join()
+    if error:
+        raise error[0]
+    return result.get("value")
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +176,54 @@ def _image_ref_to_xai_url(value: str) -> str:
     return f"data:{mime};base64,{encoded}"
 
 
+def _closest_supported_aspect_ratio(width: int, height: int) -> Optional[str]:
+    return visual_aspect_policy.nearest_aspect_ratio(
+        width,
+        height,
+        VALID_ASPECT_RATIOS,
+    )
+
+
+def _local_image_path_from_ref(value: str) -> Optional[Path]:
+    ref = (value or "").strip()
+    if not ref:
+        return None
+
+    lower = ref.lower()
+    if lower.startswith(("http://", "https://", "data:image/")):
+        return None
+    if lower.startswith("file://"):
+        parsed = urlparse(ref)
+        path = Path(unquote(parsed.path)).expanduser()
+    else:
+        path = Path(ref).expanduser()
+
+    return path if path.is_file() else None
+
+
+def _infer_aspect_ratio_from_image_ref(value: str) -> Optional[str]:
+    ref = (value or "").strip()
+    if not ref:
+        return None
+
+    try:
+        from PIL import Image
+
+        if ref.lower().startswith("data:image/") and "," in ref:
+            _, encoded = ref.split(",", 1)
+            with Image.open(io.BytesIO(base64.b64decode(encoded))) as image:
+                return _closest_supported_aspect_ratio(*image.size)
+
+        path = _local_image_path_from_ref(ref)
+        if path is None:
+            return None
+        with Image.open(path) as image:
+            return _closest_supported_aspect_ratio(*image.size)
+    except Exception as exc:
+        logger.debug("Could not infer xAI video aspect ratio from image ref: %s", exc)
+        return None
+
+
 def _normalize_reference_images(reference_image_urls: Optional[List[str]]):
     refs = []
     for url in reference_image_urls or []:
@@ -173,18 +252,36 @@ def _resolve_model_for_modality(
 ) -> str:
     """Select xAI's text/video model without treating config as a prompt override.
 
-    ``grok-imagine-video-1.5-preview`` currently rejects text-only video
+    ``grok-imagine-video-1.5`` currently rejects text-only video
     generation, but it is the desired image-to-video backend. Explicit tool
     ``model=`` still wins for users who intentionally request another model.
     """
     requested = (model or "").strip()
+    if modality == "image":
+        if explicit_model and requested and requested != DEFAULT_TEXT_TO_VIDEO_MODEL:
+            return requested
+        return DEFAULT_IMAGE_TO_VIDEO_MODEL
     if explicit_model and requested:
         return requested
-    if modality == "image":
-        return DEFAULT_IMAGE_TO_VIDEO_MODEL
     if requested == DEFAULT_IMAGE_TO_VIDEO_MODEL:
         return DEFAULT_TEXT_TO_VIDEO_MODEL
     return requested or DEFAULT_TEXT_TO_VIDEO_MODEL
+
+
+def _plan_video_aspect_normalization(
+    *,
+    width: int,
+    height: int,
+    target_aspect_ratio: str,
+    tolerance: float = 0.02,
+) -> Dict[str, Any]:
+    """Plan a no-stretch centered crop to the target aspect ratio."""
+    return visual_aspect_policy.plan_center_crop(
+        width=width,
+        height=height,
+        target_aspect_ratio=target_aspect_ratio,
+        tolerance=tolerance,
+    )
 
 
 async def _submit(
@@ -278,7 +375,7 @@ class XAIVideoGenProvider(VideoGenProvider):
         return {
             "name": "xAI Grok Imagine",
             "badge": "paid",
-            "tag": "grok-imagine-video for text-to-video; grok-imagine-video-1.5-preview for image-to-video; uses xAI Grok OAuth or XAI_API_KEY",
+            "tag": "grok-imagine-video for text-to-video; grok-imagine-video-1.5 for image-to-video; uses xAI Grok OAuth or XAI_API_KEY",
             "env_vars": [],
             "post_setup": "xai_grok",
         }
@@ -311,9 +408,8 @@ class XAIVideoGenProvider(VideoGenProvider):
         **kwargs: Any,
     ) -> Dict[str, Any]:
         try:
-            loop = asyncio.new_event_loop()
-            try:
-                return loop.run_until_complete(self._generate_async(
+            return _run_sync_video_coro(
+                lambda: self._generate_async(
                     prompt=prompt,
                     model=model,
                     explicit_model=bool(kwargs.get("_model_override_explicit")),
@@ -322,9 +418,8 @@ class XAIVideoGenProvider(VideoGenProvider):
                     duration=duration,
                     aspect_ratio=aspect_ratio,
                     resolution=resolution,
-                ))
-            finally:
-                loop.close()
+                )
+            )
         except Exception as exc:
             logger.warning("xAI video gen unexpected failure: %s", exc, exc_info=True)
             return error_response(
@@ -365,6 +460,9 @@ class XAIVideoGenProvider(VideoGenProvider):
         normalized_aspect_ratio = (aspect_ratio or DEFAULT_ASPECT_RATIO).strip()
         normalized_resolution = (resolution or DEFAULT_RESOLUTION).strip().lower()
         modality_used = "image" if image_url_norm else "text"
+        if modality_used == "image":
+            inferred_aspect_ratio = _infer_aspect_ratio_from_image_ref(image_url or "")
+            normalized_aspect_ratio = inferred_aspect_ratio or ""
         resolved_model = _resolve_model_for_modality(
             model,
             modality=modality_used,
@@ -397,7 +495,10 @@ class XAIVideoGenProvider(VideoGenProvider):
 
         clamped_duration = _clamp_duration(duration, has_reference_images=bool(refs))
 
-        if normalized_aspect_ratio not in VALID_ASPECT_RATIOS:
+        if (
+            modality_used != "image"
+            and normalized_aspect_ratio not in VALID_ASPECT_RATIOS
+        ):
             normalized_aspect_ratio = DEFAULT_ASPECT_RATIO
         if normalized_resolution not in VALID_RESOLUTIONS:
             normalized_resolution = DEFAULT_RESOLUTION
@@ -406,9 +507,10 @@ class XAIVideoGenProvider(VideoGenProvider):
             "model": resolved_model,
             "prompt": prompt,
             "duration": clamped_duration,
-            "aspect_ratio": normalized_aspect_ratio,
             "resolution": normalized_resolution,
         }
+        if modality_used != "image":
+            payload["aspect_ratio"] = normalized_aspect_ratio
         if image_url_norm:
             payload["image"] = {"url": image_url_norm}
         if refs:
