@@ -1888,6 +1888,24 @@ DEFAULT_CONFIG = {
         "provider": "",
     },
 
+    "raphael": {
+        "enabled": False,
+        "mode": "advisor",
+        "status_card_ttl_seconds": 900,
+        "max_status_cards": 20,
+        "default_conversation_mode_enabled": False,
+        "public_delivery_enabled": False,
+        "skill_writes_enabled": False,
+        "cron_mutation_enabled": False,
+        "memory_writes_enabled": False,
+        "tool_install_enabled": False,
+        "skill_trace": {
+            "enabled": True,
+            "max_summary_rows": 20,
+            "max_trace_events": 500,
+        },
+    },
+
     # Subagent delegation — override the provider:model used by delegate_task
     # so child agents can run on a different (cheaper/faster) provider and model.
     # Uses the same runtime provider resolution as CLI/gateway startup, so all
@@ -4338,7 +4356,7 @@ _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
-    "auxiliary", "custom_providers", "context", "memory", "gateway",
+    "auxiliary", "custom_providers", "context", "memory", "raphael", "gateway",
     "sessions", "streaming", "updates", "mcp_servers",
 }
 

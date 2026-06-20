@@ -174,6 +174,28 @@ def test_persist_user_message_becomes_original():
     assert ctx.messages[-1]["content"] == "api-prefixed"
 
 
+def test_raphael_observation_uses_clean_user_message_and_prior_history():
+    agent = _FakeAgent()
+    history = [{"role": "assistant", "content": "earlier sketch"}]
+
+    with patch(
+        "agent.raphael.observer.build_raphael_observation_context",
+        return_value="Raphael observation",
+    ) as observer:
+        ctx = _build(
+            agent,
+            user_message="api-prefixed",
+            persist_user_message="clean",
+            conversation_history=history,
+        )
+
+    assert ctx.raphael_observation_context == "Raphael observation"
+    observer.assert_called_once_with(
+        "clean",
+        conversation_history=history,
+    )
+
+
 def test_memory_nudge_fires_at_interval():
     agent = _FakeAgent()
     agent._memory_nudge_interval = 1
@@ -258,4 +280,3 @@ def test_between_turns_refresh_no_churn_when_unchanged():
         _build(agent)
 
     assert agent.tools is same  # not replaced → no churn
-

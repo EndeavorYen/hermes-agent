@@ -284,6 +284,20 @@ def finalize_turn(
         except Exception as exc:
             logger.warning("transform_llm_output hook failed: %s", exc)
 
+    if final_response and not interrupted:
+        try:
+            from agent.raphael.governor import (
+                apply_raphael_response_governor,
+                should_apply_raphael_response_governor,
+            )
+
+            final_response = apply_raphael_response_governor(
+                final_response,
+                enabled=should_apply_raphael_response_governor(),
+            )
+        except Exception as exc:
+            logger.warning("Raphael response governor failed: %s", exc)
+
     # Plugin hook: post_llm_call
     # Fired once per turn after the tool-calling loop completes.
     # Plugins can use this to persist conversation data (e.g. sync

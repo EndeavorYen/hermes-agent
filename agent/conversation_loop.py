@@ -532,6 +532,7 @@ def run_conversation(
     current_turn_user_idx = _ctx.current_turn_user_idx
     _should_review_memory = _ctx.should_review_memory
     _plugin_user_context = _ctx.plugin_user_context
+    _raphael_observation_context = _ctx.raphael_observation_context
     _ext_prefetch_cache = _ctx.ext_prefetch_cache
 
     # Main conversation loop counters (pure locals consumed by the loop below).
@@ -724,6 +725,8 @@ def run_conversation(
                     _fenced = build_memory_context_block(_ext_prefetch_cache)
                     if _fenced:
                         _injections.append(_fenced)
+                if _raphael_observation_context:
+                    _injections.append(_raphael_observation_context)
                 if _plugin_user_context:
                     _injections.append(_plugin_user_context)
                 if _injections:

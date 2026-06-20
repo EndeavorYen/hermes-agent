@@ -57,6 +57,8 @@ class TurnContext:
     should_review_memory: bool = False
     # Context contributed by ``pre_llm_call`` plugins (appended to user message).
     plugin_user_context: str = ""
+    # Raphael per-turn observation context (appended to user message).
+    raphael_observation_context: str = ""
     # External-memory prefetch result, reused across loop iterations.
     ext_prefetch_cache: str = ""
 
@@ -360,6 +362,17 @@ def build_turn_context(
     except Exception as exc:
         logger.warning("pre_llm_call hook failed: %s", exc)
 
+    raphael_observation_context = ""
+    try:
+        from agent.raphael.observer import build_raphael_observation_context
+
+        raphael_observation_context = build_raphael_observation_context(
+            original_user_message,
+            conversation_history=messages[:current_turn_user_idx],
+        )
+    except Exception as exc:
+        logger.warning("Raphael state observer failed: %s", exc)
+
     # Per-turn file-mutation verifier state.
     agent._turn_failed_file_mutations = {}
 
@@ -404,5 +417,6 @@ def build_turn_context(
         current_turn_user_idx=current_turn_user_idx,
         should_review_memory=should_review_memory,
         plugin_user_context=plugin_user_context,
+        raphael_observation_context=raphael_observation_context,
         ext_prefetch_cache=ext_prefetch_cache,
     )
