@@ -18,7 +18,7 @@ import sys
 import time
 import uuid
 from abc import ABC, abstractmethod
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from utils import normalize_proxy_url
 
@@ -34,6 +34,8 @@ _AUDIO_EXTS = frozenset({'.ogg', '.opus', '.mp3', '.wav', '.m4a', '.flac'})
 _TELEGRAM_AUDIO_ATTACHMENT_EXTS = frozenset({'.mp3', '.m4a'})
 _TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
 _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS = 30.0
+_GENERATED_IMAGE_ONLY_DIRECTIVE = "[[generated_image_only]]"
+_IMAGE_DELIVERY_EXTS = frozenset({'.jpg', '.jpeg', '.png', '.webp', '.gif'})
 
 
 def _platform_name(platform) -> str:
@@ -2873,6 +2875,62 @@ class BasePlatformAdapter(ABC):
         return safe_media
 
     @staticmethod
+    def generated_image_only_paths(content: str) -> set[str]:
+        marker_at = content.find(_GENERATED_IMAGE_ONLY_DIRECTIVE)
+        if marker_at < 0:
+            return set()
+        tail = content[marker_at + len(_GENERATED_IMAGE_ONLY_DIRECTIVE):]
+        scan_content = BasePlatformAdapter._mask_protected_spans(tail)
+        scan_content = BasePlatformAdapter._mask_json_string_media(scan_content)
+        paths: set[str] = set()
+        for match in MEDIA_TAG_CLEANUP_RE.finditer(scan_content):
+            path = match.group("path").strip()
+            if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
+                path = path[1:-1].strip()
+            path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
+            if Path(path).suffix.lower() in _IMAGE_DELIVERY_EXTS:
+                paths.add(os.path.expanduser(path))
+        return paths
+
+    @staticmethod
+    def filter_generated_image_delivery(
+        media_files: List[Tuple[str, bool]],
+        local_files: List[str],
+        images: List[Tuple[str, str]],
+        allowed_image_paths: set[str],
+    ) -> Tuple[List[Tuple[str, bool]], List[str], List[Tuple[str, str]]]:
+        allowed = {os.path.expanduser(path) for path in allowed_image_paths}
+        seen_images: set[str] = set()
+
+        def image_path_allowed(path: str) -> bool:
+            normalized = os.path.expanduser(path)
+            if Path(normalized).suffix.lower() not in _IMAGE_DELIVERY_EXTS:
+                return True
+            if normalized not in allowed or normalized in seen_images:
+                return False
+            seen_images.add(normalized)
+            return True
+
+        filtered_media = [
+            (path, is_voice)
+            for path, is_voice in media_files
+            if image_path_allowed(path)
+        ]
+        filtered_local = [
+            path
+            for path in local_files
+            if image_path_allowed(path)
+        ]
+        filtered_images: List[Tuple[str, str]] = []
+        for url, alt in images:
+            if not str(url).startswith("file://"):
+                continue
+            path = unquote(urlsplit(str(url)).path or "")
+            if path and image_path_allowed(path):
+                filtered_images.append((url, alt))
+        return filtered_media, filtered_local, filtered_images
+
+    @staticmethod
     def filter_local_delivery_paths(file_paths) -> List[str]:
         """Drop unsafe bare local file paths and normalize accepted paths."""
         safe_paths: List[str] = []
@@ -4231,6 +4289,7 @@ class BasePlatformAdapter(ABC):
 
                 # Pre-extract snapshot for the #29346 recovery/invariant below.
                 _response_pre_extract = response
+                _generated_image_only_paths = self.generated_image_only_paths(response)
 
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
                 media_files, response = self.extract_media(response)
@@ -4256,6 +4315,14 @@ class BasePlatformAdapter(ABC):
                     local_files = self.filter_local_delivery_paths(local_files)
                     if local_files:
                         logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
+
+                if _generated_image_only_paths:
+                    media_files, local_files, images = self.filter_generated_image_delivery(
+                        media_files,
+                        local_files,
+                        images,
+                        _generated_image_only_paths,
+                    )
 
                 # A2 (#29346): extraction can reduce a non-empty response to
                 # empty text with no attachment, and the `if text_content` guard

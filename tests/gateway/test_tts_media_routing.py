@@ -8,6 +8,7 @@ only renders as a voice bubble when explicitly flagged) and via
 """
 
 from types import SimpleNamespace
+from urllib.parse import quote
 from unittest.mock import AsyncMock
 
 import pytest
@@ -259,5 +260,52 @@ async def test_streaming_delivery_blocks_media_path_outside_allowed_roots(tmp_pa
         adapter,
     )
 
+    adapter.send_document.assert_not_awaited()
+    adapter.send_voice.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_streaming_delivery_generated_image_only_filters_prior_file_markdown(
+    tmp_path, monkeypatch
+):
+    """Streaming media delivery must not re-upload prior generated-image markdown."""
+    event = _event(thread_id="topic-1")
+    old_images = [
+        _allowed_media_path(tmp_path, monkeypatch, f"old-{idx}.jpg")
+        for idx in range(4)
+    ]
+    new_images = [
+        _allowed_media_path(tmp_path, monkeypatch, f"new-{idx}.jpg")
+        for idx in range(4)
+    ]
+    adapter = SimpleNamespace(
+        name="test",
+        extract_media=BasePlatformAdapter.extract_media,
+        extract_images=BasePlatformAdapter.extract_images,
+        extract_local_files=BasePlatformAdapter.extract_local_files,
+        send_voice=AsyncMock(return_value=SendResult(success=True, message_id="voice")),
+        send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc")),
+        send_image_file=AsyncMock(return_value=SendResult(success=True, message_id="image")),
+        send_multiple_images=AsyncMock(return_value=None),
+        send_video=AsyncMock(return_value=SendResult(success=True, message_id="video")),
+    )
+    prior_markdown = "\n".join(
+        f"![old {idx}](file://{quote(str(path))})"
+        for idx, path in enumerate(old_images)
+    )
+    current_media = "\n".join(f"MEDIA:{path}" for path in new_images)
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner({"thread_id": "topic-1"}),
+        f"{prior_markdown}\n[[generated_image_only]]\n{current_media}",
+        event,
+        adapter,
+    )
+
+    adapter.send_multiple_images.assert_awaited_once_with(
+        chat_id="chat-1",
+        images=[(f"file://{quote(str(path))}", "") for path in new_images],
+        metadata={"thread_id": "topic-1"},
+    )
     adapter.send_document.assert_not_awaited()
     adapter.send_voice.assert_not_awaited()
