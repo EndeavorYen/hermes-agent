@@ -1,5 +1,9 @@
 # Visual Agent Mode Implementation Plan
 
+> **Archive note** - This MVP plan is complete and archived. Use
+> `docs/superpowers/plans/2026-06-20-visual-agent-mode-v2.md` as the active
+> second-phase implementation plan.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build Hermes Visual Agent Mode: a bounded production loop that plans, generates, judges, repairs, animates, assembles, delivers, and learns from image/video artifacts based on user-provided materials and instructions.
@@ -26,7 +30,7 @@ Status as of 2026-06-20 05:05 Asia/Taipei:
 
 | Area | Status | Evidence |
 | --- | --- | --- |
-| Goal and plan documents | Done | `docs/visual-agent-mode-goal.md`, this plan |
+| Goal and plan documents | Done | `docs/archive/visual-agent-mode/2026-06-20-mvp-goal.md`, this plan |
 | Mission model and asset graph | Done | `tests/visual/agent_mode/test_mission_planner.py`, `test_asset_graph.py` |
 | Candidate, selection, clip, and assembler loop | Done | `tests/visual/agent_mode/test_loop_policy.py`, `test_image_batch.py`, `test_clip_builder.py`, `test_assembler.py` |
 | Tool surface | Done | `tools/visual_agent_tool.py`, `tests/tools/test_visual_agent_tool.py` |
