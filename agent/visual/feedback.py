@@ -88,8 +88,18 @@ def _extract_issues(text: str) -> list[str]:
         issues.append("reference_identity_drift")
     if "臉" in text and _has_any(text, ("不自然", "怪", "醜", "太圓")):
         issues.append("face_unnatural")
+    if _has_any(text, ("人物", "人設", "女生", "女角", "主體", "model", "subject")) and _has_any(
+        text,
+        ("醜", "不漂亮", "不好看", "不是美女", "not attractive", "ugly"),
+    ):
+        issues.append("subject_not_attractive")
     if _has_any(text, ("不漂亮", "不好看", "不是美女", "醜")):
         issues.append("not_beautiful")
+    if _has_any(text, ("絲襪", "黑絲", "白絲", "褲襪", "stocking", "stockings", "tights")) and _has_any(
+        text,
+        ("醜", "廉價", "不好看", "難看", "爛", "cheap", "ugly"),
+    ):
+        issues.append("stockings_bad")
     if _has_any(text, ("不夠性感", "性感不足", "不性感", "sexy enough")):
         issues.append("not_sexy_enough")
     if "構圖" in text and _has_any(text, ("差", "不好", "普普", "無新意")):

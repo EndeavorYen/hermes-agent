@@ -21,6 +21,16 @@ def test_feedback_parser_extracts_negative_issues_without_learning_update():
     assert "strategy_update" not in feedback.parsed
 
 
+def test_feedback_parser_extracts_subject_and_stocking_quality_issues():
+    from agent.visual.feedback import parse_visual_feedback
+
+    feedback = parse_visual_feedback("幾個問題：人物太醜，絲襪太醜")
+
+    assert feedback.polarity < 0
+    assert "subject_not_attractive" in feedback.parsed["issues"]
+    assert "stockings_bad" in feedback.parsed["issues"]
+
+
 def test_record_parsed_visual_feedback_maps_selection_to_artifact(tmp_path):
     from agent.visual.attempt_ledger import VisualAttemptLedger
     from agent.visual.feedback import record_parsed_visual_feedback

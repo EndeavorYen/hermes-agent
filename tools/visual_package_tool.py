@@ -5,6 +5,8 @@ import json
 import logging
 from typing import Any
 from urllib.parse import urlparse
+from urllib.request import Request
+from urllib.request import urlopen
 
 from agent.visual.active_learning import decide_visual_action
 from agent.visual.artifact_observation import build_artifact_observation
@@ -32,6 +34,8 @@ from tools.registry import registry
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
+
+MAX_REMOTE_MEDIA_BYTES = 150 * 1024 * 1024
 
 
 VISUAL_PACKAGE_SCHEMA: dict[str, Any] = {
@@ -725,11 +729,13 @@ def _record_artifact_ref(
     kind: str,
     artifact_ref: str,
 ) -> tuple[str, dict[str, Any]]:
-    meta = probe_media_reference(artifact_ref)
+    source_ref = artifact_ref
+    probe_ref = _materialize_remote_artifact_ref(artifact_ref, kind=kind)
+    meta = probe_media_reference(probe_ref)
     content_hash = meta.sha256
     is_stable = meta.is_stable
     freshness_status = meta.freshness_status
-    if _is_remote_url(artifact_ref) and meta.freshness_status == "unknown":
+    if _is_remote_url(source_ref) and meta.freshness_status == "unknown" and kind != "video":
         content_hash = "refhash:" + hashlib.sha256(artifact_ref.encode("utf-8")).hexdigest()
         is_stable = True
         freshness_status = "fresh"
@@ -738,7 +744,7 @@ def _record_artifact_ref(
         attempt_id=attempt_id,
         kind=kind,
         local_path=meta.local_path,
-        uri=artifact_ref,
+        uri=source_ref,
         content_hash=content_hash,
         mime_type=meta.mime_type,
         bytes=meta.bytes,
@@ -748,6 +754,37 @@ def _record_artifact_ref(
         freshness_status=freshness_status,
     )
     return artifact_id, ledger.get_artifact(artifact_id)
+
+
+def _materialize_remote_artifact_ref(artifact_ref: str, *, kind: str) -> str:
+    if not _is_remote_url(artifact_ref) or kind != "video":
+        return artifact_ref
+    try:
+        return download_remote_media(artifact_ref, kind=kind)
+    except Exception as exc:
+        logger.warning("could not materialize remote %s artifact %s: %s", kind, artifact_ref, exc)
+        return artifact_ref
+
+
+def download_remote_media(url: str, *, kind: str) -> str:
+    if kind != "video":
+        raise ValueError(f"unsupported remote media kind: {kind}")
+    request = Request(url, headers={"User-Agent": "Hermes visual package"})
+    with urlopen(request, timeout=60) as response:
+        raw = response.read(MAX_REMOTE_MEDIA_BYTES + 1)
+    if len(raw) > MAX_REMOTE_MEDIA_BYTES:
+        raise ValueError("remote media exceeds maximum cache size")
+    extension = _remote_media_extension(url, default="mp4")
+    from agent.video_gen_provider import save_bytes_video
+
+    return str(save_bytes_video(raw, prefix="visual-package", extension=extension))
+
+
+def _remote_media_extension(url: str, *, default: str) -> str:
+    suffix = urlparse(url).path.rsplit(".", 1)[-1].lower()
+    if suffix in {"mp4", "mov", "webm", "mkv"}:
+        return suffix
+    return default
 
 
 def _normalise_attachments(value: Any) -> list[str]:

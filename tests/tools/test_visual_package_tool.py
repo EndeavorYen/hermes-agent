@@ -136,12 +136,20 @@ async def test_visual_package_video_aspect_follows_selected_source_image(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_visual_package_generate_selects_successful_remote_video_url(monkeypatch, tmp_path):
+async def test_visual_package_generate_materializes_successful_remote_video_url(monkeypatch, tmp_path):
     from tools import visual_package_tool
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     image = tmp_path / "image.png"
     image.write_bytes(_ONE_PIXEL_PNG)
+    remote_video_url = "https://vidgen.x.ai/xai-vidgen-bucket/current.mp4"
+    cached_video = tmp_path / "cached-current.mp4"
+
+    def fake_download_remote_media(url, *, kind):
+        assert url == remote_video_url
+        assert kind == "video"
+        cached_video.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+        return str(cached_video)
 
     monkeypatch.setattr(
         visual_package_tool,
@@ -153,10 +161,16 @@ async def test_visual_package_generate_selects_successful_remote_video_url(monke
         "generate_video",
         lambda **kwargs: {
             "success": True,
-            "video": "https://vidgen.x.ai/xai-vidgen-bucket/current.mp4",
+            "video": remote_video_url,
             "provider": "fixture",
             "model": "video-fixture",
         },
+    )
+    monkeypatch.setattr(
+        visual_package_tool,
+        "download_remote_media",
+        fake_download_remote_media,
+        raising=False,
     )
 
     payload = json.loads(
@@ -166,8 +180,51 @@ async def test_visual_package_generate_selects_successful_remote_video_url(monke
     )
 
     assert payload["success"] is True
-    assert payload["videos"] == ["https://vidgen.x.ai/xai-vidgen-bucket/current.mp4"]
+    assert payload["videos"] == [str(cached_video)]
     assert len(payload["delivery_metadata"]["selected_visual_artifact_ids"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_visual_package_does_not_select_remote_video_when_materialization_fails(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image = tmp_path / "image.png"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    remote_video_url = "https://vidgen.x.ai/xai-vidgen-bucket/current.mp4"
+
+    monkeypatch.setattr(
+        visual_package_tool,
+        "generate_image",
+        lambda **kwargs: {"success": True, "image": str(image), "provider": "fixture", "model": "image-fixture"},
+    )
+    monkeypatch.setattr(
+        visual_package_tool,
+        "generate_video",
+        lambda **kwargs: {
+            "success": True,
+            "video": remote_video_url,
+            "provider": "fixture",
+            "model": "video-fixture",
+        },
+    )
+    monkeypatch.setattr(
+        visual_package_tool,
+        "download_remote_media",
+        lambda url, *, kind: (_ for _ in ()).throw(RuntimeError("download failed")),
+        raising=False,
+    )
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {"prompt": "請產出一張圖片和一段影片：霧黑鋼筆。"}
+        )
+    )
+
+    assert payload["success"] is False
+    assert payload["package_status"] == "partial"
+    assert payload["videos"] == []
+    assert remote_video_url not in payload["videos"]
 
 
 @pytest.mark.asyncio

@@ -44,3 +44,25 @@ def test_preference_profile_is_private_safe_and_low_confidence_with_sparse_data(
     assert "private raw feedback" not in serialized
     assert profile["confidence"] < 1.0
     assert profile["minimum_confidence_sample_count"] == 5
+
+
+def test_preference_profile_tracks_stocking_quality_penalty(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.feedback import parse_visual_feedback
+    from agent.visual.preference_profile import build_preference_profile
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+    request_id = ledger.record_request(status="completed", metadata={"intent_signature": "visig_demo"})
+    parsed = parse_visual_feedback("人物太醜，絲襪太醜")
+    ledger.record_feedback(
+        request_id=request_id,
+        feedback_text=parsed.text,
+        polarity=parsed.polarity,
+        parsed=parsed.parsed,
+    )
+
+    profile = build_preference_profile(ledger, bucket="visig_demo")
+
+    assert profile["issues"]["subject_not_attractive"]["penalty"] > 0
+    assert profile["issues"]["stockings_bad"]["penalty"] > 0
