@@ -43,7 +43,8 @@ def rank_visual_candidates(
     ranked = sorted(
         passed_candidates,
         key=lambda candidate: (
-            float(candidate.get("scores", {}).get("final_score") or 0.0),
+            _candidate_score(candidate),
+            _candidate_confidence(candidate),
             str(candidate.get("artifact_id") or ""),
         ),
         reverse=True,
@@ -64,7 +65,7 @@ def rank_visual_candidates(
         )
 
     top = ranked[0]
-    top_score = float(top.get("scores", {}).get("final_score") or 0.0)
+    top_score = _candidate_score(top)
     if top_score >= post_threshold:
         decision = "post"
         reason = "top_candidate_above_post_threshold"
@@ -89,3 +90,17 @@ def rank_visual_candidates(
         ranked_artifact_ids=ranked_artifact_ids,
         reason=reason,
     )
+
+
+def _candidate_score(candidate: dict[str, Any]) -> float:
+    reward = candidate.get("reward")
+    if isinstance(reward, dict) and reward.get("final_score") is not None:
+        return float(reward.get("final_score") or 0.0)
+    return float(candidate.get("scores", {}).get("final_score") or 0.0)
+
+
+def _candidate_confidence(candidate: dict[str, Any]) -> float:
+    reward = candidate.get("reward")
+    if isinstance(reward, dict) and reward.get("confidence") is not None:
+        return float(reward.get("confidence") or 0.0)
+    return 0.0

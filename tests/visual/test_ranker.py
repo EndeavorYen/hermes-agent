@@ -73,3 +73,32 @@ def test_ranker_fails_when_no_candidates_exist():
 
     assert decision.decision == "fail"
     assert decision.selected_artifact_id is None
+
+
+def test_ranker_prefers_reward_score_when_available():
+    from agent.visual.ranker import rank_visual_candidates
+
+    decision = rank_visual_candidates(
+        request_id="vrq_test",
+        candidates=[
+            {
+                "attempt_id": "vat_old",
+                "artifact_id": "var_old",
+                "scores": {"final_score": 0.95},
+                "reward": {"final_score": 0.45, "confidence": 0.9},
+                "hard_gate": {"passed": True},
+            },
+            {
+                "attempt_id": "vat_reward",
+                "artifact_id": "var_reward",
+                "scores": {"final_score": 0.70},
+                "reward": {"final_score": 0.82, "confidence": 0.7},
+                "hard_gate": {"passed": True},
+            },
+        ],
+        post_threshold=0.80,
+        ask_threshold=0.55,
+    )
+
+    assert decision.decision == "post"
+    assert decision.selected_artifact_id == "var_reward"
