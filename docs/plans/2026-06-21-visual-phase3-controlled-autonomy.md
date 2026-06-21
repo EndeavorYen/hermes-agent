@@ -67,16 +67,27 @@ Completed and committed:
   - Added privacy-safe activation report.
   - Added self-validation failure for unsafe controlled activations.
   - Proves Phase 2 fixture self-check still passes with no active controlled strategies.
+- `ef3e6dcc0 feat: read controlled visual strategies`
+  - Added read-only controlled strategy selection.
+  - Wired `visual_package_generate` to prefer a safe controlled strategy when one exists.
+  - Proves package generation preserves the original prompt and leaves `prompt_mutation_allowed` false.
+- `5a6a6049b feat: report visual strategy read usage`
+  - Added activation report counters for read-path usage.
+  - Records `strategy_plan` metadata in visual rankings so usage is auditable.
+  - Proves controlled strategy reads do not imply prompt mutation.
 
 Current activation state:
 
-- Controlled strategy read path is not yet wired into `visual_package_generate`.
+- Controlled strategy read path is wired into `visual_package_generate`.
 - Prompt mutation remains disabled by default.
 - No active/controlled strategy exists in the live activation report unless a later milestone explicitly records one.
+- Live activation report currently shows `controlled_count: 0`, `unsafe_count: 0`,
+  `read_count: 0`, and `prompt_mutation_read_count: 0` for the default runtime
+  ledger.
 
 Next milestone:
 
-- Milestone 4: Controlled Strategy Read Path.
+- Phase 4: Visual Quality Judges, after any required live smoke is reviewed.
 
 ## Milestone 1: Promotion Gate
 
