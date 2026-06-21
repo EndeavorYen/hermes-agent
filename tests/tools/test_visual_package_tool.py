@@ -165,3 +165,40 @@ async def test_visual_package_generates_multiple_image_candidates_and_posts_only
         }
     ) == 2
     assert len(payload["delivery_metadata"]["selected_visual_artifact_ids"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_visual_package_records_shadow_learning_but_keeps_delivery_selected_only(monkeypatch, tmp_path):
+    from agent.visual.tracking import default_visual_ledger_path
+    from agent.visual.self_validation import run_visual_self_validation
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image = tmp_path / "image.png"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    monkeypatch.setattr(
+        visual_package_tool,
+        "generate_image",
+        lambda **kwargs: {
+            "success": True,
+            "image": str(image),
+            "provider": "fixture",
+            "model": "image",
+        },
+    )
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {"prompt": "請產出一張圖片：霧黑鋼筆。", "include_video": False}
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["rankings"]["image"]["decision"] in {"post", "ask_user"}
+    assert payload["delivery_metadata"]["selected_visual_artifact_ids"]
+    assert payload["learning"]["mode"] == "shadow"
+    validation = run_visual_self_validation(
+        default_visual_ledger_path(),
+        request_id=payload["visual_request_id"],
+    )
+    assert validation["success"] is True

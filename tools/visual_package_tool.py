@@ -6,6 +6,7 @@ import logging
 from typing import Any
 from urllib.parse import urlparse
 
+from agent.visual.active_learning import decide_visual_action
 from agent.visual.attempt_ledger import VisualAttemptLedger
 from agent.visual.intent_signature import build_intent_signature
 from agent.visual.judges.deterministic import judge_artifact
@@ -14,6 +15,8 @@ from agent.visual.preference_profile import build_preference_profile
 from agent.visual.provider_stats import compute_provider_reliability
 from agent.visual.ranker import rank_visual_candidates
 from agent.visual.reward_model import score_visual_candidate
+from agent.visual.shadow_learning import record_shadow_update
+from agent.visual.strategy_policy import select_strategy_plan
 from agent.visual.tracking import default_visual_ledger_path
 from agent.visual.tracking import visual_delivery_metadata
 from tools.registry import registry
@@ -157,6 +160,18 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
     selected_videos: list[str] = []
     rankings: dict[str, dict[str, Any]] = {}
     generation_payloads: dict[str, Any] = {}
+    preference_profile = build_preference_profile(ledger, bucket=intent_signature)
+    strategy_plan = select_strategy_plan(
+        intent_signature,
+        provider_stats={},
+        preference_profile=preference_profile,
+        exploration_rate=0.0,
+    )
+    learning: dict[str, Any] = {
+        "mode": "shadow",
+        "strategy_plan": strategy_plan.to_record(),
+        "active_learning": {},
+    }
 
     if wants_image:
         image_payloads = []
@@ -198,6 +213,16 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             ask_threshold=0.0,
         )
         rankings["image"] = image_decision.__dict__
+        learning["active_learning"]["image"] = _record_learning_trace(
+            ledger,
+            request_id=request_id,
+            intent_signature=intent_signature,
+            strategy_signature=strategy_plan.strategy_signature,
+            modality="image",
+            rank_decision=image_decision.__dict__,
+            candidates=image_candidates,
+            has_reference_image=bool(attachments),
+        )
         selected_image = _selected_candidate(image_candidates, image_decision.selected_artifact_id)
         if selected_image:
             selected_artifact_ids.append(selected_image["artifact_id"])
@@ -245,6 +270,16 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             ask_threshold=0.0,
         )
         rankings["video"] = video_decision.__dict__
+        learning["active_learning"]["video"] = _record_learning_trace(
+            ledger,
+            request_id=request_id,
+            intent_signature=intent_signature,
+            strategy_signature=strategy_plan.strategy_signature,
+            modality="video",
+            rank_decision=video_decision.__dict__,
+            candidates=video_candidates,
+            has_reference_image=bool(video_image_url),
+        )
         selected_video = _selected_candidate(video_candidates, video_decision.selected_artifact_id)
         if selected_video:
             selected_artifact_ids.append(selected_video["artifact_id"])
@@ -269,6 +304,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         "rankings": rankings,
         "delivery_metadata": delivery_metadata,
         "generation_payloads": generation_payloads,
+        "learning": learning,
     }
 
 
@@ -346,6 +382,68 @@ def _score_candidates(
         )
 
 
+def _record_learning_trace(
+    ledger: VisualAttemptLedger,
+    *,
+    request_id: str,
+    intent_signature: str,
+    strategy_signature: str,
+    modality: str,
+    rank_decision: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    has_reference_image: bool,
+) -> dict[str, Any]:
+    selected = _selected_candidate(candidates, rank_decision.get("selected_artifact_id"))
+    top = selected or _top_ranked_candidate(candidates, rank_decision.get("ranked_artifact_ids"))
+    reward = top.get("reward", {}) if top else {}
+    active_learning = decide_visual_action(
+        {
+            "decision": rank_decision.get("decision"),
+            "top_score": reward.get("final_score", 0.0),
+            "top_confidence": reward.get("confidence", 0.0),
+            "uncertainty_reasons": reward.get("uncertainty_reasons", []),
+        },
+        request_context={
+            "has_reference_image": has_reference_image,
+            "candidate_count": len(candidates),
+            "retry_budget_remaining": 0,
+            "failure_type": rank_decision.get("reason"),
+        },
+    )
+    ledger.record_ranking(
+        request_id=request_id,
+        selected_artifact_id=rank_decision.get("selected_artifact_id"),
+        decision=rank_decision.get("decision"),
+        scores={
+            "reward": reward,
+            "ranked_artifact_ids": rank_decision.get("ranked_artifact_ids", []),
+        },
+        metadata={
+            "modality": modality,
+            "active_learning": active_learning,
+            "strategy_signature": strategy_signature,
+        },
+    )
+    record_shadow_update(
+        ledger,
+        request_id=request_id,
+        intent_signature=intent_signature,
+        strategy_signature=strategy_signature,
+        proposed_change={
+            "type": "strategy_observation",
+            "modality": modality,
+            "activation": "shadow_only",
+        },
+        evidence={
+            "candidate_count": len(candidates),
+            "selected_artifact_id": rank_decision.get("selected_artifact_id"),
+            "rank_decision": rank_decision.get("decision"),
+        },
+        confidence=active_learning.get("top_confidence"),
+    )
+    return active_learning
+
+
 def _selected_candidate(
     candidates: list[dict[str, Any]],
     selected_artifact_id: str | None,
@@ -356,6 +454,15 @@ def _selected_candidate(
         (candidate for candidate in candidates if candidate.get("artifact_id") == selected_artifact_id),
         None,
     )
+
+
+def _top_ranked_candidate(
+    candidates: list[dict[str, Any]],
+    ranked_artifact_ids: Any,
+) -> dict[str, Any] | None:
+    if isinstance(ranked_artifact_ids, list) and ranked_artifact_ids:
+        return _selected_candidate(candidates, str(ranked_artifact_ids[0]))
+    return candidates[0] if candidates else None
 
 
 def _record_artifact_ref(
