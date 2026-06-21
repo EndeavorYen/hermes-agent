@@ -222,11 +222,11 @@ def test_xai_text_plus_image_via_tool_surface(matrix_env):
     assert len(xai_calls) == 1
     assert xai_calls[0]["url"].endswith("/videos/generations")
     payload = xai_calls[0]["json"] or {}
-    assert payload["model"] == "grok-imagine-video-1.5-preview"
+    assert payload["model"] == "grok-imagine-video-1.5"
     assert payload["image"] == {"url": "https://example.com/img.png"}
 
 
-def test_xai_explicit_model_override_via_tool_surface(matrix_env):
+def test_xai_text_model_override_is_coerced_for_image_to_video(matrix_env):
     home, _, xai_calls = matrix_env
 
     result = _invoke_tool(
@@ -241,7 +241,7 @@ def test_xai_explicit_model_override_via_tool_surface(matrix_env):
     assert result["success"] is True
 
     payload = xai_calls[0]["json"] or {}
-    assert payload["model"] == "grok-imagine-video"
+    assert payload["model"] == "grok-imagine-video-1.5"
     assert payload["image"] == {"url": "https://example.com/img.png"}
 
 

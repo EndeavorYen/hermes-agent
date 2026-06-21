@@ -826,6 +826,49 @@ def _postprocess_image_generate_result(raw: str, task_id: str | None = None) -> 
     return json.dumps(payload, ensure_ascii=False)
 
 
+def _track_image_generate_result(
+    raw: str,
+    *,
+    prompt: str,
+    aspect_ratio: str,
+    image_url: Optional[str],
+    reference_image_urls: Optional[list],
+) -> str:
+    try:
+        payload = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        return raw
+    if not isinstance(payload, dict):
+        return raw
+
+    try:
+        from agent.visual.tracking import record_visual_generation_attempt
+
+        has_reference = bool(image_url) or bool(reference_image_urls)
+        operation = "reference_image_edit" if has_reference else "text_to_image"
+        modality = "image" if has_reference else "text"
+        provider = str(payload.get("provider") or _read_configured_image_provider() or "fal")
+        model = str(payload.get("model") or _read_configured_image_model() or _resolve_fal_model()[0])
+        tracked = record_visual_generation_attempt(
+            payload,
+            user_prompt=prompt,
+            prompt_original=prompt,
+            prompt_mediated=prompt,
+            modality=modality,
+            operation=operation,
+            artifact_key="image",
+            kind="image",
+            provider=provider,
+            model=model,
+            parameters_requested={"aspect_ratio": aspect_ratio},
+            parameters_effective={"aspect_ratio": payload.get("aspect_ratio") or aspect_ratio},
+        )
+        return json.dumps(tracked, indent=2, ensure_ascii=False)
+    except Exception as exc:  # noqa: BLE001 - image generation must not depend on tracking
+        logger.warning("Image generation tracking skipped: %s", exc)
+        return raw
+
+
 def image_generate_tool(
     prompt: str,
     aspect_ratio: str = DEFAULT_ASPECT_RATIO,
@@ -1423,7 +1466,14 @@ def _handle_image_generate(args, **kw):
         reference_image_urls=reference_image_urls,
     )
     if dispatched is not None:
-        return _postprocess_image_generate_result(dispatched, task_id=task_id)
+        postprocessed = _postprocess_image_generate_result(dispatched, task_id=task_id)
+        return _track_image_generate_result(
+            postprocessed,
+            prompt=prompt,
+            aspect_ratio=aspect_ratio,
+            image_url=image_url,
+            reference_image_urls=reference_image_urls,
+        )
 
     raw = image_generate_tool(
         prompt=prompt,
@@ -1431,7 +1481,14 @@ def _handle_image_generate(args, **kw):
         image_url=image_url,
         reference_image_urls=reference_image_urls,
     )
-    return _postprocess_image_generate_result(raw, task_id=task_id)
+    postprocessed = _postprocess_image_generate_result(raw, task_id=task_id)
+    return _track_image_generate_result(
+        postprocessed,
+        prompt=prompt,
+        aspect_ratio=aspect_ratio,
+        image_url=image_url,
+        reference_image_urls=reference_image_urls,
+    )
 
 
 # ---------------------------------------------------------------------------

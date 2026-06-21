@@ -558,7 +558,7 @@ class VisualAttemptLedger:
 
 **Purpose:** Record provider attempts without changing provider behavior.
 
-- [ ] **Step 1: Write tracking tests**
+- [x] **Step 1: Write tracking tests**
 
   Create `tests/visual/test_tracking.py`:
 
@@ -602,7 +602,7 @@ class VisualAttemptLedger:
       assert artifact["freshness_status"] == "fresh"
   ```
 
-- [ ] **Step 2: Run red tracking tests**
+- [x] **Step 2: Run red tracking tests**
 
   Run:
 
@@ -612,7 +612,7 @@ class VisualAttemptLedger:
 
   Expected: FAIL because tracking hook is missing.
 
-- [ ] **Step 3: Implement best-effort tracking**
+- [x] **Step 3: Implement best-effort tracking**
 
   Create `agent/visual/tracking.py` with:
 
@@ -622,7 +622,7 @@ class VisualAttemptLedger:
   - request, attempt, artifact recording;
   - provider error taxonomy for failures.
 
-- [ ] **Step 4: Wire image and video tools**
+- [x] **Step 4: Wire image and video tools**
 
   Modify:
 
@@ -636,7 +636,13 @@ class VisualAttemptLedger:
   - `text_to_video`;
   - `image_to_video`.
 
-- [ ] **Step 5: Verify milestone 3**
+  Execution note, 2026-06-21: expanded verification also covered image
+  artifact postprocessing and video surface matrix tests. The xAI
+  image-to-video surface expectation was aligned to the GA
+  `grok-imagine-video-1.5` model while keeping the plugin's existing coercion
+  from the legacy text model to the image model.
+
+- [x] **Step 5: Verify milestone 3**
 
   Run:
 
@@ -647,7 +653,7 @@ class VisualAttemptLedger:
 
   Expected: tests pass and existing image/video contracts remain unchanged.
 
-- [ ] **Step 6: Commit milestone 3**
+- [x] **Step 6: Commit milestone 3**
 
   Run:
 
