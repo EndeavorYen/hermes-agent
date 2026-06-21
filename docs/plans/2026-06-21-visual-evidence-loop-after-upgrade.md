@@ -1372,6 +1372,9 @@ async def visual_package_generate(prompt: str, attachments: list[str] | None = N
 
 Start this only after Milestones 1-9 are green.
 
+The executable Phase 2 plan lives in
+`docs/plans/2026-06-21-visual-self-verifying-learning-phase2.md`.
+
 Phase 2 scope:
 
 - strategy atoms;
