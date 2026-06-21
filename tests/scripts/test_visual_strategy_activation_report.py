@@ -58,6 +58,43 @@ def test_strategy_activation_report_flags_unsafe_controlled_decision(tmp_path):
     assert report["strategy_activations"]["unsafe_count"] == 1
 
 
+def test_strategy_activation_report_counts_read_path_usage(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.strategy_activation import record_strategy_activation
+    from scripts.visual_strategy_activation_report import build_strategy_activation_report
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+    request_id = ledger.record_request(status="completed")
+    activation_id = record_strategy_activation(
+        ledger,
+        shadow_update_id="vsh_demo",
+        intent_signature="visig_demo",
+        strategy_signature="composition.full_subject_visible@v1",
+        activation_status="controlled",
+        promotion_decision={"decision": "promote_controlled", "allowed": True},
+    )
+    ledger.record_ranking(
+        request_id=request_id,
+        selected_artifact_id=None,
+        decision="post",
+        scores={},
+        metadata={
+            "strategy_plan": {
+                "activation_id": activation_id,
+                "activation_status": "controlled",
+                "prompt_mutation_allowed": False,
+            }
+        },
+    )
+
+    report = build_strategy_activation_report(tmp_path / "visual.sqlite3")
+
+    assert report["strategy_activations"]["read_count"] == 1
+    assert report["strategy_activations"]["top"][0]["read_count"] == 1
+    assert report["strategy_activations"]["top"][0]["prompt_mutation_read_count"] == 0
+
+
 def test_strategy_activation_report_cli_json(capsys, tmp_path):
     from agent.visual.attempt_ledger import VisualAttemptLedger
     from scripts.visual_strategy_activation_report import main

@@ -209,6 +209,7 @@ async def test_visual_package_reads_controlled_strategy_without_prompt_mutation(
     from agent.visual.intent_signature import build_intent_signature
     from agent.visual.strategy_activation import record_strategy_activation
     from agent.visual.tracking import default_visual_ledger_path
+    from scripts.visual_strategy_activation_report import build_strategy_activation_report
     from tools import visual_package_tool
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -265,3 +266,6 @@ async def test_visual_package_reads_controlled_strategy_without_prompt_mutation(
     assert payload["learning"]["strategy_plan"]["activation_id"] == activation_id
     assert payload["learning"]["strategy_plan"]["prompt_mutation_allowed"] is False
     assert image_calls[0]["prompt"] == prompt
+    report = build_strategy_activation_report(default_visual_ledger_path())
+    assert report["strategy_activations"]["read_count"] == 1
+    assert report["strategy_activations"]["prompt_mutation_read_count"] == 0

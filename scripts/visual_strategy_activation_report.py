@@ -32,12 +32,15 @@ def build_strategy_activation_report(
             intent_signature=intent_signature,
             strategy_signature=strategy_signature,
         )
+        reads = _activation_read_counts(conn)
 
-    top = [_row_to_report(row) for row in rows[:10]]
+    top = [_row_to_report(row, reads=reads) for row in rows[:10]]
     unsafe_count = sum(1 for row in rows if _is_unsafe_activation(row))
     controlled_count = sum(1 for row in rows if _status(row) == "controlled")
     disabled_count = sum(1 for row in rows if _status(row) == "disabled")
     rolled_back_count = sum(1 for row in rows if _status(row) == "rolled_back")
+    read_count = sum(item["read_count"] for item in reads.values())
+    prompt_mutation_read_count = sum(item["prompt_mutation_read_count"] for item in reads.values())
     return {
         "success": unsafe_count == 0,
         "strategy_activations": {
@@ -46,6 +49,8 @@ def build_strategy_activation_report(
             "disabled_count": disabled_count,
             "rolled_back_count": rolled_back_count,
             "unsafe_count": unsafe_count,
+            "read_count": read_count,
+            "prompt_mutation_read_count": prompt_mutation_read_count,
             "top": top,
         },
     }
@@ -98,18 +103,44 @@ def _activation_rows(
     ).fetchall()
 
 
-def _row_to_report(row: sqlite3.Row) -> dict[str, Any]:
+def _row_to_report(row: sqlite3.Row, *, reads: dict[str, dict[str, int]]) -> dict[str, Any]:
     promotion_decision = _json_value(_row_value(row, "promotion_decision", "promotion_decision_json"))
+    activation_id = str(_row_value(row, "id", "strategy_activation_id") or "")
+    read_counts = reads.get(activation_id, {"read_count": 0, "prompt_mutation_read_count": 0})
     return {
-        "id": _row_value(row, "id", "strategy_activation_id"),
+        "id": activation_id,
         "shadow_update_id": _row_value(row, "shadow_update_id"),
         "intent_signature": _row_value(row, "intent_signature"),
         "strategy_signature": _row_value(row, "strategy_signature"),
         "activation_status": _status(row),
         "promotion_decision": promotion_decision,
         "rollback_of": _row_value(row, "rollback_of"),
+        "read_count": read_counts["read_count"],
+        "prompt_mutation_read_count": read_counts["prompt_mutation_read_count"],
         "unsafe": _is_unsafe_activation(row),
     }
+
+
+def _activation_read_counts(conn: sqlite3.Connection) -> dict[str, dict[str, int]]:
+    if not _table_exists(conn, "visual_rankings"):
+        return {}
+    counts: dict[str, dict[str, int]] = {}
+    for row in conn.execute("SELECT * FROM visual_rankings").fetchall():
+        metadata = _json_value(_row_value(row, "metadata", "rationale_json"))
+        strategy_plan = metadata.get("strategy_plan") if isinstance(metadata, dict) else None
+        if not isinstance(strategy_plan, dict):
+            continue
+        activation_id = strategy_plan.get("activation_id")
+        if not isinstance(activation_id, str) or not activation_id:
+            continue
+        item = counts.setdefault(
+            activation_id,
+            {"read_count": 0, "prompt_mutation_read_count": 0},
+        )
+        item["read_count"] += 1
+        if strategy_plan.get("prompt_mutation_allowed") is True:
+            item["prompt_mutation_read_count"] += 1
+    return counts
 
 
 def _is_unsafe_activation(row: sqlite3.Row) -> bool:
@@ -161,6 +192,8 @@ def _empty_report() -> dict[str, Any]:
             "disabled_count": 0,
             "rolled_back_count": 0,
             "unsafe_count": 0,
+            "read_count": 0,
+            "prompt_mutation_read_count": 0,
             "top": [],
         },
     }
