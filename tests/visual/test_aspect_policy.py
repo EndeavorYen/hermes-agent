@@ -39,3 +39,25 @@ def test_nearest_aspect_accepts_xai_supported_set():
         1280,
         ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"],
     ) == "9:16"
+
+
+def test_select_video_aspect_prefers_source_dimensions_over_requested():
+    from agent.visual.aspect_policy import select_video_aspect_ratio
+
+    assert select_video_aspect_ratio(
+        source_width=720,
+        source_height=1280,
+        requested_aspect_ratio="16:9",
+        supported=["16:9", "9:16", "1:1"],
+    ) == "9:16"
+
+
+def test_select_video_aspect_uses_requested_when_source_unknown():
+    from agent.visual.aspect_policy import select_video_aspect_ratio
+
+    assert select_video_aspect_ratio(
+        source_width=None,
+        source_height=None,
+        requested_aspect_ratio="1:1",
+        supported=["16:9", "9:16", "1:1"],
+    ) == "1:1"

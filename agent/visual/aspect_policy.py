@@ -38,6 +38,25 @@ def nearest_aspect_ratio(
     return min(ratios, key=lambda label: abs(actual - ratios[label]))
 
 
+def select_video_aspect_ratio(
+    *,
+    source_width: int | None,
+    source_height: int | None,
+    requested_aspect_ratio: str | None,
+    supported: Iterable[str],
+    default: str = "16:9",
+) -> str:
+    supported_values = [str(item) for item in supported]
+    if source_width and source_height:
+        nearest = nearest_aspect_ratio(source_width, source_height, supported_values)
+        if nearest:
+            return nearest
+    requested = str(requested_aspect_ratio or "").strip()
+    if requested in supported_values:
+        return requested
+    return default if default in supported_values else (supported_values[0] if supported_values else default)
+
+
 def plan_center_crop(
     *,
     width: int,

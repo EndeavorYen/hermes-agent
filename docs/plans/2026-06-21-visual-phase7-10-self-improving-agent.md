@@ -594,6 +594,35 @@ rtk ./venv/bin/python -m ruff check agent/visual/aspect_policy.py agent/visual/m
 - Is aspect ratio derived from actual source media when possible?
 - Does metadata hygiene protect privacy without corrupting media or removing required compliance data?
 
+### Phase 9 Execution Status: 2026-06-21
+
+Implemented:
+
+- `agent/visual/delivery_manifest.py`
+  - Builds a selected-artifact delivery manifest from `visual_package_generate` payloads.
+  - Deduplicates deliverables by content/source identity.
+  - Excludes unselected prior-round artifacts.
+- `gateway/run.py`
+  - Adds `visual_package_generate` to the current-turn tool-result auto-append allowlist.
+  - Converts selected local package deliverables into `MEDIA:` tags for existing gateway native media delivery.
+- `agent/visual/aspect_policy.py`
+  - Adds `select_video_aspect_ratio()`.
+  - Prefers source media dimensions over requested aspect ratio when generating video from an image.
+- `tools/visual_package_tool.py`
+  - Uses selected source-image dimensions to choose video aspect ratio.
+- `agent/visual/metadata_hygiene.py`
+  - Sanitizes private local/GPS/camera/cache metadata while preserving dimensions, content hash, license, and compliance data.
+
+Self-assessment:
+
+- `proven`: `tests/visual/test_delivery_manifest.py`, `tests/gateway/test_media_extraction.py`, `tests/visual/test_aspect_policy.py`, `tests/visual/test_metadata_hygiene.py`, `tests/tools/test_visual_package_tool.py`, and `tests/scripts/test_visual_regression_report.py` passed.
+- `proven`: `scripts/visual_regression_report.py --json` passed against the runtime ledger.
+- `not_proven`: live Slack upload was not executed in this phase; the gateway extraction path is unit-proven and uses the existing media delivery pipeline.
+- `quality_delta`: should reduce stale/duplicate delivery because only selected manifest deliverables are converted to `MEDIA:` tags.
+- `regression_risks`: provider-hosted remote video URLs are preserved in payloads but not yet downloaded/packaged for Slack native upload.
+- `improvement_action`: `carry_to_next_phase`; Phase 10 learning should observe delivery outcomes, and a later refinement should add optional remote-video download/package support.
+- `rollback_path`: remove `visual_package_generate` from `_AUTO_APPEND_MEDIA_TOOL_NAMES`; package payloads will still return selected artifacts but gateway will stop auto-appending media tags.
+
 ---
 
 ## Phase 10 Goal: Self-Reinforcing Learning Loop v1

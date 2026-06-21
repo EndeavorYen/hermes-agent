@@ -868,6 +868,7 @@ _AUTO_APPEND_MEDIA_TOOL_NAMES = {
     "text_to_speech",
     "text_to_speech_tool",
     "image_generate",
+    "visual_package_generate",
 }
 
 # ---- helpers: detect interrupted tool tails & auto-continue noise ----------
@@ -1052,6 +1053,25 @@ def _collect_auto_append_media_tags(
                             and path not in history_media_paths):
                         media_tags.append(f"MEDIA:{path}")
                         break
+            continue
+        if tool_name == "visual_package_generate" and "MEDIA:" not in content:
+            try:
+                payload = json.loads(content)
+            except Exception:
+                payload = None
+            if isinstance(payload, dict) and payload.get("success"):
+                from agent.visual.delivery_manifest import build_visual_delivery_manifest
+                from agent.visual.delivery_manifest import select_deliverable_artifacts
+
+                manifest = build_visual_delivery_manifest(payload)
+                for artifact in select_deliverable_artifacts(manifest):
+                    ref = artifact.get("ref")
+                    if (
+                        isinstance(ref, str)
+                        and _TOOL_MEDIA_RE.fullmatch(f"MEDIA:{ref}")
+                        and ref not in history_media_paths
+                    ):
+                        media_tags.append(f"MEDIA:{ref}")
             continue
         if "MEDIA:" not in content:
             continue

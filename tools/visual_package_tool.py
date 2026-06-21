@@ -7,6 +7,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from agent.visual.active_learning import decide_visual_action
+from agent.visual.aspect_policy import select_video_aspect_ratio
 from agent.visual.attempt_ledger import VisualAttemptLedger
 from agent.visual.intent_signature import build_intent_signature
 from agent.visual.judges.deterministic import judge_artifact
@@ -284,6 +285,10 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
 
     if wants_video:
         video_image_url = str(args.get("image_url") or "").strip() or (selected_images[0] if selected_images else None)
+        video_aspect_ratio = _video_tool_aspect_ratio(
+            requested_aspect_ratio=_judge_aspect_ratio(aspect_ratio),
+            source_ref=video_image_url,
+        )
         video_payloads = []
         video_candidates = []
         for candidate_index in range(video_budget):
@@ -291,7 +296,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 "prompt": prompt,
                 "image_url": video_image_url,
                 "duration": duration,
-                "aspect_ratio": _judge_aspect_ratio(aspect_ratio),
+                "aspect_ratio": video_aspect_ratio,
             }
             video_payload = generate_video(**video_kwargs)
             if not video_payload.get("success"):
@@ -748,6 +753,26 @@ def _judge_aspect_ratio(value: str) -> str:
         "portrait": "9:16",
         "square": "1:1",
     }.get(lowered, lowered or "16:9")
+
+
+def _video_tool_aspect_ratio(*, requested_aspect_ratio: str, source_ref: str | None) -> str:
+    supported = ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"]
+    if source_ref:
+        meta = probe_media_reference(source_ref)
+        return select_video_aspect_ratio(
+            source_width=meta.width,
+            source_height=meta.height,
+            requested_aspect_ratio=requested_aspect_ratio,
+            supported=supported,
+            default=requested_aspect_ratio,
+        )
+    return select_video_aspect_ratio(
+        source_width=None,
+        source_height=None,
+        requested_aspect_ratio=requested_aspect_ratio,
+        supported=supported,
+        default=requested_aspect_ratio,
+    )
 
 
 def _is_remote_url(value: str) -> bool:
