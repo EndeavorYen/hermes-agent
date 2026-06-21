@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime
+from datetime import timezone
 from pathlib import Path
 from typing import Any
 
@@ -18,15 +20,73 @@ from agent.visual.ids import (
 
 _JSON_COLUMNS = {
     "normalized_intent",
+    "normalized_intent_json",
+    "policy_context_json",
     "parameters_requested",
+    "parameters_requested_json",
     "parameters_effective",
+    "parameters_effective_json",
+    "input_artifacts_json",
     "metadata",
     "details",
     "scores",
+    "score_json",
+    "raw_output_json",
+    "rationale_json",
     "parsed",
+    "parsed_json",
 }
 
 _BOOL_COLUMNS = {"is_stable"}
+
+_ID_COLUMN_CANDIDATES = {
+    "visual_requests": ("id", "request_id"),
+    "visual_attempts": ("id", "attempt_id"),
+    "visual_artifacts": ("id", "artifact_id"),
+    "visual_judgments": ("id", "judgment_id"),
+    "visual_rankings": ("id", "ranking_id"),
+    "visual_deliveries": ("id", "delivery_id"),
+    "visual_feedback": ("id", "feedback_id"),
+}
+
+_COLUMN_ALIASES = {
+    "visual_requests": {
+        "id": "request_id",
+        "normalized_intent": "normalized_intent_json",
+        "metadata": "policy_context_json",
+    },
+    "visual_attempts": {
+        "id": "attempt_id",
+        "parameters_requested": "parameters_requested_json",
+        "parameters_effective": "parameters_effective_json",
+        "error_type": "provider_error_type",
+        "error_message": "provider_error_message",
+    },
+    "visual_artifacts": {
+        "id": "artifact_id",
+        "uri": "source_url",
+        "duration_seconds": "duration_ms",
+    },
+    "visual_judgments": {
+        "id": "judgment_id",
+        "score": "confidence",
+        "details": "score_json",
+    },
+    "visual_rankings": {
+        "id": "ranking_id",
+        "scores": "score_json",
+        "metadata": "rationale_json",
+    },
+    "visual_deliveries": {
+        "id": "delivery_id",
+    },
+    "visual_feedback": {
+        "id": "feedback_id",
+        "feedback_text": "raw_text",
+        "parsed": "parsed_json",
+        "metadata": "parsed_json",
+    },
+}
 
 
 def _json_default(value: Any) -> Any:
@@ -257,7 +317,14 @@ class VisualAttemptLedger:
         id_factory,
     ) -> str:
         record_id = str(values.pop(id_column, "") or id_factory())
-        row = {id_column: record_id, **values}
+        with self._connect() as conn:
+            columns_available = self._table_columns(conn, table)
+        actual_id_column = self._actual_id_column(table, columns_available, preferred=id_column)
+        row = self._prepare_row_for_table(
+            table,
+            columns_available,
+            {actual_id_column: record_id, **values},
+        )
         encoded = {key: _encode_column(key, value) for key, value in row.items()}
         columns = list(encoded)
         placeholders = ", ".join("?" for _ in columns)
@@ -269,7 +336,9 @@ class VisualAttemptLedger:
 
     def _get(self, table: str, record_id: str) -> dict[str, Any]:
         with self._connect() as conn:
-            row = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (record_id,)).fetchone()
+            columns_available = self._table_columns(conn, table)
+            actual_id_column = self._actual_id_column(table, columns_available, preferred="id")
+            row = conn.execute(f"SELECT * FROM {table} WHERE {actual_id_column} = ?", (record_id,)).fetchone()
         if row is None:
             raise KeyError(record_id)
         return {key: _decode(key, row[key]) for key in row.keys()}
@@ -291,3 +360,89 @@ class VisualAttemptLedger:
             {key: _decode(key, row[key]) for key in row.keys()}
             for row in rows
         ]
+
+    def _actual_id_column(
+        self,
+        table: str,
+        columns_available: set[str],
+        *,
+        preferred: str,
+    ) -> str:
+        if preferred in columns_available:
+            return preferred
+        for candidate in _ID_COLUMN_CANDIDATES.get(table, (preferred,)):
+            if candidate in columns_available:
+                return candidate
+        raise sqlite3.OperationalError(f"{table} is missing an id column")
+
+    def _prepare_row_for_table(
+        self,
+        table: str,
+        columns_available: set[str],
+        row: dict[str, Any],
+    ) -> dict[str, Any]:
+        aliases = _COLUMN_ALIASES.get(table, {})
+        prepared: dict[str, Any] = {}
+        for key, value in row.items():
+            target = key if key in columns_available else aliases.get(key)
+            if target not in columns_available:
+                continue
+            if target == "duration_ms" and value is not None:
+                value = int(float(value) * 1000)
+            prepared[target] = value
+
+        self._apply_legacy_defaults(table, columns_available, prepared)
+        return prepared
+
+    def _apply_legacy_defaults(
+        self,
+        table: str,
+        columns_available: set[str],
+        prepared: dict[str, Any],
+    ) -> None:
+        if "created_at" in columns_available and "created_at" not in prepared:
+            prepared["created_at"] = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        legacy_schema = "id" not in columns_available
+        if not legacy_schema:
+            return
+        if table == "visual_requests":
+            prepared.setdefault("user_prompt", "")
+            prepared.setdefault("normalized_intent_json", {})
+            prepared.setdefault("modality", "")
+            prepared.setdefault("operation", "")
+            prepared.setdefault("status", "")
+        elif table == "visual_attempts":
+            prepared.setdefault("candidate_index", 0)
+            prepared.setdefault("provider", "")
+            prepared.setdefault("model", "")
+            prepared.setdefault("prompt_original", "")
+            prepared.setdefault("prompt_mediated", "")
+        elif table == "visual_artifacts":
+            prepared.setdefault("kind", "")
+            prepared.setdefault("is_stable", False)
+            prepared.setdefault("freshness_status", "unknown")
+        elif table == "visual_judgments":
+            prepared.setdefault("judge_name", "")
+            prepared.setdefault("judge_version", "")
+            prepared.setdefault("score_json", {})
+            prepared.setdefault("confidence", 0.0)
+        elif table == "visual_rankings":
+            prepared.setdefault("ranker_version", "")
+            prepared.setdefault("score_json", {})
+            prepared.setdefault("confidence", 0.0)
+            prepared.setdefault("decision", "")
+        elif table == "visual_deliveries":
+            prepared.setdefault("attempt_id", "")
+            prepared.setdefault("artifact_id", "")
+            prepared.setdefault("platform", "")
+            prepared.setdefault("destination_id", "")
+            prepared.setdefault("delivery_status", "")
+        elif table == "visual_feedback":
+            prepared.setdefault("feedback_type", "comment")
+
+        for key in list(prepared):
+            if key not in columns_available:
+                del prepared[key]
+
+    def _table_columns(self, conn: sqlite3.Connection, table: str) -> set[str]:
+        return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}

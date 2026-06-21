@@ -62,3 +62,23 @@ def test_deterministic_judge_hard_gate_fails_provider_error():
 
     assert score["hard_gate"]["passed"] is False
     assert score["hard_gate"]["no_provider_error"] is False
+
+
+def test_deterministic_judge_accepts_source_url_as_deliverable():
+    from agent.visual.judges.deterministic import judge_artifact
+
+    score = judge_artifact(
+        {
+            "kind": "video",
+            "mime_type": "video/mp4",
+            "content_hash": "refhash:current",
+            "source_url": "https://vidgen.x.ai/xai-vidgen-bucket/current.mp4",
+            "freshness_status": "fresh",
+            "is_stable": True,
+        },
+        expected_kind="video",
+        requested_parameters={"duration_seconds": 6},
+    )
+
+    assert score["hard_gate"]["passed"] is True
+    assert score["hard_gate"]["delivery_possible"] is True

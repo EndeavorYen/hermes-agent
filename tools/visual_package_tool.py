@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
+import hashlib
 from typing import Any
+from urllib.parse import urlparse
 
 from agent.visual.attempt_ledger import VisualAttemptLedger
 from agent.visual.judges.deterministic import judge_artifact
@@ -275,19 +277,26 @@ def _record_artifact_ref(
     artifact_ref: str,
 ) -> tuple[str, dict[str, Any]]:
     meta = probe_media_reference(artifact_ref)
+    content_hash = meta.sha256
+    is_stable = meta.is_stable
+    freshness_status = meta.freshness_status
+    if _is_remote_url(artifact_ref) and meta.freshness_status == "unknown":
+        content_hash = "refhash:" + hashlib.sha256(artifact_ref.encode("utf-8")).hexdigest()
+        is_stable = True
+        freshness_status = "fresh"
     artifact_id = ledger.record_artifact(
         request_id=request_id,
         attempt_id=attempt_id,
         kind=kind,
         local_path=meta.local_path,
         uri=artifact_ref,
-        content_hash=meta.sha256,
+        content_hash=content_hash,
         mime_type=meta.mime_type,
         bytes=meta.bytes,
         width=meta.width,
         height=meta.height,
-        is_stable=meta.is_stable,
-        freshness_status=meta.freshness_status,
+        is_stable=is_stable,
+        freshness_status=freshness_status,
     )
     return artifact_id, ledger.get_artifact(artifact_id)
 
@@ -341,6 +350,10 @@ def _judge_aspect_ratio(value: str) -> str:
         "portrait": "9:16",
         "square": "1:1",
     }.get(lowered, lowered or "16:9")
+
+
+def _is_remote_url(value: str) -> bool:
+    return urlparse(value).scheme in {"http", "https"}
 
 
 registry.register(

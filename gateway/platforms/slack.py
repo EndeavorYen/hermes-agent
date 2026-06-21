@@ -16,6 +16,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Dict, Optional, Any, Tuple, List
 
 try:
@@ -30,6 +31,10 @@ except ImportError:
     AsyncApp = Any
     AsyncSocketModeHandler = Any
     AsyncWebClient = Any
+    try:
+        import aiohttp  # type: ignore[no-redef]
+    except ImportError:
+        aiohttp = SimpleNamespace(ClientSession=None, ClientTimeout=lambda **_kwargs: None)
 
 import sys
 from pathlib import Path as _Path

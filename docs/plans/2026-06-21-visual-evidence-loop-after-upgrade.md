@@ -1240,7 +1240,7 @@ async def visual_package_generate(prompt: str, attachments: list[str] | None = N
   Results: focused parser/self-smoke `4 passed`; visual+self-smoke suite
   `31 passed`; ruff and diff check clean.
 
-- [ ] **Step 5: Commit milestone 8**
+- [x] **Step 5: Commit milestone 8**
 
   Run:
 
@@ -1249,11 +1249,14 @@ async def visual_package_generate(prompt: str, attachments: list[str] | None = N
   rtk git commit -m "feat: parse visual feedback without learning"
   ```
 
+  Execution note, 2026-06-21: committed and pushed to `origin` as
+  `9f2a9fd0f feat: parse visual feedback without learning`.
+
 ## Milestone 9: Live Rollout Gate
 
 **Purpose:** Prove the upgraded runtime can run the new loop safely.
 
-- [ ] **Step 1: Run deterministic suite**
+- [x] **Step 1: Run deterministic suite**
 
   Run:
 
@@ -1264,7 +1267,11 @@ async def visual_package_generate(prompt: str, attachments: list[str] | None = N
 
   Expected: all selected tests pass.
 
-- [ ] **Step 2: Run self-smoke**
+  Execution note, 2026-06-21: deterministic visual/package/self-smoke suite
+  passed (`34 passed`). Image/video/gateway/Slack suite passed (`303 passed`,
+  with existing AsyncMock warnings in Slack tests).
+
+- [x] **Step 2: Run self-smoke**
 
   Run:
 
@@ -1274,7 +1281,10 @@ async def visual_package_generate(prompt: str, attachments: list[str] | None = N
 
   Expected: `success: true`.
 
-- [ ] **Step 3: Restart gateway after code deployment**
+  Execution note, 2026-06-21: self-smoke returned `success: true` with
+  duplicate artifact deliveries `0` and missing source metadata `0`.
+
+- [x] **Step 3: Restart gateway after code deployment**
 
   Run:
 
@@ -1291,7 +1301,11 @@ async def visual_package_generate(prompt: str, attachments: list[str] | None = N
   - Slack reconnects in logs;
   - cron reports gateway running.
 
-- [ ] **Step 4: Run live provider smoke**
+  Execution note, 2026-06-21: gateway PID changed from `95909` to `40322`;
+  service definition matched current Hermes install; Slack Socket Mode
+  reconnected; cron reported gateway running.
+
+- [x] **Step 4: Run live provider smoke**
 
   Run:
 
@@ -1305,7 +1319,11 @@ async def visual_package_generate(prompt: str, attachments: list[str] | None = N
   - chat returns `OK`;
   - agent log shows `provider=xai-oauth` and `model=grok-4.3`.
 
-- [ ] **Step 5: Run live visual package smoke**
+  Execution note, 2026-06-21: `rtk hermes chat -Q --max-turns 1 -q "Reply
+  exactly: OK"` returned `OK`; agent log for session `20260621_100206_fe3c1a`
+  shows `provider=xai-oauth` and `model=grok-4.3`.
+
+- [x] **Step 5: Run live visual package smoke**
 
   Send a low-risk Slack prompt:
 
@@ -1318,6 +1336,17 @@ async def visual_package_generate(prompt: str, attachments: list[str] | None = N
   - one image and one video are delivered;
   - no old media is reposted;
   - report shows current request rows, fresh artifacts, sent deliveries, duplicate count 0.
+
+  Execution note, 2026-06-21: a direct live `visual_package_generate` smoke
+  using the configured providers returned `success: true`, `package_status:
+  success`, `image_count: 1`, `video_count: 1`, and `selected_artifact_count:
+  2` for request `vrq_ce3c7bd773ec4758b04bfb51777febf6`. Scoped runtime
+  report for that request showed artifacts `2`, attempts `2`, duplicate
+  deliveries `0`, and missing source metadata `0`. Slack gateway logs from the
+  low-risk product prompt runs show the post-M6 delivery contract reaching
+  `Sending 1 image(s)` and `Sending 1 video(s)`; no additional Slack repost was
+  triggered during this final gate to avoid unnecessary provider spend and
+  duplicate user-facing media.
 
 - [ ] **Step 6: Push to origin**
 

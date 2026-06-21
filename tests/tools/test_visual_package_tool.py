@@ -85,3 +85,38 @@ async def test_visual_package_generate_uses_selected_image_for_video(monkeypatch
     )
 
     assert video_calls[0]["image_url"] == str(image)
+
+
+@pytest.mark.asyncio
+async def test_visual_package_generate_selects_successful_remote_video_url(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image = tmp_path / "image.png"
+    image.write_bytes(_ONE_PIXEL_PNG)
+
+    monkeypatch.setattr(
+        visual_package_tool,
+        "generate_image",
+        lambda **kwargs: {"success": True, "image": str(image), "provider": "fixture", "model": "image-fixture"},
+    )
+    monkeypatch.setattr(
+        visual_package_tool,
+        "generate_video",
+        lambda **kwargs: {
+            "success": True,
+            "video": "https://vidgen.x.ai/xai-vidgen-bucket/current.mp4",
+            "provider": "fixture",
+            "model": "video-fixture",
+        },
+    )
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {"prompt": "請產出一張圖片和一段影片：霧黑鋼筆。"}
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["videos"] == ["https://vidgen.x.ai/xai-vidgen-bucket/current.mp4"]
+    assert len(payload["delivery_metadata"]["selected_visual_artifact_ids"]) == 2

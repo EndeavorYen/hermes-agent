@@ -33,7 +33,12 @@ def _hard_gate(artifact: dict[str, Any], *, expected_kind: str) -> dict[str, boo
     mime_valid = _mime_matches_kind(artifact.get("mime_type"), expected_kind)
     kind_match = artifact.get("kind") == expected_kind
     no_provider_error = not artifact.get("error_type") and artifact.get("status") != "failed"
-    delivery_possible = bool(artifact.get("local_path") or artifact.get("uri") or artifact.get("source"))
+    delivery_possible = bool(
+        artifact.get("local_path")
+        or artifact.get("uri")
+        or artifact.get("source_url")
+        or artifact.get("source")
+    )
     passed = all(
         [
             exists,
