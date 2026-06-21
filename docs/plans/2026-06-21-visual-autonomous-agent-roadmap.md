@@ -178,11 +178,14 @@ Hermes should infer whether the request needs image, video, or a package. Advanc
 
 ## Immediate Next Step
 
-Implement Phase 3 Milestone 1:
+Implement Phase 4-6 foundational milestones:
 
 ```text
-Add a promotion gate that evaluates shadow updates and returns a promotion
-decision without changing runtime behavior.
+Add privacy-safe quality judges, natural-language visual agent planning, and
+continuous regression reporting while keeping prompt mutation disabled by
+default.
 ```
 
-This is the correct next step because Phase 2 already records shadow updates, but there is no formal policy for deciding when a shadow update is eligible to influence production behavior.
+This is the correct next step because Phase 3 already provides the controlled
+strategy read path and activation safety gate. The remaining gap is automatic
+quality evidence, user-friendly routing, and regression control.
