@@ -36,6 +36,56 @@ Phase 1 is complete enough to support Phase 2:
 
 Phase 2 must build on these contracts instead of replacing them.
 
+## Execution Status: 2026-06-21
+
+Milestones 1-11 have been implemented, self-reviewed, verified, committed, and
+pushed to `origin/upgrade/hermes-v2026.6.19-local`.
+
+Completed commits:
+
+- `33344e61b feat: add visual intent buckets`
+- `08603ece3 feat: track visual provider reliability`
+- `b9924f507 feat: summarize visual preferences from feedback`
+- `2f32491bb feat: add visual strategy policy`
+- `a1a6c488c feat: score visual candidates with rewards`
+- `da43a4977 feat: gate visual autonomy decisions`
+- `e4835e720 feat: rank visual package candidate sets`
+- `0e7cbf710 feat: record visual shadow learning`
+- `6ddd82737 feat: add visual phase2 self check`
+- `2850a5f94 feat: run visual learning in shadow mode`
+- `9834226b6 fix: expose visual evidence report cli`
+
+Final verified state:
+
+- Unit/integration gate: `64 passed`.
+- `scripts/visual_evidence_self_smoke.py --json`: `success: true`.
+- `scripts/visual_phase2_self_check.py --fixture --json`: `success: true`.
+- Live Hermes gateway restarted and reconnected to Slack Socket Mode.
+- Live chat smoke returned `OK` using `xai-oauth / grok-4.3`.
+- Live direct visual package smoke succeeded without Slack posting:
+  request `vrq_beec5e43520249748b7d41b006887ab7`,
+  image count `1`, video count `1`, selected artifact count `2`,
+  learning mode `shadow`.
+- Request-scoped live proof:
+  `visual_evidence_report.py --request-id vrq_beec5e43520249748b7d41b006887ab7 --json`
+  returned `success: true`, duplicate delivery count `0`, missing source
+  metadata count `0`.
+- Request-scoped Phase 2 self-check returned `success: true`.
+- Request-scoped shadow learning report returned `success: true` with
+  `active_count: 0` and two shadow-only observations.
+
+Self-review corrections made during execution:
+
+- Fixed the Phase 2 validation bootstrap instructions so the Phase 2 self-check
+  CLI is only mandatory after Milestone 9 creates it.
+- Added request-scoped provider reliability to avoid historical rows polluting
+  scoped reports.
+- Added deterministic provider reliability tie-breaking.
+- Added package-level self-validation so real `visual_package_generate` traces
+  must pass the Phase 2 self-check.
+- Fixed `scripts/visual_evidence_report.py` so CLI use with `--json` produces
+  real report output instead of a silent exit.
+
 ## Phase 2 Non-Goals
 
 - Do not restore old Visual Agent Mode code wholesale.
