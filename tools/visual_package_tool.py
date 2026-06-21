@@ -10,6 +10,7 @@ from agent.visual.active_learning import decide_visual_action
 from agent.visual.artifact_observation import build_artifact_observation
 from agent.visual.aspect_policy import select_video_aspect_ratio
 from agent.visual.attempt_ledger import VisualAttemptLedger
+from agent.visual.autonomous_orchestration import build_post_generation_orchestration
 from agent.visual.autonomous_validation import validate_visual_generation_payload
 from agent.visual.intent_signature import build_intent_signature
 from agent.visual.judges.deterministic import judge_artifact
@@ -434,10 +435,18 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         "generation_payloads": generation_payloads,
         "learning": learning,
     }
-    payload["autonomous_validation"] = validate_visual_generation_payload(
+    autonomous_validation = validate_visual_generation_payload(
         payload,
         db_path=default_visual_ledger_path(),
         require_video=wants_video,
+    )
+    payload["autonomous_validation"] = autonomous_validation
+    payload["autonomous_orchestration"] = build_post_generation_orchestration(
+        payload,
+        db_path=default_visual_ledger_path(),
+        require_video=wants_video,
+        autonomy_level=_coerce_int(args.get("autonomy_level")) or 2,
+        validation=autonomous_validation,
     )
     return payload
 
@@ -493,6 +502,10 @@ def _record_payload_candidate(
         "kind": expected_kind,
         "provider": provider,
         "model": model,
+        "content_hash": artifact.get("content_hash"),
+        "width": artifact.get("width"),
+        "height": artifact.get("height"),
+        "duration_seconds": artifact.get("duration_seconds"),
         "hard_gate": score["hard_gate"],
         "scores": score["scores"],
     }
@@ -516,7 +529,10 @@ def _retry_generation_payload(
     recovery = payload["recovery"]
     if recovery.get("decision") != "retry":
         return None
-    retry_kwargs = {**base_kwargs, **_generator_kwargs(recovery.get("modified_arguments"))}
+    retry_kwargs = {**base_kwargs}
+    for key in recovery.get("removed_arguments") or []:
+        retry_kwargs.pop(str(key), None)
+    retry_kwargs.update(_generator_kwargs(recovery.get("modified_arguments")))
     retry_payload = generator(**retry_kwargs)
     retry_payload["retry_of"] = retry_of
     retry_payload["recovery"] = recovery
@@ -554,7 +570,7 @@ def _generator_kwargs(value: Any) -> dict[str, Any]:
     return {
         key: item
         for key, item in value.items()
-        if key in {"prompt", "aspect_ratio", "duration", "candidate_budget"}
+        if key in {"prompt", "aspect_ratio", "duration", "candidate_budget", "reference_image_urls", "image_url"}
     }
 
 
@@ -580,12 +596,17 @@ def _score_candidates(
         return
     provider_stats = compute_provider_reliability(ledger, request_id=request_id)
     preference_profile = build_preference_profile(ledger, bucket=intent_signature)
+    recent_hashes: set[str] = set()
     for candidate in candidates:
         quality = judge_visual_quality(
             candidate,
             request_context={"has_reference_image": has_reference_image},
+            recent_artifact_hashes=recent_hashes,
             vision_observation=build_artifact_observation(candidate),
         )
+        content_hash = candidate.get("content_hash")
+        if isinstance(content_hash, str) and content_hash:
+            recent_hashes.add(content_hash)
         candidate["judge_scores"] = quality["scores"]
         ledger.record_judgment(
             request_id=request_id,

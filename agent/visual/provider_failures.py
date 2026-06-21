@@ -10,12 +10,19 @@ def classify_visual_provider_failure(payload: dict[str, Any] | Exception) -> dic
 
     if _is_timeout(payload, text):
         return _result("timeout", retryable=True, safe_reframe_allowed=False, provider_message_code=code)
-    if _contains(text, "content_moderation", "moderation", "safety", "policy rejected", "blocked"):
+    if _contains(text, "content_moderation", "moderation", "safety", "policy rejected", "blocked", "policy_violation"):
         return _result("content_moderation", retryable=True, safe_reframe_allowed=True, provider_message_code=code)
     if _contains(text, "empty_response", "empty response", "no output", "blank response"):
         return _result("empty_response", retryable=True, safe_reframe_allowed=False, provider_message_code=code)
-    if _contains(text, "reference_images not supported", "reference image not supported", "unsupported reference"):
-        return _result("unsupported_reference", retryable=False, safe_reframe_allowed=False, provider_message_code=code)
+    if _contains(
+        text,
+        "reference_images not supported",
+        "reference image not supported",
+        "unsupported reference",
+        "does not support reference_images",
+        "reference_images conditioning",
+    ):
+        return _result("unsupported_reference", retryable=True, safe_reframe_allowed=False, provider_message_code=code)
     if _contains(text, "aspect ratio", "invalid aspect", "unsupported aspect"):
         return _result("unsupported_aspect_ratio", retryable=True, safe_reframe_allowed=False, provider_message_code=code)
     if status_code == 429 or _contains(text, "rate limit", "rate_limited", "too many requests"):
@@ -64,7 +71,7 @@ def _failure_text(payload: dict[str, Any] | Exception) -> str:
         payload.get("message"),
         payload.get("reason"),
     ]
-    return " ".join(str(part) for part in parts if part).lower()
+    return " ".join(_flatten_text(part) for part in parts if part).lower()
 
 
 def _message_code(payload: dict[str, Any] | Exception, text: str) -> str:
@@ -73,6 +80,9 @@ def _message_code(payload: dict[str, Any] | Exception, text: str) -> str:
             value = payload.get(key)
             if value not in (None, ""):
                 return str(value)
+        nested_code = _nested_code(payload.get("error"))
+        if nested_code:
+            return nested_code
     if "content_moderation" in text:
         return "content_moderation"
     return "unknown"
@@ -93,3 +103,19 @@ def _is_timeout(payload: dict[str, Any] | Exception, text: str) -> bool:
 
 def _contains(text: str, *needles: str) -> bool:
     return any(needle in text for needle in needles)
+
+
+def _flatten_text(value: Any) -> str:
+    if isinstance(value, dict):
+        return " ".join(_flatten_text(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return " ".join(_flatten_text(item) for item in value)
+    return str(value)
+
+
+def _nested_code(value: Any) -> str | None:
+    if isinstance(value, dict):
+        code = value.get("code") or value.get("error_code") or value.get("type")
+        if code not in (None, ""):
+            return str(code)
+    return None

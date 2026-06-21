@@ -59,6 +59,23 @@ def plan_visual_recovery(
         arguments["prompt"] = _simplify_prompt(arguments.get("prompt") or request.get("prompt"))
         return _decision("retry", "empty_response_simplify_prompt", arguments, failure_class, retry_budget_remaining)
 
+    if failure_class == "unsupported_reference":
+        arguments = {
+            key: value
+            for key, value in arguments.items()
+            if key not in {"reference_image_urls", "image_url"}
+        }
+        arguments["prompt"] = _text_only_reference_fallback_prompt(arguments.get("prompt") or request.get("prompt"))
+        decision = _decision(
+            "retry",
+            "unsupported_reference_text_only_fallback",
+            arguments,
+            failure_class,
+            retry_budget_remaining,
+        )
+        decision["removed_arguments"] = ["reference_image_urls", "image_url"]
+        return decision
+
     if failure_class in {"rate_limited", "provider_unavailable"}:
         return _decision("retry", f"{failure_class}_retry_later", arguments, failure_class, retry_budget_remaining)
 
@@ -99,6 +116,13 @@ def _simplify_prompt(value: Any) -> str:
     if not prompt:
         return "Create the requested visual with a simple clean composition."
     return f"Create a clean, simple version of this visual request: {prompt}"
+
+
+def _text_only_reference_fallback_prompt(value: Any) -> str:
+    prompt = str(value or "").strip()
+    if not prompt:
+        return "Create a text-only visual approximation without reference-image conditioning."
+    return f"Create a text-only visual approximation without reference-image conditioning: {prompt}"
 
 
 def _nearest_supported_aspect(request: dict[str, Any]) -> str | None:

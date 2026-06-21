@@ -2479,6 +2479,14 @@ class SlackAdapter(BasePlatformAdapter):
                 # further changes.
                 thread_ts = None
 
+        self._record_visual_feedback_from_slack(
+            event=event,
+            text=text,
+            channel_id=channel_id,
+            thread_ts=thread_ts or event.get("thread_ts") or ts,
+            message_id=ts,
+        )
+
         # In channels, respond if:
         #   0. Channel is in free_response_channels, OR require_mention is
         #      disabled — always process regardless of mention.
@@ -2859,6 +2867,39 @@ class SlackAdapter(BasePlatformAdapter):
             self._reacting_message_ids.add(ts)
 
         await self.handle_message(msg_event)
+
+    def _record_visual_feedback_from_slack(
+        self,
+        *,
+        event: dict,
+        text: str,
+        channel_id: str,
+        thread_ts: str | None,
+        message_id: str,
+    ) -> None:
+        try:
+            from agent.visual.attempt_ledger import VisualAttemptLedger
+            from agent.visual.slack_feedback_ingestion import ingest_slack_visual_feedback
+            from agent.visual.tracking import default_visual_ledger_path
+
+            ledger = VisualAttemptLedger(default_visual_ledger_path())
+            ledger.initialize()
+            feedback_event = {
+                **event,
+                "text": text,
+                "channel": channel_id,
+                "thread_ts": thread_ts,
+                "ts": message_id,
+            }
+            result = ingest_slack_visual_feedback(ledger, feedback_event)
+            if result.get("success") is True:
+                logger.info(
+                    "[Slack] Recorded visual feedback for %s (%d row(s))",
+                    result.get("request_id"),
+                    result.get("recorded_feedback_count"),
+                )
+        except Exception:
+            logger.debug("[Slack] Visual feedback ingestion skipped", exc_info=True)
 
     # ----- Approval button support (Block Kit) -----
 

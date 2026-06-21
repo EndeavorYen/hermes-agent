@@ -58,6 +58,8 @@ async def test_visual_package_generate_returns_selected_image_and_video(monkeypa
     assert payload["delivery_metadata"]["selected_visual_artifact_ids"]
     assert payload["autonomous_validation"]["decision"] == "accept"
     assert payload["autonomous_validation"]["evidence"]["learning_trace_count"] >= 2
+    assert payload["autonomous_orchestration"]["runtime_hook"] == "post_generation"
+    assert payload["autonomous_orchestration"]["next_action"] == "accept_and_monitor"
 
 
 @pytest.mark.asyncio
@@ -357,6 +359,42 @@ async def test_visual_package_records_quality_judgment_for_candidates(monkeypatc
     assert "judge_sources" in quality_judgments[0]["metadata"]
     assert quality_judgments[0]["metadata"]["judge_sources"]["composition"] == "vision"
     assert rankings[0]["scores"]["reward"]["dimensions"]["aesthetic_fit"] != 0.5
+
+
+@pytest.mark.asyncio
+async def test_visual_package_quality_judge_flags_duplicate_candidate_hash(monkeypatch, tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image = tmp_path / "same-image.png"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    monkeypatch.setattr(
+        visual_package_tool,
+        "generate_image",
+        lambda **kwargs: {
+            "success": True,
+            "image": str(image),
+            "provider": "fixture",
+            "model": "image",
+        },
+    )
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {"prompt": "請產出兩張圖片：霧黑鋼筆。", "include_video": False, "candidate_budget": 2}
+        )
+    )
+
+    assert payload["success"] is True
+    judgments = VisualAttemptLedger(default_visual_ledger_path())._list("visual_judgments")
+    duplicate_judgments = [
+        row
+        for row in judgments
+        if "duplicate_content_hash" in row["details"].get("uncertainty_reasons", [])
+    ]
+    assert duplicate_judgments
 
 
 @pytest.mark.asyncio

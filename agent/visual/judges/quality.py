@@ -62,6 +62,7 @@ def judge_visual_quality(
             _motion_quality(candidate, deterministic_scores),
             judge_sources,
         )
+        _surface_artifact_defects(vision, uncertainty_reasons)
     else:
         aesthetic_fit = _aesthetic_fit(deterministic_scores)
         composition = _composition(deterministic_scores)
@@ -180,6 +181,16 @@ def _defect_penalty(
             uncertainty_reasons.append(f"vision_defect_{defect_text}")
             penalty += 0.2
     return min(0.5, penalty)
+
+
+def _surface_artifact_defects(vision: dict[str, Any], uncertainty_reasons: list[str]) -> None:
+    defects = vision.get("artifact_defects")
+    if not isinstance(defects, list):
+        return
+    for defect in defects:
+        defect_text = str(defect)
+        if defect_text.startswith("weak_"):
+            uncertainty_reasons.append(f"vision_defect_{defect_text}")
 
 
 def _has_vision_dimension(vision: dict[str, Any], key: str) -> bool:

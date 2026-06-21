@@ -135,3 +135,27 @@ def test_quality_judge_penalizes_vision_defects_for_portrait_categories():
 
     assert result["scores"]["aesthetic_fit"] < 0.95
     assert "vision_defect_blurred_face" in result["uncertainty_reasons"]
+
+
+def test_quality_judge_surfaces_video_artifact_defects_from_observation():
+    from agent.visual.judges.quality import judge_visual_quality
+
+    result = judge_visual_quality(
+        {
+            "artifact_id": "var_video",
+            "kind": "video",
+            "hard_gate": {"passed": True, "delivery_possible": True},
+            "scores": {"resolution": 0.8, "aspect_match": 0.8, "duration": 0.8, "final_score": 0.8},
+        },
+        vision_observation={
+            "aspect_integrity": 0.25,
+            "motion_quality": 0.3,
+            "confidence": 0.8,
+            "artifact_defects": ["weak_aspect_integrity", "weak_motion_or_duration_evidence"],
+        },
+    )
+
+    assert result["scores"]["aspect_integrity"] == 0.25
+    assert result["scores"]["motion_quality"] == 0.3
+    assert "vision_defect_weak_aspect_integrity" in result["uncertainty_reasons"]
+    assert "vision_defect_weak_motion_or_duration_evidence" in result["uncertainty_reasons"]

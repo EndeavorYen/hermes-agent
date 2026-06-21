@@ -259,6 +259,73 @@ class TestAppMentionHandler:
             ), f"Slack slash regex does not match {expected}"
 
 
+class TestSlackVisualFeedbackIngestion:
+    @pytest.mark.asyncio
+    async def test_thread_feedback_records_visual_feedback_without_waking_agent(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        from agent.visual.attempt_ledger import VisualAttemptLedger
+        from agent.visual.tracking import default_visual_ledger_path
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        ledger = VisualAttemptLedger(default_visual_ledger_path())
+        ledger.initialize()
+        request_id = ledger.record_request(
+            user_prompt="visual batch",
+            normalized_intent={"kind": "visual_package"},
+            modality="package",
+            operation="visual_package_generate",
+            platform="slack",
+            channel_id="C_CHAN",
+            thread_id="1700000000.000100",
+            message_id="1700000000.000100",
+            status="completed",
+        )
+        artifact_ids = []
+        for index in range(2):
+            attempt_id = ledger.record_attempt(
+                request_id=request_id,
+                candidate_index=index,
+                provider="xai",
+                model="image",
+                prompt_original="prompt",
+                prompt_mediated="prompt",
+                parameters_requested={},
+                parameters_effective={},
+                status="completed",
+            )
+            artifact_ids.append(
+                ledger.record_artifact(
+                    request_id=request_id,
+                    attempt_id=attempt_id,
+                    kind="image",
+                    local_path=str(tmp_path / f"image-{index}.jpg"),
+                    uri=str(tmp_path / f"image-{index}.jpg"),
+                    content_hash=f"sha256:{index}",
+                    mime_type="image/jpeg",
+                    is_stable=True,
+                    freshness_status="fresh",
+                )
+            )
+
+        await adapter._handle_slack_message(
+            {
+                "channel": "C_CHAN",
+                "channel_type": "channel",
+                "user": "U_USER",
+                "text": "G2 臉有點怪，但腿不錯",
+                "thread_ts": "1700000000.000100",
+                "ts": "1700000000.000200",
+            }
+        )
+
+        rows = ledger._list("visual_feedback")
+        assert len(rows) == 1
+        assert rows[0]["artifact_id"] == artifact_ids[1]
+        assert rows[0]["metadata"]["source"] == "slack_feedback_ingestion"
+        adapter.handle_message.assert_not_awaited()
+
+
 class TestSlackConnectCleanup:
     """Regression coverage for failed connect() cleanup."""
 

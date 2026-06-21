@@ -82,3 +82,26 @@ def test_plan_visual_recovery_fails_when_retry_budget_exhausted():
 
     assert result["decision"] == "fail"
     assert result["reason"] == "retry_budget_exhausted"
+
+
+def test_plan_visual_recovery_downgrades_unsupported_reference_to_text_only():
+    from agent.visual.recovery import plan_visual_recovery
+
+    result = plan_visual_recovery(
+        {
+            "prompt": "same character, new scene",
+            "arguments": {
+                "prompt": "same character, new scene",
+                "reference_image_urls": ["/tmp/ref.png"],
+                "image_url": "/tmp/ref.png",
+            },
+        },
+        {"failure_class": "unsupported_reference", "retryable": True},
+        retry_budget_remaining=1,
+    )
+
+    assert result["decision"] == "retry"
+    assert result["reason"] == "unsupported_reference_text_only_fallback"
+    assert "reference_image_urls" not in result["modified_arguments"]
+    assert "image_url" not in result["modified_arguments"]
+    assert "without reference-image conditioning" in result["modified_arguments"]["prompt"]
