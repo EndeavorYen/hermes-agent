@@ -50,6 +50,34 @@ Modify:
 - `tools/visual_package_tool.py`
   - Later Phase 3 milestone only: read controlled strategies but keep prompt mutation disabled unless activation says it is allowed.
 
+## Execution Status: 2026-06-21
+
+Completed and committed:
+
+- `5771e186f feat: gate visual strategy promotion`
+  - Added pure promotion gate with conservative defaults.
+  - Proves under-sampled evidence stays `shadow_only`.
+  - Proves missing operator approval returns `blocked`.
+  - Proves fully qualified evidence returns `promote_controlled`.
+- `c0e9c5152 feat: record visual strategy activations`
+  - Added `visual_strategy_activations` ledger table.
+  - Added activation IDs and strategy activation helper.
+  - Proves rollback records a new row and does not delete source evidence.
+- `e9609c927 feat: report visual strategy activations`
+  - Added privacy-safe activation report.
+  - Added self-validation failure for unsafe controlled activations.
+  - Proves Phase 2 fixture self-check still passes with no active controlled strategies.
+
+Current activation state:
+
+- Controlled strategy read path is not yet wired into `visual_package_generate`.
+- Prompt mutation remains disabled by default.
+- No active/controlled strategy exists in the live activation report unless a later milestone explicitly records one.
+
+Next milestone:
+
+- Milestone 4: Controlled Strategy Read Path.
+
 ## Milestone 1: Promotion Gate
 
 **Purpose:** Decide whether a shadow update is eligible for controlled activation without mutating runtime behavior.
