@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
+from urllib.parse import urlparse
 
 from hermes_constants import get_hermes_home
 
@@ -15,6 +17,124 @@ logger = logging.getLogger(__name__)
 
 def default_visual_ledger_path() -> Path:
     return get_hermes_home() / "visual" / "attempt_ledger.sqlite3"
+
+
+def visual_delivery_metadata(
+    *,
+    request_id: str,
+    attempt_id: str | None,
+    artifact_ids: list[str],
+    artifact_paths: list[str],
+    thread_id: str | None = None,
+) -> dict[str, Any]:
+    artifacts: dict[str, dict[str, str | None]] = {}
+    for artifact_id, artifact_path in zip(artifact_ids, artifact_paths, strict=False):
+        if not artifact_id or not artifact_path:
+            continue
+        entry = {
+            "request_id": request_id,
+            "attempt_id": attempt_id,
+            "artifact_id": artifact_id,
+        }
+        for key in _artifact_lookup_keys(artifact_path):
+            artifacts[key] = entry
+
+    return {
+        "visual_request_id": request_id,
+        "visual_attempt_id": attempt_id,
+        "visual_thread_id": thread_id,
+        "visual_artifacts": artifacts,
+    }
+
+
+def visual_delivery_context(
+    metadata: dict[str, Any] | None,
+    artifact_ref: str,
+    *,
+    platform: str,
+    destination_id: str,
+    thread_id: str | None = None,
+) -> dict[str, Any] | None:
+    if not metadata:
+        return None
+
+    artifacts = metadata.get("visual_artifacts")
+    if not isinstance(artifacts, dict):
+        return None
+
+    artifact_entry = None
+    for key in _artifact_lookup_keys(artifact_ref):
+        artifact_entry = artifacts.get(key)
+        if isinstance(artifact_entry, dict):
+            break
+    if not isinstance(artifact_entry, dict):
+        return None
+
+    request_id = artifact_entry.get("request_id") or metadata.get("visual_request_id")
+    artifact_id = artifact_entry.get("artifact_id")
+    if not request_id or not artifact_id:
+        return None
+
+    ledger = VisualAttemptLedger(default_visual_ledger_path())
+    artifact = ledger.get_artifact(str(artifact_id))
+    effective_thread_id = thread_id or metadata.get("visual_thread_id")
+    destination = _delivery_destination(platform, destination_id, effective_thread_id)
+
+    return {
+        "ledger": ledger,
+        "request_id": str(request_id),
+        "attempt_id": artifact_entry.get("attempt_id") or metadata.get("visual_attempt_id"),
+        "artifact_id": str(artifact_id),
+        "content_hash": artifact.get("content_hash"),
+        "platform": platform,
+        "destination": destination,
+        "destination_id": destination_id,
+        "thread_id": effective_thread_id,
+    }
+
+
+def record_visual_delivery_status(
+    context: dict[str, Any] | None,
+    delivery_status: str,
+    *,
+    message_id: str | None = None,
+    error_type: str | None = None,
+    error_message: str | None = None,
+) -> None:
+    if not context:
+        return
+    ledger = context["ledger"]
+    ledger.record_delivery(
+        request_id=context["request_id"],
+        attempt_id=context.get("attempt_id"),
+        artifact_id=context["artifact_id"],
+        platform=context["platform"],
+        destination=context["destination"],
+        destination_id=context["destination_id"],
+        thread_id=context.get("thread_id"),
+        message_id=message_id,
+        delivery_status=delivery_status,
+        error_type=error_type,
+        error_message=error_message,
+    )
+
+
+def _artifact_lookup_keys(artifact_ref: str) -> list[str]:
+    keys = [artifact_ref]
+    parsed = urlparse(artifact_ref)
+    if parsed.scheme == "file":
+        local_path = unquote(parsed.path)
+        keys.append(local_path)
+        keys.append(str(Path(local_path)))
+    elif parsed.scheme == "":
+        path = str(Path(artifact_ref))
+        keys.append(path)
+        keys.append(Path(path).as_uri() if Path(path).is_absolute() else artifact_ref)
+    return list(dict.fromkeys(keys))
+
+
+def _delivery_destination(platform: str, destination_id: str, thread_id: str | None) -> str:
+    return f"{platform}:{destination_id}:{thread_id or ''}"
 
 
 def record_visual_generation_attempt(

@@ -157,6 +157,7 @@ class VisualAttemptLedger:
                     artifact_id TEXT,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     platform TEXT,
+                    destination TEXT,
                     destination_id TEXT,
                     thread_id TEXT,
                     message_id TEXT,
@@ -183,6 +184,7 @@ class VisualAttemptLedger:
                 );
                 """
             )
+            self._ensure_column(conn, "visual_deliveries", "destination", "TEXT")
 
     def record_request(self, **kwargs: Any) -> str:
         return self._insert("visual_requests", "id", kwargs, new_request_id)
@@ -226,10 +228,26 @@ class VisualAttemptLedger:
     def get_feedback(self, record_id: str) -> dict[str, Any]:
         return self._get("visual_feedback", record_id)
 
+    def list_deliveries(self, *, request_id: str | None = None) -> list[dict[str, Any]]:
+        if request_id is None:
+            return self._list("visual_deliveries")
+        return self._list("visual_deliveries", where="request_id = ?", params=(request_id,))
+
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
+
+    def _ensure_column(
+        self,
+        conn: sqlite3.Connection,
+        table: str,
+        column: str,
+        definition: str,
+    ) -> None:
+        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def _insert(
         self,
@@ -255,3 +273,21 @@ class VisualAttemptLedger:
         if row is None:
             raise KeyError(record_id)
         return {key: _decode(key, row[key]) for key in row.keys()}
+
+    def _list(
+        self,
+        table: str,
+        *,
+        where: str | None = None,
+        params: tuple[Any, ...] = (),
+    ) -> list[dict[str, Any]]:
+        sql = f"SELECT * FROM {table}"
+        if where:
+            sql += f" WHERE {where}"
+        sql += " ORDER BY created_at, rowid"
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [
+            {key: _decode(key, row[key]) for key in row.keys()}
+            for row in rows
+        ]

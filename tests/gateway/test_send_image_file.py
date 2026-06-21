@@ -14,7 +14,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import PlatformConfig
+from gateway.config import Platform
 from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.base import SendResult
 
 
 def _run(coro):
@@ -92,6 +94,173 @@ class TestExtractMediaImages:
         assert BasePlatformAdapter.generated_image_only_paths(content) == {
             "/tmp/new-grok-image.jpg"
         }
+
+
+class _VisualDeliveryStubAdapter(BasePlatformAdapter):
+    def __init__(self, config):
+        super().__init__(config, Platform.SLACK)
+        self.image_file_sends = []
+        self.fail_next_image_file = False
+
+    async def connect(self) -> bool:
+        return True
+
+    async def disconnect(self) -> None:
+        return None
+
+    async def send(self, chat_id, content, **kwargs):
+        return SendResult(success=True, message_id="msg_text")
+
+    async def send_message(self, chat_id, content, **kwargs):
+        return SendResult(success=True, message_id="msg_text")
+
+    async def send_image_file(self, chat_id, image_path, caption=None, **kwargs):
+        self.image_file_sends.append(image_path)
+        if self.fail_next_image_file:
+            self.fail_next_image_file = False
+            return SendResult(success=False, error="upload failed")
+        return SendResult(success=True, message_id="msg_image")
+
+    async def get_chat_info(self, chat_id):
+        return {"id": chat_id}
+
+
+@pytest.mark.asyncio
+async def test_generated_artifact_delivery_records_sent_status(tmp_path, monkeypatch):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import visual_delivery_metadata
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ledger = VisualAttemptLedger(tmp_path / "visual" / "attempt_ledger.sqlite3")
+    ledger.initialize()
+    request_id = ledger.record_request(
+        platform="slack",
+        channel_id="C123",
+        thread_id="T123",
+        normalized_intent={"kind": "image"},
+        modality="image",
+        operation="text_to_image",
+    )
+    attempt_id = ledger.record_attempt(request_id=request_id, provider="xai")
+    image_path = tmp_path / "candidate.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+    artifact_id = ledger.record_artifact(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        kind="image",
+        uri=str(image_path),
+        local_path=str(image_path),
+        content_hash="sha256:current",
+        mime_type="image/png",
+    )
+
+    adapter = _VisualDeliveryStubAdapter(PlatformConfig(enabled=True, token="redacted"))
+    metadata = visual_delivery_metadata(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        artifact_ids=[artifact_id],
+        artifact_paths=[str(image_path)],
+        thread_id="T123",
+    )
+
+    await adapter.send_multiple_images("C123", [(str(image_path), "caption")], metadata=metadata)
+
+    deliveries = ledger.list_deliveries(request_id=request_id)
+    assert len(deliveries) == 1
+    assert deliveries[0]["artifact_id"] == artifact_id
+    assert deliveries[0]["delivery_status"] == "sent"
+    assert deliveries[0]["destination"] == "slack:C123:T123"
+
+
+@pytest.mark.asyncio
+async def test_generated_artifact_delivery_skips_duplicate_for_same_request_destination(tmp_path, monkeypatch):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import visual_delivery_metadata
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ledger = VisualAttemptLedger(tmp_path / "visual" / "attempt_ledger.sqlite3")
+    ledger.initialize()
+    request_id = ledger.record_request(
+        platform="slack",
+        channel_id="C123",
+        thread_id="T123",
+        normalized_intent={"kind": "image"},
+        modality="image",
+        operation="text_to_image",
+    )
+    attempt_id = ledger.record_attempt(request_id=request_id, provider="xai")
+    image_path = tmp_path / "candidate.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+    artifact_id = ledger.record_artifact(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        kind="image",
+        uri=image_path.as_uri(),
+        local_path=str(image_path),
+        content_hash="sha256:duplicate-test",
+        mime_type="image/png",
+    )
+    metadata = visual_delivery_metadata(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        artifact_ids=[artifact_id],
+        artifact_paths=[str(image_path)],
+        thread_id="T123",
+    )
+    adapter = _VisualDeliveryStubAdapter(PlatformConfig(enabled=True, token="redacted"))
+
+    await adapter.send_multiple_images("C123", [(image_path.as_uri(), "caption")], metadata=metadata)
+    await adapter.send_multiple_images("C123", [(image_path.as_uri(), "caption")], metadata=metadata)
+
+    deliveries = ledger.list_deliveries(request_id=request_id)
+    assert adapter.image_file_sends == [str(image_path)]
+    assert [delivery["delivery_status"] for delivery in deliveries] == ["sent", "skipped_duplicate"]
+
+
+@pytest.mark.asyncio
+async def test_failed_generated_artifact_delivery_does_not_poison_dedupe(tmp_path, monkeypatch):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import visual_delivery_metadata
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ledger = VisualAttemptLedger(tmp_path / "visual" / "attempt_ledger.sqlite3")
+    ledger.initialize()
+    request_id = ledger.record_request(
+        platform="slack",
+        channel_id="C123",
+        thread_id="T123",
+        normalized_intent={"kind": "image"},
+        modality="image",
+        operation="text_to_image",
+    )
+    attempt_id = ledger.record_attempt(request_id=request_id, provider="xai")
+    image_path = tmp_path / "candidate.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+    artifact_id = ledger.record_artifact(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        kind="image",
+        uri=image_path.as_uri(),
+        local_path=str(image_path),
+        content_hash="sha256:failed-then-success",
+        mime_type="image/png",
+    )
+    metadata = visual_delivery_metadata(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        artifact_ids=[artifact_id],
+        artifact_paths=[str(image_path)],
+        thread_id="T123",
+    )
+    adapter = _VisualDeliveryStubAdapter(PlatformConfig(enabled=True, token="redacted"))
+
+    adapter.fail_next_image_file = True
+    await adapter.send_multiple_images("C123", [(image_path.as_uri(), "caption")], metadata=metadata)
+    await adapter.send_multiple_images("C123", [(image_path.as_uri(), "caption")], metadata=metadata)
+
+    deliveries = ledger.list_deliveries(request_id=request_id)
+    assert adapter.image_file_sends == [str(image_path), str(image_path)]
+    assert [delivery["delivery_status"] for delivery in deliveries] == ["failed", "sent"]
 
 
 # ---------------------------------------------------------------------------

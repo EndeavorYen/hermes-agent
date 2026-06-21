@@ -2629,7 +2629,40 @@ class BasePlatformAdapter(ABC):
         for image_url, alt_text in images:
             if human_delay > 0:
                 await asyncio.sleep(human_delay)
+            visual_context = None
+            visual_deduper = None
+            record_delivery_status = None
             try:
+                try:
+                    from agent.visual.delivery_dedupe import get_artifact_delivery_deduper
+                    from agent.visual.tracking import record_visual_delivery_status
+                    from agent.visual.tracking import visual_delivery_context
+
+                    record_delivery_status = record_visual_delivery_status
+                    visual_context = visual_delivery_context(
+                        metadata,
+                        image_url,
+                        platform=self.platform.value,
+                        destination_id=str(chat_id),
+                        thread_id=(metadata or {}).get("thread_id") or (metadata or {}).get("visual_thread_id"),
+                    )
+                    if visual_context and visual_context.get("content_hash"):
+                        visual_deduper = get_artifact_delivery_deduper()
+                        if visual_deduper.is_duplicate(
+                            visual_context["content_hash"],
+                            visual_context["destination"],
+                            visual_context["request_id"],
+                        ):
+                            record_delivery_status(visual_context, "skipped_duplicate")
+                            logger.info(
+                                "[%s] Skipping duplicate generated image delivery: %s",
+                                self.name,
+                                safe_url_for_log(image_url),
+                            )
+                            continue
+                except Exception as visual_err:
+                    logger.debug("[%s] Visual delivery attribution skipped: %s", self.name, visual_err)
+
                 logger.info(
                     "[%s] Sending image: %s (alt=%s)",
                     self.name,
@@ -2659,8 +2692,31 @@ class BasePlatformAdapter(ABC):
                     )
                 if not img_result.success:
                     logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
+                if visual_context and record_delivery_status:
+                    if img_result.success and visual_deduper and visual_context.get("content_hash"):
+                        visual_deduper.mark(
+                            visual_context["content_hash"],
+                            visual_context["destination"],
+                            visual_context["request_id"],
+                        )
+                    record_delivery_status(
+                        visual_context,
+                        "sent" if img_result.success else "failed",
+                        message_id=img_result.message_id,
+                        error_message=img_result.error,
+                    )
             except Exception as img_err:
                 logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
+                if visual_context and record_delivery_status:
+                    try:
+                        record_delivery_status(
+                            visual_context,
+                            "failed",
+                            error_type=type(img_err).__name__,
+                            error_message=str(img_err),
+                        )
+                    except Exception as visual_err:
+                        logger.debug("[%s] Visual delivery failure recording skipped: %s", self.name, visual_err)
 
     async def send_image(
         self,

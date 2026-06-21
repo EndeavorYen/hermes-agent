@@ -666,7 +666,7 @@ class VisualAttemptLedger:
 
 **Purpose:** Stop old/new artifact confusion and make feedback attachable.
 
-- [ ] **Step 1: Write delivery dedupe tests**
+- [x] **Step 1: Write delivery dedupe tests**
 
   Create `tests/visual/test_delivery_dedupe.py`:
 
@@ -682,7 +682,7 @@ class VisualAttemptLedger:
       assert deduper.mark_if_new("sha256:a", "slack:C2:T1", "vrq_1") is True
   ```
 
-- [ ] **Step 2: Write gateway delivery attribution test**
+- [x] **Step 2: Write gateway delivery attribution test**
 
   Add a focused test near gateway media tests using the existing
   `BasePlatformAdapter` media path and a concrete stub adapter:
@@ -754,7 +754,7 @@ class VisualAttemptLedger:
   If the current adapter API differs at execution time, keep the assertions
   fixed and adapt only the test harness to the actual helper names.
 
-- [ ] **Step 3: Run red delivery tests**
+- [x] **Step 3: Run red delivery tests**
 
   Run:
 
@@ -764,7 +764,7 @@ class VisualAttemptLedger:
 
   Expected: new dedupe test fails until `ArtifactDeliveryDeduper` exists.
 
-- [ ] **Step 4: Implement delivery dedupe and metadata gate**
+- [x] **Step 4: Implement delivery dedupe and metadata gate**
 
   Modify `gateway/platforms/base.py` so native media delivery:
 
@@ -773,7 +773,13 @@ class VisualAttemptLedger:
   - records `sent`, `failed`, `skipped_duplicate`, or `skipped_stale`;
   - never blocks ordinary non-visual files if visual metadata is absent.
 
-- [ ] **Step 5: Verify milestone 4**
+  Execution note, 2026-06-21: implemented hash/destination/request-scoped
+  dedupe, visual delivery metadata attribution, delivery status recording, and
+  insertion-ordered delivery listing. Self-review added regressions proving
+  duplicate generated artifacts are skipped for the same request/destination
+  and failed sends do not poison dedupe state.
+
+- [x] **Step 5: Verify milestone 4**
 
   Run:
 
@@ -783,6 +789,14 @@ class VisualAttemptLedger:
   ```
 
   Expected: tests pass and ordinary media delivery remains unchanged.
+
+  Execution note, 2026-06-21: verified with:
+
+  ```bash
+  rtk ./venv/bin/python -m pytest tests/visual tests/gateway/test_send_image_file.py tests/tools/test_image_generation.py tests/tools/test_image_generation_plugin_dispatch.py tests/tools/test_image_generation_image_to_image.py tests/tools/test_image_generation_artifacts.py tests/plugins/video_gen/test_xai_plugin.py tests/tools/test_video_generation_dispatch.py tests/tools/test_video_generation_tool_surface_matrix.py tests/tools/test_video_generation_dynamic_schema.py -q
+  ```
+
+  Result: `171 passed`.
 
 - [ ] **Step 6: Commit milestone 4**
 
