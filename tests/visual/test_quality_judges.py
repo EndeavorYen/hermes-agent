@@ -80,3 +80,58 @@ def test_quality_judge_scores_video_motion_from_duration_score():
     )
 
     assert result["scores"]["motion_quality"] == 0.8
+
+
+def test_quality_judge_uses_vision_observation_without_leaking_prompt():
+    from agent.visual.judges.quality import judge_visual_quality
+
+    result = judge_visual_quality(
+        {
+            "artifact_id": "var_1",
+            "kind": "image",
+            "hard_gate": {"passed": True, "delivery_possible": True},
+            "scores": {"resolution": 0.6, "aspect_match": 0.7, "final_score": 0.6},
+        },
+        request_context={"has_reference_image": True, "category": "fashion", "raw_prompt": "private"},
+        vision_observation={
+            "reference_adherence": 0.9,
+            "visual_appeal": 0.8,
+            "composition": 0.85,
+            "aspect_integrity": 0.95,
+            "confidence": 0.75,
+            "evidence": {"summary": "same subject, clean pose"},
+            "raw_prompt": "must not appear",
+        },
+    )
+
+    assert result["scores"]["reference_adherence"] == 0.9
+    assert result["scores"]["aesthetic_fit"] >= 0.75
+    assert result["scores"]["composition"] == 0.85
+    assert result["scores"]["aspect_integrity"] == 0.95
+    assert result["judge_sources"]["reference_adherence"] == "vision"
+    assert result["judge_sources"]["composition"] == "vision"
+    assert "must not appear" not in json.dumps(result, ensure_ascii=False)
+    assert "private" not in json.dumps(result, ensure_ascii=False)
+
+
+def test_quality_judge_penalizes_vision_defects_for_portrait_categories():
+    from agent.visual.judges.quality import judge_visual_quality
+
+    result = judge_visual_quality(
+        {
+            "artifact_id": "var_1",
+            "kind": "image",
+            "hard_gate": {"passed": True, "delivery_possible": True},
+            "scores": {"resolution": 0.9, "aspect_match": 0.9, "final_score": 0.9},
+        },
+        request_context={"category": "portrait"},
+        vision_observation={
+            "visual_appeal": 0.95,
+            "composition": 0.95,
+            "confidence": 0.8,
+            "artifact_defects": ["blurred_face"],
+        },
+    )
+
+    assert result["scores"]["aesthetic_fit"] < 0.95
+    assert "vision_defect_blurred_face" in result["uncertainty_reasons"]

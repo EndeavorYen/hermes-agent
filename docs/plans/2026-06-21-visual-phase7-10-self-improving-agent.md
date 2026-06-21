@@ -273,6 +273,36 @@ rtk git diff --check
 - Can the report show judge/human alignment without exposing private media?
 - Does this phase reduce human review load only when confidence is high?
 
+### Phase 7 Execution Status: 2026-06-21
+
+Implemented:
+
+- `agent/visual/judges/vision_observation.py`
+  - Normalizes bounded vision observations.
+  - Clamps numeric dimensions.
+  - Drops unknown fields and private evidence keys.
+  - Exposes `normalize_vision_observation()` and `empty_vision_observation()` from `agent.visual.judges`.
+- `agent/visual/judges/quality.py`
+  - Accepts optional `vision_observation`.
+  - Merges vision dimensions into existing quality scores.
+  - Adds `judge_sources` so score provenance is explicit.
+  - Penalizes portrait/fashion/character defects such as blurred faces.
+- `agent/visual/calibration.py`
+  - Builds a privacy-safe calibration report over judgments and human feedback.
+  - Reports agreement, disagreement, low-confidence counts, and uncertainty reasons.
+- `scripts/visual_quality_calibration_report.py`
+  - Adds CLI report support for local/runtime ledger checks.
+
+Self-assessment:
+
+- `proven`: `tests/visual/test_vision_observation.py`, `tests/visual/test_quality_judges.py`, `tests/visual/test_calibration.py`, `tests/visual/test_reward_model.py`, `tests/tools/test_visual_package_tool.py`, `tests/scripts/test_visual_quality_calibration_report.py`, and `tests/scripts/test_visual_regression_report.py` passed.
+- `proven`: `scripts/visual_quality_calibration_report.py --json` and `scripts/visual_regression_report.py --json` passed against the runtime ledger.
+- `not_proven`: live provider vision analysis is not wired yet; Phase 7 accepts artifact-aware observations but does not call a vision provider by itself.
+- `quality_delta`: should reduce human review only after a caller supplies vision observations; without observations it remains backward-compatible metadata scoring.
+- `regression_risks`: low risk for prompt leakage because tests assert raw prompt removal; remaining risk is under-scoring when no vision observations are present.
+- `improvement_action`: `carry_to_next_phase`; Phase 8 should consume these richer judge scores before pre-delivery retry/suppression decisions.
+- `rollback_path`: callers can omit `vision_observation`; quality judge then falls back to prior deterministic behavior.
+
 ---
 
 ## Phase 8 Goal: Pre-Delivery Ranking and Negotiated Repair
