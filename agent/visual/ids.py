@@ -33,3 +33,7 @@ def new_delivery_id() -> str:
 
 def new_feedback_id() -> str:
     return _new_visual_id("vfb")
+
+
+def new_shadow_update_id() -> str:
+    return _new_visual_id("vsh")

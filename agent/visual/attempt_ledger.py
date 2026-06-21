@@ -15,6 +15,7 @@ from agent.visual.ids import (
     new_judgment_id,
     new_ranking_id,
     new_request_id,
+    new_shadow_update_id,
 )
 
 
@@ -35,6 +36,10 @@ _JSON_COLUMNS = {
     "rationale_json",
     "parsed",
     "parsed_json",
+    "proposed_change",
+    "proposed_change_json",
+    "evidence",
+    "evidence_json",
 }
 
 _BOOL_COLUMNS = {"is_stable"}
@@ -47,6 +52,7 @@ _ID_COLUMN_CANDIDATES = {
     "visual_rankings": ("id", "ranking_id"),
     "visual_deliveries": ("id", "delivery_id"),
     "visual_feedback": ("id", "feedback_id"),
+    "visual_shadow_updates": ("id", "shadow_update_id"),
 }
 
 _COLUMN_ALIASES = {
@@ -85,6 +91,11 @@ _COLUMN_ALIASES = {
         "feedback_text": "raw_text",
         "parsed": "parsed_json",
         "metadata": "parsed_json",
+    },
+    "visual_shadow_updates": {
+        "id": "shadow_update_id",
+        "proposed_change": "proposed_change_json",
+        "evidence": "evidence_json",
     },
 }
 
@@ -242,6 +253,19 @@ class VisualAttemptLedger:
                     FOREIGN KEY(request_id) REFERENCES visual_requests(id),
                     FOREIGN KEY(artifact_id) REFERENCES visual_artifacts(id)
                 );
+
+                CREATE TABLE IF NOT EXISTS visual_shadow_updates (
+                    id TEXT PRIMARY KEY,
+                    request_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    intent_signature TEXT,
+                    strategy_signature TEXT,
+                    proposed_change TEXT,
+                    evidence TEXT,
+                    confidence REAL,
+                    activation_status TEXT,
+                    FOREIGN KEY(request_id) REFERENCES visual_requests(id)
+                );
                 """
             )
             self._ensure_column(conn, "visual_deliveries", "destination", "TEXT")
@@ -267,6 +291,9 @@ class VisualAttemptLedger:
     def record_feedback(self, **kwargs: Any) -> str:
         return self._insert("visual_feedback", "id", kwargs, new_feedback_id)
 
+    def record_shadow_update(self, **kwargs: Any) -> str:
+        return self._insert("visual_shadow_updates", "id", kwargs, new_shadow_update_id)
+
     def get_request(self, record_id: str) -> dict[str, Any]:
         return self._get("visual_requests", record_id)
 
@@ -287,6 +314,9 @@ class VisualAttemptLedger:
 
     def get_feedback(self, record_id: str) -> dict[str, Any]:
         return self._get("visual_feedback", record_id)
+
+    def get_shadow_update(self, record_id: str) -> dict[str, Any]:
+        return self._get("visual_shadow_updates", record_id)
 
     def list_deliveries(self, *, request_id: str | None = None) -> list[dict[str, Any]]:
         if request_id is None:
@@ -439,6 +469,8 @@ class VisualAttemptLedger:
             prepared.setdefault("delivery_status", "")
         elif table == "visual_feedback":
             prepared.setdefault("feedback_type", "comment")
+        elif table == "visual_shadow_updates":
+            prepared.setdefault("activation_status", "shadow")
 
         for key in list(prepared):
             if key not in columns_available:
