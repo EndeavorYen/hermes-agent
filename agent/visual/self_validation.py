@@ -56,6 +56,9 @@ def run_visual_self_validation(
         if _active_shadow_update_count(conn, request_id=request_id) > 0:
             failures.append("active_shadow_update")
 
+        if _unsafe_strategy_activation_count(conn) > 0:
+            failures.append("unsafe_strategy_activation")
+
     return _result(db_path, request_id=request_id, failures=failures)
 
 
@@ -133,6 +136,25 @@ def _active_shadow_update_count(conn: sqlite3.Connection, *, request_id: str | N
         params,
     ).fetchone()
     return int(row["count"])
+
+
+def _unsafe_strategy_activation_count(conn: sqlite3.Connection) -> int:
+    if "visual_strategy_activations" not in _table_names(conn):
+        return 0
+    rows = conn.execute("SELECT * FROM visual_strategy_activations").fetchall()
+    return sum(1 for row in rows if _is_unsafe_strategy_activation(row))
+
+
+def _is_unsafe_strategy_activation(row: sqlite3.Row) -> bool:
+    activation_status = str(_row_value(row, "activation_status") or "")
+    if activation_status != "controlled":
+        return False
+    promotion_decision = _json_value(_row_value(row, "promotion_decision", "promotion_decision_json"))
+    return not (
+        isinstance(promotion_decision, dict)
+        and promotion_decision.get("allowed") is True
+        and promotion_decision.get("decision") == "promote_controlled"
+    )
 
 
 def _count(conn: sqlite3.Connection, table: str, *, request_id: str | None) -> int:
