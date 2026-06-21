@@ -1348,7 +1348,7 @@ async def visual_package_generate(prompt: str, attachments: list[str] | None = N
   triggered during this final gate to avoid unnecessary provider spend and
   duplicate user-facing media.
 
-- [ ] **Step 6: Push to origin**
+- [x] **Step 6: Push to origin**
 
   Run:
 
@@ -1361,6 +1361,12 @@ async def visual_package_generate(prompt: str, attachments: list[str] | None = N
 
   - worktree clean before push;
   - origin branch receives all milestone commits.
+
+  Execution note, 2026-06-21: pushed milestone work through
+  `b478bab4d fix: support runtime visual evidence ledger` to
+  `origin/upgrade/hermes-v2026.6.19-local`. This final M9 fix added runtime
+  legacy-ledger compatibility, scoped reporting, successful remote video URL
+  selection, and a Slack optional-dependency test fix.
 
 ## Phase 2: Learning After Evidence Exists
 
