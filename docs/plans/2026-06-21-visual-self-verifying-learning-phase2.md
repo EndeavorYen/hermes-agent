@@ -112,14 +112,20 @@ Every Phase 2 implementation milestone must end with three validation layers:
 2. **Headless self-check:** fixture artifacts and temporary `HERMES_HOME`; must prove no duplicate delivery, no missing source metadata, valid reward traces, and stable active-learning decisions.
 3. **Runtime-scoped proof:** run against a specific request id when live providers are used; report must be scoped and privacy-safe.
 
-Required commands after each implementation milestone:
+Required commands after each implementation milestone before Milestone 9:
 
 ```bash
 rtk ./venv/bin/python -m pytest tests/visual tests/tools/test_visual_package_tool.py tests/scripts/test_visual_evidence_self_smoke.py -q
 rtk ./venv/bin/python scripts/visual_evidence_self_smoke.py --json
-rtk ./venv/bin/python scripts/visual_phase2_self_check.py --json
-rtk ./venv/bin/python -m ruff check agent/visual tools/visual_package_tool.py scripts/visual_phase2_self_check.py scripts/visual_shadow_learning_report.py
+rtk ./venv/bin/python -m ruff check agent/visual tools/visual_package_tool.py scripts/visual_evidence_self_smoke.py scripts/visual_evidence_report.py
 rtk git diff --check
+```
+
+From Milestone 9 onward, add:
+
+```bash
+rtk ./venv/bin/python scripts/visual_phase2_self_check.py --json
+rtk ./venv/bin/python scripts/visual_shadow_learning_report.py --json
 ```
 
 Expected:
