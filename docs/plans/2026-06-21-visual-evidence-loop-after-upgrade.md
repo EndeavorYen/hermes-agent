@@ -1062,7 +1062,7 @@ async def visual_package_generate(prompt: str, attachments: list[str] | None = N
   Results: focused suite `77 passed`; wider suite `181 passed`; ruff and diff
   check clean.
 
-- [ ] **Step 6: Commit milestone 6**
+- [x] **Step 6: Commit milestone 6**
 
   Run:
 
@@ -1071,11 +1071,14 @@ async def visual_package_generate(prompt: str, attachments: list[str] | None = N
   rtk git commit -m "feat: add visual package generation tool"
   ```
 
+  Execution note, 2026-06-21: committed and pushed to `origin` as
+  `3fe46da5e feat: add visual package generation tool`.
+
 ## Milestone 7: Self-Smoke, Report, and Live Proof
 
 **Purpose:** Let the agent verify the visual loop without requiring Simon to drive every Slack round.
 
-- [ ] **Step 1: Write self-smoke test**
+- [x] **Step 1: Write self-smoke test**
 
   Create `tests/scripts/test_visual_evidence_self_smoke.py`:
 
@@ -1096,7 +1099,7 @@ async def visual_package_generate(prompt: str, attachments: list[str] | None = N
       assert "raw_prompt" not in json.dumps(payload).lower()
   ```
 
-- [ ] **Step 2: Run red self-smoke test**
+- [x] **Step 2: Run red self-smoke test**
 
   Run:
 
@@ -1106,7 +1109,7 @@ async def visual_package_generate(prompt: str, attachments: list[str] | None = N
 
   Expected: FAIL because script is missing.
 
-- [ ] **Step 3: Implement self-smoke and report**
+- [x] **Step 3: Implement self-smoke and report**
 
   Create:
 
@@ -1122,7 +1125,12 @@ async def visual_package_generate(prompt: str, attachments: list[str] | None = N
   - run proof checks;
   - emit JSON without raw prompts or media bytes.
 
-- [ ] **Step 4: Verify milestone 7**
+  Execution note, 2026-06-21: implemented a headless isolated self-smoke and a
+  privacy-safe aggregate report. The smoke creates synthetic image/video
+  artifacts, records request/attempt/artifact/delivery/feedback rows, and
+  emits only counts and proof metrics.
+
+- [x] **Step 4: Verify milestone 7**
 
   Run:
 
@@ -1139,6 +1147,19 @@ async def visual_package_generate(prompt: str, attachments: list[str] | None = N
   - duplicate deliveries are 0;
   - missing source metadata is 0;
   - feedback count is at least 2.
+
+  Execution note, 2026-06-21: verified with:
+
+  ```bash
+  rtk ./venv/bin/python -m pytest tests/scripts/test_visual_evidence_self_smoke.py -q
+  rtk ./venv/bin/python scripts/visual_evidence_self_smoke.py --json
+  rtk ./venv/bin/python -m pytest tests/visual tests/tools/test_visual_package_tool.py tests/scripts/test_visual_evidence_self_smoke.py tests/gateway/test_send_image_file.py tests/tools/test_image_generation.py tests/plugins/video_gen/test_xai_plugin.py -q
+  rtk ./venv/bin/python -m ruff check scripts/visual_evidence_self_smoke.py scripts/visual_evidence_report.py tests/scripts/test_visual_evidence_self_smoke.py
+  rtk git diff --check
+  ```
+
+  Results: self-smoke test `1 passed`; script returned `success: true`;
+  wider evidence suite `129 passed`; ruff and diff check clean.
 
 - [ ] **Step 5: Commit milestone 7**
 
