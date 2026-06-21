@@ -841,3 +841,50 @@ At the end of each phase, report:
 - Whether human intervention should decrease in that phase.
 - What rollback path exists if live behavior regresses.
 - Whether the next phase can start without live provider access.
+
+---
+
+## Follow-Up Execution: Self-Verification and Learning Evidence Hardening
+
+Date: 2026-06-21
+
+Implemented:
+
+- `scripts/visual_test_coverage_report.py`
+  - Adds a runnable targeted line-coverage gate using Python stdlib `trace`.
+  - Runs the relevant visual tests quietly, then executes deterministic probes for critical learning and validation modules.
+  - Requires each target file to meet `min_line_coverage=0.70`.
+- `scripts/visual_learning_replay.py`
+  - Builds a privacy-safe fixture ledger with enough request, delivery, judgment, and feedback evidence to produce safe shadow proposals.
+  - Verifies self-reinforcement can produce `prefer_strategy` and `prefer_provider_for_bucket` without prompt mutation or unsafe activation.
+- `tools/visual_package_tool.py`
+  - Quality judgments now carry learning metadata: intent signature, strategy signature, modality, judge sources, and uncertainty reasons.
+- `scripts/visual_evidence_report.py`
+  - Evidence reports now include `judgments.count`.
+  - Missing optional tables are handled schema-tolerantly.
+- `scripts/visual_evidence_self_smoke.py`
+  - Fixture now records image and video judgments, proving the self-smoke path has learnable quality evidence.
+
+Verification:
+
+- `rtk ./venv/bin/python -m pytest ...` visual slice: `153 passed`.
+- `rtk ./venv/bin/python -m ruff check ...`: passed.
+- `rtk ./venv/bin/python scripts/visual_test_coverage_report.py --json`: passed.
+  - `agent/visual/learning/outcomes.py`: `0.8611`
+  - `agent/visual/learning/proposals.py`: `0.8272`
+  - `agent/visual/promotion_policy.py`: `0.7436`
+  - `agent/visual/strategy_activation.py`: `0.8824`
+  - `agent/visual/judges/quality.py`: `0.9118`
+  - `scripts/visual_learning_report.py`: `0.9167`
+- `rtk ./venv/bin/python scripts/visual_learning_replay.py --json`: passed and produced safe shadow proposals.
+- `rtk ./venv/bin/python scripts/visual_evidence_self_smoke.py --json`: passed with `judgments.count=2`.
+- `rtk ./venv/bin/python scripts/visual_learning_report.py --json`: passed.
+- `rtk ./venv/bin/python scripts/visual_regression_report.py --json`: passed.
+
+Self-assessment:
+
+- `improved`: self-verification now has a runnable targeted coverage gate without adding dependencies.
+- `improved`: learning replay proves the self-reinforcement proposal path can work without live provider access or human intervention.
+- `improved`: visual package candidate judgments now preserve enough metadata for later replay, calibration, and proposal attribution.
+- `still_limited`: the current live runtime ledger still reports `judgments=0`; this means old/live history has not yet accumulated judged provider outputs, not that the new fixture path cannot write judgments.
+- `next_improvement`: run real Slack visual-package tasks through the new path, then verify the runtime ledger `judgments` count rises and learning proposals appear from actual usage.

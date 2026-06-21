@@ -100,6 +100,26 @@ def run_self_smoke(work_dir: Path) -> dict[str, Any]:
         kind="video",
         path=video_path,
     )
+    ledger.record_judgment(
+        request_id=request_id,
+        attempt_id=image_attempt_id,
+        artifact_id=image_artifact_id,
+        judge_name="visual_quality_judge",
+        score=0.86,
+        verdict="pass",
+        details={"scores": {"aesthetic_fit": 0.86, "composition": 0.82}},
+        metadata={"intent_signature": "visig_self_smoke", "modality": "image"},
+    )
+    ledger.record_judgment(
+        request_id=request_id,
+        attempt_id=video_attempt_id,
+        artifact_id=video_artifact_id,
+        judge_name="visual_quality_judge",
+        score=0.78,
+        verdict="pass",
+        details={"scores": {"motion_quality": 0.78, "composition": 0.80}},
+        metadata={"intent_signature": "visig_self_smoke", "modality": "video"},
+    )
     destination = "slack:C_SELF:T_SELF"
     ledger.record_delivery(
         request_id=request_id,

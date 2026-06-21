@@ -18,6 +18,7 @@ def build_visual_evidence_report(db_path: str | Path, *, request_id: str | None 
         request_count = _count(conn, "visual_requests", request_id=request_id)
         attempt_count = _count(conn, "visual_attempts", request_id=request_id)
         artifact_count = _count(conn, "visual_artifacts", request_id=request_id)
+        judgment_count = _count(conn, "visual_judgments", request_id=request_id)
         delivery_count = _count(conn, "visual_deliveries", request_id=request_id)
         feedback_count = _count(conn, "visual_feedback", request_id=request_id)
         duplicate_count = _duplicate_sent_delivery_count(conn, request_id=request_id)
@@ -36,6 +37,7 @@ def build_visual_evidence_report(db_path: str | Path, *, request_id: str | None 
         "requests": {"count": request_count},
         "attempts": {"count": attempt_count},
         "artifacts": {"count": artifact_count},
+        "judgments": {"count": judgment_count},
         "deliveries": {"count": delivery_count},
         "feedback": {"count": feedback_count},
         "proof": proof,
@@ -60,6 +62,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _count(conn: sqlite3.Connection, table: str, *, request_id: str | None = None) -> int:
+    if not _table_exists(conn, table):
+        return 0
     where, params = _request_where(conn, table, request_id=request_id)
     row = conn.execute(f"SELECT COUNT(*) AS count FROM {table}{where}", params).fetchone()
     return int(row["count"])
@@ -158,6 +162,14 @@ def _first_existing_column(conn: sqlite3.Connection, table: str, candidates: tup
 
 def _column_names(conn: sqlite3.Connection, table: str) -> set[str]:
     return {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,),
+    ).fetchone()
+    return row is not None
 
 
 if __name__ == "__main__":

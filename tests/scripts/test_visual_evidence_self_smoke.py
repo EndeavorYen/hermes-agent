@@ -13,6 +13,7 @@ def test_visual_evidence_self_smoke_passes_in_isolated_home(tmp_path, capsys):
     assert payload["proof"]["duplicate_artifact_delivery_count"] == 0
     assert payload["proof"]["missing_source_metadata_count"] == 0
     assert payload["feedback"]["count"] >= 2
+    assert payload["judgments"]["count"] >= 2
     assert "raw_prompt" not in json.dumps(payload).lower()
 
 

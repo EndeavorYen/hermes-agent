@@ -349,6 +349,10 @@ async def test_visual_package_records_quality_judgment_for_candidates(monkeypatc
         if row["judge_name"] == "visual_quality_judge"
     ]
     assert quality_judgments
+    assert quality_judgments[0]["metadata"]["intent_signature"].startswith("visig_")
+    assert quality_judgments[0]["metadata"]["strategy_signature"].startswith("vstrat_")
+    assert quality_judgments[0]["metadata"]["modality"] == "image"
+    assert "judge_sources" in quality_judgments[0]["metadata"]
     assert rankings[0]["scores"]["reward"]["dimensions"]["aesthetic_fit"] != 0.5
 
 

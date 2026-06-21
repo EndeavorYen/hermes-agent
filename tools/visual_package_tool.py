@@ -258,6 +258,9 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             ledger,
             request_id=request_id,
             intent_signature=intent_signature,
+            strategy_signature=strategy_plan.strategy_signature,
+            modality="image",
+            has_reference_image=bool(attachments),
             candidates=image_candidates,
         )
         image_decision = rank_visual_candidates(
@@ -363,6 +366,9 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             ledger,
             request_id=request_id,
             intent_signature=intent_signature,
+            strategy_signature=strategy_plan.strategy_signature,
+            modality="video",
+            has_reference_image=bool(video_image_url),
             candidates=video_candidates,
         )
         video_decision = rank_visual_candidates(
@@ -540,6 +546,9 @@ def _score_candidates(
     *,
     request_id: str,
     intent_signature: str,
+    strategy_signature: str,
+    modality: str,
+    has_reference_image: bool,
     candidates: list[dict[str, Any]],
 ) -> None:
     if not candidates:
@@ -549,7 +558,7 @@ def _score_candidates(
     for candidate in candidates:
         quality = judge_visual_quality(
             candidate,
-            request_context={"has_reference_image": False},
+            request_context={"has_reference_image": has_reference_image},
         )
         candidate["judge_scores"] = quality["scores"]
         ledger.record_judgment(
@@ -560,6 +569,13 @@ def _score_candidates(
             score=quality.get("confidence"),
             verdict="pass" if quality.get("confidence", 0.0) >= 0.5 else "review",
             details=quality,
+            metadata={
+                "intent_signature": intent_signature,
+                "strategy_signature": strategy_signature,
+                "modality": modality,
+                "judge_sources": quality.get("judge_sources", {}),
+                "uncertainty_reasons": quality.get("uncertainty_reasons", []),
+            },
         )
         candidate["reward"] = score_visual_candidate(
             candidate,
