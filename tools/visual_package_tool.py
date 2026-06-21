@@ -43,9 +43,12 @@ VISUAL_PACKAGE_SCHEMA: dict[str, Any] = {
     "description": (
         "Generate a coordinated visual package when the user naturally asks "
         "for both an image and a video, a set of visual assets, a product photo "
-        "plus short clip, or similar. Use this instead of separate image_generate "
+        "plus short clip, a 寫真影片, or similar. Use this instead of separate image_generate "
         "and video_generate calls for requests like '請產出一張圖片和一段影片', "
-        "'做一組視覺素材', 'image plus short video', or 'product photo and 6 second clip'. "
+        "'做一組視覺素材', 'image plus short video', 'fashion portrait video', "
+        "or 'product photo and 6 second clip'. For text-only visual video requests, "
+        "this tool uses the image-first route: generate image candidates, rank/select "
+        "one, then animate the selected image. "
         "The tool generates candidates, records evidence, ranks artifacts, and "
         "returns only selected current media plus delivery metadata."
     ),
@@ -134,17 +137,25 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
     aspect_ratio = str(args.get("aspect_ratio") or "16:9").strip() or "16:9"
     image_aspect_ratio = _image_tool_aspect_ratio(aspect_ratio)
     duration = _coerce_int(args.get("duration")) or 6
-    wants_image = _wants_image(prompt, args)
+    requested_image = _wants_image(prompt, args)
     wants_video = _wants_video(prompt, args)
-    if not wants_image and not wants_video:
-        wants_image = True
+    explicit_image_url = str(args.get("image_url") or "").strip() or None
+    attachment_video_source = attachments[0] if attachments and not requested_image else None
+    explicit_video_source = explicit_image_url or attachment_video_source
+    image_first_for_video = wants_video and not requested_image and not explicit_video_source
+    should_generate_image = requested_image or image_first_for_video
+    if not should_generate_image and not wants_video:
+        requested_image = True
+        should_generate_image = True
         wants_video = True
-    candidate_budget = _candidate_budget(args, wants_image=wants_image)
+    candidate_budget = _candidate_budget(args, wants_image=should_generate_image)
     video_budget = _video_budget(args, wants_video=wants_video)
     normalized_intent = {
         "kind": "visual_package",
-        "wants_image": wants_image,
+        "wants_image": requested_image,
         "wants_video": wants_video,
+        "generates_image": should_generate_image,
+        "image_first_for_video": image_first_for_video,
         "aspect_ratio": _judge_aspect_ratio(aspect_ratio),
     }
     intent_signature = build_intent_signature(
@@ -171,6 +182,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
     selected_artifact_ids: list[str] = []
     selected_images: list[str] = []
     selected_videos: list[str] = []
+    video_source_image: str | None = None
     rankings: dict[str, dict[str, Any]] = {}
     generation_payloads: dict[str, Any] = {}
     preference_profile = build_preference_profile(ledger, bucket=intent_signature)
@@ -192,7 +204,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         "active_learning": {},
     }
 
-    if wants_image:
+    if should_generate_image:
         image_payloads = []
         image_candidates = []
         for candidate_index in range(candidate_budget):
@@ -291,101 +303,130 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         )
         selected_image = _selected_candidate(image_candidates, image_decision.selected_artifact_id)
         if selected_image:
-            selected_artifact_ids.append(selected_image["artifact_id"])
-            selected_images.append(selected_image["artifact_path"])
+            video_source_image = selected_image["artifact_path"]
+            if requested_image:
+                selected_artifact_ids.append(selected_image["artifact_id"])
+                selected_images.append(selected_image["artifact_path"])
 
     if wants_video:
-        video_image_url = str(args.get("image_url") or "").strip() or (selected_images[0] if selected_images else None)
-        hardened_video = build_hardened_video_request(
-            prompt=prompt,
-            requested_aspect_ratio=_video_tool_aspect_ratio(
-                requested_aspect_ratio=_judge_aspect_ratio(aspect_ratio),
-                source_ref=video_image_url,
-            ),
-            source_media=_source_media_from_attachments([video_image_url] if video_image_url else []),
-        )
-        video_prompt = hardened_video["prompt"]
-        video_aspect_ratio = hardened_video["aspect_ratio"]
-        video_payloads = []
+        video_image_url = explicit_video_source or video_source_image
         video_candidates = []
-        for candidate_index in range(video_budget):
-            video_kwargs = {
-                "prompt": video_prompt,
-                "image_url": video_image_url,
-                "duration": duration,
-                "aspect_ratio": video_aspect_ratio,
+        if not video_image_url:
+            video_payload = {
+                "success": False,
+                "video": None,
+                "error": "Image-first video generation requires a selected or supplied source image.",
+                "error_type": "missing_video_source_image",
+                "prompt": prompt,
+                "provider": "",
+                "model": "",
             }
-            video_payload = generate_video(**video_kwargs)
-            if not video_payload.get("success"):
-                _annotate_generation_failure(
-                    video_payload,
-                    base_kwargs=video_kwargs,
-                    request={
-                        "prompt": prompt,
-                        "arguments": video_kwargs,
-                        "source_media": _source_media_from_attachments([video_image_url] if video_image_url else []),
-                        "video_hardening": hardened_video.get("metadata", {}),
-                    },
-                    retry_budget_remaining=1,
-                )
-            video_payloads.append(video_payload)
-            video_candidate = _record_payload_candidate(
+            generation_payloads["video"] = video_payload
+            _record_payload_candidate(
                 ledger,
                 request_id=request_id,
                 payload=video_payload,
                 artifact_key="video",
                 expected_kind="video",
-                prompt=video_prompt,
-                provider=str(video_payload.get("provider") or ""),
-                model=str(video_payload.get("model") or ""),
+                prompt=prompt,
+                provider="",
+                model="",
                 requested_parameters={
                     "duration_seconds": duration,
-                    "aspect_ratio": video_aspect_ratio,
-                    "motion_mode": hardened_video.get("metadata", {}).get("motion_mode"),
+                    "aspect_ratio": _judge_aspect_ratio(aspect_ratio),
+                    "motion_mode": None,
                 },
-                candidate_index=candidate_index,
             )
-            if video_candidate:
-                video_candidates.append(video_candidate)
-                all_artifact_ids.append(video_candidate["artifact_id"])
-                all_artifact_paths.append(video_candidate["artifact_path"])
-            elif not video_payload.get("success"):
-                retry_payload = _retry_generation_payload(
-                    generator=generate_video,
-                    payload=video_payload,
-                    base_kwargs=video_kwargs,
-                    request={
-                        "prompt": prompt,
-                        "arguments": video_kwargs,
-                        "source_media": _source_media_from_attachments([video_image_url] if video_image_url else []),
-                        "video_hardening": hardened_video.get("metadata", {}),
-                    },
-                    retry_budget_remaining=1,
-                    retry_of=candidate_index,
-                )
-                if retry_payload is not None:
-                    video_payloads.append(retry_payload)
-                    retry_candidate = _record_payload_candidate(
-                        ledger,
-                        request_id=request_id,
-                        payload=retry_payload,
-                        artifact_key="video",
-                        expected_kind="video",
-                        prompt=str(retry_payload.get("prompt") or prompt),
-                        provider=str(retry_payload.get("provider") or ""),
-                        model=str(retry_payload.get("model") or ""),
-                        requested_parameters={
-                            "duration_seconds": retry_payload.get("duration", duration),
-                            "aspect_ratio": video_aspect_ratio,
-                            "motion_mode": hardened_video.get("metadata", {}).get("motion_mode"),
+        else:
+            hardened_video = build_hardened_video_request(
+                prompt=prompt,
+                requested_aspect_ratio=_video_tool_aspect_ratio(
+                    requested_aspect_ratio=_judge_aspect_ratio(aspect_ratio),
+                    source_ref=video_image_url,
+                ),
+                source_media=_source_media_from_attachments([video_image_url]),
+            )
+            video_prompt = hardened_video["prompt"]
+            video_aspect_ratio = hardened_video["aspect_ratio"]
+            video_payloads = []
+            for candidate_index in range(video_budget):
+                video_kwargs = {
+                    "prompt": video_prompt,
+                    "image_url": video_image_url,
+                    "duration": duration,
+                    "aspect_ratio": video_aspect_ratio,
+                }
+                video_payload = generate_video(**video_kwargs)
+                if not video_payload.get("success"):
+                    _annotate_generation_failure(
+                        video_payload,
+                        base_kwargs=video_kwargs,
+                        request={
+                            "prompt": prompt,
+                            "arguments": video_kwargs,
+                            "source_media": _source_media_from_attachments([video_image_url]),
+                            "video_hardening": hardened_video.get("metadata", {}),
                         },
-                        candidate_index=candidate_index + video_budget,
+                        retry_budget_remaining=1,
                     )
-                    if retry_candidate:
-                        video_candidates.append(retry_candidate)
-                        all_artifact_ids.append(retry_candidate["artifact_id"])
-                        all_artifact_paths.append(retry_candidate["artifact_path"])
-        generation_payloads["video"] = video_payloads[0] if len(video_payloads) == 1 else video_payloads
+                video_payloads.append(video_payload)
+                video_candidate = _record_payload_candidate(
+                    ledger,
+                    request_id=request_id,
+                    payload=video_payload,
+                    artifact_key="video",
+                    expected_kind="video",
+                    prompt=video_prompt,
+                    provider=str(video_payload.get("provider") or ""),
+                    model=str(video_payload.get("model") or ""),
+                    requested_parameters={
+                        "duration_seconds": duration,
+                        "aspect_ratio": video_aspect_ratio,
+                        "motion_mode": hardened_video.get("metadata", {}).get("motion_mode"),
+                    },
+                    candidate_index=candidate_index,
+                )
+                if video_candidate:
+                    video_candidates.append(video_candidate)
+                    all_artifact_ids.append(video_candidate["artifact_id"])
+                    all_artifact_paths.append(video_candidate["artifact_path"])
+                elif not video_payload.get("success"):
+                    retry_payload = _retry_generation_payload(
+                        generator=generate_video,
+                        payload=video_payload,
+                        base_kwargs=video_kwargs,
+                        request={
+                            "prompt": prompt,
+                            "arguments": video_kwargs,
+                            "source_media": _source_media_from_attachments([video_image_url]),
+                            "video_hardening": hardened_video.get("metadata", {}),
+                        },
+                        retry_budget_remaining=1,
+                        retry_of=candidate_index,
+                    )
+                    if retry_payload is not None:
+                        video_payloads.append(retry_payload)
+                        retry_candidate = _record_payload_candidate(
+                            ledger,
+                            request_id=request_id,
+                            payload=retry_payload,
+                            artifact_key="video",
+                            expected_kind="video",
+                            prompt=str(retry_payload.get("prompt") or prompt),
+                            provider=str(retry_payload.get("provider") or ""),
+                            model=str(retry_payload.get("model") or ""),
+                            requested_parameters={
+                                "duration_seconds": retry_payload.get("duration", duration),
+                                "aspect_ratio": video_aspect_ratio,
+                                "motion_mode": hardened_video.get("metadata", {}).get("motion_mode"),
+                            },
+                            candidate_index=candidate_index + video_budget,
+                        )
+                        if retry_candidate:
+                            video_candidates.append(retry_candidate)
+                            all_artifact_ids.append(retry_candidate["artifact_id"])
+                            all_artifact_paths.append(retry_candidate["artifact_path"])
+            generation_payloads["video"] = video_payloads[0] if len(video_payloads) == 1 else video_payloads
         _score_candidates(
             ledger,
             request_id=request_id,
@@ -418,7 +459,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             selected_artifact_ids.append(selected_video["artifact_id"])
             selected_videos.append(selected_video["artifact_path"])
 
-    success = (not wants_image or bool(selected_images)) and (not wants_video or bool(selected_videos))
+    success = (not requested_image or bool(selected_images)) and (not wants_video or bool(selected_videos))
     package_status = "success" if success else ("partial" if selected_images or selected_videos else "failed")
     delivery_metadata = visual_delivery_metadata(
         request_id=request_id,
@@ -435,6 +476,12 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         "images": selected_images,
         "videos": selected_videos,
         "rankings": rankings,
+        "generation_strategy": {
+            "requested_image": requested_image,
+            "generated_image": should_generate_image,
+            "image_first_for_video": image_first_for_video,
+            "video_source_image": video_source_image,
+        },
         "delivery_metadata": delivery_metadata,
         "generation_payloads": generation_payloads,
         "learning": learning,

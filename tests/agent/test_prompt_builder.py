@@ -1551,9 +1551,10 @@ class TestVisualPackageToolGuidance:
 
         assert "visual_package_generate" in prompt
         assert "請產出一張圖片和一段影片" in prompt
+        assert "image-first" in prompt
+        assert "寫真影片" in prompt
 
 
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-

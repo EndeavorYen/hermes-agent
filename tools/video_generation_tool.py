@@ -57,6 +57,32 @@ from tools.registry import registry, tool_error
 
 logger = logging.getLogger(__name__)
 
+_IMAGE_FIRST_VISUAL_VIDEO_TOKENS = (
+    "portrait",
+    "fashion",
+    "glamour",
+    "photoshoot",
+    "photo shoot",
+    "product",
+    "model",
+    "runway",
+    "beauty",
+    "cosplay",
+    "寫真",
+    "時尚",
+    "人物",
+    "角色",
+    "美女",
+    "模特",
+    "產品",
+    "商品",
+    "黑絲",
+    "絲襪",
+    "禮服",
+)
+
+_IMAGE_REQUEST_TOKENS = ("image", "photo", "picture", "圖片", "圖", "照片", "寫真")
+
 
 VIDEO_GENERATE_SCHEMA: Dict[str, Any] = {
     "name": "video_generate",
@@ -392,6 +418,49 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
     # Drop None entries so providers see clean defaults.
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
 
+    if _should_defer_to_visual_package(
+        prompt=prompt,
+        image_url=image_url,
+        reference_image_urls=reference_image_urls,
+        provider_name=str(getattr(provider, "name", "")),
+        model=model,
+    ):
+        payload = error_response(
+            error=(
+                "This is a high-quality visual video request without a source image. "
+                "Use visual_package_generate so Hermes first generates image candidates, "
+                "ranks/selects one, then animates the selected image with image-to-video."
+            ),
+            error_type="wrong_visual_route",
+            provider=getattr(provider, "name", ""),
+            model=model or "",
+            prompt=prompt,
+        )
+        payload.update(
+            {
+                "recommended_tool": "visual_package_generate",
+                "recommended_arguments": {
+                    "prompt": prompt,
+                    "include_image": _prompt_requests_image(prompt),
+                    "include_video": True,
+                    "candidate_budget": 2,
+                    "video_budget": 1,
+                },
+                "route": "image_first_visual_package",
+            }
+        )
+        tracked = _track_video_generate_payload(
+            payload,
+            prompt=prompt,
+            image_url=image_url,
+            provider=str(getattr(provider, "name", "")),
+            model=model or "",
+            aspect_ratio=aspect_ratio,
+            duration=duration,
+            resolution=resolution,
+        )
+        return json.dumps(tracked)
+
     try:
         result = provider.generate(prompt=prompt, **kwargs)
     except TypeError as exc:
@@ -478,6 +547,34 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
         resolution=resolution,
     )
     return json.dumps(tracked)
+
+
+def _should_defer_to_visual_package(
+    *,
+    prompt: str,
+    image_url: str | None,
+    reference_image_urls: List[str],
+    provider_name: str,
+    model: str | None,
+) -> bool:
+    if image_url or reference_image_urls:
+        return False
+    if provider_name.lower() != "xai":
+        return False
+    model_lc = str(model or "").lower()
+    if "grok-imagine-video" not in model_lc or "1.5" in model_lc:
+        return False
+    return _looks_like_image_first_visual_video(prompt)
+
+
+def _looks_like_image_first_visual_video(prompt: str) -> bool:
+    prompt_lc = str(prompt or "").lower()
+    return any(token in prompt_lc for token in _IMAGE_FIRST_VISUAL_VIDEO_TOKENS)
+
+
+def _prompt_requests_image(prompt: str) -> bool:
+    prompt_lc = str(prompt or "").lower()
+    return any(token in prompt_lc for token in _IMAGE_REQUEST_TOKENS)
 
 
 # ---------------------------------------------------------------------------

@@ -21,8 +21,9 @@ def _reset_registry():
 class _RecordingProvider(VideoGenProvider):
     """Captures the kwargs the tool layer hands it."""
 
-    def __init__(self, name: str = "fake"):
+    def __init__(self, name: str = "fake", default_model: str = "model-a"):
         self._name = name
+        self._default_model = default_model
         self.last_kwargs: Dict[str, Any] = {}
 
     @property
@@ -30,10 +31,10 @@ class _RecordingProvider(VideoGenProvider):
         return self._name
 
     def list_models(self) -> List[Dict[str, Any]]:
-        return [{"id": "model-a"}]
+        return [{"id": self._default_model}]
 
     def default_model(self) -> Optional[str]:
-        return "model-a"
+        return self._default_model
 
     def generate(self, prompt, **kwargs):
         self.last_kwargs = {"prompt": prompt, **kwargs}
@@ -94,6 +95,21 @@ class TestUnifiedDispatch:
         assert "image_url" not in provider.last_kwargs
         assert provider.last_kwargs["aspect_ratio"] == "16:9"
         assert provider.last_kwargs["resolution"] == "720p"
+
+    def test_xai_text_visual_video_defers_to_visual_package(self):
+        provider = _RecordingProvider("xai", default_model="grok-imagine-video")
+        video_gen_registry.register_provider(provider)
+
+        result = self._run(
+            {"prompt": "make a high quality fashion portrait video"},
+            configured="xai",
+        )
+
+        assert result["success"] is False
+        assert result["error_type"] == "wrong_visual_route"
+        assert result["recommended_tool"] == "visual_package_generate"
+        assert result["recommended_arguments"]["candidate_budget"] == 2
+        assert provider.last_kwargs == {}
 
     def test_image_to_video_routes_with_image_url(self):
         provider = _RecordingProvider("rec")

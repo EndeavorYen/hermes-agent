@@ -351,8 +351,11 @@ VISUAL_PACKAGE_TOOL_GUIDANCE = (
     "When `visual_package_generate` is available and the user naturally asks "
     "for an image plus a video, a product photo plus a short clip, or a small "
     "set of visual assets, call `visual_package_generate` directly instead of "
-    "asking for advanced parameters. Examples include: `請產出一張圖片和一段影片`, "
-    "`做一組視覺素材`, `image plus short video`, and `product photo and 6 second clip`."
+    "asking for advanced parameters. For high-quality visual videos from text "
+    "only, use this image-first route too: generate image candidates, rank/select "
+    "one, then animate the selected image. Examples include: `請產出一張圖片和一段影片`, "
+    "`做一組視覺素材`, `寫真影片`, `image plus short video`, `fashion portrait video`, "
+    "and `product photo and 6 second clip`."
 )
 
 

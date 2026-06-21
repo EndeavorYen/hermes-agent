@@ -38,6 +38,20 @@ def test_agent_mode_planner_routes_video_only_request():
     assert plan["arguments"]["duration"] == 6
 
 
+def test_agent_mode_planner_routes_text_only_video_through_image_first_candidates():
+    from agent.visual.agent_mode.planner import plan_visual_agent_request
+
+    plan = plan_visual_agent_request("幫我產生一段 6 秒時尚短片，主體是霧黑鋼筆")
+
+    assert plan["should_use_visual_package"] is True
+    assert plan["arguments"]["include_image"] is False
+    assert plan["arguments"]["include_video"] is True
+    assert plan["arguments"]["candidate_budget"] == 2
+    assert plan["arguments"]["video_budget"] == 1
+    assert plan["arguments"]["duration"] == 6
+    assert plan["reason"] == "text_to_video_image_first_request"
+
+
 def test_agent_mode_planner_returns_provider_neutral_recovery_policy():
     from agent.visual.agent_mode.planner import plan_visual_agent_request
 

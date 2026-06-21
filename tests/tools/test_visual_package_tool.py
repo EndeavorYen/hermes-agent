@@ -93,6 +93,168 @@ async def test_visual_package_generate_uses_selected_image_for_video(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_visual_package_video_only_with_attachment_animates_attachment(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    source = tmp_path / "source.png"
+    video = tmp_path / "video.mp4"
+    source.write_bytes(_ONE_PIXEL_PNG)
+    video.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+    video_calls = []
+
+    def fail_generate_image(**kwargs):
+        raise AssertionError(f"attachment-to-video should not generate a new image: {kwargs}")
+
+    def fake_generate_video(**kwargs):
+        video_calls.append(kwargs)
+        return {"success": True, "video": str(video), "provider": "fixture", "model": "video-fixture"}
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fail_generate_image)
+    monkeypatch.setattr(visual_package_tool, "generate_video", fake_generate_video)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "用這張圖產生 6 秒短片",
+                "attachments": [str(source)],
+                "include_image": False,
+                "include_video": True,
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["images"] == []
+    assert payload["videos"] == [str(video)]
+    assert video_calls[0]["image_url"] == str(source)
+
+
+@pytest.mark.asyncio
+async def test_visual_package_image_plus_video_with_attachment_animates_selected_image(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    reference = tmp_path / "reference.png"
+    selected = tmp_path / "selected.png"
+    video = tmp_path / "video.mp4"
+    reference.write_bytes(_ONE_PIXEL_PNG)
+    selected.write_bytes(_ONE_PIXEL_PNG)
+    video.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+    video_calls = []
+
+    monkeypatch.setattr(
+        visual_package_tool,
+        "generate_image",
+        lambda **kwargs: {"success": True, "image": str(selected), "provider": "fixture", "model": "image-fixture"},
+    )
+
+    def fake_generate_video(**kwargs):
+        video_calls.append(kwargs)
+        return {"success": True, "video": str(video), "provider": "fixture", "model": "video-fixture"}
+
+    monkeypatch.setattr(visual_package_tool, "generate_video", fake_generate_video)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "用這張 reference 產出一張圖片和一段影片",
+                "attachments": [str(reference)],
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["images"] == [str(selected)]
+    assert payload["videos"] == [str(video)]
+    assert video_calls[0]["image_url"] == str(selected)
+
+
+@pytest.mark.asyncio
+async def test_visual_package_text_only_video_uses_internal_image_first(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image = tmp_path / "image.png"
+    video = tmp_path / "video.mp4"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    video.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+    image_calls = []
+    video_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        return {"success": True, "image": str(image), "provider": "fixture", "model": "image-fixture"}
+
+    def fake_generate_video(**kwargs):
+        video_calls.append(kwargs)
+        return {"success": True, "video": str(video), "provider": "fixture", "model": "video-fixture"}
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+    monkeypatch.setattr(visual_package_tool, "generate_video", fake_generate_video)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "幫我產生一段 6 秒時尚短片，主體是霧黑鋼筆",
+                "include_image": False,
+                "include_video": True,
+                "candidate_budget": 2,
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["images"] == []
+    assert payload["videos"] == [str(video)]
+    assert len(image_calls) == 2
+    assert video_calls[0]["image_url"] == str(image)
+    assert payload["generation_strategy"]["image_first_for_video"] is True
+
+
+@pytest.mark.asyncio
+async def test_visual_package_text_only_video_does_not_fall_back_to_direct_video_when_images_fail(
+    monkeypatch,
+    tmp_path,
+):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    def fake_generate_image(**kwargs):
+        return {
+            "success": False,
+            "image": None,
+            "error": "image provider unavailable",
+            "error_type": "connection_error",
+            "provider": "fixture",
+            "model": "image-fixture",
+        }
+
+    def fail_generate_video(**kwargs):
+        raise AssertionError(f"must not call direct text-to-video without a source image: {kwargs}")
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+    monkeypatch.setattr(visual_package_tool, "generate_video", fail_generate_video)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "幫我產生一段 6 秒時尚短片，主體是霧黑鋼筆",
+                "include_image": False,
+                "include_video": True,
+                "candidate_budget": 2,
+            }
+        )
+    )
+
+    assert payload["success"] is False
+    assert payload["videos"] == []
+    assert payload["generation_payloads"]["video"]["error_type"] == "missing_video_source_image"
+    assert payload["generation_strategy"]["image_first_for_video"] is True
+
+
+@pytest.mark.asyncio
 async def test_visual_package_video_aspect_follows_selected_source_image(monkeypatch, tmp_path):
     from tools import visual_package_tool
 

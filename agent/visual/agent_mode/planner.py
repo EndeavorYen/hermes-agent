@@ -21,6 +21,7 @@ def plan_visual_agent_request(
         wants_image = False
     if not wants_image and not wants_video and attachments:
         wants_video = True
+    image_first_for_video = wants_video and not wants_image and not attachments
     should_use_visual_package = wants_image or wants_video
     arguments: dict[str, Any] = {
         "prompt": prompt,
@@ -29,8 +30,8 @@ def plan_visual_agent_request(
     }
     if attachments:
         arguments["attachments"] = attachments
-    if wants_image:
-        arguments["candidate_budget"] = 1
+    if wants_image or image_first_for_video:
+        arguments["candidate_budget"] = 2 if wants_video and not attachments else 1
     if wants_video:
         arguments["video_budget"] = 1
     duration = _duration_seconds(prompt)
@@ -46,7 +47,12 @@ def plan_visual_agent_request(
             "safe_reframe_allowed": True,
             "ask_user_on_low_confidence": True,
         },
-        "reason": _reason(wants_image=wants_image, wants_video=wants_video, attachments=attachments),
+        "reason": _reason(
+            wants_image=wants_image,
+            wants_video=wants_video,
+            attachments=attachments,
+            image_first_for_video=image_first_for_video,
+        ),
     }
 
 
@@ -78,11 +84,19 @@ def _confidence(*, wants_image: bool, wants_video: bool, attachments: list[str])
     return 0.0
 
 
-def _reason(*, wants_image: bool, wants_video: bool, attachments: list[str]) -> str:
+def _reason(
+    *,
+    wants_image: bool,
+    wants_video: bool,
+    attachments: list[str],
+    image_first_for_video: bool = False,
+) -> str:
     if wants_image and wants_video:
         return "image_plus_video_request"
     if wants_video and attachments:
         return "attachment_to_video_request"
+    if image_first_for_video:
+        return "text_to_video_image_first_request"
     if wants_video:
         return "video_request"
     if wants_image:
