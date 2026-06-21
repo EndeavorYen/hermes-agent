@@ -25,7 +25,7 @@ def build_visual_e2e_automation_report(
     health = build_visual_autonomous_healthcheck(_ledger_path_for_work_dir(work_dir), autonomy_level=2)
     if include_live:
         live_e2e = (
-            build_visual_live_provider_e2e_report(mode="live", work_dir=work_dir)
+            build_visual_live_provider_e2e_report(mode="live", work_dir=None)
             if live_provider_enabled()
             else {"status": "skipped", "reason": "live_provider_not_enabled"}
         )
