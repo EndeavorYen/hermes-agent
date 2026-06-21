@@ -213,4 +213,32 @@ rtk git diff --check
 
 ## Execution Status: 2026-06-21
 
-Not started at plan creation.
+Completed and committed:
+
+- `dfb01e031 feat: judge visual candidate quality`
+  - Added privacy-safe visual quality judge.
+  - Integrated quality scores into `visual_package_generate` candidate scoring.
+  - Records `visual_quality_judge` rows in the Visual Attempt Ledger.
+  - Self-review: quality evidence improves automatic reward dimensions without overriding hard gates; reference-specific evidence is still conservative and should be improved with future vision-model inputs.
+- `a3327eba6 feat: plan visual agent mode requests`
+  - Added natural-language visual agent planner.
+  - Routes image-only, video-only, and image-plus-video requests into `visual_package_generate` arguments.
+  - Adds provider-neutral recovery policy.
+  - Self-review: normal prompts no longer need advanced knobs; image-to-video references are treated as input assets rather than forced image outputs.
+- `257817513 feat: add visual regression report`
+  - Added privacy-safe visual regression report and CLI.
+  - Fails closed on duplicate delivery, missing source metadata, unsafe activation, and prompt mutation reads.
+  - Self-review: report can run without live providers and is suitable as a pre-push visual release gate.
+
+Final verification:
+
+- Phase 4 targeted tests passed.
+- Phase 5 targeted tests passed.
+- Phase 6 targeted tests passed.
+- Full visual gate and regression scripts passed before push.
+
+Remaining follow-up:
+
+- Calibrate quality judge dimensions with real vision-model output and Visual Arsenal feedback.
+- Wire the visual agent planner into the actual agent/tool-routing surface after one live Slack smoke confirms no route conflict.
+- Add historical replay over runtime-private ledger rows for trend reporting.
