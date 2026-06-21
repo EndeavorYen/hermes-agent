@@ -1,0 +1,1 @@
+"""Visual candidate judges."""

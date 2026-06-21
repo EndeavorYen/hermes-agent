@@ -798,7 +798,7 @@ class VisualAttemptLedger:
 
   Result: `171 passed`.
 
-- [ ] **Step 6: Commit milestone 4**
+- [x] **Step 6: Commit milestone 4**
 
   Run:
 
@@ -807,11 +807,14 @@ class VisualAttemptLedger:
   rtk git commit -m "feat: gate visual artifact delivery"
   ```
 
+  Execution note, 2026-06-21: committed and pushed to `origin` as
+  `ad9a5c85e feat: gate visual artifact delivery`.
+
 ## Milestone 5: Deterministic Judges and Ranker v0
 
 **Purpose:** Rank by artifact evidence before using VLM or learning.
 
-- [ ] **Step 1: Write deterministic judge tests**
+- [x] **Step 1: Write deterministic judge tests**
 
   Create `tests/visual/test_deterministic_judges.py`:
 
@@ -837,7 +840,7 @@ class VisualAttemptLedger:
       assert score["hard_gate"]["artifact_fresh"] is False
   ```
 
-- [ ] **Step 2: Write ranker tests**
+- [x] **Step 2: Write ranker tests**
 
   Create `tests/visual/test_ranker.py`:
 
@@ -869,7 +872,7 @@ class VisualAttemptLedger:
       assert decision.selected_artifact_id == "var_good"
   ```
 
-- [ ] **Step 3: Run red judge/ranker tests**
+- [x] **Step 3: Run red judge/ranker tests**
 
   Run:
 
@@ -879,7 +882,7 @@ class VisualAttemptLedger:
 
   Expected: FAIL because judge and ranker modules are missing.
 
-- [ ] **Step 4: Implement deterministic judge and ranker**
+- [x] **Step 4: Implement deterministic judge and ranker**
 
   Implement:
 
@@ -888,7 +891,13 @@ class VisualAttemptLedger:
   - decision: `post`, `ask_user`, `retry`, `fail`;
   - version labels: `deterministic_judge.v0.1`, `visual_ranker.v0.1`.
 
-- [ ] **Step 5: Verify milestone 5**
+  Execution note, 2026-06-21: implemented `agent.visual.judges.deterministic`
+  and `agent.visual.ranker` with hard gates for freshness, MIME, kind,
+  provider error, and delivery possibility; soft scores for aspect, resolution,
+  duration, and neutral provider reliability; and rank decisions `post`,
+  `ask_user`, `retry`, and `fail`.
+
+- [x] **Step 5: Verify milestone 5**
 
   Run:
 
@@ -898,6 +907,18 @@ class VisualAttemptLedger:
   ```
 
   Expected: tests pass and diff check is clean.
+
+  Execution note, 2026-06-21: verified with:
+
+  ```bash
+  rtk ./venv/bin/python -m pytest tests/visual/test_deterministic_judges.py tests/visual/test_ranker.py -q
+  rtk ./venv/bin/python -m pytest tests/visual -q
+  rtk ./venv/bin/python -m ruff check agent/visual/judges/__init__.py agent/visual/judges/deterministic.py agent/visual/ranker.py tests/visual/test_deterministic_judges.py tests/visual/test_ranker.py
+  rtk git diff --check
+  ```
+
+  Results: focused judge/ranker `7 passed`; full visual suite `27 passed`;
+  ruff and diff check clean.
 
 - [ ] **Step 6: Commit milestone 5**
 
