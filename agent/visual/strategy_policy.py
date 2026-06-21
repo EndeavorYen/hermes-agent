@@ -4,6 +4,7 @@ import hashlib
 from dataclasses import dataclass
 from typing import Any
 
+from agent.visual.attempt_ledger import VisualAttemptLedger
 from agent.visual.strategy_atoms import StrategyAtom
 from agent.visual.strategy_atoms import builtin_strategy_atom_map
 
@@ -17,6 +18,7 @@ class StrategyPlan:
     atom_signatures: list[str]
     activation_status: str = "shadow"
     prompt_mutation_allowed: bool = False
+    activation_id: str | None = None
 
     def to_record(self) -> dict[str, Any]:
         return {
@@ -27,6 +29,7 @@ class StrategyPlan:
             "atom_signatures": self.atom_signatures,
             "activation_status": self.activation_status,
             "prompt_mutation_allowed": self.prompt_mutation_allowed,
+            "activation_id": self.activation_id,
         }
 
 
@@ -52,6 +55,40 @@ def select_strategy_plan(
         strategy_signature=_strategy_signature(intent_signature, atom_signatures),
         atom_signatures=atom_signatures,
     )
+
+
+def find_controlled_strategy_plan(
+    ledger: VisualAttemptLedger,
+    *,
+    intent_signature: str,
+) -> StrategyPlan | None:
+    activations = ledger.list_strategy_activations(intent_signature=intent_signature)
+    rolled_back_ids = {
+        str(row["rollback_of"])
+        for row in activations
+        if row.get("activation_status") == "rolled_back" and row.get("rollback_of")
+    }
+    for row in reversed(activations):
+        activation_id = str(row.get("id") or "")
+        if activation_id in rolled_back_ids:
+            continue
+        if row.get("activation_status") != "controlled":
+            continue
+        promotion_decision = row.get("promotion_decision")
+        if not _safe_controlled_decision(promotion_decision):
+            continue
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        return StrategyPlan(
+            intent_signature=str(row.get("intent_signature") or intent_signature),
+            mode="controlled",
+            confidence=_coerce_float(promotion_decision.get("confidence")),
+            strategy_signature=str(row.get("strategy_signature") or ""),
+            atom_signatures=_string_list(metadata.get("atom_signatures")),
+            activation_status="controlled",
+            prompt_mutation_allowed=False,
+            activation_id=activation_id,
+        )
+    return None
 
 
 def _select_atoms(
@@ -102,6 +139,20 @@ def _strategy_signature(intent_signature: str, atom_signatures: list[str]) -> st
     payload = "|".join([intent_signature, *atom_signatures])
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
     return f"vstrat_{digest}"
+
+
+def _safe_controlled_decision(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and value.get("allowed") is True
+        and value.get("decision") == "promote_controlled"
+    )
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str) and item]
 
 
 def _coerce_float(value: Any) -> float:

@@ -16,6 +16,7 @@ from agent.visual.provider_stats import compute_provider_reliability
 from agent.visual.ranker import rank_visual_candidates
 from agent.visual.reward_model import score_visual_candidate
 from agent.visual.shadow_learning import record_shadow_update
+from agent.visual.strategy_policy import find_controlled_strategy_plan
 from agent.visual.strategy_policy import select_strategy_plan
 from agent.visual.tracking import default_visual_ledger_path
 from agent.visual.tracking import visual_delivery_metadata
@@ -167,8 +168,14 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         preference_profile=preference_profile,
         exploration_rate=0.0,
     )
+    controlled_strategy_plan = find_controlled_strategy_plan(
+        ledger,
+        intent_signature=intent_signature,
+    )
+    if controlled_strategy_plan is not None:
+        strategy_plan = controlled_strategy_plan
     learning: dict[str, Any] = {
-        "mode": "shadow",
+        "mode": "controlled_read_only" if controlled_strategy_plan is not None else "shadow",
         "strategy_plan": strategy_plan.to_record(),
         "active_learning": {},
     }

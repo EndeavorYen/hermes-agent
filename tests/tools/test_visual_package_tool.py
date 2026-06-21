@@ -202,3 +202,66 @@ async def test_visual_package_records_shadow_learning_but_keeps_delivery_selecte
         request_id=payload["visual_request_id"],
     )
     assert validation["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_visual_package_reads_controlled_strategy_without_prompt_mutation(monkeypatch, tmp_path):
+    from agent.visual.intent_signature import build_intent_signature
+    from agent.visual.strategy_activation import record_strategy_activation
+    from agent.visual.tracking import default_visual_ledger_path
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image = tmp_path / "image.png"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    prompt = "請產出一張圖片：霧黑鋼筆。"
+    intent_signature = build_intent_signature(
+        {
+            "kind": "visual_package",
+            "wants_image": True,
+            "wants_video": False,
+            "aspect_ratio": "16:9",
+            "modality": "package",
+            "operation": "visual_package_generate",
+        }
+    )
+    ledger = visual_package_tool.VisualAttemptLedger(default_visual_ledger_path())
+    ledger.initialize()
+    activation_id = record_strategy_activation(
+        ledger,
+        shadow_update_id="vsh_demo",
+        intent_signature=intent_signature,
+        strategy_signature="vstrat_controlled_demo",
+        activation_status="controlled",
+        promotion_decision={
+            "decision": "promote_controlled",
+            "allowed": True,
+            "confidence": 0.88,
+        },
+        metadata={"atom_signatures": ["composition.full_subject_visible@v1"]},
+    )
+    image_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(image),
+            "provider": "fixture",
+            "model": "image",
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {"prompt": prompt, "include_video": False, "candidate_budget": 1}
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["learning"]["mode"] == "controlled_read_only"
+    assert payload["learning"]["strategy_plan"]["activation_status"] == "controlled"
+    assert payload["learning"]["strategy_plan"]["activation_id"] == activation_id
+    assert payload["learning"]["strategy_plan"]["prompt_mutation_allowed"] is False
+    assert image_calls[0]["prompt"] == prompt
