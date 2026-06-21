@@ -67,6 +67,7 @@ def _count(conn: sqlite3.Connection, table: str, *, request_id: str | None = Non
 
 def _duplicate_sent_delivery_count(conn: sqlite3.Connection, *, request_id: str | None = None) -> int:
     artifact_id_column = _first_existing_column(conn, "visual_artifacts", ("id", "artifact_id"))
+    artifact_identity_expr = _artifact_identity_expr(conn)
     destination_expr = _delivery_destination_expr(conn)
     request_filter = ""
     params: tuple[str, ...] = ()
@@ -79,9 +80,9 @@ def _duplicate_sent_delivery_count(conn: sqlite3.Connection, *, request_id: str 
         FROM visual_deliveries d
         JOIN visual_artifacts a ON a.{artifact_id_column} = d.artifact_id
         WHERE d.delivery_status = 'sent'
-          AND a.content_hash IS NOT NULL
+          AND {artifact_identity_expr} IS NOT NULL
           {request_filter}
-        GROUP BY d.request_id, {destination_expr}, a.content_hash
+        GROUP BY d.request_id, {destination_expr}, {artifact_identity_expr}
         HAVING COUNT(*) > 1
         """,
         params,
@@ -105,8 +106,7 @@ def _missing_source_metadata_count(conn: sqlite3.Connection, *, request_id: str 
         SELECT COUNT(*) AS count
         FROM visual_artifacts
         WHERE (
-              content_hash IS NULL
-           OR freshness_status IS NULL
+              freshness_status IS NULL
            OR kind IS NULL
            OR ({missing_source})
         )
@@ -136,6 +136,16 @@ def _delivery_destination_expr(conn: sqlite3.Connection) -> str:
     if "destination" in columns:
         return f"COALESCE(d.destination, {fallback})"
     return fallback
+
+
+def _artifact_identity_expr(conn: sqlite3.Connection) -> str:
+    columns = _column_names(conn, "visual_artifacts")
+    candidates = [
+        f"a.{column}"
+        for column in ("content_hash", "source_url", "uri", "local_path")
+        if column in columns
+    ]
+    return "COALESCE(" + ", ".join(candidates) + ")" if candidates else "NULL"
 
 
 def _first_existing_column(conn: sqlite3.Connection, table: str, candidates: tuple[str, ...]) -> str:

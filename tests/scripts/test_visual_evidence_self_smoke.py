@@ -75,6 +75,57 @@ def test_visual_evidence_report_supports_legacy_runtime_schema(tmp_path):
     assert payload["proof"]["missing_source_metadata_count"] == 0
 
 
+def test_visual_evidence_report_accepts_legacy_remote_source_without_hash(tmp_path):
+    from scripts.visual_evidence_report import build_visual_evidence_report
+
+    db_path = tmp_path / "remote.sqlite3"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE visual_requests (request_id TEXT PRIMARY KEY);
+            CREATE TABLE visual_attempts (attempt_id TEXT PRIMARY KEY, request_id TEXT);
+            CREATE TABLE visual_artifacts (
+                artifact_id TEXT PRIMARY KEY,
+                attempt_id TEXT,
+                request_id TEXT,
+                kind TEXT,
+                local_path TEXT,
+                source_url TEXT,
+                content_hash TEXT,
+                freshness_status TEXT
+            );
+            CREATE TABLE visual_deliveries (
+                delivery_id TEXT PRIMARY KEY,
+                request_id TEXT,
+                attempt_id TEXT,
+                artifact_id TEXT,
+                platform TEXT,
+                destination_id TEXT,
+                thread_id TEXT,
+                delivery_status TEXT
+            );
+            CREATE TABLE visual_feedback (feedback_id TEXT PRIMARY KEY, request_id TEXT);
+            INSERT INTO visual_requests VALUES ('vrq_remote');
+            INSERT INTO visual_attempts VALUES ('vat_remote', 'vrq_remote');
+            INSERT INTO visual_artifacts VALUES (
+                'var_remote',
+                'vat_remote',
+                'vrq_remote',
+                'video',
+                NULL,
+                'https://vidgen.x.ai/xai-vidgen-bucket/current.mp4',
+                NULL,
+                'unknown'
+            );
+            """
+        )
+
+    payload = build_visual_evidence_report(db_path)
+
+    assert payload["success"] is True
+    assert payload["proof"]["missing_source_metadata_count"] == 0
+
+
 def test_visual_evidence_report_can_scope_to_request(tmp_path):
     from scripts.visual_evidence_report import build_visual_evidence_report
 
