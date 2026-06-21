@@ -308,5 +308,51 @@ async def test_visual_package_records_quality_judgment_for_candidates(monkeypatc
     assert rankings[0]["scores"]["reward"]["dimensions"]["aesthetic_fit"] != 0.5
 
 
+@pytest.mark.asyncio
+async def test_visual_package_retries_empty_image_response_before_ranking(monkeypatch, tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image = tmp_path / "retry-image.png"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    calls = []
+
+    def fake_generate_image(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return {
+                "success": False,
+                "error": "empty_response",
+                "provider": "fixture",
+                "model": "image",
+            }
+        return {
+            "success": True,
+            "image": str(image),
+            "provider": "fixture",
+            "model": "image",
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {"prompt": "請產出一張圖片：霧黑鋼筆。", "include_video": False, "candidate_budget": 1}
+        )
+    )
+
+    assert len(calls) == 2
+    assert payload["success"] is True
+    assert payload["images"] == [str(image)]
+    assert payload["generation_payloads"]["image"][0]["failure"]["failure_class"] == "empty_response"
+    assert payload["generation_payloads"]["image"][0]["recovery"]["decision"] == "retry"
+    assert payload["generation_payloads"]["image"][1]["retry_of"] == 0
+    attempts = VisualAttemptLedger(default_visual_ledger_path())._list("visual_attempts")
+    assert attempts[0]["metadata"]["failure"]["failure_class"] == "empty_response"
+    assert attempts[1]["metadata"]["retry_of"] == 0
+
+
 def _list_rows(ledger, table):
     return ledger._list(table)

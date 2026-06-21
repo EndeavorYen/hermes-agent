@@ -445,6 +445,36 @@ rtk git diff --check
 - Does retry improve success without hiding compromise?
 - Can the user understand what changed when Hermes returns a compromised version?
 
+### Phase 8 Execution Status: 2026-06-21
+
+Implemented:
+
+- `agent/visual/provider_failures.py`
+  - Classifies provider failures into content moderation, timeout, empty response, unsupported reference, unsupported aspect ratio, rate limited, provider unavailable, and unknown.
+  - Emits safe operator summaries without raw provider bodies.
+- `agent/visual/recovery.py`
+  - Plans bounded recovery decisions.
+  - Supports content-moderation safe reframing, timeout work reduction, unsupported aspect-ratio repair from source dimensions, and empty-response simplification.
+  - Fails closed when retry budget is exhausted or the failure is not retryable.
+- `tools/visual_package_tool.py`
+  - Annotates failed generation attempts with `failure` and `recovery` metadata before writing the ledger.
+  - Performs one bounded retry per failed image/video candidate when recovery returns `decision="retry"`.
+  - Ranks only successful retry candidates.
+- `agent/visual/selection_report.py`
+  - Reports selected artifacts, generated candidates, stale suppression, duplicate suppression, retry count, failure classes, and rank decisions.
+- `scripts/visual_selection_report.py`
+  - Adds CLI support for runtime selection-report inspection.
+
+Self-assessment:
+
+- `proven`: `tests/visual/test_provider_failures.py`, `tests/visual/test_recovery.py`, `tests/visual/test_selection_report.py`, `tests/tools/test_visual_package_tool.py`, `tests/scripts/test_visual_selection_report.py`, and `tests/scripts/test_visual_regression_report.py` passed.
+- `proven`: `scripts/visual_selection_report.py --json` and `scripts/visual_regression_report.py --json` passed against the runtime ledger.
+- `not_proven`: live provider retry quality is not yet proven; the retry loop is fixture-proven and ledger-visible.
+- `quality_delta`: should reduce manual intervention for empty responses, timeouts, and aspect mismatch because Hermes can retry or report compromise without user input.
+- `regression_risks`: safe reframing may still be too conservative or too generic; Phase 9 must prove delivery does not expose failed/unselected attempts.
+- `improvement_action`: `carry_to_next_phase`; Phase 9 must use selected-artifact manifests so repaired candidates are delivered while failed attempts remain suppressed.
+- `rollback_path`: disable retry by setting `retry_budget_remaining=0` in the package tool recovery call; failures will record metadata but no automatic retry will run.
+
 ---
 
 ## Phase 9 Goal: Slack Delivery End-to-End Contract

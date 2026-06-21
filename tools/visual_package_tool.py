@@ -13,8 +13,10 @@ from agent.visual.judges.deterministic import judge_artifact
 from agent.visual.judges.quality import judge_visual_quality
 from agent.visual.media_probe import probe_media_reference
 from agent.visual.preference_profile import build_preference_profile
+from agent.visual.provider_failures import classify_visual_provider_failure
 from agent.visual.provider_stats import compute_provider_reliability
 from agent.visual.ranker import rank_visual_candidates
+from agent.visual.recovery import plan_visual_recovery
 from agent.visual.reward_model import score_visual_candidate
 from agent.visual.shadow_learning import record_shadow_update
 from agent.visual.strategy_policy import find_controlled_strategy_plan
@@ -185,11 +187,23 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         image_payloads = []
         image_candidates = []
         for candidate_index in range(candidate_budget):
-            image_payload = generate_image(
-                prompt=prompt,
-                aspect_ratio=image_aspect_ratio,
-                reference_image_urls=attachments or None,
-            )
+            image_kwargs = {
+                "prompt": prompt,
+                "aspect_ratio": image_aspect_ratio,
+                "reference_image_urls": attachments or None,
+            }
+            image_payload = generate_image(**image_kwargs)
+            if not image_payload.get("success"):
+                _annotate_generation_failure(
+                    image_payload,
+                    base_kwargs=image_kwargs,
+                    request={
+                        "prompt": prompt,
+                        "arguments": image_kwargs,
+                        "source_media": _source_media_from_attachments(attachments),
+                    },
+                    retry_budget_remaining=1,
+                )
             image_payloads.append(image_payload)
             image_candidate = _record_payload_candidate(
                 ledger,
@@ -207,6 +221,37 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 image_candidates.append(image_candidate)
                 all_artifact_ids.append(image_candidate["artifact_id"])
                 all_artifact_paths.append(image_candidate["artifact_path"])
+            elif not image_payload.get("success"):
+                retry_payload = _retry_generation_payload(
+                    generator=generate_image,
+                    payload=image_payload,
+                    base_kwargs=image_kwargs,
+                    request={
+                        "prompt": prompt,
+                        "arguments": image_kwargs,
+                        "source_media": _source_media_from_attachments(attachments),
+                    },
+                    retry_budget_remaining=1,
+                    retry_of=candidate_index,
+                )
+                if retry_payload is not None:
+                    image_payloads.append(retry_payload)
+                    retry_candidate = _record_payload_candidate(
+                        ledger,
+                        request_id=request_id,
+                        payload=retry_payload,
+                        artifact_key="image",
+                        expected_kind="image",
+                        prompt=str(retry_payload.get("prompt") or prompt),
+                        provider=str(retry_payload.get("provider") or ""),
+                        model=str(retry_payload.get("model") or ""),
+                        requested_parameters={"aspect_ratio": _judge_aspect_ratio(aspect_ratio)},
+                        candidate_index=candidate_index + candidate_budget,
+                    )
+                    if retry_candidate:
+                        image_candidates.append(retry_candidate)
+                        all_artifact_ids.append(retry_candidate["artifact_id"])
+                        all_artifact_paths.append(retry_candidate["artifact_path"])
         generation_payloads["image"] = image_payloads[0] if len(image_payloads) == 1 else image_payloads
         _score_candidates(
             ledger,
@@ -242,12 +287,24 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         video_payloads = []
         video_candidates = []
         for candidate_index in range(video_budget):
-            video_payload = generate_video(
-                prompt=prompt,
-                image_url=video_image_url,
-                duration=duration,
-                aspect_ratio=_judge_aspect_ratio(aspect_ratio),
-            )
+            video_kwargs = {
+                "prompt": prompt,
+                "image_url": video_image_url,
+                "duration": duration,
+                "aspect_ratio": _judge_aspect_ratio(aspect_ratio),
+            }
+            video_payload = generate_video(**video_kwargs)
+            if not video_payload.get("success"):
+                _annotate_generation_failure(
+                    video_payload,
+                    base_kwargs=video_kwargs,
+                    request={
+                        "prompt": prompt,
+                        "arguments": video_kwargs,
+                        "source_media": _source_media_from_attachments([video_image_url] if video_image_url else []),
+                    },
+                    retry_budget_remaining=1,
+                )
             video_payloads.append(video_payload)
             video_candidate = _record_payload_candidate(
                 ledger,
@@ -265,6 +322,37 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 video_candidates.append(video_candidate)
                 all_artifact_ids.append(video_candidate["artifact_id"])
                 all_artifact_paths.append(video_candidate["artifact_path"])
+            elif not video_payload.get("success"):
+                retry_payload = _retry_generation_payload(
+                    generator=generate_video,
+                    payload=video_payload,
+                    base_kwargs=video_kwargs,
+                    request={
+                        "prompt": prompt,
+                        "arguments": video_kwargs,
+                        "source_media": _source_media_from_attachments([video_image_url] if video_image_url else []),
+                    },
+                    retry_budget_remaining=1,
+                    retry_of=candidate_index,
+                )
+                if retry_payload is not None:
+                    video_payloads.append(retry_payload)
+                    retry_candidate = _record_payload_candidate(
+                        ledger,
+                        request_id=request_id,
+                        payload=retry_payload,
+                        artifact_key="video",
+                        expected_kind="video",
+                        prompt=str(retry_payload.get("prompt") or prompt),
+                        provider=str(retry_payload.get("provider") or ""),
+                        model=str(retry_payload.get("model") or ""),
+                        requested_parameters={"duration_seconds": retry_payload.get("duration", duration)},
+                        candidate_index=candidate_index + video_budget,
+                    )
+                    if retry_candidate:
+                        video_candidates.append(retry_candidate)
+                        all_artifact_ids.append(retry_candidate["artifact_id"])
+                        all_artifact_paths.append(retry_candidate["artifact_path"])
         generation_payloads["video"] = video_payloads[0] if len(video_payloads) == 1 else video_payloads
         _score_candidates(
             ledger,
@@ -344,6 +432,7 @@ def _record_payload_candidate(
         status="completed" if success else "failed",
         error_type=payload.get("error_type") if not success else None,
         error_message=payload.get("error") if not success else None,
+        metadata=_attempt_metadata(payload),
     )
     artifact_ref = payload.get(artifact_key)
     if not success or not isinstance(artifact_ref, str) or not artifact_ref.strip():
@@ -371,6 +460,74 @@ def _record_payload_candidate(
         "hard_gate": score["hard_gate"],
         "scores": score["scores"],
     }
+
+
+def _retry_generation_payload(
+    *,
+    generator,
+    payload: dict[str, Any],
+    base_kwargs: dict[str, Any],
+    request: dict[str, Any],
+    retry_budget_remaining: int,
+    retry_of: int,
+) -> dict[str, Any] | None:
+    _annotate_generation_failure(
+        payload,
+        base_kwargs=base_kwargs,
+        request=request,
+        retry_budget_remaining=retry_budget_remaining,
+    )
+    recovery = payload["recovery"]
+    if recovery.get("decision") != "retry":
+        return None
+    retry_kwargs = {**base_kwargs, **_generator_kwargs(recovery.get("modified_arguments"))}
+    retry_payload = generator(**retry_kwargs)
+    retry_payload["retry_of"] = retry_of
+    retry_payload["recovery"] = recovery
+    return retry_payload
+
+
+def _annotate_generation_failure(
+    payload: dict[str, Any],
+    *,
+    base_kwargs: dict[str, Any],
+    request: dict[str, Any],
+    retry_budget_remaining: int,
+) -> None:
+    if "failure" not in payload:
+        payload["failure"] = classify_visual_provider_failure(payload)
+    if "recovery" not in payload:
+        payload["recovery"] = plan_visual_recovery(
+            {**request, "arguments": {**base_kwargs}},
+            payload["failure"],
+            retry_budget_remaining=retry_budget_remaining,
+        )
+
+
+def _attempt_metadata(payload: dict[str, Any]) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    for key in ("failure", "recovery", "retry_of"):
+        if key in payload:
+            metadata[key] = payload[key]
+    return metadata
+
+
+def _generator_kwargs(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: item
+        for key, item in value.items()
+        if key in {"prompt", "aspect_ratio", "duration", "candidate_budget"}
+    }
+
+
+def _source_media_from_attachments(attachments: list[str]) -> dict[str, Any]:
+    for attachment in attachments:
+        meta = probe_media_reference(attachment)
+        if meta.width and meta.height:
+            return {"width": meta.width, "height": meta.height}
+    return {}
 
 
 def _score_candidates(
