@@ -8,6 +8,35 @@
 
 **Tech Stack:** Python 3.11, SQLite, existing `agent.visual` modules, `tools/visual_package_tool.py`, gateway/Slack delivery surfaces, pytest, ruff, `scripts/visual_regression_report.py`, `scripts/visual_evidence_self_smoke.py`, runtime-private Visual Attempt Ledger.
 
+## Phase 7-10 Completion Objective
+
+Phase 7-10 are complete only when Hermes can run the visual package path with materially less manual intervention:
+
+- It can judge generated image/video artifacts with evidence beyond metadata-only checks.
+- It can suppress weak, stale, duplicate, failed, or unselected candidates before Slack delivery.
+- It can negotiate one bounded provider repair attempt when a provider rejects, times out, returns empty output, or cannot honor reference/aspect settings.
+- It can post selected current images/videos to Slack automatically without requiring a second user prompt.
+- It can derive video aspect settings from the actual source media when available.
+- It can produce privacy-safe learning proposals from ledger evidence while keeping prompt mutation disabled.
+- It can explain what was selected, what was suppressed, what was retried, and what remains shadow-only.
+
+The target is not to make every generated image excellent. The target is to make Hermes measurably better at avoiding known failure modes, choosing the best current candidate, recovering from provider failures, and learning from evidence without relying on the user to review every round.
+
+## Self-Assessment and Improvement Contract
+
+Every phase must end with a written self-assessment and at least one concrete improvement decision.
+
+The self-assessment must include:
+
+- `proven`: exact tests, reports, or runtime ledger checks that passed.
+- `not_proven`: user-facing behavior that is still unverified.
+- `quality_delta`: whether the phase should reduce human intervention, and why.
+- `regression_risks`: stale media, duplicate delivery, wrong aspect ratio, prompt mutation, provider-policy confusion, or privacy leakage risks still present.
+- `improvement_action`: one of `fix_now`, `carry_to_next_phase`, or `documented_defer`, with a concrete reason.
+- `rollback_path`: how to disable or revert the behavior if live output regresses.
+
+If self-assessment finds a failed acceptance gate, the phase is not complete. The worker must either fix it immediately or explicitly move the incomplete item into the next phase with a testable follow-up task. Reporting a weakness without an action is not accepted.
+
 ## Global Constraints
 
 - Base branch: `upgrade/hermes-v2026.6.19-local`.
