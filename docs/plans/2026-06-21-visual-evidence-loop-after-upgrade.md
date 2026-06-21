@@ -154,9 +154,11 @@ Create or modify these files in phases:
   ```python
   from __future__ import annotations
 
-  def test_get_xai_oauth_auth_status_uses_runtime_resolver(monkeypatch):
+  def test_get_xai_oauth_auth_status_uses_runtime_resolver_when_pool_empty(monkeypatch):
+      import agent.credential_pool as credential_pool
       import hermes_cli.auth as auth_mod
 
+      monkeypatch.setattr(credential_pool, "load_pool", lambda provider_id: None)
       monkeypatch.setattr(
           auth_mod,
           "resolve_xai_oauth_runtime_credentials",
@@ -178,7 +180,7 @@ Create or modify these files in phases:
   Also extend `tests/hermes_cli/test_status.py` with a display-level regression:
 
   ```python
-  def test_xai_oauth_runtime_resolver_login_truth_is_printed(monkeypatch, capsys, tmp_path):
+  def test_runtime_resolver_login_truth_is_printed(monkeypatch, capsys, tmp_path):
       import hermes_cli.auth as auth_mod
 
       status_mod = _base_xai_mocks(monkeypatch, tmp_path)
@@ -206,7 +208,7 @@ Create or modify these files in phases:
   Run:
 
   ```bash
-  rtk ./venv/bin/python -m pytest tests/hermes_cli/test_auth_xai_oauth_provider.py::test_get_xai_oauth_auth_status_uses_runtime_resolver tests/hermes_cli/test_status.py::TestShowStatusXaiOAuth::test_xai_oauth_runtime_resolver_login_truth_is_printed -q
+  rtk ./venv/bin/python -m pytest tests/hermes_cli/test_auth_xai_oauth_provider.py::test_get_xai_oauth_auth_status_uses_runtime_resolver_when_pool_empty tests/hermes_cli/test_status.py::TestShowStatusXaiOAuth::test_runtime_resolver_login_truth_is_printed -q
   ```
 
   Original expectation: FAIL because the status reader does not yet report
@@ -234,7 +236,7 @@ Create or modify these files in phases:
   Run:
 
   ```bash
-  rtk ./venv/bin/python -m pytest tests/hermes_cli/test_auth_xai_oauth_provider.py::test_get_xai_oauth_auth_status_uses_runtime_resolver tests/hermes_cli/test_status.py::TestShowStatusXaiOAuth::test_xai_oauth_runtime_resolver_login_truth_is_printed -q
+  rtk ./venv/bin/python -m pytest tests/hermes_cli/test_auth_xai_oauth_provider.py::test_get_xai_oauth_auth_status_uses_runtime_resolver_when_pool_empty tests/hermes_cli/test_status.py::TestShowStatusXaiOAuth::test_runtime_resolver_login_truth_is_printed -q
   rtk hermes status
   rtk hermes chat -Q --max-turns 1 -q "Reply exactly: OK"
   ```
@@ -245,14 +247,18 @@ Create or modify these files in phases:
   - `hermes status` no longer contradicts the live `xai-oauth` smoke;
   - chat returns `OK`.
 
-- [ ] **Step 7: Commit hygiene/status baseline**
+- [x] **Step 7: Commit hygiene/status baseline**
 
   Run:
 
   ```bash
   rtk git add docs/visual-mediator-runtime-private.md tests/hermes_cli/test_auth_xai_oauth_provider.py tests/hermes_cli/test_status.py hermes_cli/auth.py hermes_cli/status.py
-  rtk git commit -m "fix: report xai oauth status truthfully"
+  rtk git commit -m "test: lock xai oauth status truth"
   ```
+
+  Execution note, 2026-06-21: committed and pushed as
+  `b82e01069 test: lock xai oauth status truth`. No production status files were
+  changed because the behavior already existed.
 
 ## Milestone 1: Ledger and Artifact Identity
 
