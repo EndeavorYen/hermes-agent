@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import argparse
+import json
 import sqlite3
 from pathlib import Path
 from typing import Any
 
 from agent.visual.attempt_ledger import VisualAttemptLedger
 from agent.visual.provider_stats import top_provider_reliability
+from agent.visual.tracking import default_visual_ledger_path
 
 
 def build_visual_evidence_report(db_path: str | Path, *, request_id: str | None = None) -> dict[str, Any]:
@@ -38,6 +41,22 @@ def build_visual_evidence_report(db_path: str | Path, *, request_id: str | None 
         "proof": proof,
         "provider_reliability": {"top": provider_reliability},
     }
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Build a privacy-safe visual evidence report.")
+    parser.add_argument("--db-path", type=Path, default=default_visual_ledger_path())
+    parser.add_argument("--request-id", default=None)
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args(argv)
+
+    payload = build_visual_evidence_report(args.db_path, request_id=args.request_id)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    else:
+        status = "passed" if payload["success"] else "failed"
+        print(f"visual evidence report {status}")
+    return 0 if payload["success"] else 1
 
 
 def _count(conn: sqlite3.Connection, table: str, *, request_id: str | None = None) -> int:
@@ -129,3 +148,7 @@ def _first_existing_column(conn: sqlite3.Connection, table: str, candidates: tup
 
 def _column_names(conn: sqlite3.Connection, table: str) -> set[str]:
     return {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

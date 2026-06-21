@@ -118,3 +118,18 @@ def test_visual_evidence_report_can_scope_to_request(tmp_path):
     assert payload["success"] is True
     assert payload["requests"]["count"] == 1
     assert payload["proof"]["missing_source_metadata_count"] == 0
+
+
+def test_visual_evidence_report_cli_outputs_json(tmp_path, capsys):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from scripts.visual_evidence_report import main
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+    request_id = ledger.record_request(status="completed")
+
+    exit_code = main(["--db-path", str(tmp_path / "visual.sqlite3"), "--request-id", request_id, "--json"])
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert '"success": true' in out
