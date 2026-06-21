@@ -445,7 +445,7 @@ class VisualAttemptLedger:
 
 **Purpose:** Avoid stale URL/file reposts by stabilizing generated media locally.
 
-- [ ] **Step 1: Write media probe tests**
+- [x] **Step 1: Write media probe tests**
 
   Create `tests/visual/test_media_probe.py`:
 
@@ -474,7 +474,7 @@ class VisualAttemptLedger:
       assert meta.freshness_status == "fresh"
   ```
 
-- [ ] **Step 2: Write artifact store tests**
+- [x] **Step 2: Write artifact store tests**
 
   Create `tests/visual/test_artifact_store.py`:
 
@@ -510,7 +510,7 @@ class VisualAttemptLedger:
       assert artifact.freshness_status == "fresh"
   ```
 
-- [ ] **Step 3: Run red tests**
+- [x] **Step 3: Run red tests**
 
   Run:
 
@@ -520,7 +520,7 @@ class VisualAttemptLedger:
 
   Expected: FAIL because media probe and artifact store are missing.
 
-- [ ] **Step 4: Implement media probe and artifact store**
+- [x] **Step 4: Implement media probe and artifact store**
 
   Implement:
 
@@ -530,7 +530,11 @@ class VisualAttemptLedger:
   - stable local copy;
   - remote URL references marked `freshness_status="unknown"` unless cached.
 
-- [ ] **Step 5: Verify milestone 2**
+  Execution note, 2026-06-21: implementation supports local paths and `file://`
+  URIs as stable fresh artifacts. HTTP(S) references are not fetched and are
+  deliberately marked `freshness_status="unknown"`.
+
+- [x] **Step 5: Verify milestone 2**
 
   Run:
 
@@ -541,7 +545,7 @@ class VisualAttemptLedger:
 
   Expected: tests pass and diff check is clean.
 
-- [ ] **Step 6: Commit milestone 2**
+- [x] **Step 6: Commit milestone 2**
 
   Run:
 
