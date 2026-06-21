@@ -780,6 +780,36 @@ rtk git diff --check
 - Is controlled activation reversible?
 - Does the system reduce user review burden without silently changing prompts?
 
+### Phase 10 Execution Status: 2026-06-21
+
+Implemented:
+
+- `agent/visual/learning/outcomes.py`
+  - Aggregates strategy outcomes by intent bucket and strategy signature.
+  - Separates provider health, delivery correctness, quality judge scores, human feedback, retry effectiveness, and ask-user rate.
+  - Computes confidence from sample size, judge-human disagreement, and human veto pressure.
+- `agent/visual/learning/proposals.py`
+  - Emits shadow-only safe proposal types: prefer/avoid strategy, prefer/avoid provider, candidate-budget increase, duration reduction, and ask-user-sooner.
+  - Rejects raw prompt rewriting and policy-bypass style mutations by construction.
+- `agent/visual/promotion_policy.py`
+  - Promotion gates now require successful delivery evidence.
+  - Blocks judge-human disagreement, human vetoes, prompt mutation requests, duplicate delivery, missing source metadata, and failed self-validation.
+- `agent/visual/strategy_activation.py`
+  - Controlled activation rejects prompt mutation metadata and remains read-only.
+- `scripts/visual_learning_report.py`
+  - Reports bucket/strategy counts, shadow proposals, controlled reads, blocked promotions, rollback count, prompt mutation reads, human veto count, and ask-user rate.
+  - Fails closed on unsafe activations, prompt mutation reads, duplicate deliveries, or missing source metadata.
+
+Self-assessment:
+
+- `proven`: Phase 10 tests passed for outcome aggregation, proposal generation, promotion gates, read-only activation, and privacy-safe learning report.
+- `proven`: runtime ledger reports passed: `visual_learning_report.py --json`, `visual_strategy_activation_report.py --json`, `visual_regression_report.py --json`, `visual_evidence_self_smoke.py --json`, and `visual_quality_calibration_report.py --json`.
+- `not_proven`: live provider-generated artifacts still have sparse judge rows in the runtime ledger (`judgments=0` in the current regression report), so the learning loop is operational but cannot yet create high-confidence aesthetic proposals from live history.
+- `quality_delta`: Hermes can now reduce user review burden when enough evidence accumulates, without silently rewriting prompts or merging provider reliability into aesthetic preference.
+- `regression_risks`: proposal thresholds are intentionally conservative; early usage may produce no proposals until more judged artifacts and feedback are recorded.
+- `improvement_action`: next phase should wire provider/vision judging into live package generation so `judgments` are populated consistently, then calibrate proposal thresholds against actual Slack feedback.
+- `rollback_path`: stop reading controlled strategies by disabling/removing controlled activations; shadow proposals remain evidence records and do not mutate prompts.
+
 ---
 
 ## Phase 7-10 Completion Criteria

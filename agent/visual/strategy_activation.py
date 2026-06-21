@@ -21,6 +21,11 @@ def record_strategy_activation(
 ) -> str:
     if activation_status not in _SUPPORTED_STATUSES:
         raise ValueError(f"unsupported activation_status: {activation_status}")
+    if activation_status == "controlled" and _prompt_mutation_requested(
+        promotion_decision=promotion_decision,
+        metadata=metadata,
+    ):
+        raise ValueError("controlled strategy activation must be read-only")
     return ledger.record_strategy_activation(
         shadow_update_id=shadow_update_id,
         intent_signature=intent_signature,
@@ -30,3 +35,16 @@ def record_strategy_activation(
         rollback_of=rollback_of,
         metadata=metadata or {},
     )
+
+
+def _prompt_mutation_requested(
+    *,
+    promotion_decision: dict[str, Any],
+    metadata: dict[str, Any] | None,
+) -> bool:
+    if isinstance(metadata, dict) and metadata.get("prompt_mutation_allowed") is True:
+        return True
+    observed = promotion_decision.get("observed") if isinstance(promotion_decision, dict) else None
+    if isinstance(observed, dict) and observed.get("prompt_mutation_allowed") is True:
+        return True
+    return promotion_decision.get("prompt_mutation_allowed") is True

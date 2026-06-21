@@ -23,11 +23,14 @@ def test_strategy_activation_records_controlled_decision(tmp_path):
         {
             "bucket_request_count": 25,
             "successful_artifact_count": 12,
+            "successful_delivery_count": 10,
             "provider_confidence": 0.95,
             "shadow_confidence": 0.90,
             "duplicate_delivery_count": 0,
             "missing_source_metadata_count": 0,
             "recent_negative_feedback_count": 0,
+            "human_veto_count": 0,
+            "judge_human_disagreement_rate": 0.0,
             "self_validation_success": True,
         },
         operator_approved=True,
@@ -96,4 +99,23 @@ def test_strategy_activation_rejects_unknown_status(tmp_path):
             strategy_signature="composition.full_subject_visible@v1",
             activation_status="active",
             promotion_decision={"decision": "promote_controlled", "allowed": True},
+        )
+
+
+def test_strategy_activation_rejects_controlled_prompt_mutation(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.strategy_activation import record_strategy_activation
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+
+    with pytest.raises(ValueError, match="controlled strategy activation must be read-only"):
+        record_strategy_activation(
+            ledger,
+            shadow_update_id="vsh_demo",
+            intent_signature="visig_demo",
+            strategy_signature="composition.full_subject_visible@v1",
+            activation_status="controlled",
+            promotion_decision={"decision": "promote_controlled", "allowed": True},
+            metadata={"prompt_mutation_allowed": True},
         )

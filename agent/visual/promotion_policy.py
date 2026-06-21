@@ -8,23 +8,30 @@ from typing import Any
 class PromotionThresholds:
     min_bucket_requests: int = 20
     min_successful_artifacts: int = 10
+    min_successful_deliveries: int = 5
     min_provider_confidence: float = 0.80
     min_shadow_confidence: float = 0.75
     max_duplicate_deliveries: int = 0
     max_missing_source_metadata: int = 0
     max_recent_negative_feedback: int = 0
+    max_human_veto_count: int = 0
+    max_judge_human_disagreement_rate: float = 0.25
 
     def to_record(self) -> dict[str, float | int | bool]:
         return {
             "min_bucket_requests": self.min_bucket_requests,
             "min_successful_artifacts": self.min_successful_artifacts,
+            "min_successful_deliveries": self.min_successful_deliveries,
             "min_provider_confidence": self.min_provider_confidence,
             "min_shadow_confidence": self.min_shadow_confidence,
             "max_duplicate_deliveries": self.max_duplicate_deliveries,
             "max_missing_source_metadata": self.max_missing_source_metadata,
             "max_recent_negative_feedback": self.max_recent_negative_feedback,
+            "max_human_veto_count": self.max_human_veto_count,
+            "max_judge_human_disagreement_rate": self.max_judge_human_disagreement_rate,
             "operator_approved": True,
             "self_validation_success": True,
+            "prompt_mutation_allowed": False,
         }
 
 
@@ -88,13 +95,17 @@ def _observed(
     return {
         "bucket_request_count": _int(evidence.get("bucket_request_count")),
         "successful_artifact_count": _int(evidence.get("successful_artifact_count")),
+        "successful_delivery_count": _int(evidence.get("successful_delivery_count")),
         "provider_confidence": _float(evidence.get("provider_confidence")),
         "shadow_confidence": _float(evidence.get("shadow_confidence")),
         "duplicate_delivery_count": _int(evidence.get("duplicate_delivery_count")),
         "missing_source_metadata_count": _int(evidence.get("missing_source_metadata_count")),
         "recent_negative_feedback_count": _int(evidence.get("recent_negative_feedback_count")),
+        "human_veto_count": _int(evidence.get("human_veto_count")),
+        "judge_human_disagreement_rate": _float(evidence.get("judge_human_disagreement_rate")),
         "self_validation_success": evidence.get("self_validation_success") is True,
         "operator_approved": operator_approved is True,
+        "prompt_mutation_allowed": evidence.get("prompt_mutation_allowed") is True,
     }
 
 
@@ -107,6 +118,8 @@ def _gate_failures(
         reasons.append("insufficient_bucket_requests")
     if _int(observed["successful_artifact_count"]) < thresholds.min_successful_artifacts:
         reasons.append("insufficient_successful_artifacts")
+    if _int(observed["successful_delivery_count"]) < thresholds.min_successful_deliveries:
+        reasons.append("insufficient_successful_deliveries")
     if _float(observed["provider_confidence"]) < thresholds.min_provider_confidence:
         reasons.append("provider_confidence_below_threshold")
     if _float(observed["shadow_confidence"]) < thresholds.min_shadow_confidence:
@@ -117,10 +130,16 @@ def _gate_failures(
         reasons.append("missing_source_metadata")
     if _int(observed["recent_negative_feedback_count"]) > thresholds.max_recent_negative_feedback:
         reasons.append("recent_negative_feedback")
+    if _int(observed["human_veto_count"]) > thresholds.max_human_veto_count:
+        reasons.append("human_veto_detected")
+    if _float(observed["judge_human_disagreement_rate"]) > thresholds.max_judge_human_disagreement_rate:
+        reasons.append("judge_human_disagreement_above_threshold")
     if observed["self_validation_success"] is not True:
         reasons.append("self_validation_failed")
     if observed["operator_approved"] is not True:
         reasons.append("operator_approval_required")
+    if observed["prompt_mutation_allowed"] is True:
+        reasons.append("prompt_mutation_requested")
     return reasons
 
 
