@@ -10,6 +10,7 @@ from agent.visual.active_learning import decide_visual_action
 from agent.visual.attempt_ledger import VisualAttemptLedger
 from agent.visual.intent_signature import build_intent_signature
 from agent.visual.judges.deterministic import judge_artifact
+from agent.visual.judges.quality import judge_visual_quality
 from agent.visual.media_probe import probe_media_reference
 from agent.visual.preference_profile import build_preference_profile
 from agent.visual.provider_stats import compute_provider_reliability
@@ -384,6 +385,20 @@ def _score_candidates(
     provider_stats = compute_provider_reliability(ledger, request_id=request_id)
     preference_profile = build_preference_profile(ledger, bucket=intent_signature)
     for candidate in candidates:
+        quality = judge_visual_quality(
+            candidate,
+            request_context={"has_reference_image": False},
+        )
+        candidate["judge_scores"] = quality["scores"]
+        ledger.record_judgment(
+            request_id=request_id,
+            attempt_id=candidate.get("attempt_id"),
+            artifact_id=candidate.get("artifact_id"),
+            judge_name="visual_quality_judge",
+            score=quality.get("confidence"),
+            verdict="pass" if quality.get("confidence", 0.0) >= 0.5 else "review",
+            details=quality,
+        )
         candidate["reward"] = score_visual_candidate(
             candidate,
             provider_stats=provider_stats,

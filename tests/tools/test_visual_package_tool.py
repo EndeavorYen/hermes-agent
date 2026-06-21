@@ -269,3 +269,44 @@ async def test_visual_package_reads_controlled_strategy_without_prompt_mutation(
     report = build_strategy_activation_report(default_visual_ledger_path())
     assert report["strategy_activations"]["read_count"] == 1
     assert report["strategy_activations"]["prompt_mutation_read_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_visual_package_records_quality_judgment_for_candidates(monkeypatch, tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image = tmp_path / "image.png"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    monkeypatch.setattr(
+        visual_package_tool,
+        "generate_image",
+        lambda **kwargs: {
+            "success": True,
+            "image": str(image),
+            "provider": "fixture",
+            "model": "image",
+        },
+    )
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {"prompt": "請產出一張圖片：霧黑鋼筆。", "include_video": False, "candidate_budget": 1}
+        )
+    )
+
+    ledger = VisualAttemptLedger(default_visual_ledger_path())
+    rankings = _list_rows(ledger, "visual_rankings")
+    quality_judgments = [
+        row
+        for row in _list_rows(ledger, "visual_judgments")
+        if row["judge_name"] == "visual_quality_judge"
+    ]
+    assert quality_judgments
+    assert rankings[0]["scores"]["reward"]["dimensions"]["aesthetic_fit"] != 0.5
+
+
+def _list_rows(ledger, table):
+    return ledger._list(table)
