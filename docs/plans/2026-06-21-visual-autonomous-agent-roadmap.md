@@ -2,7 +2,7 @@
 
 **Goal:** Evolve the Hermes visual workflow from a shadow learning loop into a practical visual agent mode that can accept natural user requests and assets, generate images and videos, self-rank results, deliver only current selected outputs, and learn from evidence with minimal human intervention.
 
-**Current Baseline:** Phase 1 and Phase 2 are complete on `upgrade/hermes-v2026.6.19-local`. Hermes has an evidence ledger, artifact store, deterministic checks, ranker, feedback parser, reward model, active-learning decisions, shadow learning records, privacy-safe reports, and live proof for `visual_package_generate` in shadow mode.
+**Current Baseline:** Phase 1-6 are complete on `upgrade/hermes-v2026.6.19-local`. Hermes has an evidence ledger, artifact store, deterministic checks, ranker, feedback parser, reward model, active-learning decisions, shadow learning records, controlled strategy safety gates, privacy-safe reports, a basic quality judge, a natural-language visual agent planner, and a visual regression report.
 
 **Primary Constraint:** The system must stay evidence-led. User intent is the target, provider prompts are negotiable interfaces, provider output is evidence, and user feedback is the strongest signal. Autonomous learning must not mutate production behavior until gates prove enough quality, safety, and delivery reliability.
 
@@ -162,6 +162,76 @@ Hermes should infer whether the request needs image, video, or a package. Advanc
   - strategy promotion/rollback history.
 - Release gate that runs before pushing visual workflow changes.
 
+## Phase 7: Artifact-Aware Quality Judges
+
+**Objective:** Upgrade the quality layer from metadata-only judging to artifact-aware judging that can consume bounded vision observations for images and videos.
+
+### Deliverables
+
+- Vision observation contract that normalizes privacy-safe visual analysis.
+- Quality judge merge layer that combines deterministic checks with vision observations.
+- Calibration report comparing judge confidence with available human feedback.
+- Uncertainty and disagreement handling so weak evidence lowers confidence instead of producing false certainty.
+
+### Gate
+
+- No raw prompts, private media paths, or provider response bodies in reports.
+- Hard delivery failures still dominate aesthetic scores.
+- Missing or contradictory evidence must lower confidence.
+
+## Phase 8: Pre-Delivery Ranking and Negotiated Repair
+
+**Objective:** Repair or suppress bad candidates before they reach Slack.
+
+### Deliverables
+
+- Provider failure classifier for content moderation, timeout, empty response, unsupported reference, unsupported aspect ratio, rate limit, and provider-unavailable cases.
+- Negotiated retry planner that preserves user intent while respecting provider policy.
+- Package-tool retry loop with clear partial/failure reporting.
+- Pre-delivery selection report showing selected, suppressed, retried, and failed candidates.
+
+### Gate
+
+- Provider failure, delivery failure, and aesthetic failure remain separate.
+- Safe reframing is allowed only as a compromise, never as policy bypass.
+- Stale, duplicate, failed, or unselected artifacts are not delivered.
+
+## Phase 9: Slack Delivery End-to-End Contract
+
+**Objective:** Prove the real user-facing contract: Hermes posts only current selected visual outputs automatically after generation.
+
+### Deliverables
+
+- Delivery manifest built from selected artifact ids.
+- Gateway/Slack auto-delivery hook for selected images and videos.
+- Duplicate suppression by content/source identity, not filename.
+- Aspect-ratio and metadata hygiene gate for deliverable media.
+
+### Gate
+
+- Slack media delivery requires no second user prompt.
+- Prior-round media is never posted as part of a new visual request.
+- Video aspect settings derive from source media when possible.
+- Metadata hygiene removes private/local metadata without corrupting media or removing required compliance data.
+
+## Phase 10: Self-Reinforcing Learning Loop v1
+
+**Objective:** Let Hermes improve strategy selection from ledger evidence, judge scores, provider outcomes, and sparse human feedback.
+
+### Deliverables
+
+- Strategy outcome aggregator grouped by intent and strategy signatures.
+- Shadow-only policy update proposer.
+- Controlled activation bridge with approval, minimum evidence, veto, and rollback gates.
+- Continuous learning report that fails closed on unsafe activation, duplicate delivery, missing source metadata, or prompt mutation reads.
+
+### Gate
+
+- Learning proposals stay shadow-only until promotion gates pass.
+- Controlled read-only may choose strategy/provider/budget within safe bounds.
+- Controlled read-only must not mutate raw prompt text.
+- Rollback disables strategy reads without deleting evidence.
+
 ## Execution Policy
 
 - Keep each milestone independently testable and commit-sized.
@@ -178,14 +248,16 @@ Hermes should infer whether the request needs image, video, or a package. Advanc
 
 ## Immediate Next Step
 
-Implement Phase 4-6 foundational milestones:
+Implement Phase 7-10:
 
 ```text
-Add privacy-safe quality judges, natural-language visual agent planning, and
-continuous regression reporting while keeping prompt mutation disabled by
-default.
+Add artifact-aware judging, pre-delivery negotiated repair, Slack delivery
+E2E proof, and self-reinforcing learning v1 while keeping prompt mutation
+disabled by default.
 ```
 
-This is the correct next step because Phase 3 already provides the controlled
-strategy read path and activation safety gate. The remaining gap is automatic
-quality evidence, user-friendly routing, and regression control.
+This is the correct next step because Phase 4-6 now provide the basic judge,
+planner, and regression-report foundation. The remaining gap is real artifact
+quality evidence, pre-delivery repair, live delivery correctness, and a
+shadow-first learning loop that can improve without requiring manual feedback
+on every round.
