@@ -466,6 +466,8 @@ class VisualAttemptLedger:
             target = key if key in columns_available else aliases.get(key)
             if target not in columns_available:
                 continue
+            if target in prepared and key not in columns_available:
+                continue
             if target == "duration_ms" and value is not None:
                 value = int(float(value) * 1000)
             prepared[target] = value

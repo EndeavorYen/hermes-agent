@@ -223,6 +223,7 @@ def test_attempt_ledger_writes_legacy_runtime_schema(tmp_path):
         feedback_text="第 1 張不錯",
         polarity=1.0,
         parsed={"selection_hint": 1},
+        metadata={"source": "slack_feedback_ingestion"},
     )
 
     assert ledger.get_request(request_id)["normalized_intent_json"] == {"kind": "visual_package"}
