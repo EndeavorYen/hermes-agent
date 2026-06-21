@@ -7,8 +7,10 @@ from typing import Any
 from urllib.parse import urlparse
 
 from agent.visual.active_learning import decide_visual_action
+from agent.visual.artifact_observation import build_artifact_observation
 from agent.visual.aspect_policy import select_video_aspect_ratio
 from agent.visual.attempt_ledger import VisualAttemptLedger
+from agent.visual.autonomous_validation import validate_visual_generation_payload
 from agent.visual.intent_signature import build_intent_signature
 from agent.visual.judges.deterministic import judge_artifact
 from agent.visual.judges.quality import judge_visual_quality
@@ -24,6 +26,7 @@ from agent.visual.strategy_policy import find_controlled_strategy_plan
 from agent.visual.strategy_policy import select_strategy_plan
 from agent.visual.tracking import default_visual_ledger_path
 from agent.visual.tracking import visual_delivery_metadata
+from agent.visual.video_hardening import build_hardened_video_request
 from tools.registry import registry
 from tools.registry import tool_error
 
@@ -288,15 +291,21 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
 
     if wants_video:
         video_image_url = str(args.get("image_url") or "").strip() or (selected_images[0] if selected_images else None)
-        video_aspect_ratio = _video_tool_aspect_ratio(
-            requested_aspect_ratio=_judge_aspect_ratio(aspect_ratio),
-            source_ref=video_image_url,
+        hardened_video = build_hardened_video_request(
+            prompt=prompt,
+            requested_aspect_ratio=_video_tool_aspect_ratio(
+                requested_aspect_ratio=_judge_aspect_ratio(aspect_ratio),
+                source_ref=video_image_url,
+            ),
+            source_media=_source_media_from_attachments([video_image_url] if video_image_url else []),
         )
+        video_prompt = hardened_video["prompt"]
+        video_aspect_ratio = hardened_video["aspect_ratio"]
         video_payloads = []
         video_candidates = []
         for candidate_index in range(video_budget):
             video_kwargs = {
-                "prompt": prompt,
+                "prompt": video_prompt,
                 "image_url": video_image_url,
                 "duration": duration,
                 "aspect_ratio": video_aspect_ratio,
@@ -310,6 +319,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                         "prompt": prompt,
                         "arguments": video_kwargs,
                         "source_media": _source_media_from_attachments([video_image_url] if video_image_url else []),
+                        "video_hardening": hardened_video.get("metadata", {}),
                     },
                     retry_budget_remaining=1,
                 )
@@ -320,10 +330,14 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 payload=video_payload,
                 artifact_key="video",
                 expected_kind="video",
-                prompt=prompt,
+                prompt=video_prompt,
                 provider=str(video_payload.get("provider") or ""),
                 model=str(video_payload.get("model") or ""),
-                requested_parameters={"duration_seconds": duration},
+                requested_parameters={
+                    "duration_seconds": duration,
+                    "aspect_ratio": video_aspect_ratio,
+                    "motion_mode": hardened_video.get("metadata", {}).get("motion_mode"),
+                },
                 candidate_index=candidate_index,
             )
             if video_candidate:
@@ -339,6 +353,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                         "prompt": prompt,
                         "arguments": video_kwargs,
                         "source_media": _source_media_from_attachments([video_image_url] if video_image_url else []),
+                        "video_hardening": hardened_video.get("metadata", {}),
                     },
                     retry_budget_remaining=1,
                     retry_of=candidate_index,
@@ -354,7 +369,11 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                         prompt=str(retry_payload.get("prompt") or prompt),
                         provider=str(retry_payload.get("provider") or ""),
                         model=str(retry_payload.get("model") or ""),
-                        requested_parameters={"duration_seconds": retry_payload.get("duration", duration)},
+                        requested_parameters={
+                            "duration_seconds": retry_payload.get("duration", duration),
+                            "aspect_ratio": video_aspect_ratio,
+                            "motion_mode": hardened_video.get("metadata", {}).get("motion_mode"),
+                        },
                         candidate_index=candidate_index + video_budget,
                     )
                     if retry_candidate:
@@ -404,7 +423,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         selected_artifact_ids=selected_artifact_ids,
     )
 
-    return {
+    payload = {
         "success": success,
         "package_status": package_status,
         "visual_request_id": request_id,
@@ -415,6 +434,12 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         "generation_payloads": generation_payloads,
         "learning": learning,
     }
+    payload["autonomous_validation"] = validate_visual_generation_payload(
+        payload,
+        db_path=default_visual_ledger_path(),
+        require_video=wants_video,
+    )
+    return payload
 
 
 def _record_payload_candidate(
@@ -559,6 +584,7 @@ def _score_candidates(
         quality = judge_visual_quality(
             candidate,
             request_context={"has_reference_image": has_reference_image},
+            vision_observation=build_artifact_observation(candidate),
         )
         candidate["judge_scores"] = quality["scores"]
         ledger.record_judgment(

@@ -56,6 +56,8 @@ async def test_visual_package_generate_returns_selected_image_and_video(monkeypa
     assert payload["videos"] == [str(video)]
     assert payload["package_status"] == "success"
     assert payload["delivery_metadata"]["selected_visual_artifact_ids"]
+    assert payload["autonomous_validation"]["decision"] == "accept"
+    assert payload["autonomous_validation"]["evidence"]["learning_trace_count"] >= 2
 
 
 @pytest.mark.asyncio
@@ -353,7 +355,56 @@ async def test_visual_package_records_quality_judgment_for_candidates(monkeypatc
     assert quality_judgments[0]["metadata"]["strategy_signature"].startswith("vstrat_")
     assert quality_judgments[0]["metadata"]["modality"] == "image"
     assert "judge_sources" in quality_judgments[0]["metadata"]
+    assert quality_judgments[0]["metadata"]["judge_sources"]["composition"] == "vision"
     assert rankings[0]["scores"]["reward"]["dimensions"]["aesthetic_fit"] != 0.5
+
+
+@pytest.mark.asyncio
+async def test_visual_package_hardens_video_prompt_without_stretch(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image = tmp_path / "portrait.png"
+    video = tmp_path / "video.mp4"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    video.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+    video_calls = []
+
+    def fake_probe_media_reference(ref):
+        return SimpleNamespace(
+            sha256=f"hash:{ref}",
+            is_stable=True,
+            freshness_status="fresh",
+            local_path=str(ref) if str(ref).startswith("/") else None,
+            mime_type="image/png" if str(ref).endswith(".png") else "video/mp4",
+            bytes=10,
+            width=720 if str(ref).endswith(".png") else 0,
+            height=1280 if str(ref).endswith(".png") else 0,
+        )
+
+    monkeypatch.setattr(visual_package_tool, "probe_media_reference", fake_probe_media_reference)
+    monkeypatch.setattr(
+        visual_package_tool,
+        "generate_image",
+        lambda **kwargs: {"success": True, "image": str(image), "provider": "fixture", "model": "image"},
+    )
+
+    def fake_generate_video(**kwargs):
+        video_calls.append(kwargs)
+        return {"success": True, "video": str(video), "provider": "fixture", "model": "video"}
+
+    monkeypatch.setattr(visual_package_tool, "generate_video", fake_generate_video)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {"prompt": "image plus video", "aspect_ratio": "16:9"}
+        )
+    )
+
+    assert payload["success"] is True
+    assert video_calls[0]["aspect_ratio"] == "9:16"
+    assert "natural real-time motion" in video_calls[0]["prompt"]
+    assert "not slow motion" in video_calls[0]["prompt"]
 
 
 @pytest.mark.asyncio
