@@ -1161,7 +1161,7 @@ async def visual_package_generate(prompt: str, attachments: list[str] | None = N
   Results: self-smoke test `1 passed`; script returned `success: true`;
   wider evidence suite `129 passed`; ruff and diff check clean.
 
-- [ ] **Step 5: Commit milestone 7**
+- [x] **Step 5: Commit milestone 7**
 
   Run:
 
@@ -1170,11 +1170,14 @@ async def visual_package_generate(prompt: str, attachments: list[str] | None = N
   rtk git commit -m "feat: add visual evidence self smoke"
   ```
 
+  Execution note, 2026-06-21: committed and pushed to `origin` as
+  `95678f48e feat: add visual evidence self smoke`.
+
 ## Milestone 8: Feedback Parser Without Learning
 
 **Purpose:** Attribute user feedback to the right artifact before changing future behavior.
 
-- [ ] **Step 1: Write feedback parser tests**
+- [x] **Step 1: Write feedback parser tests**
 
   Create `tests/visual/test_feedback_parser.py`:
 
@@ -1190,7 +1193,7 @@ async def visual_package_generate(prompt: str, attachments: list[str] | None = N
       assert "face_unnatural" in feedback.parsed["issues"]
   ```
 
-- [ ] **Step 2: Run red feedback test**
+- [x] **Step 2: Run red feedback test**
 
   Run:
 
@@ -1200,7 +1203,7 @@ async def visual_package_generate(prompt: str, attachments: list[str] | None = N
 
   Expected: FAIL because feedback parser is missing.
 
-- [ ] **Step 3: Implement parser and ledger recording helper**
+- [x] **Step 3: Implement parser and ledger recording helper**
 
   Implement `agent/visual/feedback.py`:
 
@@ -1209,7 +1212,12 @@ async def visual_package_generate(prompt: str, attachments: list[str] | None = N
   - issue tags: `reference_identity_drift`, `face_unnatural`, `not_beautiful`, `not_sexy_enough`, `composition_bad`, `static_video`, `motion_good`, `stale_repost`;
   - no automatic strategy update.
 
-- [ ] **Step 4: Verify milestone 8**
+  Execution note, 2026-06-21: implemented `parse_visual_feedback()` and
+  `record_parsed_visual_feedback()` as a rule-based attribution layer. It
+  extracts selection hints, polarity, positive signals, issue tags, and records
+  parsed feedback to the ledger without updating strategy or model behavior.
+
+- [x] **Step 4: Verify milestone 8**
 
   Run:
 
@@ -1219,6 +1227,18 @@ async def visual_package_generate(prompt: str, attachments: list[str] | None = N
   ```
 
   Expected: tests pass and self-smoke still records feedback.
+
+  Execution note, 2026-06-21: verified with:
+
+  ```bash
+  rtk ./venv/bin/python -m pytest tests/visual/test_feedback_parser.py tests/scripts/test_visual_evidence_self_smoke.py -q
+  rtk ./venv/bin/python -m pytest tests/visual tests/scripts/test_visual_evidence_self_smoke.py -q
+  rtk ./venv/bin/python -m ruff check agent/visual/feedback.py tests/visual/test_feedback_parser.py
+  rtk git diff --check
+  ```
+
+  Results: focused parser/self-smoke `4 passed`; visual+self-smoke suite
+  `31 passed`; ruff and diff check clean.
 
 - [ ] **Step 5: Commit milestone 8**
 
