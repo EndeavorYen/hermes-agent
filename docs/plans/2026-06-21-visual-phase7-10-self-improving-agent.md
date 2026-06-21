@@ -804,10 +804,10 @@ Self-assessment:
 
 - `proven`: Phase 10 tests passed for outcome aggregation, proposal generation, promotion gates, read-only activation, and privacy-safe learning report.
 - `proven`: runtime ledger reports passed: `visual_learning_report.py --json`, `visual_strategy_activation_report.py --json`, `visual_regression_report.py --json`, `visual_evidence_self_smoke.py --json`, and `visual_quality_calibration_report.py --json`.
-- `not_proven`: live provider-generated artifacts still have sparse judge rows in the runtime ledger (`judgments=0` in the current regression report), so the learning loop is operational but cannot yet create high-confidence aesthetic proposals from live history.
+- `previous_gap`: live provider-generated artifacts had sparse judge rows in the runtime ledger. This is now addressed by the follow-up live provider E2E gate below.
 - `quality_delta`: Hermes can now reduce user review burden when enough evidence accumulates, without silently rewriting prompts or merging provider reliability into aesthetic preference.
 - `regression_risks`: proposal thresholds are intentionally conservative; early usage may produce no proposals until more judged artifacts and feedback are recorded.
-- `improvement_action`: next phase should wire provider/vision judging into live package generation so `judgments` are populated consistently, then calibrate proposal thresholds against actual Slack feedback.
+- `improvement_action`: calibrate proposal thresholds against actual Slack feedback now that live provider judgments and learning traces can be verified automatically.
 - `rollback_path`: stop reading controlled strategies by disabling/removing controlled activations; shadow proposals remain evidence records and do not mutate prompts.
 
 ---
@@ -886,5 +886,52 @@ Self-assessment:
 - `improved`: self-verification now has a runnable targeted coverage gate without adding dependencies.
 - `improved`: learning replay proves the self-reinforcement proposal path can work without live provider access or human intervention.
 - `improved`: visual package candidate judgments now preserve enough metadata for later replay, calibration, and proposal attribution.
-- `still_limited`: the current live runtime ledger still reports `judgments=0`; this means old/live history has not yet accumulated judged provider outputs, not that the new fixture path cannot write judgments.
-- `next_improvement`: run real Slack visual-package tasks through the new path, then verify the runtime ledger `judgments` count rises and learning proposals appear from actual usage.
+- `improved`: live provider judgments can now be verified automatically by the live provider E2E gate below.
+- `next_improvement`: keep accumulating real provider attempts and Slack feedback, then calibrate proposal thresholds from actual usage.
+
+---
+
+## Follow-Up Execution: Live Provider E2E Gate
+
+Date: 2026-06-21
+
+Implemented:
+
+- `scripts/visual_live_provider_e2e.py`
+  - Runs `visual_package_generate` in `live` mode by default and `fixture` mode for deterministic tests.
+  - Fails closed when image or video providers are unavailable.
+  - Rejects fixture/mock/test providers in live mode so live proof cannot be faked.
+  - Verifies selected image and video outputs, attempts, artifacts, quality judgments, rankings, shadow updates, and active-learning traces.
+  - Supports `--report-path` for structured machine-readable reports and `--capture-log-path` for noisy provider logs.
+  - Handles both current and legacy runtime ledger schemas:
+    - current `visual_judgments.request_id`;
+    - legacy `visual_judgments.artifact_id` / `attempt_id`;
+    - current ranking `metadata`;
+    - legacy ranking `rationale_json`.
+- `tests/scripts/test_visual_live_provider_e2e.py`
+  - Covers fixture proof, provider-unavailable fail-closed behavior, non-live provider rejection, legacy ledger schema compatibility, report writing, and provider log capture.
+
+Verification:
+
+- `rtk ./venv/bin/python -m pytest tests/scripts/test_visual_live_provider_e2e.py -q`: `7 passed`.
+- `rtk ./venv/bin/python -m pytest tests/scripts/test_visual_live_provider_e2e.py tests/tools/test_visual_package_tool.py tests/scripts/test_visual_evidence_self_smoke.py tests/scripts/test_visual_learning_replay.py tests/scripts/test_visual_test_coverage_report.py -q`: `26 passed`.
+- Full visual slice:
+  - `rtk ./venv/bin/python -m pytest tests/visual tests/tools/test_visual_package_tool.py tests/gateway/test_media_extraction.py tests/scripts/test_visual_quality_calibration_report.py tests/scripts/test_visual_selection_report.py tests/scripts/test_visual_learning_report.py tests/scripts/test_visual_regression_report.py tests/scripts/test_visual_strategy_activation_report.py tests/scripts/test_visual_test_coverage_report.py tests/scripts/test_visual_learning_replay.py tests/scripts/test_visual_evidence_self_smoke.py tests/scripts/test_visual_live_provider_e2e.py -q`
+  - Result: `160 passed`.
+- `rtk ./venv/bin/python -m ruff check scripts/visual_live_provider_e2e.py tests/scripts/test_visual_live_provider_e2e.py`: passed.
+- `rtk git diff --check`: passed.
+- Real provider E2E:
+  - `rtk ./venv/bin/python scripts/visual_live_provider_e2e.py --mode live --report-path /private/tmp/hermes-visual-live-e2e-20260621-final.json --capture-log-path /private/tmp/hermes-visual-live-e2e-20260621-final.log`
+  - Result: passed with provider `xai`, `image_count=1`, `video_count=1`, `attempt_count=2`, `artifact_count=2`, `judgment_count=2`, `ranking_count=2`, `shadow_update_count=2`, `learning_trace_count=2`.
+- Runtime reports:
+  - `rtk ./venv/bin/python scripts/visual_learning_report.py --json`: passed.
+  - `rtk ./venv/bin/python scripts/visual_regression_report.py --json`: passed with runtime `judgments=4` and `duplicate_deliveries=0`.
+
+Self-assessment:
+
+- `proven`: Hermes now has an automated real provider E2E gate for image + video generation and learning evidence.
+- `proven`: the gate detects provider availability separately from artifact quality and fails closed when real providers cannot be reached.
+- `proven`: the gate catches false negatives from legacy ledger schemas instead of requiring manual DB inspection.
+- `human_intervention_reduction`: the user no longer has to manually inspect Slack output to prove that live provider generation wrote learnable evidence.
+- `still_shadow_only`: strategy changes remain shadow/read-only unless promotion gates approve them.
+- `rollback_path`: remove the script from release gates or run it in `fixture` mode only; no runtime prompt mutation or provider routing is changed by this gate.
