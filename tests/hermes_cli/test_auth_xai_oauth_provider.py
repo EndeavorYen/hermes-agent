@@ -817,6 +817,29 @@ def test_get_xai_oauth_auth_status_logged_in_via_singleton(tmp_path, monkeypatch
     assert status["auth_mode"] == "oauth_pkce"
 
 
+def test_get_xai_oauth_auth_status_uses_runtime_resolver_when_pool_empty(monkeypatch):
+    import agent.credential_pool as credential_pool
+    import hermes_cli.auth as auth_mod
+
+    monkeypatch.setattr(credential_pool, "load_pool", lambda provider_id: None)
+    monkeypatch.setattr(
+        auth_mod,
+        "resolve_xai_oauth_runtime_credentials",
+        lambda: {
+            "api_key": "redacted-access-token",
+            "auth_mode": "oauth_pkce",
+            "source": "runtime-resolver",
+            "last_refresh": "2026-06-21T00:00:00+00:00",
+        },
+    )
+
+    status = auth_mod.get_xai_oauth_auth_status()
+
+    assert status["logged_in"] is True
+    assert status["source"] == "runtime-resolver"
+    assert status["auth_mode"] == "oauth_pkce"
+
+
 def test_get_xai_oauth_auth_status_logged_out(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)

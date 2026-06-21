@@ -179,6 +179,28 @@ class TestShowStatusXaiOAuth:
         assert "✓" in out or "logged in" in out
         assert "not logged in" not in out.split("xAI OAuth", 1)[1].split("\n")[0]
 
+    def test_runtime_resolver_login_truth_is_printed(self, monkeypatch, capsys, tmp_path):
+        import hermes_cli.auth as auth_mod
+
+        status_mod = _base_xai_mocks(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            auth_mod,
+            "get_xai_oauth_auth_status",
+            lambda: {
+                "logged_in": True,
+                "auth_store": str(tmp_path / "auth.json"),
+                "source": "runtime-resolver",
+            },
+            raising=False,
+        )
+
+        status_mod.show_status(SimpleNamespace(all=False, deep=False))
+        out = capsys.readouterr().out
+
+        xai_line = out.split("xAI OAuth", 1)[1].splitlines()[0]
+        assert "logged in" in xai_line
+        assert "not logged in" not in xai_line
+
     def test_logged_in_shows_auth_store(self, monkeypatch, capsys, tmp_path):
         import hermes_cli.auth as auth_mod
         status_mod = _base_xai_mocks(monkeypatch, tmp_path)

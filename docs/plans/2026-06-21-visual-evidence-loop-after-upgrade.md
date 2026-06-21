@@ -110,7 +110,7 @@ Create or modify these files in phases:
 
 **Purpose:** Start from a clean, trustworthy upgraded baseline.
 
-- [ ] **Step 1: Preserve private mediator notes outside tracked docs**
+- [x] **Step 1: Preserve private mediator notes outside tracked docs**
 
   Run:
 
@@ -127,7 +127,7 @@ Create or modify these files in phases:
 
   does not show `docs/image2-adaptive-mediator.md`.
 
-- [ ] **Step 2: Add a redacted public note if needed**
+- [x] **Step 2: Add a redacted public note if needed**
 
   Create `docs/visual-mediator-runtime-private.md` containing:
 
@@ -144,7 +144,7 @@ Create or modify these files in phases:
   state.
   ```
 
-- [ ] **Step 3: Write the xAI OAuth status drift tests**
+- [x] **Step 3: Write the xAI OAuth status drift tests**
 
   Extend the existing xAI OAuth auth/status tests instead of creating a parallel
   status collector. Add the resolver truth test near the current
@@ -201,7 +201,7 @@ Create or modify these files in phases:
       assert "not logged in" not in xai_line
   ```
 
-- [ ] **Step 4: Run the red test**
+- [x] **Step 4: Run the status truth tests**
 
   Run:
 
@@ -209,16 +209,27 @@ Create or modify these files in phases:
   rtk ./venv/bin/python -m pytest tests/hermes_cli/test_auth_xai_oauth_provider.py::test_get_xai_oauth_auth_status_uses_runtime_resolver tests/hermes_cli/test_status.py::TestShowStatusXaiOAuth::test_xai_oauth_runtime_resolver_login_truth_is_printed -q
   ```
 
-  Expected: FAIL because the status reader does not yet report resolver-backed xAI OAuth truth.
+  Original expectation: FAIL because the status reader does not yet report
+  resolver-backed xAI OAuth truth.
 
-- [ ] **Step 5: Implement the status truth fix**
+  Execution note, 2026-06-21: the new regression tests passed immediately.
+  Live preflight also showed `hermes status` reporting `xAI OAuth ✓ logged in`.
+  The original status-drift precondition was stale, so no production status fix
+  was made in this milestone.
 
-  Modify `hermes_cli/auth.py` so `get_xai_oauth_auth_status()` reports the same
-  credential truth that the runtime uses through
-  `resolve_xai_oauth_runtime_credentials()`. Keep `hermes_cli/status.py` as a
-  presentation layer unless the display regression proves formatting drift.
+- [x] **Step 5: Evaluate the status truth fix requirement**
 
-- [ ] **Step 6: Verify status truth**
+  If the regression fails, modify `hermes_cli/auth.py` so
+  `get_xai_oauth_auth_status()` reports the same credential truth that the
+  runtime uses through `resolve_xai_oauth_runtime_credentials()`. Keep
+  `hermes_cli/status.py` as a presentation layer unless the display regression
+  proves formatting drift.
+
+  Execution note, 2026-06-21: implementation change was not required because the
+  resolver-backed status behavior already exists and the display-level
+  regression passed.
+
+- [x] **Step 6: Verify status truth**
 
   Run:
 
