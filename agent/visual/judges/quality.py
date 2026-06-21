@@ -177,7 +177,7 @@ def _defect_penalty(
     penalty = 0.0
     for defect in defects:
         defect_text = str(defect)
-        if defect_text in {"blurred_face", "distorted_face", "extra_fingers"}:
+        if defect_text in {"blurred_face", "distorted_face", "extra_fingers", "face_quality_low"}:
             uncertainty_reasons.append(f"vision_defect_{defect_text}")
             penalty += 0.2
     return min(0.5, penalty)
@@ -189,7 +189,16 @@ def _surface_artifact_defects(vision: dict[str, Any], uncertainty_reasons: list[
         return
     for defect in defects:
         defect_text = str(defect)
-        if defect_text.startswith("weak_"):
+        if defect_text.startswith("weak_") or defect_text in {
+            "aspect_mismatch",
+            "duration_mismatch",
+            "missing_video_dimensions",
+            "missing_video_duration",
+            "reference_identity_drift",
+            "face_quality_low",
+            "visual_appeal_low",
+            "composition_weak",
+        }:
             uncertainty_reasons.append(f"vision_defect_{defect_text}")
 
 

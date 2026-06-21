@@ -119,3 +119,55 @@ def test_slack_feedback_ingestion_ignores_generic_thread_chat(tmp_path):
     assert result["success"] is False
     assert result["reason"] == "not_visual_feedback"
     assert ledger._list("visual_feedback") == []
+
+
+def test_slack_reaction_ingestion_binds_delivery_message_to_artifact(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.slack_feedback_ingestion import ingest_slack_visual_reaction
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+    request_id, artifact_ids = _seed_request_with_artifacts(ledger, tmp_path, count=1)
+    ledger.record_delivery(
+        request_id=request_id,
+        artifact_id=artifact_ids[0],
+        platform="slack",
+        destination_id="C123",
+        thread_id="1700000000.000100",
+        message_id="1700000000.000500",
+        delivery_status="sent",
+    )
+
+    result = ingest_slack_visual_reaction(
+        ledger,
+        {
+            "reaction": "thumbsup",
+            "item": {"channel": "C123", "ts": "1700000000.000500"},
+            "event_ts": "1700000000.000600",
+            "user": "U999",
+        },
+    )
+
+    assert result["success"] is True
+    row = ledger.get_feedback(result["feedback_ids"][0])
+    assert row["request_id"] == request_id
+    assert row["artifact_id"] == artifact_ids[0]
+    assert row["polarity"] > 0
+    assert row["metadata"]["source"] == "slack_reaction_ingestion"
+    assert "U999" not in str(row)
+
+
+def test_slack_reaction_ingestion_ignores_unknown_emoji(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.slack_feedback_ingestion import ingest_slack_visual_reaction
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+
+    result = ingest_slack_visual_reaction(
+        ledger,
+        {"reaction": "eyes", "item": {"channel": "C123", "ts": "1700000000.000500"}},
+    )
+
+    assert result["success"] is False
+    assert result["reason"] == "unsupported_reaction"

@@ -903,7 +903,7 @@ class SlackAdapter(BasePlatformAdapter):
             # gateway.error.log with Slack Bolt "Unhandled request" warnings.
             @self._app.event("reaction_added")
             async def handle_reaction_added(event, say):
-                pass
+                self._record_visual_reaction_from_slack(event)
 
             @self._app.event("reaction_removed")
             async def handle_reaction_removed(event, say):
@@ -2900,6 +2900,24 @@ class SlackAdapter(BasePlatformAdapter):
                 )
         except Exception:
             logger.debug("[Slack] Visual feedback ingestion skipped", exc_info=True)
+
+    def _record_visual_reaction_from_slack(self, event: dict) -> None:
+        try:
+            from agent.visual.attempt_ledger import VisualAttemptLedger
+            from agent.visual.slack_feedback_ingestion import ingest_slack_visual_reaction
+            from agent.visual.tracking import default_visual_ledger_path
+
+            ledger = VisualAttemptLedger(default_visual_ledger_path())
+            ledger.initialize()
+            result = ingest_slack_visual_reaction(ledger, event)
+            if result.get("success") is True:
+                logger.info(
+                    "[Slack] Recorded visual reaction feedback for %s (%d row(s))",
+                    result.get("request_id"),
+                    result.get("recorded_feedback_count"),
+                )
+        except Exception:
+            logger.debug("[Slack] Visual reaction ingestion skipped", exc_info=True)
 
     # ----- Approval button support (Block Kit) -----
 

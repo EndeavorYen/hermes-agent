@@ -325,6 +325,63 @@ class TestSlackVisualFeedbackIngestion:
         assert rows[0]["metadata"]["source"] == "slack_feedback_ingestion"
         adapter.handle_message.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_reaction_records_visual_feedback_without_waking_agent(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        from agent.visual.attempt_ledger import VisualAttemptLedger
+        from agent.visual.tracking import default_visual_ledger_path
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        ledger = VisualAttemptLedger(default_visual_ledger_path())
+        ledger.initialize()
+        request_id = ledger.record_request(
+            user_prompt="visual batch",
+            normalized_intent={"kind": "visual_package"},
+            modality="package",
+            operation="visual_package_generate",
+            platform="slack",
+            channel_id="C_CHAN",
+            thread_id="1700000000.000100",
+            message_id="1700000000.000100",
+            status="completed",
+        )
+        artifact_id = ledger.record_artifact(
+            request_id=request_id,
+            kind="image",
+            local_path=str(tmp_path / "image.jpg"),
+            uri=str(tmp_path / "image.jpg"),
+            content_hash="sha256:image",
+            mime_type="image/jpeg",
+            is_stable=True,
+            freshness_status="fresh",
+        )
+        ledger.record_delivery(
+            request_id=request_id,
+            artifact_id=artifact_id,
+            platform="slack",
+            destination_id="C_CHAN",
+            thread_id="1700000000.000100",
+            message_id="1700000000.000500",
+            delivery_status="sent",
+        )
+
+        adapter._record_visual_reaction_from_slack(
+            {
+                "reaction": "x",
+                "item": {"channel": "C_CHAN", "ts": "1700000000.000500"},
+                "event_ts": "1700000000.000600",
+                "user": "U_USER",
+            }
+        )
+
+        rows = ledger._list("visual_feedback")
+        assert len(rows) == 1
+        assert rows[0]["artifact_id"] == artifact_id
+        assert rows[0]["polarity"] < 0
+        assert rows[0]["metadata"]["source"] == "slack_reaction_ingestion"
+        adapter.handle_message.assert_not_awaited()
+
 
 class TestSlackConnectCleanup:
     """Regression coverage for failed connect() cleanup."""

@@ -506,6 +506,7 @@ def _record_payload_candidate(
         "width": artifact.get("width"),
         "height": artifact.get("height"),
         "duration_seconds": artifact.get("duration_seconds"),
+        "requested_parameters": requested_parameters,
         "hard_gate": score["hard_gate"],
         "scores": score["scores"],
     }

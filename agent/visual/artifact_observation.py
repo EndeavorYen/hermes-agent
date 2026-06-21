@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from agent.visual.video_probe import build_video_probe_observation
+
 
 def build_artifact_observation(candidate: dict[str, Any]) -> dict[str, Any]:
     scores = candidate.get("scores") if isinstance(candidate.get("scores"), dict) else {}
@@ -15,7 +17,13 @@ def build_artifact_observation(candidate: dict[str, Any]) -> dict[str, Any]:
     defects = _defects(kind=kind, aspect=aspect, resolution=resolution, motion=motion, delivery=delivery)
     confidence = _clamp((aspect + resolution + final_score + delivery) / 4)
     if kind == "video":
-        confidence = _clamp((confidence + motion) / 2)
+        video_probe = build_video_probe_observation(candidate)
+        probe_defects = video_probe.get("artifact_defects", [])
+        if "missing_video_dimensions" not in probe_defects:
+            aspect = _clamp(video_probe.get("aspect_integrity", aspect))
+        motion = _clamp(video_probe.get("motion_quality", motion))
+        confidence = _clamp((confidence + video_probe.get("confidence", motion)) / 2)
+        defects = list(dict.fromkeys([*defects, *probe_defects]))
     return {
         "reference_adherence": 0.5,
         "composition": round(_clamp(aspect * 0.65 + resolution * 0.35), 4),
