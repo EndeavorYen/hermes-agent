@@ -25,6 +25,7 @@ def visual_delivery_metadata(
     attempt_id: str | None,
     artifact_ids: list[str],
     artifact_paths: list[str],
+    selected_artifact_ids: list[str] | None = None,
     thread_id: str | None = None,
 ) -> dict[str, Any]:
     artifacts: dict[str, dict[str, str | None]] = {}
@@ -43,6 +44,7 @@ def visual_delivery_metadata(
         "visual_request_id": request_id,
         "visual_attempt_id": attempt_id,
         "visual_thread_id": thread_id,
+        "selected_visual_artifact_ids": selected_artifact_ids or artifact_ids,
         "visual_artifacts": artifacts,
     }
 
@@ -76,20 +78,30 @@ def visual_delivery_context(
         return None
 
     ledger = VisualAttemptLedger(default_visual_ledger_path())
-    artifact = ledger.get_artifact(str(artifact_id))
+    artifact_id_text = str(artifact_id)
+    artifact = ledger.get_artifact(artifact_id_text)
     effective_thread_id = thread_id or metadata.get("visual_thread_id")
     destination = _delivery_destination(platform, destination_id, effective_thread_id)
+    selected_artifact_ids = metadata.get("selected_visual_artifact_ids")
+    skip_status = None
+    if isinstance(selected_artifact_ids, list) and selected_artifact_ids:
+        selected_set = {str(item) for item in selected_artifact_ids}
+        if artifact_id_text not in selected_set:
+            skip_status = "skipped_unselected"
+    if artifact.get("freshness_status") not in {None, "fresh"} or artifact.get("is_stable") is False:
+        skip_status = "skipped_stale"
 
     return {
         "ledger": ledger,
         "request_id": str(request_id),
         "attempt_id": artifact_entry.get("attempt_id") or metadata.get("visual_attempt_id"),
-        "artifact_id": str(artifact_id),
+        "artifact_id": artifact_id_text,
         "content_hash": artifact.get("content_hash"),
         "platform": platform,
         "destination": destination,
         "destination_id": destination_id,
         "thread_id": effective_thread_id,
+        "skip_status": skip_status,
     }
 
 

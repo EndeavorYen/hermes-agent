@@ -346,6 +346,21 @@ PARALLEL_TOOL_CALL_GUIDANCE = (
     "in doubt and the calls are independent, batch them."
 )
 
+VISUAL_PACKAGE_TOOL_GUIDANCE = (
+    "# Visual package generation\n"
+    "When `visual_package_generate` is available and the user naturally asks "
+    "for an image plus a video, a product photo plus a short clip, or a small "
+    "set of visual assets, call `visual_package_generate` directly instead of "
+    "asking for advanced parameters. Examples include: `請產出一張圖片和一段影片`, "
+    "`做一組視覺素材`, `image plus short video`, and `product photo and 6 second clip`."
+)
+
+
+def build_visual_package_tool_guidance(valid_tool_names: "set[str] | None" = None) -> str:
+    if "visual_package_generate" not in set(valid_tool_names or set()):
+        return ""
+    return VISUAL_PACKAGE_TOOL_GUIDANCE
+
 # OpenAI GPT/Codex-specific execution guidance.  Addresses known failure modes
 # where GPT models abandon work on partial results, skip prerequisite lookups,
 # hallucinate instead of using tools, and declare "done" without verification.

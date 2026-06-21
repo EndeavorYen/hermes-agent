@@ -17,6 +17,7 @@ from agent.prompt_builder import (
     _strip_yaml_frontmatter,
     build_skills_system_prompt,
     build_nous_subscription_prompt,
+    build_visual_package_tool_guidance,
     build_context_files_prompt,
     CONTEXT_FILE_MAX_CHARS,
     _dynamic_context_file_max_chars,
@@ -1542,8 +1543,17 @@ class TestParallelToolCallGuidance:
         assert "parallel tool call" not in GOOGLE_MODEL_OPERATIONAL_GUIDANCE.lower()
 
 
+class TestVisualPackageToolGuidance:
+    def test_only_injected_when_tool_available(self):
+        assert build_visual_package_tool_guidance({"image_generate"}) == ""
+
+        prompt = build_visual_package_tool_guidance({"visual_package_generate", "image_generate"})
+
+        assert "visual_package_generate" in prompt
+        assert "請產出一張圖片和一段影片" in prompt
+
+
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 

@@ -263,6 +263,67 @@ async def test_failed_generated_artifact_delivery_does_not_poison_dedupe(tmp_pat
     assert [delivery["delivery_status"] for delivery in deliveries] == ["failed", "sent"]
 
 
+@pytest.mark.asyncio
+async def test_generated_artifact_delivery_skips_unselected_artifact(tmp_path, monkeypatch):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import visual_delivery_metadata
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ledger = VisualAttemptLedger(tmp_path / "visual" / "attempt_ledger.sqlite3")
+    ledger.initialize()
+    request_id = ledger.record_request(
+        platform="slack",
+        channel_id="C123",
+        thread_id="T123",
+        normalized_intent={"kind": "image"},
+        modality="image",
+        operation="text_to_image",
+    )
+    attempt_id = ledger.record_attempt(request_id=request_id, provider="xai")
+    rejected_path = tmp_path / "rejected.png"
+    selected_path = tmp_path / "selected.png"
+    rejected_path.write_bytes(b"\x89PNG\r\n\x1a\nrejected")
+    selected_path.write_bytes(b"\x89PNG\r\n\x1a\nselected")
+    rejected_id = ledger.record_artifact(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        kind="image",
+        uri=rejected_path.as_uri(),
+        local_path=str(rejected_path),
+        content_hash="sha256:rejected",
+        mime_type="image/png",
+    )
+    selected_id = ledger.record_artifact(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        kind="image",
+        uri=selected_path.as_uri(),
+        local_path=str(selected_path),
+        content_hash="sha256:selected",
+        mime_type="image/png",
+    )
+    metadata = visual_delivery_metadata(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        artifact_ids=[rejected_id, selected_id],
+        artifact_paths=[str(rejected_path), str(selected_path)],
+        selected_artifact_ids=[selected_id],
+        thread_id="T123",
+    )
+    adapter = _VisualDeliveryStubAdapter(PlatformConfig(enabled=True, token="redacted"))
+
+    await adapter.send_multiple_images(
+        "C123",
+        [(rejected_path.as_uri(), "rejected"), (selected_path.as_uri(), "selected")],
+        metadata=metadata,
+    )
+
+    deliveries = ledger.list_deliveries(request_id=request_id)
+    assert adapter.image_file_sends == [str(selected_path)]
+    assert [delivery["artifact_id"] for delivery in deliveries] == [rejected_id, selected_id]
+    assert [delivery["delivery_status"] for delivery in deliveries] == ["skipped_unselected", "sent"]
+
+
 # ---------------------------------------------------------------------------
 # Telegram send_image_file tests
 # ---------------------------------------------------------------------------

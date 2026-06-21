@@ -2646,6 +2646,15 @@ class BasePlatformAdapter(ABC):
                         destination_id=str(chat_id),
                         thread_id=(metadata or {}).get("thread_id") or (metadata or {}).get("visual_thread_id"),
                     )
+                    if visual_context and visual_context.get("skip_status"):
+                        record_delivery_status(visual_context, visual_context["skip_status"])
+                        logger.info(
+                            "[%s] Skipping generated image delivery (%s): %s",
+                            self.name,
+                            visual_context["skip_status"],
+                            safe_url_for_log(image_url),
+                        )
+                        continue
                     if visual_context and visual_context.get("content_hash"):
                         visual_deduper = get_artifact_delivery_deduper()
                         if visual_deduper.is_duplicate(

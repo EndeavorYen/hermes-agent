@@ -779,6 +779,10 @@ class VisualAttemptLedger:
   duplicate generated artifacts are skipped for the same request/destination
   and failed sends do not poison dedupe state.
 
+  Follow-up self-review note, 2026-06-21: added selected-artifact enforcement
+  so delivery metadata containing rejected/non-winner artifacts records
+  `skipped_unselected` and does not send them.
+
 - [x] **Step 5: Verify milestone 4**
 
   Run:
@@ -920,7 +924,7 @@ class VisualAttemptLedger:
   Results: focused judge/ranker `7 passed`; full visual suite `27 passed`;
   ruff and diff check clean.
 
-- [ ] **Step 6: Commit milestone 5**
+- [x] **Step 6: Commit milestone 5**
 
   Run:
 
@@ -928,6 +932,9 @@ class VisualAttemptLedger:
   rtk git add agent/visual/judges agent/visual/ranker.py tests/visual/test_deterministic_judges.py tests/visual/test_ranker.py
   rtk git commit -m "feat: rank visual artifacts with deterministic gates"
   ```
+
+  Execution note, 2026-06-21: committed and pushed to `origin` as
+  `147cc7cfb feat: rank visual artifacts with deterministic gates`.
 
 ## Milestone 6: Minimal Visual Package Orchestrator
 
@@ -940,7 +947,7 @@ async def visual_package_generate(prompt: str, attachments: list[str] | None = N
     """Generate image/video package, rank artifacts, and return selected media paths."""
 ```
 
-- [ ] **Step 1: Write orchestration tests**
+- [x] **Step 1: Write orchestration tests**
 
   Create `tests/tools/test_visual_package_tool.py`:
 
@@ -988,7 +995,7 @@ async def visual_package_generate(prompt: str, attachments: list[str] | None = N
       assert payload["delivery_metadata"]["selected_visual_artifact_ids"]
   ```
 
-- [ ] **Step 2: Run red orchestration test**
+- [x] **Step 2: Run red orchestration test**
 
   Run:
 
@@ -998,7 +1005,7 @@ async def visual_package_generate(prompt: str, attachments: list[str] | None = N
 
   Expected: FAIL because `tools.visual_package_tool` does not exist.
 
-- [ ] **Step 3: Implement `tools/visual_package_tool.py`**
+- [x] **Step 3: Implement `tools/visual_package_tool.py`**
 
   Implement minimal package flow:
 
@@ -1009,7 +1016,14 @@ async def visual_package_generate(prompt: str, attachments: list[str] | None = N
   - run deterministic judge/ranker;
   - return only selected image/video paths and `delivery_metadata`.
 
-- [ ] **Step 4: Add tool routing guidance**
+  Execution note, 2026-06-21: implemented `visual_package_generate` as an
+  async registered tool under `image_gen`, gated on image and video backend
+  availability. The tool records a package request, records image/video
+  attempts and artifacts, runs deterministic judge/ranker, uses the selected
+  image as image-to-video input, and returns only selected image/video paths
+  with `delivery_metadata`.
+
+- [x] **Step 4: Add tool routing guidance**
 
   Modify prompt/tool guidance so natural requests like:
 
@@ -1022,7 +1036,10 @@ async def visual_package_generate(prompt: str, attachments: list[str] | None = N
 
   prefer `visual_package_generate`.
 
-- [ ] **Step 5: Verify milestone 6**
+  Execution note, 2026-06-21: added tool schema examples and system prompt
+  guidance that is injected only when `visual_package_generate` is available.
+
+- [x] **Step 5: Verify milestone 6**
 
   Run:
 
@@ -1032,6 +1049,18 @@ async def visual_package_generate(prompt: str, attachments: list[str] | None = N
   ```
 
   Expected: tests pass and existing image/video tools still pass.
+
+  Execution note, 2026-06-21: verified with:
+
+  ```bash
+  rtk ./venv/bin/python -m pytest tests/tools/test_visual_package_tool.py tests/tools/test_image_generation.py tests/plugins/video_gen/test_xai_plugin.py tests/gateway/test_send_image_file.py::test_generated_artifact_delivery_records_sent_status tests/gateway/test_send_image_file.py::test_generated_artifact_delivery_skips_duplicate_for_same_request_destination tests/gateway/test_send_image_file.py::test_failed_generated_artifact_delivery_does_not_poison_dedupe tests/gateway/test_send_image_file.py::test_generated_artifact_delivery_skips_unselected_artifact tests/agent/test_prompt_builder.py::TestVisualPackageToolGuidance::test_only_injected_when_tool_available -q
+  rtk ./venv/bin/python -m pytest tests/visual tests/tools/test_visual_package_tool.py tests/tools/test_image_generation.py tests/tools/test_image_generation_plugin_dispatch.py tests/tools/test_image_generation_image_to_image.py tests/tools/test_image_generation_artifacts.py tests/plugins/video_gen/test_xai_plugin.py tests/tools/test_video_generation_dispatch.py tests/tools/test_video_generation_tool_surface_matrix.py tests/tools/test_video_generation_dynamic_schema.py tests/gateway/test_send_image_file.py -q
+  rtk ./venv/bin/python -m ruff check tools/visual_package_tool.py tests/tools/test_visual_package_tool.py agent/prompt_builder.py agent/system_prompt.py agent/visual/tracking.py gateway/platforms/base.py tests/gateway/test_send_image_file.py tests/agent/test_prompt_builder.py
+  rtk git diff --check
+  ```
+
+  Results: focused suite `77 passed`; wider suite `181 passed`; ruff and diff
+  check clean.
 
 - [ ] **Step 6: Commit milestone 6**
 

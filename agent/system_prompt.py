@@ -41,6 +41,7 @@ from agent.prompt_builder import (
     TASK_COMPLETION_GUIDANCE,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
+    build_visual_package_tool_guidance,
     drain_truncation_warnings,
 )
 from agent.runtime_cwd import resolve_context_cwd
@@ -192,6 +193,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # (default True) and only injected when tools are actually loaded.
     if getattr(agent, "_parallel_tool_call_guidance", True) and agent.valid_tool_names:
         stable_parts.append(PARALLEL_TOOL_CALL_GUIDANCE)
+
+    visual_package_guidance = build_visual_package_tool_guidance(agent.valid_tool_names)
+    if visual_package_guidance:
+        stable_parts.append(visual_package_guidance)
 
     # Tool-aware behavioral guidance: only inject when the tools are loaded
     tool_guidance = []
