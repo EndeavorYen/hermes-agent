@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
-import hashlib
 from typing import Any
 from urllib.parse import urlparse
 
 from agent.visual.attempt_ledger import VisualAttemptLedger
+from agent.visual.intent_signature import build_intent_signature
 from agent.visual.judges.deterministic import judge_artifact
 from agent.visual.media_probe import probe_media_reference
+from agent.visual.preference_profile import build_preference_profile
+from agent.visual.provider_stats import compute_provider_reliability
 from agent.visual.ranker import rank_visual_candidates
+from agent.visual.reward_model import score_visual_candidate
 from agent.visual.tracking import default_visual_ledger_path
 from agent.visual.tracking import visual_delivery_metadata
 from tools.registry import registry
@@ -48,6 +52,18 @@ VISUAL_PACKAGE_SCHEMA: dict[str, Any] = {
             "duration": {
                 "type": "integer",
                 "description": "Optional desired video duration in seconds.",
+            },
+            "candidate_budget": {
+                "type": "integer",
+                "description": "Optional image candidate budget. Defaults to 2.",
+            },
+            "video_budget": {
+                "type": "integer",
+                "description": "Optional video candidate budget. Defaults to 1.",
+            },
+            "autonomy_level": {
+                "type": "integer",
+                "description": "Optional advanced autonomy level reserved for learning gates.",
             },
         },
         "required": ["prompt"],
@@ -107,19 +123,31 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
     if not wants_image and not wants_video:
         wants_image = True
         wants_video = True
+    candidate_budget = _candidate_budget(args, wants_image=wants_image)
+    video_budget = _video_budget(args, wants_video=wants_video)
+    normalized_intent = {
+        "kind": "visual_package",
+        "wants_image": wants_image,
+        "wants_video": wants_video,
+        "aspect_ratio": _judge_aspect_ratio(aspect_ratio),
+    }
+    intent_signature = build_intent_signature(
+        {
+            **normalized_intent,
+            "modality": "package",
+            "operation": "visual_package_generate",
+        }
+    )
 
     ledger = VisualAttemptLedger(default_visual_ledger_path())
     ledger.initialize()
     request_id = ledger.record_request(
         user_prompt=prompt,
-        normalized_intent={
-            "kind": "visual_package",
-            "wants_image": wants_image,
-            "wants_video": wants_video,
-        },
+        normalized_intent=normalized_intent,
         modality="package",
         operation="visual_package_generate",
         status="started",
+        metadata={"intent_signature": intent_signature},
     )
 
     all_artifact_ids: list[str] = []
@@ -131,70 +159,96 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
     generation_payloads: dict[str, Any] = {}
 
     if wants_image:
-        image_payload = generate_image(
-            prompt=prompt,
-            aspect_ratio=image_aspect_ratio,
-            reference_image_urls=attachments or None,
-        )
-        generation_payloads["image"] = image_payload
-        image_candidate = _record_payload_candidate(
+        image_payloads = []
+        image_candidates = []
+        for candidate_index in range(candidate_budget):
+            image_payload = generate_image(
+                prompt=prompt,
+                aspect_ratio=image_aspect_ratio,
+                reference_image_urls=attachments or None,
+            )
+            image_payloads.append(image_payload)
+            image_candidate = _record_payload_candidate(
+                ledger,
+                request_id=request_id,
+                payload=image_payload,
+                artifact_key="image",
+                expected_kind="image",
+                prompt=prompt,
+                provider=str(image_payload.get("provider") or ""),
+                model=str(image_payload.get("model") or ""),
+                requested_parameters={"aspect_ratio": _judge_aspect_ratio(aspect_ratio)},
+                candidate_index=candidate_index,
+            )
+            if image_candidate:
+                image_candidates.append(image_candidate)
+                all_artifact_ids.append(image_candidate["artifact_id"])
+                all_artifact_paths.append(image_candidate["artifact_path"])
+        generation_payloads["image"] = image_payloads[0] if len(image_payloads) == 1 else image_payloads
+        _score_candidates(
             ledger,
             request_id=request_id,
-            payload=image_payload,
-            artifact_key="image",
-            expected_kind="image",
-            prompt=prompt,
-            provider=str(image_payload.get("provider") or ""),
-            model=str(image_payload.get("model") or ""),
-            requested_parameters={"aspect_ratio": _judge_aspect_ratio(aspect_ratio)},
+            intent_signature=intent_signature,
+            candidates=image_candidates,
         )
-        if image_candidate:
-            all_artifact_ids.append(image_candidate["artifact_id"])
-            all_artifact_paths.append(image_candidate["artifact_path"])
-            image_decision = rank_visual_candidates(
-                request_id=request_id,
-                candidates=[image_candidate],
-                post_threshold=0.0,
-                ask_threshold=0.0,
-            )
-            rankings["image"] = image_decision.__dict__
-            if image_decision.selected_artifact_id == image_candidate["artifact_id"]:
-                selected_artifact_ids.append(image_candidate["artifact_id"])
-                selected_images.append(image_candidate["artifact_path"])
+        image_decision = rank_visual_candidates(
+            request_id=request_id,
+            candidates=image_candidates,
+            post_threshold=0.0,
+            ask_threshold=0.0,
+        )
+        rankings["image"] = image_decision.__dict__
+        selected_image = _selected_candidate(image_candidates, image_decision.selected_artifact_id)
+        if selected_image:
+            selected_artifact_ids.append(selected_image["artifact_id"])
+            selected_images.append(selected_image["artifact_path"])
 
     if wants_video:
         video_image_url = str(args.get("image_url") or "").strip() or (selected_images[0] if selected_images else None)
-        video_payload = generate_video(
-            prompt=prompt,
-            image_url=video_image_url,
-            duration=duration,
-            aspect_ratio=_judge_aspect_ratio(aspect_ratio),
-        )
-        generation_payloads["video"] = video_payload
-        video_candidate = _record_payload_candidate(
+        video_payloads = []
+        video_candidates = []
+        for candidate_index in range(video_budget):
+            video_payload = generate_video(
+                prompt=prompt,
+                image_url=video_image_url,
+                duration=duration,
+                aspect_ratio=_judge_aspect_ratio(aspect_ratio),
+            )
+            video_payloads.append(video_payload)
+            video_candidate = _record_payload_candidate(
+                ledger,
+                request_id=request_id,
+                payload=video_payload,
+                artifact_key="video",
+                expected_kind="video",
+                prompt=prompt,
+                provider=str(video_payload.get("provider") or ""),
+                model=str(video_payload.get("model") or ""),
+                requested_parameters={"duration_seconds": duration},
+                candidate_index=candidate_index,
+            )
+            if video_candidate:
+                video_candidates.append(video_candidate)
+                all_artifact_ids.append(video_candidate["artifact_id"])
+                all_artifact_paths.append(video_candidate["artifact_path"])
+        generation_payloads["video"] = video_payloads[0] if len(video_payloads) == 1 else video_payloads
+        _score_candidates(
             ledger,
             request_id=request_id,
-            payload=video_payload,
-            artifact_key="video",
-            expected_kind="video",
-            prompt=prompt,
-            provider=str(video_payload.get("provider") or ""),
-            model=str(video_payload.get("model") or ""),
-            requested_parameters={"duration_seconds": duration},
+            intent_signature=intent_signature,
+            candidates=video_candidates,
         )
-        if video_candidate:
-            all_artifact_ids.append(video_candidate["artifact_id"])
-            all_artifact_paths.append(video_candidate["artifact_path"])
-            video_decision = rank_visual_candidates(
-                request_id=request_id,
-                candidates=[video_candidate],
-                post_threshold=0.0,
-                ask_threshold=0.0,
-            )
-            rankings["video"] = video_decision.__dict__
-            if video_decision.selected_artifact_id == video_candidate["artifact_id"]:
-                selected_artifact_ids.append(video_candidate["artifact_id"])
-                selected_videos.append(video_candidate["artifact_path"])
+        video_decision = rank_visual_candidates(
+            request_id=request_id,
+            candidates=video_candidates,
+            post_threshold=0.0,
+            ask_threshold=0.0,
+        )
+        rankings["video"] = video_decision.__dict__
+        selected_video = _selected_candidate(video_candidates, video_decision.selected_artifact_id)
+        if selected_video:
+            selected_artifact_ids.append(selected_video["artifact_id"])
+            selected_videos.append(selected_video["artifact_path"])
 
     success = (not wants_image or bool(selected_images)) and (not wants_video or bool(selected_videos))
     package_status = "success" if success else ("partial" if selected_images or selected_videos else "failed")
@@ -229,10 +283,12 @@ def _record_payload_candidate(
     provider: str,
     model: str,
     requested_parameters: dict[str, Any],
+    candidate_index: int = 0,
 ) -> dict[str, Any] | None:
     success = bool(payload.get("success"))
     attempt_id = ledger.record_attempt(
         request_id=request_id,
+        candidate_index=candidate_index,
         provider=provider,
         model=model,
         prompt_original=prompt,
@@ -263,9 +319,43 @@ def _record_payload_candidate(
         "attempt_id": attempt_id,
         "artifact_id": artifact_id,
         "artifact_path": artifact.get("local_path") or artifact.get("uri") or artifact_ref.strip(),
+        "kind": expected_kind,
+        "provider": provider,
+        "model": model,
         "hard_gate": score["hard_gate"],
         "scores": score["scores"],
     }
+
+
+def _score_candidates(
+    ledger: VisualAttemptLedger,
+    *,
+    request_id: str,
+    intent_signature: str,
+    candidates: list[dict[str, Any]],
+) -> None:
+    if not candidates:
+        return
+    provider_stats = compute_provider_reliability(ledger, request_id=request_id)
+    preference_profile = build_preference_profile(ledger, bucket=intent_signature)
+    for candidate in candidates:
+        candidate["reward"] = score_visual_candidate(
+            candidate,
+            provider_stats=provider_stats,
+            preference_profile=preference_profile,
+        )
+
+
+def _selected_candidate(
+    candidates: list[dict[str, Any]],
+    selected_artifact_id: str | None,
+) -> dict[str, Any] | None:
+    if selected_artifact_id is None:
+        return None
+    return next(
+        (candidate for candidate in candidates if candidate.get("artifact_id") == selected_artifact_id),
+        None,
+    )
 
 
 def _record_artifact_ref(
@@ -332,6 +422,24 @@ def _coerce_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _candidate_budget(args: dict[str, Any], *, wants_image: bool) -> int:
+    if not wants_image:
+        return 0
+    value = _coerce_int(args.get("candidate_budget"))
+    return _clamp_budget(value or 2, minimum=1, maximum=4)
+
+
+def _video_budget(args: dict[str, Any], *, wants_video: bool) -> int:
+    if not wants_video:
+        return 0
+    value = _coerce_int(args.get("video_budget"))
+    return _clamp_budget(value or 1, minimum=1, maximum=2)
+
+
+def _clamp_budget(value: int, *, minimum: int, maximum: int) -> int:
+    return max(minimum, min(maximum, value))
 
 
 def _image_tool_aspect_ratio(value: str) -> str:

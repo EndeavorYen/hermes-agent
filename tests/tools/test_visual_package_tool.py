@@ -120,3 +120,48 @@ async def test_visual_package_generate_selects_successful_remote_video_url(monke
     assert payload["success"] is True
     assert payload["videos"] == ["https://vidgen.x.ai/xai-vidgen-bucket/current.mp4"]
     assert len(payload["delivery_metadata"]["selected_visual_artifact_ids"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_visual_package_generates_multiple_image_candidates_and_posts_only_winner(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    paths = []
+    for index in range(2):
+        path = tmp_path / f"image-{index}.png"
+        path.write_bytes(_ONE_PIXEL_PNG)
+        paths.append(path)
+    calls = []
+
+    def fake_generate_image(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(paths[len(calls) - 1]),
+            "provider": "fixture",
+            "model": "image",
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+    monkeypatch.setattr(
+        visual_package_tool,
+        "generate_video",
+        lambda **kwargs: {"success": False, "error": "not requested", "provider": "fixture", "model": "video"},
+    )
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {"prompt": "請產出一張圖片：霧黑鋼筆。", "candidate_budget": 2, "include_video": False}
+        )
+    )
+
+    assert len(calls) == 2
+    assert len(payload["images"]) == 1
+    assert len(
+        {
+            entry["artifact_id"]
+            for entry in payload["delivery_metadata"]["visual_artifacts"].values()
+        }
+    ) == 2
+    assert len(payload["delivery_metadata"]["selected_visual_artifact_ids"]) == 1
