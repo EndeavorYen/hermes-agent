@@ -4,6 +4,9 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from agent.visual.attempt_ledger import VisualAttemptLedger
+from agent.visual.provider_stats import top_provider_reliability
+
 
 def build_visual_evidence_report(db_path: str | Path, *, request_id: str | None = None) -> dict[str, Any]:
     db_path = Path(db_path)
@@ -16,6 +19,10 @@ def build_visual_evidence_report(db_path: str | Path, *, request_id: str | None 
         feedback_count = _count(conn, "visual_feedback", request_id=request_id)
         duplicate_count = _duplicate_sent_delivery_count(conn, request_id=request_id)
         missing_metadata_count = _missing_source_metadata_count(conn, request_id=request_id)
+    provider_reliability = top_provider_reliability(
+        VisualAttemptLedger(db_path),
+        request_id=request_id,
+    )
 
     proof = {
         "duplicate_artifact_delivery_count": duplicate_count,
@@ -29,6 +36,7 @@ def build_visual_evidence_report(db_path: str | Path, *, request_id: str | None 
         "deliveries": {"count": delivery_count},
         "feedback": {"count": feedback_count},
         "proof": proof,
+        "provider_reliability": {"top": provider_reliability},
     }
 
 
