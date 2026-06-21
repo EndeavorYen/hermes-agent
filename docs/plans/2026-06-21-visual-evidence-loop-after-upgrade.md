@@ -279,7 +279,7 @@ class VisualAttemptLedger:
     def record_delivery(self, **kwargs) -> str: ...
 ```
 
-- [ ] **Step 1: Write ID tests**
+- [x] **Step 1: Write ID tests**
 
   Create `tests/visual/test_ids.py`:
 
@@ -315,7 +315,7 @@ class VisualAttemptLedger:
       assert any(value.startswith("vfb_") for value in ids)
   ```
 
-- [ ] **Step 2: Run the ID red test**
+- [x] **Step 2: Run the ID red test**
 
   Run:
 
@@ -325,11 +325,11 @@ class VisualAttemptLedger:
 
   Expected: FAIL because `agent.visual.ids` does not exist.
 
-- [ ] **Step 3: Implement `agent/visual/ids.py`**
+- [x] **Step 3: Implement `agent/visual/ids.py`**
 
   Create small UUID-backed prefix functions.
 
-- [ ] **Step 4: Write ledger schema test**
+- [x] **Step 4: Write ledger schema test**
 
   Create `tests/visual/test_attempt_ledger.py` with:
 
@@ -341,7 +341,7 @@ class VisualAttemptLedger:
       ledger.initialize()
 
       request_id = ledger.record_request(
-          user_prompt="private prompt stays runtime-local",
+          user_prompt="redacted user prompt",
           normalized_intent={"modality": "image", "operation": "text_to_image"},
           modality="image",
           operation="text_to_image",
@@ -358,7 +358,7 @@ class VisualAttemptLedger:
           candidate_index=0,
           provider="xai",
           model="grok-imagine-image",
-          prompt_original="private prompt stays runtime-local",
+          prompt_original="redacted user prompt",
           prompt_mediated="compiled prompt",
           parameters_requested={"aspect_ratio": "16:9"},
           parameters_effective={"aspect_ratio": "16:9"},
@@ -393,7 +393,7 @@ class VisualAttemptLedger:
       assert ledger.get_delivery(delivery_id)["delivery_status"] == "sent"
   ```
 
-- [ ] **Step 5: Run the ledger red test**
+- [x] **Step 5: Run the ledger red test**
 
   Run:
 
@@ -403,7 +403,7 @@ class VisualAttemptLedger:
 
   Expected: FAIL because `VisualAttemptLedger` does not exist.
 
-- [ ] **Step 6: Implement `agent/visual/attempt_ledger.py`**
+- [x] **Step 6: Implement `agent/visual/attempt_ledger.py`**
 
   Implement SQLite tables:
 
@@ -417,7 +417,11 @@ class VisualAttemptLedger:
 
   Use JSON encoding for structured columns and row decoding helpers for query results.
 
-- [ ] **Step 7: Verify milestone 1**
+  Execution note, 2026-06-21: self-review added a second red test for
+  `visual_judgments`, `visual_rankings`, and `visual_feedback` get helpers so
+  every table created in this milestone has record/query coverage.
+
+- [x] **Step 7: Verify milestone 1**
 
   Run:
 
@@ -428,7 +432,7 @@ class VisualAttemptLedger:
 
   Expected: tests pass and diff check is clean.
 
-- [ ] **Step 8: Commit milestone 1**
+- [x] **Step 8: Commit milestone 1**
 
   Run:
 
