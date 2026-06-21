@@ -16,6 +16,7 @@ from agent.visual.ids import (
     new_ranking_id,
     new_request_id,
     new_shadow_update_id,
+    new_strategy_activation_id,
 )
 
 
@@ -38,6 +39,8 @@ _JSON_COLUMNS = {
     "parsed_json",
     "proposed_change",
     "proposed_change_json",
+    "promotion_decision",
+    "promotion_decision_json",
     "evidence",
     "evidence_json",
 }
@@ -53,6 +56,7 @@ _ID_COLUMN_CANDIDATES = {
     "visual_deliveries": ("id", "delivery_id"),
     "visual_feedback": ("id", "feedback_id"),
     "visual_shadow_updates": ("id", "shadow_update_id"),
+    "visual_strategy_activations": ("id", "strategy_activation_id"),
 }
 
 _COLUMN_ALIASES = {
@@ -96,6 +100,11 @@ _COLUMN_ALIASES = {
         "id": "shadow_update_id",
         "proposed_change": "proposed_change_json",
         "evidence": "evidence_json",
+    },
+    "visual_strategy_activations": {
+        "id": "strategy_activation_id",
+        "promotion_decision": "promotion_decision_json",
+        "metadata": "metadata_json",
     },
 }
 
@@ -266,6 +275,20 @@ class VisualAttemptLedger:
                     activation_status TEXT,
                     FOREIGN KEY(request_id) REFERENCES visual_requests(id)
                 );
+
+                CREATE TABLE IF NOT EXISTS visual_strategy_activations (
+                    id TEXT PRIMARY KEY,
+                    shadow_update_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    intent_signature TEXT NOT NULL,
+                    strategy_signature TEXT NOT NULL,
+                    activation_status TEXT NOT NULL,
+                    promotion_decision TEXT,
+                    rollback_of TEXT,
+                    metadata TEXT,
+                    FOREIGN KEY(shadow_update_id) REFERENCES visual_shadow_updates(id),
+                    FOREIGN KEY(rollback_of) REFERENCES visual_strategy_activations(id)
+                );
                 """
             )
             self._ensure_column(conn, "visual_deliveries", "destination", "TEXT")
@@ -294,6 +317,9 @@ class VisualAttemptLedger:
     def record_shadow_update(self, **kwargs: Any) -> str:
         return self._insert("visual_shadow_updates", "id", kwargs, new_shadow_update_id)
 
+    def record_strategy_activation(self, **kwargs: Any) -> str:
+        return self._insert("visual_strategy_activations", "id", kwargs, new_strategy_activation_id)
+
     def get_request(self, record_id: str) -> dict[str, Any]:
         return self._get("visual_requests", record_id)
 
@@ -318,10 +344,33 @@ class VisualAttemptLedger:
     def get_shadow_update(self, record_id: str) -> dict[str, Any]:
         return self._get("visual_shadow_updates", record_id)
 
+    def get_strategy_activation(self, record_id: str) -> dict[str, Any]:
+        return self._get("visual_strategy_activations", record_id)
+
     def list_deliveries(self, *, request_id: str | None = None) -> list[dict[str, Any]]:
         if request_id is None:
             return self._list("visual_deliveries")
         return self._list("visual_deliveries", where="request_id = ?", params=(request_id,))
+
+    def list_strategy_activations(
+        self,
+        *,
+        intent_signature: str | None = None,
+        strategy_signature: str | None = None,
+    ) -> list[dict[str, Any]]:
+        where_parts: list[str] = []
+        params: list[str] = []
+        if intent_signature is not None:
+            where_parts.append("intent_signature = ?")
+            params.append(intent_signature)
+        if strategy_signature is not None:
+            where_parts.append("strategy_signature = ?")
+            params.append(strategy_signature)
+        return self._list(
+            "visual_strategy_activations",
+            where=" AND ".join(where_parts) if where_parts else None,
+            params=tuple(params),
+        )
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)

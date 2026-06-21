@@ -37,3 +37,7 @@ def new_feedback_id() -> str:
 
 def new_shadow_update_id() -> str:
     return _new_visual_id("vsh")
+
+
+def new_strategy_activation_id() -> str:
+    return _new_visual_id("vsa")
