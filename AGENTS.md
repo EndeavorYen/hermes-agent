@@ -41,10 +41,18 @@ then prove the real runtime behavior.
   but not sufficient. Add the smallest fixture regression, then run a focused
   live or runtime smoke when the behavior depends on a real provider or
   platform.
+- **Judge visual quality from visual evidence.** Beauty, face fidelity, pose,
+  wardrobe, composition, aspect ratio, and motion quality should be scored from
+  artifact observations or vision-backed signals. Metadata-only green results
+  are low-confidence and should be treated as such.
 - **Self-validate before asking the user.** Each agentic loop should record
   enough evidence to classify provider failures, quality failures, delivery
   failures, and learning-policy failures. The next run should be able to act on
   that evidence without requiring the user to manually trigger every test.
+- **Hide orchestration complexity from the user.** Natural requests like
+  "make an image and video" should route to the right visual agent mode without
+  requiring advanced flags. Budgets and autonomy levels are operator controls,
+  not the primary user interface.
 - **Separate internal generation from delivery.** Image-first video may create
   several candidate source images, rank them, and use the best one for video.
   A video-only request should still deliver only the selected video. Multi-shot
@@ -54,6 +62,14 @@ then prove the real runtime behavior.
   record source evidence, confidence, affected dimensions, provider-vs-aesthetic
   attribution, and rollback conditions. Do not let weak self-judgment silently
   mutate prompts or policy.
+- **Spend resources when quality is the goal.** When live E2E or quality-burn
+  mode is explicitly enabled, candidate generation, ranking, repair, and retry
+  loops are valid tools. Record cost, attempts, failures, and selected evidence
+  instead of hiding poor output behind thrift.
+- **Protect privacy while preserving internal auditability.** Do not commit
+  private prompts, preference traces, generated media, cache contents, provider
+  logs, or raw delivery artifacts. Sanitize external media metadata for privacy
+  where supported, but keep internal provenance in the local ledger.
 - **Avoid busywork loops.** If work is not moving the product toward higher
   quality, higher delivery reliability, lower user intervention, or clearer
   recovery, stop and re-evaluate the objective before adding more machinery.
