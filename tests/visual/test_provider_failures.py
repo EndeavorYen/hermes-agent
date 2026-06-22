@@ -88,6 +88,28 @@ def test_classify_visual_provider_failure_detects_xai_connection_refused_503_tex
     assert result["safe_reframe_allowed"] is False
 
 
+def test_classify_visual_provider_failure_detects_dns_resolution_failure():
+    from agent.visual.provider_failures import classify_visual_provider_failure
+
+    result = classify_visual_provider_failure(
+        {
+            "success": False,
+            "error_type": "connection_error",
+            "error": (
+                "xAI connection error: HTTPSConnectionPool(host='api.x.ai', port=443): "
+                "Max retries exceeded with url: /v1/images/generations "
+                "(Caused by NameResolutionError(\"HTTPSConnection(host='api.x.ai', port=443): "
+                "Failed to resolve 'api.x.ai' ([Errno 8] nodename nor servname provided, or not known)\"))"
+            ),
+        }
+    )
+
+    assert result["failure_class"] == "provider_unavailable"
+    assert result["retryable"] is True
+    assert result["safe_reframe_allowed"] is False
+    assert result["provider_message_code"] == "connection_error"
+
+
 def test_classify_visual_provider_failure_unknown_fails_closed():
     from agent.visual.provider_failures import classify_visual_provider_failure
 

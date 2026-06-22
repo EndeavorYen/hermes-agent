@@ -52,6 +52,11 @@ def build_visual_scheduled_self_validation_report(
     if case_timeout_seconds is not None:
         automation_kwargs["case_timeout_seconds"] = case_timeout_seconds
     automation = build_visual_e2e_automation_report(**automation_kwargs)
+    automation = _with_carried_live_quality_burn(
+        automation=automation,
+        live_policy=live_policy,
+        state=state,
+    )
     report = {
         "success": automation.get("success") is True,
         "run_id": _run_id(now),
@@ -71,7 +76,7 @@ def build_visual_scheduled_self_validation_report(
     }
     _write_report(output_dir, report)
     if include_live:
-        _write_json(output_dir / "state.json", {"last_live_run_at": now.isoformat()})
+        _write_json(output_dir / "state.json", _next_state_after_live_run(state, automation=automation, now=now))
     return report
 
 
@@ -279,6 +284,101 @@ def _action_types(*action_lists: Any) -> list[str]:
             if action_type and action_type not in values:
                 values.append(action_type)
     return values
+
+
+def _with_carried_live_quality_burn(
+    *,
+    automation: dict[str, Any],
+    live_policy: dict[str, Any],
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    if live_policy.get("decision") != "skip_interval":
+        return automation
+    carried = _carried_live_quality_burn(state)
+    if not carried:
+        return automation
+
+    merged = dict(automation)
+    merged["live_quality_burn"] = carried
+
+    self_improvement = (
+        dict(merged.get("self_improvement"))
+        if isinstance(merged.get("self_improvement"), dict)
+        else {}
+    )
+    self_improvement["next_actions"] = _dedupe_actions(
+        _action_list(self_improvement.get("next_actions")) + _action_list(carried.get("next_actions"))
+    )
+    self_improvement["action_count"] = len(self_improvement["next_actions"])
+    self_improvement["reduces_human_intervention"] = bool(self_improvement["next_actions"])
+    self_improvement.setdefault("privacy_safe", True)
+    merged["self_improvement"] = self_improvement
+    return merged
+
+
+def _next_state_after_live_run(
+    state: dict[str, Any],
+    *,
+    automation: dict[str, Any],
+    now: datetime,
+) -> dict[str, Any]:
+    next_state = dict(state)
+    next_state["last_live_run_at"] = now.isoformat()
+    live_quality_burn = _state_live_quality_burn(automation, now=now)
+    if live_quality_burn:
+        next_state["last_live_quality_burn"] = live_quality_burn
+    return next_state
+
+
+def _state_live_quality_burn(automation: dict[str, Any], *, now: datetime) -> dict[str, Any]:
+    live_quality_burn = automation.get("live_quality_burn")
+    if not isinstance(live_quality_burn, dict):
+        return {}
+    actions = _action_list(live_quality_burn.get("next_actions"))
+    if not actions:
+        return {}
+    return {
+        "success": live_quality_burn.get("success"),
+        "status": live_quality_burn.get("status"),
+        "summary": live_quality_burn.get("summary") if isinstance(live_quality_burn.get("summary"), dict) else {},
+        "next_actions": actions,
+        "generated_at": now.isoformat(),
+    }
+
+
+def _carried_live_quality_burn(state: dict[str, Any]) -> dict[str, Any]:
+    live_quality_burn = state.get("last_live_quality_burn")
+    if not isinstance(live_quality_burn, dict):
+        return {}
+    actions = _action_list(live_quality_burn.get("next_actions"))
+    if not actions:
+        return {}
+    carried = dict(live_quality_burn)
+    carried["status"] = "carried_forward"
+    carried["next_actions"] = actions
+    return carried
+
+
+def _action_list(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _dedupe_actions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[tuple[str, str, str]] = set()
+    deduped: list[dict[str, Any]] = []
+    for action in actions:
+        key = (
+            str(action.get("type") or ""),
+            str(action.get("source") or ""),
+            str(action.get("modality") or ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(action)
+    return deduped
 
 
 def _write_report(output_dir: Path, report: dict[str, Any]) -> None:

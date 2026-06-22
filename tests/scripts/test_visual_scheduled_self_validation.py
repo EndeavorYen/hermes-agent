@@ -361,6 +361,54 @@ def test_scheduled_self_validation_skips_live_until_interval_elapsed(monkeypatch
     assert calls == [{"include_live": False, "include_live_slack_upload": False}]
 
 
+def test_scheduled_self_validation_carries_forward_recent_live_burn_actions(monkeypatch, tmp_path):
+    from scripts import visual_scheduled_self_validation
+
+    calls = []
+
+    def fake_automation(*, work_dir, include_live, include_live_slack_upload=False):
+        calls.append({"include_live": include_live, "include_live_slack_upload": include_live_slack_upload})
+        return _automation_report(
+            include_live=include_live,
+            include_live_slack_upload=include_live_slack_upload,
+        )
+
+    monkeypatch.setattr(
+        visual_scheduled_self_validation,
+        "build_visual_e2e_automation_report",
+        fake_automation,
+    )
+
+    visual_scheduled_self_validation.build_visual_scheduled_self_validation_report(
+        output_dir=tmp_path,
+        live_mode="auto",
+        live_enabled=True,
+        min_live_interval_hours=6,
+        now=datetime(2026, 6, 22, 8, 0, tzinfo=timezone.utc),
+    )
+
+    report = visual_scheduled_self_validation.build_visual_scheduled_self_validation_report(
+        output_dir=tmp_path,
+        live_mode="auto",
+        live_enabled=True,
+        min_live_interval_hours=6,
+        now=datetime(2026, 6, 22, 9, 0, tzinfo=timezone.utc),
+    )
+
+    assert calls == [
+        {"include_live": True, "include_live_slack_upload": False},
+        {"include_live": False, "include_live_slack_upload": False},
+    ]
+    assert report["live_policy"]["decision"] == "skip_interval"
+    assert report["automation"]["live_quality_burn"]["status"] == "carried_forward"
+    assert report["summary"]["live_quality_burn_action_types"] == ["increase_candidate_budget"]
+    assert {
+        "type": "increase_candidate_budget",
+        "requires_human_feedback": False,
+        "source": "live_quality_burn",
+    } in report["automation"]["self_improvement"]["next_actions"]
+
+
 def test_scheduled_self_validation_separates_rollout_autonomy_from_validation(monkeypatch, tmp_path):
     from scripts import visual_scheduled_self_validation
 

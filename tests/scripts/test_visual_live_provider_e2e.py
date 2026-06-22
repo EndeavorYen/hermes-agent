@@ -430,6 +430,28 @@ def test_visual_live_provider_e2e_counts_provider_error_schema_columns():
     assert codes["api_error"] == 1
 
 
+def test_visual_live_provider_e2e_ignores_internal_missing_video_source_error():
+    from scripts.visual_live_provider_e2e import _provider_failure_counters
+
+    classes, codes = _provider_failure_counters(
+        [
+            {
+                "provider": "xai-oauth",
+                "provider_error_type": "connection_error",
+                "provider_error_message": "Failed to resolve api.x.ai",
+            },
+            {
+                "provider": "",
+                "provider_error_type": "missing_video_source_image",
+                "provider_error_message": "Image-first video generation requires a selected source image.",
+            },
+        ]
+    )
+
+    assert classes == {"provider_unavailable": 1}
+    assert codes == {"connection_error": 1}
+
+
 def test_visual_live_provider_e2e_reports_moderation_recovery_summary(monkeypatch, tmp_path):
     from agent.visual.attempt_ledger import VisualAttemptLedger
     from agent.visual.tracking import default_visual_ledger_path

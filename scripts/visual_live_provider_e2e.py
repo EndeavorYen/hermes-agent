@@ -461,9 +461,12 @@ def _provider_failure_counters(attempts: list[dict[str, Any]]) -> tuple[Counter[
     classes: Counter[str] = Counter()
     codes: Counter[str] = Counter()
     for row in attempts:
+        provider = str(row.get("provider") or row.get("provider_name") or "").strip()
         error_type = row.get("error_type") or row.get("provider_error_type")
         error_message = row.get("error_message") or row.get("provider_error_message")
         if not (error_type or error_message):
+            continue
+        if not provider and _is_internal_pipeline_error(error_type):
             continue
         failure = classify_visual_provider_failure(
             {
@@ -479,6 +482,12 @@ def _provider_failure_counters(attempts: list[dict[str, Any]]) -> tuple[Counter[
         if provider_code:
             codes[provider_code] += 1
     return classes, codes
+
+
+def _is_internal_pipeline_error(error_type: Any) -> bool:
+    return str(error_type or "").strip() in {
+        "missing_video_source_image",
+    }
 
 
 def _recovery_summary(
