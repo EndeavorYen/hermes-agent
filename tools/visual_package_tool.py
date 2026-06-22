@@ -517,6 +517,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
 
     success = (not requested_image or bool(selected_images)) and (not wants_video or bool(selected_videos))
     package_status = "success" if success else ("partial" if selected_images or selected_videos else "failed")
+    package_error = _package_error(success=success, delivery_gate=delivery_gate)
     delivery_metadata = visual_delivery_metadata(
         request_id=request_id,
         attempt_id=None,
@@ -528,6 +529,8 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
     payload = {
         "success": success,
         "package_status": package_status,
+        "error_type": package_error.get("error_type"),
+        "error": package_error.get("error"),
         "visual_request_id": request_id,
         "images": selected_images,
         "videos": selected_videos,
@@ -623,6 +626,26 @@ def _record_payload_candidate(
         "scores": score["scores"],
         "vision_observation": _payload_vision_observation(payload),
     }
+
+
+def _package_error(
+    *,
+    success: bool,
+    delivery_gate: dict[str, dict[str, Any]],
+) -> dict[str, str | None]:
+    if success:
+        return {"error_type": None, "error": None}
+    if any(
+        isinstance(gate, dict)
+        and gate.get("allowed") is False
+        and gate.get("reason") == "active_learning_fail_closed"
+        for gate in delivery_gate.values()
+    ):
+        return {
+            "error_type": "delivery_gate_blocked",
+            "error": "visual candidate blocked by active-learning delivery gate",
+        }
+    return {"error_type": None, "error": None}
 
 
 def _retry_generation_payload(

@@ -866,6 +866,8 @@ async def test_visual_package_blocks_delivery_when_active_learning_fails_closed(
 
     assert payload["success"] is False
     assert payload["package_status"] == "failed"
+    assert payload["error_type"] == "delivery_gate_blocked"
+    assert payload["error"] == "visual candidate blocked by active-learning delivery gate"
     assert payload["images"] == []
     assert payload["delivery_metadata"]["selected_visual_artifact_ids"] == []
     assert payload["learning"]["active_learning"]["image"]["action"] == "fail_closed"
