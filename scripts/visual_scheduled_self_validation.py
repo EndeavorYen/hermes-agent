@@ -339,6 +339,9 @@ def _summary(automation: dict[str, Any], live_quality_trends: dict[str, Any] | N
         else None,
         "live_quality_burn_case_count": _int(live_quality_burn_summary.get("case_count")),
         "live_quality_burn_min_score": live_quality_burn_summary.get("min_quality_score"),
+        "live_quality_burn_promotion_min_score": live_quality_burn_summary.get(
+            "promotion_min_quality_score"
+        ),
         "live_quality_burn_action_types": _action_types(live_quality_burn.get("next_actions")),
         "live_quality_burn_image_first_video_source_case_count": _int(
             live_quality_burn_summary.get("image_first_video_source_case_count")

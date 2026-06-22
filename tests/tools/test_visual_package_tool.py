@@ -356,7 +356,7 @@ async def test_visual_package_blocks_low_quality_video_delivery(monkeypatch, tmp
     assert payload["videos"] == []
     assert payload["error_type"] == "delivery_gate_blocked"
     assert payload["delivery_gate"]["video"]["allowed"] is False
-    assert payload["delivery_gate"]["video"]["reason"] == "active_learning_fail_closed"
+    assert payload["delivery_gate"]["video"]["reason"] == "video_quality_issue_blocked"
     assert payload["delivery_gate"]["video"]["quality_issues"] == [
         "aspect_integrity_bad",
         "motion_bad",
@@ -472,7 +472,98 @@ async def test_visual_package_repairs_blocked_video_before_delivery(monkeypatch,
         and attempt["metadata"]["quality_repair"].get("modality") == "video"
     ]
     assert len(repair_attempts) == 1
-    assert repair_attempts[0]["metadata"]["quality_repair"]["reason"] == "active_learning_fail_closed"
+    assert repair_attempts[0]["metadata"]["quality_repair"]["reason"] == "video_quality_issue_blocked"
+
+
+@pytest.mark.asyncio
+async def test_visual_package_repairs_video_blocking_issue_even_when_active_learning_would_ask(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image = tmp_path / "source.png"
+    bad_video = tmp_path / "bad-video.mp4"
+    good_video = tmp_path / "good-video.mp4"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    bad_video.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+    good_video.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isomgood")
+    video_calls = []
+
+    def fake_probe_media_reference(ref):
+        is_video = str(ref).endswith(".mp4")
+        return SimpleNamespace(
+            sha256=f"hash:{ref}",
+            is_stable=True,
+            freshness_status="fresh",
+            local_path=str(ref),
+            mime_type="video/mp4" if is_video else "image/png",
+            bytes=10,
+            width=768,
+            height=768,
+            duration_seconds=4.0 if is_video else None,
+        )
+
+    monkeypatch.setattr(visual_package_tool, "probe_media_reference", fake_probe_media_reference)
+    monkeypatch.setattr(
+        visual_package_tool,
+        "generate_image",
+        lambda **kwargs: {
+            "success": True,
+            "image": str(image),
+            "provider": "fixture",
+            "model": "image-fixture",
+        },
+    )
+
+    def fake_generate_video(**kwargs):
+        video_calls.append(kwargs)
+        if len(video_calls) == 1:
+            return {
+                "success": True,
+                "video": str(bad_video),
+                "provider": "fixture",
+                "model": "video-fixture",
+                "vision_observation": {
+                    "aspect_integrity": 0.2,
+                    "motion_quality": 0.25,
+                    "confidence": 0.9,
+                    "artifact_defects": ["weak_aspect_integrity", "weak_motion_or_duration_evidence"],
+                },
+            }
+        return {
+            "success": True,
+            "video": str(good_video),
+            "provider": "fixture",
+            "model": "video-fixture",
+            "vision_observation": {
+                "aspect_integrity": 0.95,
+                "motion_quality": 0.9,
+                "confidence": 0.9,
+                "artifact_defects": [],
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_video", fake_generate_video)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "請產出一張圖片和一段影片：乾淨產品攝影。",
+                "aspect_ratio": "1:1",
+                "candidate_budget": 1,
+                "video_budget": 1,
+                "duration": 4,
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["videos"] == [str(good_video)]
+    assert len(video_calls) == 2
+    assert payload["delivery_gate"]["video"]["repaired_from"]["reason"] == "video_quality_issue_blocked"
+    assert payload["delivery_gate"]["video"]["repaired_from"]["quality_issues"] == [
+        "aspect_integrity_bad",
+        "motion_bad",
+    ]
 
 
 @pytest.mark.asyncio

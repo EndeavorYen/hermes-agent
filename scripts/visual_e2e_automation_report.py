@@ -47,7 +47,11 @@ def build_visual_e2e_automation_report(
         "composition_target": "single_coherent_video",
         "delivery_policy": "deliver_composed_video_when_available_else_selected_clips",
     }
-    fixture_quality_suite_kwargs = {"mode": "fixture", "work_dir": work_dir}
+    fixture_quality_suite_kwargs = {
+        "mode": "fixture",
+        "work_dir": work_dir,
+        "include_video_repair_probe": True,
+    }
     if case_timeout_seconds is not None:
         fixture_quality_suite_kwargs["case_timeout_seconds"] = case_timeout_seconds
     fixture_quality_suite = build_visual_live_provider_e2e_suite_report(**fixture_quality_suite_kwargs)
@@ -71,7 +75,11 @@ def build_visual_e2e_automation_report(
     quality_calibration = build_quality_calibration_report(_ledger_path_for_work_dir(work_dir))
     if include_live:
         live_e2e = build_visual_live_provider_e2e_report(mode="live", work_dir=None)
-        live_quality_suite_kwargs = {"mode": "live", "work_dir": None}
+        live_quality_suite_kwargs = {
+            "mode": "live",
+            "work_dir": None,
+            "include_video_repair_probe": True,
+        }
         if case_timeout_seconds is not None:
             live_quality_suite_kwargs["case_timeout_seconds"] = case_timeout_seconds
         live_quality_suite = build_visual_live_provider_e2e_suite_report(**live_quality_suite_kwargs)

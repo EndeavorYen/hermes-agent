@@ -100,6 +100,9 @@ def _float_timeout(value: float | int | None) -> float:
 def _summary(suite: dict[str, Any]) -> dict[str, Any]:
     cases = suite.get("cases") if isinstance(suite.get("cases"), list) else []
     quality_scores = _case_quality_scores(cases)
+    promotion_quality_scores = _case_quality_scores(
+        [case for case in cases if not _diagnostic_case(case)]
+    )
     quality_issues = _quality_issues(cases)
     preference_dimension_failures = _preference_dimension_failures(cases)
     video_missing_after_image_case_ids = _video_missing_after_image_case_ids(cases)
@@ -126,6 +129,9 @@ def _summary(suite: dict[str, Any]) -> dict[str, Any]:
         "failed_case_count": len([case_id for case_id in failed_cases if case_id]),
         "failed_case_ids": [case_id for case_id in failed_cases if case_id],
         "min_quality_score": min(quality_scores) if quality_scores else None,
+        "promotion_min_quality_score": min(promotion_quality_scores)
+        if promotion_quality_scores
+        else None,
         "quality_issue_count": len(quality_issues),
         "quality_issues": quality_issues,
         "preference_dimension_failure_count": len(preference_dimension_failures),
@@ -169,6 +175,12 @@ def _case_quality_scores(cases: list[Any]) -> list[float]:
         if score is not None:
             scores.append(score)
     return scores
+
+
+def _diagnostic_case(case: Any) -> bool:
+    if not isinstance(case, dict):
+        return False
+    return str(case.get("case_id") or "") in {"video_quality_repair"}
 
 
 def _quality_issues(cases: list[Any]) -> list[str]:

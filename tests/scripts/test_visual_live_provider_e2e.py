@@ -628,6 +628,108 @@ def test_visual_live_provider_e2e_fixture_suite_exercises_video_quality_repair(t
     assert case["payload"]["video_count"] == 1
 
 
+def test_visual_live_provider_e2e_live_suite_can_include_video_quality_repair_probe(monkeypatch, tmp_path):
+    from scripts import visual_live_provider_e2e
+
+    calls = []
+
+    def fake_report(**kwargs):
+        calls.append(kwargs)
+        force_repair = kwargs.get("force_video_quality_repair") is True
+        return {
+            "success": True,
+            "provider_mode": kwargs["mode"],
+            "failures": [],
+            "payload": {"success": True, "image_count": 1, "video_count": 1},
+            "evidence": {
+                "quality_repair_summary": (
+                    {
+                        "attempt_count": 1,
+                        "success_count": 1,
+                        "selected_repair_count": 1,
+                        "by_modality": {
+                            "video": {
+                                "attempt_count": 1,
+                                "success_count": 1,
+                                "selected_repair_count": 1,
+                            }
+                        },
+                    }
+                    if force_repair
+                    else {
+                        "attempt_count": 0,
+                        "success_count": 0,
+                        "selected_repair_count": 0,
+                        "by_modality": {},
+                    }
+                )
+            },
+        }
+
+    monkeypatch.setattr(
+        visual_live_provider_e2e,
+        "build_visual_live_provider_e2e_report",
+        fake_report,
+    )
+
+    suite = visual_live_provider_e2e.build_visual_live_provider_e2e_suite_report(
+        mode="live",
+        work_dir=tmp_path,
+        include_video_repair_probe=True,
+    )
+
+    assert [call["force_video_quality_repair"] for call in calls] == [False, False, True]
+    assert suite["case_count"] == 3
+    assert suite["cases"][-1]["case_id"] == "video_quality_repair"
+    assert suite["quality_repair_summary"]["by_modality"]["video"]["success_count"] == 1
+
+
+def test_quality_repair_summary_detects_repair_attempt_from_requested_parameters():
+    from scripts.visual_live_provider_e2e import _quality_repair_summary
+
+    summary = _quality_repair_summary(
+        payload={
+            "delivery_metadata": {
+                "selected_visual_artifact_ids": ["repair_artifact"],
+            }
+        },
+        attempts=[
+            {
+                "attempt_id": "initial_attempt",
+                "parameters_requested": {"duration_seconds": 4},
+            },
+            {
+                "attempt_id": "repair_attempt",
+                "parameters_requested": {
+                    "duration_seconds": 4,
+                    "quality_repair": True,
+                },
+            },
+        ],
+        artifacts=[
+            {
+                "attempt_id": "initial_attempt",
+                "artifact_id": "initial_artifact",
+                "kind": "video",
+            },
+            {
+                "attempt_id": "repair_attempt",
+                "artifact_id": "repair_artifact",
+                "kind": "video",
+            },
+        ],
+    )
+
+    assert summary["attempt_count"] == 1
+    assert summary["success_count"] == 1
+    assert summary["selected_repair_count"] == 1
+    assert summary["by_modality"]["video"] == {
+        "attempt_count": 1,
+        "success_count": 1,
+        "selected_repair_count": 1,
+    }
+
+
 def test_visual_live_provider_e2e_suite_times_out_one_case_and_continues(monkeypatch, tmp_path):
     from scripts import visual_live_provider_e2e
 

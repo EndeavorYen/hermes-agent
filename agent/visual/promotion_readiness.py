@@ -139,7 +139,10 @@ def _live_quality_burn_blocking_reasons(summary: dict[str, Any]) -> list[str]:
         reasons.append("live_quality_burn_not_successful")
     if _int(summary.get("live_quality_burn_case_count")) < MIN_PROMOTION_CASES:
         reasons.append("insufficient_live_quality_cases")
-    if _float(summary.get("live_quality_burn_min_score")) < MIN_PROMOTION_LIVE_SCORE:
+    promotion_score = summary.get("live_quality_burn_promotion_min_score")
+    if promotion_score is None:
+        promotion_score = summary.get("live_quality_burn_min_score")
+    if _float(promotion_score) < MIN_PROMOTION_LIVE_SCORE:
         reasons.append("live_quality_score_below_threshold")
     if summary.get("live_quality_burn_image_first_video_source_covered") is not True:
         reasons.append("image_first_video_source_not_covered")

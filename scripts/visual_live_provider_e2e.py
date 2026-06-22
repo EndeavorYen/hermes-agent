@@ -206,8 +206,12 @@ def build_visual_live_provider_e2e_suite_report(
     work_dir: str | Path | None = None,
     cases: list[dict[str, Any]] | None = None,
     case_timeout_seconds: float | int | None = None,
+    include_video_repair_probe: bool | None = None,
 ) -> dict[str, Any]:
-    case_specs = cases or _default_e2e_cases(mode)
+    case_specs = cases or _default_e2e_cases(
+        mode,
+        include_video_repair_probe=include_video_repair_probe,
+    )
     case_reports = []
     failures: list[str] = []
     for case in case_specs:
@@ -273,9 +277,16 @@ def run_visual_package(args: dict[str, Any]) -> dict[str, Any]:
         }
 
 
-def _default_e2e_cases(mode: str) -> list[dict[str, Any]]:
+def _default_e2e_cases(
+    mode: str,
+    *,
+    include_video_repair_probe: bool | None = None,
+) -> list[dict[str, Any]]:
     cases = [dict(case) for case in DEFAULT_E2E_CASES]
-    if str(mode or "").strip().lower() == "fixture":
+    mode_text = str(mode or "").strip().lower()
+    if include_video_repair_probe is None:
+        include_video_repair_probe = mode_text == "fixture"
+    if include_video_repair_probe:
         cases.append(dict(FIXTURE_VIDEO_REPAIR_CASE))
     return cases
 
@@ -1042,7 +1053,19 @@ def _suite_quality_repair_summary(case_reports: list[dict[str, Any]]) -> dict[st
 def _quality_repair_metadata(row: dict[str, Any]) -> dict[str, Any]:
     metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
     repair = metadata.get("quality_repair") if isinstance(metadata, dict) else None
-    return repair if isinstance(repair, dict) else {}
+    if isinstance(repair, dict):
+        return repair
+    parameters = row.get("parameters_requested")
+    if not isinstance(parameters, dict):
+        parameters = row.get("parameters_requested_json")
+    if isinstance(parameters, str):
+        try:
+            parameters = json.loads(parameters)
+        except json.JSONDecodeError:
+            parameters = {}
+    if isinstance(parameters, dict) and parameters.get("quality_repair") is True:
+        return {"modality": "video"}
+    return {}
 
 
 def _row_id(row: dict[str, Any], *keys: str) -> str:
@@ -1531,7 +1554,11 @@ def _fixture_provider_context(
     force_storyboard_composition: bool = False,
 ):
     if mode != "fixture":
-        yield
+        if force_video_quality_repair:
+            with _live_video_quality_repair_probe_context():
+                yield
+        else:
+            yield
         return
     from tools import visual_package_tool
 
@@ -1636,6 +1663,56 @@ def _fixture_provider_context(
         visual_package_tool.generate_video = old_video
         visual_package_tool.probe_media_reference = old_probe
         visual_package_tool._compose_storyboard_clips = old_compose
+
+
+@contextlib.contextmanager
+def _live_video_quality_repair_probe_context():
+    from tools import visual_package_tool
+
+    old_video = visual_package_tool.generate_video
+    video_calls = 0
+
+    def repair_probe_video(**kwargs):
+        nonlocal video_calls
+        video_calls += 1
+        payload = old_video(**kwargs)
+        if not isinstance(payload, dict) or payload.get("success") is not True:
+            return payload
+        payload = dict(payload)
+        observation = payload.get("vision_observation")
+        observation = dict(observation) if isinstance(observation, dict) else {}
+        if video_calls == 1:
+            observation.update(
+                {
+                    "aspect_integrity": 0.2,
+                    "motion_quality": 0.25,
+                    "artifact_defects": [
+                        "weak_aspect_integrity",
+                        "weak_motion_or_duration_evidence",
+                    ],
+                }
+            )
+            payload["quality_probe"] = {
+                "type": "live_video_quality_repair_probe",
+                "phase": "forced_initial_motion_failure",
+            }
+        else:
+            observation.setdefault("aspect_integrity", 0.95)
+            observation.setdefault("motion_quality", 0.9)
+            observation.setdefault("confidence", 0.9)
+            observation.setdefault("artifact_defects", [])
+            payload["quality_probe"] = {
+                "type": "live_video_quality_repair_probe",
+                "phase": "repair_candidate_observed",
+            }
+        payload["vision_observation"] = observation
+        return payload
+
+    visual_package_tool.generate_video = repair_probe_video
+    try:
+        yield
+    finally:
+        visual_package_tool.generate_video = old_video
 
 
 if __name__ == "__main__":

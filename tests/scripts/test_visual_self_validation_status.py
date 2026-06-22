@@ -383,6 +383,37 @@ def test_visual_self_validation_status_reports_strategy_promotion_readiness(tmp_
     assert "do not leak" not in encoded
 
 
+def test_visual_self_validation_status_uses_promotion_min_score_for_strategy_readiness(tmp_path):
+    from scripts.visual_self_validation_status import build_visual_self_validation_status
+
+    report = _scheduled_report()
+    report["summary"]["live_quality_burn_min_score"] = 0.6643
+    report["summary"]["live_quality_burn_promotion_min_score"] = 0.8206
+    report["summary"]["live_conversation_quality_run_count"] = 0
+    report["summary"]["live_conversation_quality_recent_avg_min_quality_score"] = None
+    report["summary"]["live_conversation_quality_native_video_upload_covered_count"] = 0
+    report["summary"]["live_conversation_quality_image_first_video_source_failure_count"] = 0
+    report["summary"]["live_conversation_quality_provider_failure_count"] = 0
+    report["automation"]["self_improvement"]["next_actions"].append(
+        {
+            "type": "prefer_strategy",
+            "source": "live_quality_burn",
+            "track": "aesthetic",
+            "strategy_signature": "image_first_rank_then_video",
+            "bucket": "image-video:product-editorial",
+            "activation_status": "shadow",
+            "confidence": 0.8206,
+            "evidence_count": 4,
+        }
+    )
+    latest_path = _write_latest(tmp_path, report)
+
+    status = build_visual_self_validation_status(latest_path=latest_path)
+
+    assert status["promotion_readiness"]["ready"] is True
+    assert "live_quality_score_below_threshold" not in status["promotion_readiness"]["blocking_reasons"]
+
+
 def test_visual_self_validation_status_blocks_strategy_promotion_on_trend_degradation(tmp_path):
     from scripts.visual_self_validation_status import build_visual_self_validation_status
 

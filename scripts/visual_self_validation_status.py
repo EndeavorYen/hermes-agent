@@ -118,6 +118,7 @@ def build_visual_self_validation_status(
             "burn_success": summary.get("live_quality_burn_success"),
             "burn_case_count": _optional_int(summary.get("live_quality_burn_case_count")),
             "burn_min_score": summary.get("live_quality_burn_min_score"),
+            "burn_promotion_min_score": summary.get("live_quality_burn_promotion_min_score"),
             "image_first_video_source_covered": summary.get(
                 "live_quality_burn_image_first_video_source_covered"
             ),

@@ -1626,7 +1626,7 @@ def _package_error(
     if any(
         isinstance(gate, dict)
         and gate.get("allowed") is False
-        and gate.get("reason") == "active_learning_fail_closed"
+        and gate.get("reason") in {"active_learning_fail_closed", "video_quality_issue_blocked"}
         for gate in delivery_gate.values()
     ):
         return {
@@ -1952,6 +1952,14 @@ def _delivery_gate_decision(
         return {
             "allowed": False,
             "reason": "invalid_video_source_frame",
+            "active_learning_action": action,
+            "quality_issues": quality_issues,
+            "ignored_quality_issues": ignored_quality_issues,
+        }
+    if any(issue in VIDEO_BLOCKING_QUALITY_ISSUES for issue in quality_issues):
+        return {
+            "allowed": False,
+            "reason": "video_quality_issue_blocked",
             "active_learning_action": action,
             "quality_issues": quality_issues,
             "ignored_quality_issues": ignored_quality_issues,

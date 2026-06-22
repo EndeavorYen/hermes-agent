@@ -115,6 +115,53 @@ def test_visual_live_quality_burn_writes_report_and_actions(monkeypatch, tmp_pat
     assert (tmp_path / "burn" / "runs" / "20260622T100000Z.json").exists()
 
 
+def test_visual_live_quality_burn_excludes_repair_probe_from_promotion_min_score(monkeypatch, tmp_path):
+    from scripts import visual_live_quality_burn
+
+    suite = _suite_with_quality_failure()
+    suite["success"] = True
+    suite["failures"] = []
+    suite["case_count"] = 3
+    suite["cases"][1]["success"] = True
+    suite["cases"][1]["failures"] = []
+    suite["cases"][1]["evidence"]["quality_gate"]["success"] = True
+    suite["cases"][1]["evidence"]["quality_gate"]["min_score"] = 0.84
+    suite["cases"][1]["evidence"]["quality_gate"]["quality_issues"] = []
+    suite["cases"].append(
+        {
+            "case_id": "video_quality_repair",
+            "success": True,
+            "failures": [],
+            "evidence": {
+                "quality_gate": {
+                    "success": True,
+                    "min_score": 0.6643,
+                    "quality_issues": [],
+                },
+                "image_count": 1,
+                "video_count": 1,
+                "ranking_count": 3,
+            },
+        }
+    )
+
+    monkeypatch.setattr(
+        visual_live_quality_burn,
+        "build_visual_live_provider_e2e_suite_report",
+        lambda **_kwargs: suite,
+    )
+
+    report = visual_live_quality_burn.build_visual_live_quality_burn_report(
+        mode="live",
+        output_dir=tmp_path / "burn",
+        work_dir=tmp_path / "work",
+        now=datetime(2026, 6, 22, 10, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["summary"]["min_quality_score"] == 0.6643
+    assert report["summary"]["promotion_min_quality_score"] == 0.78
+
+
 def test_visual_live_quality_burn_summarizes_core_quality_contract_coverage(monkeypatch, tmp_path):
     from scripts import visual_live_quality_burn
 
