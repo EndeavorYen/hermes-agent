@@ -161,6 +161,55 @@ def test_quality_judge_surfaces_video_artifact_defects_from_observation():
     assert "vision_defect_weak_motion_or_duration_evidence" in result["uncertainty_reasons"]
 
 
+def test_quality_judge_maps_video_defects_to_delivery_blocking_issue_tags():
+    from agent.visual.judges.quality import judge_visual_quality
+
+    result = judge_visual_quality(
+        {
+            "artifact_id": "var_video",
+            "kind": "video",
+            "hard_gate": {"passed": True, "delivery_possible": True},
+            "scores": {"resolution": 0.8, "aspect_match": 0.8, "duration": 0.8, "final_score": 0.8},
+        },
+        request_context={"category": "product"},
+        vision_observation={
+            "aspect_integrity": 0.2,
+            "motion_quality": 0.25,
+            "confidence": 0.8,
+            "artifact_defects": ["weak_aspect_integrity", "weak_motion_or_duration_evidence"],
+        },
+    )
+
+    assert result["quality_issues"] == ["aspect_integrity_bad", "motion_bad"]
+
+
+def test_quality_judge_keeps_missing_video_metadata_non_blocking():
+    from agent.visual.judges.quality import judge_visual_quality
+
+    result = judge_visual_quality(
+        {
+            "artifact_id": "var_video",
+            "kind": "video",
+            "hard_gate": {"passed": True, "delivery_possible": True},
+            "scores": {"resolution": 0.5, "aspect_match": 0.5, "duration": 0.5, "final_score": 0.5},
+        },
+        request_context={"category": "product"},
+        vision_observation={
+            "aspect_integrity": 0.5,
+            "motion_quality": 0.25,
+            "confidence": 0.45,
+            "artifact_defects": [
+                "weak_aspect_integrity",
+                "missing_video_dimensions",
+                "missing_video_duration",
+                "weak_motion_evidence",
+            ],
+        },
+    )
+
+    assert result["quality_issues"] == ["video_metadata_missing"]
+
+
 def test_quality_judge_maps_artifact_defects_to_preference_issue_tags():
     from agent.visual.judges.quality import judge_visual_quality
 

@@ -59,6 +59,8 @@ def _merge_observations(
         "visual_appeal",
         "composition",
         "pose_novelty",
+        "aspect_integrity",
+        "motion_quality",
         "confidence",
     ):
         if key in vision:

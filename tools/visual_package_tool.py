@@ -43,6 +43,10 @@ ALWAYS_BLOCKING_QUALITY_ISSUES = {
     "composition_bad",
     "reference_identity_drift",
 }
+VIDEO_BLOCKING_QUALITY_ISSUES = {
+    "aspect_integrity_bad",
+    "motion_bad",
+}
 PORTRAIT_BLOCKING_QUALITY_ISSUES = {
     "subject_not_attractive",
     "not_beautiful",
@@ -1046,7 +1050,7 @@ def _blocking_quality_issues(issues: list[str], *, prompt: str) -> tuple[list[st
     blocking: list[str] = []
     ignored: list[str] = []
     for issue in issues:
-        if issue in ALWAYS_BLOCKING_QUALITY_ISSUES:
+        if issue in ALWAYS_BLOCKING_QUALITY_ISSUES or issue in VIDEO_BLOCKING_QUALITY_ISSUES:
             blocking.append(issue)
         elif issue in PORTRAIT_BLOCKING_QUALITY_ISSUES:
             if portrait_like:

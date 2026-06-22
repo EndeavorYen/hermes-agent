@@ -60,3 +60,23 @@ def test_vision_judge_maps_stocking_quality_defect():
 
     assert "stockings_quality_low" in observation["artifact_defects"]
     assert "stocking_quality" not in observation
+
+
+def test_vision_judge_preserves_video_quality_dimensions():
+    from agent.visual.judges.vision import build_vision_judge_observation
+
+    observation = build_vision_judge_observation(
+        {
+            "visual_appeal": 0.8,
+            "composition": 0.75,
+            "aspect_integrity": 0.2,
+            "motion_quality": 0.25,
+            "artifact_defects": ["duration_mismatch"],
+        }
+    )
+
+    assert observation["aspect_integrity"] == 0.2
+    assert observation["motion_quality"] == 0.25
+    assert "weak_aspect_integrity" in observation["artifact_defects"]
+    assert "weak_motion_or_duration_evidence" in observation["artifact_defects"]
+    assert "duration_mismatch" in observation["artifact_defects"]

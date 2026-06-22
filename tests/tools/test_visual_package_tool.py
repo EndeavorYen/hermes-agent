@@ -156,6 +156,84 @@ async def test_visual_package_product_video_ignores_portrait_only_vision_defects
 
 
 @pytest.mark.asyncio
+async def test_visual_package_blocks_low_quality_video_delivery(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image = tmp_path / "source.png"
+    video = tmp_path / "stretched-video.mp4"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    video.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+
+    def fake_probe_media_reference(ref):
+        is_video = str(ref).endswith(".mp4")
+        return SimpleNamespace(
+            sha256=f"hash:{ref}",
+            is_stable=True,
+            freshness_status="fresh",
+            local_path=str(ref),
+            mime_type="video/mp4" if is_video else "image/png",
+            bytes=10,
+            width=1920 if is_video else 768,
+            height=1080 if is_video else 768,
+            duration_seconds=4.0 if is_video else None,
+        )
+
+    monkeypatch.setattr(visual_package_tool, "probe_media_reference", fake_probe_media_reference)
+    monkeypatch.setattr(
+        visual_package_tool,
+        "generate_image",
+        lambda **kwargs: {
+            "success": True,
+            "image": str(image),
+            "provider": "fixture",
+            "model": "image-fixture",
+        },
+    )
+    monkeypatch.setattr(
+        visual_package_tool,
+        "generate_video",
+        lambda **kwargs: {
+            "success": True,
+            "video": str(video),
+            "provider": "fixture",
+            "model": "video-fixture",
+            "vision_observation": {
+                "aspect_integrity": 0.2,
+                "motion_quality": 0.25,
+                "artifact_defects": ["weak_aspect_integrity", "weak_motion_or_duration_evidence"],
+            },
+        },
+    )
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "請產出一張圖片和一段影片：乾淨產品攝影。",
+                "aspect_ratio": "1:1",
+                "candidate_budget": 1,
+                "video_budget": 1,
+            }
+        )
+    )
+
+    assert payload["success"] is False
+    assert payload["package_status"] == "partial"
+    assert payload["images"] == [str(image)]
+    assert payload["videos"] == []
+    assert payload["error_type"] == "delivery_gate_blocked"
+    assert payload["delivery_gate"]["video"]["allowed"] is False
+    assert payload["delivery_gate"]["video"]["reason"] == "active_learning_fail_closed"
+    assert payload["delivery_gate"]["video"]["quality_issues"] == [
+        "aspect_integrity_bad",
+        "motion_bad",
+    ]
+    assert payload["delivery_metadata"]["selected_visual_artifact_ids"] == [
+        payload["generation_strategy"]["video_source_artifact_id"]
+    ]
+
+
+@pytest.mark.asyncio
 async def test_visual_package_video_only_with_attachment_animates_attachment(monkeypatch, tmp_path):
     from tools import visual_package_tool
 
@@ -425,9 +503,9 @@ async def test_visual_package_generate_materializes_successful_remote_video_url(
             local_path=str(ref) if str(ref).startswith("/") else None,
             mime_type="video/mp4" if is_video else "image/png",
             bytes=10,
-            width=1024 if is_video else 1,
-            height=576 if is_video else 1,
-            duration_seconds=4.25 if is_video else None,
+            width=1024,
+            height=576,
+            duration_seconds=6.0 if is_video else None,
         )
 
     monkeypatch.setattr(visual_package_tool, "probe_media_reference", fake_probe_media_reference)
@@ -450,7 +528,7 @@ async def test_visual_package_generate_materializes_successful_remote_video_url(
     video_artifact = next(row for row in artifacts if row["kind"] == "video")
     assert video_artifact["width"] == 1024
     assert video_artifact["height"] == 576
-    assert video_artifact["duration_seconds"] == 4.25
+    assert video_artifact["duration_seconds"] == 6.0
 
 
 @pytest.mark.asyncio

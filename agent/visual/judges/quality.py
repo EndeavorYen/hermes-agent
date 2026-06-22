@@ -84,7 +84,11 @@ def judge_visual_quality(
     return {
         "version": VERSION,
         "scores": {key: round(value, 4) for key, value in scores.items()},
-        "quality_issues": _quality_issues_from_observation(vision, request_context=request_context),
+        "quality_issues": _quality_issues_from_observation(
+            vision,
+            request_context=request_context,
+            candidate_kind=str(candidate.get("kind") or ""),
+        ),
         "confidence": confidence,
         "uncertainty_reasons": sorted(set(uncertainty_reasons)),
         "judge_sources": judge_sources,
@@ -216,16 +220,30 @@ def _quality_issues_from_observation(
     vision: dict[str, Any],
     *,
     request_context: dict[str, Any],
+    candidate_kind: str,
 ) -> list[str]:
     defects = vision.get("artifact_defects")
     if not isinstance(defects, list):
         return []
     portrait_like = _portrait_like_context(request_context)
     has_reference_image = request_context.get("has_reference_image") is True
+    video_like = candidate_kind == "video"
+    defect_set = {str(defect) for defect in defects}
     issues: list[str] = []
     for defect in defects:
-        issue = _issue_for_defect(str(defect))
+        defect_text = str(defect)
+        issue = _issue_for_defect(defect_text)
         if issue == "reference_identity_drift" and not has_reference_image:
+            continue
+        if issue in {"aspect_integrity_bad", "motion_bad", "video_metadata_missing"} and not video_like:
+            continue
+        if issue == "aspect_integrity_bad" and "missing_video_dimensions" in defect_set:
+            continue
+        if (
+            issue == "motion_bad"
+            and defect_text in {"weak_motion_evidence", "weak_motion_or_duration_evidence"}
+            and "missing_video_duration" in defect_set
+        ):
             continue
         if issue in {"subject_not_attractive", "not_beautiful", "stockings_bad"} and not portrait_like:
             continue
@@ -245,6 +263,13 @@ def _issue_for_defect(defect: str) -> str | None:
         "bad_stockings": "stockings_bad",
         "composition_weak": "composition_bad",
         "reference_identity_drift": "reference_identity_drift",
+        "aspect_mismatch": "aspect_integrity_bad",
+        "weak_aspect_integrity": "aspect_integrity_bad",
+        "duration_mismatch": "motion_bad",
+        "weak_motion_evidence": "motion_bad",
+        "weak_motion_or_duration_evidence": "motion_bad",
+        "missing_video_dimensions": "video_metadata_missing",
+        "missing_video_duration": "video_metadata_missing",
     }.get(defect)
 
 
