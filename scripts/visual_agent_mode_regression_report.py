@@ -19,6 +19,7 @@ class VisualAgentCase:
     min_candidate_budget: int | None = None
     expect_reason: str | None = None
     expect_duration: int | None = None
+    expect_aspect_ratio: str | None = None
 
 
 _CASES: tuple[VisualAgentCase, ...] = (
@@ -57,6 +58,7 @@ _CASES: tuple[VisualAgentCase, ...] = (
         expect_video=False,
         min_candidate_budget=1,
         expect_reason="image_request",
+        expect_aspect_ratio="16:9",
     ),
 )
 
@@ -103,6 +105,8 @@ def _validate_case(case: VisualAgentCase, plan: dict[str, Any]) -> list[str]:
             failures.append(f"candidate_budget_lt_{case.min_candidate_budget}")
     if case.expect_duration is not None and args.get("duration") != case.expect_duration:
         failures.append("wrong_duration")
+    if case.expect_aspect_ratio is not None and args.get("aspect_ratio") != case.expect_aspect_ratio:
+        failures.append("wrong_aspect_ratio")
     if "autonomy_level" in args:
         failures.append("advanced_autonomy_leaked")
     return failures
@@ -128,6 +132,7 @@ def _summarize_plan(
             "candidate_budget": args.get("candidate_budget"),
             "video_budget": args.get("video_budget"),
             "duration": args.get("duration"),
+            "aspect_ratio": args.get("aspect_ratio"),
             "attachment_count": len(args.get("attachments") or []),
             "has_autonomy_level": "autonomy_level" in args,
         },

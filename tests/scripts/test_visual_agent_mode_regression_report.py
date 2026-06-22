@@ -15,6 +15,8 @@ def test_visual_agent_mode_regression_report_passes_default_fixture_set():
         "text_video_image_first",
     }
     assert all("prompt" not in case for case in report["cases"])
+    product_case = next(case for case in report["cases"] if case["case_id"] == "image_only_product")
+    assert product_case["arguments"]["aspect_ratio"] == "16:9"
 
 
 def test_visual_agent_mode_regression_report_flags_broken_image_first_plan(monkeypatch):

@@ -6,6 +6,37 @@ from typing import Any
 
 _IMAGE_TOKENS = ("image", "photo", "picture", "圖片", "圖", "照片", "寫真", "產品攝影")
 _VIDEO_TOKENS = ("video", "clip", "motion", "影片", "視頻", "短片", "動畫")
+_PORTRAIT_ASPECT_TOKENS = (
+    "portrait",
+    "vertical",
+    "full body",
+    "fashion",
+    "全身",
+    "直式",
+    "直圖",
+    "直向",
+    "手機",
+    "人像",
+    "寫真",
+    "腿部",
+    "美腿",
+)
+_LANDSCAPE_ASPECT_TOKENS = (
+    "landscape",
+    "horizontal",
+    "wide",
+    "product photography",
+    "desk",
+    "橫式",
+    "橫圖",
+    "橫向",
+    "寬景",
+    "產品攝影",
+    "商品攝影",
+    "桌面",
+    "白紙",
+    "鋼筆",
+)
 
 
 def plan_visual_agent_request(
@@ -34,6 +65,9 @@ def plan_visual_agent_request(
         arguments["candidate_budget"] = 2 if wants_video and not attachments else 1
     if wants_video:
         arguments["video_budget"] = 1
+    aspect_ratio = _infer_aspect_ratio(prompt)
+    if aspect_ratio is not None:
+        arguments["aspect_ratio"] = aspect_ratio
     duration = _duration_seconds(prompt)
     if duration is not None:
         arguments["duration"] = duration
@@ -67,6 +101,26 @@ def _duration_seconds(value: str) -> int | None:
         return None
     duration = int(match.group(1))
     return max(1, min(30, duration))
+
+
+def _infer_aspect_ratio(value: str) -> str | None:
+    lowered = str(value or "").lower()
+    compact = re.sub(r"\s+", "", lowered)
+    if re.search(r"(?<!\d)1\s*[:：x/]\s*1(?!\d)", lowered) or "方形" in lowered or "square" in lowered:
+        return "1:1"
+    if re.search(r"(?<!\d)9\s*[:：x/]\s*16(?!\d)", lowered):
+        return "9:16"
+    if re.search(r"(?<!\d)16\s*[:：x/]\s*9(?!\d)", lowered):
+        return "16:9"
+    if any(token in lowered for token in _LANDSCAPE_ASPECT_TOKENS) or any(
+        token in compact for token in ("16:9", "16：9")
+    ):
+        return "16:9"
+    if any(token in lowered for token in _PORTRAIT_ASPECT_TOKENS) or any(
+        token in compact for token in ("9:16", "9：16")
+    ):
+        return "9:16"
+    return None
 
 
 def _looks_like_image_to_video(value: str) -> bool:

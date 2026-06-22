@@ -67,6 +67,30 @@ def test_agent_mode_planner_routes_text_only_video_through_image_first_candidate
     assert plan["reason"] == "text_to_video_image_first_request"
 
 
+def test_agent_mode_planner_infers_portrait_aspect_for_full_body_fashion_request():
+    from agent.visual.agent_mode.planner import plan_visual_agent_request
+
+    plan = plan_visual_agent_request("請產出一張全身時尚寫真和一段 6 秒影片，強調腿部構圖")
+
+    assert plan["arguments"]["aspect_ratio"] == "9:16"
+
+
+def test_agent_mode_planner_infers_landscape_aspect_for_desk_product_photography():
+    from agent.visual.agent_mode.planner import plan_visual_agent_request
+
+    plan = plan_visual_agent_request("請用 visual agent mode 產出產品攝影：霧黑鋼筆放在白紙上，柔和窗光，一張圖片和一段影片")
+
+    assert plan["arguments"]["aspect_ratio"] == "16:9"
+
+
+def test_agent_mode_planner_respects_explicit_square_aspect():
+    from agent.visual.agent_mode.planner import plan_visual_agent_request
+
+    plan = plan_visual_agent_request("幫我做一張 1:1 方形產品圖")
+
+    assert plan["arguments"]["aspect_ratio"] == "1:1"
+
+
 def test_agent_mode_planner_returns_provider_neutral_recovery_policy():
     from agent.visual.agent_mode.planner import plan_visual_agent_request
 
