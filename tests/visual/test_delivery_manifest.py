@@ -96,3 +96,90 @@ def test_delivery_manifest_empty_payload_is_safe():
 
     assert manifest["request_id"] is None
     assert select_deliverable_artifacts(manifest) == []
+
+
+def test_delivery_manifest_fails_closed_without_selected_artifact_ids():
+    from agent.visual.delivery_manifest import build_visual_delivery_manifest
+    from agent.visual.delivery_manifest import select_deliverable_artifacts
+
+    payload = {
+        "visual_request_id": "vrq_1",
+        "images": ["/tmp/current.png"],
+        "delivery_metadata": {
+            "visual_artifacts": {
+                "/tmp/current.png": {
+                    "request_id": "vrq_1",
+                    "artifact_id": "var_current",
+                    "kind": "image",
+                },
+                "/tmp/old.png": {
+                    "request_id": "vrq_old",
+                    "artifact_id": "var_old",
+                    "kind": "image",
+                },
+            },
+        },
+    }
+
+    manifest = build_visual_delivery_manifest(payload)
+
+    assert select_deliverable_artifacts(manifest) == []
+    assert "missing_selected_visual_artifact_ids" in manifest["failures"]
+
+
+def test_delivery_manifest_skips_selected_artifacts_from_other_requests():
+    from agent.visual.delivery_manifest import build_visual_delivery_manifest
+    from agent.visual.delivery_manifest import select_deliverable_artifacts
+
+    payload = {
+        "visual_request_id": "vrq_current",
+        "delivery_metadata": {
+            "selected_visual_artifact_ids": ["var_current", "var_old"],
+            "visual_artifacts": {
+                "/tmp/current.png": {
+                    "request_id": "vrq_current",
+                    "artifact_id": "var_current",
+                    "kind": "image",
+                },
+                "/tmp/old.png": {
+                    "request_id": "vrq_old",
+                    "artifact_id": "var_old",
+                    "kind": "image",
+                },
+            },
+        },
+    }
+
+    manifest = build_visual_delivery_manifest(payload)
+    deliverables = select_deliverable_artifacts(manifest)
+
+    assert [item["artifact_id"] for item in deliverables] == ["var_current"]
+    assert "cross_request_visual_artifact" in manifest["failures"]
+
+
+def test_delivery_manifest_marks_remote_video_unuploadable():
+    from agent.visual.delivery_manifest import build_visual_delivery_manifest
+    from agent.visual.delivery_manifest import select_deliverable_artifacts
+
+    payload = {
+        "visual_request_id": "vrq_1",
+        "videos": ["https://vidgen.example/current.mp4"],
+        "delivery_metadata": {
+            "selected_visual_artifact_ids": ["var_video"],
+            "visual_artifacts": {
+                "https://vidgen.example/current.mp4": {
+                    "request_id": "vrq_1",
+                    "artifact_id": "var_video",
+                    "kind": "video",
+                },
+            },
+        },
+    }
+
+    manifest = build_visual_delivery_manifest(payload)
+    deliverables = select_deliverable_artifacts(manifest)
+
+    assert deliverables[0]["artifact_id"] == "var_video"
+    assert deliverables[0]["delivery_ref_type"] == "remote_url"
+    assert deliverables[0]["uploadable_file"] is False
+    assert "video_ref_not_local_file" in manifest["failures"]

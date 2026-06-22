@@ -1175,6 +1175,35 @@ def _collect_auto_append_media_tags(
     )
     return delivery.media_tags, delivery.has_voice_directive
 
+
+def _append_auto_append_media_tags_to_response(
+    final_response: str,
+    media_tags: List[str],
+    *,
+    has_voice_directive: bool,
+) -> str:
+    if not media_tags:
+        return final_response
+
+    existing_tags = set()
+    for match in _TOOL_MEDIA_RE.finditer(final_response or ""):
+        path = match.group(1).strip().rstrip('",}')
+        if path:
+            existing_tags.add(f"MEDIA:{path}")
+    seen = set(existing_tags)
+    unique_tags = []
+    for tag in media_tags:
+        if tag in seen:
+            continue
+        seen.add(tag)
+        unique_tags.append(tag)
+    if not unique_tags:
+        return final_response
+    if has_voice_directive and "[[audio_as_voice]]" not in final_response:
+        unique_tags.insert(0, "[[audio_as_voice]]")
+    separator = "\n" if final_response else ""
+    return final_response + separator + "\n".join(unique_tags)
+
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
 # Must run BEFORE any HTTP library (discord, aiohttp, etc.) is imported.
@@ -16050,20 +16079,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _auto_append_visual_delivery_metadata = (
                 auto_append_media_delivery.delivery_metadata_by_ref
             )
-            if "MEDIA:" not in final_response:
-                media_tags = auto_append_media_delivery.media_tags
-                has_voice_directive = auto_append_media_delivery.has_voice_directive
-
-                if media_tags:
-                    seen = set()
-                    unique_tags = []
-                    for tag in media_tags:
-                        if tag not in seen:
-                            seen.add(tag)
-                            unique_tags.append(tag)
-                    if has_voice_directive:
-                        unique_tags.insert(0, "[[audio_as_voice]]")
-                    final_response = final_response + "\n" + "\n".join(unique_tags)
+            final_response = _append_auto_append_media_tags_to_response(
+                final_response,
+                auto_append_media_delivery.media_tags,
+                has_voice_directive=auto_append_media_delivery.has_voice_directive,
+            )
             
             # Auto-generate session title after first exchange (non-blocking)
             if final_response and self._session_db:

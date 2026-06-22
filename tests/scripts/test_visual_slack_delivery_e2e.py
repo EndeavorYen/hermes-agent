@@ -251,6 +251,83 @@ def test_slack_delivery_evidence_flags_same_artifact_delivered_twice(monkeypatch
     assert evidence["duplicate_delivery_count"] == 1
 
 
+def test_slack_delivery_evidence_flags_unexpected_artifact_delivery(monkeypatch, tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+    from scripts.visual_slack_delivery_e2e import inspect_slack_delivery_evidence
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ledger = VisualAttemptLedger(default_visual_ledger_path())
+    ledger.initialize()
+    request_id = ledger.record_request(
+        user_prompt="unexpected delivery",
+        normalized_intent={"kind": "visual_package"},
+        modality="package",
+        operation="visual_package_generate",
+        status="completed",
+    )
+    selected_id = ledger.record_artifact(
+        request_id=request_id,
+        kind="image",
+        content_hash="sha256:selected",
+    )
+    unselected_id = ledger.record_artifact(
+        request_id=request_id,
+        kind="image",
+        content_hash="sha256:unselected",
+    )
+    for artifact_id in (selected_id, unselected_id):
+        ledger.record_delivery(
+            request_id=request_id,
+            artifact_id=artifact_id,
+            platform="slack",
+            destination_id="D_TEST",
+            message_id=f"msg-{artifact_id}",
+            delivery_status="sent",
+        )
+
+    evidence = inspect_slack_delivery_evidence(
+        payload={"visual_request_id": request_id},
+        deliverables=[{"artifact_id": selected_id}],
+        destination_id="D_TEST",
+        thread_id=None,
+    )
+
+    assert evidence["unexpected_delivery_artifact_ids"] == [unselected_id]
+
+
+def test_visual_slack_delivery_fails_when_selected_video_is_remote_url(monkeypatch, tmp_path):
+    from scripts import visual_slack_delivery_e2e
+
+    payload = {
+        "success": True,
+        "visual_request_id": "vrq_remote_video",
+        "images": [],
+        "videos": ["https://vidgen.example/xai-video.mp4"],
+        "delivery_metadata": {
+            "visual_request_id": "vrq_remote_video",
+            "selected_visual_artifact_ids": ["var_video"],
+            "visual_artifacts": {
+                "https://vidgen.example/xai-video.mp4": {
+                    "request_id": "vrq_remote_video",
+                    "artifact_id": "var_video",
+                    "kind": "video",
+                }
+            },
+        },
+    }
+    monkeypatch.setattr(visual_slack_delivery_e2e, "run_visual_package", lambda _args: payload)
+
+    report = visual_slack_delivery_e2e.build_visual_slack_delivery_e2e_report(
+        mode="fixture",
+        work_dir=tmp_path,
+        target="D_TEST",
+    )
+
+    assert report["success"] is False
+    assert "video_ref_not_local_file" in report["failures"]
+
+
 def test_visual_slack_delivery_cli_respects_env_upload_gate(monkeypatch, capsys):
     from scripts import visual_slack_delivery_e2e
 

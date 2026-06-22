@@ -329,6 +329,34 @@ caption
         assert video_metadata["selected_visual_artifact_ids"] == ["var_img", "var_vid"]
         assert video_metadata["visual_artifacts"]["/tmp/current.mp4"]["artifact_id"] == "var_vid"
 
+    def test_gateway_appends_current_media_even_when_final_response_contains_stale_media(self):
+        """Current-turn visual media must still be appended when final text mentions an older MEDIA tag."""
+        from gateway.run import _append_auto_append_media_tags_to_response
+
+        final = "Previous batch:\nMEDIA:/tmp/old-image.png"
+
+        updated = _append_auto_append_media_tags_to_response(
+            final,
+            ["MEDIA:/tmp/current-image.png"],
+            has_voice_directive=False,
+        )
+
+        assert "MEDIA:/tmp/old-image.png" in updated
+        assert updated.endswith("MEDIA:/tmp/current-image.png")
+
+    def test_gateway_does_not_duplicate_existing_current_media_tag(self):
+        from gateway.run import _append_auto_append_media_tags_to_response
+
+        final = "Current:\nMEDIA:/tmp/current-image.png"
+
+        updated = _append_auto_append_media_tags_to_response(
+            final,
+            ["MEDIA:/tmp/current-image.png"],
+            has_voice_directive=False,
+        )
+
+        assert updated.count("MEDIA:/tmp/current-image.png") == 1
+
     def test_media_tags_not_extracted_from_history(self):
         """MEDIA tags from previous turns should NOT be extracted again."""
         # Simulate conversation history with a TTS call from a previous turn

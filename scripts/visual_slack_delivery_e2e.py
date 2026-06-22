@@ -66,6 +66,11 @@ def build_visual_slack_delivery_e2e_report(
         visual_evidence = inspect_visual_e2e_evidence(payload, require_video=require_video)
         manifest = build_visual_delivery_manifest(payload)
         deliverables = select_deliverable_artifacts(manifest)
+        manifest_failures = [
+            str(item)
+            for item in manifest.get("failures", [])
+            if item
+        ] if isinstance(manifest, dict) else []
         delivery_metadata = payload.get("delivery_metadata") if isinstance(payload, dict) else None
         if _should_live_upload(mode=mode, upload=upload):
             record_summary = asyncio.run(
@@ -103,6 +108,7 @@ def build_visual_slack_delivery_e2e_report(
         delivery_evidence=delivery_evidence,
         record_summary=record_summary,
         mode=mode,
+        manifest_failures=manifest_failures,
     )
     return {
         "success": not failures,
@@ -122,6 +128,10 @@ def build_visual_slack_delivery_e2e_report(
             "ranking_count": visual_evidence.get("ranking_count", 0),
         },
         "delivery": delivery_evidence,
+        "delivery_manifest": {
+            "failure_count": len(manifest_failures),
+            "failures": manifest_failures,
+        },
         "record_summary": record_summary,
     }
 
@@ -137,7 +147,10 @@ def inspect_slack_delivery_evidence(
     if isinstance(payload, dict):
         request_id = str(payload.get("visual_request_id") or "")
     ledger = VisualAttemptLedger(default_visual_ledger_path())
-    deliveries = ledger.list_deliveries(request_id=request_id) if request_id else []
+    try:
+        deliveries = ledger.list_deliveries(request_id=request_id) if request_id else []
+    except Exception:
+        deliveries = []
     expected_artifact_ids = {
         str(item.get("artifact_id") or "")
         for item in deliverables
@@ -170,6 +183,7 @@ def inspect_slack_delivery_evidence(
         "expected_artifact_ids": sorted(expected_artifact_ids),
         "sent_artifact_ids": sorted(sent_artifact_ids),
         "missing_delivery_artifact_ids": sorted(expected_artifact_ids - sent_artifact_ids),
+        "unexpected_delivery_artifact_ids": sorted(sent_artifact_ids - expected_artifact_ids),
         "message_ids": sorted(
             str(row.get("message_id") or "")
             for row in sent_rows
@@ -187,9 +201,13 @@ def _record_slack_delivery_evidence(
 ) -> dict[str, Any]:
     recorded = 0
     missing_context_refs: list[str] = []
+    skipped_refs: list[str] = []
     for item in deliverables:
         ref = str(item.get("ref") or "")
         if not ref:
+            continue
+        if item.get("uploadable_file") is False:
+            skipped_refs.append(ref)
             continue
         context = visual_delivery_context(
             metadata,
@@ -214,6 +232,7 @@ def _record_slack_delivery_evidence(
     return {
         "recorded_count": recorded,
         "missing_context_refs": missing_context_refs,
+        "skipped_refs": skipped_refs,
         "upload_enabled": False,
     }
 
@@ -308,8 +327,10 @@ def _delivery_failures(
     delivery_evidence: dict[str, Any],
     record_summary: dict[str, Any],
     mode: str,
+    manifest_failures: list[str] | None = None,
 ) -> list[str]:
     failures: list[str] = []
+    failures.extend(manifest_failures or [])
     if not isinstance(payload, dict):
         return ["missing_payload"]
     if payload.get("success") is not True:
@@ -330,6 +351,8 @@ def _delivery_failures(
         failures.append("missing_sent_deliveries")
     if delivery_evidence.get("missing_delivery_artifact_ids"):
         failures.append("missing_delivery_artifacts")
+    if delivery_evidence.get("unexpected_delivery_artifact_ids"):
+        failures.append("unexpected_delivery_artifacts")
     if delivery_evidence.get("duplicate_delivery_count", 0) > 0:
         failures.append("duplicate_delivery_records")
     return sorted(set(failures))
