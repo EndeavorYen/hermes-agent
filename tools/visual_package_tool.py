@@ -350,6 +350,88 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         selected_image = _selected_candidate(image_candidates, image_decision.selected_artifact_id)
         image_gate = _delivery_gate_decision(image_learning, selected_image, prompt=prompt)
         delivery_gate["image"] = image_gate
+        if selected_image and not image_gate["allowed"]:
+            repair_prompt = _quality_repair_prompt(prompt, image_gate)
+            repair_kwargs = {
+                "prompt": repair_prompt,
+                "aspect_ratio": image_aspect_ratio,
+                "reference_image_urls": attachments or None,
+            }
+            repair_payload = generate_image(**repair_kwargs)
+            repair_payload["retry_of"] = selected_image.get("attempt_id")
+            repair_payload["quality_repair"] = {
+                "reason": image_gate.get("reason"),
+                "quality_issues": image_gate.get("quality_issues", []),
+            }
+            image_payloads.append(repair_payload)
+            if not repair_payload.get("success"):
+                _annotate_generation_failure(
+                    repair_payload,
+                    base_kwargs=repair_kwargs,
+                    request={
+                        "prompt": repair_prompt,
+                        "arguments": repair_kwargs,
+                        "source_media": _source_media_from_attachments(attachments),
+                        "quality_repair": repair_payload["quality_repair"],
+                    },
+                    retry_budget_remaining=0,
+                )
+            repair_candidate = _record_payload_candidate(
+                ledger,
+                request_id=request_id,
+                payload=repair_payload,
+                artifact_key="image",
+                expected_kind="image",
+                prompt=repair_prompt,
+                provider=str(repair_payload.get("provider") or ""),
+                model=str(repair_payload.get("model") or ""),
+                requested_parameters={
+                    "aspect_ratio": _judge_aspect_ratio(aspect_ratio),
+                    "quality_repair_of": selected_image.get("artifact_id"),
+                },
+                candidate_index=candidate_budget,
+            )
+            if repair_candidate:
+                image_candidates.append(repair_candidate)
+                all_artifact_ids.append(repair_candidate["artifact_id"])
+                all_artifact_paths.append(repair_candidate["artifact_path"])
+                _score_candidates(
+                    ledger,
+                    request_id=request_id,
+                    intent_signature=intent_signature,
+                    strategy_signature=strategy_plan.strategy_signature,
+                    modality="image",
+                    has_reference_image=bool(attachments),
+                    candidates=[repair_candidate],
+                    inline_vision_judge=inline_vision_judge,
+                    vision_analyzer=analyze_candidate_with_vision_tool,
+                )
+                repair_decision = rank_visual_candidates(
+                    request_id=request_id,
+                    candidates=[repair_candidate],
+                    post_threshold=0.0,
+                    ask_threshold=0.0,
+                )
+                rankings["image"] = repair_decision.__dict__
+                repair_learning = _record_learning_trace(
+                    ledger,
+                    request_id=request_id,
+                    intent_signature=intent_signature,
+                    strategy_signature=strategy_plan.strategy_signature,
+                    strategy_plan=strategy_plan.to_record(),
+                    modality="image",
+                    rank_decision=repair_decision.__dict__,
+                    candidates=[repair_candidate],
+                    has_reference_image=bool(attachments),
+                )
+                learning["active_learning"]["image"] = repair_learning
+                selected_image = _selected_candidate([repair_candidate], repair_decision.selected_artifact_id)
+                repaired_gate = _delivery_gate_decision(repair_learning, selected_image, prompt=prompt)
+                repaired_gate["repair_attempted"] = True
+                repaired_gate["repaired_from"] = image_gate
+                image_gate = repaired_gate
+                delivery_gate["image"] = image_gate
+        generation_payloads["image"] = image_payloads[0] if len(image_payloads) == 1 else image_payloads
         if selected_image and image_gate["allowed"]:
             video_source_image = selected_image["artifact_path"]
             video_source_artifact_id = selected_image["artifact_id"]
@@ -703,7 +785,7 @@ def _annotate_generation_failure(
 
 def _attempt_metadata(payload: dict[str, Any]) -> dict[str, Any]:
     metadata: dict[str, Any] = {}
-    for key in ("failure", "recovery", "retry_of"):
+    for key in ("failure", "recovery", "retry_of", "quality_repair"):
         if key in payload:
             metadata[key] = payload[key]
     return metadata
@@ -949,6 +1031,28 @@ def _blocking_quality_issues(issues: list[str], *, prompt: str) -> tuple[list[st
             else:
                 ignored.append(issue)
     return blocking, ignored
+
+
+def _quality_repair_prompt(prompt: str, gate: dict[str, Any]) -> str:
+    issues = _string_list(gate.get("quality_issues"))
+    instructions: list[str] = []
+    if "subject_not_attractive" in issues or "not_beautiful" in issues:
+        instructions.append("render a naturally beautiful subject with clean facial features")
+    if "composition_bad" in issues:
+        instructions.append("use a stronger editorial composition with clear framing")
+    if "stockings_bad" in issues:
+        instructions.append("make wardrobe and legwear texture clean, refined, and realistic")
+    if "reference_identity_drift" in issues:
+        instructions.append("preserve the reference identity and recognizable facial structure")
+    if not instructions:
+        instructions.append("improve visual quality while preserving the original intent")
+    repair = "; ".join(instructions)
+    return (
+        f"{prompt}\n\n"
+        "Quality repair pass: "
+        f"{repair}. Avoid distorted anatomy, awkward face rendering, weak composition, "
+        "and low-quality surface detail."
+    )
 
 
 def _portrait_like_prompt(prompt: str) -> bool:

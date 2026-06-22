@@ -882,6 +882,74 @@ async def test_visual_package_blocks_delivery_when_active_learning_fails_closed(
 
 
 @pytest.mark.asyncio
+async def test_visual_package_repairs_blocked_image_before_delivery(monkeypatch, tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    bad_image = tmp_path / "bad-image.png"
+    good_image = tmp_path / "good-image.png"
+    bad_image.write_bytes(_ONE_PIXEL_PNG)
+    good_image.write_bytes(_ONE_PIXEL_PNG)
+    calls = []
+
+    def fake_generate_image(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return {
+                "success": True,
+                "image": str(bad_image),
+                "provider": "fixture",
+                "model": "image",
+                "vision_observation": {
+                    "face_quality": 0.2,
+                    "visual_appeal": 0.2,
+                    "composition": 0.2,
+                    "stocking_quality": 0.2,
+                },
+            }
+        return {
+            "success": True,
+            "image": str(good_image),
+            "provider": "fixture",
+            "model": "image",
+            "vision_observation": {
+                "face_quality": 0.9,
+                "visual_appeal": 0.9,
+                "composition": 0.9,
+                "stocking_quality": 0.9,
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {"prompt": "請產出一張圖片：時尚寫真。", "include_video": False, "candidate_budget": 1}
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["images"] == [str(good_image)]
+    assert len(calls) == 2
+    assert "Quality repair pass" in calls[1]["prompt"]
+    assert payload["delivery_gate"]["image"]["allowed"] is True
+    assert payload["delivery_gate"]["image"]["repair_attempted"] is True
+    assert payload["delivery_gate"]["image"]["repaired_from"]["reason"] == "active_learning_fail_closed"
+    assert len(payload["delivery_metadata"]["selected_visual_artifact_ids"]) == 1
+    attempts = VisualAttemptLedger(default_visual_ledger_path())._list("visual_attempts")
+    repair_attempts = [
+        attempt
+        for attempt in attempts
+        if isinstance(attempt.get("metadata"), dict)
+        and isinstance(attempt["metadata"].get("quality_repair"), dict)
+    ]
+    assert len(repair_attempts) == 1
+    assert repair_attempts[0]["metadata"]["quality_repair"]["reason"] == "active_learning_fail_closed"
+
+
+@pytest.mark.asyncio
 async def test_visual_package_does_not_block_product_delivery_on_portrait_only_issues(monkeypatch, tmp_path):
     from tools import visual_package_tool
 
