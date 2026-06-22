@@ -762,6 +762,118 @@ def test_score_candidates_uses_candidate_vision_observation_for_aesthetic_issues
     assert judgment["metadata"]["judge_sources"]["aesthetic_fit"] == "vision"
 
 
+def test_score_candidates_runs_inline_vision_before_reward(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from tools import visual_package_tool
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+    request_id = ledger.record_request(
+        user_prompt="redacted",
+        normalized_intent={"kind": "visual_package"},
+        modality="package",
+        operation="visual_package_generate",
+        status="started",
+        metadata={"intent_signature": "visig_demo"},
+    )
+    candidate = {
+        "attempt_id": "vat_demo",
+        "artifact_id": "var_demo",
+        "artifact_path": str(tmp_path / "candidate.png"),
+        "kind": "image",
+        "provider": "xai",
+        "model": "grok-imagine-image-quality",
+        "content_hash": "hash-demo",
+        "hard_gate": {"passed": True, "delivery_possible": True},
+        "scores": {"resolution": 0.9, "aspect_match": 0.9, "final_score": 0.9},
+    }
+
+    visual_package_tool._score_candidates(
+        ledger,
+        request_id=request_id,
+        intent_signature="visig_demo",
+        strategy_signature="vstrat_demo",
+        modality="image",
+        has_reference_image=False,
+        candidates=[candidate],
+        inline_vision_judge=True,
+        vision_analyzer=lambda _candidate: {
+            "analysis": {
+                "face_quality": 0.2,
+                "visual_appeal": 0.35,
+                "composition": 0.7,
+                "stocking_quality": 0.2,
+            }
+        },
+    )
+
+    judgment = ledger._list("visual_judgments")[0]
+    assert candidate["quality_issues"] == ["subject_not_attractive", "not_beautiful", "stockings_bad"]
+    assert candidate["reward"]["dimensions"]["aesthetic_fit"] < 0.5
+    assert judgment["metadata"]["vision_observation_source"] == "inline_vision_judge"
+    assert judgment["details"]["evidence"]["source"] == "inline_vision_judge"
+
+
+@pytest.mark.asyncio
+async def test_visual_package_inline_vision_changes_ranked_image_selection(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    first = tmp_path / "first.png"
+    second = tmp_path / "second.png"
+    first.write_bytes(_ONE_PIXEL_PNG + b"first")
+    second.write_bytes(_ONE_PIXEL_PNG + b"second")
+    images = [first, second]
+
+    def fake_generate_image(**kwargs):
+        image = images.pop(0)
+        return {
+            "success": True,
+            "image": str(image),
+            "provider": "xai",
+            "model": "grok-imagine-image-quality",
+        }
+
+    def fake_inline_vision(candidate):
+        if str(candidate["artifact_path"]).endswith("first.png"):
+            return {
+                "analysis": {
+                    "face_quality": 0.2,
+                    "visual_appeal": 0.3,
+                    "composition": 0.65,
+                    "stocking_quality": 0.2,
+                }
+            }
+        return {
+            "analysis": {
+                "face_quality": 0.9,
+                "visual_appeal": 0.9,
+                "composition": 0.9,
+                "stocking_quality": 0.9,
+            }
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+    monkeypatch.setattr(visual_package_tool, "analyze_candidate_with_vision_tool", fake_inline_vision)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "請產出兩張圖片：時尚寫真。",
+                "include_video": False,
+                "candidate_budget": 2,
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["images"] == [str(second)]
+    assert (
+        payload["rankings"]["image"]["ranked_artifact_ids"][0]
+        == payload["delivery_metadata"]["selected_visual_artifact_ids"][0]
+    )
+
+
 @pytest.mark.asyncio
 async def test_visual_package_hardens_video_prompt_without_stretch(monkeypatch, tmp_path):
     from tools import visual_package_tool

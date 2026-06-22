@@ -144,6 +144,9 @@ def inspect_visual_e2e_evidence(
     judgments_with_learning_metadata = sum(
         1 for row in judgments if _judgment_has_learning_metadata(row)
     )
+    inline_vision_judgment_count = sum(
+        1 for row in judgments if _judgment_uses_inline_vision(row)
+    )
     return {
         "request_id": request_id,
         "image_count": len(payload.get("images") or []),
@@ -155,6 +158,7 @@ def inspect_visual_e2e_evidence(
         "shadow_update_count": len(shadow_updates),
         "learning_trace_count": learning_trace_count,
         "judgments_with_learning_metadata": judgments_with_learning_metadata,
+        "inline_vision_judgment_count": inline_vision_judgment_count,
         "providers": providers,
         "require_video": require_video,
     }
@@ -275,6 +279,8 @@ def _payload_failures(
         failures.append("missing_learning_trace")
     if evidence.get("judgments_with_learning_metadata", 0) < (2 if require_video else 1):
         failures.append("missing_judgment_learning_metadata")
+    if mode == "live" and evidence.get("image_count", 0) >= 1 and evidence.get("inline_vision_judgment_count", 0) < 1:
+        failures.append("missing_inline_vision_judgment")
     if mode == "live" and _contains_fixture_provider(payload, evidence):
         failures.append("non_live_provider_detected")
     return sorted(set(failures))
@@ -393,6 +399,18 @@ def _judgment_has_learning_metadata(row: dict[str, Any]) -> bool:
     if all(metadata.get(key) for key in ("intent_signature", "strategy_signature", "modality")):
         return True
     return _is_legacy_quality_judgment(row)
+
+
+def _judgment_uses_inline_vision(row: dict[str, Any]) -> bool:
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    if metadata.get("vision_observation_source") == "inline_vision_judge":
+        return True
+    for key in ("details", "score_json"):
+        payload = row.get(key) if isinstance(row.get(key), dict) else {}
+        evidence = payload.get("evidence") if isinstance(payload.get("evidence"), dict) else {}
+        if evidence.get("source") == "inline_vision_judge":
+            return True
+    return False
 
 
 def _is_legacy_quality_judgment(row: dict[str, Any]) -> bool:

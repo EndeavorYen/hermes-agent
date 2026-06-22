@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 from typing import Any
 from urllib.parse import urlparse
 from urllib.request import Request
@@ -37,6 +38,19 @@ from tools.registry import tool_error
 logger = logging.getLogger(__name__)
 
 MAX_REMOTE_MEDIA_BYTES = 150 * 1024 * 1024
+INLINE_VISION_JUDGE_PROMPT = """\
+Evaluate this generated visual artifact for automated quality ranking.
+Return only a JSON object with numeric values from 0.0 to 1.0:
+{
+  "reference_adherence": 0.5,
+  "face_quality": 0.5,
+  "visual_appeal": 0.5,
+  "composition": 0.5,
+  "pose_novelty": 0.5,
+  "stocking_quality": 0.5
+}
+Do not include names, private prompt text, file paths, or prose.
+"""
 
 
 VISUAL_PACKAGE_SCHEMA: dict[str, Any] = {
@@ -113,6 +127,22 @@ def generate_video(**kwargs: Any) -> dict[str, Any]:
     return json.loads(_handle_video_generate(kwargs))
 
 
+def analyze_candidate_with_vision_tool(candidate: dict[str, Any]) -> dict[str, Any]:
+    source = _candidate_visual_source(candidate)
+    if not source:
+        raise ValueError("candidate has no analyzable image source")
+    from model_tools import _run_async
+    from tools.vision_tools import vision_analyze_tool
+
+    raw = _run_async(vision_analyze_tool(source, INLINE_VISION_JUDGE_PROMPT))
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return {"analysis": raw}
+    return raw if isinstance(raw, dict) else {"analysis": str(raw)}
+
+
 async def _handle_visual_package_generate(args: dict[str, Any], **_kw: Any) -> str:
     prompt = str(args.get("prompt") or "").strip()
     if not prompt:
@@ -151,6 +181,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         wants_video = True
     candidate_budget = _candidate_budget(args, wants_image=should_generate_image)
     video_budget = _video_budget(args, wants_video=wants_video)
+    inline_vision_judge = _inline_vision_judge_mode(args)
     normalized_intent = {
         "kind": "visual_package",
         "wants_image": requested_image,
@@ -283,6 +314,8 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             modality="image",
             has_reference_image=bool(attachments),
             candidates=image_candidates,
+            inline_vision_judge=inline_vision_judge,
+            vision_analyzer=analyze_candidate_with_vision_tool,
         )
         image_decision = rank_visual_candidates(
             request_id=request_id,
@@ -436,6 +469,8 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             modality="video",
             has_reference_image=bool(video_image_url),
             candidates=video_candidates,
+            inline_vision_judge=False,
+            vision_analyzer=analyze_candidate_with_vision_tool,
         )
         video_decision = rank_visual_candidates(
             request_id=request_id,
@@ -653,6 +688,8 @@ def _score_candidates(
     modality: str,
     has_reference_image: bool,
     candidates: list[dict[str, Any]],
+    inline_vision_judge: bool | str = "auto",
+    vision_analyzer=None,
 ) -> None:
     if not candidates:
         return
@@ -660,15 +697,25 @@ def _score_candidates(
     preference_profile = build_preference_profile(ledger, bucket=intent_signature)
     recent_hashes: set[str] = set()
     for candidate in candidates:
+        vision_observation = build_candidate_vision_observation(
+            candidate,
+            fallback_observation=build_artifact_observation(candidate),
+            inline_enabled=_should_run_inline_vision_judge(candidate, inline_vision_judge),
+            analyzer=vision_analyzer,
+        )
+        evidence = vision_observation.get("evidence") if isinstance(vision_observation.get("evidence"), dict) else {}
+        candidate["vision_observation_source"] = evidence.get("source")
         quality = judge_visual_quality(
             candidate,
             request_context={"has_reference_image": has_reference_image},
             recent_artifact_hashes=recent_hashes,
-            vision_observation=build_candidate_vision_observation(
-                candidate,
-                fallback_observation=build_artifact_observation(candidate),
-            ),
+            vision_observation=vision_observation,
         )
+        if evidence.get("source"):
+            quality["evidence"] = {
+                "source": evidence.get("source"),
+                "summary": evidence.get("summary", ""),
+            }
         content_hash = candidate.get("content_hash")
         if isinstance(content_hash, str) and content_hash:
             recent_hashes.add(content_hash)
@@ -688,6 +735,7 @@ def _score_candidates(
                 "modality": modality,
                 "judge_sources": quality.get("judge_sources", {}),
                 "uncertainty_reasons": quality.get("uncertainty_reasons", []),
+                "vision_observation_source": candidate.get("vision_observation_source"),
             },
         )
         candidate["reward"] = score_visual_candidate(
@@ -695,6 +743,29 @@ def _score_candidates(
             provider_stats=provider_stats,
             preference_profile=preference_profile,
         )
+
+
+def _inline_vision_judge_mode(args: dict[str, Any]) -> bool | str:
+    if args.get("inline_vision_judge") is not None:
+        return _coerce_bool(args.get("inline_vision_judge"))
+    env_value = os.environ.get("HERMES_VISUAL_INLINE_VISION_JUDGE", "auto").strip().lower()
+    if env_value in {"0", "false", "no", "off", "disabled"}:
+        return False
+    if env_value in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    return "auto"
+
+
+def _should_run_inline_vision_judge(candidate: dict[str, Any], mode: bool | str) -> bool:
+    if mode is True:
+        return candidate.get("kind") == "image"
+    if mode is False:
+        return False
+    if candidate.get("kind") != "image":
+        return False
+    provider = str(candidate.get("provider") or "").strip().lower()
+    model = str(candidate.get("model") or "").strip().lower()
+    return bool(provider) and provider not in {"fixture", "mock", "test"} and "fixture" not in model
 
 
 def _record_learning_trace(
@@ -879,6 +950,20 @@ def _coerce_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def _candidate_visual_source(candidate: dict[str, Any]) -> str:
+    for key in ("artifact_path", "local_path", "source_url", "uri"):
+        value = candidate.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
 def _candidate_budget(args: dict[str, Any], *, wants_image: bool) -> int:

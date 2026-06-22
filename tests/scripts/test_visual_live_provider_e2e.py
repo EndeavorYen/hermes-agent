@@ -251,3 +251,42 @@ def test_visual_live_provider_e2e_cli_captures_provider_noise(
     assert "provider noise" not in out
     assert "provider noise that should not reach terminal" in log_path.read_text()
     assert json.loads(report_path.read_text())["success"] is True
+
+
+def test_visual_live_provider_e2e_requires_inline_vision_for_live_image_outputs():
+    from scripts.visual_live_provider_e2e import _payload_failures
+
+    failures = _payload_failures(
+        {"success": True, "images": ["/tmp/image.png"], "videos": []},
+        {
+            "image_count": 1,
+            "video_count": 0,
+            "judgment_count": 1,
+            "ranking_count": 1,
+            "learning_trace_count": 1,
+            "judgments_with_learning_metadata": 1,
+            "inline_vision_judgment_count": 0,
+            "providers": ["xai"],
+        },
+        mode="live",
+        require_video=False,
+    )
+
+    assert "missing_inline_vision_judgment" in failures
+
+
+def test_visual_live_provider_e2e_counts_legacy_score_json_inline_vision():
+    from scripts.visual_live_provider_e2e import _judgment_uses_inline_vision
+
+    assert _judgment_uses_inline_vision(
+        {
+            "judge_name": "visual_quality_judge",
+            "score_json": {
+                "evidence": {
+                    "source": "inline_vision_judge",
+                    "summary": "privacy-safe independent visual quality observation",
+                },
+                "scores": {"aesthetic_fit": 0.85},
+            },
+        }
+    )
