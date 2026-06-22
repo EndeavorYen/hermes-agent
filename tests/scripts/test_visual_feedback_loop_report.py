@@ -140,6 +140,133 @@ def test_visual_feedback_loop_fails_closed_on_duplicate_delivery(tmp_path):
     assert "repair_delivery_dedup" in _action_types(report)
 
 
+def test_visual_feedback_loop_tracks_successful_quality_repairs(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from scripts.visual_feedback_loop_report import build_visual_feedback_loop_report
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+    request_id = ledger.record_request(status="completed", metadata={"intent_signature": "visig_glamour"})
+    blocked_attempt_id = ledger.record_attempt(
+        request_id=request_id,
+        provider="xai",
+        model="grok-imagine-image-quality",
+        status="completed",
+    )
+    blocked_artifact_id = ledger.record_artifact(
+        request_id=request_id,
+        attempt_id=blocked_attempt_id,
+        kind="image",
+        local_path="/tmp/blocked.jpg",
+        content_hash="sha256:blocked",
+        freshness_status="fresh",
+    )
+    repair_attempt_id = ledger.record_attempt(
+        request_id=request_id,
+        provider="xai",
+        model="grok-imagine-image-quality",
+        status="completed",
+        metadata={
+            "quality_repair": {
+                "reason": "active_learning_fail_closed",
+                "quality_issues": ["subject_not_attractive"],
+            },
+            "retry_of": blocked_attempt_id,
+        },
+    )
+    repair_artifact_id = ledger.record_artifact(
+        request_id=request_id,
+        attempt_id=repair_attempt_id,
+        kind="image",
+        local_path="/tmp/repaired.jpg",
+        content_hash="sha256:repaired",
+        freshness_status="fresh",
+    )
+    ledger.record_judgment(
+        request_id=request_id,
+        attempt_id=blocked_attempt_id,
+        artifact_id=blocked_artifact_id,
+        judge_name="visual_quality_judge",
+        score=0.35,
+        verdict="fail",
+    )
+    ledger.record_judgment(
+        request_id=request_id,
+        attempt_id=repair_attempt_id,
+        artifact_id=repair_artifact_id,
+        judge_name="visual_quality_judge",
+        score=0.86,
+        verdict="pass",
+    )
+    ledger.record_delivery(
+        request_id=request_id,
+        attempt_id=repair_attempt_id,
+        artifact_id=repair_artifact_id,
+        platform="slack",
+        destination_id="C123",
+        delivery_status="sent",
+    )
+
+    report = build_visual_feedback_loop_report(tmp_path / "visual.sqlite3")
+    encoded = json.dumps(report, ensure_ascii=False)
+
+    assert report["success"] is True
+    assert report["signals"]["repair"]["quality_repair_attempt_count"] == 1
+    assert report["signals"]["repair"]["quality_repair_success_count"] == 1
+    assert report["signals"]["repair"]["quality_repair_delivery_success_count"] == 1
+    assert report["signals"]["repair"]["quality_repair_success_rate"] == 1.0
+    assert "prefer_quality_repair_retry" in _action_types(report)
+    assert "/tmp/repaired.jpg" not in encoded
+
+
+def test_visual_feedback_loop_flags_failed_quality_repairs(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from scripts.visual_feedback_loop_report import build_visual_feedback_loop_report
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+    request_id = ledger.record_request(status="completed", metadata={"intent_signature": "visig_glamour"})
+    for index in range(3):
+        repair_attempt_id = ledger.record_attempt(
+            request_id=request_id,
+            provider="xai",
+            model="grok-imagine-image-quality",
+            status="failed" if index == 0 else "completed",
+            error_type="delivery_gate_blocked" if index == 0 else None,
+            metadata={
+                "quality_repair": {
+                    "reason": "active_learning_fail_closed",
+                    "quality_issues": ["composition_bad"],
+                }
+            },
+        )
+        if index > 0:
+            artifact_id = ledger.record_artifact(
+                request_id=request_id,
+                attempt_id=repair_attempt_id,
+                kind="image",
+                local_path=f"/tmp/repair-{index}.jpg",
+                content_hash=f"sha256:repair-{index}",
+                freshness_status="fresh",
+            )
+            ledger.record_judgment(
+                request_id=request_id,
+                attempt_id=repair_attempt_id,
+                artifact_id=artifact_id,
+                judge_name="visual_quality_judge",
+                score=0.38,
+                verdict="fail",
+            )
+
+    report = build_visual_feedback_loop_report(tmp_path / "visual.sqlite3")
+
+    assert report["success"] is True
+    assert report["signals"]["repair"]["quality_repair_attempt_count"] == 3
+    assert report["signals"]["repair"]["quality_repair_success_count"] == 0
+    assert report["signals"]["repair"]["quality_repair_success_rate"] == 0.0
+    assert "escalate_quality_repair_strategy" in _action_types(report)
+
+
 def test_visual_e2e_automation_includes_feedback_loop_gate(monkeypatch, tmp_path):
     from scripts import visual_e2e_automation_report
 

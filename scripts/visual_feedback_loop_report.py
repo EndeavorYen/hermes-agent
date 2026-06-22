@@ -40,6 +40,7 @@ def build_visual_feedback_loop_report(db_path: str | Path) -> dict[str, Any]:
         "provider": _provider_signals(attempts, artifacts),
         "aesthetic": _aesthetic_signals(judgments),
         "delivery": _delivery_signals(evidence, deliveries),
+        "repair": _repair_signals(attempts, artifacts, judgments, deliveries),
         "human_feedback": {
             "feedback_count": len(feedback),
         },
@@ -141,10 +142,60 @@ def _delivery_signals(evidence: dict[str, Any], deliveries: list[dict[str, Any]]
     }
 
 
+def _repair_signals(
+    attempts: list[dict[str, Any]],
+    artifacts: list[dict[str, Any]],
+    judgments: list[dict[str, Any]],
+    deliveries: list[dict[str, Any]],
+) -> dict[str, Any]:
+    repair_attempt_ids = {
+        _record_id(attempt)
+        for attempt in attempts
+        if _record_id(attempt) and _quality_repair_metadata(attempt)
+    }
+    repair_artifact_ids = {
+        _record_id(artifact)
+        for artifact in artifacts
+        if str(artifact.get("attempt_id") or "") in repair_attempt_ids and _record_id(artifact)
+    }
+    successful_judgments = {
+        str(judgment.get("artifact_id") or "")
+        for judgment in judgments
+        if str(judgment.get("artifact_id") or "") in repair_artifact_ids
+        and _score(judgment) >= 0.60
+        and str(judgment.get("verdict") or "").lower() != "fail"
+    }
+    delivered_repair_artifacts = {
+        str(delivery.get("artifact_id") or "")
+        for delivery in deliveries
+        if str(delivery.get("artifact_id") or "") in repair_artifact_ids
+        and _delivery_status(delivery) == "sent"
+    }
+    reasons: dict[str, int] = {}
+    for attempt in attempts:
+        metadata = _quality_repair_metadata(attempt)
+        if not metadata:
+            continue
+        reason = str(metadata.get("reason") or "unknown")
+        reasons[reason] = reasons.get(reason, 0) + 1
+    attempt_count = len(repair_attempt_ids)
+    success_count = len(successful_judgments)
+    delivery_success_count = len(delivered_repair_artifacts)
+    return {
+        "quality_repair_attempt_count": attempt_count,
+        "quality_repair_success_count": success_count,
+        "quality_repair_delivery_success_count": delivery_success_count,
+        "quality_repair_success_rate": _rate(success_count, attempt_count),
+        "quality_repair_delivery_success_rate": _rate(delivery_success_count, attempt_count),
+        "quality_repair_reasons": reasons,
+    }
+
+
 def _next_actions(signals: dict[str, Any]) -> list[dict[str, Any]]:
     provider = signals["provider"]
     aesthetic = signals["aesthetic"]
     delivery = signals["delivery"]
+    repair = signals.get("repair", {})
     actions: list[dict[str, Any]] = []
     if delivery["duplicate_delivery_count"] > 0:
         actions.append(
@@ -209,6 +260,33 @@ def _next_actions(signals: dict[str, Any]) -> list[dict[str, Any]]:
                 "provider_policy_failure_requires_prompt_reframe",
                 confidence=0.70,
                 evidence_count=provider["policy_failure_count"],
+            )
+        )
+    repair_attempt_count = _int(repair.get("quality_repair_attempt_count"))
+    repair_success_rate = _float(repair.get("quality_repair_success_rate"))
+    repair_delivery_success_rate = _float(repair.get("quality_repair_delivery_success_rate"))
+    if repair_attempt_count > 0 and repair_success_rate >= 0.60:
+        actions.append(
+            _action(
+                "prefer_quality_repair_retry",
+                "repair",
+                "quality_repair_retry_has_positive_success_rate",
+                confidence=min(0.90, 0.55 + repair_success_rate * 0.35),
+                evidence_count=repair_attempt_count,
+                success_rate=repair_success_rate,
+                delivery_success_rate=repair_delivery_success_rate,
+            )
+        )
+    if repair_attempt_count >= 3 and repair_success_rate < 0.50:
+        actions.append(
+            _action(
+                "escalate_quality_repair_strategy",
+                "repair",
+                "quality_repair_retry_success_rate_low",
+                confidence=max(0.60, 1.0 - repair_success_rate),
+                evidence_count=repair_attempt_count,
+                success_rate=repair_success_rate,
+                max_candidate_budget=4,
             )
         )
     return actions
@@ -311,6 +389,22 @@ def _score(row: dict[str, Any]) -> float:
     return _float(row.get("score", row.get("confidence")))
 
 
+def _record_id(row: dict[str, Any]) -> str:
+    for column in ("id", "attempt_id", "artifact_id", "judgment_id", "delivery_id"):
+        value = row.get(column)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
+def _quality_repair_metadata(row: dict[str, Any]) -> dict[str, Any]:
+    metadata = row.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = row.get("metadata_json") if isinstance(row.get("metadata_json"), dict) else {}
+    quality_repair = metadata.get("quality_repair") if isinstance(metadata, dict) else None
+    return quality_repair if isinstance(quality_repair, dict) else {}
+
+
 def _decode_value(value: Any) -> Any:
     if isinstance(value, str):
         stripped = value.strip()
@@ -392,6 +486,14 @@ def _empty_report(db_path: Path) -> dict[str, Any]:
                 "failed_delivery_count": 0,
                 "duplicate_delivery_count": 0,
                 "missing_source_metadata_count": 0,
+            },
+            "repair": {
+                "quality_repair_attempt_count": 0,
+                "quality_repair_success_count": 0,
+                "quality_repair_delivery_success_count": 0,
+                "quality_repair_success_rate": 0.0,
+                "quality_repair_delivery_success_rate": 0.0,
+                "quality_repair_reasons": {},
             },
             "human_feedback": {"feedback_count": 0},
         },
