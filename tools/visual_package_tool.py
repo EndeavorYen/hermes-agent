@@ -292,6 +292,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
     video_source_artifact_id: str | None = None
     rankings: dict[str, dict[str, Any]] = {}
     generation_payloads: dict[str, Any] = {}
+    image_payloads: list[dict[str, Any]] = []
     delivery_gate: dict[str, dict[str, Any]] = {}
     preference_profile = build_preference_profile(ledger, bucket=intent_signature)
     strategy_plan = select_strategy_plan(
@@ -398,7 +399,6 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         )
 
     if should_generate_image:
-        image_payloads = []
         image_candidates = []
         image_prompt_base = _image_first_source_frame_prompt(prompt) if image_first_for_video else prompt
         image_generation_prompt = _apply_first_pass_quality_guidance(image_prompt_base, quality_guidance["image"])
@@ -761,13 +761,20 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                     "source_media": _source_media_from_attachments([video_image_url]),
                     "video_hardening": hardened_video.get("metadata", {}),
                 }
-                video_payload = generate_video(**video_kwargs)
+                video_payload = _video_provider_quarantine_payload(
+                    image_payloads=image_payloads,
+                    prompt=video_prompt,
+                )
+                if video_payload is None:
+                    video_payload = generate_video(**video_kwargs)
                 if not video_payload.get("success"):
                     _annotate_generation_failure(
                         video_payload,
                         base_kwargs=video_kwargs,
                         request=video_request,
-                        retry_budget_remaining=provider_retry_budget,
+                        retry_budget_remaining=0
+                        if video_payload.get("provider_quarantine")
+                        else provider_retry_budget,
                     )
                 video_payloads.append(video_payload)
                 video_candidate = _record_payload_candidate(
@@ -1966,6 +1973,107 @@ def _payload_failure_class(payload: dict[str, Any]) -> str:
     return str(failure.get("failure_class") or "").strip()
 
 
+def _video_provider_quarantine_payload(
+    *,
+    image_payloads: list[dict[str, Any]],
+    prompt: str,
+) -> dict[str, Any] | None:
+    blocked = _quota_blocked_provider_families(image_payloads)
+    if not blocked:
+        return None
+    provider, model = _active_video_provider_identity()
+    provider_family = _provider_family(provider)
+    if not provider_family or provider_family not in blocked:
+        return None
+    if _available_video_provider_fallbacks(failed_provider=provider):
+        return None
+    failure = _first_quota_failure(image_payloads)
+    provider_label = provider or provider_family
+    return {
+        "success": False,
+        "video": None,
+        "error_type": "provider_quarantined",
+        "error": (
+            f"Skipped {provider_label} video generation because this run already hit "
+            "the same provider account quota or subscription limit and no available "
+            "video fallback provider was found."
+        ),
+        "prompt": prompt,
+        "provider": provider_label,
+        "model": model or "",
+        "failure": failure,
+        "provider_quarantine": {
+            "modality": "video",
+            "provider": provider_label,
+            "provider_family": provider_family,
+            "failure_class": failure.get("failure_class") or "quota_exceeded",
+            "provider_message_code": failure.get("provider_message_code") or "unknown",
+            "no_video_fallback_available": True,
+        },
+    }
+
+
+def _quota_blocked_provider_families(payloads: list[dict[str, Any]]) -> set[str]:
+    families: set[str] = set()
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("success") is True:
+            continue
+        if _payload_failure_class(payload) != "quota_exceeded":
+            continue
+        family = _provider_family(str(payload.get("provider") or ""))
+        if family:
+            families.add(family)
+    return families
+
+
+def _first_quota_failure(payloads: list[dict[str, Any]]) -> dict[str, Any]:
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        failure = payload.get("failure") if isinstance(payload.get("failure"), dict) else {}
+        if not failure:
+            failure = classify_visual_provider_failure(payload)
+        if failure.get("failure_class") == "quota_exceeded":
+            return dict(failure)
+    return {
+        "failure_class": "quota_exceeded",
+        "retryable": False,
+        "safe_reframe_allowed": False,
+        "provider_message_code": "unknown",
+        "operator_summary": "provider account quota or subscription limit was hit",
+    }
+
+
+def _provider_family(provider: str) -> str:
+    value = str(provider or "").strip().lower()
+    if not value:
+        return ""
+    if value.startswith("xai"):
+        return "xai"
+    return value
+
+
+def _active_video_provider_identity() -> tuple[str, str]:
+    try:
+        from tools.video_generation_tool import _resolve_active_provider
+
+        provider = _resolve_active_provider()
+    except Exception as exc:  # noqa: BLE001 - preflight should never break generation
+        logger.debug("video provider preflight identity unavailable: %s", exc)
+        provider = None
+    if provider is None:
+        return "", ""
+    name = str(getattr(provider, "name", "") or "").strip()
+    model = ""
+    try:
+        model = str(provider.default_model() or "").strip()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("video provider default model unavailable for %s: %s", name, exc)
+    return name, model
+
+
 def _available_image_provider_fallbacks(*, failed_provider: str | None = None) -> list[str]:
     failed = str(failed_provider or "").strip()
     try:
@@ -2067,7 +2175,14 @@ def _annotate_generation_failure(
 
 def _attempt_metadata(payload: dict[str, Any]) -> dict[str, Any]:
     metadata: dict[str, Any] = {}
-    for key in ("failure", "recovery", "retry_of", "quality_repair", "candidate_escalation"):
+    for key in (
+        "failure",
+        "recovery",
+        "retry_of",
+        "quality_repair",
+        "candidate_escalation",
+        "provider_quarantine",
+    ):
         if key in payload:
             metadata[key] = payload[key]
     return metadata

@@ -3568,6 +3568,96 @@ async def test_visual_package_falls_back_to_available_video_provider_after_quota
 
 
 @pytest.mark.asyncio
+async def test_visual_package_skips_xai_video_when_quota_known_and_no_video_fallback(
+    monkeypatch,
+    tmp_path,
+):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image = tmp_path / "fallback.png"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    image_calls = []
+    video_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        if kwargs.get("_provider") == "codex":
+            return {
+                "success": True,
+                "image": str(image),
+                "provider": "codex",
+                "model": "gpt-image-fallback",
+                "vision_observation": {
+                    "face_quality": 0.9,
+                    "fashion_material_quality": 0.9,
+                    "visual_appeal": 0.9,
+                    "composition": 0.9,
+                },
+            }
+        return {
+            "success": False,
+            "error_type": "api_error",
+            "error": (
+                'xAI image gen failed (403): {"code":"personal-team-blocked:spending-limit",'
+                '"error":"You have run out of credits or need a Grok subscription."}'
+            ),
+            "provider": "xai-oauth",
+            "model": "grok-imagine-image-quality",
+        }
+
+    def fake_generate_video(**kwargs):
+        video_calls.append(kwargs)
+        return {
+            "success": False,
+            "error_type": "api_error",
+            "error": "xAI video should have been quarantined before this call",
+            "provider": "xai",
+            "model": "grok-imagine-video-1.5",
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+    monkeypatch.setattr(visual_package_tool, "generate_video", fake_generate_video)
+    monkeypatch.setattr(
+        visual_package_tool,
+        "_available_image_provider_fallbacks",
+        lambda failed_provider=None: ["codex"],
+    )
+    monkeypatch.setattr(
+        visual_package_tool,
+        "_available_video_provider_fallbacks",
+        lambda failed_provider=None: [],
+    )
+    monkeypatch.setattr(
+        visual_package_tool,
+        "_active_video_provider_identity",
+        lambda: ("xai", "grok-imagine-video-1.5"),
+        raising=False,
+    )
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "請產出一張圖片和一段影片：產品攝影。",
+                "include_image": True,
+                "include_video": True,
+                "candidate_budget": 1,
+                "video_budget": 1,
+            }
+        )
+    )
+
+    assert len(image_calls) == 2
+    assert video_calls == []
+    video_payload = payload["generation_payloads"]["video"]
+    assert video_payload["success"] is False
+    assert video_payload["error_type"] == "provider_quarantined"
+    assert video_payload["provider_quarantine"]["no_video_fallback_available"] is True
+    assert video_payload["failure"]["failure_class"] == "quota_exceeded"
+    assert payload["videos"] == []
+
+
+@pytest.mark.asyncio
 async def test_visual_package_ignores_failed_self_validation_next_actions(monkeypatch, tmp_path):
     from tools import visual_package_tool
 

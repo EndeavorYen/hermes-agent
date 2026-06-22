@@ -598,6 +598,17 @@ def _build_quality_run(report: dict[str, Any]) -> dict[str, Any]:
                 ),
             }
         )
+    provider_quarantine_count = _int(recovery.get("provider_quarantine_count"))
+    if provider_quarantine_count > 0:
+        summary.update(
+            {
+                "provider_quarantine_count": provider_quarantine_count,
+                "no_video_fallback_available_count": _int(
+                    recovery.get("no_video_fallback_available_count")
+                ),
+                "provider_quarantine_classes": _string_list(recovery.get("provider_quarantine_classes")),
+            }
+        )
     inline_vision_failure_count = _int(visual.get("inline_vision_failure_count"))
     if inline_vision_failure_count > 0:
         summary.update(

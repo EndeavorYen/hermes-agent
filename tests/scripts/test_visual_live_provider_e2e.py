@@ -1324,6 +1324,37 @@ def test_visual_live_provider_e2e_reports_provider_fallback_recovery(monkeypatch
     ]
 
 
+def test_visual_live_provider_e2e_reports_no_video_fallback_available():
+    from collections import Counter
+
+    from scripts.visual_live_provider_e2e import _recovery_summary
+
+    summary = _recovery_summary(
+        payload={
+            "success": False,
+            "generation_payloads": {
+                "video": {
+                    "success": False,
+                    "provider": "xai",
+                    "error_type": "provider_quarantined",
+                    "provider_quarantine": {
+                        "modality": "video",
+                        "failure_class": "quota_exceeded",
+                        "no_video_fallback_available": True,
+                    },
+                }
+            },
+        },
+        provider_failure_classes=Counter({"quota_exceeded": 1}),
+        provider_error_codes=Counter({"personal-team-blocked:spending-limit": 1}),
+        retry_attempt_count=0,
+    )
+
+    assert summary["no_video_fallback_available_count"] == 1
+    assert summary["provider_quarantine_count"] == 1
+    assert summary["provider_quarantine_classes"] == ["quota_exceeded"]
+
+
 def test_visual_live_provider_e2e_inspects_selected_artifact_quality_gate(monkeypatch, tmp_path):
     from agent.visual.attempt_ledger import VisualAttemptLedger
     from agent.visual.tracking import default_visual_ledger_path

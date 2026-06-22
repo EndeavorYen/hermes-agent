@@ -935,6 +935,9 @@ def _recovery_summary(
     fallback_summary = _provider_fallback_summary(payload)
     if fallback_summary["provider_fallback_attempt_count"] > 0:
         summary.update(fallback_summary)
+    quarantine_summary = _provider_quarantine_summary(payload)
+    if quarantine_summary["provider_quarantine_count"] > 0:
+        summary.update(quarantine_summary)
     return summary
 
 
@@ -958,6 +961,29 @@ def _provider_fallback_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "provider_fallback_attempt_count": attempt_count,
         "provider_fallback_success_count": success_count,
         "provider_fallback_recovered_classes": sorted(recovered_classes),
+    }
+
+
+def _provider_quarantine_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    quarantine_count = 0
+    no_video_fallback_count = 0
+    classes: set[str] = set()
+    for item in _generation_payload_items(payload):
+        if not isinstance(item, dict):
+            continue
+        quarantine = item.get("provider_quarantine")
+        if not isinstance(quarantine, dict):
+            continue
+        quarantine_count += 1
+        if quarantine.get("no_video_fallback_available") is True:
+            no_video_fallback_count += 1
+        failure_class = str(quarantine.get("failure_class") or "").strip()
+        if failure_class:
+            classes.add(failure_class)
+    return {
+        "provider_quarantine_count": quarantine_count,
+        "no_video_fallback_available_count": no_video_fallback_count,
+        "provider_quarantine_classes": sorted(classes),
     }
 
 
