@@ -65,6 +65,10 @@ _IMAGE_FIRST_VISUAL_VIDEO_TOKENS = (
     "glamour",
     "photoshoot",
     "photo shoot",
+    "animate",
+    "animated",
+    "make it move",
+    "bring it to life",
     "product",
     "model",
     "runway",
@@ -78,12 +82,40 @@ _IMAGE_FIRST_VISUAL_VIDEO_TOKENS = (
     "模特",
     "產品",
     "商品",
+    "動起來",
+    "動態",
+    "動圖",
+    "動態化",
+    "做成動態",
+    "這張圖",
+    "這張照片",
     "黑絲",
     "絲襪",
     "禮服",
 )
 
-_IMAGE_REQUEST_TOKENS = ("image", "photo", "picture", "圖片", "圖", "照片", "寫真")
+_IMAGE_OUTPUT_REQUEST_PHRASES = (
+    "image plus video",
+    "image plus short video",
+    "image and video",
+    "photo and video",
+    "picture and video",
+    "image + video",
+    "photo + video",
+    "generate an image and",
+    "make an image and",
+    "create an image and",
+    "產出一張圖片和一段影片",
+    "產生一張圖片和一段影片",
+    "生成一張圖片和一段影片",
+    "做一張圖片和一段影片",
+    "一張圖片和一段影片",
+    "一張圖和一段影片",
+    "圖片和影片",
+    "圖和影片",
+    "圖片+影片",
+    "圖+影片",
+)
 
 
 VIDEO_GENERATE_SCHEMA: Dict[str, Any] = {
@@ -722,7 +754,18 @@ def _looks_like_image_first_visual_video(prompt: str) -> bool:
 
 def _prompt_requests_image(prompt: str) -> bool:
     prompt_lc = str(prompt or "").lower()
-    return any(token in prompt_lc for token in _IMAGE_REQUEST_TOKENS)
+    compact = "".join(prompt_lc.split())
+    return any(token in prompt_lc for token in _IMAGE_OUTPUT_REQUEST_PHRASES) or any(
+        token in compact
+        for token in (
+            "圖片和影片",
+            "圖和影片",
+            "圖片+影片",
+            "圖+影片",
+            "一張圖片和一段影片",
+            "一張圖和一段影片",
+        )
+    )
 
 
 # ---------------------------------------------------------------------------

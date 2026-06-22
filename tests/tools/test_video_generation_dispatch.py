@@ -199,6 +199,43 @@ class TestUnifiedDispatch:
         assert captured["aspect_ratio"] == "9:16"
         assert provider.last_kwargs == {}
 
+    def test_xai_image_plus_video_prompt_preserves_image_delivery_request(self, monkeypatch):
+        from tools import visual_package_tool
+
+        captured: Dict[str, Any] = {}
+
+        async def fake_visual_package(args, **_kwargs):
+            captured.update(args)
+            return json.dumps(
+                {
+                    "success": True,
+                    "package_status": "success",
+                    "videos": ["/tmp/current-video.mp4"],
+                    "images": ["/tmp/current-image.png"],
+                    "visual_request_id": "vrq_image_plus_video",
+                    "generation_strategy": {"image_first_for_video": True},
+                }
+            )
+
+        monkeypatch.setattr(
+            visual_package_tool,
+            "_handle_visual_package_generate",
+            fake_visual_package,
+        )
+        provider = _RecordingProvider("xai", default_model="grok-imagine-video")
+        video_gen_registry.register_provider(provider)
+
+        result = self._run(
+            {"prompt": "image plus short video of a clean product photoshoot"},
+            configured="xai",
+        )
+
+        assert result["success"] is True
+        assert result["route"] == "image_first_visual_package"
+        assert captured["include_image"] is True
+        assert captured["include_video"] is True
+        assert provider.last_kwargs == {}
+
     def test_xai_visual_video_with_multiple_reference_images_routes_to_visual_package(self, monkeypatch):
         from tools import visual_package_tool
 
@@ -254,6 +291,58 @@ class TestUnifiedDispatch:
         assert captured["include_video"] is True
         assert captured["candidate_budget"] == 2
         assert captured["video_budget"] == 1
+        assert provider.last_kwargs == {}
+
+    def test_xai_animate_reference_request_routes_to_visual_package(self, monkeypatch):
+        from tools import visual_package_tool
+
+        captured: Dict[str, Any] = {}
+
+        async def fake_visual_package(args, **_kwargs):
+            captured.update(args)
+            return json.dumps(
+                {
+                    "success": True,
+                    "package_status": "success",
+                    "videos": ["/tmp/current-animate-video.mp4"],
+                    "images": [],
+                    "visual_request_id": "vrq_animate_reference_video",
+                    "generation_strategy": {
+                        "image_first_for_video": True,
+                        "video_source_image": "/tmp/selected-source.png",
+                        "video_source_artifact_id": "var_selected_source",
+                    },
+                }
+            )
+
+        monkeypatch.setattr(
+            visual_package_tool,
+            "_handle_visual_package_generate",
+            fake_visual_package,
+        )
+        provider = _RecordingProvider("xai", default_model="grok-imagine-video-1.5")
+        video_gen_registry.register_provider(provider)
+
+        result = self._run(
+            {
+                "prompt": "讓這張圖動起來，做成 6 秒自然鏡頭",
+                "reference_image_urls": ["/tmp/ref.png"],
+                "duration": 6,
+            },
+            configured="xai",
+        )
+
+        assert result["success"] is True
+        assert result["video"] == "/tmp/current-animate-video.mp4"
+        assert result["route"] == "image_first_visual_package"
+        assert result["recommended_tool"] == "visual_package_generate"
+        assert captured["attachments"] == ["/tmp/ref.png"]
+        assert captured["include_image"] is False
+        assert captured["include_video"] is True
+        assert captured["candidate_budget"] == 2
+        assert captured["candidate_budget_source"] == "planner_default"
+        assert captured["video_budget"] == 1
+        assert captured["duration"] == 6
         assert provider.last_kwargs == {}
 
     def test_xai_15_text_visual_video_routes_to_visual_package(self, monkeypatch):
