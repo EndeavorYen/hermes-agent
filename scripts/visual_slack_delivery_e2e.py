@@ -16,6 +16,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from hermes_constants import get_hermes_home
 from agent.visual.attempt_ledger import VisualAttemptLedger
 from agent.visual.delivery_manifest import build_visual_delivery_manifest
 from agent.visual.delivery_manifest import select_deliverable_artifacts
@@ -466,12 +467,22 @@ def _duplicate_delivery_count(rows: list[dict[str, Any]]) -> int:
 def _resolve_target(*, mode: str, target: str | None) -> str | None:
     if target:
         return target
+    try:
+        _load_runtime_env()
+    except Exception:
+        pass
     env_target = (
         os.environ.get("HERMES_VISUAL_SLACK_E2E_TARGET")
         or os.environ.get("SLACK_HOME_CHANNEL")
     )
     if env_target:
         return env_target
+    config_target = (
+        _load_top_level_config_value("HERMES_VISUAL_SLACK_E2E_TARGET")
+        or _load_top_level_config_value("SLACK_HOME_CHANNEL")
+    )
+    if config_target:
+        return str(config_target)
     try:
         from gateway.config import Platform
         from gateway.config import load_gateway_config
@@ -484,6 +495,22 @@ def _resolve_target(*, mode: str, target: str | None) -> str | None:
     if mode == "fixture":
         return "fixture-slack-target"
     return None
+
+
+def _load_top_level_config_value(key: str) -> Any:
+    try:
+        import yaml
+
+        config_path = get_hermes_home() / "config.yaml"
+        payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get(key)
+    if value in (None, ""):
+        return None
+    return value
 
 
 def _should_live_upload(*, mode: str, upload: bool | None) -> bool:

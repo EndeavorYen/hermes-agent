@@ -440,6 +440,41 @@ def test_make_live_slack_adapter_loads_runtime_env(monkeypatch):
     assert adapter._app.client == {"token": "xoxb-test"}
 
 
+def test_resolve_target_loads_runtime_env_home_channel(monkeypatch):
+    from scripts import visual_slack_delivery_e2e
+
+    loaded = []
+    monkeypatch.delenv("HERMES_VISUAL_SLACK_E2E_TARGET", raising=False)
+    monkeypatch.delenv("SLACK_HOME_CHANNEL", raising=False)
+    monkeypatch.setattr(
+        visual_slack_delivery_e2e,
+        "_load_runtime_env",
+        lambda: (loaded.append(True), monkeypatch.setenv("SLACK_HOME_CHANNEL", "D_TEST")),
+    )
+
+    target = visual_slack_delivery_e2e._resolve_target(mode="live", target=None)
+
+    assert loaded == [True]
+    assert target == "D_TEST"
+
+
+def test_resolve_target_reads_top_level_config_home_channel(monkeypatch):
+    from scripts import visual_slack_delivery_e2e
+
+    monkeypatch.delenv("HERMES_VISUAL_SLACK_E2E_TARGET", raising=False)
+    monkeypatch.delenv("SLACK_HOME_CHANNEL", raising=False)
+    monkeypatch.setattr(visual_slack_delivery_e2e, "_load_runtime_env", lambda: None)
+    monkeypatch.setattr(
+        visual_slack_delivery_e2e,
+        "_load_top_level_config_value",
+        lambda key: "D_CONFIG" if key == "SLACK_HOME_CHANNEL" else None,
+    )
+
+    target = visual_slack_delivery_e2e._resolve_target(mode="live", target=None)
+
+    assert target == "D_CONFIG"
+
+
 def test_visual_e2e_automation_includes_slack_delivery_gate(monkeypatch, tmp_path):
     from scripts import visual_e2e_automation_report
 
