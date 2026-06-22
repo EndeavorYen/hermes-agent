@@ -332,6 +332,63 @@ def test_visual_live_quality_burn_exports_quality_focus_operator_actions(monkeyp
     } in report["next_actions"]
 
 
+def test_visual_live_quality_burn_exports_evaluation_action_for_missing_dimension_evidence(monkeypatch, tmp_path):
+    from scripts import visual_live_quality_burn
+
+    suite = _suite_with_quality_failure()
+    suite["quality_focus_summary"] = {
+        "outcome_count": 1,
+        "success_count": 0,
+        "failure_count": 1,
+        "successful_focuses": [],
+        "failed_focuses": ["adult_fashion_portrait"],
+        "outcomes": [
+            {
+                "case_id": "fashion_portrait_video",
+                "focus": "adult_fashion_portrait",
+                "success": False,
+                "dimension": "subject_beauty",
+                "dimension_evidence_count": 0,
+                "min_quality_score": 0.83,
+                "quality_issues": ["missing_preference_dimension_evidence:subject_beauty"],
+                "preference_dimension_failures": [],
+            },
+        ],
+    }
+
+    monkeypatch.setattr(
+        visual_live_quality_burn,
+        "build_visual_live_provider_e2e_suite_report",
+        lambda **_kwargs: suite,
+    )
+
+    report = visual_live_quality_burn.build_visual_live_quality_burn_report(
+        mode="live",
+        output_dir=tmp_path,
+    )
+
+    assert {
+        "type": "require_preference_dimension_evidence",
+        "track": "evaluation",
+        "reason": "live_quality_burn_missing_preference_dimension_evidence",
+        "confidence": 0.84,
+        "evidence_count": 1,
+        "requires_human_feedback": False,
+        "activation_status": "next_run",
+        "source": "live_quality_burn",
+        "focus": "adult_fashion_portrait",
+        "dimension": "subject_beauty",
+        "evaluation_operator": "inline_vision_preference_dimensions",
+        "case_ids": ["fashion_portrait_video"],
+        "quality_issues": ["missing_preference_dimension_evidence:subject_beauty"],
+    } in report["next_actions"]
+    assert not any(
+        action.get("type") == "apply_quality_focus_operator"
+        and action.get("focus") == "adult_fashion_portrait"
+        for action in report["next_actions"]
+    )
+
+
 def test_visual_live_quality_burn_exports_preference_dimension_repair_actions(monkeypatch, tmp_path):
     from scripts import visual_live_quality_burn
 

@@ -4,7 +4,7 @@ def test_visual_closed_loop_regression_report_proves_focus_policy_is_applied():
     report = build_visual_closed_loop_regression_report()
 
     assert report["success"] is True
-    assert report["case_count"] >= 3
+    assert report["case_count"] >= 4
     assert report["failure_count"] == 0
     assert "closed-loop private prompt" not in str(report)
 
@@ -24,6 +24,12 @@ def test_visual_closed_loop_regression_report_proves_focus_policy_is_applied():
     strategy_case = next(case for case in report["cases"] if case["case_id"] == "proven_strategy_operator")
     assert strategy_case["policy_delta"]["strategy_preference_applied"] is True
     assert strategy_case["policy_delta"]["image_first_video_enabled"] is True
+
+    evidence_case = next(case for case in report["cases"] if case["case_id"] == "preference_dimension_evidence_operator")
+    assert evidence_case["action_type"] == "require_preference_dimension_evidence"
+    assert evidence_case["policy_delta"]["preference_dimension_evidence_required"] is True
+    assert evidence_case["policy_delta"]["candidate_budget_increased"] is False
+    assert evidence_case["policy_delta"]["quality_repair_enabled"] is False
 
 
 def test_visual_closed_loop_regression_report_cli_json(capsys):

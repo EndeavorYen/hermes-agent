@@ -434,6 +434,23 @@ def _quality_focus_actions(summary: dict[str, Any]) -> list[dict[str, Any]]:
             )
             continue
         dimension = str(details.get("dimension") or _dimension_for_focus(focus)).strip()
+        quality_issues = _list(details.get("quality_issues"))
+        if _only_missing_preference_dimension_evidence(quality_issues):
+            actions.append(
+                _action(
+                    "require_preference_dimension_evidence",
+                    "evaluation",
+                    "live_quality_burn_missing_preference_dimension_evidence",
+                    confidence=0.84,
+                    evidence_count=evidence_count,
+                    focus=focus,
+                    dimension=dimension,
+                    evaluation_operator="inline_vision_preference_dimensions",
+                    case_ids=case_ids,
+                    quality_issues=quality_issues,
+                )
+            )
+            continue
         actions.append(
             _action(
                 "apply_quality_focus_operator",
@@ -446,10 +463,17 @@ def _quality_focus_actions(summary: dict[str, Any]) -> list[dict[str, Any]]:
                 strategy_operator=_strategy_operator_for_focus(focus),
                 repair_hint=_repair_hint_for_dimension(dimension),
                 case_ids=case_ids,
-                quality_issues=_list(details.get("quality_issues")),
+                quality_issues=quality_issues,
             )
         )
     return actions
+
+
+def _only_missing_preference_dimension_evidence(quality_issues: list[str]) -> bool:
+    return bool(quality_issues) and all(
+        issue.startswith("missing_preference_dimension_evidence:")
+        for issue in quality_issues
+    )
 
 
 def _high_quality_pass(suite: dict[str, Any], summary: dict[str, Any]) -> bool:

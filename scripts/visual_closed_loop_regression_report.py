@@ -101,6 +101,25 @@ _CASES: tuple[ClosedLoopCase, ...] = (
             "strategy_preference_applied",
         ),
     ),
+    ClosedLoopCase(
+        case_id="preference_dimension_evidence_operator",
+        action={
+            "type": "require_preference_dimension_evidence",
+            "track": "evaluation",
+            "source": "live_quality_burn",
+            "focus": "adult_fashion_portrait",
+            "dimension": "subject_beauty",
+            "evaluation_operator": "inline_vision_preference_dimensions",
+            "requires_human_feedback": False,
+        },
+        wants_image=True,
+        wants_video=True,
+        default_candidate_budget=1,
+        request_category="fashion_portrait",
+        expected_checks=(
+            "preference_dimension_evidence_required",
+        ),
+    ),
 )
 
 
@@ -171,6 +190,7 @@ def _evaluate_case(case: ClosedLoopCase) -> dict[str, Any]:
             "quality_repair_enabled": checks["quality_repair_enabled"],
             "image_first_video_enabled": checks["image_first_video_enabled"],
             "strategy_preference_applied": checks["strategy_preference_applied"],
+            "preference_dimension_evidence_required": checks["preference_dimension_evidence_required"],
         },
         "quality_guidance": {
             "image_enabled": checks["image_guidance_enabled"],
@@ -201,6 +221,10 @@ def _checks(
         ),
         "image_first_video_enabled": applied.get("prefer_image_first_video") is True,
         "strategy_preference_applied": isinstance(applied.get("strategy_preference"), dict),
+        "preference_dimension_evidence_required": (
+            applied.get("require_preference_dimension_evidence") is True
+            and bool(applied.get("required_preference_dimensions"))
+        ),
         "image_guidance_enabled": image_guidance.get("enabled") is True,
         "prompt_guidance_applied": guided_prompt != _PRIVATE_PROMPT and _PRIVATE_PROMPT in guided_prompt,
         "dimension_guidance_present": bool(dimension_terms),

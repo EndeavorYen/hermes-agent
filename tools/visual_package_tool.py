@@ -229,6 +229,11 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
     )
     video_budget = _video_budget(args, wants_video=wants_video)
     inline_vision_judge = _inline_vision_judge_mode(args)
+    if (
+        args.get("inline_vision_judge") is None
+        and feedback_policy.get("require_preference_dimension_evidence") is True
+    ):
+        inline_vision_judge = True
     request_category = _visual_request_category(prompt)
     quality_guidance = _quality_guidance_plan(feedback_policy, request_category=request_category)
     normalized_intent = {

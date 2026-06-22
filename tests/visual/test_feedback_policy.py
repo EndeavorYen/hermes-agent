@@ -355,6 +355,40 @@ def test_feedback_policy_applies_quality_focus_operator_actions():
     assert policy["applied_action_sources"] == ["live_quality_burn"]
 
 
+def test_feedback_policy_applies_preference_dimension_evidence_action_without_prompt_repair():
+    from agent.visual.feedback_policy import resolve_visual_feedback_policy
+
+    policy = resolve_visual_feedback_policy(
+        {
+            "next_actions": [
+                {
+                    "type": "require_preference_dimension_evidence",
+                    "track": "evaluation",
+                    "source": "live_quality_burn",
+                    "focus": "adult_fashion_portrait",
+                    "dimension": "subject_beauty",
+                    "evaluation_operator": "inline_vision_preference_dimensions",
+                    "requires_human_feedback": False,
+                }
+            ],
+            "policy_sources": ["scheduled_self_validation"],
+        },
+        wants_image=True,
+        wants_video=True,
+        explicit_candidate_budget=None,
+        default_candidate_budget=1,
+    )
+
+    assert policy["candidate_budget"] == 1
+    assert policy["candidate_budget_source"] == "default"
+    assert policy["quality_repair_mode"] == "default"
+    assert policy["repair_dimensions"] == []
+    assert policy["require_preference_dimension_evidence"] is True
+    assert policy["required_preference_dimensions"] == ["subject_beauty"]
+    assert policy["applied_action_types"] == ["require_preference_dimension_evidence"]
+    assert policy["applied_action_sources"] == ["live_quality_burn"]
+
+
 def test_feedback_policy_applies_safe_reframe_provider_retry():
     from agent.visual.feedback_policy import resolve_visual_feedback_policy
 

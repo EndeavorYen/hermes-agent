@@ -2409,6 +2409,83 @@ async def test_visual_package_applies_preference_dimension_guidance_from_self_va
 
 
 @pytest.mark.asyncio
+async def test_visual_package_requires_preference_dimension_evidence_from_self_validation(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
+    latest_report.parent.mkdir(parents=True)
+    latest_report.write_text(
+        json.dumps(
+            {
+                "success": True,
+                "automation": {
+                    "self_improvement": {
+                        "next_actions": [
+                            {
+                                "type": "require_preference_dimension_evidence",
+                                "requires_human_feedback": False,
+                                "activation_status": "next_run",
+                                "confidence": 0.84,
+                                "source": "live_quality_burn",
+                                "dimension": "subject_beauty",
+                                "focus": "adult_fashion_portrait",
+                                "evaluation_operator": "inline_vision_preference_dimensions",
+                            }
+                        ]
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    image_path = tmp_path / "image.png"
+    image_path.write_bytes(_ONE_PIXEL_PNG)
+    vision_calls = []
+
+    def fake_generate_image(**kwargs):
+        return {
+            "success": True,
+            "image": str(image_path),
+            "provider": "fixture",
+            "model": "image",
+        }
+
+    def fake_inline_vision(candidate):
+        vision_calls.append(candidate["artifact_path"])
+        return {
+            "subject_quality": 0.92,
+            "face_quality": 0.9,
+            "glamour_impact": 0.86,
+            "fashion_material_quality": 0.88,
+            "pose_composition": 0.87,
+            "visual_appeal": 0.9,
+            "composition": 0.88,
+            "confidence": 0.9,
+            "evidence": {"source": "inline_vision_judge"},
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+    monkeypatch.setattr(visual_package_tool, "analyze_candidate_with_vision_tool", fake_inline_vision)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "請產出一張圖片：時尚寫真。",
+                "include_video": False,
+                "candidate_budget": 1,
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert vision_calls == [str(image_path)]
+    assert payload["generation_strategy"]["feedback_policy"]["require_preference_dimension_evidence"] is True
+    assert payload["generation_strategy"]["feedback_policy"]["required_preference_dimensions"] == ["subject_beauty"]
+
+
+@pytest.mark.asyncio
 async def test_visual_package_applies_quality_focus_operator_guidance_from_self_validation(monkeypatch, tmp_path):
     from tools import visual_package_tool
 

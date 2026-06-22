@@ -41,6 +41,8 @@ def resolve_visual_feedback_policy(
     applied_action_sources: list[str] = []
     repair_dimensions: list[dict[str, str]] = []
     quality_focus_operators: list[dict[str, str]] = []
+    require_preference_dimension_evidence = False
+    required_preference_dimensions: list[str] = []
 
     for action in _next_actions(feedback_report):
         action_type = str(action.get("type") or "")
@@ -103,6 +105,11 @@ def resolve_visual_feedback_policy(
             _append_once(applied_action_sources, action_source)
             _append_repair_dimension(repair_dimensions, action)
             _append_quality_focus_operator(quality_focus_operators, action)
+        elif action_type == "require_preference_dimension_evidence":
+            require_preference_dimension_evidence = True
+            _append_required_preference_dimension(required_preference_dimensions, action)
+            _append_once(applied_action_types, action_type)
+            _append_once(applied_action_sources, action_source)
         elif action_type == "safe_reframe_provider_retry":
             provider_recovery_mode = "safe_reframe"
             provider_retry_budget = 2
@@ -139,6 +146,8 @@ def resolve_visual_feedback_policy(
         "strategy_preference": strategy_preference,
         "repair_dimensions": repair_dimensions,
         "quality_focus_operators": quality_focus_operators,
+        "require_preference_dimension_evidence": require_preference_dimension_evidence,
+        "required_preference_dimensions": required_preference_dimensions,
         "applied_action_types": applied_action_types,
         "applied_action_sources": applied_action_sources,
         "policy_sources": _string_list(feedback_report.get("policy_sources")) or ["feedback_loop"],
@@ -211,6 +220,12 @@ def _append_quality_focus_operator(values: list[dict[str, str]], action: dict[st
     ):
         return
     values.append(entry)
+
+
+def _append_required_preference_dimension(values: list[str], action: dict[str, Any]) -> None:
+    dimension = str(action.get("dimension") or "").strip()
+    if dimension and dimension not in values:
+        values.append(dimension)
 
 
 def _action_quality_issue(action: dict[str, Any]) -> str:
