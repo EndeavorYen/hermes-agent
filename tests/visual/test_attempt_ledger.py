@@ -234,3 +234,98 @@ def test_attempt_ledger_writes_legacy_runtime_schema(tmp_path):
     assert ledger.get_artifact(artifact_id)["duration_seconds"] == 4.25
     assert ledger.get_delivery(delivery_id)["delivery_status"] == "sent"
     assert ledger.get_feedback(feedback_id)["parsed_json"] == {"selection_hint": 1}
+
+
+def test_attempt_ledger_migrates_legacy_delivery_without_created_at(tmp_path):
+    import sqlite3
+
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+
+    db_path = tmp_path / "legacy_delivery.sqlite3"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE visual_requests (
+                id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                user_prompt TEXT,
+                normalized_intent TEXT,
+                modality TEXT,
+                operation TEXT,
+                status TEXT
+            );
+            CREATE TABLE visual_deliveries (
+                delivery_id TEXT PRIMARY KEY,
+                request_id TEXT NOT NULL,
+                attempt_id TEXT,
+                artifact_id TEXT,
+                platform TEXT,
+                destination_id TEXT,
+                thread_id TEXT,
+                delivery_status TEXT
+            );
+            INSERT INTO visual_requests (id, user_prompt) VALUES ('vrq_legacy', 'prompt');
+            INSERT INTO visual_deliveries (
+                delivery_id, request_id, artifact_id, platform, destination_id, delivery_status
+            ) VALUES (
+                'vdel_legacy', 'vrq_legacy', 'var_legacy', 'slack', 'D_TEST', 'sent'
+            );
+            """
+        )
+
+    ledger = VisualAttemptLedger(db_path)
+    ledger.initialize()
+
+    deliveries = ledger.list_deliveries(request_id="vrq_legacy")
+
+    assert deliveries[0]["delivery_status"] == "sent"
+    assert deliveries[0]["created_at"]
+
+
+def test_attempt_ledger_writes_legacy_delivery_with_null_attempt_id(tmp_path):
+    import sqlite3
+
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+
+    db_path = tmp_path / "legacy_delivery_not_null.sqlite3"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE visual_requests (
+                id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                user_prompt TEXT,
+                normalized_intent TEXT,
+                modality TEXT,
+                operation TEXT,
+                status TEXT
+            );
+            CREATE TABLE visual_deliveries (
+                delivery_id TEXT PRIMARY KEY,
+                request_id TEXT NOT NULL,
+                attempt_id TEXT NOT NULL,
+                artifact_id TEXT NOT NULL,
+                platform TEXT NOT NULL,
+                destination_id TEXT NOT NULL,
+                thread_id TEXT,
+                delivery_status TEXT NOT NULL,
+                created_at TEXT
+            );
+            INSERT INTO visual_requests (id, user_prompt) VALUES ('vrq_legacy', 'prompt');
+            """
+        )
+
+    ledger = VisualAttemptLedger(db_path)
+    ledger.initialize()
+    delivery_id = ledger.record_delivery(
+        request_id="vrq_legacy",
+        attempt_id=None,
+        artifact_id="var_legacy",
+        platform="slack",
+        destination_id="D_TEST",
+        delivery_status="sent",
+    )
+
+    delivery = ledger.get_delivery(delivery_id)
+    assert delivery["attempt_id"] == ""
+    assert delivery["delivery_status"] == "sent"

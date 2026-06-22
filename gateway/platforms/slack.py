@@ -64,6 +64,10 @@ logger = logging.getLogger(__name__)
 
 def _slack_upload_message_id(result: Any) -> str | None:
     if not isinstance(result, dict):
+        data = getattr(result, "data", None)
+        if isinstance(data, dict):
+            result = data
+    if not isinstance(result, dict):
         return None
     for key in ("ts", "message_ts", "id"):
         value = result.get(key)
@@ -71,6 +75,9 @@ def _slack_upload_message_id(result: Any) -> str | None:
             return str(value)
     file_payload = result.get("file")
     if isinstance(file_payload, dict):
+        share_ts = _slack_file_share_ts(file_payload)
+        if share_ts:
+            return share_ts
         for key in ("id", "permalink", "url_private"):
             value = file_payload.get(key)
             if value not in (None, ""):
@@ -79,10 +86,34 @@ def _slack_upload_message_id(result: Any) -> str | None:
     if isinstance(files_payload, list) and files_payload:
         first = files_payload[0]
         if isinstance(first, dict):
+            share_ts = _slack_file_share_ts(first)
+            if share_ts:
+                return share_ts
             for key in ("id", "permalink", "url_private"):
                 value = first.get(key)
                 if value not in (None, ""):
                     return str(value)
+    return None
+
+
+def _slack_file_share_ts(file_payload: dict[str, Any]) -> str | None:
+    shares = file_payload.get("shares")
+    if not isinstance(shares, dict):
+        return None
+    for visibility in ("public", "private"):
+        channels = shares.get(visibility)
+        if not isinstance(channels, dict):
+            continue
+        for entries in channels.values():
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                for key in ("ts", "message_ts", "thread_ts"):
+                    value = entry.get(key)
+                    if value not in (None, ""):
+                        return str(value)
     return None
 
 

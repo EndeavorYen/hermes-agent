@@ -69,6 +69,7 @@ import gateway.platforms.slack as _slack_mod
 _slack_mod.SLACK_AVAILABLE = True
 
 from gateway.platforms.slack import SlackAdapter  # noqa: E402
+from gateway.platforms.slack import _slack_upload_message_id  # noqa: E402
 
 
 async def _pending_for_fake_task():
@@ -77,6 +78,25 @@ async def _pending_for_fake_task():
     # event loop will cancel us at teardown, which the adapter's
     # ``_on_socket_mode_task_done`` already treats as intentional shutdown.
     await asyncio.Event().wait()
+
+
+def test_slack_upload_message_id_reads_slack_response_data():
+    class FakeSlackResponse:
+        data = {
+            "files": [
+                {
+                    "shares": {
+                        "public": {
+                            "C123": [
+                                {"ts": "1719000000.000001"},
+                            ],
+                        },
+                    },
+                },
+            ],
+        }
+
+    assert _slack_upload_message_id(FakeSlackResponse()) == "1719000000.000001"
 
 
 def _fake_create_task(coro):

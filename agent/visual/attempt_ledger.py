@@ -303,6 +303,7 @@ class VisualAttemptLedger:
                 """
             )
             self._ensure_column(conn, "visual_deliveries", "destination", "TEXT")
+            self._ensure_created_at_columns(conn)
 
     def record_request(self, **kwargs: Any) -> str:
         return self._insert("visual_requests", "id", kwargs, new_request_id)
@@ -398,6 +399,28 @@ class VisualAttemptLedger:
         existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
         if column not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+    def _ensure_created_at_columns(self, conn: sqlite3.Connection) -> None:
+        tables = (
+            "visual_requests",
+            "visual_attempts",
+            "visual_artifacts",
+            "visual_judgments",
+            "visual_rankings",
+            "visual_deliveries",
+            "visual_feedback",
+            "visual_shadow_updates",
+            "visual_strategy_activations",
+        )
+        for table in tables:
+            self._ensure_column(conn, table, "created_at", "TEXT")
+            conn.execute(
+                f"""
+                UPDATE {table}
+                SET created_at = CURRENT_TIMESTAMP
+                WHERE created_at IS NULL OR created_at = ''
+                """
+            )
 
     def _insert(
         self,
@@ -521,11 +544,16 @@ class VisualAttemptLedger:
             prepared.setdefault("confidence", 0.0)
             prepared.setdefault("decision", "")
         elif table == "visual_deliveries":
-            prepared.setdefault("attempt_id", "")
-            prepared.setdefault("artifact_id", "")
-            prepared.setdefault("platform", "")
-            prepared.setdefault("destination_id", "")
-            prepared.setdefault("delivery_status", "")
+            for key in (
+                "attempt_id",
+                "artifact_id",
+                "platform",
+                "destination_id",
+                "delivery_status",
+            ):
+                if prepared.get(key) is None:
+                    prepared[key] = ""
+                prepared.setdefault(key, "")
         elif table == "visual_feedback":
             prepared.setdefault("feedback_type", "comment")
         elif table == "visual_shadow_updates":

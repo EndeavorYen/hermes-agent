@@ -16,6 +16,7 @@ from scripts.visual_agent_mode_regression_report import build_visual_agent_mode_
 from scripts.visual_autonomous_healthcheck import build_visual_autonomous_healthcheck
 from scripts.visual_quality_calibration_report import build_quality_calibration_report
 from scripts.visual_live_provider_e2e import build_visual_live_provider_e2e_report
+from scripts.visual_slack_delivery_e2e import build_visual_slack_delivery_e2e_report
 
 
 def build_visual_e2e_automation_report(
@@ -25,6 +26,7 @@ def build_visual_e2e_automation_report(
 ) -> dict[str, Any]:
     agent_mode = build_visual_agent_mode_regression_report()
     fixture_e2e = build_visual_live_provider_e2e_report(mode="fixture", work_dir=work_dir)
+    slack_delivery = build_visual_slack_delivery_e2e_report(mode="fixture", work_dir=work_dir)
     health = build_visual_autonomous_healthcheck(_ledger_path_for_work_dir(work_dir), autonomy_level=2)
     quality_calibration = build_quality_calibration_report(_ledger_path_for_work_dir(work_dir))
     if include_live:
@@ -41,6 +43,8 @@ def build_visual_e2e_automation_report(
         failures.append("agent_mode_failed")
     if fixture_e2e.get("success") is not True:
         failures.append("fixture_e2e_failed")
+    if slack_delivery.get("success") is not True:
+        failures.append("slack_delivery_failed")
     if health.get("success") is not True:
         failures.append("health_failed")
     if quality_calibration.get("success") is not True:
@@ -53,6 +57,7 @@ def build_visual_e2e_automation_report(
         "failures": failures,
         "agent_mode": agent_mode,
         "fixture_e2e": fixture_e2e,
+        "slack_delivery": slack_delivery,
         "live_e2e": live_e2e,
         "health": health,
         "quality_calibration": quality_calibration,
