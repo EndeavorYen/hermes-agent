@@ -104,6 +104,7 @@ def build_visual_live_provider_e2e_report(
     duration: int = 4,
     require_video: bool = True,
     force_video_quality_repair: bool = False,
+    storyboard: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     mode = mode.strip().lower()
     if mode not in {"live", "fixture"}:
@@ -134,6 +135,7 @@ def build_visual_live_provider_e2e_report(
             mode,
             work_dir,
             force_video_quality_repair=force_video_quality_repair,
+            force_storyboard_composition=bool(storyboard),
         ):
             package_args = {
                 "prompt": prompt,
@@ -144,6 +146,9 @@ def build_visual_live_provider_e2e_report(
             }
             if candidate_budget is not None:
                 package_args["candidate_budget"] = candidate_budget
+            if storyboard:
+                package_args["include_image"] = False
+                package_args["storyboard"] = storyboard
             payload = run_visual_package(package_args)
         evidence = inspect_visual_e2e_evidence(
             payload,
@@ -158,6 +163,40 @@ def build_visual_live_provider_e2e_report(
         "provider_checks": provider_checks,
         "payload": _safe_payload_summary(payload),
         "evidence": evidence,
+    }
+
+
+def build_visual_storyboard_execution_report(
+    *,
+    mode: str = "fixture",
+    work_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    storyboard = {
+        "enabled": True,
+        "shot_count": 2,
+        "candidate_budget_per_shot": 2,
+        "source_image_policy": "one_ranked_image_per_shot",
+        "composition_target": "single_coherent_video",
+        "delivery_policy": "deliver_composed_video_when_available_else_selected_clips",
+    }
+    report = build_visual_live_provider_e2e_report(
+        mode=mode,
+        work_dir=work_dir,
+        prompt="請做一支 2 段分鏡的連貫產品影片：霧黑鋼筆放在白紙上，柔和窗光。",
+        candidate_budget=2,
+        video_budget=1,
+        duration=4,
+        require_video=True,
+        storyboard=storyboard,
+    )
+    evidence = report.get("evidence") if isinstance(report.get("evidence"), dict) else {}
+    storyboard_evidence = evidence.get("storyboard_execution") if isinstance(evidence.get("storyboard_execution"), dict) else {}
+    failures = list(report.get("failures") or [])
+    failures.extend(_storyboard_execution_failures(storyboard_evidence))
+    return {
+        **report,
+        "success": not failures,
+        "failures": sorted(set(str(item) for item in failures if item)),
     }
 
 
@@ -187,6 +226,7 @@ def build_visual_live_provider_e2e_suite_report(
                     duration=int(case.get("duration") or 4),
                     require_video=case.get("require_video") is not False,
                     force_video_quality_repair=case.get("force_video_quality_repair") is True,
+                    storyboard=case.get("storyboard") if isinstance(case.get("storyboard"), dict) else None,
                 )
         except VisualE2ECaseTimeout:
             report = _case_timeout_report(mode=mode, timeout_seconds=timeout_seconds)
@@ -498,6 +538,7 @@ def inspect_visual_e2e_evidence(
         "require_video": require_video,
         "quality_gate": quality_gate,
         "video_source": _video_source_evidence(payload, require_video=require_video),
+        "storyboard_execution": _storyboard_execution_evidence(payload),
     }
 
 
@@ -603,14 +644,24 @@ def _payload_failures(
     if not isinstance(payload, dict):
         return ["missing_payload"]
     video_source = evidence.get("video_source") if isinstance(evidence.get("video_source"), dict) else {}
+    storyboard_execution = (
+        evidence.get("storyboard_execution")
+        if isinstance(evidence.get("storyboard_execution"), dict)
+        else {}
+    )
     has_internal_ranked_video_source = (
         require_video
         and evidence.get("video_count", 0) >= 1
         and video_source.get("uses_ranked_selected_image") is True
     )
+    has_storyboard_video_source = (
+        require_video
+        and evidence.get("video_count", 0) >= 1
+        and storyboard_execution.get("status") in {"composed", "clips_ready"}
+    )
     if payload.get("success") is not True:
         failures.append(str(payload.get("error_type") or "provider_generation_failed"))
-    if evidence.get("image_count", 0) < 1 and not has_internal_ranked_video_source:
+    if evidence.get("image_count", 0) < 1 and not has_internal_ranked_video_source and not has_storyboard_video_source:
         failures.append("missing_image_output")
     if require_video and evidence.get("video_count", 0) < 1:
         failures.append("missing_video_output")
@@ -679,6 +730,52 @@ def _safe_payload_summary(payload: dict[str, Any] | None) -> dict[str, Any] | No
         "error_type": payload.get("error_type"),
         "error": payload.get("error"),
     }
+
+
+def _storyboard_execution_evidence(payload: dict[str, Any]) -> dict[str, Any]:
+    generation_strategy = (
+        payload.get("generation_strategy")
+        if isinstance(payload.get("generation_strategy"), dict)
+        else {}
+    )
+    execution = (
+        generation_strategy.get("storyboard_execution")
+        if isinstance(generation_strategy.get("storyboard_execution"), dict)
+        else {}
+    )
+    videos = [str(item) for item in payload.get("videos") or [] if isinstance(item, str)]
+    shots = execution.get("shots") if isinstance(execution.get("shots"), list) else []
+    source_clips = [
+        str(shot.get("clip_path"))
+        for shot in shots
+        if isinstance(shot, dict) and isinstance(shot.get("clip_path"), str)
+    ]
+    composed_video = _string_or_none(execution.get("composed_video"))
+    return {
+        "status": execution.get("status"),
+        "shot_count": execution.get("shot_count"),
+        "clip_count": execution.get("clip_count"),
+        "composition_status": execution.get("composition_status"),
+        "delivery_policy": execution.get("delivery_policy"),
+        "composed_video": composed_video,
+        "delivers_composed_video": bool(composed_video and videos == [composed_video]),
+        "delivers_source_clips": any(clip in videos for clip in source_clips),
+    }
+
+
+def _storyboard_execution_failures(evidence: dict[str, Any]) -> list[str]:
+    failures: list[str] = []
+    if evidence.get("status") != "composed":
+        failures.append("storyboard_not_composed")
+    if evidence.get("composition_status") != "composed":
+        failures.append("storyboard_composition_not_composed")
+    if evidence.get("clip_count") != 2:
+        failures.append("storyboard_wrong_clip_count")
+    if evidence.get("delivers_composed_video") is not True:
+        failures.append("storyboard_composed_video_not_delivered")
+    if evidence.get("delivers_source_clips") is True:
+        failures.append("storyboard_source_clips_delivered")
+    return failures
 
 
 def _video_source_evidence(payload: dict[str, Any], *, require_video: bool) -> dict[str, Any]:
@@ -1353,6 +1450,7 @@ def _fixture_provider_context(
     work_dir: str | Path | None,
     *,
     force_video_quality_repair: bool = False,
+    force_storyboard_composition: bool = False,
 ):
     if mode != "fixture":
         yield
@@ -1364,13 +1462,16 @@ def _fixture_provider_context(
     image_path = fixture_dir / "live-e2e-fixture.png"
     video_path = fixture_dir / "live-e2e-fixture.mp4"
     repaired_video_path = fixture_dir / "live-e2e-fixture-repaired.mp4"
+    composed_video_path = fixture_dir / "live-e2e-fixture-storyboard-composed.mp4"
     image_path.write_bytes(_ONE_PIXEL_PNG)
     video_path.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
     repaired_video_path.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isomrepaired")
+    composed_video_path.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isomcomposed")
 
     old_image = visual_package_tool.generate_image
     old_video = visual_package_tool.generate_video
     old_probe = visual_package_tool.probe_media_reference
+    old_compose = visual_package_tool._compose_storyboard_clips
     video_calls = 0
 
     def fixture_video(**kwargs):
@@ -1427,12 +1528,21 @@ def _fixture_provider_context(
     visual_package_tool.generate_video = fixture_video
     if force_video_quality_repair:
         visual_package_tool.probe_media_reference = fixture_probe_media_reference
+    if force_storyboard_composition:
+        visual_package_tool._compose_storyboard_clips = lambda video_paths, **_kwargs: {
+            "success": True,
+            "video": str(composed_video_path),
+            "provider": "local",
+            "model": "fixture-concat",
+            "clip_count": len(video_paths),
+        }
     try:
         yield
     finally:
         visual_package_tool.generate_image = old_image
         visual_package_tool.generate_video = old_video
         visual_package_tool.probe_media_reference = old_probe
+        visual_package_tool._compose_storyboard_clips = old_compose
 
 
 if __name__ == "__main__":

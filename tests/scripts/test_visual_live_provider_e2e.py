@@ -84,6 +84,24 @@ def test_visual_live_provider_e2e_fixture_records_learning_evidence(tmp_path):
     assert report["evidence"]["judgments_with_learning_metadata"] >= 2
 
 
+def test_visual_live_provider_e2e_fixture_storyboard_execution_composes_video(tmp_path):
+    from scripts.visual_live_provider_e2e import build_visual_storyboard_execution_report
+
+    report = build_visual_storyboard_execution_report(
+        mode="fixture",
+        work_dir=tmp_path,
+    )
+
+    assert report["success"] is True
+    assert report["provider_mode"] == "fixture"
+    assert report["payload"]["video_count"] == 1
+    assert report["evidence"]["storyboard_execution"]["status"] == "composed"
+    assert report["evidence"]["storyboard_execution"]["clip_count"] == 2
+    assert report["evidence"]["storyboard_execution"]["composition_status"] == "composed"
+    assert report["evidence"]["storyboard_execution"]["delivers_composed_video"] is True
+    assert report["evidence"]["storyboard_execution"]["delivers_source_clips"] is False
+
+
 def test_visual_live_provider_default_suite_declares_core_portrait_quality_contract(monkeypatch, tmp_path):
     from scripts import visual_live_provider_e2e
 

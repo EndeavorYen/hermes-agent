@@ -20,6 +20,7 @@ from scripts.visual_feedback_loop_report import build_visual_feedback_loop_repor
 from scripts.visual_quality_calibration_report import build_quality_calibration_report
 from scripts.visual_live_provider_e2e import build_visual_live_provider_e2e_report
 from scripts.visual_live_provider_e2e import build_visual_live_provider_e2e_suite_report
+from scripts.visual_live_provider_e2e import build_visual_storyboard_execution_report
 from scripts.visual_live_quality_burn import build_visual_live_quality_burn_report
 from scripts.visual_slack_conversation_e2e import build_visual_slack_conversation_e2e_report
 from scripts.visual_slack_delivery_e2e import build_visual_slack_delivery_e2e_report
@@ -36,6 +37,7 @@ def build_visual_e2e_automation_report(
     closed_loop_regression = build_visual_closed_loop_regression_report()
     conversation_route = build_visual_conversation_route_report()
     fixture_e2e = build_visual_live_provider_e2e_report(mode="fixture", work_dir=work_dir)
+    storyboard_execution = build_visual_storyboard_execution_report(mode="fixture", work_dir=work_dir)
     fixture_quality_suite_kwargs = {"mode": "fixture", "work_dir": work_dir}
     if case_timeout_seconds is not None:
         fixture_quality_suite_kwargs["case_timeout_seconds"] = case_timeout_seconds
@@ -91,6 +93,8 @@ def build_visual_e2e_automation_report(
         failures.append("conversation_route_failed")
     if fixture_e2e.get("success") is not True:
         failures.append("fixture_e2e_failed")
+    if storyboard_execution.get("success") is not True:
+        failures.append("storyboard_execution_failed")
     if fixture_quality_suite.get("success") is not True:
         failures.append("fixture_quality_suite_failed")
     if slack_conversation.get("success") is not True:
@@ -117,6 +121,7 @@ def build_visual_e2e_automation_report(
         "closed_loop_regression": closed_loop_regression,
         "conversation_route": conversation_route,
         "fixture_e2e": fixture_e2e,
+        "storyboard_execution": storyboard_execution,
         "fixture_quality_suite": fixture_quality_suite,
         "slack_conversation": slack_conversation,
         "slack_delivery": slack_delivery,

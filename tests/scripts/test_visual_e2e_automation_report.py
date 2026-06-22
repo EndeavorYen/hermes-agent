@@ -14,6 +14,8 @@ def test_visual_e2e_automation_fixture_default(tmp_path):
     assert report["agent_mode"]["success"] is True
     assert report["closed_loop_regression"]["success"] is True
     assert report["conversation_route"]["success"] is True
+    assert report["storyboard_execution"]["success"] is True
+    assert report["storyboard_execution"]["evidence"]["storyboard_execution"]["delivers_composed_video"] is True
     assert report["slack_conversation"]["success"] is True
     assert report["live_e2e"]["status"] == "not_requested"
     assert report["health"]["success"] is True

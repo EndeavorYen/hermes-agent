@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import datetime
 import hashlib
 import json
 import logging
 import os
+import shutil
+import subprocess
+import tempfile
+import uuid
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 from urllib.request import Request
@@ -996,6 +1002,10 @@ def _run_storyboard_execution(
     first_source_artifact_id: str | None = None
     candidate_budget_per_shot = _storyboard_candidate_budget(storyboard, fallback=_coerce_int(args.get("candidate_budget")) or 1)
     video_budget_per_shot = 1
+    composition_status = "not_required"
+    composition_error: dict[str, Any] = {}
+    composed_video: str | None = None
+    composed_video_artifact_id: str | None = None
 
     for shot_index, shot in enumerate(_storyboard_shots(storyboard)):
         shot_id = str(shot.get("shot_id") or f"shot_{shot_index + 1}")
@@ -1165,14 +1175,64 @@ def _run_storyboard_execution(
         generation_payloads["storyboard"].append(shot_payloads)
         execution_shots.append(shot_summary)
 
-    clip_count = len(selected_videos)
+    source_clip_videos = list(selected_videos)
+    source_clip_artifact_ids = list(selected_artifact_ids)
+    source_clip_count = len(source_clip_videos)
+    if storyboard.get("composition_target") == "single_coherent_video" and source_clip_count > 1:
+        composition_payload = _compose_storyboard_clips(source_clip_videos, request_id=request_id)
+        generation_payloads["composition"] = composition_payload
+        if composition_payload.get("success"):
+            composed_candidate = _record_payload_candidate(
+                ledger,
+                request_id=request_id,
+                payload=composition_payload,
+                artifact_key="video",
+                expected_kind="video",
+                prompt=prompt,
+                provider=str(composition_payload.get("provider") or "local"),
+                model=str(composition_payload.get("model") or "ffmpeg-concat"),
+                requested_parameters={
+                    "composition": "storyboard_concat",
+                    "composition_target": storyboard.get("composition_target"),
+                    "source_clip_count": source_clip_count,
+                    "source_video_artifact_ids": source_clip_artifact_ids,
+                },
+                candidate_index=len(_storyboard_shots(storyboard)) * candidate_budget_per_shot + source_clip_count,
+            )
+            if composed_candidate:
+                selected_artifact_ids = [composed_candidate["artifact_id"]]
+                selected_videos = [composed_candidate["artifact_path"]]
+                composed_video = composed_candidate["artifact_path"]
+                composed_video_artifact_id = composed_candidate["artifact_id"]
+                composition_status = "composed"
+            else:
+                composition_status = "failed"
+                composition_error = {
+                    "error_type": "composition_artifact_not_recorded",
+                    "error": "composed video payload did not produce a recordable artifact",
+                }
+        else:
+            composition_status = "failed"
+            composition_error = {
+                "error_type": composition_payload.get("error_type"),
+                "error": composition_payload.get("error"),
+            }
+
+    clip_count = source_clip_count
     shot_count = len(execution_shots)
     execution = {
-        "status": "clips_ready" if clip_count == shot_count else ("partial" if clip_count else "failed"),
+        "status": (
+            "composed"
+            if composition_status == "composed"
+            else ("clips_ready" if clip_count == shot_count else ("partial" if clip_count else "failed"))
+        ),
         "shot_count": shot_count,
         "clip_count": clip_count,
-        "composition_status": "not_composed",
-        "composed_video": None,
+        "composition_status": composition_status,
+        "composition_error": composition_error or None,
+        "composed_video": composed_video,
+        "composed_video_artifact_id": composed_video_artifact_id,
+        "delivery_policy": storyboard.get("delivery_policy") or "deliver_composed_video_when_available_else_selected_clips",
         "source_image_policy": storyboard.get("source_image_policy") or "one_ranked_image_per_shot",
         "candidate_budget_per_shot": candidate_budget_per_shot,
         "shots": execution_shots,
@@ -1189,6 +1249,146 @@ def _run_storyboard_execution(
         "first_source_artifact_id": first_source_artifact_id,
         "candidate_budget_per_shot": candidate_budget_per_shot,
         "execution": execution,
+    }
+
+
+def _compose_storyboard_clips(video_paths: list[str], *, request_id: str) -> dict[str, Any]:
+    source_paths = [str(Path(path)) for path in video_paths if isinstance(path, str) and path.strip()]
+    if len(source_paths) < 2:
+        return _composition_error("not_enough_clips", "storyboard composition requires at least two clips")
+    missing = [path for path in source_paths if not Path(path).exists()]
+    if missing:
+        return _composition_error("source_clip_missing", f"storyboard source clip missing: {missing[0]}")
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return _composition_error("ffmpeg_unavailable", "ffmpeg is not available for storyboard composition")
+
+    output_path = _storyboard_composed_video_path(request_id)
+    with tempfile.NamedTemporaryFile(
+        "w",
+        suffix=".txt",
+        prefix="storyboard-concat-",
+        delete=False,
+        encoding="utf-8",
+    ) as file_list:
+        list_path = Path(file_list.name)
+        for path in source_paths:
+            file_list.write(_ffmpeg_concat_file_line(path) + "\n")
+    try:
+        copy_result = _run_ffmpeg_concat(
+            ffmpeg,
+            list_path=list_path,
+            output_path=output_path,
+            reencode=False,
+        )
+        if copy_result["success"]:
+            return _composition_success(
+                output_path,
+                source_clip_count=len(source_paths),
+                method="ffmpeg_concat_copy",
+            )
+
+        reencode_result = _run_ffmpeg_concat(
+            ffmpeg,
+            list_path=list_path,
+            output_path=output_path,
+            reencode=True,
+        )
+        if reencode_result["success"]:
+            payload = _composition_success(
+                output_path,
+                source_clip_count=len(source_paths),
+                method="ffmpeg_concat_reencode",
+            )
+            payload["copy_error"] = copy_result.get("error")
+            return payload
+        return _composition_error(
+            "ffmpeg_concat_failed",
+            str(reencode_result.get("error") or copy_result.get("error") or "ffmpeg concat failed"),
+        )
+    finally:
+        list_path.unlink(missing_ok=True)
+
+
+def _run_ffmpeg_concat(
+    ffmpeg: str,
+    *,
+    list_path: Path,
+    output_path: Path,
+    reencode: bool,
+) -> dict[str, Any]:
+    command = [
+        ffmpeg,
+        "-y",
+        "-loglevel",
+        "error",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        str(list_path),
+    ]
+    if reencode:
+        command.extend(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart"])
+    else:
+        command.extend(["-c", "copy"])
+    command.append(str(output_path))
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=180,
+        )
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": "ffmpeg concat timed out"}
+    if result.returncode == 0 and output_path.exists() and output_path.stat().st_size > 0:
+        return {"success": True}
+    return {
+        "success": False,
+        "error": (result.stderr or result.stdout or f"ffmpeg exited with {result.returncode}")[:2000],
+    }
+
+
+def _storyboard_composed_video_path(request_id: str) -> Path:
+    from hermes_constants import get_hermes_home
+
+    cache_dir = get_hermes_home() / "cache" / "videos"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    short = uuid.uuid4().hex[:8]
+    safe_request_id = "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in request_id)
+    return cache_dir / f"visual-storyboard_{safe_request_id}_{ts}_{short}.mp4"
+
+
+def _ffmpeg_concat_file_line(path: str) -> str:
+    escaped = str(Path(path)).replace("'", "'\\''")
+    return f"file '{escaped}'"
+
+
+def _composition_success(path: Path, *, source_clip_count: int, method: str) -> dict[str, Any]:
+    return {
+        "success": True,
+        "video": str(path),
+        "provider": "local",
+        "model": "ffmpeg-concat",
+        "composition": {
+            "method": method,
+            "source_clip_count": source_clip_count,
+        },
+    }
+
+
+def _composition_error(error_type: str, error: str) -> dict[str, Any]:
+    return {
+        "success": False,
+        "provider": "local",
+        "model": "ffmpeg-concat",
+        "error_type": error_type,
+        "error": error,
     }
 
 
