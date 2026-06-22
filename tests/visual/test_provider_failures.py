@@ -38,6 +38,27 @@ def test_classify_visual_provider_failure_detects_xai_content_moderation_text():
     assert result["safe_reframe_allowed"] is True
 
 
+def test_classify_visual_provider_failure_detects_xai_spending_limit_before_blocked_text():
+    from agent.visual.provider_failures import classify_visual_provider_failure
+
+    result = classify_visual_provider_failure(
+        {
+            "success": False,
+            "error_type": "api_error",
+            "status_code": 403,
+            "error": (
+                'xAI image gen failed (403): {"code":"personal-team-blocked:spending-limit",'
+                '"error":"You have run out of credits or need a Grok subscription."}'
+            ),
+        }
+    )
+
+    assert result["failure_class"] == "quota_exceeded"
+    assert result["retryable"] is False
+    assert result["safe_reframe_allowed"] is False
+    assert result["provider_message_code"] == "personal-team-blocked:spending-limit"
+
+
 def test_classify_visual_provider_failure_detects_timeout_and_empty_response():
     from agent.visual.provider_failures import classify_visual_provider_failure
 

@@ -190,3 +190,105 @@ def test_video_tool_dispatch_records_visual_attempt(tmp_path, monkeypatch):
     assert payload["video"] == str(video)
     assert payload["visual_artifact_id"].startswith("var_")
     assert Path(tmp_path / "visual" / "attempt_ledger.sqlite3").exists()
+
+
+def test_tracking_records_slack_delivery_quality_run_after_selected_video_sent(tmp_path, monkeypatch):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+    from agent.visual.tracking import record_visual_delivery_status
+    from agent.visual.tracking import visual_delivery_context
+    from agent.visual.tracking import visual_delivery_metadata
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image_path = tmp_path / "source.png"
+    video_path = tmp_path / "selected.mp4"
+    image_path.write_bytes(_ONE_PIXEL_PNG)
+    video_path.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+
+    ledger = VisualAttemptLedger(default_visual_ledger_path())
+    ledger.initialize()
+    request_id = ledger.record_request(
+        user_prompt="private prompt must not be copied",
+        normalized_intent={"operation": "visual_package_generate"},
+        modality="package",
+        operation="visual_package_generate",
+        status="completed",
+    )
+    image_artifact_id = ledger.record_artifact(
+        request_id=request_id,
+        kind="image",
+        local_path=str(image_path),
+        uri=str(image_path),
+        content_hash="sha256:image",
+        mime_type="image/png",
+        is_stable=True,
+        freshness_status="fresh",
+    )
+    video_artifact_id = ledger.record_artifact(
+        request_id=request_id,
+        kind="video",
+        local_path=str(video_path),
+        uri=str(video_path),
+        content_hash="sha256:video",
+        mime_type="video/mp4",
+        is_stable=True,
+        freshness_status="fresh",
+    )
+    metadata = visual_delivery_metadata(
+        request_id=request_id,
+        attempt_id=None,
+        artifact_ids=[image_artifact_id, video_artifact_id],
+        artifact_paths=[str(image_path), str(video_path)],
+        selected_artifact_ids=[image_artifact_id, video_artifact_id],
+    )
+    metadata["visual_quality_run"] = {
+        "requires_video": True,
+        "summary": {
+            "case_count": 1,
+            "failed_case_count": 0,
+            "min_quality_score": 0.86,
+            "quality_issue_count": 0,
+            "quality_issues": [],
+            "provider_failure_count": 0,
+            "video_missing_after_image_count": 0,
+            "image_first_video_source_failure_count": 0,
+            "preference_dimension_failure_count": 0,
+            "preference_dimension_failures": [],
+        },
+        "self_review": {
+            "image_first_video_source_covered": True,
+        },
+    }
+
+    image_context = visual_delivery_context(
+        metadata,
+        str(image_path),
+        platform="slack",
+        destination_id="D_TEST",
+    )
+    record_visual_delivery_status(image_context, "sent", message_id="image-msg")
+
+    runs_dir = tmp_path / "visual" / "live_quality_burn" / "runs"
+    assert not runs_dir.exists()
+
+    video_context = visual_delivery_context(
+        metadata,
+        str(video_path),
+        platform="slack",
+        destination_id="D_TEST",
+    )
+    record_visual_delivery_status(video_context, "sent", message_id="video-msg")
+
+    run_paths = sorted(runs_dir.glob("*.json"))
+    assert len(run_paths) == 1
+    quality_run = json.loads(run_paths[0].read_text(encoding="utf-8"))
+    assert quality_run["source"] == "slack_delivery"
+    assert quality_run["success"] is True
+    assert quality_run["summary"]["min_quality_score"] == 0.86
+    assert quality_run["self_review"]["native_video_upload_covered"] is True
+    assert quality_run["self_review"]["image_first_video_source_covered"] is True
+    assert quality_run["privacy"]["raw_prompt_omitted"] is True
+    assert "private prompt" not in json.dumps(quality_run, ensure_ascii=False)
+
+    record_visual_delivery_status(video_context, "sent", message_id="video-msg-duplicate")
+    assert len(sorted(runs_dir.glob("*.json"))) == 1

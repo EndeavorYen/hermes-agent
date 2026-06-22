@@ -56,6 +56,15 @@ async def test_visual_package_generate_returns_selected_image_and_video(monkeypa
     assert payload["videos"] == [str(video)]
     assert payload["package_status"] == "success"
     assert payload["delivery_metadata"]["selected_visual_artifact_ids"]
+    quality_run = payload["delivery_metadata"]["visual_quality_run"]
+    assert quality_run["requires_video"] is True
+    assert quality_run["summary"]["case_count"] == 1
+    assert quality_run["summary"]["failed_case_count"] == 0
+    assert 0.0 <= quality_run["summary"]["min_quality_score"] < 1.0
+    assert quality_run["summary"]["video_missing_after_image_count"] == 0
+    assert quality_run["summary"]["image_first_video_source_failure_count"] == 0
+    assert quality_run["self_review"]["image_first_video_source_covered"] is True
+    assert "霧黑鋼筆" not in json.dumps(quality_run, ensure_ascii=False)
     assert payload["autonomous_validation"]["decision"] == "accept"
     assert payload["autonomous_validation"]["evidence"]["learning_trace_count"] >= 2
     assert payload["autonomous_orchestration"]["runtime_hook"] == "post_generation"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 
@@ -10,6 +11,8 @@ def classify_visual_provider_failure(payload: dict[str, Any] | Exception) -> dic
 
     if _is_timeout(payload, text):
         return _result("timeout", retryable=True, safe_reframe_allowed=False, provider_message_code=code)
+    if _is_quota_exceeded_text(text):
+        return _result("quota_exceeded", retryable=False, safe_reframe_allowed=False, provider_message_code=code)
     if _contains(text, "content_moderation", "moderation", "safety", "policy rejected", "blocked", "policy_violation"):
         return _result("content_moderation", retryable=True, safe_reframe_allowed=True, provider_message_code=code)
     if _contains(text, "empty_response", "empty response", "no output", "blank response"):
@@ -57,6 +60,7 @@ def _operator_summary(failure_class: str) -> str:
         "unsupported_aspect_ratio": "provider does not support the requested aspect ratio",
         "rate_limited": "provider rate limit was hit",
         "provider_unavailable": "provider is unavailable",
+        "quota_exceeded": "provider account quota or subscription limit was hit",
     }.get(failure_class, "provider failure could not be classified")
 
 
@@ -76,6 +80,9 @@ def _failure_text(payload: dict[str, Any] | Exception) -> str:
 
 def _message_code(payload: dict[str, Any] | Exception, text: str) -> str:
     if isinstance(payload, dict):
+        embedded_code = _embedded_json_code(text) if _is_quota_exceeded_text(text) else None
+        if embedded_code:
+            return embedded_code
         for key in ("error_type", "code", "status_code"):
             value = payload.get(key)
             if value not in (None, ""):
@@ -99,6 +106,20 @@ def _status_code(payload: dict[str, Any] | Exception) -> int | None:
 
 def _is_timeout(payload: dict[str, Any] | Exception, text: str) -> bool:
     return isinstance(payload, TimeoutError) or _contains(text, "timeout", "timed out", "deadline")
+
+
+def _is_quota_exceeded_text(text: str) -> bool:
+    return _contains(
+        text,
+        "spending-limit",
+        "run out of credits",
+        "out of credits",
+        "need a grok subscription",
+        "quota exceeded",
+        "billing limit",
+        "insufficient credits",
+        "subscription limit",
+    )
 
 
 def _contains(text: str, *needles: str) -> bool:
@@ -139,6 +160,18 @@ def _flatten_text(value: Any) -> str:
     if isinstance(value, (list, tuple)):
         return " ".join(_flatten_text(item) for item in value)
     return str(value)
+
+
+def _embedded_json_code(text: str) -> str | None:
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        payload = json.loads(text[start : end + 1])
+    except json.JSONDecodeError:
+        return None
+    return _nested_code(payload)
 
 
 def _nested_code(value: Any) -> str | None:

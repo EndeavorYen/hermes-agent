@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import logging
+import json
 import time
+from datetime import datetime
+from datetime import timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
@@ -132,12 +135,14 @@ def visual_delivery_context(
         "request_id": str(request_id),
         "attempt_id": artifact_entry.get("attempt_id") or metadata.get("visual_attempt_id"),
         "artifact_id": artifact_id_text,
+        "artifact_kind": artifact.get("kind"),
         "content_hash": artifact.get("content_hash"),
         "platform": platform,
         "destination": destination,
         "destination_id": destination_id,
         "thread_id": effective_thread_id,
         "skip_status": skip_status,
+        "metadata": metadata,
     }
 
 
@@ -180,6 +185,188 @@ def record_visual_delivery_status(
         error_type=error_type,
         error_message=error_message,
     )
+    _record_visual_delivery_quality_run(context, delivery_status)
+
+
+def _record_visual_delivery_quality_run(context: dict[str, Any], delivery_status: str) -> None:
+    if delivery_status != "sent":
+        return
+    metadata = context.get("metadata") if isinstance(context.get("metadata"), dict) else {}
+    quality_run = metadata.get("visual_quality_run") if isinstance(metadata, dict) else None
+    if not isinstance(quality_run, dict):
+        return
+    requires_video = quality_run.get("requires_video") is True
+    artifact_kind = str(context.get("artifact_kind") or "")
+    if requires_video and artifact_kind != "video":
+        return
+
+    run_id = _delivery_quality_run_id(str(context.get("request_id") or ""))
+    if not run_id:
+        return
+    output_dir = get_hermes_home() / "visual" / "live_quality_burn"
+    runs_dir = output_dir / "runs"
+    path = runs_dir / f"{run_id}.json"
+    if path.exists():
+        return
+
+    summary = _visual_quality_run_summary(quality_run.get("summary"))
+    payload = {
+        "success": _visual_quality_run_success(quality_run, summary),
+        "run_id": run_id,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "mode": "live",
+        "source": "slack_delivery",
+        "summary": summary,
+        "next_actions": _visual_quality_run_actions(quality_run.get("next_actions")),
+        "self_review": _visual_quality_run_self_review(
+            quality_run.get("self_review"),
+            artifact_kind=artifact_kind,
+            requires_video=requires_video,
+        ),
+        "privacy": {
+            "raw_prompt_omitted": True,
+            "stores_prompt_hash_only": True,
+        },
+    }
+    try:
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        _write_json(path, payload)
+        _write_json(output_dir / "latest.json", payload)
+    except Exception as exc:  # noqa: BLE001 - delivery tracking must not break sends
+        logger.warning("Visual delivery quality run recording skipped: %s", exc)
+
+
+def _delivery_quality_run_id(request_id: str) -> str:
+    text = request_id.strip()
+    if not text:
+        return ""
+    return f"slack_delivery_{text}"
+
+
+def _visual_quality_run_summary(value: Any) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    return {
+        "case_count": _non_negative_int(source.get("case_count"), default=1),
+        "failed_case_count": _non_negative_int(source.get("failed_case_count")),
+        "failed_case_ids": _strings(source.get("failed_case_ids")),
+        "min_quality_score": _score_or_none(source.get("min_quality_score")),
+        "quality_issue_count": _non_negative_int(source.get("quality_issue_count")),
+        "quality_issues": _strings(source.get("quality_issues")),
+        "provider_failure_count": _non_negative_int(source.get("provider_failure_count")),
+        "video_missing_after_image_count": _non_negative_int(
+            source.get("video_missing_after_image_count")
+        ),
+        "video_missing_after_image_case_ids": _strings(
+            source.get("video_missing_after_image_case_ids")
+        ),
+        "image_first_video_source_case_count": _non_negative_int(
+            source.get("image_first_video_source_case_count")
+        ),
+        "image_first_video_source_covered_count": _non_negative_int(
+            source.get("image_first_video_source_covered_count")
+        ),
+        "image_first_video_source_failure_count": _non_negative_int(
+            source.get("image_first_video_source_failure_count")
+        ),
+        "image_first_video_source_failure_case_ids": _strings(
+            source.get("image_first_video_source_failure_case_ids")
+        ),
+        "preference_dimension_failure_count": _non_negative_int(
+            source.get("preference_dimension_failure_count")
+        ),
+        "preference_dimension_failures": _preference_dimension_failures(
+            source.get("preference_dimension_failures")
+        ),
+    }
+
+
+def _visual_quality_run_success(quality_run: dict[str, Any], summary: dict[str, Any]) -> bool:
+    if isinstance(quality_run.get("success"), bool):
+        return quality_run["success"]
+    return (
+        _non_negative_int(summary.get("failed_case_count")) == 0
+        and _non_negative_int(summary.get("quality_issue_count")) == 0
+        and _non_negative_int(summary.get("provider_failure_count")) == 0
+        and _non_negative_int(summary.get("video_missing_after_image_count")) == 0
+        and _non_negative_int(summary.get("image_first_video_source_failure_count")) == 0
+        and _non_negative_int(summary.get("preference_dimension_failure_count")) == 0
+    )
+
+
+def _visual_quality_run_actions(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
+
+
+def _visual_quality_run_self_review(
+    value: Any,
+    *,
+    artifact_kind: str,
+    requires_video: bool,
+) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    native_video_upload_covered = source.get("native_video_upload_covered")
+    if native_video_upload_covered is None:
+        native_video_upload_covered = artifact_kind == "video" if requires_video else False
+    return {
+        "native_video_upload_covered": native_video_upload_covered is True,
+        "image_first_video_source_covered": source.get("image_first_video_source_covered")
+        is True,
+        "privacy_safe": True,
+        "raw_prompt_omitted": True,
+    }
+
+
+def _preference_dimension_failures(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    failures: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        dimension = str(item.get("dimension") or "").strip()
+        if not dimension:
+            continue
+        entry = {
+            "dimension": dimension,
+            "issue": str(item.get("issue") or "").strip(),
+        }
+        score = _score_or_none(item.get("score"))
+        if score is not None:
+            entry["score"] = score
+        failures.append(entry)
+    return failures
+
+
+def _strings(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    result: list[str] = []
+    for item in value:
+        text = str(item or "").strip()
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
+def _non_negative_int(value: Any, *, default: int = 0) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _score_or_none(value: Any) -> float | None:
+    try:
+        return round(max(0.0, min(1.0, float(value))), 4)
+    except (TypeError, ValueError):
+        return None
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 
 
 def _artifact_lookup_keys(artifact_ref: str) -> list[str]:

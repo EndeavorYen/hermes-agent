@@ -12,6 +12,7 @@ DEFAULT_BASELINE_WINDOW = 3
 DEFAULT_RECENT_WINDOW = 3
 DEFAULT_MAX_RUNS = 20
 QUALITY_DEGRADATION_THRESHOLD = -0.15
+SLACK_CONVERSATION_SOURCES = {"slack_conversation_e2e", "slack_delivery"}
 
 
 def build_live_quality_trend_report(
@@ -149,7 +150,7 @@ def _summary(
     preference_recent = _sum(recent, "preference_dimension_failure_count")
     quality_issue_baseline = _sum(baseline, "quality_issue_count")
     quality_issue_recent = _sum(recent, "quality_issue_count")
-    recent_slack_conversation = _source_runs(recent, "slack_conversation_e2e")
+    recent_slack_conversation = _slack_conversation_runs(recent)
     return {
         "run_ids": [run["run_id"] for run in runs],
         "baseline_run_ids": [run["run_id"] for run in baseline],
@@ -351,6 +352,10 @@ def _avg_score(runs: list[dict[str, Any]]) -> float | None:
 
 def _source_runs(runs: list[dict[str, Any]], source: str) -> list[dict[str, Any]]:
     return [run for run in runs if str(run.get("source") or "") == source]
+
+
+def _slack_conversation_runs(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [run for run in runs if str(run.get("source") or "") in SLACK_CONVERSATION_SOURCES]
 
 
 def _bool_count(runs: list[dict[str, Any]], key: str) -> int:

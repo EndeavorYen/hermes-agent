@@ -108,7 +108,7 @@ def test_live_quality_trends_summarizes_recent_slack_conversation_runs():
         "image_first_video_source_covered": True,
     }
     second_conversation = _burn_report("run04", min_score=0.84)
-    second_conversation["source"] = "slack_conversation_e2e"
+    second_conversation["source"] = "slack_delivery"
     second_conversation["self_review"] = {
         "native_video_upload_covered": True,
         "image_first_video_source_covered": True,

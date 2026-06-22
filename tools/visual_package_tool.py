@@ -1017,6 +1017,18 @@ def _finalize_visual_package_payload(
         require_video=wants_video,
     )
     payload["autonomous_validation"] = autonomous_validation
+    delivery_metadata["visual_quality_run"] = _visual_quality_run_metadata(
+        payload=payload,
+        requested_image=requested_image,
+        wants_video=wants_video,
+        should_generate_image=should_generate_image,
+        image_first_for_video=image_first_for_video,
+        video_source_artifact_id=video_source_artifact_id,
+        rankings=rankings,
+        selected_artifact_ids=selected_artifact_ids,
+        delivery_gate=delivery_gate,
+        validation=autonomous_validation,
+    )
     payload["autonomous_orchestration"] = build_post_generation_orchestration(
         payload,
         db_path=default_visual_ledger_path(),
@@ -1025,6 +1037,163 @@ def _finalize_visual_package_payload(
         validation=autonomous_validation,
     )
     return payload
+
+
+def _visual_quality_run_metadata(
+    *,
+    payload: dict[str, Any],
+    requested_image: bool,
+    wants_video: bool,
+    should_generate_image: bool,
+    image_first_for_video: bool,
+    video_source_artifact_id: str | None,
+    rankings: dict[str, Any],
+    selected_artifact_ids: list[str],
+    delivery_gate: dict[str, dict[str, Any]],
+    validation: dict[str, Any],
+) -> dict[str, Any]:
+    success = payload.get("success") is True and validation.get("success") is True
+    quality_issues = _delivery_gate_quality_issues(delivery_gate)
+    preference_failures = _delivery_gate_preference_failures(delivery_gate)
+    image_first_case_count = 1 if wants_video and image_first_for_video else 0
+    image_first_covered = bool(
+        wants_video
+        and image_first_for_video
+        and video_source_artifact_id
+        and payload.get("videos")
+    )
+    video_missing_after_image = bool(
+        wants_video
+        and should_generate_image
+        and payload.get("images")
+        and not payload.get("videos")
+    )
+    summary = {
+        "case_count": 1,
+        "failed_case_count": 0 if success else 1,
+        "failed_case_ids": [] if success else [str(payload.get("visual_request_id") or "visual_package")],
+        "min_quality_score": _visual_quality_run_score(
+            rankings,
+            selected_artifact_ids=selected_artifact_ids,
+            validation_success=validation.get("success") is True,
+        ),
+        "quality_issue_count": len(quality_issues),
+        "quality_issues": quality_issues,
+        "provider_failure_count": 0 if payload.get("success") is True else 1,
+        "video_missing_after_image_count": 1 if video_missing_after_image else 0,
+        "video_missing_after_image_case_ids": [str(payload.get("visual_request_id") or "visual_package")]
+        if video_missing_after_image
+        else [],
+        "image_first_video_source_case_count": image_first_case_count,
+        "image_first_video_source_covered_count": 1 if image_first_covered else 0,
+        "image_first_video_source_failure_count": 1
+        if image_first_case_count and not image_first_covered
+        else 0,
+        "image_first_video_source_failure_case_ids": [
+            str(payload.get("visual_request_id") or "visual_package")
+        ]
+        if image_first_case_count and not image_first_covered
+        else [],
+        "preference_dimension_failure_count": len(preference_failures),
+        "preference_dimension_failures": preference_failures,
+    }
+    return {
+        "success": success,
+        "requires_video": wants_video,
+        "summary": summary,
+        "next_actions": [],
+        "self_review": {
+            "image_first_video_source_covered": image_first_covered if wants_video else False,
+            "privacy_safe": True,
+            "raw_prompt_omitted": True,
+        },
+        "privacy": {
+            "raw_prompt_omitted": True,
+            "stores_prompt_hash_only": True,
+        },
+    }
+
+
+def _visual_quality_run_score(
+    rankings: dict[str, Any],
+    *,
+    selected_artifact_ids: list[str],
+    validation_success: bool,
+) -> float:
+    judgment_scores = _selected_artifact_judgment_scores(selected_artifact_ids)
+    if judgment_scores:
+        return min(judgment_scores)
+    scores: list[float] = []
+    for value in rankings.values():
+        if not isinstance(value, dict):
+            continue
+        for key in ("top_score", "selected_score", "score"):
+            if value.get(key) is not None:
+                scores.append(_coerce_float(value.get(key)))
+    if scores:
+        return min(scores)
+    return 1.0 if validation_success else 0.0
+
+
+def _selected_artifact_judgment_scores(selected_artifact_ids: list[str]) -> list[float]:
+    artifact_ids = [str(artifact_id or "").strip() for artifact_id in selected_artifact_ids]
+    artifact_ids = [artifact_id for artifact_id in artifact_ids if artifact_id]
+    if not artifact_ids:
+        return []
+    try:
+        ledger = VisualAttemptLedger(default_visual_ledger_path())
+        rows: list[dict[str, Any]] = []
+        for artifact_id in artifact_ids:
+            rows.extend(
+                ledger._list(
+                    "visual_judgments",
+                    where="artifact_id = ?",
+                    params=(artifact_id,),
+                )
+            )
+    except Exception:
+        return []
+    scores: list[float] = []
+    for row in rows:
+        if row.get("judge_name") != "visual_quality_judge":
+            continue
+        value = row.get("score", row.get("confidence"))
+        if value is None:
+            continue
+        scores.append(_coerce_float(value))
+    return scores
+
+
+def _delivery_gate_quality_issues(delivery_gate: dict[str, dict[str, Any]]) -> list[str]:
+    issues: list[str] = []
+    for gate in delivery_gate.values():
+        if not isinstance(gate, dict):
+            continue
+        for issue in _string_list(gate.get("quality_issues")):
+            if issue and issue not in issues:
+                issues.append(issue)
+    return issues
+
+
+def _delivery_gate_preference_failures(delivery_gate: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    failures: list[dict[str, Any]] = []
+    for modality, gate in delivery_gate.items():
+        if not isinstance(gate, dict):
+            continue
+        fit = gate.get("preference_dimension_fit")
+        if fit is None:
+            continue
+        score = _coerce_float(fit)
+        if score >= PREFERENCE_DIMENSION_DELIVERY_THRESHOLD:
+            continue
+        failures.append(
+            {
+                "dimension": str(modality or "visual"),
+                "issue": str(gate.get("reason") or "preference_dimension_low"),
+                "score": score,
+            }
+        )
+    return failures
 
 
 def _run_storyboard_execution(
