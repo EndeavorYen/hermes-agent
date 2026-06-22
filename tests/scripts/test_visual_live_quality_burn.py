@@ -165,6 +165,63 @@ def test_visual_live_quality_burn_summarizes_core_quality_contract_coverage(monk
     assert report["summary"]["core_quality_contract_case_ids"] == ["fashion_portrait_video"]
 
 
+def test_visual_live_quality_burn_summarizes_quality_focus_outcomes(monkeypatch, tmp_path):
+    from scripts import visual_live_quality_burn
+
+    suite = _suite_with_quality_failure()
+    suite["quality_focus_summary"] = {
+        "outcome_count": 2,
+        "success_count": 1,
+        "failure_count": 1,
+        "successful_focuses": ["natural_face"],
+        "failed_focuses": ["legwear_material"],
+        "outcomes": [
+            {
+                "case_id": "fashion_portrait_video",
+                "focus": "natural_face",
+                "success": True,
+                "dimension": "face_naturalness",
+                "min_quality_score": 0.78,
+                "quality_issues": [],
+                "preference_dimension_failures": [],
+            },
+            {
+                "case_id": "fashion_portrait_video",
+                "focus": "legwear_material",
+                "success": False,
+                "dimension": "fashion_material_quality",
+                "min_quality_score": 0.31,
+                "quality_issues": ["stockings_bad"],
+                "preference_dimension_failures": [
+                    {
+                        "dimension": "fashion_material_quality",
+                        "issue": "stockings_bad",
+                        "score": 0.31,
+                    }
+                ],
+            },
+        ],
+    }
+
+    monkeypatch.setattr(
+        visual_live_quality_burn,
+        "build_visual_live_provider_e2e_suite_report",
+        lambda **_kwargs: suite,
+    )
+
+    report = visual_live_quality_burn.build_visual_live_quality_burn_report(
+        mode="live",
+        output_dir=tmp_path,
+    )
+
+    assert report["summary"]["quality_focus_outcome_count"] == 2
+    assert report["summary"]["quality_focus_success_count"] == 1
+    assert report["summary"]["quality_focus_failure_count"] == 1
+    assert report["summary"]["quality_focus_successes"] == ["natural_face"]
+    assert report["summary"]["quality_focus_failures"] == ["legwear_material"]
+    assert report["summary"]["quality_focus_failed_case_ids"] == ["fashion_portrait_video"]
+
+
 def test_visual_live_quality_burn_exports_preference_dimension_repair_actions(monkeypatch, tmp_path):
     from scripts import visual_live_quality_burn
 

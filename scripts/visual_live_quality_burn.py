@@ -115,6 +115,11 @@ def _summary(suite: dict[str, Any]) -> dict[str, Any]:
         if isinstance(suite.get("quality_contract_summary"), dict)
         else {}
     )
+    quality_focus = (
+        suite.get("quality_focus_summary")
+        if isinstance(suite.get("quality_focus_summary"), dict)
+        else {}
+    )
     return {
         "case_count": _int(suite.get("case_count"), default=len(cases)),
         "failed_case_count": len([case_id for case_id in failed_cases if case_id]),
@@ -143,6 +148,12 @@ def _summary(suite: dict[str, Any]) -> dict[str, Any]:
         if "core_quality_coverage_ready" in quality_contract
         else None,
         "core_quality_required_dimensions": _list(quality_contract.get("required_dimensions")),
+        "quality_focus_outcome_count": _int(quality_focus.get("outcome_count")),
+        "quality_focus_success_count": _int(quality_focus.get("success_count")),
+        "quality_focus_failure_count": _int(quality_focus.get("failure_count")),
+        "quality_focus_successes": _list(quality_focus.get("successful_focuses")),
+        "quality_focus_failures": _list(quality_focus.get("failed_focuses")),
+        "quality_focus_failed_case_ids": _quality_focus_failed_case_ids(quality_focus),
     }
 
 
@@ -254,6 +265,20 @@ def _image_first_video_source_summary(cases: list[Any]) -> dict[str, Any]:
         "failure_count": len(failure_case_ids),
         "failure_case_ids": failure_case_ids,
     }
+
+
+def _quality_focus_failed_case_ids(summary: dict[str, Any]) -> list[str]:
+    outcomes = summary.get("outcomes")
+    if not isinstance(outcomes, list):
+        return []
+    case_ids: list[str] = []
+    for outcome in outcomes:
+        if not isinstance(outcome, dict) or outcome.get("success") is True:
+            continue
+        case_id = str(outcome.get("case_id") or "").strip()
+        if case_id and case_id not in case_ids:
+            case_ids.append(case_id)
+    return case_ids
 
 
 def _next_actions(suite: dict[str, Any], summary: dict[str, Any]) -> list[dict[str, Any]]:

@@ -34,6 +34,13 @@ CORE_PORTRAIT_QUALITY_DIMENSIONS = [
     "fashion_material_quality",
     "pose_composition",
 ]
+QUALITY_FOCUS_DIMENSIONS = {
+    "adult_fashion_portrait": "subject_beauty",
+    "natural_face": "face_naturalness",
+    "legwear_material": "fashion_material_quality",
+    "long_leg_composition": "pose_composition",
+    "tasteful_glamour": "glamour_impact",
+}
 DEFAULT_E2E_CASES = [
     {
         "case_id": "product_photo_video",
@@ -205,6 +212,7 @@ def build_visual_live_provider_e2e_suite_report(
         "recovery_summary": _suite_recovery_summary(case_reports),
         "quality_repair_summary": _suite_quality_repair_summary(case_reports),
         "quality_contract_summary": _suite_quality_contract_summary(case_reports),
+        "quality_focus_summary": _suite_quality_focus_summary(case_reports),
         "cases": case_reports,
     }
 
@@ -287,6 +295,127 @@ def _suite_quality_contract_summary(case_reports: list[dict[str, Any]]) -> dict[
         "core_quality_coverage_ready": not missing,
         "image_first_video_contract_case_ids": image_first_video_case_ids,
     }
+
+
+def _suite_quality_focus_summary(case_reports: list[dict[str, Any]]) -> dict[str, Any]:
+    outcomes = [
+        outcome
+        for case in case_reports
+        for outcome in _case_quality_focus_outcomes(case)
+    ]
+    successful_focuses: list[str] = []
+    failed_focuses: list[str] = []
+    for outcome in outcomes:
+        focus = str(outcome.get("focus") or "")
+        if not focus:
+            continue
+        if outcome.get("success") is True:
+            if focus not in successful_focuses:
+                successful_focuses.append(focus)
+        elif focus not in failed_focuses:
+            failed_focuses.append(focus)
+    return {
+        "outcome_count": len(outcomes),
+        "success_count": len([outcome for outcome in outcomes if outcome.get("success") is True]),
+        "failure_count": len([outcome for outcome in outcomes if outcome.get("success") is not True]),
+        "successful_focuses": successful_focuses,
+        "failed_focuses": failed_focuses,
+        "outcomes": outcomes,
+    }
+
+
+def _case_quality_focus_outcomes(case: dict[str, Any]) -> list[dict[str, Any]]:
+    contract = case.get("quality_contract") if isinstance(case.get("quality_contract"), dict) else {}
+    focuses = _string_list(contract.get("quality_focus"))
+    if not focuses:
+        return []
+    evidence = case.get("evidence") if isinstance(case.get("evidence"), dict) else {}
+    gate = evidence.get("quality_gate") if isinstance(evidence.get("quality_gate"), dict) else {}
+    quality_issues = _string_list(gate.get("quality_issues"))
+    preference_failures = _preference_dimension_failures(gate.get("preference_dimension_failures"))
+    min_score = _coerce_score(gate.get("min_score"))
+    outcomes: list[dict[str, Any]] = []
+    for focus in focuses:
+        dimension = QUALITY_FOCUS_DIMENSIONS.get(focus, "")
+        focus_failures = [
+            failure
+            for failure in preference_failures
+            if dimension and failure.get("dimension") == dimension
+        ]
+        focus_issues = _focus_quality_issues(
+            focus,
+            quality_issues=quality_issues,
+            preference_failures=focus_failures,
+        )
+        success = _positive_int(evidence.get("image_count")) and not focus_issues
+        if focus == "image_first_video":
+            video_source = evidence.get("video_source") if isinstance(evidence.get("video_source"), dict) else {}
+            success = (
+                _positive_int(evidence.get("video_count"))
+                and video_source.get("uses_ranked_selected_image") is True
+            )
+        outcome: dict[str, Any] = {
+            "case_id": str(case.get("case_id") or ""),
+            "focus": focus,
+            "success": success,
+            "dimension": dimension,
+            "min_quality_score": round(min_score, 4) if min_score is not None else None,
+            "quality_issues": focus_issues,
+            "preference_dimension_failures": focus_failures,
+        }
+        if not dimension:
+            outcome.pop("dimension")
+        outcomes.append(outcome)
+    return outcomes
+
+
+def _positive_int(value: Any) -> bool:
+    try:
+        return int(value) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _focus_quality_issues(
+    focus: str,
+    *,
+    quality_issues: list[str],
+    preference_failures: list[dict[str, Any]],
+) -> list[str]:
+    focus_issue = {
+        "adult_fashion_portrait": "subject_not_attractive",
+        "natural_face": "face_unnatural",
+        "legwear_material": "stockings_bad",
+        "long_leg_composition": "composition_bad",
+        "tasteful_glamour": "not_glamorous",
+    }.get(focus)
+    issues: list[str] = []
+    if focus_issue and focus_issue in quality_issues:
+        issues.append(focus_issue)
+    for failure in preference_failures:
+        issue = str(failure.get("issue") or "").strip()
+        if issue and issue not in issues:
+            issues.append(issue)
+    return issues
+
+
+def _preference_dimension_failures(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    failures: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        dimension = str(item.get("dimension") or "").strip()
+        issue = str(item.get("issue") or "").strip()
+        if not dimension:
+            continue
+        entry: dict[str, Any] = {"dimension": dimension, "issue": issue}
+        score = _coerce_score(item.get("score"))
+        if score is not None:
+            entry["score"] = round(score, 4)
+        failures.append(entry)
+    return failures
 
 
 def inspect_visual_e2e_evidence(

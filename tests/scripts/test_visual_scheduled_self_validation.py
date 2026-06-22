@@ -122,6 +122,18 @@ def _automation_report(*, include_live: bool, include_live_slack_upload: bool = 
                         "pose_composition",
                     ],
                     "core_quality_dimensions_missing": [],
+                    "quality_focus_outcome_count": 6,
+                    "quality_focus_success_count": 5,
+                    "quality_focus_failure_count": 1,
+                    "quality_focus_successes": [
+                        "adult_fashion_portrait",
+                        "natural_face",
+                        "long_leg_composition",
+                        "tasteful_glamour",
+                        "image_first_video",
+                    ],
+                    "quality_focus_failures": ["legwear_material"],
+                    "quality_focus_failed_case_ids": ["fashion_portrait_video"],
                     "image_first_video_source_case_count": 2,
                     "image_first_video_source_covered_count": 2,
                     "image_first_video_source_failure_count": 0,
@@ -289,6 +301,11 @@ def test_scheduled_self_validation_runs_live_when_due(monkeypatch, tmp_path):
         "pose_composition",
     ]
     assert report["summary"]["live_quality_burn_core_quality_dimensions_missing"] == []
+    assert report["summary"]["live_quality_burn_quality_focus_failure_count"] == 1
+    assert report["summary"]["live_quality_burn_quality_focus_failures"] == ["legwear_material"]
+    assert report["summary"]["live_quality_burn_quality_focus_failed_case_ids"] == [
+        "fashion_portrait_video"
+    ]
     assert report["summary"]["live_quality_burn_image_first_video_source_covered"] is True
     assert report["summary"]["live_quality_burn_image_first_video_source_failure_count"] == 0
     assert report["summary"]["live_quality_suite_negotiation_success_case_count"] == 1

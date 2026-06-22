@@ -153,6 +153,202 @@ def test_visual_live_provider_default_suite_declares_core_portrait_quality_contr
     assert "prompt" not in json.dumps(suite, ensure_ascii=False)
 
 
+def test_visual_live_provider_suite_reports_quality_focus_outcomes(monkeypatch, tmp_path):
+    from scripts import visual_live_provider_e2e
+
+    def fake_report(**kwargs):
+        is_fashion = "fashion" in kwargs["prompt"].lower()
+        return {
+            "success": True,
+            "failures": [],
+            "payload": {"success": True},
+            "evidence": {
+                "quality_gate": {
+                    "success": True,
+                    "min_score": 0.83 if is_fashion else 0.79,
+                    "quality_issues": [],
+                    "preference_dimension_failures": [],
+                },
+                "video_source": {
+                    "uses_ranked_selected_image": True,
+                },
+                "image_count": 1,
+                "video_count": 1,
+                "recovery_summary": {
+                    "provider_failure_count": 0,
+                    "provider_failure_classes": {},
+                    "provider_error_codes": {},
+                    "retry_attempt_count": 0,
+                    "negotiation_attempted": False,
+                    "negotiation_success": False,
+                    "content_moderation_recovered": False,
+                    "recovered_failure_classes": [],
+                },
+            },
+        }
+
+    monkeypatch.setattr(
+        visual_live_provider_e2e,
+        "build_visual_live_provider_e2e_report",
+        fake_report,
+    )
+
+    suite = visual_live_provider_e2e.build_visual_live_provider_e2e_suite_report(
+        mode="fixture",
+        work_dir=tmp_path,
+    )
+
+    assert suite["quality_focus_summary"]["outcome_count"] == 6
+    assert suite["quality_focus_summary"]["success_count"] == 6
+    assert suite["quality_focus_summary"]["failure_count"] == 0
+    assert suite["quality_focus_summary"]["successful_focuses"] == [
+        "adult_fashion_portrait",
+        "natural_face",
+        "legwear_material",
+        "long_leg_composition",
+        "tasteful_glamour",
+        "image_first_video",
+    ]
+    assert suite["quality_focus_summary"]["failed_focuses"] == []
+    assert suite["quality_focus_summary"]["outcomes"][0] == {
+        "case_id": "fashion_portrait_video",
+        "focus": "adult_fashion_portrait",
+        "success": True,
+        "dimension": "subject_beauty",
+        "min_quality_score": 0.83,
+        "quality_issues": [],
+        "preference_dimension_failures": [],
+    }
+
+
+def test_visual_live_provider_suite_marks_failed_quality_focus(monkeypatch, tmp_path):
+    from scripts import visual_live_provider_e2e
+
+    def fake_report(**kwargs):
+        is_fashion = "fashion" in kwargs["prompt"].lower()
+        return {
+            "success": not is_fashion,
+            "failures": ["quality_gate_failed"] if is_fashion else [],
+            "payload": {"success": True},
+            "evidence": {
+                "quality_gate": {
+                    "success": not is_fashion,
+                    "min_score": 0.42 if is_fashion else 0.79,
+                    "quality_issues": ["stockings_bad"] if is_fashion else [],
+                    "preference_dimension_failures": (
+                        [
+                            {
+                                "dimension": "fashion_material_quality",
+                                "issue": "stockings_bad",
+                                "score": 0.28,
+                            }
+                        ]
+                        if is_fashion
+                        else []
+                    ),
+                },
+                "video_source": {
+                    "uses_ranked_selected_image": False if is_fashion else True,
+                },
+                "image_count": 1,
+                "video_count": 1,
+                "recovery_summary": {
+                    "provider_failure_count": 0,
+                    "provider_failure_classes": {},
+                    "provider_error_codes": {},
+                    "retry_attempt_count": 0,
+                    "negotiation_attempted": False,
+                    "negotiation_success": False,
+                    "content_moderation_recovered": False,
+                    "recovered_failure_classes": [],
+                },
+            },
+        }
+
+    monkeypatch.setattr(
+        visual_live_provider_e2e,
+        "build_visual_live_provider_e2e_report",
+        fake_report,
+    )
+
+    suite = visual_live_provider_e2e.build_visual_live_provider_e2e_suite_report(
+        mode="fixture",
+        work_dir=tmp_path,
+    )
+
+    assert "legwear_material" in suite["quality_focus_summary"]["failed_focuses"]
+    assert "image_first_video" in suite["quality_focus_summary"]["failed_focuses"]
+    legwear = next(
+        outcome
+        for outcome in suite["quality_focus_summary"]["outcomes"]
+        if outcome["focus"] == "legwear_material"
+    )
+    assert legwear == {
+        "case_id": "fashion_portrait_video",
+        "focus": "legwear_material",
+        "success": False,
+        "dimension": "fashion_material_quality",
+        "min_quality_score": 0.42,
+        "quality_issues": ["stockings_bad"],
+        "preference_dimension_failures": [
+            {
+                "dimension": "fashion_material_quality",
+                "issue": "stockings_bad",
+                "score": 0.28,
+            }
+        ],
+    }
+
+
+def test_visual_live_provider_focus_outcomes_ignore_unrelated_video_metadata_issue(monkeypatch, tmp_path):
+    from scripts import visual_live_provider_e2e
+
+    def fake_report(**kwargs):
+        is_fashion = "fashion" in kwargs["prompt"].lower()
+        return {
+            "success": True,
+            "failures": [],
+            "payload": {"success": True},
+            "evidence": {
+                "quality_gate": {
+                    "success": False if is_fashion else True,
+                    "min_score": 0.42 if is_fashion else 0.79,
+                    "quality_issues": ["video_metadata_missing"] if is_fashion else [],
+                    "preference_dimension_failures": [],
+                },
+                "video_source": {
+                    "uses_ranked_selected_image": True,
+                },
+                "image_count": 1,
+                "video_count": 1,
+                "recovery_summary": {
+                    "provider_failure_count": 0,
+                    "provider_failure_classes": {},
+                    "provider_error_codes": {},
+                    "retry_attempt_count": 0,
+                    "negotiation_attempted": False,
+                    "negotiation_success": False,
+                    "content_moderation_recovered": False,
+                    "recovered_failure_classes": [],
+                },
+            },
+        }
+
+    monkeypatch.setattr(
+        visual_live_provider_e2e,
+        "build_visual_live_provider_e2e_report",
+        fake_report,
+    )
+
+    suite = visual_live_provider_e2e.build_visual_live_provider_e2e_suite_report(
+        mode="fixture",
+        work_dir=tmp_path,
+    )
+
+    assert suite["quality_focus_summary"]["failure_count"] == 0
+    assert suite["quality_focus_summary"]["failed_focuses"] == []
+
+
 def test_visual_live_provider_fashion_probe_uses_provider_safe_prompt_wording():
     from scripts.visual_live_provider_e2e import DEFAULT_E2E_CASES
 

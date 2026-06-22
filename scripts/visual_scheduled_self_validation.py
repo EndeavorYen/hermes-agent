@@ -305,6 +305,24 @@ def _summary(automation: dict[str, Any], live_quality_trends: dict[str, Any] | N
         "live_quality_burn_core_quality_dimensions_missing": _list(
             live_quality_burn_summary.get("core_quality_dimensions_missing")
         ),
+        "live_quality_burn_quality_focus_outcome_count": _int(
+            live_quality_burn_summary.get("quality_focus_outcome_count")
+        ),
+        "live_quality_burn_quality_focus_success_count": _int(
+            live_quality_burn_summary.get("quality_focus_success_count")
+        ),
+        "live_quality_burn_quality_focus_failure_count": _int(
+            live_quality_burn_summary.get("quality_focus_failure_count")
+        ),
+        "live_quality_burn_quality_focus_successes": _list(
+            live_quality_burn_summary.get("quality_focus_successes")
+        ),
+        "live_quality_burn_quality_focus_failures": _list(
+            live_quality_burn_summary.get("quality_focus_failures")
+        ),
+        "live_quality_burn_quality_focus_failed_case_ids": _list(
+            live_quality_burn_summary.get("quality_focus_failed_case_ids")
+        ),
         "live_quality_trend_run_count": _int(live_quality_trends.get("run_count")),
         "live_quality_trend_degradations": _list(live_quality_trends.get("degradations")),
         "live_quality_trend_action_types": _action_types(live_quality_trends.get("next_actions")),
