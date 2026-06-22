@@ -14,6 +14,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from hermes_constants import get_hermes_home
+from agent.visual.live_quality_trends import build_live_quality_trend_report_from_dir
 from scripts.visual_e2e_automation_report import build_visual_e2e_automation_report
 
 
@@ -57,6 +58,11 @@ def build_visual_scheduled_self_validation_report(
         live_policy=live_policy,
         state=state,
     )
+    live_quality_trends = build_live_quality_trend_report_from_dir(_live_quality_burn_dir(output_dir))
+    automation = _with_live_quality_trend_actions(
+        automation=automation,
+        live_quality_trends=live_quality_trends,
+    )
     report = {
         "success": automation.get("success") is True,
         "run_id": _run_id(now),
@@ -65,7 +71,8 @@ def build_visual_scheduled_self_validation_report(
         "failures": list(automation.get("failures") or []),
         "live_policy": live_policy,
         "slack_live_upload_policy": slack_live_upload_policy,
-        "summary": _summary(automation),
+        "live_quality_trends": live_quality_trends,
+        "summary": _summary(automation, live_quality_trends=live_quality_trends),
         "automation": automation,
         "self_review": {
             "cron_safe": True,
@@ -127,7 +134,8 @@ def _live_policy(
     }
 
 
-def _summary(automation: dict[str, Any]) -> dict[str, Any]:
+def _summary(automation: dict[str, Any], live_quality_trends: dict[str, Any] | None = None) -> dict[str, Any]:
+    live_quality_trends = live_quality_trends if isinstance(live_quality_trends, dict) else {}
     feedback_loop = automation.get("feedback_loop") if isinstance(automation.get("feedback_loop"), dict) else {}
     self_improvement = (
         automation.get("self_improvement")
@@ -206,6 +214,7 @@ def _summary(automation: dict[str, Any]) -> dict[str, Any]:
         feedback_loop.get("next_actions"),
         self_improvement.get("next_actions"),
         live_quality_burn.get("next_actions"),
+        live_quality_trends.get("next_actions"),
     )
     slack_sent_count = _int(delivery.get("sent_count"))
     slack_deliverable_count = _int(delivery.get("deliverable_count"))
@@ -282,6 +291,9 @@ def _summary(automation: dict[str, Any]) -> dict[str, Any]:
         "live_quality_burn_preference_dimensions": _preference_dimensions(
             live_quality_burn_preference_failures
         ),
+        "live_quality_trend_run_count": _int(live_quality_trends.get("run_count")),
+        "live_quality_trend_degradations": _list(live_quality_trends.get("degradations")),
+        "live_quality_trend_action_types": _action_types(live_quality_trends.get("next_actions")),
         "live_quality_repair_attempt_count": _int(live_quality_repair.get("attempt_count")),
         "live_quality_repair_success_count": _int(live_quality_repair.get("success_count")),
         "live_video_quality_repair_success_count": _int(live_video_repair.get("success_count")),
@@ -322,6 +334,12 @@ def _summary(automation: dict[str, Any]) -> dict[str, Any]:
         if live_slack_delivery_record
         else None,
     }
+
+
+def _live_quality_burn_dir(output_dir: Path) -> Path:
+    if output_dir.name == "self_validation":
+        return output_dir.parent / "live_quality_burn"
+    return output_dir / "live_quality_burn"
 
 
 def _modality_summary(summary: dict[str, Any], modality: str) -> dict[str, Any]:
@@ -368,6 +386,30 @@ def _with_carried_live_quality_burn(
     )
     self_improvement["next_actions"] = _dedupe_actions(
         _action_list(self_improvement.get("next_actions")) + _action_list(carried.get("next_actions"))
+    )
+    self_improvement["action_count"] = len(self_improvement["next_actions"])
+    self_improvement["reduces_human_intervention"] = bool(self_improvement["next_actions"])
+    self_improvement.setdefault("privacy_safe", True)
+    merged["self_improvement"] = self_improvement
+    return merged
+
+
+def _with_live_quality_trend_actions(
+    *,
+    automation: dict[str, Any],
+    live_quality_trends: dict[str, Any],
+) -> dict[str, Any]:
+    actions = _action_list(live_quality_trends.get("next_actions"))
+    if not actions:
+        return automation
+    merged = dict(automation)
+    self_improvement = (
+        dict(merged.get("self_improvement"))
+        if isinstance(merged.get("self_improvement"), dict)
+        else {}
+    )
+    self_improvement["next_actions"] = _dedupe_actions(
+        _action_list(self_improvement.get("next_actions")) + actions
     )
     self_improvement["action_count"] = len(self_improvement["next_actions"])
     self_improvement["reduces_human_intervention"] = bool(self_improvement["next_actions"])

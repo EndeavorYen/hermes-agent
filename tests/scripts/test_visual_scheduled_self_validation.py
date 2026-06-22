@@ -278,6 +278,82 @@ def test_scheduled_self_validation_runs_live_when_due(monkeypatch, tmp_path):
     assert state["last_live_run_at"] == "2026-06-22T08:00:00+00:00"
 
 
+def test_scheduled_self_validation_includes_live_quality_trends(monkeypatch, tmp_path):
+    from scripts import visual_scheduled_self_validation
+
+    def fake_automation(*, work_dir, include_live, include_live_slack_upload=False):
+        return _automation_report(
+            include_live=include_live,
+            include_live_slack_upload=include_live_slack_upload,
+        )
+
+    monkeypatch.setattr(
+        visual_scheduled_self_validation,
+        "build_visual_e2e_automation_report",
+        fake_automation,
+    )
+
+    output_dir = tmp_path / "self_validation"
+    runs_dir = tmp_path / "live_quality_burn" / "runs"
+    runs_dir.mkdir(parents=True)
+    (runs_dir / "run01.json").write_text(
+        json.dumps(
+            {
+                "success": True,
+                "run_id": "run01",
+                "generated_at": "2026-06-22T01:00:00+00:00",
+                "summary": {
+                    "case_count": 2,
+                    "min_quality_score": 0.86,
+                    "provider_failure_count": 0,
+                    "video_missing_after_image_count": 0,
+                    "image_first_video_source_failure_count": 0,
+                    "preference_dimension_failure_count": 0,
+                    "preference_dimension_failures": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (runs_dir / "run02.json").write_text(
+        json.dumps(
+            {
+                "success": False,
+                "run_id": "run02",
+                "generated_at": "2026-06-22T02:00:00+00:00",
+                "summary": {
+                    "case_count": 2,
+                    "min_quality_score": 0.52,
+                    "provider_failure_count": 1,
+                    "video_missing_after_image_count": 1,
+                    "image_first_video_source_failure_count": 0,
+                    "preference_dimension_failure_count": 1,
+                    "preference_dimension_failures": [
+                        {"dimension": "subject_beauty", "issue": "subject_not_attractive", "score": 0.3}
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = visual_scheduled_self_validation.build_visual_scheduled_self_validation_report(
+        output_dir=output_dir,
+        live_mode="off",
+        now=datetime(2026, 6, 22, 9, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["live_quality_trends"]["run_count"] == 2
+    assert report["summary"]["live_quality_trend_degradations"] == [
+        "quality_score_degraded",
+        "video_generation_degraded",
+        "provider_failures_spiked",
+        "preference_dimension_failures_spiked",
+    ]
+    assert "prefer_image_first_video" in report["summary"]["live_quality_trend_action_types"]
+    assert "prefer_image_first_video" in report["summary"]["feedback_action_types"]
+
+
 def test_scheduled_self_validation_live_mode_on_forces_live_without_env_gate(monkeypatch, tmp_path):
     from scripts import visual_scheduled_self_validation
 
