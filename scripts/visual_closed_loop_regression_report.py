@@ -120,6 +120,29 @@ _CASES: tuple[ClosedLoopCase, ...] = (
             "preference_dimension_evidence_required",
         ),
     ),
+    ClosedLoopCase(
+        case_id="motion_quality_video_operator",
+        action={
+            "type": "repair_low_preference_dimension",
+            "track": "aesthetic",
+            "source": "live_quality_burn",
+            "dimension": "motion_quality",
+            "quality_issue": "motion_bad",
+            "repair_hint": "improve_motion_quality",
+            "requires_human_feedback": False,
+        },
+        wants_image=True,
+        wants_video=True,
+        default_candidate_budget=1,
+        request_category="product",
+        expected_checks=(
+            "rerank_enabled",
+            "quality_repair_enabled",
+            "video_guidance_enabled",
+            "video_prompt_guidance_applied",
+            "dimension_guidance_present",
+        ),
+    ),
 )
 
 
@@ -166,13 +189,17 @@ def _evaluate_case(case: ClosedLoopCase) -> dict[str, Any]:
     )
     guidance = _quality_guidance_plan(applied, request_category=case.request_category)
     image_guidance = guidance.get("image") if isinstance(guidance.get("image"), dict) else {}
+    video_guidance = guidance.get("video") if isinstance(guidance.get("video"), dict) else {}
     guided_prompt = _apply_first_pass_quality_guidance(_PRIVATE_PROMPT, image_guidance)
+    guided_video_prompt = _apply_first_pass_quality_guidance(_PRIVATE_PROMPT, video_guidance)
     dimension_terms = _dimension_terms(applied)
     checks = _checks(
         baseline=baseline,
         applied=applied,
         image_guidance=image_guidance,
+        video_guidance=video_guidance,
         guided_prompt=guided_prompt,
+        guided_video_prompt=guided_video_prompt,
         dimension_terms=dimension_terms,
     )
     failures = [name for name in case.expected_checks if checks.get(name) is not True]
@@ -195,6 +222,8 @@ def _evaluate_case(case: ClosedLoopCase) -> dict[str, Any]:
         "quality_guidance": {
             "image_enabled": checks["image_guidance_enabled"],
             "prompt_guidance_applied": checks["prompt_guidance_applied"],
+            "video_enabled": checks["video_guidance_enabled"],
+            "video_prompt_guidance_applied": checks["video_prompt_guidance_applied"],
             "dimension_terms": dimension_terms,
         },
         "applied_action_types": _string_list(applied.get("applied_action_types")),
@@ -207,7 +236,9 @@ def _checks(
     baseline: dict[str, Any],
     applied: dict[str, Any],
     image_guidance: dict[str, Any],
+    video_guidance: dict[str, Any],
     guided_prompt: str,
+    guided_video_prompt: str,
     dimension_terms: list[str],
 ) -> dict[str, bool]:
     baseline_budget = _int(baseline.get("candidate_budget"))
@@ -218,6 +249,7 @@ def _checks(
         "quality_repair_enabled": (
             applied.get("quality_repair_mode") in {"preferred", "escalated"}
             or _repair_mode(applied, "image") in {"preferred", "escalated"}
+            or _repair_mode(applied, "video") in {"preferred", "escalated"}
         ),
         "image_first_video_enabled": applied.get("prefer_image_first_video") is True,
         "strategy_preference_applied": isinstance(applied.get("strategy_preference"), dict),
@@ -227,6 +259,10 @@ def _checks(
         ),
         "image_guidance_enabled": image_guidance.get("enabled") is True,
         "prompt_guidance_applied": guided_prompt != _PRIVATE_PROMPT and _PRIVATE_PROMPT in guided_prompt,
+        "video_guidance_enabled": video_guidance.get("enabled") is True,
+        "video_prompt_guidance_applied": (
+            guided_video_prompt != _PRIVATE_PROMPT and _PRIVATE_PROMPT in guided_video_prompt
+        ),
         "dimension_guidance_present": bool(dimension_terms),
         "quality_focus_operator_recorded": bool(applied.get("quality_focus_operators")),
     }

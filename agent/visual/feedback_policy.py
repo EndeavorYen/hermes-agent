@@ -278,7 +278,41 @@ def _action_modalities(action: dict[str, Any]) -> list[str]:
         text = str(item or "").strip().lower()
         if text in {"image", "video"} and text not in modalities:
             modalities.append(text)
-    return modalities
+    if modalities:
+        return modalities
+    return _dimension_modalities(action)
+
+
+def _dimension_modalities(action: dict[str, Any]) -> list[str]:
+    dimension = str(action.get("dimension") or "").strip().lower()
+    quality_issue = str(action.get("quality_issue") or "").strip().lower()
+    issues = [str(item or "").strip().lower() for item in action.get("quality_issues") or []]
+    video_signals = {
+        "aspect_integrity",
+        "motion_quality",
+        "aspect_integrity_bad",
+        "motion_bad",
+        "video_metadata_missing",
+        "duration_mismatch",
+    }
+    if dimension in video_signals or quality_issue in video_signals or any(issue in video_signals for issue in issues):
+        return ["video"]
+    image_signals = {
+        "subject_beauty",
+        "face_naturalness",
+        "glamour_impact",
+        "fashion_material_quality",
+        "pose_composition",
+        "subject_not_attractive",
+        "not_beautiful",
+        "face_unnatural",
+        "stockings_bad",
+        "composition_bad",
+        "reference_identity_drift",
+    }
+    if dimension in image_signals or quality_issue in image_signals or any(issue in image_signals for issue in issues):
+        return ["image"]
+    return []
 
 
 def _string_list(value: Any) -> list[str]:

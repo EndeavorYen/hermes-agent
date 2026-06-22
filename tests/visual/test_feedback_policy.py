@@ -305,6 +305,40 @@ def test_feedback_policy_applies_preference_dimension_repair_actions():
     assert policy["applied_action_types"] == ["repair_low_preference_dimension"]
 
 
+def test_feedback_policy_infers_motion_quality_repair_as_video_only():
+    from agent.visual.feedback_policy import resolve_visual_feedback_policy
+
+    policy = resolve_visual_feedback_policy(
+        {
+            "next_actions": [
+                {
+                    "type": "repair_low_preference_dimension",
+                    "dimension": "motion_quality",
+                    "quality_issue": "motion_bad",
+                    "repair_hint": "improve_motion_quality",
+                    "confidence": 0.72,
+                },
+            ]
+        },
+        wants_image=True,
+        wants_video=True,
+        explicit_candidate_budget=None,
+        default_candidate_budget=1,
+    )
+
+    assert policy["quality_repair_modes"] == {
+        "image": "default",
+        "video": "preferred",
+    }
+    assert policy["repair_dimensions"] == [
+        {
+            "dimension": "motion_quality",
+            "quality_issue": "motion_bad",
+            "repair_hint": "improve_motion_quality",
+        },
+    ]
+
+
 def test_feedback_policy_applies_quality_focus_operator_actions():
     from agent.visual.feedback_policy import resolve_visual_feedback_policy
 

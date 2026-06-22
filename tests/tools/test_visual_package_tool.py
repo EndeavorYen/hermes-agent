@@ -771,6 +771,113 @@ async def test_visual_package_applies_self_validation_guidance_to_first_video_pr
 
 
 @pytest.mark.asyncio
+async def test_visual_package_applies_motion_dimension_guidance_to_video_only(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
+    latest_report.parent.mkdir(parents=True)
+    latest_report.write_text(
+        json.dumps(
+            {
+                "success": True,
+                "automation": {
+                    "self_improvement": {
+                        "next_actions": [
+                            {
+                                "type": "repair_low_preference_dimension",
+                                "requires_human_feedback": False,
+                                "activation_status": "next_run",
+                                "source": "live_quality_burn",
+                                "dimension": "motion_quality",
+                                "quality_issue": "motion_bad",
+                                "repair_hint": "improve_motion_quality",
+                            }
+                        ]
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    image = tmp_path / "source.png"
+    video = tmp_path / "video.mp4"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    video.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+    image_calls = []
+    video_calls = []
+
+    def fake_probe_media_reference(ref):
+        is_video = str(ref).endswith(".mp4")
+        return SimpleNamespace(
+            sha256=f"hash:{ref}",
+            is_stable=True,
+            freshness_status="fresh",
+            local_path=str(ref),
+            mime_type="video/mp4" if is_video else "image/png",
+            bytes=10,
+            width=768,
+            height=768,
+            duration_seconds=4.0 if is_video else None,
+        )
+
+    monkeypatch.setattr(visual_package_tool, "probe_media_reference", fake_probe_media_reference)
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(image),
+            "provider": "fixture",
+            "model": "image",
+            "vision_observation": {
+                "face_quality": 0.9,
+                "visual_appeal": 0.9,
+                "composition": 0.9,
+            },
+        }
+
+    def fake_generate_video(**kwargs):
+        video_calls.append(kwargs)
+        return {
+            "success": True,
+            "video": str(video),
+            "provider": "fixture",
+            "model": "video",
+            "vision_observation": {
+                "aspect_integrity": 0.95,
+                "motion_quality": 0.9,
+                "confidence": 0.9,
+                "artifact_defects": [],
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+    monkeypatch.setattr(visual_package_tool, "generate_video", fake_generate_video)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "請產出一張圖片和一段影片：乾淨產品攝影。",
+                "include_video": True,
+                "candidate_budget": 1,
+                "video_budget": 1,
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert "motion_quality" not in image_calls[0]["prompt"]
+    assert "Dimension-specific quality guidance" in video_calls[0]["prompt"]
+    assert "motion_quality: use clear real-time movement with stable anatomy" in video_calls[0]["prompt"]
+    assert payload["generation_strategy"]["feedback_policy"]["quality_repair_modes"] == {
+        "image": "default",
+        "video": "preferred",
+    }
+
+
+@pytest.mark.asyncio
 async def test_visual_package_video_only_with_attachment_uses_generated_source_by_default(monkeypatch, tmp_path):
     from tools import visual_package_tool
 

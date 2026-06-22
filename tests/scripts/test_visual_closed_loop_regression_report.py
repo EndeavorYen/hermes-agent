@@ -31,6 +31,13 @@ def test_visual_closed_loop_regression_report_proves_focus_policy_is_applied():
     assert evidence_case["policy_delta"]["candidate_budget_increased"] is False
     assert evidence_case["policy_delta"]["quality_repair_enabled"] is False
 
+    motion_case = next(case for case in report["cases"] if case["case_id"] == "motion_quality_video_operator")
+    assert motion_case["action_type"] == "repair_low_preference_dimension"
+    assert motion_case["quality_guidance"]["image_enabled"] is False
+    assert motion_case["quality_guidance"]["video_enabled"] is True
+    assert motion_case["quality_guidance"]["video_prompt_guidance_applied"] is True
+    assert "motion_quality" in motion_case["quality_guidance"]["dimension_terms"]
+
 
 def test_visual_closed_loop_regression_report_cli_json(capsys):
     from scripts.visual_closed_loop_regression_report import main
