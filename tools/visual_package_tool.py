@@ -365,10 +365,11 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         image_gate = _delivery_gate_decision(image_learning, selected_image, prompt=prompt)
         delivery_gate["image"] = image_gate
         if selected_image and not image_gate["allowed"]:
+            image_repair_mode = _quality_repair_policy_mode(feedback_policy, "image")
             repair_prompt = _quality_repair_prompt(
                 prompt,
                 image_gate,
-                mode=str(feedback_policy.get("quality_repair_mode") or "default"),
+                mode=image_repair_mode,
             )
             repair_kwargs = {
                 "prompt": repair_prompt,
@@ -380,7 +381,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             repair_payload["quality_repair"] = {
                 "reason": image_gate.get("reason"),
                 "quality_issues": image_gate.get("quality_issues", []),
-                "policy_mode": feedback_policy.get("quality_repair_mode"),
+                "policy_mode": image_repair_mode,
                 "policy_actions": feedback_policy.get("applied_action_types", []),
             }
             image_payloads.append(repair_payload)
@@ -616,7 +617,8 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         video_gate = _delivery_gate_decision(video_learning, selected_video, prompt=prompt)
         delivery_gate["video"] = video_gate
         if selected_video and not video_gate["allowed"] and video_image_url and _string_list(video_gate.get("quality_issues")):
-            repair_prompt = _video_quality_repair_prompt(video_prompt, video_gate)
+            video_repair_mode = _quality_repair_policy_mode(feedback_policy, "video")
+            repair_prompt = _video_quality_repair_prompt(video_prompt, video_gate, mode=video_repair_mode)
             repair_kwargs = {
                 "prompt": repair_prompt,
                 "image_url": video_image_url,
@@ -628,6 +630,8 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 "modality": "video",
                 "reason": video_gate.get("reason"),
                 "quality_issues": _string_list(video_gate.get("quality_issues")),
+                "policy_mode": video_repair_mode,
+                "policy_actions": feedback_policy.get("applied_action_types", []),
             }
             if not repair_payload.get("success"):
                 _annotate_generation_failure(
@@ -1179,7 +1183,7 @@ def _quality_repair_prompt(prompt: str, gate: dict[str, Any], *, mode: str = "de
     )
 
 
-def _video_quality_repair_prompt(prompt: str, gate: dict[str, Any]) -> str:
+def _video_quality_repair_prompt(prompt: str, gate: dict[str, Any], *, mode: str = "default") -> str:
     issues = _string_list(gate.get("quality_issues"))
     instructions: list[str] = []
     if "aspect_integrity_bad" in issues:
@@ -1189,11 +1193,28 @@ def _video_quality_repair_prompt(prompt: str, gate: dict[str, Any]) -> str:
     if not instructions:
         instructions.append("improve video coherence while preserving the source image and original composition")
     repair = "; ".join(instructions)
+    if mode == "preferred":
+        policy_instruction = "Proven video quality repair strategy: reuse the historically successful repair pattern. "
+    elif mode == "escalated":
+        policy_instruction = (
+            "Escalated video quality repair strategy: change the motion path instead of repeating the failed clip. "
+        )
+    else:
+        policy_instruction = ""
     return (
         f"{prompt}\n\n"
-        f"Video quality repair pass: {repair}. "
+        f"{policy_instruction}Video quality repair pass: {repair}. "
         "Keep the same subject, framing, lighting, and user intent."
     )
+
+
+def _quality_repair_policy_mode(feedback_policy: dict[str, Any], modality: str) -> str:
+    modes = feedback_policy.get("quality_repair_modes")
+    if isinstance(modes, dict):
+        mode = str(modes.get(modality) or "default").strip().lower()
+        return mode if mode in {"default", "preferred", "escalated"} else "default"
+    mode = str(feedback_policy.get("quality_repair_mode") or "default").strip().lower()
+    return mode if mode in {"default", "preferred", "escalated"} else "default"
 
 
 def _portrait_like_prompt(prompt: str) -> bool:
@@ -1379,13 +1400,7 @@ def _visual_feedback_policy(
     wants_image: bool,
     wants_video: bool,
 ) -> dict[str, Any]:
-    try:
-        from scripts.visual_feedback_loop_report import build_visual_feedback_loop_report
-
-        report = build_visual_feedback_loop_report(default_visual_ledger_path())
-    except Exception as exc:  # noqa: BLE001 - feedback loop must never block generation
-        logger.debug("visual feedback loop policy unavailable: %s", exc)
-        report = {"next_actions": []}
+    report = _runtime_visual_feedback_report()
     return resolve_visual_feedback_policy(
         report,
         wants_image=wants_image,
@@ -1393,6 +1408,54 @@ def _visual_feedback_policy(
         explicit_candidate_budget=_coerce_int(args.get("candidate_budget")),
         default_candidate_budget=2,
     )
+
+
+def _runtime_visual_feedback_report() -> dict[str, Any]:
+    policy_sources = ["feedback_loop"]
+    try:
+        from scripts.visual_feedback_loop_report import build_visual_feedback_loop_report
+
+        report = build_visual_feedback_loop_report(default_visual_ledger_path())
+    except Exception as exc:  # noqa: BLE001 - feedback loop must never block generation
+        logger.debug("visual feedback loop policy unavailable: %s", exc)
+        report = {"next_actions": []}
+    merged_actions = _action_list(report.get("next_actions"))
+    scheduled_actions = _latest_self_validation_next_actions()
+    if scheduled_actions:
+        policy_sources.append("scheduled_self_validation")
+        merged_actions.extend(scheduled_actions)
+    merged_report = dict(report)
+    merged_report["next_actions"] = merged_actions
+    merged_report["policy_sources"] = policy_sources
+    return merged_report
+
+
+def _latest_self_validation_next_actions() -> list[dict[str, Any]]:
+    latest_path = default_visual_ledger_path().parent / "self_validation" / "latest.json"
+    try:
+        payload = json.loads(latest_path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 - stale/missing reports must not block generation
+        logger.debug("visual scheduled self-validation policy unavailable: %s", exc)
+        return []
+    if not isinstance(payload, dict):
+        return []
+    if payload.get("success") is not True:
+        return []
+    automation = payload.get("automation") if isinstance(payload.get("automation"), dict) else {}
+    self_improvement = (
+        automation.get("self_improvement")
+        if isinstance(automation.get("self_improvement"), dict)
+        else payload.get("self_improvement")
+    )
+    if not isinstance(self_improvement, dict):
+        return []
+    return _action_list(self_improvement.get("next_actions"))
+
+
+def _action_list(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
 
 
 def _video_budget(args: dict[str, Any], *, wants_video: bool) -> int:

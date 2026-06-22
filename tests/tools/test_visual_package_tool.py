@@ -342,6 +342,129 @@ async def test_visual_package_repairs_blocked_video_before_delivery(monkeypatch,
 
 
 @pytest.mark.asyncio
+async def test_visual_package_applies_video_self_validation_action_to_video_repair(monkeypatch, tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
+    latest_report.parent.mkdir(parents=True)
+    latest_report.write_text(
+        json.dumps(
+            {
+                "success": True,
+                "automation": {
+                    "self_improvement": {
+                        "next_actions": [
+                            {
+                                "type": "prefer_quality_repair_retry",
+                                "requires_human_feedback": False,
+                                "activation_status": "next_run",
+                                "source": "fixture_quality_suite",
+                                "modality": "video",
+                            }
+                        ]
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    image = tmp_path / "source.png"
+    bad_video = tmp_path / "bad-video.mp4"
+    good_video = tmp_path / "good-video.mp4"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    bad_video.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+    good_video.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isomgood")
+    video_calls = []
+
+    def fake_probe_media_reference(ref):
+        is_video = str(ref).endswith(".mp4")
+        return SimpleNamespace(
+            sha256=f"hash:{ref}",
+            is_stable=True,
+            freshness_status="fresh",
+            local_path=str(ref),
+            mime_type="video/mp4" if is_video else "image/png",
+            bytes=10,
+            width=768,
+            height=768,
+            duration_seconds=4.0 if is_video else None,
+        )
+
+    monkeypatch.setattr(visual_package_tool, "probe_media_reference", fake_probe_media_reference)
+    monkeypatch.setattr(
+        visual_package_tool,
+        "generate_image",
+        lambda **kwargs: {
+            "success": True,
+            "image": str(image),
+            "provider": "fixture",
+            "model": "image-fixture",
+        },
+    )
+
+    def fake_generate_video(**kwargs):
+        video_calls.append(kwargs)
+        if len(video_calls) == 1:
+            return {
+                "success": True,
+                "video": str(bad_video),
+                "provider": "fixture",
+                "model": "video-fixture",
+                "vision_observation": {
+                    "aspect_integrity": 0.2,
+                    "motion_quality": 0.25,
+                    "artifact_defects": ["weak_aspect_integrity", "weak_motion_or_duration_evidence"],
+                },
+            }
+        return {
+            "success": True,
+            "video": str(good_video),
+            "provider": "fixture",
+            "model": "video-fixture",
+            "vision_observation": {
+                "aspect_integrity": 0.95,
+                "motion_quality": 0.9,
+                "artifact_defects": [],
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_video", fake_generate_video)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "請產出一張圖片和一段影片：乾淨產品攝影。",
+                "aspect_ratio": "1:1",
+                "candidate_budget": 1,
+                "video_budget": 1,
+                "duration": 4,
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["generation_strategy"]["feedback_policy"]["quality_repair_modes"] == {
+        "image": "default",
+        "video": "preferred",
+    }
+    assert "Proven video quality repair strategy" in video_calls[1]["prompt"]
+
+    attempts = VisualAttemptLedger(default_visual_ledger_path())._list("visual_attempts")
+    repair_attempts = [
+        attempt
+        for attempt in attempts
+        if isinstance(attempt.get("metadata"), dict)
+        and isinstance(attempt["metadata"].get("quality_repair"), dict)
+        and attempt["metadata"]["quality_repair"].get("modality") == "video"
+    ]
+    assert repair_attempts[0]["metadata"]["quality_repair"]["policy_mode"] == "preferred"
+
+
+@pytest.mark.asyncio
 async def test_visual_package_video_only_with_attachment_animates_attachment(monkeypatch, tmp_path):
     from tools import visual_package_tool
 
@@ -1149,6 +1272,150 @@ async def test_visual_package_applies_preferred_quality_repair_policy(monkeypatc
         and attempt["metadata"]["quality_repair"].get("policy_mode") == "preferred"
     ]
     assert len(repair_attempts) == 1
+
+
+@pytest.mark.asyncio
+async def test_visual_package_applies_self_validation_next_actions(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
+    latest_report.parent.mkdir(parents=True)
+    latest_report.write_text(
+        json.dumps(
+            {
+                "success": True,
+                "automation": {
+                    "self_improvement": {
+                        "next_actions": [
+                            {
+                                "type": "prefer_quality_repair_retry",
+                                "requires_human_feedback": False,
+                                "activation_status": "next_run",
+                                "confidence": 0.9,
+                                "source": "fixture_quality_suite",
+                                "modality": "image",
+                            }
+                        ]
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    bad_image = tmp_path / "bad-image.png"
+    good_image = tmp_path / "good-image.png"
+    bad_image.write_bytes(_ONE_PIXEL_PNG)
+    good_image.write_bytes(_ONE_PIXEL_PNG)
+    calls = []
+
+    def fake_generate_image(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return {
+                "success": True,
+                "image": str(bad_image),
+                "provider": "fixture",
+                "model": "image",
+                "vision_observation": {
+                    "face_quality": 0.2,
+                    "visual_appeal": 0.2,
+                    "composition": 0.2,
+                    "stocking_quality": 0.2,
+                },
+            }
+        return {
+            "success": True,
+            "image": str(good_image),
+            "provider": "fixture",
+            "model": "image",
+            "vision_observation": {
+                "face_quality": 0.9,
+                "visual_appeal": 0.9,
+                "composition": 0.9,
+                "stocking_quality": 0.9,
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "請產出一張圖片：時尚寫真。",
+                "include_video": False,
+                "candidate_budget": 1,
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["generation_strategy"]["feedback_policy"]["quality_repair_mode"] == "preferred"
+    assert payload["generation_strategy"]["feedback_policy"]["policy_sources"] == [
+        "feedback_loop",
+        "scheduled_self_validation",
+    ]
+    assert payload["generation_strategy"]["feedback_policy"]["applied_action_types"] == [
+        "prefer_quality_repair_retry"
+    ]
+    assert "Proven quality repair strategy" in calls[1]["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_visual_package_ignores_failed_self_validation_next_actions(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
+    latest_report.parent.mkdir(parents=True)
+    latest_report.write_text(
+        json.dumps(
+            {
+                "success": False,
+                "automation": {
+                    "self_improvement": {
+                        "next_actions": [
+                            {
+                                "type": "prefer_quality_repair_retry",
+                                "requires_human_feedback": False,
+                                "activation_status": "next_run",
+                            }
+                        ]
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    image = tmp_path / "image.png"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    monkeypatch.setattr(
+        visual_package_tool,
+        "generate_image",
+        lambda **kwargs: {
+            "success": True,
+            "image": str(image),
+            "provider": "fixture",
+            "model": "image",
+        },
+    )
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "請產出一張圖片：霧黑鋼筆。",
+                "include_video": False,
+                "candidate_budget": 1,
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["generation_strategy"]["feedback_policy"]["quality_repair_mode"] == "default"
+    assert payload["generation_strategy"]["feedback_policy"]["policy_sources"] == ["feedback_loop"]
+    assert payload["generation_strategy"]["feedback_policy"]["applied_action_types"] == []
 
 
 @pytest.mark.asyncio

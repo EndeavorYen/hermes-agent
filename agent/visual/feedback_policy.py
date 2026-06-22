@@ -36,6 +36,7 @@ def resolve_visual_feedback_policy(
     prefer_image_first_video = False
     rerank_before_delivery = False
     quality_repair_mode = "default"
+    quality_repair_modes = {"image": "default", "video": "default"}
     applied_action_types: list[str] = []
 
     for action in _next_actions(feedback_report):
@@ -45,23 +46,25 @@ def resolve_visual_feedback_policy(
             if not budget_locked_by_user and value is not None and value > candidate_budget:
                 candidate_budget = _clamp(value, minimum=candidate_budget, maximum=MAX_CANDIDATE_BUDGET)
                 candidate_budget_source = "feedback_loop"
-                applied_action_types.append(action_type)
+                _append_once(applied_action_types, action_type)
         elif action_type == "prefer_image_first_video" and wants_video:
             prefer_image_first_video = True
-            applied_action_types.append(action_type)
+            _append_once(applied_action_types, action_type)
         elif action_type == "rerank_before_slack":
             rerank_before_delivery = True
-            applied_action_types.append(action_type)
+            _append_once(applied_action_types, action_type)
         elif action_type == "prefer_quality_repair_retry":
             quality_repair_mode = "preferred"
-            applied_action_types.append(action_type)
+            _set_quality_repair_mode(quality_repair_modes, action, "preferred")
+            _append_once(applied_action_types, action_type)
         elif action_type == "escalate_quality_repair_strategy":
             value = _int(action.get("max_candidate_budget"))
             if not budget_locked_by_user and value is not None and value > candidate_budget:
                 candidate_budget = _clamp(value, minimum=candidate_budget, maximum=MAX_CANDIDATE_BUDGET)
                 candidate_budget_source = "feedback_loop"
             quality_repair_mode = "escalated"
-            applied_action_types.append(action_type)
+            _set_quality_repair_mode(quality_repair_modes, action, "escalated")
+            _append_once(applied_action_types, action_type)
 
     return {
         "candidate_budget": candidate_budget,
@@ -69,7 +72,9 @@ def resolve_visual_feedback_policy(
         "prefer_image_first_video": prefer_image_first_video,
         "rerank_before_delivery": rerank_before_delivery,
         "quality_repair_mode": quality_repair_mode,
+        "quality_repair_modes": quality_repair_modes,
         "applied_action_types": applied_action_types,
+        "policy_sources": _string_list(feedback_report.get("policy_sources")) or ["feedback_loop"],
     }
 
 
@@ -89,3 +94,34 @@ def _int(value: Any) -> int | None:
 
 def _clamp(value: int, *, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, value))
+
+
+def _append_once(values: list[str], value: str) -> None:
+    if value and value not in values:
+        values.append(value)
+
+
+def _set_quality_repair_mode(modes: dict[str, str], action: dict[str, Any], mode: str) -> None:
+    modalities = _action_modalities(action)
+    if not modalities:
+        modalities = ["image", "video"]
+    for modality in modalities:
+        modes[modality] = mode
+
+
+def _action_modalities(action: dict[str, Any]) -> list[str]:
+    value = action.get("modalities")
+    if not isinstance(value, list):
+        value = [action.get("modality")]
+    modalities: list[str] = []
+    for item in value:
+        text = str(item or "").strip().lower()
+        if text in {"image", "video"} and text not in modalities:
+            modalities.append(text)
+    return modalities
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if isinstance(item, str) and item.strip()]
