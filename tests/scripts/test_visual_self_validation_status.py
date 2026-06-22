@@ -443,6 +443,9 @@ def test_visual_self_validation_status_requires_current_live_run_for_promotion(t
     report["summary"]["live_quality_gate_success"] = None
     report["summary"]["live_quality_suite_success"] = None
     report["summary"]["live_quality_burn_min_score"] = 0.86
+    report["summary"]["live_conversation_quality_run_count"] = 0
+    report["summary"]["live_conversation_quality_recent_avg_min_quality_score"] = None
+    report["summary"]["live_conversation_quality_native_video_upload_covered_count"] = 0
     report["automation"]["self_improvement"]["next_actions"].append(
         {
             "type": "prefer_strategy",
@@ -465,6 +468,115 @@ def test_visual_self_validation_status_requires_current_live_run_for_promotion(t
     assert status["health_status"] == "pass"
     assert status["promotion_readiness"]["ready"] is False
     assert "current_live_run_required" in status["promotion_readiness"]["blocking_reasons"]
+
+
+def test_visual_self_validation_status_allows_promotion_with_live_conversation_quality_evidence(
+    tmp_path,
+):
+    from scripts.visual_self_validation_status import build_visual_self_validation_status
+
+    report = _scheduled_report(live_decision="skip_not_enabled")
+    report["mode"] = "fixture"
+    report["summary"]["live_quality_gate_success"] = None
+    report["summary"]["live_quality_suite_success"] = None
+    report["summary"]["live_quality_burn_success"] = None
+    report["summary"]["live_quality_burn_case_count"] = 0
+    report["summary"]["live_quality_burn_min_score"] = None
+    report["summary"]["live_quality_burn_image_first_video_source_covered"] = None
+    report["summary"]["live_slack_upload_native_delivery_covered"] = None
+    report["automation"]["self_improvement"]["next_actions"].append(
+        {
+            "type": "prefer_strategy",
+            "source": "slack_conversation_e2e",
+            "track": "aesthetic",
+            "strategy_signature": "image_first_rank_then_video",
+            "bucket": "image-video:product-editorial",
+            "activation_status": "shadow",
+            "confidence": 0.83,
+            "evidence_count": 5,
+        }
+    )
+    latest_path = _write_latest(tmp_path, report)
+
+    status = build_visual_self_validation_status(latest_path=latest_path)
+
+    assert status["health_status"] == "pass"
+    readiness = status["promotion_readiness"]
+    assert readiness["ready"] is True
+    assert readiness["blocking_reasons"] == []
+    assert readiness["thresholds"]["allows_live_conversation_quality_evidence"] is True
+    assert readiness["thresholds"]["min_live_conversation_quality_cases"] == 2
+    assert readiness["thresholds"]["min_live_conversation_quality_score"] == 0.8
+    assert readiness["self_review"]["conversation_evidence_gated"] is True
+    assert status["next_steps"] == ["continue_visual_agent_mode_rollout"]
+
+
+def test_visual_self_validation_status_blocks_promotion_when_conversation_upload_evidence_missing(
+    tmp_path,
+):
+    from scripts.visual_self_validation_status import build_visual_self_validation_status
+
+    report = _scheduled_report(live_decision="skip_not_enabled")
+    report["mode"] = "fixture"
+    report["summary"]["live_quality_gate_success"] = None
+    report["summary"]["live_quality_suite_success"] = None
+    report["summary"]["live_quality_burn_success"] = None
+    report["summary"]["live_quality_burn_case_count"] = 0
+    report["summary"]["live_quality_burn_min_score"] = None
+    report["summary"]["live_quality_burn_image_first_video_source_covered"] = None
+    report["summary"]["live_slack_upload_native_delivery_covered"] = None
+    report["summary"]["live_conversation_quality_native_video_upload_covered_count"] = 1
+    report["automation"]["self_improvement"]["next_actions"].append(
+        {
+            "type": "prefer_strategy",
+            "source": "slack_conversation_e2e",
+            "track": "aesthetic",
+            "strategy_signature": "image_first_rank_then_video",
+            "bucket": "image-video:product-editorial",
+            "activation_status": "shadow",
+            "confidence": 0.83,
+            "evidence_count": 5,
+        }
+    )
+    latest_path = _write_latest(tmp_path, report)
+
+    status = build_visual_self_validation_status(latest_path=latest_path)
+
+    assert status["health_status"] == "warn"
+    readiness = status["promotion_readiness"]
+    assert readiness["ready"] is False
+    assert "live_conversation_native_upload_not_covered" in readiness["blocking_reasons"]
+    assert "slack_native_upload_not_covered" not in readiness["blocking_reasons"]
+
+
+def test_visual_self_validation_status_keeps_promotion_ready_when_live_burn_passes_but_conversation_partial(
+    tmp_path,
+):
+    from scripts.visual_self_validation_status import build_visual_self_validation_status
+
+    report = _scheduled_report()
+    report["summary"]["live_quality_burn_min_score"] = 0.86
+    report["summary"]["live_conversation_quality_native_video_upload_covered_count"] = 1
+    report["automation"]["self_improvement"]["next_actions"].append(
+        {
+            "type": "prefer_strategy",
+            "source": "live_quality_burn",
+            "track": "aesthetic",
+            "strategy_signature": "image_first_rank_then_video",
+            "bucket": "image-video:product-editorial",
+            "activation_status": "shadow",
+            "confidence": 0.86,
+            "evidence_count": 5,
+        }
+    )
+    latest_path = _write_latest(tmp_path, report)
+
+    status = build_visual_self_validation_status(latest_path=latest_path)
+
+    assert status["health_status"] == "pass"
+    readiness = status["promotion_readiness"]
+    assert readiness["ready"] is True
+    assert "live_conversation_native_upload_not_covered" not in readiness["blocking_reasons"]
 
 
 def test_visual_self_validation_status_warns_when_live_slack_upload_not_covered(tmp_path):

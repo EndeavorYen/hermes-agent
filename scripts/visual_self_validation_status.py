@@ -14,6 +14,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 from hermes_constants import get_hermes_home
 from agent.visual.promotion_readiness import build_visual_promotion_readiness
+from agent.visual.promotion_readiness import live_conversation_quality_evidence_ready
 from agent.visual.promotion_readiness import missing_visual_promotion_readiness
 
 
@@ -59,6 +60,9 @@ def build_visual_self_validation_status(
         summary=summary,
         is_stale=is_stale,
     )
+    live_conversation_evidence_current = (
+        not is_stale and live_conversation_quality_evidence_ready(summary)
+    )
     failures = _strings(payload.get("failures"))
     actions = _collect_actions(payload)
     action_types = _action_types(summary, actions)
@@ -79,6 +83,7 @@ def build_visual_self_validation_status(
         failures=failures,
         live_e2e_ran=live_e2e_ran,
         carried_live_evidence_current=carried_live_evidence_current,
+        live_conversation_evidence_current=live_conversation_evidence_current,
         live_decision=live_decision,
         is_stale=is_stale,
         summary=summary,
@@ -90,6 +95,7 @@ def build_visual_self_validation_status(
         next_steps=next_steps,
         live_e2e_ran=live_e2e_ran,
         carried_live_evidence_current=carried_live_evidence_current,
+        live_conversation_evidence_current=live_conversation_evidence_current,
         failures=failures,
     )
     return {
@@ -299,6 +305,7 @@ def _next_steps(
     failures: list[str],
     live_e2e_ran: bool,
     carried_live_evidence_current: bool,
+    live_conversation_evidence_current: bool,
     live_decision: str,
     is_stale: bool,
     summary: dict[str, Any],
@@ -310,7 +317,11 @@ def _next_steps(
         steps.append("inspect_self_validation_failures")
     if summary.get("closed_loop_regression_success") is False or "closed_loop_regression_failed" in failures:
         steps.append("inspect_closed_loop_policy_application")
-    if (live_decision != "run" or not live_e2e_ran) and not carried_live_evidence_current:
+    if (
+        (live_decision != "run" or not live_e2e_ran)
+        and not carried_live_evidence_current
+        and not live_conversation_evidence_current
+    ):
         steps.append("enable_or_force_live_self_validation")
     if is_stale:
         steps.append("refresh_stale_self_validation")
@@ -347,11 +358,16 @@ def _health_status(
     next_steps: list[str],
     live_e2e_ran: bool,
     carried_live_evidence_current: bool,
+    live_conversation_evidence_current: bool,
     failures: list[str],
 ) -> str:
     if not report_success or failures:
         return "fail"
-    if not live_e2e_ran and not carried_live_evidence_current:
+    if (
+        not live_e2e_ran
+        and not carried_live_evidence_current
+        and not live_conversation_evidence_current
+    ):
         return "warn"
     if any(step != "continue_visual_agent_mode_rollout" for step in next_steps):
         return "warn"

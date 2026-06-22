@@ -61,6 +61,9 @@ def _thresholds() -> dict[str, float | int | bool]:
     return {
         "min_live_quality_burn_score": MIN_PROMOTION_LIVE_SCORE,
         "min_live_quality_burn_cases": MIN_PROMOTION_CASES,
+        "allows_live_conversation_quality_evidence": True,
+        "min_live_conversation_quality_score": MIN_PROMOTION_LIVE_SCORE,
+        "min_live_conversation_quality_cases": MIN_PROMOTION_CASES,
         "min_strategy_confidence": MIN_PROMOTION_STRATEGY_CONFIDENCE,
         "requires_current_live_run": True,
         "requires_native_slack_upload": True,
@@ -74,6 +77,7 @@ def _self_review() -> dict[str, bool]:
         "raw_action_exposed": False,
         "provider_stability_gated": True,
         "aesthetic_quality_gated": True,
+        "conversation_evidence_gated": True,
         "activation_performed": False,
     }
 
@@ -88,26 +92,23 @@ def _blocking_reasons(
     trend_degradations: list[str],
 ) -> list[str]:
     reasons: list[str] = []
+    has_conversation_evidence = _has_live_conversation_quality_evidence(summary)
+    conversation_evidence_ready = live_conversation_quality_evidence_ready(summary)
+    live_burn_evidence_ready = _live_quality_burn_evidence_ready(summary)
     if not report_success or failures:
         reasons.append("self_validation_failed")
-    if not live_e2e_ran:
+    if not live_e2e_ran and not conversation_evidence_ready:
         reasons.append("current_live_run_required")
     if trend_degradations:
         reasons.append("live_quality_trend_degraded")
-    if summary.get("live_quality_burn_success") is not True:
-        reasons.append("live_quality_burn_not_successful")
-    if _int(summary.get("live_quality_burn_case_count")) < MIN_PROMOTION_CASES:
-        reasons.append("insufficient_live_quality_cases")
-    if _float(summary.get("live_quality_burn_min_score")) < MIN_PROMOTION_LIVE_SCORE:
-        reasons.append("live_quality_score_below_threshold")
-    if summary.get("live_quality_burn_image_first_video_source_covered") is not True:
-        reasons.append("image_first_video_source_not_covered")
-    if _int(summary.get("live_quality_burn_image_first_video_source_failure_count")) > 0:
-        reasons.append("image_first_video_source_failures")
+    if live_burn_evidence_ready or conversation_evidence_ready:
+        pass
+    elif has_conversation_evidence:
+        reasons.extend(_live_conversation_quality_blocking_reasons(summary))
+    else:
+        reasons.extend(_live_quality_burn_blocking_reasons(summary))
     if _int(summary.get("live_quality_burn_quality_focus_failure_count")) > 0:
         reasons.append("quality_focus_failures")
-    if summary.get("live_slack_upload_native_delivery_covered") is not True:
-        reasons.append("slack_native_upload_not_covered")
     if _int(summary.get("slack_duplicate_delivery_count")) > 0:
         reasons.append("duplicate_delivery_detected")
     if candidate is None:
@@ -120,6 +121,64 @@ def _blocking_reasons(
         if _float(candidate.get("confidence")) < MIN_PROMOTION_STRATEGY_CONFIDENCE:
             reasons.append("strategy_confidence_below_threshold")
     return _dedupe(reasons)
+
+
+def live_conversation_quality_evidence_ready(summary: dict[str, Any]) -> bool:
+    if not _has_live_conversation_quality_evidence(summary):
+        return False
+    return not _live_conversation_quality_blocking_reasons(summary)
+
+
+def _live_quality_burn_evidence_ready(summary: dict[str, Any]) -> bool:
+    return not _live_quality_burn_blocking_reasons(summary)
+
+
+def _live_quality_burn_blocking_reasons(summary: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    if summary.get("live_quality_burn_success") is not True:
+        reasons.append("live_quality_burn_not_successful")
+    if _int(summary.get("live_quality_burn_case_count")) < MIN_PROMOTION_CASES:
+        reasons.append("insufficient_live_quality_cases")
+    if _float(summary.get("live_quality_burn_min_score")) < MIN_PROMOTION_LIVE_SCORE:
+        reasons.append("live_quality_score_below_threshold")
+    if summary.get("live_quality_burn_image_first_video_source_covered") is not True:
+        reasons.append("image_first_video_source_not_covered")
+    if _int(summary.get("live_quality_burn_image_first_video_source_failure_count")) > 0:
+        reasons.append("image_first_video_source_failures")
+    if summary.get("live_slack_upload_native_delivery_covered") is not True:
+        reasons.append("slack_native_upload_not_covered")
+    return reasons
+
+
+def _has_live_conversation_quality_evidence(summary: dict[str, Any]) -> bool:
+    return (
+        _int(summary.get("live_conversation_quality_run_count")) > 0
+        or summary.get("live_conversation_quality_recent_avg_min_quality_score") is not None
+        or _int(summary.get("live_conversation_quality_native_video_upload_covered_count")) > 0
+        or _int(summary.get("live_conversation_quality_image_first_video_source_failure_count")) > 0
+        or _int(summary.get("live_conversation_quality_provider_failure_count")) > 0
+    )
+
+
+def _live_conversation_quality_blocking_reasons(summary: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    if _int(summary.get("live_conversation_quality_run_count")) < MIN_PROMOTION_CASES:
+        reasons.append("insufficient_live_conversation_quality_cases")
+    if (
+        _float(summary.get("live_conversation_quality_recent_avg_min_quality_score"))
+        < MIN_PROMOTION_LIVE_SCORE
+    ):
+        reasons.append("live_conversation_quality_score_below_threshold")
+    if (
+        _int(summary.get("live_conversation_quality_native_video_upload_covered_count"))
+        < MIN_PROMOTION_CASES
+    ):
+        reasons.append("live_conversation_native_upload_not_covered")
+    if _int(summary.get("live_conversation_quality_image_first_video_source_failure_count")) > 0:
+        reasons.append("live_conversation_image_first_video_source_failures")
+    if _int(summary.get("live_conversation_quality_provider_failure_count")) > 0:
+        reasons.append("live_conversation_provider_failures")
+    return reasons
 
 
 def _strategy_candidate(actions: list[dict[str, Any]]) -> dict[str, Any] | None:

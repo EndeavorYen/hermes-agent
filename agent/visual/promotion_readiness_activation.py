@@ -177,6 +177,23 @@ def _evidence(status: dict[str, Any], *, readiness: dict[str, Any]) -> dict[str,
         "live_quality_burn_min_score": _float(live.get("burn_min_score")),
         "image_first_video_source_covered": live.get("image_first_video_source_covered") is True,
         "native_video_upload_covered": delivery.get("native_video_upload_covered") is True,
+        "live_conversation_quality_run_count": _int(live.get("conversation_quality_run_count")),
+        "live_conversation_quality_recent_avg_min_quality_score": _float(
+            live.get("conversation_quality_recent_avg_min_quality_score")
+        ),
+        "live_conversation_native_video_upload_covered": _int(
+            live.get("conversation_quality_native_video_upload_covered_count")
+        )
+        > 0,
+        "live_conversation_native_video_upload_covered_count": _int(
+            live.get("conversation_quality_native_video_upload_covered_count")
+        ),
+        "live_conversation_image_first_video_source_failure_count": _int(
+            live.get("conversation_quality_image_first_video_source_failure_count")
+        ),
+        "live_conversation_provider_failure_count": _int(
+            live.get("conversation_quality_provider_failure_count")
+        ),
         "duplicate_delivery_count": _int(delivery.get("duplicate_delivery_count")),
         "thresholds": readiness.get("thresholds") if isinstance(readiness.get("thresholds"), dict) else {},
     }
@@ -205,6 +222,23 @@ def _promotion_decision(
             "live_quality_burn_min_score": _float(live.get("burn_min_score")),
             "image_first_video_source_covered": live.get("image_first_video_source_covered") is True,
             "native_video_upload_covered": delivery.get("native_video_upload_covered") is True,
+            "live_conversation_quality_run_count": _int(live.get("conversation_quality_run_count")),
+            "live_conversation_quality_recent_avg_min_quality_score": _float(
+                live.get("conversation_quality_recent_avg_min_quality_score")
+            ),
+            "live_conversation_native_video_upload_covered": _int(
+                live.get("conversation_quality_native_video_upload_covered_count")
+            )
+            > 0,
+            "live_conversation_native_video_upload_covered_count": _int(
+                live.get("conversation_quality_native_video_upload_covered_count")
+            ),
+            "live_conversation_image_first_video_source_failure_count": _int(
+                live.get("conversation_quality_image_first_video_source_failure_count")
+            ),
+            "live_conversation_provider_failure_count": _int(
+                live.get("conversation_quality_provider_failure_count")
+            ),
             "duplicate_delivery_count": _int(delivery.get("duplicate_delivery_count")),
             "prompt_mutation_allowed": False,
         },

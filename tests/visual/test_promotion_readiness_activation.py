@@ -79,6 +79,58 @@ def test_activate_ready_visual_promotion_records_audited_controlled_strategy(tmp
     assert plan.activation_id == activation["id"]
 
 
+def test_activate_ready_visual_promotion_records_conversation_quality_evidence(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.promotion_readiness_activation import activate_ready_visual_promotion
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+    status = _ready_status()
+    status["live_e2e_ran"] = False
+    status["live"] = {
+        "burn_success": None,
+        "burn_case_count": 0,
+        "burn_min_score": None,
+        "conversation_quality_run_count": 2,
+        "conversation_quality_recent_avg_min_quality_score": 0.83,
+        "conversation_quality_native_video_upload_covered_count": 2,
+        "conversation_quality_image_first_video_source_failure_count": 0,
+        "conversation_quality_provider_failure_count": 0,
+    }
+    status["delivery"] = {
+        "native_video_upload_covered": None,
+        "uploaded_video_file_count": 0,
+        "duplicate_delivery_count": 0,
+    }
+    status["promotion_readiness"]["candidate"] = {
+        **status["promotion_readiness"]["candidate"],
+        "source": "slack_conversation_e2e",
+        "confidence": 0.83,
+        "evidence_count": 5,
+    }
+    status["promotion_readiness"]["thresholds"] = {
+        **status["promotion_readiness"]["thresholds"],
+        "allows_live_conversation_quality_evidence": True,
+        "min_live_conversation_quality_cases": 2,
+        "min_live_conversation_quality_score": 0.8,
+    }
+
+    result = activate_ready_visual_promotion(ledger, status)
+
+    activation = ledger.get_strategy_activation(result["activation_ids"][0])
+    observed = activation["promotion_decision"]["observed"]
+    assert observed["live_e2e_ran"] is False
+    assert observed["live_quality_burn_success"] is False
+    assert observed["live_conversation_quality_run_count"] == 2
+    assert observed["live_conversation_quality_recent_avg_min_quality_score"] == 0.83
+    assert observed["live_conversation_native_video_upload_covered"] is True
+    assert observed["live_conversation_provider_failure_count"] == 0
+
+    shadow = ledger.get_shadow_update(activation["shadow_update_id"])
+    assert shadow["evidence"]["live_conversation_quality_run_count"] == 2
+    assert shadow["evidence"]["live_conversation_native_video_upload_covered"] is True
+
+
 def test_activate_ready_visual_promotion_skips_blocked_readiness(tmp_path):
     from agent.visual.attempt_ledger import VisualAttemptLedger
     from agent.visual.promotion_readiness_activation import activate_ready_visual_promotion
