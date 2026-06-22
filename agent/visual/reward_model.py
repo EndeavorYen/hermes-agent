@@ -5,7 +5,7 @@ from typing import Any
 from agent.visual.eval_dimensions import combine_weighted_scores
 
 
-VERSION = "visual_reward_model.v0.2"
+VERSION = "visual_reward_model.v0.3"
 
 DEFAULT_WEIGHTS = {
     "artifact_validity": 0.20,
@@ -43,7 +43,11 @@ def score_visual_candidate(
         "user_preference_fit": _preference_fit(candidate, preference_profile),
         "preference_dimension_fit": _preference_dimension_fit(candidate),
     }
-    final_score = 0.0 if not hard_gate_passed else combine_weighted_scores(dimensions, DEFAULT_WEIGHTS)
+    raw_score = 0.0 if not hard_gate_passed else combine_weighted_scores(dimensions, DEFAULT_WEIGHTS)
+    final_score = _apply_preference_dimension_soft_gate(
+        raw_score,
+        dimensions["preference_dimension_fit"],
+    )
     confidence = _confidence(
         hard_gate_passed=hard_gate_passed,
         judge_scores=judge_scores,
@@ -122,6 +126,13 @@ def _preference_dimension_fit(candidate: dict[str, Any]) -> float:
     return round(sum(values) / len(values), 4)
 
 
+def _apply_preference_dimension_soft_gate(score: float, preference_dimension_fit: float) -> float:
+    if preference_dimension_fit >= 0.5:
+        return round(_clamp(score), 4)
+    multiplier = max(0.5, preference_dimension_fit + 0.45)
+    return round(_clamp(score) * multiplier, 4)
+
+
 def _candidate_signal_score(candidate: dict[str, Any], preference_profile: dict[str, Any]) -> float:
     quality_signals = _string_list(candidate.get("quality_signals"))
     if not quality_signals:
@@ -195,6 +206,9 @@ def _uncertainty_reasons(
             reasons.append(f"candidate_quality_issue_{issue}")
     dimensions = candidate.get("preference_dimensions")
     if isinstance(dimensions, dict):
+        preference_values = [_clamp(value) for value in dimensions.values() if value is not None]
+        if preference_values and sum(preference_values) / len(preference_values) < 0.5:
+            reasons.append("preference_dimension_soft_gate_penalty")
         for dimension, value in dimensions.items():
             dimension_text = str(dimension or "").strip()
             if dimension_text and _clamp(value) < 0.5:

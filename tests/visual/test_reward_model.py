@@ -133,3 +133,67 @@ def test_reward_model_penalizes_low_preference_dimensions_even_before_human_prof
     assert flawed["dimensions"]["preference_dimension_fit"] < 0.4
     assert clean["final_score"] > flawed["final_score"]
     assert "low_preference_dimension_face_naturalness" in flawed["uncertainty_reasons"]
+
+
+def test_reward_model_strongly_penalizes_low_glamour_preference_dimensions():
+    from agent.visual.reward_model import score_visual_candidate
+
+    provider_stats = {"xai:image": {"generation_success_rate": 1.0, "delivery_success_rate": 1.0}}
+    preference_profile = {"signals": {}, "issues": {}, "sample_count": 0}
+    generic_high_score = {
+        "artifact_id": "generic_high_score",
+        "kind": "image",
+        "provider": "xai",
+        "model": "image",
+        "hard_gate": {"passed": True},
+        "scores": {"final_score": 0.96},
+        "judge_scores": {
+            "aesthetic_fit": 0.96,
+            "reference_adherence": 0.9,
+            "novelty": 0.9,
+            "motion_quality": 1.0,
+        },
+        "preference_dimensions": {
+            "subject_beauty": 0.24,
+            "face_naturalness": 0.26,
+            "glamour_impact": 0.25,
+            "fashion_material_quality": 0.28,
+            "pose_composition": 0.3,
+        },
+    }
+    aligned_candidate = {
+        "artifact_id": "aligned_candidate",
+        "kind": "image",
+        "provider": "xai",
+        "model": "image",
+        "hard_gate": {"passed": True},
+        "scores": {"final_score": 0.78},
+        "judge_scores": {
+            "aesthetic_fit": 0.78,
+            "reference_adherence": 0.82,
+            "novelty": 0.74,
+            "motion_quality": 1.0,
+        },
+        "preference_dimensions": {
+            "subject_beauty": 0.82,
+            "face_naturalness": 0.84,
+            "glamour_impact": 0.8,
+            "fashion_material_quality": 0.83,
+            "pose_composition": 0.78,
+        },
+    }
+
+    generic = score_visual_candidate(
+        generic_high_score,
+        provider_stats=provider_stats,
+        preference_profile=preference_profile,
+    )
+    aligned = score_visual_candidate(
+        aligned_candidate,
+        provider_stats=provider_stats,
+        preference_profile=preference_profile,
+    )
+
+    assert aligned["final_score"] > generic["final_score"]
+    assert generic["dimensions"]["preference_dimension_fit"] < 0.3
+    assert "preference_dimension_soft_gate_penalty" in generic["uncertainty_reasons"]

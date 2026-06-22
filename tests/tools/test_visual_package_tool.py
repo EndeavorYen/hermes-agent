@@ -785,6 +785,116 @@ async def test_visual_package_text_only_video_uses_internal_image_first(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_visual_package_uses_preference_aligned_image_for_video_source(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    generic_image = tmp_path / "generic.png"
+    aligned_image = tmp_path / "aligned.png"
+    video = tmp_path / "video.mp4"
+    generic_image.write_bytes(_ONE_PIXEL_PNG)
+    aligned_image.write_bytes(_ONE_PIXEL_PNG)
+    video.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+    image_calls = []
+    video_calls = []
+
+    def fake_probe_media_reference(ref):
+        ref_text = str(ref)
+        is_video = ref_text.endswith(".mp4")
+        return SimpleNamespace(
+            sha256=f"sha256:{ref_text}",
+            is_stable=True,
+            freshness_status="fresh",
+            local_path=ref_text,
+            mime_type="video/mp4" if is_video else "image/png",
+            bytes=100,
+            width=768,
+            height=768,
+            duration_seconds=4.0 if is_video else None,
+        )
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        if len(image_calls) == 1:
+            return {
+                "success": True,
+                "image": str(generic_image),
+                "provider": "xai",
+                "model": "image",
+                "vision_observation": {
+                    "reference_adherence": 0.9,
+                    "subject_quality": 0.24,
+                    "face_quality": 0.26,
+                    "visual_appeal": 0.96,
+                    "glamour_impact": 0.25,
+                    "composition": 0.9,
+                    "pose_composition": 0.3,
+                    "pose_novelty": 0.9,
+                    "fashion_material_quality": 0.28,
+                    "confidence": 0.96,
+                },
+            }
+        return {
+            "success": True,
+            "image": str(aligned_image),
+            "provider": "xai",
+            "model": "image",
+            "vision_observation": {
+                "reference_adherence": 0.82,
+                "subject_quality": 0.82,
+                "face_quality": 0.84,
+                "visual_appeal": 0.78,
+                "glamour_impact": 0.8,
+                "composition": 0.78,
+                "pose_composition": 0.78,
+                "pose_novelty": 0.74,
+                "fashion_material_quality": 0.83,
+                "confidence": 0.78,
+            },
+        }
+
+    def fake_generate_video(**kwargs):
+        video_calls.append(kwargs)
+        return {
+            "success": True,
+            "video": str(video),
+            "provider": "xai",
+            "model": "video",
+            "vision_observation": {
+                "aspect_integrity": 0.95,
+                "motion_quality": 0.9,
+                "composition": 0.85,
+                "confidence": 0.9,
+                "artifact_defects": [],
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "probe_media_reference", fake_probe_media_reference)
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+    monkeypatch.setattr(visual_package_tool, "generate_video", fake_generate_video)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "請產出一張性感時尚寫真圖片和一段短影片，重視美女臉、絲襪質感、腿部構圖。",
+                "include_image": True,
+                "include_video": True,
+                "candidate_budget": 2,
+                "video_budget": 1,
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert len(image_calls) == 2
+    assert video_calls[0]["image_url"] == str(aligned_image)
+    assert payload["generation_strategy"]["video_source_image"] == str(aligned_image)
+    assert payload["rankings"]["image"]["ranked_artifact_ids"][0] == (
+        payload["generation_strategy"]["video_source_artifact_id"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_visual_package_text_only_video_does_not_fall_back_to_direct_video_when_images_fail(
     monkeypatch,
     tmp_path,

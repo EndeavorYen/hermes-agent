@@ -102,3 +102,75 @@ def test_ranker_prefers_reward_score_when_available():
 
     assert decision.decision == "post"
     assert decision.selected_artifact_id == "var_reward"
+
+
+def test_ranker_prefers_preference_aligned_reward_over_generic_high_score():
+    from agent.visual.ranker import rank_visual_candidates
+    from agent.visual.reward_model import score_visual_candidate
+
+    provider_stats = {"xai:image": {"generation_success_rate": 1.0, "delivery_success_rate": 1.0}}
+    preference_profile = {"signals": {}, "issues": {}, "sample_count": 0}
+    generic = {
+        "attempt_id": "vat_generic",
+        "artifact_id": "var_generic",
+        "kind": "image",
+        "provider": "xai",
+        "model": "image",
+        "hard_gate": {"passed": True},
+        "scores": {"final_score": 0.96},
+        "judge_scores": {
+            "aesthetic_fit": 0.96,
+            "reference_adherence": 0.9,
+            "novelty": 0.9,
+            "motion_quality": 1.0,
+        },
+        "preference_dimensions": {
+            "subject_beauty": 0.24,
+            "face_naturalness": 0.26,
+            "glamour_impact": 0.25,
+            "fashion_material_quality": 0.28,
+            "pose_composition": 0.3,
+        },
+    }
+    aligned = {
+        "attempt_id": "vat_aligned",
+        "artifact_id": "var_aligned",
+        "kind": "image",
+        "provider": "xai",
+        "model": "image",
+        "hard_gate": {"passed": True},
+        "scores": {"final_score": 0.78},
+        "judge_scores": {
+            "aesthetic_fit": 0.78,
+            "reference_adherence": 0.82,
+            "novelty": 0.74,
+            "motion_quality": 1.0,
+        },
+        "preference_dimensions": {
+            "subject_beauty": 0.82,
+            "face_naturalness": 0.84,
+            "glamour_impact": 0.8,
+            "fashion_material_quality": 0.83,
+            "pose_composition": 0.78,
+        },
+    }
+    generic["reward"] = score_visual_candidate(
+        generic,
+        provider_stats=provider_stats,
+        preference_profile=preference_profile,
+    )
+    aligned["reward"] = score_visual_candidate(
+        aligned,
+        provider_stats=provider_stats,
+        preference_profile=preference_profile,
+    )
+
+    decision = rank_visual_candidates(
+        request_id="vrq_preference_rank",
+        candidates=[generic, aligned],
+        post_threshold=0.70,
+        ask_threshold=0.55,
+    )
+
+    assert decision.decision == "post"
+    assert decision.selected_artifact_id == "var_aligned"
