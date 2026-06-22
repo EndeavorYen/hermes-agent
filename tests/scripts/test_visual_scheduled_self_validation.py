@@ -51,6 +51,28 @@ def _automation_report(*, include_live: bool, include_live_slack_upload: bool = 
             },
             "failures": [],
         },
+        "fixture_quality_suite": {
+            "success": True,
+            "case_count": 2,
+            "failures": [],
+            "cases": [
+                {"case_id": "product_photo_video", "success": True, "failures": []},
+                {"case_id": "fashion_portrait_video", "success": True, "failures": []},
+            ],
+        },
+        "live_quality_suite": (
+            {
+                "success": True,
+                "case_count": 2,
+                "failures": [],
+                "cases": [
+                    {"case_id": "product_photo_video", "success": True, "failures": []},
+                    {"case_id": "fashion_portrait_video", "success": True, "failures": []},
+                ],
+            }
+            if include_live
+            else {"status": "not_requested"}
+        ),
         "feedback_loop": {
             "success": True,
             "next_actions": [
@@ -103,6 +125,8 @@ def test_scheduled_self_validation_defaults_to_fixture_and_writes_reports(monkey
     ]
     assert report["summary"]["scheduled_self_validation_reduces_human_intervention"] is True
     assert report["summary"]["autonomous_rollout_reduces_human_intervention"] is True
+    assert report["summary"]["fixture_quality_suite_success"] is True
+    assert report["summary"]["fixture_quality_suite_case_count"] == 2
     assert (tmp_path / "latest.json").exists()
     assert json.loads((tmp_path / "latest.json").read_text())["run_id"] == report["run_id"]
     assert (tmp_path / "runs" / f"{report['run_id']}.json").exists()
@@ -144,6 +168,8 @@ def test_scheduled_self_validation_runs_live_when_due(monkeypatch, tmp_path):
     assert report["live_policy"]["decision"] == "run"
     assert calls[0]["include_live"] is True
     assert report["summary"]["live_quality_gate_min_score"] == 0.82
+    assert report["summary"]["live_quality_suite_success"] is True
+    assert report["summary"]["live_quality_suite_case_count"] == 2
     state = json.loads((tmp_path / "state.json").read_text())
     assert state["last_live_run_at"] == "2026-06-22T08:00:00+00:00"
 

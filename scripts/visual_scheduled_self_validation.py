@@ -135,6 +135,16 @@ def _summary(automation: dict[str, Any]) -> dict[str, Any]:
         if isinstance(live_slack_delivery.get("delivery"), dict)
         else {}
     )
+    fixture_quality_suite = (
+        automation.get("fixture_quality_suite")
+        if isinstance(automation.get("fixture_quality_suite"), dict)
+        else {}
+    )
+    live_quality_suite = (
+        automation.get("live_quality_suite")
+        if isinstance(automation.get("live_quality_suite"), dict)
+        else {}
+    )
     health = automation.get("health") if isinstance(automation.get("health"), dict) else {}
     self_review = health.get("self_review") if isinstance(health.get("self_review"), dict) else {}
     feedback_action_types = [
@@ -163,6 +173,16 @@ def _summary(automation: dict[str, Any]) -> dict[str, Any]:
         "slack_unexpected_delivery_count": slack_unexpected_delivery_count,
         "scheduled_self_validation_reduces_human_intervention": scheduled_validation_reduces_human_intervention,
         "autonomous_rollout_reduces_human_intervention": self_review.get("reduces_human_intervention") is True,
+        "fixture_quality_suite_success": fixture_quality_suite.get("success")
+        if "success" in fixture_quality_suite
+        else None,
+        "fixture_quality_suite_case_count": _int(fixture_quality_suite.get("case_count")),
+        "fixture_quality_suite_failure_count": len(fixture_quality_suite.get("failures") or []),
+        "live_quality_suite_success": live_quality_suite.get("success")
+        if "success" in live_quality_suite
+        else None,
+        "live_quality_suite_case_count": _int(live_quality_suite.get("case_count")),
+        "live_quality_suite_failure_count": len(live_quality_suite.get("failures") or []),
         "live_slack_upload_success": live_slack_delivery.get("success")
         if "success" in live_slack_delivery
         else None,

@@ -17,6 +17,7 @@ from scripts.visual_autonomous_healthcheck import build_visual_autonomous_health
 from scripts.visual_feedback_loop_report import build_visual_feedback_loop_report
 from scripts.visual_quality_calibration_report import build_quality_calibration_report
 from scripts.visual_live_provider_e2e import build_visual_live_provider_e2e_report
+from scripts.visual_live_provider_e2e import build_visual_live_provider_e2e_suite_report
 from scripts.visual_slack_delivery_e2e import build_visual_slack_delivery_e2e_report
 
 
@@ -28,6 +29,7 @@ def build_visual_e2e_automation_report(
 ) -> dict[str, Any]:
     agent_mode = build_visual_agent_mode_regression_report()
     fixture_e2e = build_visual_live_provider_e2e_report(mode="fixture", work_dir=work_dir)
+    fixture_quality_suite = build_visual_live_provider_e2e_suite_report(mode="fixture", work_dir=work_dir)
     slack_delivery = build_visual_slack_delivery_e2e_report(mode="fixture", work_dir=work_dir)
     live_slack_delivery = (
         build_visual_slack_delivery_e2e_report(mode="live", work_dir=None, upload=True)
@@ -43,14 +45,22 @@ def build_visual_e2e_automation_report(
             if live_provider_enabled()
             else {"status": "skipped", "reason": "live_provider_not_enabled"}
         )
+        live_quality_suite = (
+            build_visual_live_provider_e2e_suite_report(mode="live", work_dir=None)
+            if live_provider_enabled()
+            else {"status": "skipped", "reason": "live_provider_not_enabled"}
+        )
     else:
         live_e2e = {"status": "not_requested"}
+        live_quality_suite = {"status": "not_requested"}
 
     failures = []
     if agent_mode.get("success") is not True:
         failures.append("agent_mode_failed")
     if fixture_e2e.get("success") is not True:
         failures.append("fixture_e2e_failed")
+    if fixture_quality_suite.get("success") is not True:
+        failures.append("fixture_quality_suite_failed")
     if slack_delivery.get("success") is not True:
         failures.append("slack_delivery_failed")
     if health.get("success") is not True:
@@ -61,6 +71,8 @@ def build_visual_e2e_automation_report(
         failures.append("quality_calibration_failed")
     if isinstance(live_e2e, dict) and live_e2e.get("success") is False:
         failures.append("live_e2e_failed")
+    if isinstance(live_quality_suite, dict) and live_quality_suite.get("success") is False:
+        failures.append("live_quality_suite_failed")
     if isinstance(live_slack_delivery, dict) and live_slack_delivery.get("success") is False:
         failures.append("live_slack_delivery_failed")
     return {
@@ -69,9 +81,11 @@ def build_visual_e2e_automation_report(
         "failures": failures,
         "agent_mode": agent_mode,
         "fixture_e2e": fixture_e2e,
+        "fixture_quality_suite": fixture_quality_suite,
         "slack_delivery": slack_delivery,
         "live_slack_delivery": live_slack_delivery,
         "live_e2e": live_e2e,
+        "live_quality_suite": live_quality_suite,
         "health": health,
         "feedback_loop": feedback_loop,
         "quality_calibration": quality_calibration,

@@ -19,6 +19,25 @@ def test_classify_visual_provider_failure_detects_content_moderation_without_raw
     }
 
 
+def test_classify_visual_provider_failure_detects_xai_content_moderation_text():
+    from agent.visual.provider_failures import classify_visual_provider_failure
+
+    result = classify_visual_provider_failure(
+        {
+            "success": False,
+            "error_type": "api_error",
+            "error": (
+                'xAI image generation failed (400): {"code":"Client specified an invalid argument",'
+                '"error":"Generated image rejected by content moderation."}'
+            ),
+        }
+    )
+
+    assert result["failure_class"] == "content_moderation"
+    assert result["retryable"] is True
+    assert result["safe_reframe_allowed"] is True
+
+
 def test_classify_visual_provider_failure_detects_timeout_and_empty_response():
     from agent.visual.provider_failures import classify_visual_provider_failure
 

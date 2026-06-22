@@ -17,6 +17,92 @@ def test_visual_e2e_automation_fixture_default(tmp_path):
     assert report["quality_calibration"]["success"] is True
 
 
+def test_visual_e2e_automation_includes_quality_suite(monkeypatch, tmp_path):
+    from scripts import visual_e2e_automation_report
+
+    calls = []
+
+    def fake_quality_suite(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success": True,
+            "provider_mode": kwargs["mode"],
+            "case_count": 2,
+            "failures": [],
+            "cases": [
+                {"case_id": "product_photo_video", "success": True, "failures": []},
+                {"case_id": "fashion_portrait_video", "success": True, "failures": []},
+            ],
+        }
+
+    def fake_live_provider_e2e_report(*, mode, work_dir=None, **kwargs):
+        return {
+            "success": True,
+            "provider_mode": mode,
+            "failures": [],
+            "payload": {"success": True, "image_count": 1, "video_count": 1},
+            "evidence": {
+                "request_id": f"{mode}_request",
+                "image_count": 1,
+                "video_count": 1,
+                "attempt_count": 2,
+                "artifact_count": 2,
+                "judgment_count": 2,
+                "ranking_count": 2,
+                "learning_trace_count": 2,
+                "judgments_with_learning_metadata": 2,
+                "providers": ["fixture" if mode == "fixture" else "xai"],
+                "require_video": True,
+            },
+        }
+
+    monkeypatch.setattr(
+        visual_e2e_automation_report,
+        "build_visual_live_provider_e2e_report",
+        fake_live_provider_e2e_report,
+    )
+    monkeypatch.setattr(
+        visual_e2e_automation_report,
+        "build_visual_live_provider_e2e_suite_report",
+        fake_quality_suite,
+    )
+    monkeypatch.setattr(visual_e2e_automation_report, "live_provider_enabled", lambda: True)
+
+    report = visual_e2e_automation_report.build_visual_e2e_automation_report(
+        work_dir=tmp_path,
+        include_live=True,
+    )
+
+    assert report["success"] is True
+    assert report["fixture_quality_suite"]["case_count"] == 2
+    assert report["live_quality_suite"]["case_count"] == 2
+    assert calls[0]["mode"] == "fixture"
+    assert calls[0]["work_dir"] == tmp_path
+    assert calls[1]["mode"] == "live"
+    assert calls[1]["work_dir"] is None
+
+
+def test_visual_e2e_automation_fails_when_quality_suite_fails(monkeypatch, tmp_path):
+    from scripts import visual_e2e_automation_report
+
+    monkeypatch.setattr(
+        visual_e2e_automation_report,
+        "build_visual_live_provider_e2e_suite_report",
+        lambda **kwargs: {
+            "success": False,
+            "provider_mode": kwargs["mode"],
+            "case_count": 2,
+            "failures": ["fashion_portrait_video:selected_quality_issue_detected"],
+            "cases": [],
+        },
+    )
+
+    report = visual_e2e_automation_report.build_visual_e2e_automation_report(work_dir=tmp_path)
+
+    assert report["success"] is False
+    assert "fixture_quality_suite_failed" in report["failures"]
+
+
 def test_visual_e2e_automation_fails_when_agent_mode_regression_fails(monkeypatch, tmp_path):
     from scripts import visual_e2e_automation_report
 
@@ -90,11 +176,28 @@ def test_visual_e2e_automation_live_uses_runtime_home_not_fixture_work_dir(monke
             },
         }
 
+    suite_calls = []
+
+    def fake_quality_suite(*, mode, work_dir=None, **kwargs):
+        suite_calls.append({"mode": mode, "work_dir": work_dir, **kwargs})
+        return {
+            "success": True,
+            "provider_mode": mode,
+            "case_count": 2,
+            "failures": [],
+            "cases": [],
+        }
+
     monkeypatch.setattr(visual_e2e_automation_report, "live_provider_enabled", lambda: True)
     monkeypatch.setattr(
         visual_e2e_automation_report,
         "build_visual_live_provider_e2e_report",
         fake_build_live_provider_e2e_report,
+    )
+    monkeypatch.setattr(
+        visual_e2e_automation_report,
+        "build_visual_live_provider_e2e_suite_report",
+        fake_quality_suite,
     )
 
     report = visual_e2e_automation_report.build_visual_e2e_automation_report(
@@ -107,6 +210,10 @@ def test_visual_e2e_automation_live_uses_runtime_home_not_fixture_work_dir(monke
     assert calls[0]["work_dir"] == tmp_path
     assert calls[1]["mode"] == "live"
     assert calls[1]["work_dir"] is None
+    assert suite_calls[0]["mode"] == "fixture"
+    assert suite_calls[0]["work_dir"] == tmp_path
+    assert suite_calls[1]["mode"] == "live"
+    assert suite_calls[1]["work_dir"] is None
 
 
 def test_visual_e2e_automation_can_run_live_slack_upload_with_runtime_home(monkeypatch, tmp_path):

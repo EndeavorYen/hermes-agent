@@ -24,6 +24,26 @@ DEFAULT_PROMPT = (
     "Clean product photography of a matte black fountain pen on white paper, "
     "soft window light, minimal desk scene, professional commercial style."
 )
+DEFAULT_E2E_CASES = [
+    {
+        "case_id": "product_photo_video",
+        "prompt": DEFAULT_PROMPT,
+        "require_video": True,
+        "duration": 4,
+        "video_budget": 1,
+    },
+    {
+        "case_id": "fashion_portrait_video",
+        "prompt": (
+            "Create one image and one short video: professional fashion editorial portrait of an adult woman model in refined black tights, "
+            "beautiful natural face, elegant full-body pose, long-leg composition, tasteful studio glamour."
+        ),
+        "require_video": True,
+        "duration": 4,
+        "candidate_budget": 2,
+        "video_budget": 1,
+    },
+]
 DEFAULT_MIN_QUALITY_SCORE = 0.55
 _ONE_PIXEL_PNG = (
     b"\x89PNG\r\n\x1a\n"
@@ -94,6 +114,44 @@ def build_visual_live_provider_e2e_report(
         "provider_checks": provider_checks,
         "payload": _safe_payload_summary(payload),
         "evidence": evidence,
+    }
+
+
+def build_visual_live_provider_e2e_suite_report(
+    *,
+    mode: str = "live",
+    work_dir: str | Path | None = None,
+    cases: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    case_specs = cases or DEFAULT_E2E_CASES
+    case_reports = []
+    failures: list[str] = []
+    for case in case_specs:
+        case_id = str(case.get("case_id") or f"case_{len(case_reports) + 1}")
+        report = build_visual_live_provider_e2e_report(
+            mode=mode,
+            work_dir=_case_work_dir(work_dir, case_id),
+            prompt=str(case.get("prompt") or DEFAULT_PROMPT),
+            candidate_budget=case.get("candidate_budget"),
+            video_budget=int(case.get("video_budget") or 1),
+            duration=int(case.get("duration") or 4),
+            require_video=case.get("require_video") is not False,
+        )
+        case_report = {
+            "case_id": case_id,
+            "success": report.get("success") is True,
+            "failures": list(report.get("failures") or []),
+            "payload": report.get("payload"),
+            "evidence": report.get("evidence"),
+        }
+        case_reports.append(case_report)
+        failures.extend(f"{case_id}:{failure}" for failure in case_report["failures"])
+    return {
+        "success": not failures,
+        "provider_mode": mode,
+        "case_count": len(case_reports),
+        "failures": failures,
+        "cases": case_reports,
     }
 
 
@@ -308,6 +366,8 @@ def _payload_failures(
     quality_gate = evidence.get("quality_gate")
     if mode == "live" and isinstance(quality_gate, dict) and quality_gate.get("success") is False:
         failures.append("quality_gate_failed")
+    if mode == "live" and isinstance(quality_gate, dict) and quality_gate.get("quality_issues"):
+        failures.append("selected_quality_issue_detected")
     if mode == "live" and _contains_fixture_provider(payload, evidence):
         failures.append("non_live_provider_detected")
     return sorted(set(failures))
@@ -348,17 +408,19 @@ def _provider_failure_counters(attempts: list[dict[str, Any]]) -> tuple[Counter[
     classes: Counter[str] = Counter()
     codes: Counter[str] = Counter()
     for row in attempts:
-        if not (row.get("error_type") or row.get("error_message")):
+        error_type = row.get("error_type") or row.get("provider_error_type")
+        error_message = row.get("error_message") or row.get("provider_error_message")
+        if not (error_type or error_message):
             continue
         failure = classify_visual_provider_failure(
             {
                 "success": False,
-                "error_type": row.get("error_type"),
-                "error": row.get("error_message"),
+                "error_type": error_type,
+                "error": error_message,
             }
         )
         failure_class = str(failure.get("failure_class") or "")
-        provider_code = str(failure.get("provider_message_code") or row.get("error_type") or "")
+        provider_code = str(failure.get("provider_message_code") or error_type or "")
         if failure_class:
             classes[failure_class] += 1
         if provider_code:
@@ -500,6 +562,7 @@ def _quality_gate(
             if row.get("artifact_id") or row.get("id")
         }
     latest_scores: dict[str, float] = {}
+    quality_issues_by_artifact: dict[str, list[str]] = {}
     for row in judgments:
         if row.get("judge_name") != "visual_quality_judge":
             continue
@@ -510,12 +573,23 @@ def _quality_gate(
         if score is None:
             continue
         latest_scores[artifact_id] = score
+        quality_issues = _judgment_quality_issues(row)
+        if quality_issues:
+            quality_issues_by_artifact[artifact_id] = quality_issues
     low_quality_artifacts = [
         artifact_id
         for artifact_id, score in latest_scores.items()
         if score < threshold
     ]
     min_score = min(latest_scores.values()) if latest_scores else None
+    quality_issue_artifacts = sorted(quality_issues_by_artifact)
+    quality_issues = sorted(
+        {
+            issue
+            for issues in quality_issues_by_artifact.values()
+            for issue in issues
+        }
+    )
     return {
         "success": bool(latest_scores) and not low_quality_artifacts,
         "threshold": threshold,
@@ -523,6 +597,9 @@ def _quality_gate(
         "min_score": round(min_score, 4) if min_score is not None else None,
         "artifact_scores": {key: round(value, 4) for key, value in latest_scores.items()},
         "low_quality_artifacts": low_quality_artifacts,
+        "quality_issue_artifacts": quality_issue_artifacts,
+        "quality_issues": quality_issues,
+        "quality_issues_by_artifact": quality_issues_by_artifact,
     }
 
 
@@ -556,6 +633,20 @@ def _judgment_quality_score(row: dict[str, Any]) -> float | None:
             if values:
                 return sum(values) / len(values)
     return None
+
+
+def _judgment_quality_issues(row: dict[str, Any]) -> list[str]:
+    issues: list[str] = []
+    for payload in (row.get("details"), row.get("score_json")):
+        if not isinstance(payload, dict):
+            continue
+        raw_issues = payload.get("quality_issues")
+        if not isinstance(raw_issues, list):
+            continue
+        for issue in raw_issues:
+            if isinstance(issue, str) and issue and issue not in issues:
+                issues.append(issue)
+    return issues
 
 
 def _nested_value(payload: Any, key: str) -> Any:
@@ -605,6 +696,12 @@ def _failure_result(
         "payload": _safe_payload_summary(payload),
         "evidence": evidence,
     }
+
+
+def _case_work_dir(work_dir: str | Path | None, case_id: str) -> Path | None:
+    if work_dir is None:
+        return None
+    return Path(work_dir) / "quality-suite" / case_id
 
 
 @contextlib.contextmanager

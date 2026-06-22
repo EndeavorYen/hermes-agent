@@ -257,6 +257,25 @@ def test_visual_live_provider_e2e_classifies_attempt_failure_root_causes(monkeyp
     assert evidence["retry_attempt_count"] == 1
 
 
+def test_visual_live_provider_e2e_counts_provider_error_schema_columns():
+    from scripts.visual_live_provider_e2e import _provider_failure_counters
+
+    classes, codes = _provider_failure_counters(
+        [
+            {
+                "provider_error_type": "api_error",
+                "provider_error_message": (
+                    'xAI image generation failed (400): {"code":"Client specified an invalid argument",'
+                    '"error":"Generated image rejected by content moderation."}'
+                ),
+            }
+        ]
+    )
+
+    assert classes["content_moderation"] == 1
+    assert codes["api_error"] == 1
+
+
 def test_visual_live_provider_e2e_inspects_selected_artifact_quality_gate(monkeypatch, tmp_path):
     from agent.visual.attempt_ledger import VisualAttemptLedger
     from agent.visual.tracking import default_visual_ledger_path
@@ -330,6 +349,85 @@ def test_visual_live_provider_e2e_inspects_selected_artifact_quality_gate(monkey
     assert evidence["quality_gate"]["low_quality_artifacts"] == [artifact_id]
 
 
+def test_visual_live_provider_e2e_quality_gate_reports_selected_quality_issues(monkeypatch, tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+    from scripts.visual_live_provider_e2e import inspect_visual_e2e_evidence
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ledger = VisualAttemptLedger(default_visual_ledger_path())
+    ledger.initialize()
+    request_id = ledger.record_request(
+        user_prompt="fashion portrait",
+        normalized_intent={"kind": "visual_package", "category": "portrait"},
+        modality="package",
+        operation="visual_package_generate",
+        status="started",
+    )
+    attempt_id = ledger.record_attempt(
+        request_id=request_id,
+        candidate_index=0,
+        provider="xai",
+        model="grok-imagine-image-quality",
+        prompt_original="fashion portrait",
+        prompt_mediated="fashion portrait",
+        parameters_requested={},
+        parameters_effective={},
+        status="completed",
+    )
+    artifact_id = ledger.record_artifact(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        kind="image",
+        local_path=str(tmp_path / "image.jpg"),
+        uri=str(tmp_path / "image.jpg"),
+        content_hash="sha256:selected-quality-issue",
+        mime_type="image/jpeg",
+        is_stable=True,
+        freshness_status="fresh",
+    )
+    ledger.record_judgment(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        artifact_id=artifact_id,
+        judge_name="visual_quality_judge",
+        score=0.84,
+        verdict="review",
+        details={
+            "version": "visual_quality_judge.v0.1",
+            "confidence": 0.84,
+            "quality_issues": ["subject_not_attractive", "stockings_bad"],
+            "scores": {"aesthetic_fit": 0.84, "composition": 0.9},
+        },
+        metadata={
+            "intent_signature": "visig_demo",
+            "strategy_signature": "vstrat_demo",
+            "modality": "image",
+        },
+    )
+
+    evidence = inspect_visual_e2e_evidence(
+        {
+            "visual_request_id": request_id,
+            "images": [str(tmp_path / "image.jpg")],
+            "videos": [],
+            "delivery_metadata": {
+                "selected_visual_artifact_ids": [artifact_id],
+            },
+        },
+        require_video=False,
+    )
+
+    assert evidence["quality_gate"]["quality_issue_artifacts"] == [artifact_id]
+    assert evidence["quality_gate"]["quality_issues_by_artifact"] == {
+        artifact_id: ["subject_not_attractive", "stockings_bad"],
+    }
+    assert evidence["quality_gate"]["quality_issues"] == [
+        "stockings_bad",
+        "subject_not_attractive",
+    ]
+
+
 def test_visual_live_provider_e2e_reports_provider_unavailable_after_retry():
     from scripts.visual_live_provider_e2e import _payload_failures
 
@@ -362,6 +460,35 @@ def test_visual_live_provider_e2e_reports_provider_unavailable_after_retry():
     )
 
     assert "provider_unavailable_after_retry" in failures
+
+
+def test_visual_live_provider_e2e_fails_when_selected_quality_issue_present():
+    from scripts.visual_live_provider_e2e import _payload_failures
+
+    failures = _payload_failures(
+        {"success": True, "images": ["/tmp/image.png"], "videos": []},
+        {
+            "image_count": 1,
+            "video_count": 0,
+            "judgment_count": 1,
+            "ranking_count": 1,
+            "learning_trace_count": 1,
+            "judgments_with_learning_metadata": 1,
+            "inline_vision_judgment_count": 1,
+            "quality_gate": {
+                "success": True,
+                "min_score": 0.84,
+                "threshold": 0.55,
+                "quality_issues": ["subject_not_attractive"],
+                "quality_issue_artifacts": ["var_bad_face"],
+            },
+            "providers": ["xai"],
+        },
+        mode="live",
+        require_video=False,
+    )
+
+    assert "selected_quality_issue_detected" in failures
 
 
 def test_visual_live_provider_e2e_cli_fixture_json(capsys, tmp_path):
