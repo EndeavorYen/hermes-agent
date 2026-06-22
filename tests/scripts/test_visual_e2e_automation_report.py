@@ -82,6 +82,58 @@ def test_visual_e2e_automation_includes_quality_suite(monkeypatch, tmp_path):
     assert calls[1]["work_dir"] is None
 
 
+def test_visual_e2e_automation_exports_quality_suite_next_actions(monkeypatch, tmp_path):
+    from scripts import visual_e2e_automation_report
+
+    def fake_quality_suite(**kwargs):
+        return {
+            "success": True,
+            "provider_mode": kwargs["mode"],
+            "case_count": 1,
+            "failures": [],
+            "quality_repair_summary": {
+                "attempt_count": 1,
+                "success_count": 1,
+                "selected_repair_count": 1,
+                "success_rate": 1.0,
+                "selected_repair_rate": 1.0,
+                "by_modality": {
+                    "video": {
+                        "attempt_count": 1,
+                        "success_count": 1,
+                        "selected_repair_count": 1,
+                    }
+                },
+            },
+            "cases": [],
+        }
+
+    monkeypatch.setattr(
+        visual_e2e_automation_report,
+        "build_visual_live_provider_e2e_suite_report",
+        fake_quality_suite,
+    )
+
+    report = visual_e2e_automation_report.build_visual_e2e_automation_report(work_dir=tmp_path)
+
+    assert report["self_improvement"]["next_actions"] == [
+        {
+            "type": "prefer_quality_repair_retry",
+            "track": "repair",
+            "reason": "fixture_quality_suite_video_repair_succeeded",
+            "confidence": 0.9,
+            "evidence_count": 1,
+            "requires_human_feedback": False,
+            "activation_status": "next_run",
+            "source": "fixture_quality_suite",
+            "modality": "video",
+            "success_rate": 1.0,
+            "selected_repair_rate": 1.0,
+        }
+    ]
+    assert report["self_improvement"]["reduces_human_intervention"] is True
+
+
 def test_visual_e2e_automation_passes_case_timeout_to_quality_suites(monkeypatch, tmp_path):
     from scripts import visual_e2e_automation_report
 

@@ -60,6 +60,10 @@ def build_visual_e2e_automation_report(
         live_e2e = {"status": "not_requested"}
         live_quality_suite = {"status": "not_requested"}
 
+    self_improvement = _self_improvement_summary(
+        fixture_quality_suite=fixture_quality_suite,
+        live_quality_suite=live_quality_suite,
+    )
     failures = []
     if agent_mode.get("success") is not True:
         failures.append("agent_mode_failed")
@@ -94,6 +98,7 @@ def build_visual_e2e_automation_report(
         "live_quality_suite": live_quality_suite,
         "health": health,
         "feedback_loop": feedback_loop,
+        "self_improvement": self_improvement,
         "quality_calibration": quality_calibration,
     }
 
@@ -105,6 +110,98 @@ def live_provider_enabled() -> bool:
         "yes",
         "on",
     }
+
+
+def _self_improvement_summary(
+    *,
+    fixture_quality_suite: dict[str, Any],
+    live_quality_suite: dict[str, Any],
+) -> dict[str, Any]:
+    actions: list[dict[str, Any]] = []
+    actions.extend(
+        _quality_suite_next_actions(
+            fixture_quality_suite,
+            source="fixture_quality_suite",
+        )
+    )
+    actions.extend(
+        _quality_suite_next_actions(
+            live_quality_suite,
+            source="live_quality_suite",
+        )
+    )
+    actions = _dedupe_actions(actions)
+    return {
+        "next_actions": actions,
+        "action_count": len(actions),
+        "reduces_human_intervention": bool(actions),
+        "privacy_safe": True,
+    }
+
+
+def _quality_suite_next_actions(suite: dict[str, Any], *, source: str) -> list[dict[str, Any]]:
+    if not isinstance(suite, dict) or suite.get("success") is not True:
+        return []
+    repair = suite.get("quality_repair_summary")
+    repair = repair if isinstance(repair, dict) else {}
+    by_modality = repair.get("by_modality")
+    by_modality = by_modality if isinstance(by_modality, dict) else {}
+    actions: list[dict[str, Any]] = []
+    for modality, summary in by_modality.items():
+        if not isinstance(modality, str) or not isinstance(summary, dict):
+            continue
+        attempt_count = _int(summary.get("attempt_count"))
+        success_count = _int(summary.get("success_count"))
+        selected_count = _int(summary.get("selected_repair_count"))
+        if attempt_count <= 0 or success_count <= 0 or selected_count <= 0:
+            continue
+        success_rate = _rate(success_count, attempt_count)
+        selected_repair_rate = _rate(selected_count, attempt_count)
+        actions.append(
+            {
+                "type": "prefer_quality_repair_retry",
+                "track": "repair",
+                "reason": f"{source}_{modality}_repair_succeeded",
+                "confidence": min(0.9, 0.55 + success_rate * 0.35),
+                "evidence_count": attempt_count,
+                "requires_human_feedback": False,
+                "activation_status": "next_run",
+                "source": source,
+                "modality": modality,
+                "success_rate": success_rate,
+                "selected_repair_rate": selected_repair_rate,
+            }
+        )
+    return actions
+
+
+def _dedupe_actions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[tuple[str, str, str]] = set()
+    deduped: list[dict[str, Any]] = []
+    for action in actions:
+        key = (
+            str(action.get("type") or ""),
+            str(action.get("source") or ""),
+            str(action.get("modality") or ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(action)
+    return deduped
+
+
+def _int(value: Any) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _rate(numerator: int, denominator: int) -> float:
+    if denominator <= 0:
+        return 0.0
+    return round(numerator / denominator, 4)
 
 
 def main(argv: list[str] | None = None) -> int:

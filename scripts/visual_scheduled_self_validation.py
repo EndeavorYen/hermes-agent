@@ -124,6 +124,11 @@ def _live_policy(
 
 def _summary(automation: dict[str, Any]) -> dict[str, Any]:
     feedback_loop = automation.get("feedback_loop") if isinstance(automation.get("feedback_loop"), dict) else {}
+    self_improvement = (
+        automation.get("self_improvement")
+        if isinstance(automation.get("self_improvement"), dict)
+        else {}
+    )
     live_e2e = automation.get("live_e2e") if isinstance(automation.get("live_e2e"), dict) else {}
     live_evidence = live_e2e.get("evidence") if isinstance(live_e2e.get("evidence"), dict) else {}
     quality_gate = live_evidence.get("quality_gate") if isinstance(live_evidence.get("quality_gate"), dict) else {}
@@ -173,11 +178,10 @@ def _summary(automation: dict[str, Any]) -> dict[str, Any]:
     live_video_repair = _modality_summary(live_quality_repair, "video")
     health = automation.get("health") if isinstance(automation.get("health"), dict) else {}
     self_review = health.get("self_review") if isinstance(health.get("self_review"), dict) else {}
-    feedback_action_types = [
-        str(action.get("type"))
-        for action in feedback_loop.get("next_actions", [])
-        if isinstance(action, dict) and action.get("requires_human_feedback") is not True
-    ]
+    feedback_action_types = _action_types(
+        feedback_loop.get("next_actions"),
+        self_improvement.get("next_actions"),
+    )
     slack_sent_count = _int(delivery.get("sent_count"))
     slack_deliverable_count = _int(delivery.get("deliverable_count"))
     slack_duplicate_delivery_count = _int(delivery.get("duplicate_delivery_count"))
@@ -244,6 +248,20 @@ def _modality_summary(summary: dict[str, Any], modality: str) -> dict[str, Any]:
         return {}
     value = by_modality.get(modality)
     return value if isinstance(value, dict) else {}
+
+
+def _action_types(*action_lists: Any) -> list[str]:
+    values: list[str] = []
+    for actions in action_lists:
+        if not isinstance(actions, list):
+            continue
+        for action in actions:
+            if not isinstance(action, dict) or action.get("requires_human_feedback") is True:
+                continue
+            action_type = str(action.get("type") or "")
+            if action_type and action_type not in values:
+                values.append(action_type)
+    return values
 
 
 def _write_report(output_dir: Path, report: dict[str, Any]) -> None:

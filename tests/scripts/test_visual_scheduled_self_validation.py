@@ -107,6 +107,16 @@ def _automation_report(*, include_live: bool, include_live_slack_upload: bool = 
                 {"type": "rerank_before_slack", "requires_human_feedback": False},
             ],
         },
+        "self_improvement": {
+            "next_actions": [
+                {
+                    "type": "prefer_quality_repair_retry",
+                    "requires_human_feedback": False,
+                    "source": "fixture_quality_suite",
+                }
+            ],
+            "reduces_human_intervention": True,
+        },
         "health": {
             "success": True,
             "self_review": {"reduces_human_intervention": True, "privacy_safe": True},
@@ -149,6 +159,7 @@ def test_scheduled_self_validation_defaults_to_fixture_and_writes_reports(monkey
     assert report["summary"]["feedback_action_types"] == [
         "increase_candidate_budget",
         "rerank_before_slack",
+        "prefer_quality_repair_retry",
     ]
     assert report["summary"]["scheduled_self_validation_reduces_human_intervention"] is True
     assert report["summary"]["autonomous_rollout_reduces_human_intervention"] is True
