@@ -41,6 +41,7 @@ async def test_visual_agent_generate_plans_natural_image_plus_video_request(monk
     assert captured["include_image"] is True
     assert captured["include_video"] is True
     assert captured["candidate_budget"] == 1
+    assert captured["candidate_budget_source"] == "planner_default"
     assert captured["video_budget"] == 1
 
 
@@ -70,6 +71,7 @@ async def test_visual_agent_generate_routes_text_only_video_to_image_first(monke
     assert captured["include_image"] is True
     assert captured["include_video"] is True
     assert captured["candidate_budget"] == 2
+    assert captured["candidate_budget_source"] == "planner_default"
     assert captured["video_budget"] == 1
     assert captured["duration"] == 6
     assert payload["images"] == ["/tmp/source.png"]

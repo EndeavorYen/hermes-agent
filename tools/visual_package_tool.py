@@ -1460,13 +1460,22 @@ def _visual_feedback_policy(
     wants_video: bool,
 ) -> dict[str, Any]:
     report = _runtime_visual_feedback_report()
+    explicit_candidate_budget, default_candidate_budget = _candidate_budget_policy_inputs(args)
     return resolve_visual_feedback_policy(
         report,
         wants_image=wants_image,
         wants_video=wants_video,
-        explicit_candidate_budget=_coerce_int(args.get("candidate_budget")),
-        default_candidate_budget=2,
+        explicit_candidate_budget=explicit_candidate_budget,
+        default_candidate_budget=default_candidate_budget,
     )
+
+
+def _candidate_budget_policy_inputs(args: dict[str, Any]) -> tuple[int | None, int]:
+    value = _coerce_int(args.get("candidate_budget"))
+    source = str(args.get("candidate_budget_source") or "").strip().lower()
+    if source == "planner_default":
+        return None, _clamp_budget(value or 2, minimum=1, maximum=4)
+    return value, 2
 
 
 def _runtime_visual_feedback_report() -> dict[str, Any]:

@@ -64,6 +64,7 @@ def plan_visual_agent_request(
         arguments["attachments"] = attachments
     if wants_image or image_first_for_video:
         arguments["candidate_budget"] = 2 if wants_video and not attachments else 1
+        arguments["candidate_budget_source"] = "planner_default"
     if wants_video:
         arguments["video_budget"] = 1
     aspect_ratio = _infer_aspect_ratio(prompt)
