@@ -199,6 +199,63 @@ class TestUnifiedDispatch:
         assert captured["aspect_ratio"] == "9:16"
         assert provider.last_kwargs == {}
 
+    def test_xai_visual_video_with_multiple_reference_images_routes_to_visual_package(self, monkeypatch):
+        from tools import visual_package_tool
+
+        captured: Dict[str, Any] = {}
+
+        async def fake_visual_package(args, **_kwargs):
+            captured.update(args)
+            return json.dumps(
+                {
+                    "success": True,
+                    "package_status": "success",
+                    "videos": ["/tmp/current-reference-video.mp4"],
+                    "images": [],
+                    "visual_request_id": "vrq_reference_video",
+                    "generation_strategy": {
+                        "image_first_for_video": True,
+                        "video_source_image": "/tmp/selected-source.png",
+                        "video_source_artifact_id": "var_selected_source",
+                    },
+                }
+            )
+
+        monkeypatch.setattr(
+            visual_package_tool,
+            "_handle_visual_package_generate",
+            fake_visual_package,
+        )
+        provider = _RecordingProvider("xai", default_model="grok-imagine-video-1.5")
+        video_gen_registry.register_provider(provider)
+
+        refs = [
+            "https://example.com/candidate-1.png",
+            "https://example.com/candidate-2.png",
+            "https://example.com/candidate-3.png",
+            "https://example.com/candidate-4.png",
+        ]
+        result = self._run(
+            {
+                "prompt": "make a high quality fashion portrait video",
+                "reference_image_urls": refs,
+                "duration": 6,
+                "aspect_ratio": "9:16",
+            },
+            configured="xai",
+        )
+
+        assert result["success"] is True
+        assert result["video"] == "/tmp/current-reference-video.mp4"
+        assert result["route"] == "image_first_visual_package"
+        assert result["recommended_tool"] == "visual_package_generate"
+        assert captured["attachments"] == refs
+        assert captured["include_image"] is False
+        assert captured["include_video"] is True
+        assert captured["candidate_budget"] == 2
+        assert captured["video_budget"] == 1
+        assert provider.last_kwargs == {}
+
     def test_xai_15_text_visual_video_routes_to_visual_package(self, monkeypatch):
         from tools import visual_package_tool
 

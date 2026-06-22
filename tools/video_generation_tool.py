@@ -434,6 +434,7 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
             aspect_ratio=aspect_ratio,
             duration=duration,
             resolution=resolution,
+            reference_image_urls=reference_image_urls,
         ))
 
     try:
@@ -580,13 +581,17 @@ def _should_defer_to_visual_package(
     *,
     prompt: str,
     image_url: str | None,
-    reference_image_urls: List[str],
+    reference_image_urls: List[str] | None,
     provider_name: str,
     model: str | None,
 ) -> bool:
-    if image_url or reference_image_urls:
+    if image_url:
         return False
     if not _uses_image_first_visual_package_auto_route(provider_name, model):
+        return False
+    if reference_image_urls and _looks_like_image_first_visual_video(prompt):
+        return True
+    if reference_image_urls:
         return False
     return _looks_like_image_first_visual_video(prompt)
 
@@ -606,6 +611,7 @@ def _route_visual_video_to_package(
     aspect_ratio: str,
     duration: int | None,
     resolution: str,
+    reference_image_urls: List[str] | None = None,
 ) -> Dict[str, Any]:
     package_args: Dict[str, Any] = {
         "prompt": prompt,
@@ -616,6 +622,8 @@ def _route_visual_video_to_package(
         "video_budget": 1,
         "aspect_ratio": aspect_ratio,
     }
+    if reference_image_urls:
+        package_args["attachments"] = list(reference_image_urls)
     if duration is not None:
         package_args["duration"] = duration
     try:
