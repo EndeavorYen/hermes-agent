@@ -624,7 +624,15 @@ def _retry_generation_payload(
     retry_kwargs.update(_generator_kwargs(recovery.get("modified_arguments")))
     retry_payload = generator(**retry_kwargs)
     retry_payload["retry_of"] = retry_of
-    retry_payload["recovery"] = recovery
+    if retry_payload.get("success"):
+        retry_payload["recovery"] = recovery
+    else:
+        _annotate_generation_failure(
+            retry_payload,
+            base_kwargs=retry_kwargs,
+            request={**request, "arguments": retry_kwargs},
+            retry_budget_remaining=max(0, retry_budget_remaining - 1),
+        )
     return retry_payload
 
 

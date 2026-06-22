@@ -49,6 +49,26 @@ def test_classify_visual_provider_failure_detects_reference_aspect_rate_and_unav
     )
 
 
+def test_classify_visual_provider_failure_detects_xai_connection_refused_503_text():
+    from agent.visual.provider_failures import classify_visual_provider_failure
+
+    result = classify_visual_provider_failure(
+        {
+            "success": False,
+            "error_type": "api_error",
+            "error": (
+                "xAI image generation failed (503): upstream connect error or disconnect/reset "
+                "before headers. retried and the latest reset reason: remote connection failure, "
+                "transport failure reason: delayed connect error: Connection refused"
+            ),
+        }
+    )
+
+    assert result["failure_class"] == "provider_unavailable"
+    assert result["retryable"] is True
+    assert result["safe_reframe_allowed"] is False
+
+
 def test_classify_visual_provider_failure_unknown_fails_closed():
     from agent.visual.provider_failures import classify_visual_provider_failure
 

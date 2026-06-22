@@ -968,5 +968,101 @@ async def test_visual_package_retries_empty_image_response_before_ranking(monkey
     assert attempts[1]["metadata"]["retry_of"] == 0
 
 
+@pytest.mark.asyncio
+async def test_visual_package_retries_transient_image_failure_before_image_first_video(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image = tmp_path / "retry-image.png"
+    video = tmp_path / "retry-video.mp4"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    video.write_bytes(b"video")
+    image_calls = []
+    video_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        if len(image_calls) == 1:
+            return {
+                "success": False,
+                "error_type": "api_error",
+                "error": (
+                    "xAI image generation failed (503): upstream connect error or disconnect/reset "
+                    "before headers. retried and the latest reset reason: remote connection failure, "
+                    "transport failure reason: delayed connect error: Connection refused"
+                ),
+                "provider": "xai-oauth",
+                "model": "grok-imagine-image-quality",
+            }
+        return {
+            "success": True,
+            "image": str(image),
+            "provider": "xai",
+            "model": "grok-imagine-image-quality",
+        }
+
+    def fake_generate_video(**kwargs):
+        video_calls.append(kwargs)
+        return {
+            "success": True,
+            "video": str(video),
+            "provider": "xai",
+            "model": "grok-imagine-video-1.5",
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+    monkeypatch.setattr(visual_package_tool, "generate_video", fake_generate_video)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "請產出一段產品影片：霧黑鋼筆放在白紙上，柔和窗光。",
+                "include_image": False,
+                "include_video": True,
+                "candidate_budget": 1,
+                "video_budget": 1,
+            }
+        )
+    )
+
+    assert len(image_calls) == 2
+    assert video_calls[0]["image_url"] == str(image)
+    assert payload["success"] is True
+    assert payload["images"] == []
+    assert payload["videos"] == [str(video)]
+    assert payload["generation_payloads"]["image"][0]["failure"]["failure_class"] == "provider_unavailable"
+    assert payload["generation_payloads"]["image"][1]["retry_of"] == 0
+    assert payload["generation_strategy"]["image_first_for_video"] is True
+    assert payload["generation_strategy"]["video_source_image"] == str(image)
+
+
+def test_retry_generation_payload_records_retry_failure_with_exhausted_recovery():
+    from tools.visual_package_tool import _retry_generation_payload
+
+    retry_payload = _retry_generation_payload(
+        generator=lambda **_kwargs: {
+            "success": False,
+            "error_type": "api_error",
+            "error": "xAI image generation failed (503): Connection refused",
+            "provider": "xai-oauth",
+            "model": "grok-imagine-image-quality",
+        },
+        payload={"success": False, "error": "empty_response"},
+        base_kwargs={"prompt": "product image", "aspect_ratio": "1:1"},
+        request={
+            "prompt": "product image",
+            "arguments": {"prompt": "product image", "aspect_ratio": "1:1"},
+        },
+        retry_budget_remaining=1,
+        retry_of=0,
+    )
+
+    assert retry_payload is not None
+    assert retry_payload["retry_of"] == 0
+    assert retry_payload["failure"]["failure_class"] == "provider_unavailable"
+    assert retry_payload["recovery"]["decision"] == "fail"
+    assert retry_payload["recovery"]["reason"] == "retry_budget_exhausted"
+
+
 def _list_rows(ledger, table):
     return ledger._list(table)

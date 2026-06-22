@@ -27,7 +27,7 @@ def classify_visual_provider_failure(payload: dict[str, Any] | Exception) -> dic
         return _result("unsupported_aspect_ratio", retryable=True, safe_reframe_allowed=False, provider_message_code=code)
     if status_code == 429 or _contains(text, "rate limit", "rate_limited", "too many requests"):
         return _result("rate_limited", retryable=True, safe_reframe_allowed=False, provider_message_code=code)
-    if status_code in {500, 502, 503, 504} or _contains(text, "unavailable", "bad gateway", "service down"):
+    if status_code in {500, 502, 503, 504} or _is_provider_unavailable_text(text):
         return _result("provider_unavailable", retryable=True, safe_reframe_allowed=False, provider_message_code=code)
     return _result("unknown", retryable=False, safe_reframe_allowed=False, provider_message_code=code)
 
@@ -103,6 +103,29 @@ def _is_timeout(payload: dict[str, Any] | Exception, text: str) -> bool:
 
 def _contains(text: str, *needles: str) -> bool:
     return any(needle in text for needle in needles)
+
+
+def _is_provider_unavailable_text(text: str) -> bool:
+    return _contains(
+        text,
+        "(500)",
+        "(502)",
+        "(503)",
+        "(504)",
+        "http 500",
+        "http 502",
+        "http 503",
+        "http 504",
+        "unavailable",
+        "bad gateway",
+        "service down",
+        "connection refused",
+        "connect error",
+        "connection failure",
+        "remote connection failure",
+        "transport failure",
+        "reset before headers",
+    )
 
 
 def _flatten_text(value: Any) -> str:

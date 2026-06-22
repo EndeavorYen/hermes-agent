@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import tempfile
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from agent.visual.attempt_ledger import VisualAttemptLedger
+from agent.visual.provider_failures import classify_visual_provider_failure
 from agent.visual.tracking import default_visual_ledger_path
 
 
@@ -140,6 +142,7 @@ def inspect_visual_e2e_evidence(
             if str(row.get("provider") or "")
         }
     )
+    provider_failure_classes, provider_error_codes = _provider_failure_counters(attempts)
     learning_trace_count = sum(1 for row in rankings if _ranking_has_learning_trace(row))
     judgments_with_learning_metadata = sum(
         1 for row in judgments if _judgment_has_learning_metadata(row)
@@ -147,6 +150,7 @@ def inspect_visual_e2e_evidence(
     inline_vision_judgment_count = sum(
         1 for row in judgments if _judgment_uses_inline_vision(row)
     )
+    retry_attempt_count = _retry_attempt_count(payload=payload, attempts=attempts)
     return {
         "request_id": request_id,
         "image_count": len(payload.get("images") or []),
@@ -159,6 +163,9 @@ def inspect_visual_e2e_evidence(
         "learning_trace_count": learning_trace_count,
         "judgments_with_learning_metadata": judgments_with_learning_metadata,
         "inline_vision_judgment_count": inline_vision_judgment_count,
+        "provider_failure_classes": dict(provider_failure_classes),
+        "provider_error_codes": dict(provider_error_codes),
+        "retry_attempt_count": retry_attempt_count,
         "providers": providers,
         "require_video": require_video,
     }
@@ -279,6 +286,15 @@ def _payload_failures(
         failures.append("missing_learning_trace")
     if evidence.get("judgments_with_learning_metadata", 0) < (2 if require_video else 1):
         failures.append("missing_judgment_learning_metadata")
+    provider_failures = evidence.get("provider_failure_classes")
+    if (
+        mode == "live"
+        and isinstance(provider_failures, dict)
+        and provider_failures.get("provider_unavailable", 0) >= 1
+        and evidence.get("retry_attempt_count", 0) >= 1
+        and payload.get("success") is not True
+    ):
+        failures.append("provider_unavailable_after_retry")
     if mode == "live" and evidence.get("image_count", 0) >= 1 and evidence.get("inline_vision_judgment_count", 0) < 1:
         failures.append("missing_inline_vision_judgment")
     if mode == "live" and _contains_fixture_provider(payload, evidence):
@@ -315,6 +331,51 @@ def _safe_payload_summary(payload: dict[str, Any] | None) -> dict[str, Any] | No
         "error_type": payload.get("error_type"),
         "error": payload.get("error"),
     }
+
+
+def _provider_failure_counters(attempts: list[dict[str, Any]]) -> tuple[Counter[str], Counter[str]]:
+    classes: Counter[str] = Counter()
+    codes: Counter[str] = Counter()
+    for row in attempts:
+        if not (row.get("error_type") or row.get("error_message")):
+            continue
+        failure = classify_visual_provider_failure(
+            {
+                "success": False,
+                "error_type": row.get("error_type"),
+                "error": row.get("error_message"),
+            }
+        )
+        failure_class = str(failure.get("failure_class") or "")
+        provider_code = str(failure.get("provider_message_code") or row.get("error_type") or "")
+        if failure_class:
+            classes[failure_class] += 1
+        if provider_code:
+            codes[provider_code] += 1
+    return classes, codes
+
+
+def _retry_attempt_count(*, payload: dict[str, Any], attempts: list[dict[str, Any]]) -> int:
+    payload_retries = _payload_retry_count(payload)
+    if payload_retries:
+        return payload_retries
+    return sum(1 for row in attempts if _attempt_is_retry(row))
+
+
+def _payload_retry_count(payload: dict[str, Any]) -> int:
+    generation_payloads = payload.get("generation_payloads")
+    if not isinstance(generation_payloads, dict):
+        return 0
+    count = 0
+    for value in generation_payloads.values():
+        items = value if isinstance(value, list) else [value]
+        count += sum(1 for item in items if isinstance(item, dict) and item.get("retry_of") is not None)
+    return count
+
+
+def _attempt_is_retry(row: dict[str, Any]) -> bool:
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    return metadata.get("retry_of") is not None
 
 
 def _rows_for_request(

@@ -175,6 +175,94 @@ def test_visual_live_provider_e2e_reads_legacy_judgments_by_artifact(monkeypatch
     assert evidence["learning_trace_count"] == 1
 
 
+def test_visual_live_provider_e2e_classifies_attempt_failure_root_causes(monkeypatch, tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+    from scripts.visual_live_provider_e2e import inspect_visual_e2e_evidence
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ledger = VisualAttemptLedger(default_visual_ledger_path())
+    ledger.initialize()
+    request_id = ledger.record_request(
+        user_prompt="test",
+        normalized_intent={"kind": "visual_package"},
+        modality="package",
+        operation="visual_package_generate",
+        status="started",
+    )
+    for candidate_index in (0, 1):
+        ledger.record_attempt(
+            request_id=request_id,
+            candidate_index=candidate_index,
+            provider="xai-oauth",
+            model="grok-imagine-image-quality",
+            prompt_original="test",
+            prompt_mediated="test",
+            parameters_requested={"aspect_ratio": "1:1"},
+            parameters_effective={"aspect_ratio": "1:1"},
+            status="failed",
+            error_type="api_error",
+            error_message=(
+                "xAI image generation failed (503): upstream connect error; "
+                "Connection refused"
+            ),
+        )
+
+    evidence = inspect_visual_e2e_evidence(
+        {
+            "success": False,
+            "visual_request_id": request_id,
+            "images": [],
+            "videos": [],
+            "generation_payloads": {
+                "image": [
+                    {"success": False, "error_type": "api_error"},
+                    {"success": False, "retry_of": 0, "error_type": "api_error"},
+                ]
+            },
+        },
+        require_video=True,
+    )
+
+    assert evidence["provider_failure_classes"]["provider_unavailable"] == 2
+    assert evidence["provider_error_codes"]["api_error"] == 2
+    assert evidence["retry_attempt_count"] == 1
+
+
+def test_visual_live_provider_e2e_reports_provider_unavailable_after_retry():
+    from scripts.visual_live_provider_e2e import _payload_failures
+
+    failures = _payload_failures(
+        {
+            "success": False,
+            "images": [],
+            "videos": [],
+            "generation_payloads": {
+                "image": [
+                    {"success": False, "error_type": "api_error"},
+                    {"success": False, "retry_of": 0, "error_type": "api_error"},
+                ]
+            },
+        },
+        {
+            "image_count": 0,
+            "video_count": 0,
+            "judgment_count": 0,
+            "ranking_count": 2,
+            "learning_trace_count": 2,
+            "judgments_with_learning_metadata": 0,
+            "provider_failure_classes": {"provider_unavailable": 2},
+            "provider_error_codes": {"api_error": 2},
+            "retry_attempt_count": 1,
+            "providers": ["xai-oauth"],
+        },
+        mode="live",
+        require_video=True,
+    )
+
+    assert "provider_unavailable_after_retry" in failures
+
+
 def test_visual_live_provider_e2e_cli_fixture_json(capsys, tmp_path):
     from scripts.visual_live_provider_e2e import main
 
