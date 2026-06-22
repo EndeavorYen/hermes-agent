@@ -24,6 +24,7 @@ DEFAULT_PROMPT = (
     "Clean product photography of a matte black fountain pen on white paper, "
     "soft window light, minimal desk scene, professional commercial style."
 )
+DEFAULT_MIN_QUALITY_SCORE = 0.55
 _ONE_PIXEL_PNG = (
     b"\x89PNG\r\n\x1a\n"
     b"\x00\x00\x00\rIHDR"
@@ -151,6 +152,12 @@ def inspect_visual_e2e_evidence(
         1 for row in judgments if _judgment_uses_inline_vision(row)
     )
     retry_attempt_count = _retry_attempt_count(payload=payload, attempts=attempts)
+    quality_gate = _quality_gate(
+        payload=payload,
+        artifacts=artifacts,
+        judgments=judgments,
+        threshold=_min_quality_score_threshold(),
+    )
     return {
         "request_id": request_id,
         "image_count": len(payload.get("images") or []),
@@ -168,6 +175,7 @@ def inspect_visual_e2e_evidence(
         "retry_attempt_count": retry_attempt_count,
         "providers": providers,
         "require_video": require_video,
+        "quality_gate": quality_gate,
     }
 
 
@@ -297,6 +305,9 @@ def _payload_failures(
         failures.append("provider_unavailable_after_retry")
     if mode == "live" and evidence.get("image_count", 0) >= 1 and evidence.get("inline_vision_judgment_count", 0) < 1:
         failures.append("missing_inline_vision_judgment")
+    quality_gate = evidence.get("quality_gate")
+    if mode == "live" and isinstance(quality_gate, dict) and quality_gate.get("success") is False:
+        failures.append("quality_gate_failed")
     if mode == "live" and _contains_fixture_provider(payload, evidence):
         failures.append("non_live_provider_detected")
     return sorted(set(failures))
@@ -472,6 +483,101 @@ def _judgment_uses_inline_vision(row: dict[str, Any]) -> bool:
         if evidence.get("source") == "inline_vision_judge":
             return True
     return False
+
+
+def _quality_gate(
+    *,
+    payload: dict[str, Any],
+    artifacts: list[dict[str, Any]],
+    judgments: list[dict[str, Any]],
+    threshold: float,
+) -> dict[str, Any]:
+    selected_ids = _selected_artifact_ids(payload)
+    if not selected_ids:
+        selected_ids = {
+            str(row.get("artifact_id") or row.get("id") or "")
+            for row in artifacts
+            if row.get("artifact_id") or row.get("id")
+        }
+    latest_scores: dict[str, float] = {}
+    for row in judgments:
+        if row.get("judge_name") != "visual_quality_judge":
+            continue
+        artifact_id = str(row.get("artifact_id") or "")
+        if not artifact_id or artifact_id not in selected_ids:
+            continue
+        score = _judgment_quality_score(row)
+        if score is None:
+            continue
+        latest_scores[artifact_id] = score
+    low_quality_artifacts = [
+        artifact_id
+        for artifact_id, score in latest_scores.items()
+        if score < threshold
+    ]
+    min_score = min(latest_scores.values()) if latest_scores else None
+    return {
+        "success": bool(latest_scores) and not low_quality_artifacts,
+        "threshold": threshold,
+        "score_count": len(latest_scores),
+        "min_score": round(min_score, 4) if min_score is not None else None,
+        "artifact_scores": {key: round(value, 4) for key, value in latest_scores.items()},
+        "low_quality_artifacts": low_quality_artifacts,
+    }
+
+
+def _selected_artifact_ids(payload: dict[str, Any]) -> set[str]:
+    delivery_metadata = payload.get("delivery_metadata")
+    if not isinstance(delivery_metadata, dict):
+        return set()
+    selected = delivery_metadata.get("selected_visual_artifact_ids")
+    if not isinstance(selected, list):
+        return set()
+    return {str(item) for item in selected if item}
+
+
+def _judgment_quality_score(row: dict[str, Any]) -> float | None:
+    for value in (
+        row.get("score"),
+        _nested_value(row.get("details"), "confidence"),
+        _nested_value(row.get("score_json"), "confidence"),
+    ):
+        score = _coerce_score(value)
+        if score is not None:
+            return score
+    for payload in (row.get("details"), row.get("score_json")):
+        scores = _nested_value(payload, "scores")
+        if isinstance(scores, dict):
+            values = [
+                _coerce_score(value)
+                for value in scores.values()
+            ]
+            values = [value for value in values if value is not None]
+            if values:
+                return sum(values) / len(values)
+    return None
+
+
+def _nested_value(payload: Any, key: str) -> Any:
+    return payload.get(key) if isinstance(payload, dict) else None
+
+
+def _coerce_score(value: Any) -> float | None:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, min(1.0, numeric))
+
+
+def _min_quality_score_threshold() -> float:
+    raw = os.environ.get("HERMES_VISUAL_E2E_MIN_QUALITY_SCORE")
+    if raw is None or not raw.strip():
+        return DEFAULT_MIN_QUALITY_SCORE
+    try:
+        return max(0.0, min(1.0, float(raw)))
+    except ValueError:
+        return DEFAULT_MIN_QUALITY_SCORE
 
 
 def _is_legacy_quality_judgment(row: dict[str, Any]) -> bool:

@@ -229,6 +229,79 @@ def test_visual_live_provider_e2e_classifies_attempt_failure_root_causes(monkeyp
     assert evidence["retry_attempt_count"] == 1
 
 
+def test_visual_live_provider_e2e_inspects_selected_artifact_quality_gate(monkeypatch, tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+    from scripts.visual_live_provider_e2e import inspect_visual_e2e_evidence
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ledger = VisualAttemptLedger(default_visual_ledger_path())
+    ledger.initialize()
+    request_id = ledger.record_request(
+        user_prompt="test",
+        normalized_intent={"kind": "visual_package"},
+        modality="package",
+        operation="visual_package_generate",
+        status="started",
+    )
+    attempt_id = ledger.record_attempt(
+        request_id=request_id,
+        candidate_index=0,
+        provider="xai",
+        model="grok-imagine-image-quality",
+        prompt_original="test",
+        prompt_mediated="test",
+        parameters_requested={},
+        parameters_effective={},
+        status="completed",
+    )
+    artifact_id = ledger.record_artifact(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        kind="image",
+        local_path=str(tmp_path / "image.jpg"),
+        uri=str(tmp_path / "image.jpg"),
+        content_hash="sha256:selected-low-quality",
+        mime_type="image/jpeg",
+        is_stable=True,
+        freshness_status="fresh",
+    )
+    ledger.record_judgment(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        artifact_id=artifact_id,
+        judge_name="visual_quality_judge",
+        score=0.42,
+        verdict="review",
+        details={
+            "version": "visual_quality_judge.v0.1",
+            "confidence": 0.42,
+            "scores": {"aesthetic_fit": 0.35, "composition": 0.49},
+        },
+        metadata={
+            "intent_signature": "visig_demo",
+            "strategy_signature": "vstrat_demo",
+            "modality": "image",
+        },
+    )
+
+    evidence = inspect_visual_e2e_evidence(
+        {
+            "visual_request_id": request_id,
+            "images": [str(tmp_path / "image.jpg")],
+            "videos": [],
+            "delivery_metadata": {
+                "selected_visual_artifact_ids": [artifact_id],
+            },
+        },
+        require_video=False,
+    )
+
+    assert evidence["quality_gate"]["success"] is False
+    assert evidence["quality_gate"]["min_score"] == 0.42
+    assert evidence["quality_gate"]["low_quality_artifacts"] == [artifact_id]
+
+
 def test_visual_live_provider_e2e_reports_provider_unavailable_after_retry():
     from scripts.visual_live_provider_e2e import _payload_failures
 
@@ -361,6 +434,34 @@ def test_visual_live_provider_e2e_requires_inline_vision_for_live_image_outputs(
     )
 
     assert "missing_inline_vision_judgment" in failures
+
+
+def test_visual_live_provider_e2e_fails_when_quality_score_below_threshold():
+    from scripts.visual_live_provider_e2e import _payload_failures
+
+    failures = _payload_failures(
+        {"success": True, "images": ["/tmp/image.png"], "videos": []},
+        {
+            "image_count": 1,
+            "video_count": 0,
+            "judgment_count": 1,
+            "ranking_count": 1,
+            "learning_trace_count": 1,
+            "judgments_with_learning_metadata": 1,
+            "inline_vision_judgment_count": 1,
+            "quality_gate": {
+                "success": False,
+                "min_score": 0.41,
+                "threshold": 0.55,
+                "low_quality_artifacts": ["var_low"],
+            },
+            "providers": ["xai"],
+        },
+        mode="live",
+        require_video=False,
+    )
+
+    assert "quality_gate_failed" in failures
 
 
 def test_visual_live_provider_e2e_counts_legacy_score_json_inline_vision():

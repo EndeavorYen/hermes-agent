@@ -129,6 +129,17 @@ def _decode(column: str, value: Any) -> Any:
     return value
 
 
+def _decode_row(table: str, row: sqlite3.Row) -> dict[str, Any]:
+    decoded = {key: _decode(key, row[key]) for key in row.keys()}
+    if (
+        table == "visual_artifacts"
+        and "duration_seconds" not in decoded
+        and decoded.get("duration_ms") is not None
+    ):
+        decoded["duration_seconds"] = float(decoded["duration_ms"]) / 1000.0
+    return decoded
+
+
 def _encode_column(column: str, value: Any) -> Any:
     if column in _BOOL_COLUMNS and value is not None:
         return int(value)
@@ -420,7 +431,7 @@ class VisualAttemptLedger:
             row = conn.execute(f"SELECT * FROM {table} WHERE {actual_id_column} = ?", (record_id,)).fetchone()
         if row is None:
             raise KeyError(record_id)
-        return {key: _decode(key, row[key]) for key in row.keys()}
+        return _decode_row(table, row)
 
     def _list(
         self,
@@ -435,10 +446,7 @@ class VisualAttemptLedger:
         sql += " ORDER BY created_at, rowid"
         with self._connect() as conn:
             rows = conn.execute(sql, params).fetchall()
-        return [
-            {key: _decode(key, row[key]) for key in row.keys()}
-            for row in rows
-        ]
+        return [_decode_row(table, row) for row in rows]
 
     def _actual_id_column(
         self,

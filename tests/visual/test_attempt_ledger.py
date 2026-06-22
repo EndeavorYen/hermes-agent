@@ -155,6 +155,7 @@ def test_attempt_ledger_writes_legacy_runtime_schema(tmp_path):
                 source_url TEXT,
                 content_hash TEXT,
                 mime_type TEXT,
+                duration_ms INTEGER,
                 is_stable INTEGER NOT NULL,
                 freshness_status TEXT NOT NULL,
                 created_at TEXT NOT NULL
@@ -206,6 +207,7 @@ def test_attempt_ledger_writes_legacy_runtime_schema(tmp_path):
         kind="image",
         local_path="/tmp/current.png",
         content_hash="sha256:current",
+        duration_seconds=4.25,
         freshness_status="fresh",
         is_stable=True,
     )
@@ -229,5 +231,6 @@ def test_attempt_ledger_writes_legacy_runtime_schema(tmp_path):
     assert ledger.get_request(request_id)["normalized_intent_json"] == {"kind": "visual_package"}
     assert ledger.get_attempt(attempt_id)["parameters_requested_json"] == {"aspect_ratio": "16:9"}
     assert ledger.get_artifact(artifact_id)["source_url"] is None
+    assert ledger.get_artifact(artifact_id)["duration_seconds"] == 4.25
     assert ledger.get_delivery(delivery_id)["delivery_status"] == "sent"
     assert ledger.get_feedback(feedback_id)["parsed_json"] == {"selection_hint": 1}

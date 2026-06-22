@@ -890,6 +890,7 @@ def _record_artifact_ref(
         bytes=meta.bytes,
         width=meta.width,
         height=meta.height,
+        duration_seconds=getattr(meta, "duration_seconds", None),
         is_stable=is_stable,
         freshness_status=freshness_status,
     )

@@ -299,6 +299,8 @@ async def test_visual_package_video_aspect_follows_selected_source_image(monkeyp
 
 @pytest.mark.asyncio
 async def test_visual_package_generate_materializes_successful_remote_video_url(monkeypatch, tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
     from tools import visual_package_tool
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -335,6 +337,22 @@ async def test_visual_package_generate_materializes_successful_remote_video_url(
         raising=False,
     )
 
+    def fake_probe_media_reference(ref):
+        is_video = str(ref).endswith(".mp4")
+        return SimpleNamespace(
+            sha256=f"hash:{ref}",
+            is_stable=True,
+            freshness_status="fresh",
+            local_path=str(ref) if str(ref).startswith("/") else None,
+            mime_type="video/mp4" if is_video else "image/png",
+            bytes=10,
+            width=1024 if is_video else 1,
+            height=576 if is_video else 1,
+            duration_seconds=4.25 if is_video else None,
+        )
+
+    monkeypatch.setattr(visual_package_tool, "probe_media_reference", fake_probe_media_reference)
+
     payload = json.loads(
         await visual_package_tool._handle_visual_package_generate(
             {"prompt": "請產出一張圖片和一段影片：霧黑鋼筆。"}
@@ -344,6 +362,16 @@ async def test_visual_package_generate_materializes_successful_remote_video_url(
     assert payload["success"] is True
     assert payload["videos"] == [str(cached_video)]
     assert len(payload["delivery_metadata"]["selected_visual_artifact_ids"]) == 2
+    ledger = VisualAttemptLedger(default_visual_ledger_path())
+    artifacts = ledger._list(
+        "visual_artifacts",
+        where="request_id = ?",
+        params=(payload["visual_request_id"],),
+    )
+    video_artifact = next(row for row in artifacts if row["kind"] == "video")
+    assert video_artifact["width"] == 1024
+    assert video_artifact["height"] == 576
+    assert video_artifact["duration_seconds"] == 4.25
 
 
 @pytest.mark.asyncio
