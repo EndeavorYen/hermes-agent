@@ -62,6 +62,48 @@ def test_vision_judge_maps_stocking_quality_defect():
     assert "stocking_quality" not in observation
 
 
+def test_vision_judge_preserves_preference_dimension_metrics():
+    from agent.visual.judges.vision import build_vision_judge_observation
+
+    observation = build_vision_judge_observation(
+        {
+            "reference_adherence": 0.8,
+            "subject_quality": 0.45,
+            "face_quality": 0.3,
+            "visual_appeal": 0.5,
+            "glamour_impact": 0.4,
+            "composition": 0.7,
+            "pose_composition": 0.35,
+            "fashion_material_quality": 0.25,
+        }
+    )
+
+    assert observation["subject_quality"] == 0.45
+    assert observation["face_quality"] == 0.3
+    assert observation["glamour_impact"] == 0.4
+    assert observation["pose_composition"] == 0.35
+    assert observation["fashion_material_quality"] == 0.25
+    assert "face_quality_low" in observation["artifact_defects"]
+    assert "glamour_impact_low" in observation["artifact_defects"]
+    assert "pose_composition_weak" in observation["artifact_defects"]
+    assert "composition_weak" not in observation["artifact_defects"]
+    assert "stockings_quality_low" in observation["artifact_defects"]
+
+
+def test_vision_judge_keeps_pose_and_scene_composition_defects_separate():
+    from agent.visual.judges.vision import build_vision_judge_observation
+
+    observation = build_vision_judge_observation(
+        {
+            "composition": 0.8,
+            "pose_composition": 0.2,
+        }
+    )
+
+    assert "pose_composition_weak" in observation["artifact_defects"]
+    assert "composition_weak" not in observation["artifact_defects"]
+
+
 def test_vision_judge_preserves_video_quality_dimensions():
     from agent.visual.judges.vision import build_vision_judge_observation
 

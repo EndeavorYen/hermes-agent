@@ -254,7 +254,19 @@ def _quality_issues_from_observation(
             and "missing_video_duration" in defect_set
         ):
             continue
-        if issue in {"subject_not_attractive", "not_beautiful", "stockings_bad"} and not portrait_like:
+        if (
+            issue
+            in {
+                "subject_not_attractive",
+                "face_unnatural",
+                "not_beautiful",
+                "not_glamorous",
+                "stockings_bad",
+            }
+            and not portrait_like
+        ):
+            continue
+        if issue == "composition_bad" and defect_text == "pose_composition_weak" and not portrait_like:
             continue
         if issue and issue not in issues:
             issues.append(issue)
@@ -320,6 +332,7 @@ def _issue_for_defect(defect: str) -> str | None:
         "stockings_quality_low": "stockings_bad",
         "bad_stockings": "stockings_bad",
         "composition_weak": "composition_bad",
+        "pose_composition_weak": "composition_bad",
         "reference_identity_drift": "reference_identity_drift",
         "aspect_mismatch": "aspect_integrity_bad",
         "weak_aspect_integrity": "aspect_integrity_bad",

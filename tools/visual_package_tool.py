@@ -57,10 +57,14 @@ Evaluate this generated visual artifact for automated quality ranking.
 Return only a JSON object with numeric values from 0.0 to 1.0:
 {
   "reference_adherence": 0.5,
+  "subject_quality": 0.5,
   "face_quality": 0.5,
   "visual_appeal": 0.5,
+  "glamour_impact": 0.5,
   "composition": 0.5,
+  "pose_composition": 0.5,
   "pose_novelty": 0.5,
+  "fashion_material_quality": 0.5,
   "stocking_quality": 0.5
 }
 Do not include names, private prompt text, file paths, or prose.

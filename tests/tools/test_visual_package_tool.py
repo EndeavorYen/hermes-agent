@@ -1791,7 +1791,9 @@ async def test_visual_package_carries_provider_vision_observation_into_judgment(
     assert quality_judgments[0]["details"]["quality_issues"] == [
         "subject_not_attractive",
         "not_beautiful",
+        "not_glamorous",
         "stockings_bad",
+        "face_unnatural",
     ]
 
 
@@ -2046,7 +2048,13 @@ def test_score_candidates_uses_candidate_vision_observation_for_aesthetic_issues
     )
 
     judgment = ledger._list("visual_judgments")[0]
-    assert candidate["quality_issues"] == ["subject_not_attractive", "not_beautiful", "stockings_bad"]
+    assert candidate["quality_issues"] == [
+        "subject_not_attractive",
+        "not_beautiful",
+        "not_glamorous",
+        "stockings_bad",
+        "face_unnatural",
+    ]
     assert candidate["reward"]["dimensions"]["aesthetic_fit"] < 0.5
     assert judgment["metadata"]["judge_sources"]["aesthetic_fit"] == "vision"
 
@@ -2097,10 +2105,26 @@ def test_score_candidates_runs_inline_vision_before_reward(tmp_path):
     )
 
     judgment = ledger._list("visual_judgments")[0]
-    assert candidate["quality_issues"] == ["subject_not_attractive", "not_beautiful", "stockings_bad"]
+    assert candidate["quality_issues"] == [
+        "subject_not_attractive",
+        "not_beautiful",
+        "not_glamorous",
+        "stockings_bad",
+        "face_unnatural",
+    ]
     assert candidate["reward"]["dimensions"]["aesthetic_fit"] < 0.5
     assert judgment["metadata"]["vision_observation_source"] == "inline_vision_judge"
     assert judgment["details"]["evidence"]["source"] == "inline_vision_judge"
+
+
+def test_inline_vision_prompt_requests_preference_dimension_metrics():
+    from tools.visual_package_tool import INLINE_VISION_JUDGE_PROMPT
+
+    assert "subject_quality" in INLINE_VISION_JUDGE_PROMPT
+    assert "face_quality" in INLINE_VISION_JUDGE_PROMPT
+    assert "glamour_impact" in INLINE_VISION_JUDGE_PROMPT
+    assert "fashion_material_quality" in INLINE_VISION_JUDGE_PROMPT
+    assert "pose_composition" in INLINE_VISION_JUDGE_PROMPT
 
 
 @pytest.mark.asyncio

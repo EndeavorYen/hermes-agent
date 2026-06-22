@@ -76,7 +76,9 @@ def test_independent_vision_audit_records_latest_visual_quality_judgment(tmp_pat
     assert judgments[-1]["details"]["quality_issues"] == [
         "subject_not_attractive",
         "not_beautiful",
+        "not_glamorous",
         "stockings_bad",
+        "face_unnatural",
     ]
     assert calibration["matched_feedback_count"] == 1
     assert calibration["counts"]["judge_human_agreement"] == 1

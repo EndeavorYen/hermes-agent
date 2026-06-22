@@ -56,9 +56,13 @@ def _merge_observations(
     for key in (
         "reference_adherence",
         "subject_quality",
+        "face_quality",
         "visual_appeal",
+        "glamour_impact",
         "composition",
+        "pose_composition",
         "pose_novelty",
+        "fashion_material_quality",
         "aspect_integrity",
         "motion_quality",
         "confidence",

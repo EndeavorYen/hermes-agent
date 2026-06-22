@@ -253,6 +253,8 @@ def test_quality_judge_filters_portrait_reference_defects_for_product_context():
             "artifact_defects": [
                 "reference_identity_drift",
                 "face_quality_low",
+                "glamour_impact_low",
+                "pose_composition_weak",
                 "stockings_quality_low",
             ],
         },

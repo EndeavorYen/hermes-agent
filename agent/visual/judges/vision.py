@@ -6,24 +6,37 @@ from typing import Any
 def build_vision_judge_observation(raw: dict[str, Any]) -> dict[str, Any]:
     source = raw if isinstance(raw, dict) else {}
     reference_adherence = _dimension(source, "reference_adherence", 0.5)
-    subject_quality = _dimension(source, "face_quality", _dimension(source, "subject_quality", 0.5))
+    face_quality = _dimension(source, "face_quality", 0.5)
+    subject_quality = _dimension(source, "subject_quality", face_quality)
     visual_appeal = _dimension(source, "visual_appeal", 0.5)
+    glamour_impact = _dimension(source, "glamour_impact", visual_appeal)
     composition = _dimension(source, "composition", 0.5)
+    pose_composition = _dimension(source, "pose_composition", composition)
     pose_novelty = _dimension(source, "pose_novelty", 0.5)
-    stocking_quality = _dimension(source, "stocking_quality", _dimension(source, "tights_quality", 0.5))
+    fashion_material_quality = _dimension(
+        source,
+        "fashion_material_quality",
+        _dimension(source, "stocking_quality", _dimension(source, "tights_quality", 0.5)),
+    )
     aspect_integrity = _optional_dimension(source, "aspect_integrity")
     motion_quality = _optional_dimension(source, "motion_quality")
 
     defects: list[str] = []
     if reference_adherence < 0.5:
         defects.append("reference_identity_drift")
-    if subject_quality < 0.5:
+    if face_quality < 0.5:
         defects.append("face_quality_low")
+    if subject_quality < 0.5:
+        defects.append("subject_quality_low")
     if visual_appeal < 0.5:
         defects.append("visual_appeal_low")
+    if glamour_impact < 0.5:
+        defects.append("glamour_impact_low")
     if composition < 0.45:
         defects.append("composition_weak")
-    if stocking_quality < 0.5:
+    if pose_composition < 0.45:
+        defects.append("pose_composition_weak")
+    if fashion_material_quality < 0.5:
         defects.append("stockings_quality_low")
     if aspect_integrity is not None and aspect_integrity < 0.5:
         defects.append("weak_aspect_integrity")
@@ -35,17 +48,23 @@ def build_vision_judge_observation(raw: dict[str, Any]) -> dict[str, Any]:
         (
             reference_adherence,
             subject_quality,
+            face_quality,
             visual_appeal,
+            glamour_impact,
             composition,
-            pose_novelty,
+            pose_composition,
         )
-    ) / 5
+    ) / 7
     observation = {
         "reference_adherence": round(reference_adherence, 4),
         "subject_quality": round(subject_quality, 4),
+        "face_quality": round(face_quality, 4),
         "visual_appeal": round(visual_appeal, 4),
+        "glamour_impact": round(glamour_impact, 4),
         "composition": round(composition, 4),
+        "pose_composition": round(pose_composition, 4),
         "pose_novelty": round(pose_novelty, 4),
+        "fashion_material_quality": round(fashion_material_quality, 4),
         "confidence": round(_clamp(confidence), 4),
         "artifact_defects": list(dict.fromkeys(defects)),
         "evidence": {
