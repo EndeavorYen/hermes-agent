@@ -97,6 +97,26 @@ then prove the real runtime behavior.
   quality, higher delivery reliability, lower user intervention, or clearer
   recovery, stop and re-evaluate the objective before adding more machinery.
 
+## Regression Response
+
+When the user reports that behavior got worse, treat it as a product regression
+until evidence proves otherwise.
+
+- **Compare against last known-good behavior.** The current test suite is not
+  enough if the delivered artifact, Slack behavior, or provider success rate
+  visibly regressed.
+- **Localize by layer.** Separate user intent parsing, provider routing, prompt
+  mediation, candidate selection, media generation, video packaging, Slack
+  delivery, learning policy, and runtime configuration before choosing a fix.
+- **Reproduce with representative evidence.** Use the smallest prompt, fixture,
+  or live smoke that exercises the failing product path. For provider or Slack
+  bugs, include one focused live E2E when live testing is allowed.
+- **Do not hide regressions behind phase completion.** New documents, green
+  unit tests, and completed roadmap phases do not count as success if output is
+  uglier, stale, duplicated, stretched, missing, or harder to trigger.
+- **Restore reliability first.** Re-enable smarter autonomy only after the
+  reliable path is back behind evidence gates.
+
 ## Visual Agent Mode Contract
 
 Visual agent mode is the target product behavior for image and video work. It
