@@ -765,6 +765,8 @@ async def test_visual_package_applies_self_validation_guidance_to_first_video_pr
     assert "First-pass visual quality guidance" not in image_calls[0]["prompt"]
     assert "First-pass video quality guidance" in video_calls[0]["prompt"]
     assert "avoid slow motion" in video_calls[0]["prompt"]
+    assert "avoid slow cinematic-only push-in" in video_calls[0]["prompt"]
+    assert "visible subject, camera, or environmental movement" in video_calls[0]["prompt"]
     assert payload["generation_strategy"]["quality_guidance"]["video"]["mode"] == "preferred"
 
 
@@ -3819,6 +3821,7 @@ async def test_visual_package_hardens_video_prompt_without_stretch(monkeypatch, 
     assert video_calls[0]["aspect_ratio"] == "9:16"
     assert "natural real-time motion" in video_calls[0]["prompt"]
     assert "not slow motion" in video_calls[0]["prompt"]
+    assert "visible subject, camera, or environmental movement" in video_calls[0]["prompt"]
 
 
 @pytest.mark.asyncio

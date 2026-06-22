@@ -8,13 +8,25 @@ from agent.visual.aspect_policy import select_video_aspect_ratio
 DEFAULT_SUPPORTED_ASPECT_RATIOS = ["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3"]
 _MOTION_HINT = (
     "natural real-time motion, normal playback speed, clear continuous motion, "
-    "purposeful camera movement, not slow motion"
+    "visible subject, camera, or environmental movement, purposeful camera movement, "
+    "avoid slow cinematic-only push-in, not slow motion"
 )
 _MOTION_REQUIRED_PHRASES = (
     "natural real-time motion",
     "normal playback speed",
     "clear continuous motion",
+    "visible subject, camera, or environmental movement",
+    "avoid slow cinematic-only push-in",
     "not slow motion",
+)
+_EXPLICIT_SLOW_MOTION_TOKENS = (
+    "slow motion",
+    "slow-motion",
+    "slo-mo",
+    "slomo",
+    "慢動作",
+    "慢镜头",
+    "慢鏡頭",
 )
 
 
@@ -39,7 +51,7 @@ def build_hardened_video_request(
         "prompt": _with_motion_hint(prompt),
         "aspect_ratio": aspect_ratio,
         "metadata": {
-            "motion_mode": "natural_motion",
+            "motion_mode": _motion_mode(prompt),
             "source_aspect_ratio": aspect_ratio if source_width and source_height else None,
             "no_stretch": True,
         },
@@ -61,6 +73,8 @@ def classify_video_feedback_repair(parsed_feedback: dict[str, Any]) -> dict[str,
 def _with_motion_hint(prompt: str) -> str:
     clean = str(prompt or "").strip()
     lower = clean.lower()
+    if _explicit_slow_motion_requested(clean):
+        return clean
     if all(phrase in lower for phrase in _MOTION_REQUIRED_PHRASES):
         return clean
     if not clean:
@@ -69,6 +83,17 @@ def _with_motion_hint(prompt: str) -> str:
         missing = [phrase for phrase in _MOTION_REQUIRED_PHRASES if phrase not in lower]
         return f"{clean}. {', '.join(missing)}."
     return f"{clean}. {_MOTION_HINT}."
+
+
+def _motion_mode(prompt: str) -> str:
+    if _explicit_slow_motion_requested(prompt):
+        return "slow_motion_requested"
+    return "natural_motion"
+
+
+def _explicit_slow_motion_requested(prompt: str) -> bool:
+    lowered = str(prompt or "").lower()
+    return any(token in lowered for token in _EXPLICIT_SLOW_MOTION_TOKENS)
 
 
 def _int_or_none(value: Any) -> int | None:

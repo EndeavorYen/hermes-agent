@@ -16,6 +16,8 @@ def test_video_hardening_prefers_source_aspect_and_natural_motion():
     assert "normal playback speed" in request["prompt"]
     assert "clear continuous motion" in request["prompt"]
     assert "not slow motion" in request["prompt"]
+    assert "visible subject, camera, or environmental movement" in request["prompt"]
+    assert "avoid slow cinematic-only push-in" in request["prompt"]
     assert request["metadata"]["source_aspect_ratio"] == "9:16"
 
 
@@ -31,6 +33,22 @@ def test_video_hardening_does_not_duplicate_motion_hint():
 
     assert request["prompt"].lower().count("natural real-time motion") == 1
     assert request["aspect_ratio"] == "1:1"
+
+
+def test_video_hardening_honors_explicit_slow_motion_request():
+    from agent.visual.video_hardening import build_hardened_video_request
+
+    request = build_hardened_video_request(
+        prompt="Slow motion reveal of a matte black fountain pen on white paper",
+        requested_aspect_ratio="16:9",
+        source_media={},
+        supported_aspect_ratios=["16:9", "9:16", "1:1"],
+    )
+
+    assert "slow motion reveal" in request["prompt"].lower()
+    assert "not slow motion" not in request["prompt"].lower()
+    assert "avoid slow cinematic-only push-in" not in request["prompt"].lower()
+    assert request["metadata"]["motion_mode"] == "slow_motion_requested"
 
 
 def test_video_hardening_recommends_retry_for_static_video_feedback():

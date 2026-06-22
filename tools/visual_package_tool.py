@@ -2127,7 +2127,8 @@ def _quality_guidance_entry(
     if modality == "video":
         suffix = (
             "First-pass video quality guidance: use natural real-time motion, "
-            "preserve the source aspect ratio, avoid slow motion, avoid stretching, "
+            "visible subject, camera, or environmental movement, preserve the source aspect ratio, "
+            "avoid slow motion, avoid slow cinematic-only push-in, avoid stretching, "
             "and keep subject anatomy stable."
         )
     elif _portrait_like_category(request_category):
