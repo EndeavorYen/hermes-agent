@@ -1563,6 +1563,83 @@ async def test_visual_package_reads_controlled_strategy_without_prompt_mutation(
 
 
 @pytest.mark.asyncio
+async def test_visual_package_applies_controlled_image_first_strategy_to_runtime_policy(monkeypatch, tmp_path):
+    from agent.visual.strategy_activation import record_strategy_activation
+    from agent.visual.strategy_policy import GLOBAL_VISUAL_AGENT_INTENT_SIGNATURE
+    from agent.visual.tracking import default_visual_ledger_path
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image = tmp_path / "image.png"
+    video = tmp_path / "video.mp4"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    video.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+    ledger = visual_package_tool.VisualAttemptLedger(default_visual_ledger_path())
+    ledger.initialize()
+    record_strategy_activation(
+        ledger,
+        shadow_update_id="vsh_global",
+        intent_signature=GLOBAL_VISUAL_AGENT_INTENT_SIGNATURE,
+        strategy_signature="image_first_rank_then_video",
+        activation_status="controlled",
+        promotion_decision={
+            "decision": "promote_controlled",
+            "allowed": True,
+            "confidence": 0.8206,
+        },
+        metadata={"scope": "global_visual_agent_mode"},
+    )
+    image_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(image),
+            "provider": "fixture",
+            "model": "image",
+            "vision_observation": {
+                "visual_appeal": 0.9,
+                "composition": 0.9,
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+    monkeypatch.setattr(
+        visual_package_tool,
+        "generate_video",
+        lambda **kwargs: {
+            "success": True,
+            "video": str(video),
+            "provider": "fixture",
+            "model": "video",
+        },
+    )
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "請產出一張圖片和一段影片：霧黑鋼筆。",
+                "candidate_budget": 1,
+                "candidate_budget_source": "planner_default",
+                "video_budget": 1,
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert len(image_calls) == 2
+    assert payload["generation_strategy"]["candidate_budget"] == 2
+    assert payload["generation_strategy"]["candidate_budget_source"] == "controlled_strategy"
+    assert payload["generation_strategy"]["image_first_for_video"] is True
+    assert payload["generation_strategy"]["feedback_policy"]["rerank_before_delivery"] is True
+    assert payload["generation_strategy"]["feedback_policy"]["applied_action_types"] == ["prefer_strategy"]
+    assert payload["generation_strategy"]["feedback_policy"]["applied_action_sources"] == ["controlled_strategy"]
+    assert payload["learning"]["mode"] == "controlled_read_only"
+    assert payload["learning"]["strategy_plan"]["strategy_signature"] == "image_first_rank_then_video"
+
+
+@pytest.mark.asyncio
 async def test_visual_package_records_quality_judgment_for_candidates(monkeypatch, tmp_path):
     from agent.visual.attempt_ledger import VisualAttemptLedger
     from agent.visual.tracking import default_visual_ledger_path

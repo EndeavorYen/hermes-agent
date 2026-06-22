@@ -288,6 +288,34 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
     feedback_strategy_plan = None
     if controlled_strategy_plan is not None:
         strategy_plan = controlled_strategy_plan
+        feedback_policy = _feedback_policy_with_controlled_strategy(
+            feedback_policy,
+            controlled_strategy_plan,
+            args=args,
+            wants_image=should_generate_image,
+            wants_video=wants_video,
+        )
+        policy_image_first_for_video = (
+            wants_video
+            and not requested_image
+            and feedback_policy.get("prefer_image_first_video") is True
+        )
+        if policy_image_first_for_video:
+            image_first_for_video = True
+            should_generate_image = True
+        provider_retry_budget = _provider_retry_budget(feedback_policy)
+        candidate_budget = int(feedback_policy.get("candidate_budget") or 0) if should_generate_image else 0
+        candidate_budget_source = (
+            str(feedback_policy.get("candidate_budget_source") or "default")
+            if should_generate_image
+            else "not_requested"
+        )
+        if (
+            args.get("inline_vision_judge") is None
+            and feedback_policy.get("require_preference_dimension_evidence") is True
+        ):
+            inline_vision_judge = True
+        quality_guidance = _quality_guidance_plan(feedback_policy, request_category=request_category)
     else:
         feedback_strategy_plan = _strategy_plan_from_feedback_preference(
             strategy_plan,
@@ -2346,6 +2374,55 @@ def _learning_mode(
     if feedback_strategy_plan is not None:
         return "feedback_preferred_read_only"
     return "shadow"
+
+
+def _feedback_policy_with_controlled_strategy(
+    feedback_policy: dict[str, Any],
+    controlled_strategy_plan: StrategyPlan,
+    *,
+    args: dict[str, Any],
+    wants_image: bool,
+    wants_video: bool,
+) -> dict[str, Any]:
+    if controlled_strategy_plan.strategy_signature != "image_first_rank_then_video" or not wants_video:
+        return feedback_policy
+    patched = dict(feedback_policy)
+    preference = {
+        "strategy_signature": controlled_strategy_plan.strategy_signature,
+        "source": "controlled_strategy",
+        "bucket": controlled_strategy_plan.intent_signature,
+        "activation_status": controlled_strategy_plan.activation_status,
+        "confidence": controlled_strategy_plan.confidence,
+        "candidate_budget": 2,
+        "activation_id": controlled_strategy_plan.activation_id,
+    }
+    patched["strategy_preference"] = preference
+    patched["prefer_image_first_video"] = True
+    patched["rerank_before_delivery"] = True
+    current_budget = _coerce_int(patched.get("candidate_budget")) or 0
+    if wants_image and not _candidate_budget_locked_by_user(args) and current_budget < 2:
+        patched["candidate_budget"] = 2
+        patched["candidate_budget_source"] = "controlled_strategy"
+    _append_unique_policy_value(patched, "applied_action_types", "prefer_strategy")
+    _append_unique_policy_value(patched, "applied_action_sources", "controlled_strategy")
+    _append_unique_policy_value(patched, "policy_sources", "controlled_strategy")
+    return patched
+
+
+def _candidate_budget_locked_by_user(args: dict[str, Any]) -> bool:
+    if _coerce_int(args.get("candidate_budget")) is None:
+        return False
+    source = str(args.get("candidate_budget_source") or "").strip().lower()
+    return source != "planner_default"
+
+
+def _append_unique_policy_value(policy: dict[str, Any], key: str, value: str) -> None:
+    values = policy.get(key)
+    if not isinstance(values, list):
+        values = []
+    if value not in values:
+        values = [*values, value]
+    policy[key] = values
 
 
 def _strategy_plan_from_feedback_preference(
