@@ -13,6 +13,8 @@ def test_video_hardening_prefers_source_aspect_and_natural_motion():
 
     assert request["aspect_ratio"] == "9:16"
     assert "natural real-time motion" in request["prompt"]
+    assert "normal playback speed" in request["prompt"]
+    assert "clear continuous motion" in request["prompt"]
     assert "not slow motion" in request["prompt"]
     assert request["metadata"]["source_aspect_ratio"] == "9:16"
 
@@ -35,6 +37,16 @@ def test_video_hardening_recommends_retry_for_static_video_feedback():
     from agent.visual.video_hardening import classify_video_feedback_repair
 
     repair = classify_video_feedback_repair({"issues": ["static_video", "composition_bad"]})
+
+    assert repair["decision"] == "retry_video"
+    assert repair["reason"] == "static_or_slow_motion_feedback"
+    assert repair["motion_mode"] == "natural_motion"
+
+
+def test_video_hardening_recommends_retry_for_slow_motion_feedback():
+    from agent.visual.video_hardening import classify_video_feedback_repair
+
+    repair = classify_video_feedback_repair({"issues": ["slow_motion"]})
 
     assert repair["decision"] == "retry_video"
     assert repair["reason"] == "static_or_slow_motion_feedback"

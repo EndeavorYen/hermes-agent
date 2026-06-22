@@ -96,7 +96,34 @@ class TestUnifiedDispatch:
         assert provider.last_kwargs["aspect_ratio"] == "16:9"
         assert provider.last_kwargs["resolution"] == "720p"
 
-    def test_xai_text_visual_video_defers_to_visual_package(self):
+    def test_xai_text_visual_video_routes_to_visual_package(self, monkeypatch):
+        from tools import visual_package_tool
+
+        async def fake_visual_package(args, **_kwargs):
+            return json.dumps(
+                {
+                    "success": True,
+                    "package_status": "success",
+                    "videos": ["/tmp/grok-video.mp4"],
+                    "images": [],
+                    "visual_request_id": "vrq_grok_video",
+                    "generation_payloads": {
+                        "video": {
+                            "success": True,
+                            "video": "/tmp/grok-video.mp4",
+                            "provider": "xai",
+                            "model": "grok-imagine-video-1.5",
+                        },
+                    },
+                    "generation_strategy": {"image_first_for_video": True},
+                }
+            )
+
+        monkeypatch.setattr(
+            visual_package_tool,
+            "_handle_visual_package_generate",
+            fake_visual_package,
+        )
         provider = _RecordingProvider("xai", default_model="grok-imagine-video")
         video_gen_registry.register_provider(provider)
 
@@ -105,13 +132,93 @@ class TestUnifiedDispatch:
             configured="xai",
         )
 
-        assert result["success"] is False
-        assert result["error_type"] == "wrong_visual_route"
+        assert result["success"] is True
+        assert result["video"] == "/tmp/grok-video.mp4"
+        assert result["provider"] == "xai"
+        assert result["model"] == "grok-imagine-video-1.5"
+        assert result["route"] == "image_first_visual_package"
         assert result["recommended_tool"] == "visual_package_generate"
         assert result["recommended_arguments"]["candidate_budget"] == 2
         assert provider.last_kwargs == {}
 
-    def test_xai_15_text_visual_video_defers_to_visual_package(self):
+    def test_xai_text_visual_video_auto_routes_to_visual_package(self, monkeypatch):
+        from tools import visual_package_tool
+
+        captured: Dict[str, Any] = {}
+
+        async def fake_visual_package(args, **_kwargs):
+            captured.update(args)
+            return json.dumps(
+                {
+                    "success": True,
+                    "package_status": "success",
+                    "videos": ["/tmp/current-video.mp4"],
+                    "images": [],
+                    "visual_request_id": "vrq_auto_video",
+                    "delivery_metadata": {
+                        "selected_visual_artifact_ids": ["art_video"],
+                    },
+                    "generation_strategy": {
+                        "image_first_for_video": True,
+                        "candidate_budget": 4,
+                        "candidate_budget_source": "feedback_loop",
+                    },
+                }
+            )
+
+        monkeypatch.setattr(
+            visual_package_tool,
+            "_handle_visual_package_generate",
+            fake_visual_package,
+        )
+        provider = _RecordingProvider("xai", default_model="grok-imagine-video-1.5")
+        video_gen_registry.register_provider(provider)
+
+        result = self._run(
+            {
+                "prompt": "make a high quality fashion portrait video",
+                "duration": 4,
+                "aspect_ratio": "9:16",
+            },
+            configured="xai",
+        )
+
+        assert result["success"] is True
+        assert result["video"] == "/tmp/current-video.mp4"
+        assert result["route"] == "image_first_visual_package"
+        assert result["source_tool"] == "video_generate"
+        assert result["visual_request_id"] == "vrq_auto_video"
+        assert result["generation_strategy"]["image_first_for_video"] is True
+        assert captured["prompt"] == "make a high quality fashion portrait video"
+        assert captured["include_image"] is False
+        assert captured["include_video"] is True
+        assert captured["candidate_budget"] == 2
+        assert captured["candidate_budget_source"] == "planner_default"
+        assert captured["video_budget"] == 1
+        assert captured["duration"] == 4
+        assert captured["aspect_ratio"] == "9:16"
+        assert provider.last_kwargs == {}
+
+    def test_xai_15_text_visual_video_routes_to_visual_package(self, monkeypatch):
+        from tools import visual_package_tool
+
+        async def fake_visual_package(args, **_kwargs):
+            return json.dumps(
+                {
+                    "success": True,
+                    "package_status": "success",
+                    "videos": ["/tmp/grok-15-video.mp4"],
+                    "images": [],
+                    "visual_request_id": "vrq_grok_15_video",
+                    "generation_strategy": {"image_first_for_video": True},
+                }
+            )
+
+        monkeypatch.setattr(
+            visual_package_tool,
+            "_handle_visual_package_generate",
+            fake_visual_package,
+        )
         provider = _RecordingProvider("xai", default_model="grok-imagine-video-1.5")
         video_gen_registry.register_provider(provider)
 
@@ -120,9 +227,10 @@ class TestUnifiedDispatch:
             configured="xai",
         )
 
-        assert result["success"] is False
-        assert result["error_type"] == "wrong_visual_route"
+        assert result["success"] is True
+        assert result["video"] == "/tmp/grok-15-video.mp4"
         assert result["route"] == "image_first_visual_package"
+        assert result["source_tool"] == "video_generate"
         assert result["recommended_tool"] == "visual_package_generate"
         assert provider.last_kwargs == {}
 

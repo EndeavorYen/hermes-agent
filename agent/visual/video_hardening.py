@@ -6,7 +6,16 @@ from agent.visual.aspect_policy import select_video_aspect_ratio
 
 
 DEFAULT_SUPPORTED_ASPECT_RATIOS = ["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3"]
-_MOTION_HINT = "natural real-time motion, subtle camera movement, not slow motion"
+_MOTION_HINT = (
+    "natural real-time motion, normal playback speed, clear continuous motion, "
+    "purposeful camera movement, not slow motion"
+)
+_MOTION_REQUIRED_PHRASES = (
+    "natural real-time motion",
+    "normal playback speed",
+    "clear continuous motion",
+    "not slow motion",
+)
 
 
 def build_hardened_video_request(
@@ -39,7 +48,8 @@ def build_hardened_video_request(
 
 def classify_video_feedback_repair(parsed_feedback: dict[str, Any]) -> dict[str, Any]:
     issues = parsed_feedback.get("issues") if isinstance(parsed_feedback.get("issues"), list) else []
-    if "static_video" in issues:
+    issue_set = {str(issue) for issue in issues}
+    if issue_set & {"static_video", "slow_motion", "motion_bad", "too_slow"}:
         return {
             "decision": "retry_video",
             "reason": "static_or_slow_motion_feedback",
@@ -51,10 +61,13 @@ def classify_video_feedback_repair(parsed_feedback: dict[str, Any]) -> dict[str,
 def _with_motion_hint(prompt: str) -> str:
     clean = str(prompt or "").strip()
     lower = clean.lower()
-    if "natural real-time motion" in lower and "not slow motion" in lower:
+    if all(phrase in lower for phrase in _MOTION_REQUIRED_PHRASES):
         return clean
     if not clean:
         return _MOTION_HINT
+    if "natural real-time motion" in lower and "not slow motion" in lower:
+        missing = [phrase for phrase in _MOTION_REQUIRED_PHRASES if phrase not in lower]
+        return f"{clean}. {', '.join(missing)}."
     return f"{clean}. {_MOTION_HINT}."
 
 

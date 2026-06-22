@@ -83,6 +83,18 @@ class _ImageOnlyProvider(VideoGenProvider):
         return {"success": True}
 
 
+class _XaiImagineProvider(_BothModalitiesProvider):
+    @property
+    def name(self) -> str:
+        return "xai"
+
+    def list_models(self) -> List[Dict[str, Any]]:
+        return [{"id": "grok-imagine-video-1.5", "modalities": ["text", "image"]}]
+
+    def default_model(self) -> Optional[str]:
+        return "grok-imagine-video-1.5"
+
+
 class TestDynamicSchemaBuilder:
     def test_no_config_says_so(self, cfg_home):
         from tools.video_generation_tool import _build_dynamic_video_schema
@@ -125,6 +137,24 @@ class TestDynamicSchemaBuilder:
         assert "routes automatically" in desc
         # operations bullet is gone
         assert "operations supported" not in desc
+
+    def test_xai_visual_text_video_schema_mentions_image_first_auto_route(self, cfg_home):
+        from tools.video_generation_tool import _build_dynamic_video_schema
+
+        _write_cfg(cfg_home, {"video_gen": {"provider": "xai"}})
+        video_gen_registry.register_provider(_XaiImagineProvider())
+
+        import hermes_cli.plugins as plugins_module
+        saved = plugins_module._ensure_plugins_discovered
+        plugins_module._ensure_plugins_discovered = lambda *a, **k: None
+        try:
+            desc = _build_dynamic_video_schema()["description"]
+        finally:
+            plugins_module._ensure_plugins_discovered = saved
+
+        assert "image-first visual package" in desc
+        assert "visual_package_generate" in desc
+        assert "text-only visual video" in desc
 
     def test_image_only_model_warns_about_required_image_url(self, cfg_home):
         from tools.video_generation_tool import _build_dynamic_video_schema

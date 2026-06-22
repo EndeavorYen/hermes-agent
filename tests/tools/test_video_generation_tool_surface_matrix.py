@@ -88,6 +88,19 @@ def matrix_env(tmp_path, monkeypatch):
     monkeypatch.setattr(xai_plugin.httpx, "AsyncClient", lambda: _Client())
     async def _no_sleep(*a, **k): return None
     monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+    from tools import video_generation_tool
+
+    def _fake_download_remote_video(url):
+        cached = tmp_path / "xai-generated.mp4"
+        cached.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+        return str(cached)
+
+    monkeypatch.setattr(
+        video_generation_tool,
+        "download_remote_video",
+        _fake_download_remote_video,
+        raising=False,
+    )
 
     # Reset FAL plugin's lazy fal_client cache so it picks up the stub
     from plugins.video_gen import fal as fal_plugin

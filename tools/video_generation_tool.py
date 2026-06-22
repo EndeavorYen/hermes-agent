@@ -427,41 +427,14 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
         provider_name=str(getattr(provider, "name", "")),
         model=model,
     ):
-        payload = error_response(
-            error=(
-                "This is a high-quality visual video request without a source image. "
-                "Use visual_package_generate so Hermes first generates image candidates, "
-                "ranks/selects one, then animates the selected image with image-to-video."
-            ),
-            error_type="wrong_visual_route",
-            provider=getattr(provider, "name", ""),
-            model=model or "",
+        return json.dumps(_route_visual_video_to_package(
             prompt=prompt,
-        )
-        payload.update(
-            {
-                "recommended_tool": "visual_package_generate",
-                "recommended_arguments": {
-                    "prompt": prompt,
-                    "include_image": _prompt_requests_image(prompt),
-                    "include_video": True,
-                    "candidate_budget": 2,
-                    "video_budget": 1,
-                },
-                "route": "image_first_visual_package",
-            }
-        )
-        tracked = _track_video_generate_payload(
-            payload,
-            prompt=prompt,
-            image_url=image_url,
             provider=str(getattr(provider, "name", "")),
             model=model or "",
             aspect_ratio=aspect_ratio,
             duration=duration,
             resolution=resolution,
-        )
-        return json.dumps(tracked)
+        ))
 
     try:
         result = provider.generate(prompt=prompt, **kwargs)
@@ -613,12 +586,125 @@ def _should_defer_to_visual_package(
 ) -> bool:
     if image_url or reference_image_urls:
         return False
+    if not _uses_image_first_visual_package_auto_route(provider_name, model):
+        return False
+    return _looks_like_image_first_visual_video(prompt)
+
+
+def _uses_image_first_visual_package_auto_route(provider_name: str, model: str | None) -> bool:
     if provider_name.lower() != "xai":
         return False
     model_lc = str(model or "").lower()
-    if "grok-imagine-video" not in model_lc:
-        return False
-    return _looks_like_image_first_visual_video(prompt)
+    return "grok-imagine-video" in model_lc
+
+
+def _route_visual_video_to_package(
+    *,
+    prompt: str,
+    provider: str,
+    model: str,
+    aspect_ratio: str,
+    duration: int | None,
+    resolution: str,
+) -> Dict[str, Any]:
+    package_args: Dict[str, Any] = {
+        "prompt": prompt,
+        "include_image": _prompt_requests_image(prompt),
+        "include_video": True,
+        "candidate_budget": 2,
+        "candidate_budget_source": "planner_default",
+        "video_budget": 1,
+        "aspect_ratio": aspect_ratio,
+    }
+    if duration is not None:
+        package_args["duration"] = duration
+    try:
+        from model_tools import _run_async
+        from tools.visual_package_tool import _handle_visual_package_generate
+
+        package_raw = _run_async(_handle_visual_package_generate(package_args))
+        package_payload = json.loads(package_raw) if isinstance(package_raw, str) else package_raw
+    except Exception as exc:  # noqa: BLE001 - surface structured route failure
+        return {
+            "success": False,
+            "video": None,
+            "error": f"visual_package_generate auto-route failed: {exc}",
+            "error_type": "visual_package_route_failed",
+            "provider": provider,
+            "model": model,
+            "prompt": prompt,
+            "route": "image_first_visual_package",
+            "source_tool": "video_generate",
+            "recommended_tool": "visual_package_generate",
+            "recommended_arguments": package_args,
+        }
+    if not isinstance(package_payload, dict):
+        return {
+            "success": False,
+            "video": None,
+            "error": "visual_package_generate returned a non-dict payload",
+            "error_type": "visual_package_contract",
+            "provider": provider,
+            "model": model,
+            "prompt": prompt,
+            "route": "image_first_visual_package",
+            "source_tool": "video_generate",
+            "recommended_tool": "visual_package_generate",
+            "recommended_arguments": package_args,
+        }
+    videos = [
+        item
+        for item in package_payload.get("videos", [])
+        if isinstance(item, str) and item.strip()
+    ]
+    video_ref = videos[0] if videos else None
+    success = bool(package_payload.get("success")) and bool(video_ref)
+    video_generation_payload = _selected_visual_package_video_payload(package_payload)
+    actual_provider = str(video_generation_payload.get("provider") or provider)
+    actual_model = str(video_generation_payload.get("model") or model)
+    payload: Dict[str, Any] = {
+        "success": success,
+        "video": video_ref,
+        "videos": videos,
+        "images": package_payload.get("images", []),
+        "error": None if success else package_payload.get("error") or "visual_package_generate did not return a selected video",
+        "error_type": None if success else package_payload.get("error_type") or "visual_package_no_video",
+        "provider": actual_provider,
+        "model": actual_model,
+        "prompt": prompt,
+        "aspect_ratio": aspect_ratio,
+        "duration": duration,
+        "resolution": resolution,
+        "route": "image_first_visual_package",
+        "source_tool": "video_generate",
+        "recommended_tool": "visual_package_generate",
+        "recommended_arguments": package_args,
+        "visual_request_id": package_payload.get("visual_request_id"),
+        "package_status": package_payload.get("package_status"),
+        "delivery_metadata": package_payload.get("delivery_metadata"),
+        "generation_strategy": package_payload.get("generation_strategy"),
+        "rankings": package_payload.get("rankings"),
+        "autonomous_validation": package_payload.get("autonomous_validation"),
+        "autonomous_orchestration": package_payload.get("autonomous_orchestration"),
+    }
+    return payload
+
+
+def _selected_visual_package_video_payload(package_payload: Dict[str, Any]) -> Dict[str, Any]:
+    generation_payloads = package_payload.get("generation_payloads")
+    if not isinstance(generation_payloads, dict):
+        return {}
+    video_payload = generation_payloads.get("video")
+    if isinstance(video_payload, dict):
+        return video_payload
+    if isinstance(video_payload, list):
+        for item in video_payload:
+            if isinstance(item, dict) and item.get("success") is True and item.get("video"):
+                return item
+        for item in video_payload:
+            if isinstance(item, dict):
+                return item
+    return {}
 
 
 def _looks_like_image_first_visual_video(prompt: str) -> bool:
@@ -747,6 +833,12 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
     if active_model:
         line += f" · model: {active_model}"
     parts.append(line)
+    if _uses_image_first_visual_package_auto_route(provider.name, active_model):
+        parts.append(
+            "- text-only visual video requests automatically use the "
+            "image-first visual package route via visual_package_generate: "
+            "generate image candidates, rank/select one, then animate it."
+        )
 
     # Model-specific caveats (the high-signal stuff)
     for c in _format_model_caveats(model_meta, caps):
