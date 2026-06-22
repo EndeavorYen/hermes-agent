@@ -92,6 +92,114 @@ def test_learning_outcomes_keep_provider_quality_and_feedback_separate(tmp_path)
     assert 0.0 < outcome["confidence"] <= 1.0
 
 
+def test_learning_outcomes_group_delivery_only_legacy_requests_by_attempt_strategy(tmp_path):
+    import sqlite3
+
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.learning.outcomes import aggregate_visual_strategy_outcomes
+
+    db_path = tmp_path / "visual.sqlite3"
+    ledger = VisualAttemptLedger(db_path)
+    ledger.initialize()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("ALTER TABLE visual_attempts ADD COLUMN strategy_id TEXT")
+
+    request_id = ledger.record_request(
+        status="completed",
+        normalized_intent={"intent_signature": "visig_delivery_only"},
+        modality="image",
+        operation="visual_package_generate",
+    )
+    attempt_id = ledger.record_attempt(
+        request_id=request_id,
+        provider="xai",
+        model="grok-imagine-image-quality",
+        status="completed",
+        strategy_id="hybrid_refine",
+    )
+    artifact_id = ledger.record_artifact(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        kind="image",
+        local_path="/tmp/current.png",
+        content_hash="sha256:delivery-only",
+        freshness_status="fresh",
+    )
+    ledger.record_delivery(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        artifact_id=artifact_id,
+        platform="slack",
+        destination="slack:C123:T123",
+        destination_id="C123",
+        delivery_status="sent",
+    )
+
+    report = aggregate_visual_strategy_outcomes(db_path)
+
+    assert report["bucket_count"] == 1
+    assert report["strategy_count"] == 1
+    outcome = report["outcomes"][0]
+    assert outcome["bucket"] == "visig_delivery_only"
+    assert outcome["strategy_signature"] == "hybrid_refine"
+    assert outcome["provider_health"]["attempt_count"] == 1
+    assert outcome["delivery"]["delivery_count"] == 1
+    assert outcome["delivery"]["successful_delivery_count"] == 1
+
+
+def test_learning_outcomes_derives_bucket_for_legacy_intent_without_signature(tmp_path):
+    import sqlite3
+
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.learning.outcomes import aggregate_visual_strategy_outcomes
+
+    db_path = tmp_path / "visual.sqlite3"
+    ledger = VisualAttemptLedger(db_path)
+    ledger.initialize()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("ALTER TABLE visual_attempts ADD COLUMN strategy_id TEXT")
+
+    request_id = ledger.record_request(
+        status="completed",
+        normalized_intent={
+            "artifact_kind": "image",
+            "modality": "image",
+            "operation": "text_to_image",
+        },
+        modality="image",
+        operation="visual_package_generate",
+    )
+    attempt_id = ledger.record_attempt(
+        request_id=request_id,
+        provider="xai",
+        model="grok-imagine-image-quality",
+        status="completed",
+        strategy_id="hybrid_refine",
+    )
+    artifact_id = ledger.record_artifact(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        kind="image",
+        local_path="/tmp/current.png",
+        content_hash="sha256:legacy-bucket",
+        freshness_status="fresh",
+    )
+    ledger.record_delivery(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        artifact_id=artifact_id,
+        platform="slack",
+        destination="slack:C123:T123",
+        delivery_status="sent",
+    )
+
+    outcome = aggregate_visual_strategy_outcomes(db_path)["outcomes"][0]
+
+    assert outcome["bucket"].startswith("visig_")
+    assert outcome["bucket"] != "unknown"
+    assert outcome["strategy_signature"] == "hybrid_refine"
+
+
 def test_learning_outcomes_capture_retry_and_disagreement(tmp_path):
     from agent.visual.attempt_ledger import VisualAttemptLedger
     from agent.visual.learning.outcomes import aggregate_visual_strategy_outcomes

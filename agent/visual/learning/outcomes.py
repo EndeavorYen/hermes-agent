@@ -5,9 +5,37 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from agent.visual.intent_signature import build_intent_signature
+
 
 _SUCCESS_STATUSES = {"completed", "success", "succeeded", "sent"}
 _POLICY_MARKERS = ("content_moderation", "moderation", "policy", "safety", "guardrail")
+_FALLBACK_BUCKET_KEYS = {
+    "aspect_ratio",
+    "bucket",
+    "camera",
+    "composition",
+    "content_type",
+    "duration",
+    "duration_seconds",
+    "has_reference_image",
+    "lighting",
+    "locks",
+    "modality",
+    "mood",
+    "motion",
+    "operation",
+    "provider",
+    "reference_policy",
+    "scene",
+    "setting",
+    "soft_preferences",
+    "style",
+    "style_family",
+    "subject_type",
+    "wants_image",
+    "wants_video",
+}
 
 
 def aggregate_visual_strategy_outcomes(
@@ -37,10 +65,12 @@ def aggregate_visual_strategy_outcomes(
         if _record_id(row, "id", "request_id")
     }
     groups: dict[tuple[str, str], dict[str, Any]] = {}
+    ranked_request_ids: set[str] = set()
     for ranking in rankings:
         request_id = str(ranking.get("request_id") or "")
         if not request_id:
             continue
+        ranked_request_ids.add(request_id)
         group_bucket = request_bucket.get(request_id) or bucket or "unknown"
         if bucket is not None and group_bucket != bucket:
             continue
@@ -56,6 +86,16 @@ def aggregate_visual_strategy_outcomes(
         )
         group["request_ids"].add(request_id)
         group["rankings"].append(ranking)
+
+    _add_delivery_backed_attempt_groups(
+        groups,
+        ranked_request_ids=ranked_request_ids,
+        request_bucket=request_bucket,
+        attempts=attempts,
+        artifacts=artifacts,
+        deliveries=deliveries,
+        bucket=bucket,
+    )
 
     outcomes = [
         _build_outcome(group, attempts, artifacts, judgments, deliveries, feedback)
@@ -79,14 +119,32 @@ def _build_outcome(
     feedback: list[dict[str, Any]],
 ) -> dict[str, Any]:
     request_ids = {str(item) for item in group["request_ids"]}
-    group_attempts = [row for row in attempts if str(row.get("request_id") or "") in request_ids]
-    group_artifacts = [row for row in artifacts if str(row.get("request_id") or "") in request_ids]
+    attempt_ids = {str(item) for item in group.get("attempt_ids", set()) if item}
+    if attempt_ids:
+        group_attempts = [
+            row
+            for row in attempts
+            if _record_id(row, "id", "attempt_id") in attempt_ids
+        ]
+        group_artifacts = [
+            row
+            for row in artifacts
+            if str(row.get("attempt_id") or "") in attempt_ids
+        ]
+    else:
+        group_attempts = [row for row in attempts if str(row.get("request_id") or "") in request_ids]
+        group_artifacts = [row for row in artifacts if str(row.get("request_id") or "") in request_ids]
     artifact_ids = {
         _record_id(row, "id", "artifact_id")
         for row in group_artifacts
         if _record_id(row, "id", "artifact_id")
     }
-    group_deliveries = [row for row in deliveries if str(row.get("request_id") or "") in request_ids]
+    group_deliveries = [
+        row
+        for row in deliveries
+        if str(row.get("request_id") or "") in request_ids
+        and (not artifact_ids or str(row.get("artifact_id") or "") in artifact_ids)
+    ]
     group_judgments = [row for row in judgments if str(row.get("artifact_id") or "") in artifact_ids]
     group_feedback = [row for row in feedback if str(row.get("artifact_id") or "") in artifact_ids]
     provider_health = _provider_health(group_attempts)
@@ -118,6 +176,56 @@ def _build_outcome(
         "disagreement": disagreement,
         "confidence": confidence,
     }
+
+
+def _add_delivery_backed_attempt_groups(
+    groups: dict[tuple[str, str], dict[str, Any]],
+    *,
+    ranked_request_ids: set[str],
+    request_bucket: dict[str, str],
+    attempts: list[dict[str, Any]],
+    artifacts: list[dict[str, Any]],
+    deliveries: list[dict[str, Any]],
+    bucket: str | None,
+) -> None:
+    delivered_artifact_ids = {
+        str(row.get("artifact_id") or "")
+        for row in deliveries
+        if str(row.get("artifact_id") or "") and _delivery_status(row) == "sent"
+    }
+    if not delivered_artifact_ids:
+        return
+    delivered_attempt_ids = {
+        str(row.get("attempt_id") or "")
+        for row in artifacts
+        if _record_id(row, "id", "artifact_id") in delivered_artifact_ids
+        and str(row.get("attempt_id") or "")
+    }
+    if not delivered_attempt_ids:
+        return
+    for attempt in attempts:
+        request_id = str(attempt.get("request_id") or "")
+        attempt_id = _record_id(attempt, "id", "attempt_id")
+        if not request_id or not attempt_id or attempt_id not in delivered_attempt_ids:
+            continue
+        if request_id in ranked_request_ids:
+            continue
+        group_bucket = request_bucket.get(request_id) or bucket or "unknown"
+        if bucket is not None and group_bucket != bucket:
+            continue
+        strategy_signature = _attempt_strategy_signature(attempt)
+        group = groups.setdefault(
+            (group_bucket, strategy_signature),
+            {
+                "bucket": group_bucket,
+                "strategy_signature": strategy_signature,
+                "request_ids": set(),
+                "attempt_ids": set(),
+                "rankings": [],
+            },
+        )
+        group["request_ids"].add(request_id)
+        group.setdefault("attempt_ids", set()).add(attempt_id)
 
 
 def _provider_health(attempts: list[dict[str, Any]]) -> dict[str, Any]:
@@ -304,12 +412,14 @@ def _confidence(
 
 
 def _request_bucket(row: dict[str, Any]) -> str:
+    fallback: str | None = None
     for column in ("metadata", "policy_context_json", "normalized_intent", "normalized_intent_json"):
         value = _json_value(row.get(column))
         found = _find_bucket(value)
         if found:
             return found
-    return "unknown"
+        fallback = fallback or _fallback_bucket(value)
+    return fallback or "unknown"
 
 
 def _ranking_strategy_signature(row: dict[str, Any]) -> str:
@@ -324,6 +434,37 @@ def _ranking_strategy_signature(row: dict[str, Any]) -> str:
             if isinstance(planned, str) and planned:
                 return planned
     return "unknown"
+
+
+def _attempt_strategy_signature(row: dict[str, Any]) -> str:
+    for column in ("strategy_id", "strategy_signature"):
+        value = row.get(column)
+        if isinstance(value, str) and value:
+            return value
+    for column in ("metadata", "parameters_effective", "parameters_effective_json", "parameters_requested_json"):
+        value = _json_value(row.get(column))
+        found = _find_strategy_signature(value)
+        if found:
+            return found
+    return "unknown"
+
+
+def _find_strategy_signature(value: Any) -> str | None:
+    if isinstance(value, dict):
+        for key in ("strategy_signature", "strategy_id"):
+            item = value.get(key)
+            if isinstance(item, str) and item:
+                return item
+        for item in value.values():
+            found = _find_strategy_signature(item)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = _find_strategy_signature(item)
+            if found:
+                return found
+    return None
 
 
 def _find_bucket(value: Any) -> str | None:
@@ -342,6 +483,14 @@ def _find_bucket(value: Any) -> str | None:
             if found:
                 return found
     return None
+
+
+def _fallback_bucket(value: Any) -> str | None:
+    if not isinstance(value, dict):
+        return None
+    if not any(key in value and value[key] is not None for key in _FALLBACK_BUCKET_KEYS):
+        return None
+    return build_intent_signature(value)
 
 
 def _attempt_success(row: dict[str, Any]) -> bool:
