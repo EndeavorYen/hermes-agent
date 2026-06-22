@@ -1554,6 +1554,15 @@ class TestVisualPackageToolGuidance:
         assert "image-first" in prompt
         assert "寫真影片" in prompt
 
+    def test_prefers_visual_agent_wrapper_when_available(self):
+        prompt = build_visual_package_tool_guidance(
+            {"visual_agent_generate", "visual_package_generate", "image_generate"}
+        )
+
+        assert "visual_agent_generate" in prompt
+        assert "natural visual requests" in prompt
+        assert "visual_package_generate" in prompt
+
 
 # =========================================================================
 # Budget warning history stripping

@@ -12,6 +12,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from agent.visual.tracking import default_visual_ledger_path
+from scripts.visual_agent_mode_regression_report import build_visual_agent_mode_regression_report
 from scripts.visual_autonomous_healthcheck import build_visual_autonomous_healthcheck
 from scripts.visual_live_provider_e2e import build_visual_live_provider_e2e_report
 
@@ -21,6 +22,7 @@ def build_visual_e2e_automation_report(
     work_dir: str | Path | None = None,
     include_live: bool = False,
 ) -> dict[str, Any]:
+    agent_mode = build_visual_agent_mode_regression_report()
     fixture_e2e = build_visual_live_provider_e2e_report(mode="fixture", work_dir=work_dir)
     health = build_visual_autonomous_healthcheck(_ledger_path_for_work_dir(work_dir), autonomy_level=2)
     if include_live:
@@ -33,6 +35,8 @@ def build_visual_e2e_automation_report(
         live_e2e = {"status": "not_requested"}
 
     failures = []
+    if agent_mode.get("success") is not True:
+        failures.append("agent_mode_failed")
     if fixture_e2e.get("success") is not True:
         failures.append("fixture_e2e_failed")
     if health.get("success") is not True:
@@ -43,6 +47,7 @@ def build_visual_e2e_automation_report(
         "success": not failures,
         "mode": "fixture+live" if include_live else "fixture",
         "failures": failures,
+        "agent_mode": agent_mode,
         "fixture_e2e": fixture_e2e,
         "live_e2e": live_e2e,
         "health": health,

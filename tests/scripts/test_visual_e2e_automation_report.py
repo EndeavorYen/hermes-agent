@@ -11,8 +11,24 @@ def test_visual_e2e_automation_fixture_default(tmp_path):
     assert report["success"] is True
     assert report["mode"] == "fixture"
     assert report["fixture_e2e"]["success"] is True
+    assert report["agent_mode"]["success"] is True
     assert report["live_e2e"]["status"] == "not_requested"
     assert report["health"]["success"] is True
+
+
+def test_visual_e2e_automation_fails_when_agent_mode_regression_fails(monkeypatch, tmp_path):
+    from scripts import visual_e2e_automation_report
+
+    monkeypatch.setattr(
+        visual_e2e_automation_report,
+        "build_visual_agent_mode_regression_report",
+        lambda: {"success": False, "failures": [{"case_id": "text_video_image_first"}]},
+    )
+
+    report = visual_e2e_automation_report.build_visual_e2e_automation_report(work_dir=tmp_path)
+
+    assert report["success"] is False
+    assert "agent_mode_failed" in report["failures"]
 
 
 def test_visual_e2e_automation_live_skips_without_enable(monkeypatch, tmp_path):

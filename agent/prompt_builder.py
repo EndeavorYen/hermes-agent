@@ -358,9 +358,23 @@ VISUAL_PACKAGE_TOOL_GUIDANCE = (
     "and `product photo and 6 second clip`."
 )
 
+VISUAL_AGENT_TOOL_GUIDANCE = (
+    "# Visual agent mode\n"
+    "When `visual_agent_generate` is available, use it as the primary entry "
+    "point for natural visual requests involving images, videos, image plus "
+    "video packages, references, product photos, portraits, fashion/glamour "
+    "visuals, or short motion clips. Do not ask the user for advanced "
+    "parameters first; `visual_agent_generate` plans the request and dispatches "
+    "to `visual_package_generate` for candidate generation, ranking, selected "
+    "current-media delivery, and image-first video generation."
+)
+
 
 def build_visual_package_tool_guidance(valid_tool_names: "set[str] | None" = None) -> str:
-    if "visual_package_generate" not in set(valid_tool_names or set()):
+    valid = set(valid_tool_names or set())
+    if "visual_agent_generate" in valid:
+        return VISUAL_AGENT_TOOL_GUIDANCE
+    if "visual_package_generate" not in valid:
         return ""
     return VISUAL_PACKAGE_TOOL_GUIDANCE
 

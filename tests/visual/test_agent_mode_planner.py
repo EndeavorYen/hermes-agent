@@ -17,6 +17,21 @@ def test_agent_mode_planner_routes_image_plus_video_request_without_advanced_kno
     assert "autonomy_level" not in plan["arguments"]
 
 
+def test_agent_mode_planner_treats_reference_variation_as_image_plus_video():
+    from agent.visual.agent_mode.planner import plan_visual_agent_request
+
+    plan = plan_visual_agent_request(
+        "請用這張 reference 產出一張圖片和一段 6 秒影片",
+        attachments=["/tmp/ref.png"],
+    )
+
+    assert plan["reason"] == "image_plus_video_request"
+    assert plan["arguments"]["include_image"] is True
+    assert plan["arguments"]["include_video"] is True
+    assert plan["arguments"]["attachments"] == ["/tmp/ref.png"]
+    assert plan["arguments"]["duration"] == 6
+
+
 def test_agent_mode_planner_routes_image_only_request():
     from agent.visual.agent_mode.planner import plan_visual_agent_request
 

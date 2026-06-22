@@ -17,7 +17,7 @@ def plan_visual_agent_request(
     attachments = [item for item in (attachments or []) if isinstance(item, str) and item.strip()]
     wants_image = _contains_any(prompt, _IMAGE_TOKENS)
     wants_video = _contains_any(prompt, _VIDEO_TOKENS)
-    if wants_video and attachments and _looks_like_image_to_video(prompt):
+    if wants_video and attachments and _looks_like_image_to_video(prompt) and not _requests_new_image_output(prompt):
         wants_image = False
     if not wants_image and not wants_video and attachments:
         wants_video = True
@@ -72,6 +72,25 @@ def _duration_seconds(value: str) -> int | None:
 def _looks_like_image_to_video(value: str) -> bool:
     lowered = value.lower()
     return any(token in lowered for token in ("這張圖", "this image", "this photo", "用這張"))
+
+
+def _requests_new_image_output(value: str) -> bool:
+    lowered = value.lower()
+    return any(
+        token in lowered
+        for token in (
+            "產出一張",
+            "生成一張",
+            "產生一張",
+            "做一張",
+            "一張圖片",
+            "一張圖",
+            "create an image",
+            "generate an image",
+            "make an image",
+            "image plus",
+        )
+    )
 
 
 def _confidence(*, wants_image: bool, wants_video: bool, attachments: list[str]) -> float:
