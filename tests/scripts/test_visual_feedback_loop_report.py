@@ -58,6 +58,104 @@ def test_visual_feedback_loop_proposes_candidate_budget_without_human_feedback(t
     assert "/tmp/private-result.jpg" not in encoded
 
 
+def test_visual_feedback_loop_extracts_dimension_repairs_from_judge_details(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from scripts.visual_feedback_loop_report import build_visual_feedback_loop_report
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+    request_id = ledger.record_request(
+        user_prompt="private prompt must not leak",
+        status="completed",
+        metadata={"intent_signature": "visig_glamour"},
+    )
+    attempt_id = ledger.record_attempt(
+        request_id=request_id,
+        provider="xai",
+        model="grok-imagine-image-quality",
+        status="completed",
+    )
+    artifact_id = ledger.record_artifact(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        kind="image",
+        local_path="/tmp/private-low-dimension.jpg",
+        content_hash="sha256:low-dimension",
+        freshness_status="fresh",
+    )
+    ledger.record_judgment(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        artifact_id=artifact_id,
+        judge_name="visual_quality_judge",
+        score=0.44,
+        verdict="fail",
+        details={
+            "quality_issues": ["subject_not_attractive", "stockings_bad"],
+            "preference_dimensions": {
+                "subject_beauty": 0.34,
+                "face_naturalness": 0.76,
+                "fashion_material_quality": 0.31,
+                "pose_composition": 0.78,
+            },
+        },
+    )
+
+    report = build_visual_feedback_loop_report(tmp_path / "visual.sqlite3")
+    actions = [
+        action
+        for action in report["next_actions"]
+        if action["type"] == "repair_low_preference_dimension"
+    ]
+    encoded = json.dumps(report, ensure_ascii=False)
+
+    assert report["success"] is True
+    assert report["signals"]["aesthetic"]["preference_dimension_failures"] == [
+        {
+            "dimension": "subject_beauty",
+            "issue": "subject_not_attractive",
+            "score": 0.34,
+            "count": 1,
+        },
+        {
+            "dimension": "fashion_material_quality",
+            "issue": "stockings_bad",
+            "score": 0.31,
+            "count": 1,
+        },
+    ]
+    assert actions == [
+        {
+            "type": "repair_low_preference_dimension",
+            "track": "aesthetic",
+            "reason": "feedback_loop_preference_dimension_low",
+            "confidence": 0.74,
+            "evidence_count": 1,
+            "requires_human_feedback": False,
+            "activation_status": "next_run",
+            "dimension": "subject_beauty",
+            "quality_issue": "subject_not_attractive",
+            "repair_hint": "improve_subject_beauty",
+            "modalities": ["image"],
+        },
+        {
+            "type": "repair_low_preference_dimension",
+            "track": "aesthetic",
+            "reason": "feedback_loop_preference_dimension_low",
+            "confidence": 0.74,
+            "evidence_count": 1,
+            "requires_human_feedback": False,
+            "activation_status": "next_run",
+            "dimension": "fashion_material_quality",
+            "quality_issue": "stockings_bad",
+            "repair_hint": "improve_fashion_material_quality",
+            "modalities": ["image"],
+        },
+    ]
+    assert "private prompt must not leak" not in encoded
+    assert "/tmp/private-low-dimension.jpg" not in encoded
+
+
 def test_visual_feedback_loop_prefers_image_first_after_video_failure(tmp_path):
     from agent.visual.attempt_ledger import VisualAttemptLedger
     from scripts.visual_feedback_loop_report import build_visual_feedback_loop_report

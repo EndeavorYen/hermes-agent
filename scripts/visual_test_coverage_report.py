@@ -27,6 +27,7 @@ DEFAULT_TARGET_FILES = [
     "agent/visual/strategy_policy.py",
     "agent/visual/judges/quality.py",
     "scripts/visual_activate_ready_promotion.py",
+    "scripts/visual_feedback_loop_report.py",
     "scripts/visual_learning_report.py",
     "scripts/visual_self_validation_status.py",
 ]
@@ -40,6 +41,7 @@ DEFAULT_TEST_PATHS = [
     "tests/visual/test_strategy_policy.py",
     "tests/visual/test_quality_judges.py",
     "tests/scripts/test_visual_activate_ready_promotion.py",
+    "tests/scripts/test_visual_feedback_loop_report.py",
     "tests/scripts/test_visual_learning_report.py",
     "tests/scripts/test_visual_self_validation_status.py",
 ]
@@ -124,6 +126,7 @@ def _clear_target_modules() -> None:
         "agent.visual.strategy_policy",
         "agent.visual.judges.quality",
         "scripts.visual_activate_ready_promotion",
+        "scripts.visual_feedback_loop_report",
         "scripts.visual_learning_report",
         "scripts.visual_self_validation_status",
     ]
@@ -140,6 +143,7 @@ def _clear_target_modules() -> None:
         ("agent.visual", "strategy_policy"),
         ("agent.visual.judges", "quality"),
         ("scripts", "visual_activate_ready_promotion"),
+        ("scripts", "visual_feedback_loop_report"),
         ("scripts", "visual_learning_report"),
         ("scripts", "visual_self_validation_status"),
     ]:
@@ -251,6 +255,7 @@ def run_visual_coverage_probes() -> None:
     from agent.visual.strategy_policy import find_controlled_strategy_plan
     from scripts import visual_learning_report
     from scripts import visual_activate_ready_promotion
+    from scripts import visual_feedback_loop_report
     from scripts import visual_self_validation_status
 
     with tempfile.TemporaryDirectory(prefix="hermes-visual-coverage-") as tmp:
@@ -429,12 +434,22 @@ def run_visual_coverage_probes() -> None:
         except ValueError:
             pass
         visual_learning_report.build_visual_learning_report(db_path)
+        visual_feedback_loop_report.build_visual_feedback_loop_report(db_path)
         visual_learning_report.build_visual_learning_report(Path(tmp) / "missing.sqlite3")
+        visual_feedback_loop_report.build_visual_feedback_loop_report(Path(tmp) / "missing.sqlite3")
         visual_learning_report._failures(
             unsafe_activation_count=1,
             prompt_mutation_read_count=1,
             duplicate_delivery_count=1,
             missing_source_metadata_count=1,
+        )
+        visual_feedback_loop_report._failures(
+            {
+                "delivery": {
+                    "duplicate_delivery_count": 1,
+                    "missing_source_metadata_count": 1,
+                }
+            }
         )
         visual_learning_report._json_value("{not-json")
         ready_action = {
@@ -569,6 +584,7 @@ def run_visual_coverage_probes() -> None:
         with contextlib.redirect_stdout(output):
             visual_learning_report.main(["--db-path", str(db_path), "--json"])
             visual_learning_report.main(["--db-path", str(db_path)])
+            visual_feedback_loop_report.main(["--db-path", str(db_path), "--json", "--allow-failures"])
             visual_activate_ready_promotion.main(
                 ["--db-path", str(db_path), "--status-path", str(status_path), "--json", "--allow-blocked"]
             )

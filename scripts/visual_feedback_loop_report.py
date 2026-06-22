@@ -17,6 +17,38 @@ from scripts.visual_evidence_report import build_visual_evidence_report
 
 _POLICY_MARKERS = ("content_moderation", "moderation", "policy", "safety", "guardrail")
 _SUCCESS_STATUSES = {"completed", "success", "succeeded", "sent"}
+_PREFERENCE_DIMENSION_THRESHOLD = 0.60
+_ISSUE_TO_DIMENSION = {
+    "subject_not_attractive": "subject_beauty",
+    "not_beautiful": "subject_beauty",
+    "face_unnatural": "face_naturalness",
+    "stockings_bad": "fashion_material_quality",
+    "composition_bad": "pose_composition",
+    "motion_bad": "motion_quality",
+    "aspect_integrity_bad": "motion_quality",
+}
+_DIMENSION_TO_ISSUE = {
+    "subject_beauty": "subject_not_attractive",
+    "face_naturalness": "face_unnatural",
+    "fashion_material_quality": "stockings_bad",
+    "pose_composition": "composition_bad",
+    "motion_quality": "motion_bad",
+}
+_DIMENSION_REPAIR_HINT = {
+    "subject_beauty": "improve_subject_beauty",
+    "face_naturalness": "improve_face_naturalness",
+    "fashion_material_quality": "improve_fashion_material_quality",
+    "pose_composition": "improve_pose_composition",
+    "motion_quality": "improve_motion_quality",
+}
+_PREFERENCE_DIMENSION_ORDER = {
+    "subject_beauty": 0,
+    "face_naturalness": 1,
+    "glamour_impact": 2,
+    "fashion_material_quality": 3,
+    "pose_composition": 4,
+    "motion_quality": 5,
+}
 
 
 def build_visual_feedback_loop_report(db_path: str | Path) -> dict[str, Any]:
@@ -126,6 +158,8 @@ def _aesthetic_signals(judgments: list[dict[str, Any]]) -> dict[str, Any]:
         "low_quality_judgment_count": low_quality_count,
         "average_quality_score": _average(scores),
         "pass_rate": _rate(pass_count, len(judgments)),
+        "quality_issue_counts": _quality_issue_counts(judgments),
+        "preference_dimension_failures": _preference_dimension_failures(judgments),
     }
 
 
@@ -240,6 +274,25 @@ def _next_actions(signals: dict[str, Any]) -> list[dict[str, Any]]:
                 "do_not_ship_low_scoring_candidates_without_ranking",
                 confidence=0.70,
                 evidence_count=aesthetic["low_quality_judgment_count"],
+            )
+        )
+    for failure in aesthetic.get("preference_dimension_failures") or []:
+        if not isinstance(failure, dict):
+            continue
+        dimension = str(failure.get("dimension") or "").strip()
+        if not dimension:
+            continue
+        actions.append(
+            _action(
+                "repair_low_preference_dimension",
+                "aesthetic",
+                "feedback_loop_preference_dimension_low",
+                confidence=0.74,
+                evidence_count=_int(failure.get("count")) or 1,
+                dimension=dimension,
+                quality_issue=str(failure.get("issue") or _DIMENSION_TO_ISSUE.get(dimension, "")).strip(),
+                repair_hint=_DIMENSION_REPAIR_HINT.get(dimension, f"improve_{dimension}"),
+                modalities=_modalities_for_dimension(dimension),
             )
         )
     if provider["video_failure_count"] > 0 and provider["image_artifact_count"] > 0:
@@ -389,6 +442,126 @@ def _score(row: dict[str, Any]) -> float:
     return _float(row.get("score", row.get("confidence")))
 
 
+def _quality_issue_counts(judgments: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in judgments:
+        for issue in _quality_issues(row):
+            counts[issue] = counts.get(issue, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _preference_dimension_failures(judgments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    failures: dict[str, dict[str, Any]] = {}
+    for row in judgments:
+        details = _judgment_details(row)
+        dimensions = details.get("preference_dimensions")
+        seen_dimensions: set[str] = set()
+        if isinstance(dimensions, dict):
+            for dimension, raw_score in dimensions.items():
+                score = _float_or_none(raw_score)
+                if score is None or score >= _PREFERENCE_DIMENSION_THRESHOLD:
+                    continue
+                dimension_text = str(dimension)
+                seen_dimensions.add(dimension_text)
+                _record_dimension_failure(
+                    failures,
+                    dimension=dimension_text,
+                    issue=_DIMENSION_TO_ISSUE.get(dimension_text, ""),
+                    score=score,
+                )
+        for issue in _quality_issues(row):
+            dimension = _ISSUE_TO_DIMENSION.get(issue)
+            if not dimension:
+                continue
+            score = _float_or_none(dimensions.get(dimension)) if isinstance(dimensions, dict) else None
+            if dimension in seen_dimensions:
+                _record_dimension_issue(failures, dimension=dimension, issue=issue, score=score)
+            else:
+                seen_dimensions.add(dimension)
+                _record_dimension_failure(
+                    failures,
+                    dimension=dimension,
+                    issue=issue,
+                    score=score,
+                )
+    ordered = sorted(
+        failures.values(),
+        key=lambda item: (
+            -_int(item.get("count")),
+            _PREFERENCE_DIMENSION_ORDER.get(str(item.get("dimension") or ""), 99),
+            str(item.get("dimension") or ""),
+        ),
+    )
+    return ordered
+
+
+def _record_dimension_failure(
+    failures: dict[str, dict[str, Any]],
+    *,
+    dimension: str,
+    issue: str,
+    score: float | None,
+) -> None:
+    dimension = dimension.strip()
+    if not dimension:
+        return
+    entry = failures.setdefault(
+        dimension,
+        {
+            "dimension": dimension,
+            "issue": issue or _DIMENSION_TO_ISSUE.get(dimension, ""),
+            "score": score,
+            "count": 0,
+        },
+    )
+    entry["count"] = _int(entry.get("count")) + 1
+    if issue and not entry.get("issue"):
+        entry["issue"] = issue
+    if score is not None:
+        current = _float_or_none(entry.get("score"))
+        entry["score"] = score if current is None else min(current, score)
+
+
+def _record_dimension_issue(
+    failures: dict[str, dict[str, Any]],
+    *,
+    dimension: str,
+    issue: str,
+    score: float | None,
+) -> None:
+    entry = failures.get(dimension)
+    if entry is None:
+        _record_dimension_failure(failures, dimension=dimension, issue=issue, score=score)
+        return
+    if issue and not entry.get("issue"):
+        entry["issue"] = issue
+    if score is not None:
+        current = _float_or_none(entry.get("score"))
+        entry["score"] = score if current is None else min(current, score)
+
+
+def _quality_issues(row: dict[str, Any]) -> list[str]:
+    details = _judgment_details(row)
+    issues = details.get("quality_issues")
+    if not isinstance(issues, list):
+        return []
+    return [str(issue).strip() for issue in issues if str(issue).strip()]
+
+
+def _judgment_details(row: dict[str, Any]) -> dict[str, Any]:
+    details = row.get("details")
+    if isinstance(details, dict):
+        return details
+    details = row.get("details_json")
+    return details if isinstance(details, dict) else {}
+
+
+def _modalities_for_dimension(dimension: str) -> list[str]:
+    if dimension == "motion_quality":
+        return ["video"]
+    return ["image"]
+
+
 def _record_id(row: dict[str, Any]) -> str:
     for column in ("id", "attempt_id", "artifact_id", "judgment_id", "delivery_id"):
         value = row.get(column)
@@ -441,6 +614,13 @@ def _float(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _int(value: Any) -> int:

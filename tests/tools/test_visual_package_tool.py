@@ -1640,6 +1640,104 @@ async def test_visual_package_applies_controlled_image_first_strategy_to_runtime
 
 
 @pytest.mark.asyncio
+async def test_visual_package_applies_feedback_dimension_repairs_from_auto_judge(monkeypatch, tmp_path):
+    from agent.visual.tracking import default_visual_ledger_path
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ledger = visual_package_tool.VisualAttemptLedger(default_visual_ledger_path())
+    ledger.initialize()
+    previous_request_id = ledger.record_request(
+        status="completed",
+        metadata={"intent_signature": "visig_glamour"},
+    )
+    previous_attempt_id = ledger.record_attempt(
+        request_id=previous_request_id,
+        provider="xai",
+        model="grok-imagine-image-quality",
+        status="completed",
+    )
+    previous_artifact_id = ledger.record_artifact(
+        request_id=previous_request_id,
+        attempt_id=previous_attempt_id,
+        kind="image",
+        local_path="/tmp/private-low-dim.jpg",
+        content_hash="sha256:private-low-dim",
+        freshness_status="fresh",
+    )
+    ledger.record_judgment(
+        request_id=previous_request_id,
+        attempt_id=previous_attempt_id,
+        artifact_id=previous_artifact_id,
+        judge_name="visual_quality_judge",
+        score=0.42,
+        verdict="fail",
+        details={
+            "quality_issues": ["face_unnatural", "stockings_bad"],
+            "preference_dimensions": {
+                "face_naturalness": 0.28,
+                "fashion_material_quality": 0.31,
+                "pose_composition": 0.78,
+            },
+        },
+    )
+    image = tmp_path / "image.png"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    image_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(image),
+            "provider": "fixture",
+            "model": "image",
+            "vision_observation": {
+                "face_quality": 0.9,
+                "fashion_material_quality": 0.9,
+                "visual_appeal": 0.9,
+                "composition": 0.9,
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "請產出一張圖片：時尚寫真。",
+                "include_video": False,
+                "candidate_budget": 1,
+                "candidate_budget_source": "planner_default",
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["generation_strategy"]["candidate_budget"] == 4
+    assert payload["generation_strategy"]["candidate_budget_source"] == "feedback_loop"
+    assert payload["generation_strategy"]["feedback_policy"]["applied_action_types"] == [
+        "increase_candidate_budget",
+        "rerank_before_slack",
+        "repair_low_preference_dimension",
+    ]
+    assert payload["generation_strategy"]["feedback_policy"]["repair_dimensions"] == [
+        {
+            "dimension": "face_naturalness",
+            "quality_issue": "face_unnatural",
+            "repair_hint": "improve_face_naturalness",
+        },
+        {
+            "dimension": "fashion_material_quality",
+            "quality_issue": "stockings_bad",
+            "repair_hint": "improve_fashion_material_quality",
+        },
+    ]
+    assert "face_naturalness" in image_calls[0]["prompt"]
+    assert "fashion_material_quality" in image_calls[0]["prompt"]
+
+
+@pytest.mark.asyncio
 async def test_visual_package_records_quality_judgment_for_candidates(monkeypatch, tmp_path):
     from agent.visual.attempt_ledger import VisualAttemptLedger
     from agent.visual.tracking import default_visual_ledger_path
