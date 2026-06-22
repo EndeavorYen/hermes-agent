@@ -236,6 +236,54 @@ caption
         )
         assert tags == []
 
+    def test_gateway_auto_append_video_generate_json_local_path(self):
+        """video_generate local mp4 output is auto-appended for native upload."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {"role": "user", "content": "Animate this image"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_video", "function": {"name": "video_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_video",
+                "content": '{"success": true, "video": "/tmp/gen/current.mp4"}',
+            },
+            {"role": "assistant", "content": "Done."},
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+
+        assert tags == ["MEDIA:/tmp/gen/current.mp4"]
+        assert voice is False
+
+    def test_gateway_auto_append_video_generate_remote_url_ignored(self):
+        """Remote video URLs are not auto-appended because Slack needs a local file upload path."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_video", "function": {"name": "video_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_video",
+                "content": '{"success": true, "video": "https://vidgen.example/current.mp4"}',
+            },
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+
+        assert tags == []
+        assert voice is False
+
     def test_gateway_auto_append_image_generate_dedupes_history(self):
         """A generated image path already in history is not re-sent."""
         from gateway.run import _collect_auto_append_media_tags

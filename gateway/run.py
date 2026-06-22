@@ -868,6 +868,7 @@ _AUTO_APPEND_MEDIA_TOOL_NAMES = {
     "text_to_speech",
     "text_to_speech_tool",
     "image_generate",
+    "video_generate",
     "visual_package_generate",
 }
 
@@ -1046,6 +1047,62 @@ def _merge_visual_delivery_metadata(
     return merged
 
 
+def _filter_current_visual_media_refs(
+    refs: List[str],
+    visual_delivery_metadata_by_ref: Optional[Dict[str, Dict[str, Any]]],
+) -> List[str]:
+    if not visual_delivery_metadata_by_ref:
+        return refs
+    filtered: List[str] = []
+    for ref in refs:
+        if not _is_visual_media_ref(ref) or _has_visual_delivery_metadata(
+            ref,
+            visual_delivery_metadata_by_ref,
+        ):
+            filtered.append(ref)
+    return filtered
+
+
+def _filter_current_visual_media_files(
+    media_files: List[tuple],
+    visual_delivery_metadata_by_ref: Optional[Dict[str, Dict[str, Any]]],
+) -> List[tuple]:
+    if not visual_delivery_metadata_by_ref:
+        return media_files
+    return [
+        (path, is_voice)
+        for path, is_voice in media_files
+        if not _is_visual_media_ref(str(path))
+        or _has_visual_delivery_metadata(str(path), visual_delivery_metadata_by_ref)
+    ]
+
+
+def _has_visual_delivery_metadata(
+    artifact_ref: str,
+    visual_delivery_metadata_by_ref: Dict[str, Dict[str, Any]],
+) -> bool:
+    for key in _media_ref_lookup_keys(artifact_ref):
+        if isinstance(visual_delivery_metadata_by_ref.get(key), dict):
+            return True
+    return False
+
+
+def _is_visual_media_ref(ref: str) -> bool:
+    return Path(ref).suffix.lower() in {
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".webp",
+        ".gif",
+        ".mp4",
+        ".mov",
+        ".avi",
+        ".mkv",
+        ".webm",
+        ".3gp",
+    }
+
+
 def _collect_auto_append_media_delivery(
     messages: List[Dict[str, Any]],
     history_offset: int = 0,
@@ -1115,6 +1172,20 @@ def _collect_auto_append_media_delivery(
                             and path not in history_media_paths):
                         media_tags.append(f"MEDIA:{path}")
                         break
+            continue
+        if tool_name == "video_generate" and "MEDIA:" not in content:
+            try:
+                payload = json.loads(content)
+            except Exception:
+                payload = None
+            if isinstance(payload, dict) and payload.get("success"):
+                path = payload.get("video")
+                if (
+                    isinstance(path, str)
+                    and _TOOL_MEDIA_RE.fullmatch(f"MEDIA:{path}")
+                    and path not in history_media_paths
+                ):
+                    media_tags.append(f"MEDIA:{path}")
             continue
         if tool_name == "visual_package_generate" and "MEDIA:" not in content:
             try:
@@ -11019,6 +11090,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             media_files, cleaned = adapter.extract_media(response)
             media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+            media_files = _filter_current_visual_media_files(
+                media_files,
+                visual_delivery_metadata_by_ref,
+            )
             # Chain the cleaned text through each extractor (extract_media →
             # extract_images → extract_local_files) so MEDIA: tags and image URLs
             # are removed before the bare-path auto-detect runs. Previously the
@@ -11029,6 +11104,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _, cleaned = adapter.extract_images(cleaned)
             local_files, _ = adapter.extract_local_files(cleaned)
             local_files = BasePlatformAdapter.filter_local_delivery_paths(local_files)
+            local_files = _filter_current_visual_media_refs(
+                local_files,
+                visual_delivery_metadata_by_ref,
+            )
 
             _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
 

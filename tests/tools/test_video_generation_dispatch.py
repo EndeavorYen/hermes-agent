@@ -137,6 +137,37 @@ class TestUnifiedDispatch:
         assert result["modality"] == "image"
         assert provider.last_kwargs["image_url"] == "https://example.com/img.png"
 
+    def test_xai_image_to_video_materializes_remote_video_for_upload(self, monkeypatch, tmp_path):
+        from tools import video_generation_tool
+
+        cached = tmp_path / "cached.mp4"
+
+        def fake_download_remote_video(url):
+            assert url == "https://example.com/v.mp4"
+            cached.write_bytes(b"video")
+            return str(cached)
+
+        monkeypatch.setattr(
+            video_generation_tool,
+            "download_remote_video",
+            fake_download_remote_video,
+            raising=False,
+        )
+        provider = _RecordingProvider("xai", default_model="grok-imagine-video-1.5")
+        video_gen_registry.register_provider(provider)
+
+        result = self._run(
+            {
+                "prompt": "animate this",
+                "image_url": "https://example.com/img.png",
+            },
+            configured="xai",
+        )
+
+        assert result["success"] is True
+        assert result["video"] == str(cached)
+        assert result["source_video_url"] == "https://example.com/v.mp4"
+
     def test_prompt_required(self):
         provider = _RecordingProvider("rec")
         video_gen_registry.register_provider(provider)

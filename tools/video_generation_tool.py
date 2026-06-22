@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import json
 import logging
+from urllib.parse import urlparse
 from typing import Any, Dict, List, Optional
 
 from agent.video_gen_provider import (
@@ -56,6 +57,7 @@ from agent.video_gen_provider import (
 from tools.registry import registry, tool_error
 
 logger = logging.getLogger(__name__)
+MAX_REMOTE_VIDEO_BYTES = 150 * 1024 * 1024
 
 _IMAGE_FIRST_VISUAL_VIDEO_TOKENS = (
     "portrait",
@@ -536,17 +538,69 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
         )
         return json.dumps(tracked)
 
-    tracked = _track_video_generate_payload(
+    materialized = _materialize_remote_video_result(
         result,
+        provider_name=str(result.get("provider") or getattr(provider, "name", "")),
+    )
+    tracked = _track_video_generate_payload(
+        materialized,
         prompt=prompt,
         image_url=image_url,
-        provider=str(result.get("provider") or getattr(provider, "name", "")),
-        model=str(result.get("model") or model or ""),
+        provider=str(materialized.get("provider") or getattr(provider, "name", "")),
+        model=str(materialized.get("model") or model or ""),
         aspect_ratio=aspect_ratio,
         duration=duration,
         resolution=resolution,
     )
     return json.dumps(tracked)
+
+
+def _materialize_remote_video_result(result: Dict[str, Any], *, provider_name: str) -> Dict[str, Any]:
+    if result.get("success") is not True:
+        return result
+    video_ref = result.get("video")
+    if not isinstance(video_ref, str) or not _is_remote_video_url(video_ref):
+        return result
+    if provider_name.strip().lower() != "xai":
+        return result
+    payload = dict(result)
+    payload["source_video_url"] = video_ref
+    try:
+        payload["video"] = download_remote_video(video_ref)
+    except Exception as exc:  # noqa: BLE001 - preserve provider evidence in structured failure
+        payload["success"] = False
+        payload["video"] = None
+        payload["error_type"] = "remote_video_materialization_failed"
+        payload["error"] = f"Could not download generated video for native upload: {exc}"
+    return payload
+
+
+def download_remote_video(url: str) -> str:
+    from urllib.request import urlopen
+
+    with urlopen(url, timeout=60) as response:  # noqa: S310 - provider-generated media URL
+        raw = response.read(MAX_REMOTE_VIDEO_BYTES + 1)
+    if len(raw) > MAX_REMOTE_VIDEO_BYTES:
+        raise ValueError("remote video exceeds maximum cache size")
+    from agent.video_gen_provider import save_bytes_video
+
+    return str(save_bytes_video(raw, prefix="video-generate", extension=_remote_video_extension(url)))
+
+
+def _is_remote_video_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme in {"http", "https"} and _remote_video_extension(value) in {
+        "mp4",
+        "mov",
+        "webm",
+        "mkv",
+    }
+
+
+def _remote_video_extension(url: str) -> str:
+    path = urlparse(url).path
+    suffix = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+    return suffix or "mp4"
 
 
 def _should_defer_to_visual_package(

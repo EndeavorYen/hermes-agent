@@ -272,6 +272,80 @@ async def test_streaming_delivery_passes_visual_metadata_to_video_sender(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_streaming_delivery_visual_package_filters_stale_image_video_media(
+    tmp_path,
+    monkeypatch,
+):
+    event = _event(thread_id="topic-1")
+    old_image = _allowed_media_path(tmp_path, monkeypatch, "old.jpg")
+    current_image = _allowed_media_path(tmp_path, monkeypatch, "current.jpg")
+    current_video = _allowed_media_path(tmp_path, monkeypatch, "current.mp4")
+    visual_metadata = {
+        "visual_request_id": "vrq_current",
+        "visual_attempt_id": None,
+        "selected_visual_artifact_ids": ["var_img", "var_vid"],
+        "visual_artifacts": {
+            str(current_image): {
+                "request_id": "vrq_current",
+                "attempt_id": "vat_img",
+                "artifact_id": "var_img",
+                "kind": "image",
+                "content_hash": "sha256:img",
+            },
+            str(current_video): {
+                "request_id": "vrq_current",
+                "attempt_id": "vat_vid",
+                "artifact_id": "var_vid",
+                "kind": "video",
+                "content_hash": "sha256:vid",
+            },
+        },
+    }
+    adapter = SimpleNamespace(
+        name="test",
+        extract_media=BasePlatformAdapter.extract_media,
+        extract_images=BasePlatformAdapter.extract_images,
+        extract_local_files=BasePlatformAdapter.extract_local_files,
+        send_voice=AsyncMock(return_value=SendResult(success=True, message_id="voice")),
+        send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc")),
+        send_image_file=AsyncMock(return_value=SendResult(success=True, message_id="image")),
+        send_multiple_images=AsyncMock(return_value=None),
+        send_video=AsyncMock(return_value=SendResult(success=True, message_id="video")),
+    )
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner({"thread_id": "topic-1"}),
+        "\n".join(
+            [
+                f"Previous batch: MEDIA:{old_image}",
+                f"Current batch: MEDIA:{current_image}",
+                f"MEDIA:{current_video}",
+            ]
+        ),
+        event,
+        adapter,
+        visual_delivery_metadata_by_ref={
+            str(current_image): visual_metadata,
+            str(current_video): visual_metadata,
+        },
+    )
+
+    adapter.send_multiple_images.assert_awaited_once_with(
+        chat_id="chat-1",
+        images=[(f"file://{quote(str(current_image))}", "")],
+        metadata={
+            **visual_metadata,
+            "thread_id": "topic-1",
+        },
+    )
+    adapter.send_video.assert_awaited_once()
+    assert adapter.send_video.await_args.kwargs["video_path"] == str(current_video)
+    assert adapter.send_video.await_args.kwargs["metadata"]["visual_request_id"] == "vrq_current"
+    adapter.send_document.assert_not_awaited()
+    adapter.send_voice.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_streaming_delivery_blocks_media_path_outside_allowed_roots(tmp_path, monkeypatch):
     event = _event(thread_id="topic-1")
     allowed_root = tmp_path / "media-cache"
