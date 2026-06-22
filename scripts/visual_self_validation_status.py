@@ -13,6 +13,8 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from hermes_constants import get_hermes_home
+from agent.visual.promotion_readiness import build_visual_promotion_readiness
+from agent.visual.promotion_readiness import missing_visual_promotion_readiness
 
 
 DEFAULT_STALE_AFTER_HOURS = 24
@@ -37,6 +39,7 @@ def build_visual_self_validation_status(
             "health_status": "missing",
             "live_e2e_ran": False,
             "next_steps": ["run_visual_scheduled_self_validation"],
+            "promotion_readiness": missing_visual_promotion_readiness(),
             "self_review": {
                 "privacy_safe": True,
                 "raw_report_exposed": False,
@@ -57,10 +60,19 @@ def build_visual_self_validation_status(
         is_stale=is_stale,
     )
     failures = _strings(payload.get("failures"))
-    action_types = _action_types(summary, payload)
+    actions = _collect_actions(payload)
+    action_types = _action_types(summary, actions)
     trend_degradations = _strings(summary.get("live_quality_trend_degradations"))
-    provider_failure_classes = _aggregate_counts(_collect_actions(payload), "provider_failure_classes")
-    provider_error_codes = _aggregate_counts(_collect_actions(payload), "provider_error_codes")
+    provider_failure_classes = _aggregate_counts(actions, "provider_failure_classes")
+    provider_error_codes = _aggregate_counts(actions, "provider_error_codes")
+    promotion_readiness = build_visual_promotion_readiness(
+        report_success=payload.get("success") is True,
+        failures=failures,
+        live_e2e_ran=live_e2e_ran,
+        summary=summary,
+        actions=actions,
+        trend_degradations=trend_degradations,
+    )
 
     next_steps = _next_steps(
         report_success=payload.get("success") is True,
@@ -130,6 +142,7 @@ def build_visual_self_validation_status(
             "action_count": len(action_types),
             "requires_human_feedback": False,
         },
+        "promotion_readiness": promotion_readiness,
         "next_steps": next_steps,
         "self_review": {
             "privacy_safe": True,
@@ -166,11 +179,11 @@ def _sanitise_slack_upload_policy(value: Any) -> dict[str, Any]:
     return {key: source[key] for key in allowed if key in source}
 
 
-def _action_types(summary: dict[str, Any], payload: dict[str, Any]) -> list[str]:
+def _action_types(summary: dict[str, Any], actions: list[dict[str, Any]]) -> list[str]:
     values: list[str] = []
     for key in ("live_quality_burn_action_types", "live_quality_trend_action_types", "feedback_action_types"):
         values.extend(_strings(summary.get(key)))
-    for action in _collect_actions(payload):
+    for action in actions:
         if action.get("requires_human_feedback") is True:
             continue
         action_type = str(action.get("type") or "").strip()

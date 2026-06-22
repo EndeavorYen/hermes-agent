@@ -145,6 +145,8 @@ def test_visual_self_validation_status_marks_missing_report(tmp_path):
     assert status["health_status"] == "missing"
     assert status["live_e2e_ran"] is False
     assert status["next_steps"] == ["run_visual_scheduled_self_validation"]
+    assert status["promotion_readiness"]["ready"] is False
+    assert "self_validation_report_missing" in status["promotion_readiness"]["blocking_reasons"]
 
 
 def test_visual_self_validation_status_surfaces_non_live_and_staleness(tmp_path):
@@ -239,6 +241,130 @@ def test_visual_self_validation_status_warns_on_live_quality_trend_degradation(t
     assert "stabilize_live_quality_trends" in status["next_steps"]
     assert "prefer_image_first_video" in status["self_improvement"]["action_types"]
     assert "safe_reframe_provider_retry" in status["self_improvement"]["action_types"]
+
+
+def test_visual_self_validation_status_reports_strategy_promotion_readiness(tmp_path):
+    from scripts.visual_self_validation_status import build_visual_self_validation_status
+
+    report = _scheduled_report()
+    report["summary"]["live_quality_burn_min_score"] = 0.8206
+    report["automation"]["self_improvement"]["next_actions"].append(
+        {
+            "type": "prefer_strategy",
+            "source": "live_quality_burn",
+            "track": "aesthetic",
+            "strategy_signature": "image_first_rank_then_video",
+            "bucket": "image-video:product-editorial",
+            "activation_status": "shadow",
+            "confidence": 0.8206,
+            "evidence_count": 4,
+            "private_prompt": "do not leak strategy prompt",
+        }
+    )
+    latest_path = _write_latest(tmp_path, report)
+
+    status = build_visual_self_validation_status(latest_path=latest_path)
+
+    readiness = status["promotion_readiness"]
+    assert readiness["ready"] is True
+    assert readiness["blocking_reasons"] == []
+    assert readiness["candidate"] == {
+        "type": "prefer_strategy",
+        "source": "live_quality_burn",
+        "track": "aesthetic",
+        "strategy_signature": "image_first_rank_then_video",
+        "bucket": "image-video:product-editorial",
+        "activation_status": "shadow",
+        "confidence": 0.8206,
+        "evidence_count": 4,
+    }
+    assert readiness["self_review"]["privacy_safe"] is True
+    encoded = json.dumps(status, ensure_ascii=False)
+    assert "do not leak" not in encoded
+
+
+def test_visual_self_validation_status_blocks_strategy_promotion_on_trend_degradation(tmp_path):
+    from scripts.visual_self_validation_status import build_visual_self_validation_status
+
+    report = _scheduled_report()
+    report["summary"]["live_quality_burn_min_score"] = 0.86
+    report["summary"]["live_quality_trend_degradations"] = ["provider_failures_spiked"]
+    report["automation"]["self_improvement"]["next_actions"].append(
+        {
+            "type": "prefer_strategy",
+            "source": "live_quality_burn",
+            "track": "aesthetic",
+            "strategy_signature": "image_first_rank_then_video",
+            "bucket": "image-video:product-editorial",
+            "activation_status": "shadow",
+            "confidence": 0.88,
+            "evidence_count": 4,
+        }
+    )
+    latest_path = _write_latest(tmp_path, report)
+
+    status = build_visual_self_validation_status(latest_path=latest_path)
+
+    assert status["promotion_readiness"]["ready"] is False
+    assert "live_quality_trend_degraded" in status["promotion_readiness"]["blocking_reasons"]
+
+
+def test_visual_self_validation_status_reports_low_strategy_confidence_blocker(tmp_path):
+    from scripts.visual_self_validation_status import build_visual_self_validation_status
+
+    report = _scheduled_report()
+    report["summary"]["live_quality_burn_min_score"] = 0.86
+    report["automation"]["self_improvement"]["next_actions"].append(
+        {
+            "type": "prefer_strategy",
+            "source": "live_quality_burn",
+            "track": "aesthetic",
+            "strategy_signature": "image_first_rank_then_video",
+            "bucket": "image-video:product-editorial",
+            "activation_status": "shadow",
+            "confidence": 0.72,
+            "evidence_count": 4,
+        }
+    )
+    latest_path = _write_latest(tmp_path, report)
+
+    status = build_visual_self_validation_status(latest_path=latest_path)
+
+    assert status["promotion_readiness"]["ready"] is False
+    assert "strategy_confidence_below_threshold" in status["promotion_readiness"]["blocking_reasons"]
+    assert "no_shadow_strategy_candidate" not in status["promotion_readiness"]["blocking_reasons"]
+
+
+def test_visual_self_validation_status_requires_current_live_run_for_promotion(tmp_path):
+    from scripts.visual_self_validation_status import build_visual_self_validation_status
+
+    report = _scheduled_report(live_decision="skip_interval")
+    report["mode"] = "fixture"
+    report["summary"]["live_quality_gate_success"] = None
+    report["summary"]["live_quality_suite_success"] = None
+    report["summary"]["live_quality_burn_min_score"] = 0.86
+    report["automation"]["self_improvement"]["next_actions"].append(
+        {
+            "type": "prefer_strategy",
+            "source": "live_quality_burn",
+            "track": "aesthetic",
+            "strategy_signature": "image_first_rank_then_video",
+            "bucket": "image-video:product-editorial",
+            "activation_status": "shadow",
+            "confidence": 0.88,
+            "evidence_count": 4,
+        }
+    )
+    latest_path = _write_latest(tmp_path, report)
+
+    status = build_visual_self_validation_status(
+        latest_path=latest_path,
+        now=datetime(2026, 6, 22, 16, 47, tzinfo=timezone.utc),
+    )
+
+    assert status["health_status"] == "pass"
+    assert status["promotion_readiness"]["ready"] is False
+    assert "current_live_run_required" in status["promotion_readiness"]["blocking_reasons"]
 
 
 def test_visual_self_validation_status_warns_when_live_slack_upload_not_covered(tmp_path):
