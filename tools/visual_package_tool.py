@@ -191,8 +191,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
     requested_image = _wants_image(prompt, args)
     wants_video = _wants_video(prompt, args)
     explicit_image_url = str(args.get("image_url") or "").strip() or None
-    attachment_video_source = attachments[0] if attachments and not requested_image else None
-    explicit_video_source = explicit_image_url or attachment_video_source
+    explicit_video_source = explicit_image_url
     image_first_for_video = wants_video and not requested_image and not explicit_video_source
     should_generate_image = requested_image or image_first_for_video
     if not should_generate_image and not wants_video:

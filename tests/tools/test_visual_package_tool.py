@@ -636,24 +636,28 @@ async def test_visual_package_applies_self_validation_guidance_to_first_video_pr
 
 
 @pytest.mark.asyncio
-async def test_visual_package_video_only_with_attachment_animates_attachment(monkeypatch, tmp_path):
+async def test_visual_package_video_only_with_attachment_uses_generated_source_by_default(monkeypatch, tmp_path):
     from tools import visual_package_tool
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     source = tmp_path / "source.png"
+    generated = tmp_path / "generated.png"
     video = tmp_path / "video.mp4"
     source.write_bytes(_ONE_PIXEL_PNG)
+    generated.write_bytes(_ONE_PIXEL_PNG)
     video.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+    image_calls = []
     video_calls = []
 
-    def fail_generate_image(**kwargs):
-        raise AssertionError(f"attachment-to-video should not generate a new image: {kwargs}")
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        return {"success": True, "image": str(generated), "provider": "fixture", "model": "image-fixture"}
 
     def fake_generate_video(**kwargs):
         video_calls.append(kwargs)
         return {"success": True, "video": str(video), "provider": "fixture", "model": "video-fixture"}
 
-    monkeypatch.setattr(visual_package_tool, "generate_image", fail_generate_image)
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
     monkeypatch.setattr(visual_package_tool, "generate_video", fake_generate_video)
 
     payload = json.loads(
@@ -663,6 +667,7 @@ async def test_visual_package_video_only_with_attachment_animates_attachment(mon
                 "attachments": [str(source)],
                 "include_image": False,
                 "include_video": True,
+                "candidate_budget": 1,
             }
         )
     )
@@ -670,7 +675,10 @@ async def test_visual_package_video_only_with_attachment_animates_attachment(mon
     assert payload["success"] is True
     assert payload["images"] == []
     assert payload["videos"] == [str(video)]
-    assert video_calls[0]["image_url"] == str(source)
+    assert image_calls[0]["reference_image_urls"] == [str(source)]
+    assert video_calls[0]["image_url"] == str(generated)
+    assert payload["generation_strategy"]["image_first_for_video"] is True
+    assert payload["generation_strategy"]["video_source_image"] == str(generated)
 
 
 @pytest.mark.asyncio

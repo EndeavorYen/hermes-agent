@@ -39,7 +39,8 @@ _CASES: tuple[VisualAgentCase, ...] = (
         attachments=("/tmp/ref.png",),
         expect_image=False,
         expect_video=True,
-        expect_reason="attachment_to_video_request",
+        min_candidate_budget=2,
+        expect_reason="attachment_to_video_image_first_request",
         expect_duration=6,
     ),
     VisualAgentCase(

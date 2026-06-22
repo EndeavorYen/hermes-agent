@@ -50,7 +50,10 @@ def test_agent_mode_planner_routes_video_only_request():
     assert plan["should_use_visual_package"] is True
     assert plan["arguments"]["include_image"] is False
     assert plan["arguments"]["include_video"] is True
+    assert plan["arguments"]["candidate_budget"] == 2
+    assert plan["arguments"]["candidate_budget_source"] == "planner_default"
     assert plan["arguments"]["duration"] == 6
+    assert plan["reason"] == "attachment_to_video_image_first_request"
 
 
 def test_agent_mode_planner_routes_text_only_video_through_image_first_candidates():

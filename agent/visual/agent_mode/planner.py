@@ -52,8 +52,8 @@ def plan_visual_agent_request(
         wants_image = False
     if not wants_image and not wants_video and attachments:
         wants_video = True
-    image_first_for_video = wants_video and not wants_image and not attachments
-    include_image = wants_image or image_first_for_video
+    image_first_for_video = wants_video and not wants_image
+    include_image = wants_image or (image_first_for_video and not attachments)
     should_use_visual_package = wants_image or wants_video
     arguments: dict[str, Any] = {
         "prompt": prompt,
@@ -63,7 +63,7 @@ def plan_visual_agent_request(
     if attachments:
         arguments["attachments"] = attachments
     if wants_image or image_first_for_video:
-        arguments["candidate_budget"] = 2 if wants_video and not attachments else 1
+        arguments["candidate_budget"] = 2 if image_first_for_video else 1
         arguments["candidate_budget_source"] = "planner_default"
     if wants_video:
         arguments["video_budget"] = 1
@@ -168,6 +168,8 @@ def _reason(
 ) -> str:
     if wants_image and wants_video:
         return "image_plus_video_request"
+    if wants_video and attachments and image_first_for_video:
+        return "attachment_to_video_image_first_request"
     if wants_video and attachments:
         return "attachment_to_video_request"
     if image_first_for_video:
