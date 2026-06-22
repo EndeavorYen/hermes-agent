@@ -5,6 +5,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from agent.visual.action_dedupe import dedupe_actions as _dedupe_actions
+
 
 DEFAULT_BASELINE_WINDOW = 3
 DEFAULT_RECENT_WINDOW = 3
@@ -265,22 +267,6 @@ def _action(
     }
 
 
-def _dedupe_actions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    seen: set[tuple[str, str, str]] = set()
-    deduped: list[dict[str, Any]] = []
-    for action in actions:
-        key = (
-            str(action.get("type") or ""),
-            str(action.get("source") or ""),
-            str(action.get("dimension") or ""),
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(action)
-    return deduped
-
-
 def _preference_dimension_failures(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
@@ -367,4 +353,3 @@ def _float_or_none(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
-

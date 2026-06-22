@@ -651,6 +651,50 @@ def test_scheduled_self_validation_carries_forward_recent_live_burn_actions(monk
     } in report["automation"]["self_improvement"]["next_actions"]
 
 
+def test_scheduled_self_validation_dedupe_preserves_distinct_quality_actions():
+    from scripts.visual_scheduled_self_validation import _dedupe_actions
+
+    face_repair = {
+        "type": "repair_low_preference_dimension",
+        "source": "live_quality_burn",
+        "dimension": "face_naturalness",
+    }
+    material_repair = {
+        "type": "repair_low_preference_dimension",
+        "source": "live_quality_burn",
+        "dimension": "fashion_material_quality",
+    }
+    legwear_focus = {
+        "type": "apply_quality_focus_operator",
+        "source": "live_quality_trends",
+        "dimension": "fashion_material_quality",
+        "focus": "legwear_material",
+        "strategy_operator": "refine_legwear_material",
+    }
+    composition_focus = {
+        "type": "apply_quality_focus_operator",
+        "source": "live_quality_trends",
+        "dimension": "pose_composition",
+        "focus": "long_leg_composition",
+        "strategy_operator": "refine_long_leg_composition",
+    }
+
+    assert _dedupe_actions(
+        [
+            face_repair,
+            material_repair,
+            legwear_focus,
+            composition_focus,
+            dict(legwear_focus),
+        ]
+    ) == [
+        face_repair,
+        material_repair,
+        legwear_focus,
+        composition_focus,
+    ]
+
+
 def test_scheduled_self_validation_separates_rollout_autonomy_from_validation(monkeypatch, tmp_path):
     from scripts import visual_scheduled_self_validation
 

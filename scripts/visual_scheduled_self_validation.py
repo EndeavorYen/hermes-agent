@@ -14,6 +14,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from hermes_constants import get_hermes_home
+from agent.visual.action_dedupe import dedupe_actions as _dedupe_actions
 from agent.visual.live_quality_trends import build_live_quality_trend_report_from_dir
 from scripts.visual_e2e_automation_report import build_visual_e2e_automation_report
 
@@ -507,22 +508,6 @@ def _action_list(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, dict)]
-
-
-def _dedupe_actions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    seen: set[tuple[str, str, str]] = set()
-    deduped: list[dict[str, Any]] = []
-    for action in actions:
-        key = (
-            str(action.get("type") or ""),
-            str(action.get("source") or ""),
-            str(action.get("modality") or ""),
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(action)
-    return deduped
 
 
 def _write_report(output_dir: Path, report: dict[str, Any]) -> None:

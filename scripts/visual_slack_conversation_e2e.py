@@ -17,6 +17,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from hermes_constants import get_hermes_home
+from agent.visual.action_dedupe import dedupe_actions as _dedupe_actions
 from gateway.config import PlatformConfig
 from gateway.platforms.slack import SlackAdapter
 from scripts.visual_conversation_route_report import build_visual_conversation_route_report
@@ -531,28 +532,6 @@ def _action(
     }
     payload.update(extra)
     return payload
-
-
-def _dedupe_actions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    seen: set[tuple[str, str, str, str, str]] = set()
-    deduped: list[dict[str, Any]] = []
-    for action in actions:
-        key = _dedupe_action_key(action)
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(action)
-    return deduped
-
-
-def _dedupe_action_key(action: dict[str, Any]) -> tuple[str, str, str, str, str]:
-    return (
-        str(action.get("type") or ""),
-        str(action.get("source") or ""),
-        str(action.get("modality") or ""),
-        str(action.get("dimension") or ""),
-        str(action.get("strategy_signature") or ""),
-    )
 
 
 def _int_mapping(value: Any) -> dict[str, int]:

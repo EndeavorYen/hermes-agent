@@ -12,6 +12,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from agent.visual.tracking import default_visual_ledger_path
+from agent.visual.action_dedupe import dedupe_actions as _dedupe_actions
 from scripts.visual_agent_mode_regression_report import build_visual_agent_mode_regression_report
 from scripts.visual_autonomous_healthcheck import build_visual_autonomous_healthcheck
 from scripts.visual_closed_loop_regression_report import build_visual_closed_loop_regression_report
@@ -237,22 +238,6 @@ def _action_list(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, dict)]
-
-
-def _dedupe_actions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    seen: set[tuple[str, str, str]] = set()
-    deduped: list[dict[str, Any]] = []
-    for action in actions:
-        key = (
-            str(action.get("type") or ""),
-            str(action.get("source") or ""),
-            str(action.get("modality") or ""),
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(action)
-    return deduped
 
 
 def _int(value: Any) -> int:

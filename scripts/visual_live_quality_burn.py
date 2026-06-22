@@ -13,6 +13,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from hermes_constants import get_hermes_home
+from agent.visual.action_dedupe import dedupe_actions as _dedupe_actions
 from scripts.visual_live_provider_e2e import DEFAULT_E2E_CASES
 from scripts.visual_live_provider_e2e import build_visual_live_provider_e2e_suite_report
 
@@ -568,25 +569,6 @@ def _action(
         "source": "live_quality_burn",
         **extra,
     }
-
-
-def _dedupe_actions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    seen: set[tuple[str, str, str, str, str, str]] = set()
-    deduped: list[dict[str, Any]] = []
-    for action in actions:
-        key = (
-            str(action.get("type") or ""),
-            str(action.get("source") or ""),
-            str(action.get("modality") or ""),
-            str(action.get("focus") or ""),
-            str(action.get("dimension") or ""),
-            str(action.get("strategy_operator") or action.get("strategy_signature") or ""),
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(action)
-    return deduped
 
 
 def _normalise_mode(mode: str) -> str:

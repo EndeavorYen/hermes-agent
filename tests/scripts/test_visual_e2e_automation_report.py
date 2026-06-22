@@ -385,6 +385,50 @@ def test_visual_e2e_automation_exports_feedback_loop_next_actions(monkeypatch, t
     assert report["self_improvement"]["reduces_human_intervention"] is True
 
 
+def test_visual_e2e_automation_dedupe_preserves_distinct_quality_actions():
+    from scripts.visual_e2e_automation_report import _dedupe_actions
+
+    face_repair = {
+        "type": "repair_low_preference_dimension",
+        "source": "live_quality_burn",
+        "dimension": "face_naturalness",
+    }
+    material_repair = {
+        "type": "repair_low_preference_dimension",
+        "source": "live_quality_burn",
+        "dimension": "fashion_material_quality",
+    }
+    legwear_focus = {
+        "type": "apply_quality_focus_operator",
+        "source": "live_quality_burn",
+        "dimension": "fashion_material_quality",
+        "focus": "legwear_material",
+        "strategy_operator": "refine_legwear_material",
+    }
+    composition_focus = {
+        "type": "apply_quality_focus_operator",
+        "source": "live_quality_burn",
+        "dimension": "pose_composition",
+        "focus": "long_leg_composition",
+        "strategy_operator": "refine_long_leg_composition",
+    }
+
+    assert _dedupe_actions(
+        [
+            face_repair,
+            material_repair,
+            legwear_focus,
+            composition_focus,
+            dict(face_repair),
+        ]
+    ) == [
+        face_repair,
+        material_repair,
+        legwear_focus,
+        composition_focus,
+    ]
+
+
 def test_visual_e2e_automation_fails_when_quality_calibration_fails(monkeypatch, tmp_path):
     from scripts import visual_e2e_automation_report
 
