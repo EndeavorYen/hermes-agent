@@ -171,6 +171,11 @@ def test_visual_e2e_automation_exports_quality_suite_next_actions(monkeypatch, t
         "build_visual_live_provider_e2e_suite_report",
         fake_quality_suite,
     )
+    monkeypatch.setattr(
+        visual_e2e_automation_report,
+        "build_visual_feedback_loop_report",
+        lambda _path: {"success": True, "failures": [], "next_actions": []},
+    )
 
     report = visual_e2e_automation_report.build_visual_e2e_automation_report(work_dir=tmp_path)
 
@@ -346,6 +351,32 @@ def test_visual_e2e_automation_exports_slack_conversation_repair_actions(monkeyp
 
     assert report["success"] is True
     assert repair_action in report["self_improvement"]["next_actions"]
+    assert report["self_improvement"]["reduces_human_intervention"] is True
+
+
+def test_visual_e2e_automation_exports_feedback_loop_next_actions(monkeypatch, tmp_path):
+    from scripts import visual_e2e_automation_report
+
+    feedback_action = {
+        "type": "increase_candidate_budget",
+        "track": "aesthetic",
+        "reason": "provider_renders_but_auto_judge_rejected_quality",
+        "confidence": 0.65,
+        "evidence_count": 12,
+        "requires_human_feedback": False,
+        "activation_status": "next_run",
+        "source": "feedback_loop",
+    }
+    monkeypatch.setattr(
+        visual_e2e_automation_report,
+        "build_visual_feedback_loop_report",
+        lambda _path: {"success": True, "failures": [], "next_actions": [feedback_action]},
+    )
+
+    report = visual_e2e_automation_report.build_visual_e2e_automation_report(work_dir=tmp_path)
+
+    assert report["success"] is True
+    assert feedback_action in report["self_improvement"]["next_actions"]
     assert report["self_improvement"]["reduces_human_intervention"] is True
 
 

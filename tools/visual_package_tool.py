@@ -195,6 +195,8 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
     needs_generated_video_source = wants_video and not requested_image and not explicit_video_source
     should_generate_image = requested_image or needs_generated_video_source
     image_first_for_video = wants_video and should_generate_image and not explicit_video_source
+    storyboard_contract = _normalise_storyboard_contract(args.get("storyboard"))
+    storyboard_enabled = bool(storyboard_contract and wants_video)
     if not should_generate_image and not wants_video:
         requested_image = True
         should_generate_image = True
@@ -231,6 +233,8 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         "image_first_for_video": image_first_for_video,
         "aspect_ratio": _judge_aspect_ratio(aspect_ratio),
         "category": request_category,
+        "storyboard": storyboard_enabled,
+        "storyboard_shot_count": storyboard_contract.get("shot_count") if storyboard_enabled else None,
     }
     intent_signature = build_intent_signature(
         {
@@ -289,6 +293,51 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         "strategy_plan": strategy_plan.to_record(),
         "active_learning": {},
     }
+
+    if storyboard_enabled:
+        storyboard_result = _run_storyboard_execution(
+            args=args,
+            ledger=ledger,
+            request_id=request_id,
+            intent_signature=intent_signature,
+            strategy_plan=strategy_plan,
+            prompt=prompt,
+            storyboard=storyboard_contract,
+            attachments=attachments,
+            aspect_ratio=aspect_ratio,
+            image_aspect_ratio=image_aspect_ratio,
+            duration=duration,
+            request_category=request_category,
+            quality_guidance=quality_guidance,
+            inline_vision_judge=inline_vision_judge,
+            learning=learning,
+        )
+        return _finalize_visual_package_payload(
+            args,
+            request_id=request_id,
+            requested_image=requested_image,
+            wants_video=wants_video,
+            selected_images=[],
+            selected_videos=storyboard_result["selected_videos"],
+            selected_artifact_ids=storyboard_result["selected_artifact_ids"],
+            rankings=storyboard_result["rankings"],
+            generation_payloads=storyboard_result["generation_payloads"],
+            delivery_gate=storyboard_result["delivery_gate"],
+            should_generate_image=should_generate_image,
+            image_first_for_video=True,
+            video_source_image=storyboard_result.get("first_source_image"),
+            video_source_artifact_id=storyboard_result.get("first_source_artifact_id"),
+            candidate_budget=storyboard_result["candidate_budget_per_shot"],
+            candidate_budget_source=candidate_budget_source,
+            video_budget=video_budget,
+            feedback_policy=feedback_policy,
+            quality_guidance=quality_guidance,
+            learning=learning,
+            extra_generation_strategy={
+                "storyboard": storyboard_contract,
+                "storyboard_execution": storyboard_result["execution"],
+            },
+        )
 
     if should_generate_image:
         image_payloads = []
@@ -809,6 +858,55 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             selected_artifact_ids.append(selected_video["artifact_id"])
             selected_videos.append(selected_video["artifact_path"])
 
+    return _finalize_visual_package_payload(
+        args,
+        request_id=request_id,
+        requested_image=requested_image,
+        wants_video=wants_video,
+        selected_images=selected_images,
+        selected_videos=selected_videos,
+        selected_artifact_ids=selected_artifact_ids,
+        rankings=rankings,
+        generation_payloads=generation_payloads,
+        delivery_gate=delivery_gate,
+        should_generate_image=should_generate_image,
+        image_first_for_video=image_first_for_video,
+        video_source_image=video_source_image,
+        video_source_artifact_id=video_source_artifact_id,
+        candidate_budget=candidate_budget,
+        candidate_budget_source=candidate_budget_source,
+        video_budget=video_budget,
+        feedback_policy=feedback_policy,
+        quality_guidance=quality_guidance,
+        learning=learning,
+        extra_generation_strategy={"storyboard": storyboard_contract} if storyboard_contract else None,
+    )
+
+
+def _finalize_visual_package_payload(
+    args: dict[str, Any],
+    *,
+    request_id: str,
+    requested_image: bool,
+    wants_video: bool,
+    selected_images: list[str],
+    selected_videos: list[str],
+    selected_artifact_ids: list[str],
+    rankings: dict[str, Any],
+    generation_payloads: dict[str, Any],
+    delivery_gate: dict[str, dict[str, Any]],
+    should_generate_image: bool,
+    image_first_for_video: bool,
+    video_source_image: str | None,
+    video_source_artifact_id: str | None,
+    candidate_budget: int,
+    candidate_budget_source: str,
+    video_budget: int,
+    feedback_policy: dict[str, Any],
+    quality_guidance: dict[str, Any],
+    learning: dict[str, Any],
+    extra_generation_strategy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     success = (not requested_image or bool(selected_images)) and (not wants_video or bool(selected_videos))
     package_status = "success" if success else ("partial" if selected_images or selected_videos else "failed")
     package_error = _package_error(success=success, delivery_gate=delivery_gate)
@@ -821,6 +919,20 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         selected_artifact_ids=selected_artifact_ids,
     )
     selected_delivery_refs = set(selected_artifact_paths)
+    generation_strategy = {
+        "requested_image": requested_image,
+        "generated_image": should_generate_image,
+        "image_first_for_video": image_first_for_video,
+        "video_source_image": video_source_image,
+        "video_source_artifact_id": video_source_artifact_id,
+        "candidate_budget": candidate_budget,
+        "candidate_budget_source": candidate_budget_source,
+        "video_budget": video_budget,
+        "feedback_policy": feedback_policy,
+        "quality_guidance": quality_guidance,
+    }
+    if extra_generation_strategy:
+        generation_strategy.update(extra_generation_strategy)
 
     payload = {
         "success": success,
@@ -831,18 +943,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         "images": selected_images,
         "videos": selected_videos,
         "rankings": rankings,
-        "generation_strategy": {
-            "requested_image": requested_image,
-            "generated_image": should_generate_image,
-            "image_first_for_video": image_first_for_video,
-            "video_source_image": video_source_image,
-            "video_source_artifact_id": video_source_artifact_id,
-            "candidate_budget": candidate_budget,
-            "candidate_budget_source": candidate_budget_source,
-            "video_budget": video_budget,
-            "feedback_policy": feedback_policy,
-            "quality_guidance": quality_guidance,
-        },
+        "generation_strategy": generation_strategy,
         "delivery_metadata": delivery_metadata,
         "generation_payloads": _delivery_safe_generation_payloads(
             generation_payloads,
@@ -865,6 +966,313 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         validation=autonomous_validation,
     )
     return payload
+
+
+def _run_storyboard_execution(
+    *,
+    args: dict[str, Any],
+    ledger: VisualAttemptLedger,
+    request_id: str,
+    intent_signature: str,
+    strategy_plan,
+    prompt: str,
+    storyboard: dict[str, Any],
+    attachments: list[str],
+    aspect_ratio: str,
+    image_aspect_ratio: str,
+    duration: int,
+    request_category: str,
+    quality_guidance: dict[str, Any],
+    inline_vision_judge: bool | str,
+    learning: dict[str, Any],
+) -> dict[str, Any]:
+    selected_artifact_ids: list[str] = []
+    selected_videos: list[str] = []
+    rankings: dict[str, Any] = {"storyboard": {"shots": []}}
+    generation_payloads: dict[str, Any] = {"storyboard": []}
+    delivery_gate: dict[str, dict[str, Any]] = {}
+    execution_shots: list[dict[str, Any]] = []
+    first_source_image: str | None = None
+    first_source_artifact_id: str | None = None
+    candidate_budget_per_shot = _storyboard_candidate_budget(storyboard, fallback=_coerce_int(args.get("candidate_budget")) or 1)
+    video_budget_per_shot = 1
+
+    for shot_index, shot in enumerate(_storyboard_shots(storyboard)):
+        shot_id = str(shot.get("shot_id") or f"shot_{shot_index + 1}")
+        shot_prompt = _storyboard_shot_prompt(prompt, shot, shot_index=shot_index)
+        image_payloads: list[dict[str, Any]] = []
+        image_candidates: list[dict[str, Any]] = []
+        for candidate_index in range(candidate_budget_per_shot):
+            image_generation_prompt = _apply_first_pass_quality_guidance(shot_prompt, quality_guidance["image"])
+            image_kwargs = {
+                "prompt": image_generation_prompt,
+                "aspect_ratio": image_aspect_ratio,
+                "reference_image_urls": attachments or None,
+            }
+            image_payload = generate_image(**image_kwargs)
+            image_payloads.append(image_payload)
+            image_candidate = _record_payload_candidate(
+                ledger,
+                request_id=request_id,
+                payload=image_payload,
+                artifact_key="image",
+                expected_kind="image",
+                prompt=image_generation_prompt,
+                provider=str(image_payload.get("provider") or ""),
+                model=str(image_payload.get("model") or ""),
+                requested_parameters={
+                    "aspect_ratio": _judge_aspect_ratio(aspect_ratio),
+                    "storyboard_shot_id": shot_id,
+                },
+                candidate_index=(shot_index * candidate_budget_per_shot) + candidate_index,
+            )
+            if image_candidate:
+                image_candidates.append(image_candidate)
+
+        _score_candidates(
+            ledger,
+            request_id=request_id,
+            intent_signature=intent_signature,
+            strategy_signature=strategy_plan.strategy_signature,
+            modality="image",
+            has_reference_image=bool(attachments),
+            request_category=request_category,
+            candidates=image_candidates,
+            inline_vision_judge=inline_vision_judge,
+            vision_analyzer=analyze_candidate_with_vision_tool,
+        )
+        image_decision = rank_visual_candidates(
+            request_id=request_id,
+            candidates=image_candidates,
+            post_threshold=0.0,
+            ask_threshold=0.0,
+        )
+        rankings[f"storyboard_image:{shot_id}"] = image_decision.__dict__
+        image_learning = _record_learning_trace(
+            ledger,
+            request_id=request_id,
+            intent_signature=intent_signature,
+            strategy_signature=strategy_plan.strategy_signature,
+            strategy_plan=strategy_plan.to_record(),
+            modality="image",
+            rank_decision=image_decision.__dict__,
+            candidates=image_candidates,
+            has_reference_image=bool(attachments),
+        )
+        learning["active_learning"][f"storyboard_image:{shot_id}"] = image_learning
+        selected_image = _selected_candidate(image_candidates, image_decision.selected_artifact_id)
+        image_gate = _delivery_gate_decision(image_learning, selected_image, prompt=prompt)
+        delivery_gate[f"storyboard_image:{shot_id}"] = image_gate
+
+        shot_payloads: dict[str, Any] = {
+            "shot_id": shot_id,
+            "image": image_payloads[0] if len(image_payloads) == 1 else image_payloads,
+        }
+        shot_summary: dict[str, Any] = {
+            "shot_id": shot_id,
+            "role": shot.get("role"),
+            "candidate_count": len(image_candidates),
+            "source_image_artifact_id": selected_image.get("artifact_id") if selected_image else None,
+            "video_artifact_id": None,
+            "uses_single_ranked_image": bool(selected_image and image_gate.get("allowed")),
+        }
+        if selected_image and image_gate.get("allowed"):
+            if first_source_image is None:
+                first_source_image = selected_image["artifact_path"]
+                first_source_artifact_id = selected_image["artifact_id"]
+            video_generation_base_prompt = _apply_first_pass_quality_guidance(shot_prompt, quality_guidance["video"])
+            hardened_video = build_hardened_video_request(
+                prompt=video_generation_base_prompt,
+                requested_aspect_ratio=_video_tool_aspect_ratio(
+                    requested_aspect_ratio=_judge_aspect_ratio(aspect_ratio),
+                    source_ref=selected_image["artifact_path"],
+                ),
+                source_media=_source_media_from_attachments([selected_image["artifact_path"]]),
+            )
+            video_prompt = hardened_video["prompt"]
+            video_aspect_ratio = hardened_video["aspect_ratio"]
+            video_payloads: list[dict[str, Any]] = []
+            video_candidates: list[dict[str, Any]] = []
+            for video_index in range(video_budget_per_shot):
+                video_kwargs = {
+                    "prompt": video_prompt,
+                    "image_url": selected_image["artifact_path"],
+                    "duration": duration,
+                    "aspect_ratio": video_aspect_ratio,
+                }
+                video_payload = generate_video(**video_kwargs)
+                video_payloads.append(video_payload)
+                video_candidate = _record_payload_candidate(
+                    ledger,
+                    request_id=request_id,
+                    payload=video_payload,
+                    artifact_key="video",
+                    expected_kind="video",
+                    prompt=video_prompt,
+                    provider=str(video_payload.get("provider") or ""),
+                    model=str(video_payload.get("model") or ""),
+                    requested_parameters={
+                        "duration_seconds": duration,
+                        "aspect_ratio": video_aspect_ratio,
+                        "motion_mode": hardened_video.get("metadata", {}).get("motion_mode"),
+                        "source_image_artifact_id": selected_image["artifact_id"],
+                        "storyboard_shot_id": shot_id,
+                    },
+                    candidate_index=shot_index + video_index,
+                )
+                if video_candidate:
+                    video_candidates.append(video_candidate)
+            shot_payloads["video"] = video_payloads[0] if len(video_payloads) == 1 else video_payloads
+            _score_candidates(
+                ledger,
+                request_id=request_id,
+                intent_signature=intent_signature,
+                strategy_signature=strategy_plan.strategy_signature,
+                modality="video",
+                has_reference_image=True,
+                request_category=request_category,
+                candidates=video_candidates,
+                inline_vision_judge=False,
+                vision_analyzer=analyze_candidate_with_vision_tool,
+            )
+            video_decision = rank_visual_candidates(
+                request_id=request_id,
+                candidates=video_candidates,
+                post_threshold=0.0,
+                ask_threshold=0.0,
+            )
+            rankings[f"storyboard_video:{shot_id}"] = video_decision.__dict__
+            video_learning = _record_learning_trace(
+                ledger,
+                request_id=request_id,
+                intent_signature=intent_signature,
+                strategy_signature=strategy_plan.strategy_signature,
+                strategy_plan=strategy_plan.to_record(),
+                modality="video",
+                rank_decision=video_decision.__dict__,
+                candidates=video_candidates,
+                has_reference_image=True,
+            )
+            learning["active_learning"][f"storyboard_video:{shot_id}"] = video_learning
+            selected_video = _selected_candidate(video_candidates, video_decision.selected_artifact_id)
+            video_gate = _delivery_gate_decision(video_learning, selected_video, prompt=prompt)
+            delivery_gate[f"storyboard_video:{shot_id}"] = video_gate
+            if selected_video and video_gate.get("allowed"):
+                selected_artifact_ids.append(selected_video["artifact_id"])
+                selected_videos.append(selected_video["artifact_path"])
+                shot_summary["video_artifact_id"] = selected_video["artifact_id"]
+                shot_summary["clip_path"] = selected_video["artifact_path"]
+        generation_payloads["storyboard"].append(shot_payloads)
+        execution_shots.append(shot_summary)
+
+    clip_count = len(selected_videos)
+    shot_count = len(execution_shots)
+    execution = {
+        "status": "clips_ready" if clip_count == shot_count else ("partial" if clip_count else "failed"),
+        "shot_count": shot_count,
+        "clip_count": clip_count,
+        "composition_status": "not_composed",
+        "composed_video": None,
+        "source_image_policy": storyboard.get("source_image_policy") or "one_ranked_image_per_shot",
+        "candidate_budget_per_shot": candidate_budget_per_shot,
+        "shots": execution_shots,
+    }
+    rankings["storyboard"]["shot_count"] = shot_count
+    rankings["storyboard"]["clip_count"] = clip_count
+    return {
+        "selected_artifact_ids": selected_artifact_ids,
+        "selected_videos": selected_videos,
+        "rankings": rankings,
+        "generation_payloads": generation_payloads,
+        "delivery_gate": delivery_gate,
+        "first_source_image": first_source_image,
+        "first_source_artifact_id": first_source_artifact_id,
+        "candidate_budget_per_shot": candidate_budget_per_shot,
+        "execution": execution,
+    }
+
+
+def _normalise_storyboard_contract(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or value.get("enabled") is not True:
+        return {}
+
+    supplied_shots = value.get("shots")
+    raw_shots = supplied_shots if isinstance(supplied_shots, list) else []
+    requested_count = _coerce_int(value.get("shot_count")) or len(raw_shots) or 1
+    shot_count = max(1, min(6, requested_count))
+    candidate_budget_per_shot = max(1, min(4, _coerce_int(value.get("candidate_budget_per_shot")) or 2))
+
+    normalised_shots: list[dict[str, Any]] = []
+    for index in range(shot_count):
+        source = raw_shots[index] if index < len(raw_shots) and isinstance(raw_shots[index], dict) else {}
+        shot_id = str(source.get("shot_id") or f"shot_{index + 1}").strip() or f"shot_{index + 1}"
+        role = str(source.get("role") or _default_storyboard_role(index)).strip()
+        normalised_shots.append(
+            {
+                **source,
+                "shot_id": shot_id,
+                "role": role,
+                "source_image_policy": "single_ranked_image",
+                "clip_target": "one_video_clip",
+            }
+        )
+
+    return {
+        **value,
+        "enabled": True,
+        "mode": str(value.get("mode") or "multi_shot_video"),
+        "shot_count": shot_count,
+        "candidate_budget_per_shot": candidate_budget_per_shot,
+        "source_image_policy": "one_ranked_image_per_shot",
+        "composition_target": str(value.get("composition_target") or "single_coherent_video"),
+        "delivery_policy": str(value.get("delivery_policy") or "deliver_composed_video_when_available_else_selected_clips"),
+        "shots": normalised_shots,
+    }
+
+
+def _storyboard_candidate_budget(storyboard: dict[str, Any], *, fallback: int) -> int:
+    budget = _coerce_int(storyboard.get("candidate_budget_per_shot")) or fallback or 1
+    return max(1, min(4, budget))
+
+
+def _storyboard_shots(storyboard: dict[str, Any]) -> list[dict[str, Any]]:
+    shots = storyboard.get("shots")
+    if isinstance(shots, list):
+        return [shot for shot in shots if isinstance(shot, dict)]
+    shot_count = max(1, min(6, _coerce_int(storyboard.get("shot_count")) or 1))
+    return [
+        {
+            "shot_id": f"shot_{index + 1}",
+            "role": _default_storyboard_role(index),
+            "source_image_policy": "single_ranked_image",
+            "clip_target": "one_video_clip",
+        }
+        for index in range(shot_count)
+    ]
+
+
+def _storyboard_shot_prompt(prompt: str, shot: dict[str, Any], *, shot_index: int) -> str:
+    role = str(shot.get("role") or _default_storyboard_role(shot_index)).strip()
+    shot_id = str(shot.get("shot_id") or f"shot_{shot_index + 1}").strip()
+    return (
+        f"{prompt}\n\n"
+        f"Storyboard source frame {shot_index + 1} ({shot_id}, {role}): "
+        "generate exactly one clean source frame for this shot only. "
+        "Do not create a collage, contact sheet, split-screen, grid, or four-panel layout. "
+        "Preserve continuity with the overall request while varying framing for this shot."
+    )
+
+
+def _default_storyboard_role(index: int) -> str:
+    roles = (
+        "establishing_context",
+        "subject_focus",
+        "detail_closeup",
+        "motion_variation",
+        "alternate_angle",
+        "closing_hero",
+    )
+    return roles[index] if 0 <= index < len(roles) else "continuity_shot"
 
 
 def _record_payload_candidate(
