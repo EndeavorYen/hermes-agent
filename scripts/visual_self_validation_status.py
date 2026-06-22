@@ -129,6 +129,20 @@ def build_visual_self_validation_status(
             "provider_error_codes": provider_error_codes,
             "carried_evidence_current": carried_live_evidence_current,
             "trend_degradations": trend_degradations,
+            "trend_run_count": _optional_int(summary.get("live_quality_trend_run_count")),
+            "trend_recent_run_ids": _strings(summary.get("live_quality_trend_recent_run_ids")),
+            "trend_recent_avg_min_quality_score": summary.get(
+                "live_quality_trend_recent_avg_min_quality_score"
+            ),
+            "trend_recent_provider_failure_count": _optional_int(
+                summary.get("live_quality_trend_recent_provider_failure_count")
+            ),
+            "trend_recent_video_generation_failure_count": _optional_int(
+                summary.get("live_quality_trend_recent_video_generation_failure_count")
+            ),
+            "trend_recent_preference_dimension_failure_count": _optional_int(
+                summary.get("live_quality_trend_recent_preference_dimension_failure_count")
+            ),
         },
         "delivery": {
             "native_video_upload_covered": summary.get("live_slack_upload_native_delivery_covered"),

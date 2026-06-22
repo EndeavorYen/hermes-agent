@@ -51,6 +51,15 @@ def _scheduled_report(*, success=True, live_decision="run"):
                 "face_naturalness",
                 "fashion_material_quality",
             ],
+            "live_quality_trend_run_count": 4,
+            "live_quality_trend_recent_run_ids": [
+                "20260622T183138Z",
+                "20260622T191850Z-6407540a",
+            ],
+            "live_quality_trend_recent_avg_min_quality_score": 0.8206,
+            "live_quality_trend_recent_provider_failure_count": 0,
+            "live_quality_trend_recent_video_generation_failure_count": 0,
+            "live_quality_trend_recent_preference_dimension_failure_count": 0,
             "live_video_quality_repair_success_count": 1,
             "live_slack_upload_native_delivery_covered": True,
             "live_slack_upload_uploaded_video_file_count": 1,
@@ -113,6 +122,15 @@ def test_visual_self_validation_status_summarizes_latest_live_report(tmp_path):
     assert status["live"]["content_moderation_recovered_count"] == 1
     assert status["live"]["provider_failure_classes"] == {"content_moderation": 1}
     assert status["live"]["provider_error_codes"] == {"api_error": 1}
+    assert status["live"]["trend_run_count"] == 4
+    assert status["live"]["trend_recent_run_ids"] == [
+        "20260622T183138Z",
+        "20260622T191850Z-6407540a",
+    ]
+    assert status["live"]["trend_recent_avg_min_quality_score"] == 0.8206
+    assert status["live"]["trend_recent_provider_failure_count"] == 0
+    assert status["live"]["trend_recent_video_generation_failure_count"] == 0
+    assert status["live"]["trend_recent_preference_dimension_failure_count"] == 0
     assert status["live"]["preference_dimensions"] == [
         "face_naturalness",
         "fashion_material_quality",

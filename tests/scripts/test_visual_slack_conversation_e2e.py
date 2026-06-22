@@ -682,6 +682,59 @@ def test_visual_slack_conversation_e2e_live_uses_runtime_target_resolution(
     assert delivery_calls[0]["upload"] is True
 
 
+def test_visual_slack_conversation_e2e_live_records_quality_trend_run(
+    monkeypatch,
+    tmp_path,
+):
+    from agent.visual.live_quality_trends import build_live_quality_trend_report_from_dir
+    from scripts import visual_slack_conversation_e2e
+
+    runtime_home = tmp_path / "runtime-home"
+    monkeypatch.setenv("HERMES_HOME", str(runtime_home))
+    monkeypatch.setattr(
+        visual_slack_conversation_e2e,
+        "_resolve_target",
+        lambda *, mode, target: "D_LIVE" if mode == "live" and target is None else target,
+    )
+    monkeypatch.setattr(
+        visual_slack_conversation_e2e,
+        "build_visual_slack_delivery_e2e_report",
+        _fake_delivery_report,
+    )
+
+    report = visual_slack_conversation_e2e.build_visual_slack_conversation_e2e_report(
+        mode="live",
+        work_dir=tmp_path / "work",
+        prompt="幫我做一段 4 秒乾淨產品短片，主體是一支霧黑鋼筆",
+        target=None,
+        upload=True,
+        record_quality_run=True,
+    )
+
+    quality_runs_dir = runtime_home / "visual" / "live_quality_burn"
+    run_paths = sorted((quality_runs_dir / "runs").glob("*.json"))
+    assert report["success"] is True
+    assert len(run_paths) == 1
+
+    quality_run = json.loads(run_paths[0].read_text(encoding="utf-8"))
+    assert quality_run["source"] == "slack_conversation_e2e"
+    assert quality_run["success"] is True
+    assert quality_run["summary"]["case_count"] == 1
+    assert quality_run["summary"]["min_quality_score"] == 1.0
+    assert quality_run["summary"]["provider_failure_count"] == 0
+    assert quality_run["summary"]["video_missing_after_image_count"] == 0
+    assert quality_run["summary"]["image_first_video_source_failure_count"] == 0
+    assert quality_run["summary"]["preference_dimension_failure_count"] == 0
+    assert quality_run["privacy"]["raw_prompt_omitted"] is True
+    assert "霧黑鋼筆" not in json.dumps(quality_run, ensure_ascii=False)
+    assert report["quality_run_record"]["success"] is True
+    assert report["quality_run_record"]["run_id"] == quality_run["run_id"]
+
+    trend = build_live_quality_trend_report_from_dir(quality_runs_dir)
+    assert trend["run_count"] == 1
+    assert trend["summary"]["recent_avg_min_quality_score"] == 1.0
+
+
 def test_visual_slack_conversation_e2e_live_fails_without_runtime_target(monkeypatch, tmp_path):
     from scripts import visual_slack_conversation_e2e
 

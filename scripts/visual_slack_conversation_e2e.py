@@ -40,6 +40,8 @@ def build_visual_slack_conversation_e2e_report(
     require_video: bool = True,
     upload: bool | None = None,
     repair_budget: int = 1,
+    record_quality_run: bool | None = None,
+    quality_run_output_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     mode = mode.strip().lower()
     if mode not in {"fixture", "live"}:
@@ -134,7 +136,7 @@ def build_visual_slack_conversation_e2e_report(
         next_actions=next_actions,
         failures=failures,
     )
-    return {
+    report = {
         "success": not failures,
         "mode": mode,
         "failures": sorted(set(str(item) for item in failures if item)),
@@ -151,6 +153,14 @@ def build_visual_slack_conversation_e2e_report(
             "stores_prompt_hash_only": True,
         },
     }
+    report["quality_run_record"] = _maybe_record_quality_run(
+        report=report,
+        mode=mode,
+        work_dir=work_dir,
+        record_quality_run=record_quality_run,
+        output_dir=quality_run_output_dir,
+    )
+    return report
 
 
 def _capture_slack_message_event(
@@ -516,6 +526,146 @@ def _write_repair_policy_latest(*, policy_home: str | Path, actions: list[dict[s
         return {"success": False, "failures": [f"{type(exc).__name__}:{exc}"]}
 
 
+def _maybe_record_quality_run(
+    *,
+    report: dict[str, Any],
+    mode: str,
+    work_dir: str | Path | None,
+    record_quality_run: bool | None,
+    output_dir: str | Path | None,
+) -> dict[str, Any]:
+    enabled = mode == "live" and (record_quality_run is True or (record_quality_run is None and work_dir is None))
+    if not enabled:
+        return {"status": "skipped", "reason": "not_enabled"}
+    quality_run = _build_quality_run(report)
+    target_dir = Path(output_dir) if output_dir is not None else get_hermes_home() / "visual" / "live_quality_burn"
+    path = _write_quality_run(target_dir, quality_run)
+    return {
+        "success": True,
+        "run_id": quality_run["run_id"],
+        "path": str(path),
+        "source": quality_run["source"],
+    }
+
+
+def _build_quality_run(report: dict[str, Any]) -> dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    slack_delivery = _dict(report.get("slack_delivery"))
+    visual = _dict(slack_delivery.get("visual"))
+    delivery = _dict(slack_delivery.get("delivery"))
+    quality_gate = _dict(visual.get("quality_gate"))
+    recovery = _dict(visual.get("recovery_summary"))
+    plan_args = _dict(_dict(report.get("visual_agent_plan")).get("arguments"))
+    request_id = str(visual.get("request_id") or delivery.get("request_id") or "").strip()
+    run_id = _quality_run_id(now, request_id)
+    quality_score = _quality_score(quality_gate)
+    preference_failures = _preference_dimension_failures(quality_gate.get("preference_dimension_failures"))
+    quality_issues = _string_list(quality_gate.get("quality_issues"))
+    video_source_summary = _quality_run_video_source_summary(
+        visual=visual,
+        plan_args=plan_args,
+        request_id=request_id,
+    )
+    video_missing_after_image_count = _quality_run_video_missing_after_image_count(
+        visual=visual,
+        plan_args=plan_args,
+    )
+    summary = {
+        "case_count": 1 if slack_delivery else 0,
+        "failed_case_count": 0 if report.get("success") is True else 1,
+        "failed_case_ids": [] if report.get("success") is True else [run_id],
+        "min_quality_score": quality_score,
+        "quality_issue_count": len(quality_issues),
+        "quality_issues": quality_issues,
+        "preference_dimension_failure_count": len(preference_failures),
+        "preference_dimension_failures": preference_failures,
+        "image_first_video_source_case_count": video_source_summary["case_count"],
+        "image_first_video_source_covered_count": video_source_summary["covered_count"],
+        "image_first_video_source_failure_count": video_source_summary["failure_count"],
+        "image_first_video_source_failure_case_ids": video_source_summary["failure_case_ids"],
+        "video_missing_after_image_count": video_missing_after_image_count,
+        "video_missing_after_image_case_ids": [run_id] if video_missing_after_image_count else [],
+        "provider_failure_count": _int(recovery.get("provider_failure_count")),
+    }
+    return {
+        "success": report.get("success") is True,
+        "run_id": run_id,
+        "generated_at": now.isoformat(),
+        "mode": report.get("mode"),
+        "source": "slack_conversation_e2e",
+        "summary": summary,
+        "next_actions": _action_list(report.get("next_actions")),
+        "self_review": _dict(report.get("self_review")),
+        "privacy": {
+            "raw_prompt_omitted": True,
+            "stores_prompt_hash_only": True,
+        },
+    }
+
+
+def _quality_run_id(now: datetime, request_id: str) -> str:
+    suffix = request_id[-8:] if request_id else now.strftime("%f")
+    return f"{now.strftime('%Y%m%dT%H%M%SZ')}-{suffix}"
+
+
+def _quality_score(quality_gate: dict[str, Any]) -> float | None:
+    score = _float_or_none(quality_gate.get("min_score"))
+    if score is not None:
+        return round(max(0.0, min(1.0, score)), 4)
+    if quality_gate.get("success") is True:
+        return 1.0
+    if quality_gate.get("success") is False:
+        return 0.0
+    return None
+
+
+def _quality_run_video_source_summary(
+    *,
+    visual: dict[str, Any],
+    plan_args: dict[str, Any],
+    request_id: str,
+) -> dict[str, Any]:
+    if plan_args.get("include_video") is not True:
+        return {"case_count": 0, "covered_count": 0, "failure_count": 0, "failure_case_ids": []}
+    video_source = _dict(visual.get("video_source"))
+    if not video_source:
+        return {"case_count": 0, "covered_count": 0, "failure_count": 0, "failure_case_ids": []}
+    if video_source.get("uses_ranked_selected_image") is True:
+        return {"case_count": 1, "covered_count": 1, "failure_count": 0, "failure_case_ids": []}
+    return {
+        "case_count": 1,
+        "covered_count": 0,
+        "failure_count": 1,
+        "failure_case_ids": [request_id or "slack_conversation_e2e"],
+    }
+
+
+def _quality_run_video_missing_after_image_count(
+    *,
+    visual: dict[str, Any],
+    plan_args: dict[str, Any],
+) -> int:
+    if plan_args.get("include_video") is not True:
+        return 0
+    if _int(visual.get("image_count")) < 1:
+        return 0
+    return 1 if _int(visual.get("video_count")) < 1 else 0
+
+
+def _write_quality_run(output_dir: Path, quality_run: dict[str, Any]) -> Path:
+    runs_dir = output_dir / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    path = runs_dir / f"{quality_run['run_id']}.json"
+    _write_json(path, quality_run)
+    _write_json(output_dir / "latest.json", quality_run)
+    return path
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+
+
 def _read_json(path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -729,6 +879,13 @@ def _int(value: Any) -> int:
         return max(0, int(value))
     except (TypeError, ValueError):
         return 0
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _failure_result(*, mode: str, failures: list[str]) -> dict[str, Any]:

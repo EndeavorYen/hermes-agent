@@ -137,6 +137,11 @@ def _live_policy(
 
 def _summary(automation: dict[str, Any], live_quality_trends: dict[str, Any] | None = None) -> dict[str, Any]:
     live_quality_trends = live_quality_trends if isinstance(live_quality_trends, dict) else {}
+    live_quality_trend_summary = (
+        live_quality_trends.get("summary")
+        if isinstance(live_quality_trends.get("summary"), dict)
+        else {}
+    )
     feedback_loop = automation.get("feedback_loop") if isinstance(automation.get("feedback_loop"), dict) else {}
     closed_loop_regression = (
         automation.get("closed_loop_regression")
@@ -389,6 +394,19 @@ def _summary(automation: dict[str, Any], live_quality_trends: dict[str, Any] | N
             live_quality_burn_summary.get("quality_focus_failed_case_ids")
         ),
         "live_quality_trend_run_count": _int(live_quality_trends.get("run_count")),
+        "live_quality_trend_recent_run_ids": _list(live_quality_trend_summary.get("recent_run_ids")),
+        "live_quality_trend_recent_avg_min_quality_score": live_quality_trend_summary.get(
+            "recent_avg_min_quality_score"
+        ),
+        "live_quality_trend_recent_provider_failure_count": _int(
+            live_quality_trend_summary.get("recent_provider_failure_count")
+        ),
+        "live_quality_trend_recent_video_generation_failure_count": _int(
+            live_quality_trend_summary.get("recent_video_generation_failure_count")
+        ),
+        "live_quality_trend_recent_preference_dimension_failure_count": _int(
+            live_quality_trend_summary.get("recent_preference_dimension_failure_count")
+        ),
         "live_quality_trend_degradations": _list(live_quality_trends.get("degradations")),
         "live_quality_trend_action_types": _action_types(live_quality_trends.get("next_actions")),
         "live_quality_repair_attempt_count": _int(live_quality_repair.get("attempt_count")),

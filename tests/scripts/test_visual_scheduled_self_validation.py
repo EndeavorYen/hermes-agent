@@ -510,6 +510,12 @@ def test_scheduled_self_validation_includes_live_quality_trends(monkeypatch, tmp
     )
 
     assert report["live_quality_trends"]["run_count"] == 2
+    assert report["summary"]["live_quality_trend_run_count"] == 2
+    assert report["summary"]["live_quality_trend_recent_run_ids"] == ["run02"]
+    assert report["summary"]["live_quality_trend_recent_avg_min_quality_score"] == 0.52
+    assert report["summary"]["live_quality_trend_recent_provider_failure_count"] == 1
+    assert report["summary"]["live_quality_trend_recent_video_generation_failure_count"] == 1
+    assert report["summary"]["live_quality_trend_recent_preference_dimension_failure_count"] == 1
     assert report["summary"]["live_quality_trend_degradations"] == [
         "quality_score_degraded",
         "video_generation_degraded",
