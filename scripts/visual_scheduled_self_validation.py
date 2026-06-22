@@ -1,0 +1,237 @@
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from datetime import datetime
+from datetime import timezone
+from pathlib import Path
+from typing import Any
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from hermes_constants import get_hermes_home
+from scripts.visual_e2e_automation_report import build_visual_e2e_automation_report
+
+
+DEFAULT_MIN_LIVE_INTERVAL_HOURS = 6
+
+
+def build_visual_scheduled_self_validation_report(
+    *,
+    output_dir: str | Path | None = None,
+    work_dir: str | Path | None = None,
+    live_mode: str = "off",
+    live_enabled: bool | None = None,
+    min_live_interval_hours: int = DEFAULT_MIN_LIVE_INTERVAL_HOURS,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    now = _normalise_now(now)
+    output_dir = Path(output_dir) if output_dir is not None else get_hermes_home() / "visual" / "self_validation"
+    work_dir = Path(work_dir) if work_dir is not None else output_dir / "work"
+    state = _read_json(output_dir / "state.json")
+    live_policy = _live_policy(
+        live_mode=live_mode,
+        live_enabled=_live_enabled() if live_enabled is None else live_enabled,
+        min_live_interval_hours=min_live_interval_hours,
+        state=state,
+        now=now,
+    )
+    include_live = live_policy["decision"] == "run"
+    automation = build_visual_e2e_automation_report(work_dir=work_dir, include_live=include_live)
+    report = {
+        "success": automation.get("success") is True,
+        "run_id": _run_id(now),
+        "generated_at": now.isoformat(),
+        "mode": "fixture+live" if include_live else "fixture",
+        "failures": list(automation.get("failures") or []),
+        "live_policy": live_policy,
+        "summary": _summary(automation),
+        "automation": automation,
+        "self_review": {
+            "cron_safe": True,
+            "privacy_safe": True,
+            "reduces_human_intervention": True,
+            "live_e2e_requires_opt_in": live_mode != "on",
+        },
+    }
+    _write_report(output_dir, report)
+    if include_live:
+        _write_json(output_dir / "state.json", {"last_live_run_at": now.isoformat()})
+    return report
+
+
+def _live_policy(
+    *,
+    live_mode: str,
+    live_enabled: bool,
+    min_live_interval_hours: int,
+    state: dict[str, Any],
+    now: datetime,
+) -> dict[str, Any]:
+    mode = str(live_mode or "off").strip().lower()
+    if mode not in {"off", "auto", "on"}:
+        mode = "off"
+    if mode == "off":
+        return {"mode": mode, "decision": "not_requested", "live_enabled": live_enabled}
+    if not live_enabled:
+        return {"mode": mode, "decision": "skip_not_enabled", "live_enabled": False}
+    if mode == "on":
+        return {"mode": mode, "decision": "run", "live_enabled": True}
+
+    last_live_run_at = _parse_datetime(state.get("last_live_run_at"))
+    if last_live_run_at is None:
+        return {
+            "mode": mode,
+            "decision": "run",
+            "live_enabled": True,
+            "min_live_interval_hours": min_live_interval_hours,
+            "last_live_run_at": None,
+        }
+    elapsed_hours = (now - last_live_run_at).total_seconds() / 3600
+    if elapsed_hours < max(0, min_live_interval_hours):
+        return {
+            "mode": mode,
+            "decision": "skip_interval",
+            "live_enabled": True,
+            "min_live_interval_hours": min_live_interval_hours,
+            "last_live_run_at": last_live_run_at.isoformat(),
+            "elapsed_hours": round(elapsed_hours, 4),
+        }
+    return {
+        "mode": mode,
+        "decision": "run",
+        "live_enabled": True,
+        "min_live_interval_hours": min_live_interval_hours,
+        "last_live_run_at": last_live_run_at.isoformat(),
+        "elapsed_hours": round(elapsed_hours, 4),
+    }
+
+
+def _summary(automation: dict[str, Any]) -> dict[str, Any]:
+    feedback_loop = automation.get("feedback_loop") if isinstance(automation.get("feedback_loop"), dict) else {}
+    live_e2e = automation.get("live_e2e") if isinstance(automation.get("live_e2e"), dict) else {}
+    live_evidence = live_e2e.get("evidence") if isinstance(live_e2e.get("evidence"), dict) else {}
+    quality_gate = live_evidence.get("quality_gate") if isinstance(live_evidence.get("quality_gate"), dict) else {}
+    slack_delivery = automation.get("slack_delivery") if isinstance(automation.get("slack_delivery"), dict) else {}
+    delivery = slack_delivery.get("delivery") if isinstance(slack_delivery.get("delivery"), dict) else {}
+    health = automation.get("health") if isinstance(automation.get("health"), dict) else {}
+    self_review = health.get("self_review") if isinstance(health.get("self_review"), dict) else {}
+    feedback_action_types = [
+        str(action.get("type"))
+        for action in feedback_loop.get("next_actions", [])
+        if isinstance(action, dict) and action.get("requires_human_feedback") is not True
+    ]
+    slack_sent_count = _int(delivery.get("sent_count"))
+    slack_deliverable_count = _int(delivery.get("deliverable_count"))
+    slack_duplicate_delivery_count = _int(delivery.get("duplicate_delivery_count"))
+    slack_unexpected_delivery_count = len(delivery.get("unexpected_delivery_artifact_ids") or [])
+    scheduled_validation_reduces_human_intervention = (
+        automation.get("success") is True
+        and feedback_action_types != []
+        and slack_sent_count == slack_deliverable_count
+        and slack_duplicate_delivery_count == 0
+        and slack_unexpected_delivery_count == 0
+    )
+    return {
+        "feedback_action_types": feedback_action_types,
+        "live_quality_gate_success": quality_gate.get("success"),
+        "live_quality_gate_min_score": quality_gate.get("min_score"),
+        "slack_sent_count": slack_sent_count,
+        "slack_deliverable_count": slack_deliverable_count,
+        "slack_duplicate_delivery_count": slack_duplicate_delivery_count,
+        "slack_unexpected_delivery_count": slack_unexpected_delivery_count,
+        "scheduled_self_validation_reduces_human_intervention": scheduled_validation_reduces_human_intervention,
+        "autonomous_rollout_reduces_human_intervention": self_review.get("reduces_human_intervention") is True,
+    }
+
+
+def _write_report(output_dir: Path, report: dict[str, Any]) -> None:
+    runs_dir = output_dir / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(runs_dir / f"{report['run_id']}.json", report)
+    _write_json(output_dir / "latest.json", report)
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _live_enabled() -> bool:
+    return str(os.environ.get("HERMES_VISUAL_LIVE_E2E") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _normalise_now(now: datetime | None) -> datetime:
+    if now is None:
+        return datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        return now.replace(tzinfo=timezone.utc)
+    return now.astimezone(timezone.utc)
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return _normalise_now(parsed)
+
+
+def _run_id(now: datetime) -> str:
+    return now.strftime("%Y%m%dT%H%M%SZ")
+
+
+def _int(value: Any) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Run cron-safe visual self-validation.")
+    parser.add_argument("--output-dir", type=Path, default=None)
+    parser.add_argument("--work-dir", type=Path, default=None)
+    parser.add_argument("--live-mode", choices=["off", "auto", "on"], default="off")
+    parser.add_argument("--min-live-interval-hours", type=int, default=DEFAULT_MIN_LIVE_INTERVAL_HOURS)
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--allow-failures", action="store_true")
+    args = parser.parse_args(argv)
+
+    payload = build_visual_scheduled_self_validation_report(
+        output_dir=args.output_dir,
+        work_dir=args.work_dir,
+        live_mode=args.live_mode,
+        min_live_interval_hours=args.min_live_interval_hours,
+    )
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    else:
+        status = "passed" if payload["success"] else "failed"
+        print(f"visual scheduled self-validation {status} run_id={payload['run_id']}")
+    if args.allow_failures:
+        return 0
+    return 0 if payload["success"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
