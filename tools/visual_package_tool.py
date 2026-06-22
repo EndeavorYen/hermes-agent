@@ -198,6 +198,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
     candidate_budget_source = str(feedback_policy.get("candidate_budget_source") or "default")
     video_budget = _video_budget(args, wants_video=wants_video)
     inline_vision_judge = _inline_vision_judge_mode(args)
+    request_category = _visual_request_category(prompt)
     normalized_intent = {
         "kind": "visual_package",
         "wants_image": requested_image,
@@ -205,6 +206,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         "generates_image": should_generate_image,
         "image_first_for_video": image_first_for_video,
         "aspect_ratio": _judge_aspect_ratio(aspect_ratio),
+        "category": request_category,
     }
     intent_signature = build_intent_signature(
         {
@@ -331,6 +333,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             strategy_signature=strategy_plan.strategy_signature,
             modality="image",
             has_reference_image=bool(attachments),
+            request_category=request_category,
             candidates=image_candidates,
             inline_vision_judge=inline_vision_judge,
             vision_analyzer=analyze_candidate_with_vision_tool,
@@ -415,6 +418,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                     strategy_signature=strategy_plan.strategy_signature,
                     modality="image",
                     has_reference_image=bool(attachments),
+                    request_category=request_category,
                     candidates=[repair_candidate],
                     inline_vision_judge=inline_vision_judge,
                     vision_analyzer=analyze_candidate_with_vision_tool,
@@ -580,6 +584,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             strategy_signature=strategy_plan.strategy_signature,
             modality="video",
             has_reference_image=bool(video_image_url),
+            request_category=request_category,
             candidates=video_candidates,
             inline_vision_judge=False,
             vision_analyzer=analyze_candidate_with_vision_tool,
@@ -840,6 +845,7 @@ def _score_candidates(
     modality: str,
     has_reference_image: bool,
     candidates: list[dict[str, Any]],
+    request_category: str = "portrait",
     inline_vision_judge: bool | str = "auto",
     vision_analyzer=None,
 ) -> None:
@@ -859,7 +865,10 @@ def _score_candidates(
         candidate["vision_observation_source"] = evidence.get("source")
         quality = judge_visual_quality(
             candidate,
-            request_context={"has_reference_image": has_reference_image},
+            request_context={
+                "has_reference_image": has_reference_image,
+                "category": request_category,
+            },
             recent_artifact_hashes=recent_hashes,
             vision_observation=vision_observation,
         )
@@ -1102,6 +1111,27 @@ def _portrait_like_prompt(prompt: str) -> bool:
             "臉",
         )
     )
+
+
+def _visual_request_category(prompt: str) -> str:
+    if _portrait_like_prompt(prompt):
+        return "portrait"
+    text = prompt.lower()
+    if any(
+        token in text
+        for token in (
+            "product",
+            "object",
+            "pen",
+            "fountain pen",
+            "鋼筆",
+            "產品",
+            "物品",
+            "商品",
+        )
+    ):
+        return "product"
+    return "scene"
 
 
 def _top_ranked_candidate(

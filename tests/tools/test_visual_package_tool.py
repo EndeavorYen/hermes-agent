@@ -93,6 +93,69 @@ async def test_visual_package_generate_uses_selected_image_for_video(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_visual_package_product_video_ignores_portrait_only_vision_defects(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image = tmp_path / "product.png"
+    video = tmp_path / "video.mp4"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    video.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+    video_calls = []
+
+    monkeypatch.setattr(
+        visual_package_tool,
+        "generate_image",
+        lambda **kwargs: {
+            "success": True,
+            "image": str(image),
+            "provider": "xai",
+            "model": "grok-imagine-image-quality",
+        },
+    )
+
+    def fake_generate_video(**kwargs):
+        video_calls.append(kwargs)
+        return {
+            "success": True,
+            "video": str(video),
+            "provider": "xai",
+            "model": "grok-imagine-video",
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_video", fake_generate_video)
+    monkeypatch.setattr(
+        visual_package_tool,
+        "analyze_candidate_with_vision_tool",
+        lambda _candidate: {
+            "reference_adherence": 0.2,
+            "face_quality": 0.2,
+            "visual_appeal": 0.85,
+            "composition": 0.85,
+            "stocking_quality": 0.2,
+        },
+    )
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "請產出一張圖片和一段影片：一支霧黑鋼筆放在白紙上，柔和窗光，乾淨產品攝影。",
+                "candidate_budget": 1,
+                "video_budget": 1,
+                "inline_vision_judge": True,
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["images"] == [str(image)]
+    assert payload["videos"] == [str(video)]
+    assert video_calls[0]["image_url"] == str(image)
+    assert payload["delivery_gate"]["image"]["allowed"] is True
+    assert payload["delivery_gate"]["image"]["quality_issues"] == []
+
+
+@pytest.mark.asyncio
 async def test_visual_package_video_only_with_attachment_animates_attachment(monkeypatch, tmp_path):
     from tools import visual_package_tool
 
@@ -1101,10 +1164,8 @@ async def test_visual_package_does_not_block_product_delivery_on_portrait_only_i
     assert payload["success"] is True
     assert payload["images"] == [str(image)]
     assert payload["delivery_gate"]["image"]["allowed"] is True
-    assert payload["delivery_gate"]["image"]["ignored_quality_issues"] == [
-        "subject_not_attractive",
-        "stockings_bad",
-    ]
+    assert payload["delivery_gate"]["image"]["quality_issues"] == []
+    assert payload["delivery_gate"]["image"]["ignored_quality_issues"] == []
 
 
 def test_score_candidates_carries_quality_issues_into_reward(monkeypatch, tmp_path):

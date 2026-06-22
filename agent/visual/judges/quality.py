@@ -35,12 +35,13 @@ def judge_visual_quality(
         "delivery_readiness": "deterministic",
     }
     if vision_confidence > 0.0:
-        reference_adherence = _vision_dimension(
-            vision,
-            "reference_adherence",
-            reference_adherence,
-            judge_sources,
-        )
+        if request_context.get("has_reference_image"):
+            reference_adherence = _vision_dimension(
+                vision,
+                "reference_adherence",
+                reference_adherence,
+                judge_sources,
+            )
         aesthetic_fit = _vision_aesthetic_fit(
             vision,
             _aesthetic_fit(deterministic_scores),
@@ -62,7 +63,7 @@ def judge_visual_quality(
             _motion_quality(candidate, deterministic_scores),
             judge_sources,
         )
-        _surface_artifact_defects(vision, uncertainty_reasons)
+        _surface_artifact_defects(vision, uncertainty_reasons, request_context=request_context)
     else:
         aesthetic_fit = _aesthetic_fit(deterministic_scores)
         composition = _composition(deterministic_scores)
@@ -83,7 +84,7 @@ def judge_visual_quality(
     return {
         "version": VERSION,
         "scores": {key: round(value, 4) for key, value in scores.items()},
-        "quality_issues": _quality_issues_from_observation(vision),
+        "quality_issues": _quality_issues_from_observation(vision, request_context=request_context),
         "confidence": confidence,
         "uncertainty_reasons": sorted(set(uncertainty_reasons)),
         "judge_sources": judge_sources,
@@ -155,7 +156,7 @@ def _vision_aesthetic_fit(
 ) -> float:
     if _has_vision_dimension(vision, "visual_appeal"):
         value = _clamp(vision.get("visual_appeal"))
-    elif _has_vision_dimension(vision, "subject_quality"):
+    elif _portrait_like_context(request_context) and _has_vision_dimension(vision, "subject_quality"):
         value = _clamp(vision.get("subject_quality"))
     else:
         value = default
@@ -168,9 +169,7 @@ def _defect_penalty(
     request_context: dict[str, Any],
     uncertainty_reasons: list[str],
 ) -> float:
-    category = str(request_context.get("category") or "").lower()
-    portrait_like = any(token in category for token in ("portrait", "fashion", "character", "cosplay"))
-    if not portrait_like:
+    if not _portrait_like_context(request_context):
         return 0.0
     defects = vision.get("artifact_defects")
     if not isinstance(defects, list):
@@ -184,32 +183,52 @@ def _defect_penalty(
     return min(0.5, penalty)
 
 
-def _surface_artifact_defects(vision: dict[str, Any], uncertainty_reasons: list[str]) -> None:
+def _surface_artifact_defects(
+    vision: dict[str, Any],
+    uncertainty_reasons: list[str],
+    *,
+    request_context: dict[str, Any],
+) -> None:
     defects = vision.get("artifact_defects")
     if not isinstance(defects, list):
         return
+    portrait_like = _portrait_like_context(request_context)
+    has_reference_image = request_context.get("has_reference_image") is True
     for defect in defects:
         defect_text = str(defect)
+        if defect_text == "reference_identity_drift" and not has_reference_image:
+            continue
+        if defect_text == "face_quality_low" and not portrait_like:
+            continue
         if defect_text.startswith("weak_") or defect_text in {
             "aspect_mismatch",
             "duration_mismatch",
             "missing_video_dimensions",
             "missing_video_duration",
             "reference_identity_drift",
-            "face_quality_low",
             "visual_appeal_low",
             "composition_weak",
         }:
             uncertainty_reasons.append(f"vision_defect_{defect_text}")
 
 
-def _quality_issues_from_observation(vision: dict[str, Any]) -> list[str]:
+def _quality_issues_from_observation(
+    vision: dict[str, Any],
+    *,
+    request_context: dict[str, Any],
+) -> list[str]:
     defects = vision.get("artifact_defects")
     if not isinstance(defects, list):
         return []
+    portrait_like = _portrait_like_context(request_context)
+    has_reference_image = request_context.get("has_reference_image") is True
     issues: list[str] = []
     for defect in defects:
         issue = _issue_for_defect(str(defect))
+        if issue == "reference_identity_drift" and not has_reference_image:
+            continue
+        if issue in {"subject_not_attractive", "not_beautiful", "stockings_bad"} and not portrait_like:
+            continue
         if issue and issue not in issues:
             issues.append(issue)
     return issues
@@ -227,6 +246,11 @@ def _issue_for_defect(defect: str) -> str | None:
         "composition_weak": "composition_bad",
         "reference_identity_drift": "reference_identity_drift",
     }.get(defect)
+
+
+def _portrait_like_context(request_context: dict[str, Any]) -> bool:
+    category = str(request_context.get("category") or "").lower()
+    return any(token in category for token in ("portrait", "fashion", "character", "cosplay"))
 
 
 def _has_vision_dimension(vision: dict[str, Any], key: str) -> bool:

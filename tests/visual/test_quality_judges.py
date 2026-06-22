@@ -182,3 +182,34 @@ def test_quality_judge_maps_artifact_defects_to_preference_issue_tags():
 
     assert result["quality_issues"] == ["subject_not_attractive", "stockings_bad"]
     assert "face_quality_low" not in result["quality_issues"]
+
+
+def test_quality_judge_filters_portrait_reference_defects_for_product_context():
+    from agent.visual.judges.quality import judge_visual_quality
+
+    result = judge_visual_quality(
+        {
+            "artifact_id": "var_product",
+            "kind": "image",
+            "hard_gate": {"passed": True, "delivery_possible": True},
+            "scores": {"resolution": 0.9, "aspect_match": 0.9, "final_score": 0.9},
+        },
+        request_context={"has_reference_image": False, "category": "product"},
+        vision_observation={
+            "reference_adherence": 0.2,
+            "subject_quality": 0.2,
+            "visual_appeal": 0.85,
+            "composition": 0.85,
+            "confidence": 0.8,
+            "artifact_defects": [
+                "reference_identity_drift",
+                "face_quality_low",
+                "stockings_quality_low",
+            ],
+        },
+    )
+
+    assert result["quality_issues"] == []
+    assert "vision_defect_reference_identity_drift" not in result["uncertainty_reasons"]
+    assert "vision_defect_face_quality_low" not in result["uncertainty_reasons"]
+    assert result["scores"]["aesthetic_fit"] >= 0.8
