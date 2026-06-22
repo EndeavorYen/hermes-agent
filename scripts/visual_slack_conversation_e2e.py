@@ -48,6 +48,7 @@ def build_visual_slack_conversation_e2e_report(
             "ingress": {"status": "skipped", "reason": "missing_slack_target"},
             "conversation_route": {},
             "slack_delivery": {"status": "skipped", "reason": "missing_slack_target"},
+            "next_actions": [],
             "privacy": {
                 "raw_prompt_omitted": True,
                 "stores_prompt_hash_only": True,
@@ -90,6 +91,7 @@ def build_visual_slack_conversation_e2e_report(
         if slack_delivery.get("success") is not True:
             failures.append("slack_delivery_failed")
 
+    next_actions = _next_actions_from_slack_delivery(slack_delivery)
     return {
         "success": not failures,
         "mode": mode,
@@ -97,6 +99,7 @@ def build_visual_slack_conversation_e2e_report(
         "ingress": ingress_summary,
         "conversation_route": conversation_route,
         "slack_delivery": slack_delivery,
+        "next_actions": next_actions,
         "privacy": {
             "raw_prompt_omitted": True,
             "stores_prompt_hash_only": True,
@@ -199,6 +202,100 @@ def _dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _next_actions_from_slack_delivery(slack_delivery: dict[str, Any]) -> list[dict[str, Any]]:
+    visual = slack_delivery.get("visual") if isinstance(slack_delivery.get("visual"), dict) else {}
+    recovery = visual.get("recovery_summary") if isinstance(visual.get("recovery_summary"), dict) else {}
+    provider_failure_count = _int(recovery.get("provider_failure_count"))
+    if provider_failure_count <= 0:
+        return []
+    provider_failure_classes = _int_mapping(
+        recovery.get("provider_failure_classes") or visual.get("provider_failure_classes")
+    )
+    provider_error_codes = _int_mapping(
+        recovery.get("provider_error_codes") or visual.get("provider_error_codes")
+    )
+    content_moderation_count = provider_failure_classes.get("content_moderation", 0)
+    if content_moderation_count > 0:
+        return [
+            _action(
+                "safe_reframe_provider_retry",
+                "provider",
+                "slack_conversation_content_moderation_failure",
+                confidence=0.75,
+                evidence_count=content_moderation_count,
+                provider_failure_classes=provider_failure_classes,
+                provider_error_codes=provider_error_codes,
+            )
+        ]
+    if any(provider_failure_classes.get(key, 0) > 0 for key in ("timeout", "empty_response")):
+        return [
+            _action(
+                "retry_provider_feasible_variant",
+                "provider",
+                "slack_conversation_retryable_provider_failure",
+                confidence=0.65,
+                evidence_count=provider_failure_count,
+                provider_failure_classes=provider_failure_classes,
+                provider_error_codes=provider_error_codes,
+            )
+        ]
+    if any(provider_failure_classes.get(key, 0) > 0 for key in ("provider_unavailable", "rate_limited")):
+        return [
+            _action(
+                "retry_provider_later",
+                "provider",
+                "slack_conversation_provider_temporarily_unavailable",
+                confidence=0.6,
+                evidence_count=provider_failure_count,
+                provider_failure_classes=provider_failure_classes,
+                provider_error_codes=provider_error_codes,
+            )
+        ]
+    return []
+
+
+def _action(
+    action_type: str,
+    track: str,
+    reason: str,
+    *,
+    confidence: float,
+    evidence_count: int,
+    **extra: Any,
+) -> dict[str, Any]:
+    payload = {
+        "type": action_type,
+        "track": track,
+        "reason": reason,
+        "confidence": round(max(0.0, min(1.0, confidence)), 4),
+        "evidence_count": int(evidence_count),
+        "requires_human_feedback": False,
+        "activation_status": "next_run",
+        "source": "slack_conversation_e2e",
+    }
+    payload.update(extra)
+    return payload
+
+
+def _int_mapping(value: Any) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    mapping: dict[str, int] = {}
+    for key, count in value.items():
+        text = str(key or "").strip()
+        parsed = _int(count)
+        if text and parsed > 0:
+            mapping[text] = parsed
+    return mapping
+
+
+def _int(value: Any) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _failure_result(*, mode: str, failures: list[str]) -> dict[str, Any]:
     return {
         "success": False,
@@ -207,6 +304,7 @@ def _failure_result(*, mode: str, failures: list[str]) -> dict[str, Any]:
         "ingress": {},
         "conversation_route": {},
         "slack_delivery": {},
+        "next_actions": [],
         "privacy": {
             "raw_prompt_omitted": True,
             "stores_prompt_hash_only": True,

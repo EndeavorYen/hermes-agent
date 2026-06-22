@@ -129,6 +129,11 @@ def build_visual_slack_delivery_e2e_report(
             "judgment_count": visual_evidence.get("judgment_count", 0),
             "ranking_count": visual_evidence.get("ranking_count", 0),
             "video_source": visual_evidence.get("video_source", {}),
+            "provider_failure_classes": visual_evidence.get("provider_failure_classes", {}),
+            "provider_error_codes": visual_evidence.get("provider_error_codes", {}),
+            "retry_attempt_count": visual_evidence.get("retry_attempt_count", 0),
+            "recovery_summary": visual_evidence.get("recovery_summary", {}),
+            "quality_repair_summary": visual_evidence.get("quality_repair_summary", {}),
         },
         "delivery": delivery_evidence,
         "delivery_manifest": {

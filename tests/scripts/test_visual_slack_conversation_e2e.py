@@ -120,6 +120,68 @@ def test_visual_slack_conversation_e2e_fails_when_slack_ingress_drops_message(
     assert report["slack_delivery"]["status"] == "skipped"
 
 
+def test_visual_slack_conversation_e2e_exports_repair_action_from_provider_failure(
+    monkeypatch,
+    tmp_path,
+):
+    from scripts import visual_slack_conversation_e2e
+
+    def failed_delivery(**kwargs):
+        return {
+            "success": False,
+            "mode": kwargs["mode"],
+            "failures": ["visual_generation_failed"],
+            "target": {
+                "platform": "slack",
+                "destination_id": kwargs["target"],
+                "thread_id": kwargs["thread_id"],
+            },
+            "visual": {
+                "request_id": "vrq_failed",
+                "image_count": 0,
+                "video_count": 0,
+                "provider_failure_classes": {"content_moderation": 2},
+                "provider_error_codes": {"api_error": 2},
+                "recovery_summary": {
+                    "provider_failure_count": 2,
+                    "provider_failure_classes": {"content_moderation": 2},
+                    "provider_error_codes": {"api_error": 2},
+                    "retry_attempt_count": 1,
+                    "negotiation_attempted": True,
+                    "negotiation_success": False,
+                },
+            },
+            "delivery": {"deliverable_count": 0, "sent_count": 0},
+        }
+
+    monkeypatch.setattr(
+        visual_slack_conversation_e2e,
+        "build_visual_slack_delivery_e2e_report",
+        failed_delivery,
+    )
+
+    report = visual_slack_conversation_e2e.build_visual_slack_conversation_e2e_report(
+        mode="fixture",
+        work_dir=tmp_path,
+        target="D_TEST",
+    )
+
+    assert report["success"] is False
+    assert "slack_delivery_failed" in report["failures"]
+    assert {
+        "type": "safe_reframe_provider_retry",
+        "track": "provider",
+        "reason": "slack_conversation_content_moderation_failure",
+        "confidence": 0.75,
+        "evidence_count": 2,
+        "requires_human_feedback": False,
+        "activation_status": "next_run",
+        "source": "slack_conversation_e2e",
+        "provider_failure_classes": {"content_moderation": 2},
+        "provider_error_codes": {"api_error": 2},
+    } in report["next_actions"]
+
+
 def test_visual_slack_conversation_e2e_live_uses_runtime_target_resolution(
     monkeypatch,
     tmp_path,

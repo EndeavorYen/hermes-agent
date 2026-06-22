@@ -298,6 +298,34 @@ def test_visual_e2e_automation_fails_when_slack_conversation_fails(monkeypatch, 
     assert report["slack_conversation"]["failures"] == ["slack_ingress_not_dispatched"]
 
 
+def test_visual_e2e_automation_exports_slack_conversation_repair_actions(monkeypatch, tmp_path):
+    from scripts import visual_e2e_automation_report
+
+    repair_action = {
+        "type": "safe_reframe_provider_retry",
+        "track": "provider",
+        "reason": "slack_conversation_content_moderation_failure",
+        "confidence": 0.75,
+        "evidence_count": 2,
+        "requires_human_feedback": False,
+        "activation_status": "next_run",
+        "source": "slack_conversation_e2e",
+        "provider_failure_classes": {"content_moderation": 2},
+        "provider_error_codes": {"api_error": 2},
+    }
+    monkeypatch.setattr(
+        visual_e2e_automation_report,
+        "build_visual_slack_conversation_e2e_report",
+        lambda **_kwargs: {"success": True, "failures": [], "next_actions": [repair_action]},
+    )
+
+    report = visual_e2e_automation_report.build_visual_e2e_automation_report(work_dir=tmp_path)
+
+    assert report["success"] is True
+    assert repair_action in report["self_improvement"]["next_actions"]
+    assert report["self_improvement"]["reduces_human_intervention"] is True
+
+
 def test_visual_e2e_automation_fails_when_quality_calibration_fails(monkeypatch, tmp_path):
     from scripts import visual_e2e_automation_report
 

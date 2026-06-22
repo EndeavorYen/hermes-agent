@@ -77,6 +77,7 @@ def build_visual_e2e_automation_report(
         fixture_quality_suite=fixture_quality_suite,
         live_quality_suite=live_quality_suite,
         live_quality_burn=live_quality_burn,
+        slack_conversation=slack_conversation,
     )
     failures = []
     if agent_mode.get("success") is not True:
@@ -138,8 +139,10 @@ def _self_improvement_summary(
     fixture_quality_suite: dict[str, Any],
     live_quality_suite: dict[str, Any],
     live_quality_burn: dict[str, Any],
+    slack_conversation: dict[str, Any],
 ) -> dict[str, Any]:
     actions: list[dict[str, Any]] = []
+    actions.extend(_action_list(slack_conversation.get("next_actions")))
     actions.extend(
         _quality_suite_next_actions(
             fixture_quality_suite,

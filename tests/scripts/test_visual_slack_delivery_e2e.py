@@ -130,6 +130,56 @@ def test_visual_slack_delivery_live_requires_upload_gate(monkeypatch, tmp_path):
     assert "live_upload_not_enabled" in report["failures"]
 
 
+def test_visual_slack_delivery_exports_provider_recovery_evidence(monkeypatch, tmp_path):
+    from scripts import visual_slack_delivery_e2e
+
+    monkeypatch.setattr(
+        visual_slack_delivery_e2e,
+        "run_visual_package",
+        lambda _args: {
+            "success": False,
+            "visual_request_id": "vrq_provider_failure",
+            "images": [],
+            "videos": [],
+        },
+    )
+    monkeypatch.setattr(
+        visual_slack_delivery_e2e,
+        "inspect_visual_e2e_evidence",
+        lambda _payload, *, require_video: {
+            "request_id": "vrq_provider_failure",
+            "image_count": 0,
+            "video_count": 0,
+            "artifact_count": 0,
+            "judgment_count": 0,
+            "ranking_count": 0,
+            "provider_failure_classes": {"content_moderation": 2},
+            "provider_error_codes": {"api_error": 2},
+            "retry_attempt_count": 1,
+            "recovery_summary": {
+                "provider_failure_count": 2,
+                "provider_failure_classes": {"content_moderation": 2},
+                "provider_error_codes": {"api_error": 2},
+                "retry_attempt_count": 1,
+                "negotiation_attempted": True,
+                "negotiation_success": False,
+            },
+        },
+    )
+
+    report = visual_slack_delivery_e2e.build_visual_slack_delivery_e2e_report(
+        mode="fixture",
+        work_dir=tmp_path,
+        target="D_TEST",
+    )
+
+    assert report["success"] is False
+    assert report["visual"]["provider_failure_classes"] == {"content_moderation": 2}
+    assert report["visual"]["provider_error_codes"] == {"api_error": 2}
+    assert report["visual"]["retry_attempt_count"] == 1
+    assert report["visual"]["recovery_summary"]["negotiation_attempted"] is True
+
+
 def test_visual_slack_delivery_live_uploads_images_and_videos(monkeypatch, tmp_path):
     from agent.visual.tracking import record_visual_delivery_status
     from agent.visual.tracking import visual_delivery_context
