@@ -120,6 +120,22 @@ def test_visual_self_validation_status_summarizes_latest_live_report(tmp_path):
     assert "artifact_path" not in encoded
 
 
+def test_visual_self_validation_status_flags_internal_source_image_delivery(tmp_path):
+    from scripts.visual_self_validation_status import build_visual_self_validation_status
+
+    payload = _scheduled_report()
+    payload["summary"]["slack_internal_source_image_delivery_count"] = 1
+    payload["summary"]["slack_internal_source_image_artifact_ids"] = ["var_source"]
+    latest_path = _write_latest(tmp_path, payload)
+
+    status = build_visual_self_validation_status(latest_path=latest_path)
+
+    assert status["success"] is False
+    assert status["health_status"] == "warn"
+    assert status["delivery"]["internal_source_image_delivery_count"] == 1
+    assert "fix_internal_source_image_delivery" in status["next_steps"]
+
+
 def test_visual_self_validation_status_surfaces_closed_loop_regression_failure(tmp_path):
     from scripts.visual_self_validation_status import build_visual_self_validation_status
 

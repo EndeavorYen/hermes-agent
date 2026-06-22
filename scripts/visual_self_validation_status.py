@@ -136,6 +136,9 @@ def build_visual_self_validation_status(
                 summary.get("live_slack_upload_uploaded_video_file_count")
             ),
             "duplicate_delivery_count": _optional_int(summary.get("slack_duplicate_delivery_count")),
+            "internal_source_image_delivery_count": _optional_int(
+                summary.get("slack_internal_source_image_delivery_count")
+            ),
         },
         "self_improvement": {
             "action_types": action_types,
@@ -253,6 +256,8 @@ def _next_steps(
         steps.append("stabilize_live_quality_trends")
     if summary.get("slack_duplicate_delivery_count") not in (None, 0):
         steps.append("fix_duplicate_delivery")
+    if _int(summary.get("slack_internal_source_image_delivery_count")) > 0:
+        steps.append("fix_internal_source_image_delivery")
     if summary.get("live_slack_upload_native_delivery_covered") is False:
         steps.append("verify_slack_native_uploads")
     if (

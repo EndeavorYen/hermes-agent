@@ -261,6 +261,36 @@ def test_scheduled_self_validation_defaults_to_fixture_and_writes_reports(monkey
     assert (tmp_path / "runs" / f"{report['run_id']}.json").exists()
 
 
+def test_scheduled_self_validation_tracks_internal_source_image_delivery(monkeypatch, tmp_path):
+    from scripts import visual_scheduled_self_validation
+
+    def fake_automation(*, work_dir, include_live, include_live_slack_upload=False):
+        report = _automation_report(
+            include_live=include_live,
+            include_live_slack_upload=include_live_slack_upload,
+        )
+        report["slack_delivery"]["success"] = False
+        report["slack_delivery"]["failures"] = ["internal_source_image_delivered"]
+        report["slack_delivery"]["delivery"]["internal_source_image_delivered"] = True
+        report["slack_delivery"]["delivery"]["internal_source_image_artifact_ids"] = ["var_source"]
+        return report
+
+    monkeypatch.setattr(
+        visual_scheduled_self_validation,
+        "build_visual_e2e_automation_report",
+        fake_automation,
+    )
+
+    report = visual_scheduled_self_validation.build_visual_scheduled_self_validation_report(
+        output_dir=tmp_path,
+        now=datetime(2026, 6, 22, 4, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["summary"]["slack_internal_source_image_delivery_count"] == 1
+    assert report["summary"]["slack_internal_source_image_artifact_ids"] == ["var_source"]
+    assert report["summary"]["scheduled_self_validation_reduces_human_intervention"] is False
+
+
 def test_scheduled_self_validation_runs_live_when_due(monkeypatch, tmp_path):
     from scripts import visual_scheduled_self_validation
 

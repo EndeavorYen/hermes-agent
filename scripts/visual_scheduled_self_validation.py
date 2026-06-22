@@ -226,12 +226,15 @@ def _summary(automation: dict[str, Any], live_quality_trends: dict[str, Any] | N
     slack_deliverable_count = _int(delivery.get("deliverable_count"))
     slack_duplicate_delivery_count = _int(delivery.get("duplicate_delivery_count"))
     slack_unexpected_delivery_count = len(delivery.get("unexpected_delivery_artifact_ids") or [])
+    slack_internal_source_image_artifact_ids = _list(delivery.get("internal_source_image_artifact_ids"))
+    slack_internal_source_image_delivery_count = len(slack_internal_source_image_artifact_ids)
     scheduled_validation_reduces_human_intervention = (
         automation.get("success") is True
         and feedback_action_types != []
         and slack_sent_count == slack_deliverable_count
         and slack_duplicate_delivery_count == 0
         and slack_unexpected_delivery_count == 0
+        and slack_internal_source_image_delivery_count == 0
     )
     return {
         "feedback_action_types": feedback_action_types,
@@ -241,6 +244,8 @@ def _summary(automation: dict[str, Any], live_quality_trends: dict[str, Any] | N
         "slack_deliverable_count": slack_deliverable_count,
         "slack_duplicate_delivery_count": slack_duplicate_delivery_count,
         "slack_unexpected_delivery_count": slack_unexpected_delivery_count,
+        "slack_internal_source_image_delivery_count": slack_internal_source_image_delivery_count,
+        "slack_internal_source_image_artifact_ids": slack_internal_source_image_artifact_ids,
         "scheduled_self_validation_reduces_human_intervention": scheduled_validation_reduces_human_intervention,
         "autonomous_rollout_reduces_human_intervention": self_review.get("reduces_human_intervention") is True,
         "closed_loop_regression_success": closed_loop_regression.get("success")

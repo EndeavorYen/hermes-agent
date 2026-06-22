@@ -112,6 +112,105 @@ def test_visual_slack_delivery_fixture_records_selected_media(tmp_path):
     assert {row["destination_id"] for row in deliveries} == {"D_TEST"}
 
 
+def test_visual_slack_delivery_video_only_blocks_internal_source_image_delivery(monkeypatch, tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+    from agent.visual.tracking import visual_delivery_metadata
+    from scripts import visual_slack_delivery_e2e
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    source_path = tmp_path / "internal-source.png"
+    video_path = tmp_path / "selected-video.mp4"
+    source_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+    video_path.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+
+    ledger = VisualAttemptLedger(default_visual_ledger_path())
+    ledger.initialize()
+    request_id = ledger.record_request(
+        user_prompt="video only",
+        normalized_intent={"kind": "visual_package", "wants_image": False, "wants_video": True},
+        modality="package",
+        operation="visual_package_generate",
+        status="completed",
+    )
+    source_artifact_id = ledger.record_artifact(
+        request_id=request_id,
+        kind="image",
+        local_path=str(source_path),
+        uri=str(source_path),
+        content_hash="sha256:source",
+        mime_type="image/png",
+        is_stable=True,
+        freshness_status="fresh",
+    )
+    video_artifact_id = ledger.record_artifact(
+        request_id=request_id,
+        kind="video",
+        local_path=str(video_path),
+        uri=str(video_path),
+        content_hash="sha256:video",
+        mime_type="video/mp4",
+        is_stable=True,
+        freshness_status="fresh",
+    )
+    payload = {
+        "success": True,
+        "visual_request_id": request_id,
+        "images": [],
+        "videos": [str(video_path)],
+        "generation_strategy": {
+            "requested_image": False,
+            "generated_image": True,
+            "image_first_for_video": True,
+            "video_source_artifact_id": source_artifact_id,
+        },
+        "delivery_metadata": visual_delivery_metadata(
+            request_id=request_id,
+            attempt_id=None,
+            artifact_ids=[source_artifact_id, video_artifact_id],
+            artifact_paths=[str(source_path), str(video_path)],
+            selected_artifact_ids=[source_artifact_id, video_artifact_id],
+        ),
+    }
+    monkeypatch.setattr(visual_slack_delivery_e2e, "run_visual_package", lambda _args: payload)
+    monkeypatch.setattr(
+        visual_slack_delivery_e2e,
+        "inspect_visual_e2e_evidence",
+        lambda _payload, *, require_video: {
+            "request_id": request_id,
+            "image_count": 0,
+            "video_count": 1,
+            "artifact_count": 2,
+            "judgment_count": 2,
+            "ranking_count": 2,
+            "video_source": {
+                "image_first_for_video": True,
+                "uses_ranked_selected_image": True,
+            },
+            "provider_failure_classes": {},
+            "provider_error_codes": {},
+            "retry_attempt_count": 0,
+            "recovery_summary": {},
+            "quality_repair_summary": {},
+            "quality_gate": {},
+            "storyboard_execution": {},
+        },
+    )
+
+    report = visual_slack_delivery_e2e.build_visual_slack_delivery_e2e_report(
+        mode="fixture",
+        work_dir=tmp_path,
+        target="D_TEST",
+        prompt="請產生一段產品展示影片",
+        require_video=True,
+    )
+
+    assert report["success"] is False
+    assert "internal_source_image_delivered" in report["failures"]
+    assert report["delivery"]["internal_source_image_delivered"] is True
+    assert report["delivery"]["internal_source_image_artifact_ids"] == [source_artifact_id]
+
+
 def test_visual_slack_delivery_fixture_records_composed_storyboard_video(tmp_path):
     from scripts.visual_slack_delivery_e2e import build_visual_slack_delivery_e2e_report
 

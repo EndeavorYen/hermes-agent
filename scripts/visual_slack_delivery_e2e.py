@@ -189,6 +189,10 @@ def inspect_slack_delivery_evidence(
         deliverables=deliverables,
         record_summary=record_summary,
     )
+    internal_source_gate = _internal_source_image_delivery_evidence(
+        payload=payload,
+        deliverables=deliverables,
+    )
     return {
         "request_id": request_id,
         "deliverable_count": len(deliverables),
@@ -209,6 +213,7 @@ def inspect_slack_delivery_evidence(
             if row.get("message_id")
         ),
         **upload_gate,
+        **internal_source_gate,
     }
 
 
@@ -477,6 +482,8 @@ def _delivery_failures(
         failures.append("missing_delivery_artifacts")
     if delivery_evidence.get("unexpected_delivery_artifact_ids"):
         failures.append("unexpected_delivery_artifacts")
+    if delivery_evidence.get("internal_source_image_delivered") is True:
+        failures.append("internal_source_image_delivered")
     if delivery_evidence.get("duplicate_delivery_count", 0) > 0:
         failures.append("duplicate_delivery_records")
     if mode == "live" and record_summary.get("upload_enabled") is True:
@@ -523,6 +530,47 @@ def _upload_gate_evidence(
         "uploaded_artifact_ids": sorted(uploaded_artifact_ids),
         "missing_uploaded_artifact_ids": sorted(missing),
         "unexpected_uploaded_artifact_ids": sorted(unexpected),
+    }
+
+
+def _internal_source_image_delivery_evidence(
+    *,
+    payload: dict[str, Any] | None,
+    deliverables: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {
+            "internal_source_image_delivered": False,
+            "internal_source_image_artifact_ids": [],
+        }
+    strategy = payload.get("generation_strategy")
+    if not isinstance(strategy, dict):
+        return {
+            "internal_source_image_delivered": False,
+            "internal_source_image_artifact_ids": [],
+        }
+    if strategy.get("requested_image") is not False:
+        return {
+            "internal_source_image_delivered": False,
+            "internal_source_image_artifact_ids": [],
+        }
+    source_artifact_id = str(strategy.get("video_source_artifact_id") or "")
+    if not source_artifact_id:
+        return {
+            "internal_source_image_delivered": False,
+            "internal_source_image_artifact_ids": [],
+        }
+    delivered_source_ids = sorted(
+        {
+            str(item.get("artifact_id") or "")
+            for item in deliverables
+            if str(item.get("artifact_id") or "") == source_artifact_id
+            and str(item.get("kind") or "").lower() == "image"
+        }
+    )
+    return {
+        "internal_source_image_delivered": bool(delivered_source_ids),
+        "internal_source_image_artifact_ids": delivered_source_ids,
     }
 
 
