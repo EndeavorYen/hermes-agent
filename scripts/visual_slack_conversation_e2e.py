@@ -124,18 +124,27 @@ def build_visual_slack_conversation_e2e_report(
         _next_actions_from_slack_delivery(initial_slack_delivery)
         + _next_actions_from_slack_delivery(slack_delivery)
     )
+    visual_agent_plan_summary = _summarize_visual_agent_plan(
+        visual_agent_plan if "visual_agent_plan" in locals() else {}
+    )
+    self_review = _build_slack_conversation_self_review(
+        slack_delivery=slack_delivery,
+        initial_slack_delivery=initial_slack_delivery,
+        visual_agent_plan=visual_agent_plan_summary,
+        next_actions=next_actions,
+        failures=failures,
+    )
     return {
         "success": not failures,
         "mode": mode,
         "failures": sorted(set(str(item) for item in failures if item)),
         "ingress": ingress_summary,
-        "visual_agent_plan": _summarize_visual_agent_plan(
-            visual_agent_plan if "visual_agent_plan" in locals() else {}
-        ),
+        "visual_agent_plan": visual_agent_plan_summary,
         "conversation_route": conversation_route,
         "initial_slack_delivery": initial_slack_delivery,
         "slack_delivery": slack_delivery,
         "repair_attempt": repair_attempt,
+        "self_review": self_review,
         "next_actions": next_actions,
         "privacy": {
             "raw_prompt_omitted": True,
@@ -289,6 +298,109 @@ def _summarize_visual_agent_plan(plan: dict[str, Any]) -> dict[str, Any]:
             "storyboard_enabled": bool(storyboard.get("enabled")),
             "storyboard_shot_count": storyboard.get("shot_count"),
         },
+    }
+
+
+def _build_slack_conversation_self_review(
+    *,
+    slack_delivery: dict[str, Any],
+    initial_slack_delivery: dict[str, Any],
+    visual_agent_plan: dict[str, Any],
+    next_actions: list[dict[str, Any]],
+    failures: list[Any],
+) -> dict[str, Any]:
+    visual = _dict(slack_delivery.get("visual"))
+    delivery = _dict(slack_delivery.get("delivery"))
+    recovery = _dict(visual.get("recovery_summary"))
+    quality_gate = _dict(visual.get("quality_gate"))
+    plan_args = _dict(visual_agent_plan.get("arguments"))
+    video_source = _dict(visual.get("video_source"))
+
+    provider_failure_count = _int(recovery.get("provider_failure_count"))
+    duplicate_delivery_count = _int(delivery.get("duplicate_delivery_count"))
+    internal_source_image_delivered = delivery.get("internal_source_image_delivered") is True
+    missing_delivery = _string_list(delivery.get("missing_delivery_artifact_ids"))
+    unexpected_delivery = _string_list(delivery.get("unexpected_delivery_artifact_ids"))
+    deliverable_count = _int(delivery.get("deliverable_count"))
+    sent_count = _int(delivery.get("sent_count"))
+    quality_issues = _string_list(quality_gate.get("quality_issues"))
+    preference_failures = _preference_dimension_failures(quality_gate.get("preference_dimension_failures"))
+    quality_gate_success = quality_gate.get("success")
+    if quality_gate_success is not False and (quality_gate or visual.get("quality_gate") == {}):
+        quality_gate_success = True
+
+    expects_video = plan_args.get("include_video") is True
+    expects_video_only = expects_video and plan_args.get("include_image") is False
+    image_first_video_source_covered = None
+    if expects_video_only:
+        image_first_video_source_covered = video_source.get("uses_ranked_selected_image") is True
+
+    delivery_clean = (
+        duplicate_delivery_count == 0
+        and not internal_source_image_delivered
+        and not missing_delivery
+        and not unexpected_delivery
+        and (deliverable_count == 0 or sent_count >= deliverable_count)
+    )
+    auto_next_actions = [
+        action
+        for action in next_actions
+        if isinstance(action, dict) and action.get("requires_human_feedback") is not True
+    ]
+    blocking_reasons = sorted(
+        set(
+            [
+                *[str(item) for item in failures if item],
+                *quality_issues,
+                *[failure["issue"] for failure in preference_failures if failure.get("issue")],
+            ]
+        )
+    )
+    if provider_failure_count > 0:
+        blocking_reasons.append("provider_failures_detected")
+    if not delivery_clean:
+        blocking_reasons.append("delivery_not_clean")
+    if image_first_video_source_covered is False:
+        blocking_reasons.append("image_first_video_source_not_ranked_selected_image")
+
+    final_success = slack_delivery.get("success") is True and not blocking_reasons
+    initial_failed = bool(initial_slack_delivery) and initial_slack_delivery.get("success") is False
+    if final_success and initial_failed:
+        decision = "accept_after_repair"
+    elif final_success:
+        decision = "accept"
+    elif auto_next_actions:
+        decision = "needs_repair"
+    else:
+        decision = "blocked"
+
+    requires_human_feedback = decision == "blocked" or any(
+        action.get("requires_human_feedback") is True
+        for action in next_actions
+        if isinstance(action, dict)
+    )
+    return {
+        "success": decision in {"accept", "accept_after_repair"},
+        "decision": decision,
+        "requires_human_feedback": requires_human_feedback,
+        "reduces_human_intervention": not requires_human_feedback,
+        "auto_next_action_count": len(auto_next_actions),
+        "action_types": _action_types(auto_next_actions),
+        "quality_gate_success": quality_gate_success,
+        "quality_issue_count": len(quality_issues),
+        "preference_failure_count": len(preference_failures),
+        "provider_failure_count": provider_failure_count,
+        "delivery_clean": delivery_clean,
+        "deliverable_count": deliverable_count,
+        "sent_count": sent_count,
+        "duplicate_delivery_count": duplicate_delivery_count,
+        "internal_source_image_delivered": internal_source_image_delivered,
+        "image_first_video_source_covered": image_first_video_source_covered,
+        "native_video_upload_covered": _int(delivery.get("uploaded_video_file_count")) > 0
+        and _int(delivery.get("uploaded_remote_video_url_count")) == 0,
+        "blocking_reasons": sorted(set(blocking_reasons)),
+        "privacy_safe": True,
+        "raw_prompt_omitted": True,
     }
 
 
@@ -468,8 +580,9 @@ def _next_actions_from_slack_delivery(slack_delivery: dict[str, Any]) -> list[di
                 )
             )
 
-    if _quality_repair_failure(slack_delivery):
-        actions.extend(_next_actions_from_quality_gate(_dict(visual.get("quality_gate"))))
+    quality_actions = _next_actions_from_quality_gate(_dict(visual.get("quality_gate")))
+    if quality_actions and (slack_delivery.get("success") is True or _quality_repair_failure(slack_delivery)):
+        actions.extend(quality_actions)
     return _dedupe_actions(actions)
 
 
@@ -668,7 +781,9 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(report, ensure_ascii=False, sort_keys=True))
     else:
         status = "passed" if report["success"] else "failed"
-        print(f"visual slack conversation e2e {status}")
+        self_review = _dict(report.get("self_review"))
+        decision = str(self_review.get("decision") or "unknown")
+        print(f"visual slack conversation e2e {status} (self_review={decision})")
     if args.allow_failures:
         return 0
     return 0 if report["success"] else 1

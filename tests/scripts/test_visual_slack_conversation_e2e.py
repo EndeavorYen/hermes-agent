@@ -19,11 +19,28 @@ def _fake_delivery_report(**kwargs):
             "artifact_count": 2,
             "judgment_count": 2,
             "ranking_count": 2,
+            "video_source": {
+                "uses_ranked_selected_image": kwargs.get("require_video") is True
+                and kwargs.get("include_image") is False,
+            },
+            "recovery_summary": {
+                "provider_failure_count": 0,
+                "provider_failure_classes": {},
+                "provider_error_codes": {},
+            },
+            "quality_gate": {
+                "success": True,
+                "quality_issues": [],
+                "preference_dimension_failures": [],
+            },
         },
         "delivery": {
             "deliverable_count": 2,
             "sent_count": 2,
             "duplicate_delivery_count": 0,
+            "internal_source_image_delivered": False,
+            "missing_delivery_artifact_ids": [],
+            "unexpected_delivery_artifact_ids": [],
             "uploaded_image_file_count": 1 if kwargs.get("upload") else 0,
             "uploaded_video_file_count": 1 if kwargs.get("upload") else 0,
             "uploaded_remote_video_url_count": 0,
@@ -129,6 +146,151 @@ def test_visual_slack_conversation_e2e_uses_visual_agent_plan_for_text_video(
     assert delivery_calls[0]["include_image"] is False
     assert delivery_calls[0]["aspect_ratio"] == "16:9"
     assert delivery_calls[0]["storyboard"] is None
+    assert report["self_review"]["decision"] == "accept"
+    assert report["self_review"]["success"] is True
+    assert report["self_review"]["requires_human_feedback"] is False
+    assert report["self_review"]["reduces_human_intervention"] is True
+    assert report["self_review"]["image_first_video_source_covered"] is True
+    assert report["self_review"]["internal_source_image_delivered"] is False
+    assert report["self_review"]["duplicate_delivery_count"] == 0
+    assert report["self_review"]["quality_gate_success"] is True
+    assert report["self_review"]["provider_failure_count"] == 0
+    assert report["self_review"]["auto_next_action_count"] == 0
+
+
+def test_visual_slack_conversation_e2e_self_review_flags_quality_repair_path(
+    monkeypatch,
+    tmp_path,
+):
+    from scripts import visual_slack_conversation_e2e
+
+    def low_quality_delivery(**kwargs):
+        return {
+            "success": False,
+            "mode": kwargs["mode"],
+            "failures": ["quality_gate_failed", "selected_quality_issue_detected"],
+            "target": {
+                "platform": "slack",
+                "destination_id": kwargs["target"],
+                "thread_id": kwargs["thread_id"],
+            },
+            "visual": {
+                "request_id": "vrq_low_quality",
+                "image_count": 1,
+                "video_count": 1,
+                "video_source": {"uses_ranked_selected_image": True},
+                "provider_failure_classes": {},
+                "provider_error_codes": {},
+                "recovery_summary": {
+                    "provider_failure_count": 0,
+                    "provider_failure_classes": {},
+                    "provider_error_codes": {},
+                },
+                "quality_gate": {
+                    "success": False,
+                    "quality_issues": ["subject_not_attractive"],
+                    "preference_dimension_failures": [
+                        {
+                            "artifact_id": "var_face",
+                            "dimension": "face_naturalness",
+                            "issue": "face_unnatural",
+                            "score": 0.28,
+                        }
+                    ],
+                },
+            },
+            "delivery": {
+                "deliverable_count": 0,
+                "sent_count": 0,
+                "duplicate_delivery_count": 0,
+                "internal_source_image_delivered": False,
+            },
+        }
+
+    monkeypatch.setattr(
+        visual_slack_conversation_e2e,
+        "build_visual_slack_delivery_e2e_report",
+        low_quality_delivery,
+    )
+
+    report = visual_slack_conversation_e2e.build_visual_slack_conversation_e2e_report(
+        mode="fixture",
+        work_dir=tmp_path,
+        target="D_TEST",
+        repair_budget=0,
+    )
+
+    assert report["success"] is False
+    assert report["self_review"]["decision"] == "needs_repair"
+    assert report["self_review"]["success"] is False
+    assert report["self_review"]["quality_gate_success"] is False
+    assert report["self_review"]["provider_failure_count"] == 0
+    assert report["self_review"]["auto_next_action_count"] >= 3
+    assert report["self_review"]["requires_human_feedback"] is False
+
+
+def test_visual_slack_conversation_e2e_self_review_repairs_successful_low_quality_delivery(
+    monkeypatch,
+    tmp_path,
+):
+    from scripts import visual_slack_conversation_e2e
+
+    def low_quality_sent_delivery(**kwargs):
+        return {
+            "success": True,
+            "mode": kwargs["mode"],
+            "failures": [],
+            "target": {
+                "platform": "slack",
+                "destination_id": kwargs["target"],
+                "thread_id": kwargs["thread_id"],
+            },
+            "visual": {
+                "request_id": "vrq_sent_low_quality",
+                "image_count": 0,
+                "video_count": 1,
+                "video_source": {"uses_ranked_selected_image": True},
+                "recovery_summary": {
+                    "provider_failure_count": 0,
+                    "provider_failure_classes": {},
+                    "provider_error_codes": {},
+                },
+                "quality_gate": {
+                    "success": False,
+                    "quality_issues": ["video_metadata_missing"],
+                    "preference_dimension_failures": [],
+                },
+            },
+            "delivery": {
+                "deliverable_count": 1,
+                "sent_count": 1,
+                "duplicate_delivery_count": 0,
+                "internal_source_image_delivered": False,
+                "missing_delivery_artifact_ids": [],
+                "unexpected_delivery_artifact_ids": [],
+            },
+        }
+
+    monkeypatch.setattr(
+        visual_slack_conversation_e2e,
+        "build_visual_slack_delivery_e2e_report",
+        low_quality_sent_delivery,
+    )
+
+    report = visual_slack_conversation_e2e.build_visual_slack_conversation_e2e_report(
+        mode="fixture",
+        work_dir=tmp_path,
+        prompt="幫我做一段 4 秒乾淨產品短片，主體是一支霧黑鋼筆",
+        target="D_TEST",
+    )
+
+    assert report["success"] is True
+    assert report["self_review"]["decision"] == "needs_repair"
+    assert report["self_review"]["success"] is False
+    assert report["self_review"]["requires_human_feedback"] is False
+    assert report["self_review"]["auto_next_action_count"] >= 2
+    assert "increase_candidate_budget" in [action["type"] for action in report["next_actions"]]
+    assert "rerank_before_slack" in [action["type"] for action in report["next_actions"]]
 
 
 def test_visual_slack_conversation_e2e_fails_when_slack_ingress_drops_message(
@@ -560,3 +722,22 @@ def test_visual_slack_conversation_e2e_cli_json(monkeypatch, capsys, tmp_path):
     assert payload["success"] is True
     assert payload["ingress"]["platform"] == "slack"
     assert "prompt" not in payload["ingress"]
+
+
+def test_visual_slack_conversation_e2e_cli_text_includes_self_review(monkeypatch, capsys, tmp_path):
+    from scripts import visual_slack_conversation_e2e
+
+    monkeypatch.setattr(
+        visual_slack_conversation_e2e,
+        "build_visual_slack_delivery_e2e_report",
+        _fake_delivery_report,
+    )
+
+    code = visual_slack_conversation_e2e.main(
+        ["--work-dir", str(tmp_path), "--target", "D_TEST"]
+    )
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert "visual slack conversation e2e passed" in out
+    assert "self_review=accept" in out
