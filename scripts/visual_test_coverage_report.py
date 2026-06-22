@@ -20,19 +20,28 @@ if str(_REPO_ROOT) not in sys.path:
 DEFAULT_TARGET_FILES = [
     "agent/visual/learning/outcomes.py",
     "agent/visual/learning/proposals.py",
+    "agent/visual/promotion_readiness.py",
+    "agent/visual/promotion_readiness_activation.py",
     "agent/visual/promotion_policy.py",
     "agent/visual/strategy_activation.py",
+    "agent/visual/strategy_policy.py",
     "agent/visual/judges/quality.py",
+    "scripts/visual_activate_ready_promotion.py",
     "scripts/visual_learning_report.py",
+    "scripts/visual_self_validation_status.py",
 ]
 
 DEFAULT_TEST_PATHS = [
     "tests/visual/test_learning_outcomes.py",
     "tests/visual/test_learning_proposals.py",
+    "tests/visual/test_promotion_readiness_activation.py",
     "tests/visual/test_promotion_policy.py",
     "tests/visual/test_strategy_activation.py",
+    "tests/visual/test_strategy_policy.py",
     "tests/visual/test_quality_judges.py",
+    "tests/scripts/test_visual_activate_ready_promotion.py",
     "tests/scripts/test_visual_learning_report.py",
+    "tests/scripts/test_visual_self_validation_status.py",
 ]
 
 
@@ -108,10 +117,15 @@ def _clear_target_modules() -> None:
         "agent.visual.learning",
         "agent.visual.learning.outcomes",
         "agent.visual.learning.proposals",
+        "agent.visual.promotion_readiness",
+        "agent.visual.promotion_readiness_activation",
         "agent.visual.promotion_policy",
         "agent.visual.strategy_activation",
+        "agent.visual.strategy_policy",
         "agent.visual.judges.quality",
+        "scripts.visual_activate_ready_promotion",
         "scripts.visual_learning_report",
+        "scripts.visual_self_validation_status",
     ]
     for module_name in module_names:
         sys.modules.pop(module_name, None)
@@ -119,10 +133,15 @@ def _clear_target_modules() -> None:
         ("agent.visual", "learning"),
         ("agent.visual.learning", "outcomes"),
         ("agent.visual.learning", "proposals"),
+        ("agent.visual", "promotion_readiness"),
+        ("agent.visual", "promotion_readiness_activation"),
         ("agent.visual", "promotion_policy"),
         ("agent.visual", "strategy_activation"),
+        ("agent.visual", "strategy_policy"),
         ("agent.visual.judges", "quality"),
+        ("scripts", "visual_activate_ready_promotion"),
         ("scripts", "visual_learning_report"),
+        ("scripts", "visual_self_validation_status"),
     ]:
         parent = sys.modules.get(parent_name)
         if parent is not None and hasattr(parent, attribute):
@@ -223,9 +242,16 @@ def run_visual_coverage_probes() -> None:
     from agent.visual.judges.quality import judge_visual_quality
     from agent.visual.learning.outcomes import aggregate_visual_strategy_outcomes
     from agent.visual.learning.proposals import propose_visual_policy_updates
+    from agent.visual.promotion_readiness import build_visual_promotion_readiness
+    from agent.visual.promotion_readiness import missing_visual_promotion_readiness
+    from agent.visual.promotion_readiness_activation import activate_ready_visual_promotion
     from agent.visual.promotion_policy import evaluate_shadow_promotion
     from agent.visual.strategy_activation import record_strategy_activation
+    from agent.visual.strategy_policy import select_strategy_plan
+    from agent.visual.strategy_policy import find_controlled_strategy_plan
     from scripts import visual_learning_report
+    from scripts import visual_activate_ready_promotion
+    from scripts import visual_self_validation_status
 
     with tempfile.TemporaryDirectory(prefix="hermes-visual-coverage-") as tmp:
         db_path = Path(tmp) / "visual.sqlite3"
@@ -411,10 +437,141 @@ def run_visual_coverage_probes() -> None:
             missing_source_metadata_count=1,
         )
         visual_learning_report._json_value("{not-json")
+        ready_action = {
+            "type": "prefer_strategy",
+            "source": "live_quality_burn",
+            "track": "aesthetic",
+            "strategy_signature": "image_first_rank_then_video",
+            "bucket": "live_visual_agent_mode",
+            "activation_status": "shadow",
+            "confidence": 0.8206,
+            "evidence_count": 2,
+        }
+        promotion_readiness = build_visual_promotion_readiness(
+            report_success=True,
+            failures=[],
+            live_e2e_ran=True,
+            summary={
+                "live_quality_burn_success": True,
+                "live_quality_burn_case_count": 2,
+                "live_quality_burn_min_score": 0.8206,
+                "live_quality_burn_image_first_video_source_covered": True,
+                "live_quality_burn_image_first_video_source_failure_count": 0,
+                "live_quality_burn_quality_focus_failure_count": 0,
+                "live_slack_upload_native_delivery_covered": True,
+                "slack_duplicate_delivery_count": 0,
+            },
+            actions=[ready_action],
+            trend_degradations=[],
+        )
+        ready_status = {
+            "success": True,
+            "health_status": "pass",
+            "run_id": "coverage_probe",
+            "generated_at": "2026-06-22T00:00:00+00:00",
+            "live_e2e_ran": True,
+            "live": {
+                "burn_success": True,
+                "burn_case_count": 2,
+                "burn_min_score": 0.8206,
+                "image_first_video_source_covered": True,
+            },
+            "delivery": {
+                "native_video_upload_covered": True,
+                "duplicate_delivery_count": 0,
+            },
+            "promotion_readiness": promotion_readiness,
+        }
+        activate_ready_visual_promotion(ledger, ready_status)
+        activate_ready_visual_promotion(ledger, ready_status)
+        find_controlled_strategy_plan(ledger, intent_signature="visig_probe_any")
+        missing_visual_promotion_readiness()
+        status_path = Path(tmp) / "status.json"
+        status_path.write_text(json.dumps(ready_status), encoding="utf-8")
+        visual_activate_ready_promotion.build_visual_ready_promotion_activation(
+            db_path=db_path,
+            status_path=status_path,
+        )
+        visual_self_validation_status.build_visual_self_validation_status(
+            latest_path=Path(tmp) / "missing-latest.json"
+        )
+        latest_path = Path(tmp) / "latest.json"
+        latest_path.write_text(
+            json.dumps(
+                {
+                    "success": True,
+                    "run_id": "coverage_status",
+                    "generated_at": "2026-06-22T00:00:00+00:00",
+                    "mode": "fixture+live",
+                    "failures": [],
+                    "live_policy": {"mode": "on", "decision": "run", "live_enabled": True},
+                    "slack_live_upload_policy": {"decision": "run", "enabled": True, "target": "D_PRIVATE"},
+                    "summary": {
+                        "live_quality_gate_success": True,
+                        "live_quality_gate_min_score": 0.8206,
+                        "live_quality_suite_success": True,
+                        "live_quality_suite_case_count": 2,
+                        "live_quality_suite_failure_count": 0,
+                        "live_quality_burn_success": True,
+                        "live_quality_burn_case_count": 2,
+                        "live_quality_burn_min_score": 0.8206,
+                        "live_quality_burn_image_first_video_source_covered": True,
+                        "live_quality_burn_image_first_video_source_failure_count": 0,
+                        "live_quality_burn_action_types": ["prefer_strategy"],
+                        "live_quality_trend_degradations": [],
+                        "live_slack_upload_native_delivery_covered": True,
+                        "live_slack_upload_uploaded_video_file_count": 1,
+                        "slack_duplicate_delivery_count": 0,
+                    },
+                    "automation": {
+                        "self_improvement": {
+                            "next_actions": [ready_action],
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        visual_self_validation_status.build_visual_self_validation_status(latest_path=latest_path)
+        stale_path = Path(tmp) / "stale-latest.json"
+        stale_path.write_text(
+            json.dumps(
+                {
+                    "success": False,
+                    "generated_at": "2026-06-20T00:00:00+00:00",
+                    "failures": ["closed_loop_regression_failed"],
+                    "live_policy": {"decision": "skip_not_enabled", "live_enabled": False},
+                    "slack_live_upload_policy": {"decision": "skip_missing_target", "enabled": True},
+                    "summary": {
+                        "closed_loop_regression_success": False,
+                        "live_quality_trend_degradations": ["provider_failures_spiked"],
+                        "slack_duplicate_delivery_count": 1,
+                        "live_slack_upload_native_delivery_covered": False,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        visual_self_validation_status.build_visual_self_validation_status(latest_path=stale_path)
+        select_strategy_plan(
+            "visig_probe",
+            provider_stats={"fixture": {"generation_success_rate": 0.9, "attempt_count": 20}},
+            preference_profile={"sample_count": 8, "signals": {"legs_positive": {"weight": 0.8}}},
+            exploration_rate=0.0,
+        )
+        select_strategy_plan(
+            "visig_probe_sparse",
+            provider_stats={},
+            preference_profile={"sample_count": 0, "signals": {}},
+            exploration_rate=0.2,
+        )
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             visual_learning_report.main(["--db-path", str(db_path), "--json"])
             visual_learning_report.main(["--db-path", str(db_path)])
+            visual_activate_ready_promotion.main(
+                ["--db-path", str(db_path), "--status-path", str(status_path), "--json", "--allow-blocked"]
+            )
 
     judge_visual_quality(
         {

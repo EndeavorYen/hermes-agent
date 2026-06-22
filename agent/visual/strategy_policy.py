@@ -9,6 +9,9 @@ from agent.visual.strategy_atoms import StrategyAtom
 from agent.visual.strategy_atoms import builtin_strategy_atom_map
 
 
+GLOBAL_VISUAL_AGENT_INTENT_SIGNATURE = "live_visual_agent_mode"
+
+
 @dataclass(frozen=True)
 class StrategyPlan:
     intent_signature: str
@@ -62,7 +65,29 @@ def find_controlled_strategy_plan(
     *,
     intent_signature: str,
 ) -> StrategyPlan | None:
-    activations = ledger.list_strategy_activations(intent_signature=intent_signature)
+    exact_plan = _find_controlled_strategy_plan(
+        ledger,
+        lookup_intent_signature=intent_signature,
+        requested_intent_signature=intent_signature,
+    )
+    if exact_plan is not None:
+        return exact_plan
+    if intent_signature == GLOBAL_VISUAL_AGENT_INTENT_SIGNATURE:
+        return None
+    return _find_controlled_strategy_plan(
+        ledger,
+        lookup_intent_signature=GLOBAL_VISUAL_AGENT_INTENT_SIGNATURE,
+        requested_intent_signature=intent_signature,
+    )
+
+
+def _find_controlled_strategy_plan(
+    ledger: VisualAttemptLedger,
+    *,
+    lookup_intent_signature: str,
+    requested_intent_signature: str,
+) -> StrategyPlan | None:
+    activations = ledger.list_strategy_activations(intent_signature=lookup_intent_signature)
     rolled_back_ids = {
         str(row["rollback_of"])
         for row in activations
@@ -79,7 +104,7 @@ def find_controlled_strategy_plan(
             continue
         metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
         return StrategyPlan(
-            intent_signature=str(row.get("intent_signature") or intent_signature),
+            intent_signature=requested_intent_signature,
             mode="controlled",
             confidence=_coerce_float(promotion_decision.get("confidence")),
             strategy_signature=str(row.get("strategy_signature") or ""),

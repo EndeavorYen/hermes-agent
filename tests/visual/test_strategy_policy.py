@@ -80,6 +80,38 @@ def test_strategy_policy_reads_latest_safe_controlled_activation(tmp_path):
     assert plan.to_record()["activation_id"] == activation_id
 
 
+def test_strategy_policy_falls_back_to_global_visual_agent_activation(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.strategy_activation import record_strategy_activation
+    from agent.visual.strategy_policy import GLOBAL_VISUAL_AGENT_INTENT_SIGNATURE
+    from agent.visual.strategy_policy import find_controlled_strategy_plan
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+    activation_id = record_strategy_activation(
+        ledger,
+        shadow_update_id="vsh_global",
+        intent_signature=GLOBAL_VISUAL_AGENT_INTENT_SIGNATURE,
+        strategy_signature="image_first_rank_then_video",
+        activation_status="controlled",
+        promotion_decision={
+            "decision": "promote_controlled",
+            "allowed": True,
+            "confidence": 0.8206,
+            "reasons": [],
+        },
+        metadata={"scope": "global_visual_agent_mode"},
+    )
+
+    plan = find_controlled_strategy_plan(ledger, intent_signature="visig_real_prompt")
+
+    assert plan is not None
+    assert plan.intent_signature == "visig_real_prompt"
+    assert plan.strategy_signature == "image_first_rank_then_video"
+    assert plan.activation_status == "controlled"
+    assert plan.activation_id == activation_id
+
+
 def test_strategy_policy_ignores_unsafe_or_rolled_back_activation(tmp_path):
     from agent.visual.attempt_ledger import VisualAttemptLedger
     from agent.visual.strategy_activation import record_strategy_activation
