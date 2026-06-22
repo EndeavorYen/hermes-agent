@@ -55,6 +55,13 @@ def _automation_report(*, include_live: bool, include_live_slack_upload: bool = 
             "success": True,
             "case_count": 2,
             "failures": [],
+            "recovery_summary": {
+                "provider_failure_count": 0,
+                "retry_attempt_count": 0,
+                "negotiation_attempted_case_count": 0,
+                "negotiation_success_case_count": 0,
+                "content_moderation_recovered_case_count": 0,
+            },
             "cases": [
                 {"case_id": "product_photo_video", "success": True, "failures": []},
                 {"case_id": "fashion_portrait_video", "success": True, "failures": []},
@@ -65,6 +72,13 @@ def _automation_report(*, include_live: bool, include_live_slack_upload: bool = 
                 "success": True,
                 "case_count": 2,
                 "failures": [],
+                "recovery_summary": {
+                    "provider_failure_count": 2,
+                    "retry_attempt_count": 2,
+                    "negotiation_attempted_case_count": 1,
+                    "negotiation_success_case_count": 1,
+                    "content_moderation_recovered_case_count": 1,
+                },
                 "cases": [
                     {"case_id": "product_photo_video", "success": True, "failures": []},
                     {"case_id": "fashion_portrait_video", "success": True, "failures": []},
@@ -127,6 +141,7 @@ def test_scheduled_self_validation_defaults_to_fixture_and_writes_reports(monkey
     assert report["summary"]["autonomous_rollout_reduces_human_intervention"] is True
     assert report["summary"]["fixture_quality_suite_success"] is True
     assert report["summary"]["fixture_quality_suite_case_count"] == 2
+    assert report["summary"]["fixture_quality_suite_negotiation_success_case_count"] == 0
     assert (tmp_path / "latest.json").exists()
     assert json.loads((tmp_path / "latest.json").read_text())["run_id"] == report["run_id"]
     assert (tmp_path / "runs" / f"{report['run_id']}.json").exists()
@@ -170,6 +185,8 @@ def test_scheduled_self_validation_runs_live_when_due(monkeypatch, tmp_path):
     assert report["summary"]["live_quality_gate_min_score"] == 0.82
     assert report["summary"]["live_quality_suite_success"] is True
     assert report["summary"]["live_quality_suite_case_count"] == 2
+    assert report["summary"]["live_quality_suite_negotiation_success_case_count"] == 1
+    assert report["summary"]["live_quality_suite_content_moderation_recovered_case_count"] == 1
     state = json.loads((tmp_path / "state.json").read_text())
     assert state["last_live_run_at"] == "2026-06-22T08:00:00+00:00"
 

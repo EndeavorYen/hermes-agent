@@ -145,6 +145,16 @@ def _summary(automation: dict[str, Any]) -> dict[str, Any]:
         if isinstance(automation.get("live_quality_suite"), dict)
         else {}
     )
+    fixture_quality_recovery = (
+        fixture_quality_suite.get("recovery_summary")
+        if isinstance(fixture_quality_suite.get("recovery_summary"), dict)
+        else {}
+    )
+    live_quality_recovery = (
+        live_quality_suite.get("recovery_summary")
+        if isinstance(live_quality_suite.get("recovery_summary"), dict)
+        else {}
+    )
     health = automation.get("health") if isinstance(automation.get("health"), dict) else {}
     self_review = health.get("self_review") if isinstance(health.get("self_review"), dict) else {}
     feedback_action_types = [
@@ -178,11 +188,23 @@ def _summary(automation: dict[str, Any]) -> dict[str, Any]:
         else None,
         "fixture_quality_suite_case_count": _int(fixture_quality_suite.get("case_count")),
         "fixture_quality_suite_failure_count": len(fixture_quality_suite.get("failures") or []),
+        "fixture_quality_suite_negotiation_success_case_count": _int(
+            fixture_quality_recovery.get("negotiation_success_case_count")
+        ),
+        "fixture_quality_suite_content_moderation_recovered_case_count": _int(
+            fixture_quality_recovery.get("content_moderation_recovered_case_count")
+        ),
         "live_quality_suite_success": live_quality_suite.get("success")
         if "success" in live_quality_suite
         else None,
         "live_quality_suite_case_count": _int(live_quality_suite.get("case_count")),
         "live_quality_suite_failure_count": len(live_quality_suite.get("failures") or []),
+        "live_quality_suite_negotiation_success_case_count": _int(
+            live_quality_recovery.get("negotiation_success_case_count")
+        ),
+        "live_quality_suite_content_moderation_recovered_case_count": _int(
+            live_quality_recovery.get("content_moderation_recovered_case_count")
+        ),
         "live_slack_upload_success": live_slack_delivery.get("success")
         if "success" in live_slack_delivery
         else None,

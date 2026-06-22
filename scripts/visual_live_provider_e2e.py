@@ -144,6 +144,8 @@ def build_visual_live_provider_e2e_suite_report(
             "payload": report.get("payload"),
             "evidence": report.get("evidence"),
         }
+        evidence = report.get("evidence") if isinstance(report.get("evidence"), dict) else {}
+        case_report["recovery_summary"] = evidence.get("recovery_summary", {})
         case_reports.append(case_report)
         failures.extend(f"{case_id}:{failure}" for failure in case_report["failures"])
     return {
@@ -151,6 +153,7 @@ def build_visual_live_provider_e2e_suite_report(
         "provider_mode": mode,
         "case_count": len(case_reports),
         "failures": failures,
+        "recovery_summary": _suite_recovery_summary(case_reports),
         "cases": case_reports,
     }
 
@@ -210,6 +213,12 @@ def inspect_visual_e2e_evidence(
         1 for row in judgments if _judgment_uses_inline_vision(row)
     )
     retry_attempt_count = _retry_attempt_count(payload=payload, attempts=attempts)
+    recovery_summary = _recovery_summary(
+        payload=payload,
+        provider_failure_classes=provider_failure_classes,
+        provider_error_codes=provider_error_codes,
+        retry_attempt_count=retry_attempt_count,
+    )
     quality_gate = _quality_gate(
         payload=payload,
         artifacts=artifacts,
@@ -231,6 +240,7 @@ def inspect_visual_e2e_evidence(
         "provider_failure_classes": dict(provider_failure_classes),
         "provider_error_codes": dict(provider_error_codes),
         "retry_attempt_count": retry_attempt_count,
+        "recovery_summary": recovery_summary,
         "providers": providers,
         "require_video": require_video,
         "quality_gate": quality_gate,
@@ -426,6 +436,76 @@ def _provider_failure_counters(attempts: list[dict[str, Any]]) -> tuple[Counter[
         if provider_code:
             codes[provider_code] += 1
     return classes, codes
+
+
+def _recovery_summary(
+    *,
+    payload: dict[str, Any],
+    provider_failure_classes: Counter[str],
+    provider_error_codes: Counter[str],
+    retry_attempt_count: int,
+) -> dict[str, Any]:
+    provider_failure_count = sum(provider_failure_classes.values())
+    negotiation_attempted = provider_failure_count > 0 and retry_attempt_count > 0
+    negotiation_success = negotiation_attempted and payload.get("success") is True
+    recovered_failure_classes = sorted(provider_failure_classes) if negotiation_success else []
+    return {
+        "provider_failure_count": provider_failure_count,
+        "provider_failure_classes": dict(provider_failure_classes),
+        "provider_error_codes": dict(provider_error_codes),
+        "retry_attempt_count": retry_attempt_count,
+        "negotiation_attempted": negotiation_attempted,
+        "negotiation_success": negotiation_success,
+        "content_moderation_recovered": "content_moderation" in recovered_failure_classes,
+        "recovered_failure_classes": recovered_failure_classes,
+    }
+
+
+def _suite_recovery_summary(case_reports: list[dict[str, Any]]) -> dict[str, Any]:
+    provider_failure_classes: Counter[str] = Counter()
+    provider_error_codes: Counter[str] = Counter()
+    provider_failure_count = 0
+    retry_attempt_count = 0
+    negotiation_attempted_case_count = 0
+    negotiation_success_case_count = 0
+    content_moderation_recovered_case_count = 0
+    recovered_failure_classes: set[str] = set()
+    for case in case_reports:
+        summary = case.get("recovery_summary") if isinstance(case.get("recovery_summary"), dict) else {}
+        provider_failure_count += int(_coerce_score(summary.get("provider_failure_count")) or 0)
+        retry_attempt_count += int(_coerce_score(summary.get("retry_attempt_count")) or 0)
+        provider_failure_classes.update(_counter_from_mapping(summary.get("provider_failure_classes")))
+        provider_error_codes.update(_counter_from_mapping(summary.get("provider_error_codes")))
+        if summary.get("negotiation_attempted") is True:
+            negotiation_attempted_case_count += 1
+        if summary.get("negotiation_success") is True:
+            negotiation_success_case_count += 1
+        if summary.get("content_moderation_recovered") is True:
+            content_moderation_recovered_case_count += 1
+        for failure_class in summary.get("recovered_failure_classes") or []:
+            if isinstance(failure_class, str) and failure_class:
+                recovered_failure_classes.add(failure_class)
+    return {
+        "provider_failure_count": provider_failure_count,
+        "provider_failure_classes": dict(provider_failure_classes),
+        "provider_error_codes": dict(provider_error_codes),
+        "retry_attempt_count": retry_attempt_count,
+        "negotiation_attempted_case_count": negotiation_attempted_case_count,
+        "negotiation_success_case_count": negotiation_success_case_count,
+        "content_moderation_recovered_case_count": content_moderation_recovered_case_count,
+        "recovered_failure_classes": sorted(recovered_failure_classes),
+    }
+
+
+def _counter_from_mapping(value: Any) -> Counter[str]:
+    counter: Counter[str] = Counter()
+    if not isinstance(value, dict):
+        return counter
+    for key, count in value.items():
+        if not isinstance(key, str) or not key:
+            continue
+        counter[key] += int(_coerce_score(count) or 0)
+    return counter
 
 
 def _retry_attempt_count(*, payload: dict[str, Any], attempts: list[dict[str, Any]]) -> int:

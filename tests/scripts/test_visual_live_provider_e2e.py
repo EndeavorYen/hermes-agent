@@ -49,6 +49,74 @@ def test_visual_live_provider_e2e_fixture_records_learning_evidence(tmp_path):
     assert report["evidence"]["judgments_with_learning_metadata"] >= 2
 
 
+def test_visual_live_provider_e2e_suite_aggregates_recovery_summary(monkeypatch, tmp_path):
+    from scripts import visual_live_provider_e2e
+
+    reports = [
+        {
+            "success": True,
+            "failures": [],
+            "payload": {"success": True},
+            "evidence": {
+                "recovery_summary": {
+                    "provider_failure_count": 1,
+                    "provider_failure_classes": {"content_moderation": 1},
+                    "provider_error_codes": {"api_error": 1},
+                    "retry_attempt_count": 1,
+                    "negotiation_attempted": True,
+                    "negotiation_success": True,
+                    "content_moderation_recovered": True,
+                    "recovered_failure_classes": ["content_moderation"],
+                }
+            },
+        },
+        {
+            "success": True,
+            "failures": [],
+            "payload": {"success": True},
+            "evidence": {
+                "recovery_summary": {
+                    "provider_failure_count": 0,
+                    "provider_failure_classes": {},
+                    "provider_error_codes": {},
+                    "retry_attempt_count": 0,
+                    "negotiation_attempted": False,
+                    "negotiation_success": False,
+                    "content_moderation_recovered": False,
+                    "recovered_failure_classes": [],
+                }
+            },
+        },
+    ]
+
+    monkeypatch.setattr(
+        visual_live_provider_e2e,
+        "build_visual_live_provider_e2e_report",
+        lambda **_kwargs: reports.pop(0),
+    )
+
+    suite = visual_live_provider_e2e.build_visual_live_provider_e2e_suite_report(
+        mode="fixture",
+        work_dir=tmp_path,
+        cases=[
+            {"case_id": "fashion_portrait_video"},
+            {"case_id": "product_photo_video"},
+        ],
+    )
+
+    assert suite["success"] is True
+    assert suite["recovery_summary"] == {
+        "provider_failure_count": 1,
+        "provider_failure_classes": {"content_moderation": 1},
+        "provider_error_codes": {"api_error": 1},
+        "retry_attempt_count": 1,
+        "negotiation_attempted_case_count": 1,
+        "negotiation_success_case_count": 1,
+        "content_moderation_recovered_case_count": 1,
+        "recovered_failure_classes": ["content_moderation"],
+    }
+
+
 def test_visual_live_provider_e2e_fails_closed_when_provider_unavailable(monkeypatch, tmp_path):
     from scripts import visual_live_provider_e2e
 
@@ -274,6 +342,114 @@ def test_visual_live_provider_e2e_counts_provider_error_schema_columns():
 
     assert classes["content_moderation"] == 1
     assert codes["api_error"] == 1
+
+
+def test_visual_live_provider_e2e_reports_moderation_recovery_summary(monkeypatch, tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+    from scripts.visual_live_provider_e2e import inspect_visual_e2e_evidence
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ledger = VisualAttemptLedger(default_visual_ledger_path())
+    ledger.initialize()
+    request_id = ledger.record_request(
+        user_prompt="fashion portrait",
+        normalized_intent={"kind": "visual_package"},
+        modality="package",
+        operation="visual_package_generate",
+        status="started",
+    )
+    ledger.record_attempt(
+        request_id=request_id,
+        candidate_index=0,
+        provider="xai-oauth",
+        model="grok-imagine-image-quality",
+        prompt_original="fashion portrait",
+        prompt_mediated="fashion portrait",
+        parameters_requested={},
+        parameters_effective={},
+        status="failed",
+        error_type="api_error",
+        error_message='xAI image generation failed (400): {"error":"Generated image rejected by content moderation."}',
+    )
+    recovered_attempt_id = ledger.record_attempt(
+        request_id=request_id,
+        candidate_index=1,
+        provider="xai",
+        model="grok-imagine-image-quality",
+        prompt_original="policy compliant fashion portrait",
+        prompt_mediated="policy compliant fashion portrait",
+        parameters_requested={},
+        parameters_effective={},
+        status="completed",
+    )
+    artifact_id = ledger.record_artifact(
+        request_id=request_id,
+        attempt_id=recovered_attempt_id,
+        kind="image",
+        local_path=str(tmp_path / "image.jpg"),
+        uri=str(tmp_path / "image.jpg"),
+        content_hash="sha256:recovered-image",
+        mime_type="image/jpeg",
+        is_stable=True,
+        freshness_status="fresh",
+    )
+    ledger.record_judgment(
+        request_id=request_id,
+        attempt_id=recovered_attempt_id,
+        artifact_id=artifact_id,
+        judge_name="visual_quality_judge",
+        score=0.82,
+        verdict="pass",
+        details={
+            "version": "visual_quality_judge.v0.1",
+            "confidence": 0.82,
+            "quality_issues": [],
+            "scores": {"aesthetic_fit": 0.82, "composition": 0.9},
+        },
+        metadata={
+            "intent_signature": "visig_demo",
+            "strategy_signature": "vstrat_demo",
+            "modality": "image",
+        },
+    )
+    ledger.record_ranking(
+        request_id=request_id,
+        selected_artifact_id=artifact_id,
+        decision="post",
+        scores={"reward": {"confidence": 0.82}},
+        metadata={"active_learning": {"action": "auto_post"}},
+    )
+
+    evidence = inspect_visual_e2e_evidence(
+        {
+            "success": True,
+            "visual_request_id": request_id,
+            "images": [str(tmp_path / "image.jpg")],
+            "videos": [],
+            "generation_payloads": {
+                "image": [
+                    {"success": False, "error_type": "api_error"},
+                    {"success": True, "retry_of": 0},
+                ],
+            },
+            "delivery_metadata": {
+                "selected_visual_artifact_ids": [artifact_id],
+            },
+        },
+        require_video=False,
+    )
+
+    assert evidence["recovery_summary"] == {
+        "provider_failure_count": 1,
+        "provider_failure_classes": {"content_moderation": 1},
+        "provider_error_codes": {"api_error": 1},
+        "retry_attempt_count": 1,
+        "negotiation_attempted": True,
+        "negotiation_success": True,
+        "content_moderation_recovered": True,
+        "recovered_failure_classes": ["content_moderation"],
+    }
 
 
 def test_visual_live_provider_e2e_inspects_selected_artifact_quality_gate(monkeypatch, tmp_path):
