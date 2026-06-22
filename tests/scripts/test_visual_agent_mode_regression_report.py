@@ -13,11 +13,15 @@ def test_visual_agent_mode_regression_report_passes_default_fixture_set():
         "image_plus_video_reference",
         "attachment_to_video",
         "text_video_image_first",
+        "storyboard_video",
         "friendly_draw_character",
     }
     assert all("prompt" not in case for case in report["cases"])
     product_case = next(case for case in report["cases"] if case["case_id"] == "image_only_product")
     assert product_case["arguments"]["aspect_ratio"] == "16:9"
+    storyboard_case = next(case for case in report["cases"] if case["case_id"] == "storyboard_video")
+    assert storyboard_case["arguments"]["storyboard_enabled"] is True
+    assert storyboard_case["arguments"]["storyboard_shot_count"] == 3
 
 
 def test_visual_agent_mode_regression_report_flags_broken_image_first_plan(monkeypatch):

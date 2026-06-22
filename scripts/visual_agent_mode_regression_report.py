@@ -20,6 +20,8 @@ class VisualAgentCase:
     expect_reason: str | None = None
     expect_duration: int | None = None
     expect_aspect_ratio: str | None = None
+    expect_storyboard: bool | None = None
+    min_shot_count: int | None = None
 
 
 _CASES: tuple[VisualAgentCase, ...] = (
@@ -51,6 +53,16 @@ _CASES: tuple[VisualAgentCase, ...] = (
         min_candidate_budget=2,
         expect_reason="text_to_video_image_first_request",
         expect_duration=6,
+    ),
+    VisualAgentCase(
+        case_id="storyboard_video",
+        prompt="請做一支 3 段分鏡的連貫產品影片：霧黑鋼筆放在白紙上，柔和窗光。",
+        expect_image=False,
+        expect_video=True,
+        min_candidate_budget=2,
+        expect_reason="storyboard_video_request",
+        expect_storyboard=True,
+        min_shot_count=3,
     ),
     VisualAgentCase(
         case_id="image_only_product",
@@ -116,6 +128,17 @@ def _validate_case(case: VisualAgentCase, plan: dict[str, Any]) -> list[str]:
         failures.append("wrong_duration")
     if case.expect_aspect_ratio is not None and args.get("aspect_ratio") != case.expect_aspect_ratio:
         failures.append("wrong_aspect_ratio")
+    storyboard = args.get("storyboard") if isinstance(args.get("storyboard"), dict) else {}
+    if case.expect_storyboard is not None and bool(storyboard.get("enabled")) is not case.expect_storyboard:
+        failures.append("wrong_storyboard_enabled")
+    if case.min_shot_count is not None:
+        shot_count = storyboard.get("shot_count")
+        if not isinstance(shot_count, int) or shot_count < case.min_shot_count:
+            failures.append(f"shot_count_lt_{case.min_shot_count}")
+        if storyboard.get("source_image_policy") != "one_ranked_image_per_shot":
+            failures.append("wrong_storyboard_source_policy")
+        if storyboard.get("composition_target") != "single_coherent_video":
+            failures.append("wrong_storyboard_composition_target")
     if "autonomy_level" in args:
         failures.append("advanced_autonomy_leaked")
     return failures
@@ -144,6 +167,14 @@ def _summarize_plan(
             "aspect_ratio": args.get("aspect_ratio"),
             "attachment_count": len(args.get("attachments") or []),
             "has_autonomy_level": "autonomy_level" in args,
+            "storyboard_enabled": bool(
+                isinstance(args.get("storyboard"), dict) and args["storyboard"].get("enabled")
+            ),
+            "storyboard_shot_count": (
+                args.get("storyboard", {}).get("shot_count")
+                if isinstance(args.get("storyboard"), dict)
+                else None
+            ),
         },
         "failures": failures,
     }

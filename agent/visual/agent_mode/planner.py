@@ -26,6 +26,25 @@ _IMAGE_TOKENS = (
     "角色設計",
 )
 _VIDEO_TOKENS = ("video", "clip", "motion", "影片", "視頻", "短片", "動畫")
+_STORYBOARD_TOKENS = (
+    "storyboard",
+    "shot list",
+    "multi-shot",
+    "multishot",
+    "sequence",
+    "cinematic sequence",
+    "coherent video",
+    "分鏡",
+    "多鏡頭",
+    "多段",
+    "多幕",
+    "連貫影片",
+    "連貫",
+    "轉場",
+    "剪輯",
+    "合成一支",
+    "組合成",
+)
 _PORTRAIT_ASPECT_TOKENS = (
     "portrait",
     "vertical",
@@ -73,6 +92,7 @@ def plan_visual_agent_request(
     if not wants_image and not wants_video and attachments:
         wants_video = True
     image_first_for_video = wants_video and not wants_image
+    storyboard_video = wants_video and _looks_like_storyboard_request(prompt)
     include_image = wants_image
     should_use_visual_package = wants_image or wants_video
     arguments: dict[str, Any] = {
@@ -87,6 +107,8 @@ def plan_visual_agent_request(
         arguments["candidate_budget_source"] = "planner_default"
     if wants_video:
         arguments["video_budget"] = 1
+    if storyboard_video:
+        arguments["storyboard"] = _build_storyboard_contract(prompt)
     aspect_ratio = _infer_aspect_ratio(prompt)
     if aspect_ratio is not None:
         arguments["aspect_ratio"] = aspect_ratio
@@ -108,6 +130,7 @@ def plan_visual_agent_request(
             wants_video=wants_video,
             attachments=attachments,
             image_first_for_video=image_first_for_video,
+            storyboard_video=storyboard_video,
         ),
     }
 
@@ -142,6 +165,70 @@ def _duration_seconds(value: str) -> int | None:
         return None
     duration = int(match.group(1))
     return max(1, min(30, duration))
+
+
+def _looks_like_storyboard_request(value: str) -> bool:
+    lowered = str(value or "").lower()
+    compact = re.sub(r"\s+", "", lowered)
+    return any(token in lowered for token in _STORYBOARD_TOKENS) or any(
+        token in compact for token in ("三段", "四段", "五段", "六段", "三幕", "四幕", "五幕", "六幕")
+    )
+
+
+def _build_storyboard_contract(value: str) -> dict[str, Any]:
+    shot_count = _storyboard_shot_count(value)
+    return {
+        "enabled": True,
+        "mode": "multi_shot_video",
+        "shot_count": shot_count,
+        "candidate_budget_per_shot": 2,
+        "source_image_policy": "one_ranked_image_per_shot",
+        "composition_target": "single_coherent_video",
+        "delivery_policy": "deliver_composed_video_when_available_else_selected_clips",
+        "shots": _storyboard_shots(shot_count),
+    }
+
+
+def _storyboard_shot_count(value: str) -> int:
+    lowered = str(value or "").lower()
+    match = re.search(r"(\d+)\s*(?:shots?|clips?|scenes?|segments?|段|幕|個分鏡|鏡頭)", lowered)
+    if match:
+        return max(2, min(6, int(match.group(1))))
+    compact = re.sub(r"\s+", "", lowered)
+    chinese_numbers = {
+        "二": 2,
+        "兩": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+    }
+    for text, count in chinese_numbers.items():
+        if any(token in compact for token in (f"{text}段", f"{text}幕", f"{text}個分鏡", f"{text}鏡頭")):
+            return count
+    return 3
+
+
+def _storyboard_shots(shot_count: int) -> list[dict[str, Any]]:
+    roles = [
+        "establishing_context",
+        "subject_focus",
+        "detail_closeup",
+        "motion_variation",
+        "alternate_angle",
+        "closing_hero",
+    ]
+    shots = []
+    for index in range(shot_count):
+        shots.append(
+            {
+                "shot_id": f"shot_{index + 1}",
+                "role": roles[index] if index < len(roles) else "continuity_shot",
+                "source_image_policy": "single_ranked_image",
+                "clip_target": "one_video_clip",
+            }
+        )
+    return shots
 
 
 def _infer_aspect_ratio(value: str) -> str | None:
@@ -204,7 +291,10 @@ def _reason(
     wants_video: bool,
     attachments: list[str],
     image_first_for_video: bool = False,
+    storyboard_video: bool = False,
 ) -> str:
+    if storyboard_video:
+        return "storyboard_video_request"
     if wants_image and wants_video:
         return "image_plus_video_request"
     if wants_video and attachments and image_first_for_video:

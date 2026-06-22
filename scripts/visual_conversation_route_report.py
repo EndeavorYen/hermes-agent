@@ -20,6 +20,8 @@ class ConversationRouteCase:
     expect_video: bool | None = None
     min_candidate_budget: int | None = None
     expect_reason: str | None = None
+    expect_storyboard: bool | None = None
+    min_shot_count: int | None = None
 
 
 _CASES: tuple[ConversationRouteCase, ...] = (
@@ -46,6 +48,16 @@ _CASES: tuple[ConversationRouteCase, ...] = (
         expect_video=True,
         min_candidate_budget=2,
         expect_reason="text_to_video_image_first_request",
+    ),
+    ConversationRouteCase(
+        case_id="friendly_storyboard_video",
+        prompt="請做一支 3 段分鏡的連貫產品影片：霧黑鋼筆放在白紙上，柔和窗光。",
+        expect_image=False,
+        expect_video=True,
+        min_candidate_budget=2,
+        expect_reason="storyboard_video_request",
+        expect_storyboard=True,
+        min_shot_count=3,
     ),
 )
 
@@ -115,6 +127,15 @@ def _validate_case(case: ConversationRouteCase, plan: dict[str, Any]) -> list[st
         candidate_budget = args.get("candidate_budget")
         if not isinstance(candidate_budget, int) or candidate_budget < case.min_candidate_budget:
             failures.append(f"candidate_budget_lt_{case.min_candidate_budget}")
+    storyboard = args.get("storyboard") if isinstance(args.get("storyboard"), dict) else {}
+    if case.expect_storyboard is not None and bool(storyboard.get("enabled")) is not case.expect_storyboard:
+        failures.append("wrong_storyboard_enabled")
+    if case.min_shot_count is not None:
+        shot_count = storyboard.get("shot_count")
+        if not isinstance(shot_count, int) or shot_count < case.min_shot_count:
+            failures.append(f"shot_count_lt_{case.min_shot_count}")
+        if storyboard.get("source_image_policy") != "one_ranked_image_per_shot":
+            failures.append("wrong_storyboard_source_policy")
     if "autonomy_level" in args:
         failures.append("advanced_autonomy_leaked")
     return failures
@@ -143,6 +164,14 @@ def _summarize_case(
             "duration": args.get("duration"),
             "attachment_count": len(args.get("attachments") or []),
             "has_autonomy_level": "autonomy_level" in args,
+            "storyboard_enabled": bool(
+                isinstance(args.get("storyboard"), dict) and args["storyboard"].get("enabled")
+            ),
+            "storyboard_shot_count": (
+                args.get("storyboard", {}).get("shot_count")
+                if isinstance(args.get("storyboard"), dict)
+                else None
+            ),
         },
         "failures": failures,
     }

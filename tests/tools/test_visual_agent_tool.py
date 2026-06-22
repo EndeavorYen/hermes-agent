@@ -78,6 +78,36 @@ async def test_visual_agent_generate_routes_text_only_video_to_image_first(monke
 
 
 @pytest.mark.asyncio
+async def test_visual_agent_generate_passes_storyboard_contract_for_multishot_video(monkeypatch):
+    from tools import visual_agent_tool
+
+    captured = {}
+
+    async def fake_visual_package_generate(args, **kwargs):
+        captured.update(args)
+        return json.dumps({"success": True, "images": [], "videos": ["/tmp/current.mp4"]})
+
+    monkeypatch.setattr(
+        visual_agent_tool,
+        "_handle_visual_package_generate",
+        fake_visual_package_generate,
+    )
+
+    raw = await visual_agent_tool._handle_visual_agent_generate(
+        {"prompt": "請做一支 3 段分鏡的連貫產品影片：霧黑鋼筆放在白紙上，柔和窗光。"}
+    )
+    payload = json.loads(raw)
+
+    assert payload["success"] is True
+    assert payload["visual_agent_plan"]["reason"] == "storyboard_video_request"
+    assert captured["include_image"] is False
+    assert captured["include_video"] is True
+    assert captured["storyboard"]["shot_count"] == 3
+    assert captured["storyboard"]["source_image_policy"] == "one_ranked_image_per_shot"
+    assert payload["visual_agent_plan"]["arguments"]["storyboard"]["composition_target"] == "single_coherent_video"
+
+
+@pytest.mark.asyncio
 async def test_visual_agent_generate_accepts_friendly_draw_character_prompt(monkeypatch):
     from tools import visual_agent_tool
 
@@ -116,3 +146,4 @@ def test_visual_agent_generate_is_registered():
     assert entry.is_async is True
     assert entry.toolset == "image_gen"
     assert "draw/anime/character art" in entry.schema["description"]
+    assert "storyboard/multi-shot" in entry.schema["description"]

@@ -17,7 +17,7 @@ VISUAL_AGENT_SCHEMA: dict[str, Any] = {
         "Use this as the primary entry point when the user asks for images, "
         "videos, image plus video packages, reference-based variations, product "
         "photos, portrait/fashion/glamour visuals, draw/anime/character art prompts, "
-        "or short motion clips without "
+        "storyboard/multi-shot video requests, or short motion clips without "
         "advanced parameters. The tool plans the request, then dispatches to "
         "visual_package_generate so Hermes can generate candidates, rank/select "
         "current artifacts, animate the best image when video is requested, and "

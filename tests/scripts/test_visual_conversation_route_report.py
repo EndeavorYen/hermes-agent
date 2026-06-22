@@ -11,7 +11,11 @@ def test_visual_conversation_route_report_verifies_friendly_agent_entrypoint():
         "friendly_product_image_video",
         "friendly_draw_character",
         "friendly_text_video",
+        "friendly_storyboard_video",
     }
+    storyboard_case = next(case for case in report["cases"] if case["case_id"] == "friendly_storyboard_video")
+    assert storyboard_case["arguments"]["storyboard_enabled"] is True
+    assert storyboard_case["arguments"]["storyboard_shot_count"] == 3
     assert all("prompt" not in case for case in report["cases"])
     assert all(case["arguments"]["has_autonomy_level"] is False for case in report["cases"])
 
