@@ -52,7 +52,7 @@ async def test_visual_agent_generate_routes_text_only_video_to_image_first(monke
 
     async def fake_visual_package_generate(args, **kwargs):
         captured.update(args)
-        return json.dumps({"success": True, "images": [], "videos": ["/tmp/current.mp4"]})
+        return json.dumps({"success": True, "images": ["/tmp/source.png"], "videos": ["/tmp/current.mp4"]})
 
     monkeypatch.setattr(
         visual_agent_tool,
@@ -67,11 +67,12 @@ async def test_visual_agent_generate_routes_text_only_video_to_image_first(monke
 
     assert payload["success"] is True
     assert payload["visual_agent_plan"]["reason"] == "text_to_video_image_first_request"
-    assert captured["include_image"] is False
+    assert captured["include_image"] is True
     assert captured["include_video"] is True
     assert captured["candidate_budget"] == 2
     assert captured["video_budget"] == 1
     assert captured["duration"] == 6
+    assert payload["images"] == ["/tmp/source.png"]
 
 
 def test_visual_agent_generate_is_registered():

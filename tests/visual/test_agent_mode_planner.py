@@ -59,7 +59,7 @@ def test_agent_mode_planner_routes_text_only_video_through_image_first_candidate
     plan = plan_visual_agent_request("幫我產生一段 6 秒時尚短片，主體是霧黑鋼筆")
 
     assert plan["should_use_visual_package"] is True
-    assert plan["arguments"]["include_image"] is False
+    assert plan["arguments"]["include_image"] is True
     assert plan["arguments"]["include_video"] is True
     assert plan["arguments"]["candidate_budget"] == 2
     assert plan["arguments"]["video_budget"] == 1
