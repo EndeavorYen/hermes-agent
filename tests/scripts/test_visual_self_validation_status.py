@@ -55,6 +55,16 @@ def _scheduled_report(*, success=True, live_decision="run"):
             "live_slack_upload_native_delivery_covered": True,
             "live_slack_upload_uploaded_video_file_count": 1,
             "slack_duplicate_delivery_count": 0,
+            "slack_conversation_self_review_decision": "accept",
+            "slack_conversation_self_review_success": True,
+            "slack_conversation_requires_human_feedback": False,
+            "slack_conversation_reduces_human_intervention": True,
+            "slack_conversation_auto_next_action_count": 0,
+            "slack_conversation_quality_gate_success": True,
+            "slack_conversation_provider_failure_count": 0,
+            "slack_conversation_image_first_video_source_covered": True,
+            "slack_conversation_native_video_upload_covered": True,
+            "slack_conversation_blocking_reasons": [],
         },
         "automation": {
             "self_improvement": {
@@ -108,6 +118,11 @@ def test_visual_self_validation_status_summarizes_latest_live_report(tmp_path):
         "fashion_material_quality",
     ]
     assert status["delivery"]["native_video_upload_covered"] is True
+    assert status["conversation"]["self_review_decision"] == "accept"
+    assert status["conversation"]["self_review_success"] is True
+    assert status["conversation"]["requires_human_feedback"] is False
+    assert status["conversation"]["image_first_video_source_covered"] is True
+    assert status["conversation"]["native_video_upload_covered"] is True
     assert status["self_improvement"]["action_types"] == [
         "repair_low_preference_dimension",
         "safe_reframe_provider_retry",
@@ -230,6 +245,37 @@ def test_visual_self_validation_status_accepts_recent_carried_live_burn_on_inter
     assert status["next_steps"] == ["continue_visual_agent_mode_rollout"]
     assert status["self_review"]["reduces_human_intervention"] is True
     assert "D_SECRET" not in json.dumps(status, ensure_ascii=False)
+
+
+def test_visual_self_validation_status_warns_on_slack_conversation_self_review_repair(tmp_path):
+    from scripts.visual_self_validation_status import build_visual_self_validation_status
+
+    report = _scheduled_report()
+    report["summary"]["slack_conversation_self_review_decision"] = "needs_repair"
+    report["summary"]["slack_conversation_self_review_success"] = False
+    report["summary"]["slack_conversation_requires_human_feedback"] = False
+    report["summary"]["slack_conversation_auto_next_action_count"] = 2
+    report["summary"]["slack_conversation_quality_gate_success"] = False
+    report["summary"]["slack_conversation_blocking_reasons"] = ["video_metadata_missing"]
+    report["automation"]["self_improvement"]["next_actions"].append(
+        {
+            "type": "rerank_before_slack",
+            "requires_human_feedback": False,
+            "source": "slack_conversation_e2e",
+        }
+    )
+    latest_path = _write_latest(tmp_path, report)
+
+    status = build_visual_self_validation_status(latest_path=latest_path)
+
+    assert status["success"] is False
+    assert status["health_status"] == "warn"
+    assert status["conversation"]["self_review_decision"] == "needs_repair"
+    assert status["conversation"]["self_review_success"] is False
+    assert status["conversation"]["requires_human_feedback"] is False
+    assert status["conversation"]["blocking_reasons"] == ["video_metadata_missing"]
+    assert "apply_slack_conversation_self_review_actions" in status["next_steps"]
+    assert "rerank_before_slack" in status["self_improvement"]["action_types"]
 
 
 def test_visual_self_validation_status_warns_on_live_quality_trend_degradation(tmp_path):

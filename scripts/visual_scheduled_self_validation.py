@@ -153,6 +153,16 @@ def _summary(automation: dict[str, Any], live_quality_trends: dict[str, Any] | N
     quality_gate = live_evidence.get("quality_gate") if isinstance(live_evidence.get("quality_gate"), dict) else {}
     slack_delivery = automation.get("slack_delivery") if isinstance(automation.get("slack_delivery"), dict) else {}
     delivery = slack_delivery.get("delivery") if isinstance(slack_delivery.get("delivery"), dict) else {}
+    slack_conversation = (
+        automation.get("slack_conversation")
+        if isinstance(automation.get("slack_conversation"), dict)
+        else {}
+    )
+    slack_conversation_self_review = (
+        slack_conversation.get("self_review")
+        if isinstance(slack_conversation.get("self_review"), dict)
+        else {}
+    )
     live_slack_delivery = (
         automation.get("live_slack_delivery")
         if isinstance(automation.get("live_slack_delivery"), dict)
@@ -238,6 +248,45 @@ def _summary(automation: dict[str, Any], live_quality_trends: dict[str, Any] | N
     )
     return {
         "feedback_action_types": feedback_action_types,
+        "slack_conversation_self_review_decision": slack_conversation_self_review.get("decision"),
+        "slack_conversation_self_review_success": slack_conversation_self_review.get("success")
+        if "success" in slack_conversation_self_review
+        else None,
+        "slack_conversation_requires_human_feedback": slack_conversation_self_review.get(
+            "requires_human_feedback"
+        )
+        if "requires_human_feedback" in slack_conversation_self_review
+        else None,
+        "slack_conversation_reduces_human_intervention": slack_conversation_self_review.get(
+            "reduces_human_intervention"
+        )
+        if "reduces_human_intervention" in slack_conversation_self_review
+        else None,
+        "slack_conversation_auto_next_action_count": _int(
+            slack_conversation_self_review.get("auto_next_action_count")
+        ),
+        "slack_conversation_action_types": _list(slack_conversation_self_review.get("action_types")),
+        "slack_conversation_quality_gate_success": slack_conversation_self_review.get(
+            "quality_gate_success"
+        )
+        if "quality_gate_success" in slack_conversation_self_review
+        else None,
+        "slack_conversation_provider_failure_count": _int(
+            slack_conversation_self_review.get("provider_failure_count")
+        ),
+        "slack_conversation_image_first_video_source_covered": slack_conversation_self_review.get(
+            "image_first_video_source_covered"
+        )
+        if "image_first_video_source_covered" in slack_conversation_self_review
+        else None,
+        "slack_conversation_native_video_upload_covered": slack_conversation_self_review.get(
+            "native_video_upload_covered"
+        )
+        if "native_video_upload_covered" in slack_conversation_self_review
+        else None,
+        "slack_conversation_blocking_reasons": _list(
+            slack_conversation_self_review.get("blocking_reasons")
+        ),
         "live_quality_gate_success": quality_gate.get("success"),
         "live_quality_gate_min_score": quality_gate.get("min_score"),
         "slack_sent_count": slack_sent_count,

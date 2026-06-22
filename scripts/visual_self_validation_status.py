@@ -140,6 +140,28 @@ def build_visual_self_validation_status(
                 summary.get("slack_internal_source_image_delivery_count")
             ),
         },
+        "conversation": {
+            "self_review_decision": summary.get("slack_conversation_self_review_decision"),
+            "self_review_success": summary.get("slack_conversation_self_review_success"),
+            "requires_human_feedback": summary.get("slack_conversation_requires_human_feedback"),
+            "reduces_human_intervention": summary.get(
+                "slack_conversation_reduces_human_intervention"
+            ),
+            "auto_next_action_count": _optional_int(
+                summary.get("slack_conversation_auto_next_action_count")
+            ),
+            "quality_gate_success": summary.get("slack_conversation_quality_gate_success"),
+            "provider_failure_count": _optional_int(
+                summary.get("slack_conversation_provider_failure_count")
+            ),
+            "image_first_video_source_covered": summary.get(
+                "slack_conversation_image_first_video_source_covered"
+            ),
+            "native_video_upload_covered": summary.get(
+                "slack_conversation_native_video_upload_covered"
+            ),
+            "blocking_reasons": _strings(summary.get("slack_conversation_blocking_reasons")),
+        },
         "self_improvement": {
             "action_types": action_types,
             "action_count": len(action_types),
@@ -184,7 +206,12 @@ def _sanitise_slack_upload_policy(value: Any) -> dict[str, Any]:
 
 def _action_types(summary: dict[str, Any], actions: list[dict[str, Any]]) -> list[str]:
     values: list[str] = []
-    for key in ("live_quality_burn_action_types", "live_quality_trend_action_types", "feedback_action_types"):
+    for key in (
+        "live_quality_burn_action_types",
+        "live_quality_trend_action_types",
+        "feedback_action_types",
+        "slack_conversation_action_types",
+    ):
         values.extend(_strings(summary.get(key)))
     for action in actions:
         if action.get("requires_human_feedback") is True:
@@ -260,6 +287,11 @@ def _next_steps(
         steps.append("fix_internal_source_image_delivery")
     if summary.get("live_slack_upload_native_delivery_covered") is False:
         steps.append("verify_slack_native_uploads")
+    if summary.get("slack_conversation_self_review_success") is False:
+        if summary.get("slack_conversation_requires_human_feedback") is True:
+            steps.append("review_slack_conversation_self_review_blocker")
+        else:
+            steps.append("apply_slack_conversation_self_review_actions")
     if (
         live_e2e_ran
         and summary.get("live_slack_upload_native_delivery_covered") is None

@@ -62,6 +62,23 @@ def _automation_report(*, include_live: bool, include_live_slack_upload: bool = 
             },
             "failures": [],
         },
+        "slack_conversation": {
+            "success": True,
+            "self_review": {
+                "success": True,
+                "decision": "accept",
+                "requires_human_feedback": False,
+                "reduces_human_intervention": True,
+                "auto_next_action_count": 0,
+                "action_types": [],
+                "quality_gate_success": True,
+                "provider_failure_count": 0,
+                "image_first_video_source_covered": True,
+                "native_video_upload_covered": include_live_slack_upload,
+                "blocking_reasons": [],
+            },
+            "next_actions": [],
+        },
         "fixture_quality_suite": {
             "success": True,
             "case_count": 3,
@@ -249,6 +266,11 @@ def test_scheduled_self_validation_defaults_to_fixture_and_writes_reports(monkey
     ]
     assert report["summary"]["scheduled_self_validation_reduces_human_intervention"] is True
     assert report["summary"]["autonomous_rollout_reduces_human_intervention"] is True
+    assert report["summary"]["slack_conversation_self_review_decision"] == "accept"
+    assert report["summary"]["slack_conversation_self_review_success"] is True
+    assert report["summary"]["slack_conversation_requires_human_feedback"] is False
+    assert report["summary"]["slack_conversation_reduces_human_intervention"] is True
+    assert report["summary"]["slack_conversation_image_first_video_source_covered"] is True
     assert report["summary"]["fixture_quality_suite_success"] is True
     assert report["summary"]["fixture_quality_suite_case_count"] == 3
     assert report["summary"]["closed_loop_regression_success"] is True
@@ -289,6 +311,66 @@ def test_scheduled_self_validation_tracks_internal_source_image_delivery(monkeyp
     assert report["summary"]["slack_internal_source_image_delivery_count"] == 1
     assert report["summary"]["slack_internal_source_image_artifact_ids"] == ["var_source"]
     assert report["summary"]["scheduled_self_validation_reduces_human_intervention"] is False
+
+
+def test_scheduled_self_validation_tracks_slack_conversation_self_review_actions(monkeypatch, tmp_path):
+    from scripts import visual_scheduled_self_validation
+
+    def fake_automation(*, work_dir, include_live, include_live_slack_upload=False):
+        report = _automation_report(
+            include_live=include_live,
+            include_live_slack_upload=include_live_slack_upload,
+        )
+        report["slack_conversation"]["success"] = True
+        report["slack_conversation"]["self_review"] = {
+            "success": False,
+            "decision": "needs_repair",
+            "requires_human_feedback": False,
+            "reduces_human_intervention": True,
+            "auto_next_action_count": 2,
+            "action_types": ["increase_candidate_budget", "rerank_before_slack"],
+            "quality_gate_success": False,
+            "provider_failure_count": 0,
+            "image_first_video_source_covered": True,
+            "native_video_upload_covered": False,
+            "blocking_reasons": ["video_metadata_missing"],
+        }
+        report["slack_conversation"]["next_actions"] = [
+            {
+                "type": "increase_candidate_budget",
+                "requires_human_feedback": False,
+                "source": "slack_conversation_e2e",
+            },
+            {
+                "type": "rerank_before_slack",
+                "requires_human_feedback": False,
+                "source": "slack_conversation_e2e",
+            },
+        ]
+        report["self_improvement"] = {
+            "next_actions": report["slack_conversation"]["next_actions"],
+            "reduces_human_intervention": True,
+        }
+        return report
+
+    monkeypatch.setattr(
+        visual_scheduled_self_validation,
+        "build_visual_e2e_automation_report",
+        fake_automation,
+    )
+
+    report = visual_scheduled_self_validation.build_visual_scheduled_self_validation_report(
+        output_dir=tmp_path,
+        now=datetime(2026, 6, 22, 4, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["summary"]["slack_conversation_self_review_decision"] == "needs_repair"
+    assert report["summary"]["slack_conversation_self_review_success"] is False
+    assert report["summary"]["slack_conversation_requires_human_feedback"] is False
+    assert report["summary"]["slack_conversation_auto_next_action_count"] == 2
+    assert report["summary"]["slack_conversation_blocking_reasons"] == ["video_metadata_missing"]
+    assert "increase_candidate_budget" in report["summary"]["feedback_action_types"]
+    assert "rerank_before_slack" in report["summary"]["feedback_action_types"]
 
 
 def test_scheduled_self_validation_runs_live_when_due(monkeypatch, tmp_path):
