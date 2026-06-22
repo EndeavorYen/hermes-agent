@@ -272,6 +272,70 @@ def test_scheduled_self_validation_runs_live_when_due(monkeypatch, tmp_path):
     assert state["last_live_run_at"] == "2026-06-22T08:00:00+00:00"
 
 
+def test_scheduled_self_validation_live_mode_on_forces_live_without_env_gate(monkeypatch, tmp_path):
+    from scripts import visual_scheduled_self_validation
+
+    calls = []
+
+    def fake_automation(*, work_dir, include_live, include_live_slack_upload=False):
+        calls.append(
+            {
+                "work_dir": work_dir,
+                "include_live": include_live,
+                "include_live_slack_upload": include_live_slack_upload,
+            }
+        )
+        return _automation_report(
+            include_live=include_live,
+            include_live_slack_upload=include_live_slack_upload,
+        )
+
+    monkeypatch.setattr(
+        visual_scheduled_self_validation,
+        "build_visual_e2e_automation_report",
+        fake_automation,
+    )
+
+    report = visual_scheduled_self_validation.build_visual_scheduled_self_validation_report(
+        output_dir=tmp_path,
+        live_mode="on",
+        live_enabled=False,
+        now=datetime(2026, 6, 22, 8, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["live_policy"] == {"mode": "on", "decision": "run", "live_enabled": True}
+    assert calls == [{"work_dir": tmp_path / "work", "include_live": True, "include_live_slack_upload": False}]
+    assert report["mode"] == "fixture+live"
+    assert report["self_review"]["live_e2e_requires_opt_in"] is False
+
+
+def test_scheduled_self_validation_auto_still_requires_live_env_gate(monkeypatch, tmp_path):
+    from scripts import visual_scheduled_self_validation
+
+    calls = []
+    monkeypatch.setattr(
+        visual_scheduled_self_validation,
+        "build_visual_e2e_automation_report",
+        lambda *, work_dir, include_live, include_live_slack_upload=False: (
+            calls.append({"include_live": include_live, "include_live_slack_upload": include_live_slack_upload})
+            or _automation_report(
+                include_live=include_live,
+                include_live_slack_upload=include_live_slack_upload,
+            )
+        ),
+    )
+
+    report = visual_scheduled_self_validation.build_visual_scheduled_self_validation_report(
+        output_dir=tmp_path,
+        live_mode="auto",
+        live_enabled=False,
+        now=datetime(2026, 6, 22, 8, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["live_policy"] == {"mode": "auto", "decision": "skip_not_enabled", "live_enabled": False}
+    assert calls == [{"include_live": False, "include_live_slack_upload": False}]
+
+
 def test_scheduled_self_validation_summarizes_quality_repair_coverage(monkeypatch, tmp_path):
     from scripts import visual_scheduled_self_validation
 

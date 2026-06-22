@@ -93,10 +93,10 @@ def _live_policy(
         mode = "off"
     if mode == "off":
         return {"mode": mode, "decision": "not_requested", "live_enabled": live_enabled}
-    if not live_enabled:
-        return {"mode": mode, "decision": "skip_not_enabled", "live_enabled": False}
     if mode == "on":
         return {"mode": mode, "decision": "run", "live_enabled": True}
+    if not live_enabled:
+        return {"mode": mode, "decision": "skip_not_enabled", "live_enabled": False}
 
     last_live_run_at = _parse_datetime(state.get("last_live_run_at"))
     if last_live_run_at is None:
