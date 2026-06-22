@@ -38,16 +38,19 @@ def resolve_visual_feedback_policy(
     }
     strategy_preference: dict[str, Any] | None = None
     applied_action_types: list[str] = []
+    applied_action_sources: list[str] = []
     repair_dimensions: list[dict[str, str]] = []
 
     for action in _next_actions(feedback_report):
         action_type = str(action.get("type") or "")
+        action_source = _action_source(action)
         if action_type == "increase_candidate_budget":
             value = _int(action.get("max_candidate_budget"))
             if wants_image and not budget_locked_by_user and value is not None and value > candidate_budget:
                 candidate_budget = _clamp(value, minimum=candidate_budget, maximum=MAX_CANDIDATE_BUDGET)
-                candidate_budget_source = "feedback_loop"
+                candidate_budget_source = action_source
                 _append_once(applied_action_types, action_type)
+                _append_once(applied_action_sources, action_source)
         elif action_type == "prefer_image_first_video" and wants_video:
             prefer_image_first_video = True
             rerank_before_delivery = True
@@ -57,37 +60,43 @@ def resolve_visual_feedback_policy(
                     minimum=1,
                     maximum=MAX_CANDIDATE_BUDGET,
                 )
-                candidate_budget_source = "feedback_loop" if not budget_locked_by_user else "user"
+                candidate_budget_source = action_source if not budget_locked_by_user else "user"
             _append_once(applied_action_types, action_type)
+            _append_once(applied_action_sources, action_source)
         elif action_type == "rerank_before_slack":
             rerank_before_delivery = True
             _append_once(applied_action_types, action_type)
+            _append_once(applied_action_sources, action_source)
         elif action_type == "prefer_quality_repair_retry":
             quality_repair_mode = "preferred"
             _set_quality_repair_mode(quality_repair_modes, action, "preferred")
             _append_once(applied_action_types, action_type)
+            _append_once(applied_action_sources, action_source)
         elif action_type == "escalate_quality_repair_strategy":
             value = _int(action.get("max_candidate_budget"))
             if not budget_locked_by_user and value is not None and value > candidate_budget:
                 candidate_budget = _clamp(value, minimum=candidate_budget, maximum=MAX_CANDIDATE_BUDGET)
-                candidate_budget_source = "feedback_loop"
+                candidate_budget_source = action_source
             quality_repair_mode = "escalated"
             _set_quality_repair_mode(quality_repair_modes, action, "escalated")
             _append_once(applied_action_types, action_type)
+            _append_once(applied_action_sources, action_source)
         elif action_type == "repair_low_preference_dimension":
             if not budget_locked_by_user and candidate_budget < 2:
                 candidate_budget = 2
-                candidate_budget_source = "feedback_loop"
+                candidate_budget_source = action_source
             rerank_before_delivery = True
             quality_repair_mode = "preferred"
             _set_quality_repair_mode(quality_repair_modes, action, "preferred")
             _append_once(applied_action_types, action_type)
+            _append_once(applied_action_sources, action_source)
             _append_repair_dimension(repair_dimensions, action)
         elif action_type == "safe_reframe_provider_retry":
             provider_recovery_mode = "safe_reframe"
             provider_retry_budget = 2
             provider_failure_context = _provider_failure_context(action)
             _append_once(applied_action_types, action_type)
+            _append_once(applied_action_sources, action_source)
         elif action_type == "prefer_strategy":
             preference = _strategy_preference(action)
             if preference:
@@ -103,6 +112,7 @@ def resolve_visual_feedback_policy(
                         candidate_budget = 2
                         candidate_budget_source = "feedback_loop"
                 _append_once(applied_action_types, action_type)
+                _append_once(applied_action_sources, action_source)
 
     return {
         "candidate_budget": candidate_budget,
@@ -117,6 +127,7 @@ def resolve_visual_feedback_policy(
         "strategy_preference": strategy_preference,
         "repair_dimensions": repair_dimensions,
         "applied_action_types": applied_action_types,
+        "applied_action_sources": applied_action_sources,
         "policy_sources": _string_list(feedback_report.get("policy_sources")) or ["feedback_loop"],
     }
 
@@ -161,6 +172,9 @@ def _append_repair_dimension(values: list[dict[str, str]], action: dict[str, Any
         "quality_issue": str(action.get("quality_issue") or "").strip(),
         "repair_hint": str(action.get("repair_hint") or "").strip(),
     }
+    action_source = _action_source(action)
+    if action_source == "live_quality_trends":
+        entry["source"] = action_source
     if any(item.get("dimension") == dimension for item in values):
         return
     values.append(entry)
@@ -186,6 +200,11 @@ def _provider_failure_context(action: dict[str, Any]) -> dict[str, dict[str, int
         "provider_failure_classes": _int_mapping(action.get("provider_failure_classes")),
         "provider_error_codes": _int_mapping(action.get("provider_error_codes")),
     }
+
+
+def _action_source(action: dict[str, Any]) -> str:
+    source = str(action.get("source") or "").strip()
+    return source or "feedback_loop"
 
 
 def _action_modalities(action: dict[str, Any]) -> list[str]:

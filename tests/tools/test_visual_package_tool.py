@@ -2103,6 +2103,114 @@ async def test_visual_package_applies_preference_dimension_guidance_from_self_va
 
 
 @pytest.mark.asyncio
+async def test_visual_package_applies_live_quality_trend_actions_with_source(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
+    latest_report.parent.mkdir(parents=True)
+    latest_report.write_text(
+        json.dumps(
+            {
+                "success": True,
+                "automation": {
+                    "self_improvement": {
+                        "next_actions": [
+                            {
+                                "type": "increase_candidate_budget",
+                                "requires_human_feedback": False,
+                                "activation_status": "next_run",
+                                "source": "live_quality_trends",
+                                "max_candidate_budget": 4,
+                            },
+                            {
+                                "type": "prefer_image_first_video",
+                                "requires_human_feedback": False,
+                                "activation_status": "next_run",
+                                "source": "live_quality_trends",
+                            },
+                            {
+                                "type": "repair_low_preference_dimension",
+                                "requires_human_feedback": False,
+                                "activation_status": "next_run",
+                                "source": "live_quality_trends",
+                                "dimension": "fashion_material_quality",
+                                "quality_issue": "stockings_bad",
+                                "repair_hint": "improve_fashion_material_quality",
+                            },
+                        ]
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    image = tmp_path / "image.png"
+    video = tmp_path / "video.mp4"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    video.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+    image_calls = []
+    video_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(image),
+            "provider": "fixture",
+            "model": "image",
+            "vision_observation": {
+                "face_quality": 0.9,
+                "fashion_material_quality": 0.9,
+                "visual_appeal": 0.9,
+                "composition": 0.9,
+            },
+        }
+
+    def fake_generate_video(**kwargs):
+        video_calls.append(kwargs)
+        return {
+            "success": True,
+            "video": str(video),
+            "provider": "fixture",
+            "model": "video",
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+    monkeypatch.setattr(visual_package_tool, "generate_video", fake_generate_video)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "請產出一段短影片：時尚寫真。",
+                "include_video": True,
+                "video_budget": 1,
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert len(image_calls) == 4
+    assert len(video_calls) == 1
+    assert payload["generation_strategy"]["image_first_for_video"] is True
+    assert payload["generation_strategy"]["candidate_budget"] == 4
+    assert payload["generation_strategy"]["candidate_budget_source"] == "live_quality_trends"
+    assert payload["generation_strategy"]["feedback_policy"]["applied_action_sources"] == [
+        "live_quality_trends"
+    ]
+    assert payload["generation_strategy"]["feedback_policy"]["repair_dimensions"] == [
+        {
+            "dimension": "fashion_material_quality",
+            "quality_issue": "stockings_bad",
+            "repair_hint": "improve_fashion_material_quality",
+            "source": "live_quality_trends",
+        }
+    ]
+    assert "fashion_material_quality" in image_calls[0]["prompt"]
+
+
+@pytest.mark.asyncio
 async def test_visual_package_applies_safe_reframe_retry_budget_from_self_validation(monkeypatch, tmp_path):
     from tools import visual_package_tool
 

@@ -46,6 +46,55 @@ def test_feedback_policy_applies_next_actions_to_runtime_strategy():
     ]
 
 
+def test_feedback_policy_preserves_live_quality_trend_action_source():
+    from agent.visual.feedback_policy import resolve_visual_feedback_policy
+
+    policy = resolve_visual_feedback_policy(
+        {
+            "next_actions": [
+                {
+                    "type": "increase_candidate_budget",
+                    "source": "live_quality_trends",
+                    "max_candidate_budget": 4,
+                    "requires_human_feedback": False,
+                },
+                {
+                    "type": "prefer_image_first_video",
+                    "source": "live_quality_trends",
+                    "requires_human_feedback": False,
+                },
+                {
+                    "type": "repair_low_preference_dimension",
+                    "source": "live_quality_trends",
+                    "dimension": "fashion_material_quality",
+                    "quality_issue": "stockings_bad",
+                    "repair_hint": "improve_fashion_material_quality",
+                    "requires_human_feedback": False,
+                },
+            ],
+            "policy_sources": ["feedback_loop", "scheduled_self_validation"],
+        },
+        wants_image=True,
+        wants_video=True,
+        explicit_candidate_budget=None,
+        default_candidate_budget=1,
+    )
+
+    assert policy["candidate_budget"] == 4
+    assert policy["candidate_budget_source"] == "live_quality_trends"
+    assert policy["prefer_image_first_video"] is True
+    assert policy["rerank_before_delivery"] is True
+    assert policy["repair_dimensions"] == [
+        {
+            "dimension": "fashion_material_quality",
+            "quality_issue": "stockings_bad",
+            "repair_hint": "improve_fashion_material_quality",
+            "source": "live_quality_trends",
+        }
+    ]
+    assert policy["applied_action_sources"] == ["live_quality_trends"]
+
+
 def test_feedback_policy_exposes_preferred_strategy_without_prompt_mutation():
     from agent.visual.feedback_policy import resolve_visual_feedback_policy
 
