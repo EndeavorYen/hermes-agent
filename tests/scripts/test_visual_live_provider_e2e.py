@@ -1,6 +1,34 @@
 import json
 
 
+def test_visual_live_provider_e2e_leaves_candidate_budget_to_feedback_policy_by_default(monkeypatch, tmp_path):
+    from scripts import visual_live_provider_e2e
+
+    captured = {}
+
+    def fake_package(args):
+        captured.update(args)
+        return {
+            "success": True,
+            "visual_request_id": "",
+            "images": [str(tmp_path / "image.png")],
+            "videos": [str(tmp_path / "video.mp4")],
+            "generation_payloads": {
+                "image": {"success": True, "provider": "xai", "model": "image"},
+                "video": {"success": True, "provider": "xai", "model": "video"},
+            },
+        }
+
+    monkeypatch.setattr(visual_live_provider_e2e, "run_visual_package", fake_package)
+
+    visual_live_provider_e2e.build_visual_live_provider_e2e_report(
+        mode="fixture",
+        work_dir=tmp_path,
+    )
+
+    assert "candidate_budget" not in captured
+
+
 def test_visual_live_provider_e2e_fixture_records_learning_evidence(tmp_path):
     from scripts.visual_live_provider_e2e import build_visual_live_provider_e2e_report
 

@@ -15,6 +15,7 @@ from agent.visual.aspect_policy import select_video_aspect_ratio
 from agent.visual.attempt_ledger import VisualAttemptLedger
 from agent.visual.autonomous_orchestration import build_post_generation_orchestration
 from agent.visual.autonomous_validation import validate_visual_generation_payload
+from agent.visual.feedback_policy import resolve_visual_feedback_policy
 from agent.visual.intent_signature import build_intent_signature
 from agent.visual.judges.deterministic import judge_artifact
 from agent.visual.judges.quality import judge_visual_quality
@@ -188,7 +189,13 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         requested_image = True
         should_generate_image = True
         wants_video = True
-    candidate_budget, candidate_budget_source = _candidate_budget(args, wants_image=should_generate_image)
+    feedback_policy = _visual_feedback_policy(
+        args,
+        wants_image=should_generate_image,
+        wants_video=wants_video,
+    )
+    candidate_budget = int(feedback_policy.get("candidate_budget") or 0)
+    candidate_budget_source = str(feedback_policy.get("candidate_budget_source") or "default")
     video_budget = _video_budget(args, wants_video=wants_video)
     inline_vision_judge = _inline_vision_judge_mode(args)
     normalized_intent = {
@@ -351,7 +358,11 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         image_gate = _delivery_gate_decision(image_learning, selected_image, prompt=prompt)
         delivery_gate["image"] = image_gate
         if selected_image and not image_gate["allowed"]:
-            repair_prompt = _quality_repair_prompt(prompt, image_gate)
+            repair_prompt = _quality_repair_prompt(
+                prompt,
+                image_gate,
+                mode=str(feedback_policy.get("quality_repair_mode") or "default"),
+            )
             repair_kwargs = {
                 "prompt": repair_prompt,
                 "aspect_ratio": image_aspect_ratio,
@@ -362,6 +373,8 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             repair_payload["quality_repair"] = {
                 "reason": image_gate.get("reason"),
                 "quality_issues": image_gate.get("quality_issues", []),
+                "policy_mode": feedback_policy.get("quality_repair_mode"),
+                "policy_actions": feedback_policy.get("applied_action_types", []),
             }
             image_payloads.append(repair_payload)
             if not repair_payload.get("success"):
@@ -626,6 +639,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             "candidate_budget": candidate_budget,
             "candidate_budget_source": candidate_budget_source,
             "video_budget": video_budget,
+            "feedback_policy": feedback_policy,
         },
         "delivery_metadata": delivery_metadata,
         "generation_payloads": generation_payloads,
@@ -1033,7 +1047,7 @@ def _blocking_quality_issues(issues: list[str], *, prompt: str) -> tuple[list[st
     return blocking, ignored
 
 
-def _quality_repair_prompt(prompt: str, gate: dict[str, Any]) -> str:
+def _quality_repair_prompt(prompt: str, gate: dict[str, Any], *, mode: str = "default") -> str:
     issues = _string_list(gate.get("quality_issues"))
     instructions: list[str] = []
     if "subject_not_attractive" in issues or "not_beautiful" in issues:
@@ -1047,9 +1061,17 @@ def _quality_repair_prompt(prompt: str, gate: dict[str, Any]) -> str:
     if not instructions:
         instructions.append("improve visual quality while preserving the original intent")
     repair = "; ".join(instructions)
+    if mode == "preferred":
+        policy_instruction = "Proven quality repair strategy: reuse the historically successful repair pattern. "
+    elif mode == "escalated":
+        policy_instruction = (
+            "Escalated quality repair strategy: change the composition path instead of repeating the failed draft. "
+        )
+    else:
+        policy_instruction = ""
     return (
         f"{prompt}\n\n"
-        "Quality repair pass: "
+        f"{policy_instruction}Quality repair pass: "
         f"{repair}. Avoid distorted anatomy, awkward face rendering, weak composition, "
         "and low-quality surface detail."
     )
@@ -1211,34 +1233,26 @@ def _candidate_visual_source(candidate: dict[str, Any]) -> str:
     return ""
 
 
-def _candidate_budget(args: dict[str, Any], *, wants_image: bool) -> tuple[int, str]:
-    if not wants_image:
-        return 0, "not_requested"
-    value = _coerce_int(args.get("candidate_budget"))
-    if value is not None:
-        return _clamp_budget(value, minimum=1, maximum=4), "user"
-    default_budget = 2
-    feedback_budget = _candidate_budget_from_feedback_loop(default_budget)
-    if feedback_budget > default_budget:
-        return feedback_budget, "feedback_loop"
-    return default_budget, "default"
-
-
-def _candidate_budget_from_feedback_loop(default_budget: int) -> int:
+def _visual_feedback_policy(
+    args: dict[str, Any],
+    *,
+    wants_image: bool,
+    wants_video: bool,
+) -> dict[str, Any]:
     try:
         from scripts.visual_feedback_loop_report import build_visual_feedback_loop_report
 
         report = build_visual_feedback_loop_report(default_visual_ledger_path())
     except Exception as exc:  # noqa: BLE001 - feedback loop must never block generation
-        logger.debug("visual feedback loop candidate budget unavailable: %s", exc)
-        return default_budget
-    for action in report.get("next_actions", []):
-        if not isinstance(action, dict) or action.get("type") != "increase_candidate_budget":
-            continue
-        value = _coerce_int(action.get("max_candidate_budget"))
-        if value is not None:
-            return _clamp_budget(value, minimum=default_budget, maximum=4)
-    return default_budget
+        logger.debug("visual feedback loop policy unavailable: %s", exc)
+        report = {"next_actions": []}
+    return resolve_visual_feedback_policy(
+        report,
+        wants_image=wants_image,
+        wants_video=wants_video,
+        explicit_candidate_budget=_coerce_int(args.get("candidate_budget")),
+        default_candidate_budget=2,
+    )
 
 
 def _video_budget(args: dict[str, Any], *, wants_video: bool) -> int:

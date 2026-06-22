@@ -40,7 +40,7 @@ def build_visual_live_provider_e2e_report(
     mode: str = "live",
     work_dir: str | Path | None = None,
     prompt: str = DEFAULT_PROMPT,
-    candidate_budget: int = 1,
+    candidate_budget: int | None = None,
     video_budget: int = 1,
     duration: int = 4,
     require_video: bool = True,
@@ -71,16 +71,16 @@ def build_visual_live_provider_e2e_report(
 
     with _hermes_home_context(work_dir):
         with _fixture_provider_context(mode, work_dir):
-            payload = run_visual_package(
-                {
-                    "prompt": prompt,
-                    "include_video": require_video,
-                    "candidate_budget": candidate_budget,
-                    "video_budget": video_budget,
-                    "duration": duration,
-                    "aspect_ratio": "1:1",
-                }
-            )
+            package_args = {
+                "prompt": prompt,
+                "include_video": require_video,
+                "video_budget": video_budget,
+                "duration": duration,
+                "aspect_ratio": "1:1",
+            }
+            if candidate_budget is not None:
+                package_args["candidate_budget"] = candidate_budget
+            payload = run_visual_package(package_args)
         evidence = inspect_visual_e2e_evidence(
             payload,
             require_video=require_video,
@@ -196,7 +196,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mode", choices=["live", "fixture"], default="live")
     parser.add_argument("--work-dir", type=Path, default=None)
     parser.add_argument("--prompt", default=DEFAULT_PROMPT)
-    parser.add_argument("--candidate-budget", type=int, default=1)
+    parser.add_argument("--candidate-budget", type=int, default=None)
     parser.add_argument("--video-budget", type=int, default=1)
     parser.add_argument("--duration", type=int, default=4)
     parser.add_argument("--no-video", action="store_true")
