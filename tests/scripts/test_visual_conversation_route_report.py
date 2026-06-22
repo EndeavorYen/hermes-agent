@@ -1,3 +1,8 @@
+import os
+import subprocess
+import sys
+
+
 def test_visual_conversation_route_report_verifies_friendly_agent_entrypoint():
     from scripts.visual_conversation_route_report import build_visual_conversation_route_report
 
@@ -11,6 +16,7 @@ def test_visual_conversation_route_report_verifies_friendly_agent_entrypoint():
         "friendly_product_image_video",
         "friendly_draw_character",
         "friendly_text_video",
+        "friendly_move_attachment_video",
         "friendly_storyboard_video",
     }
     storyboard_case = next(case for case in report["cases"] if case["case_id"] == "friendly_storyboard_video")
@@ -42,3 +48,20 @@ def test_visual_conversation_route_report_cli_json(capsys):
 
     assert code == 0
     assert '"success": true' in capsys.readouterr().out
+
+
+def test_visual_conversation_route_report_script_runs_directly_from_repo_root():
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+
+    result = subprocess.run(
+        [sys.executable, "scripts/visual_conversation_route_report.py", "--json"],
+        cwd=os.getcwd(),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert '"success": true' in result.stdout

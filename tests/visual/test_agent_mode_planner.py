@@ -71,6 +71,34 @@ def test_agent_mode_planner_routes_video_only_request():
     assert plan["reason"] == "attachment_to_video_image_first_request"
 
 
+def test_agent_mode_planner_routes_move_this_image_as_attachment_video():
+    from agent.visual.agent_mode.planner import plan_visual_agent_request
+
+    plan = plan_visual_agent_request("讓這張圖動起來，做成 6 秒自然鏡頭", attachments=["/tmp/ref.png"])
+
+    assert plan["should_use_visual_package"] is True
+    assert plan["arguments"]["include_image"] is False
+    assert plan["arguments"]["include_video"] is True
+    assert plan["arguments"]["candidate_budget"] == 2
+    assert plan["arguments"]["candidate_budget_source"] == "planner_default"
+    assert plan["arguments"]["duration"] == 6
+    assert plan["reason"] == "attachment_to_video_image_first_request"
+
+
+def test_agent_mode_planner_routes_english_animate_request_as_image_first_video():
+    from agent.visual.agent_mode.planner import plan_visual_agent_request
+
+    plan = plan_visual_agent_request("Animate this image into a 5 second natural product shot", attachments=["/tmp/ref.png"])
+
+    assert plan["should_use_visual_package"] is True
+    assert plan["arguments"]["include_image"] is False
+    assert plan["arguments"]["include_video"] is True
+    assert plan["arguments"]["candidate_budget"] == 2
+    assert plan["arguments"]["candidate_budget_source"] == "planner_default"
+    assert plan["arguments"]["duration"] == 5
+    assert plan["reason"] == "attachment_to_video_image_first_request"
+
+
 def test_agent_mode_planner_routes_text_only_video_through_image_first_candidates():
     from agent.visual.agent_mode.planner import plan_visual_agent_request
 

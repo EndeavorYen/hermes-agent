@@ -1,4 +1,7 @@
 import json
+import os
+import subprocess
+import sys
 
 
 def test_visual_agent_mode_regression_report_passes_default_fixture_set():
@@ -12,6 +15,7 @@ def test_visual_agent_mode_regression_report_passes_default_fixture_set():
     assert {case["case_id"] for case in report["cases"]} >= {
         "image_plus_video_reference",
         "attachment_to_video",
+        "move_attachment_to_video",
         "text_video_image_first",
         "storyboard_video",
         "friendly_draw_character",
@@ -58,4 +62,22 @@ def test_visual_agent_mode_regression_report_cli_json(capsys):
 
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
+    assert payload["success"] is True
+
+
+def test_visual_agent_mode_regression_report_script_runs_directly_from_repo_root():
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+
+    result = subprocess.run(
+        [sys.executable, "scripts/visual_agent_mode_regression_report.py", "--json"],
+        cwd=os.getcwd(),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
     assert payload["success"] is True

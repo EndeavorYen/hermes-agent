@@ -354,7 +354,8 @@ VISUAL_PACKAGE_TOOL_GUIDANCE = (
     "asking for advanced parameters. For high-quality visual videos from text "
     "only, use this image-first route too: generate image candidates, rank/select "
     "one, then animate the selected image. Examples include: `請產出一張圖片和一段影片`, "
-    "`做一組視覺素材`, `寫真影片`, `image plus short video`, `fashion portrait video`, "
+    "`做一組視覺素材`, `寫真影片`, `讓這張圖動起來`, `image plus short video`, "
+    "`animate this image`, `make it move`, `fashion portrait video`, "
     "and `product photo and 6 second clip`."
 )
 
@@ -363,8 +364,8 @@ VISUAL_AGENT_TOOL_GUIDANCE = (
     "When `visual_agent_generate` is available, use it as the primary entry "
     "point for natural visual requests involving images, videos, image plus "
     "video packages, references, product photos, portraits, fashion/glamour "
-    "visuals, draw/anime/character art prompts, storyboard or multi-shot "
-    "video requests, or short motion clips. Do not "
+    "visuals, draw/anime/character art prompts, animate/make-it-move "
+    "requests, storyboard or multi-shot video requests, or short motion clips. Do not "
     "ask the user for advanced "
     "parameters first; `visual_agent_generate` plans the request and dispatches "
     "to `visual_package_generate` for candidate generation, ranking, selected "

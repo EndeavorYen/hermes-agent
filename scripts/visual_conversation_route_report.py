@@ -3,8 +3,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from agent.prompt_builder import build_visual_package_tool_guidance
 from agent.visual.agent_mode.planner import plan_visual_agent_request
@@ -48,6 +54,15 @@ _CASES: tuple[ConversationRouteCase, ...] = (
         expect_video=True,
         min_candidate_budget=2,
         expect_reason="text_to_video_image_first_request",
+    ),
+    ConversationRouteCase(
+        case_id="friendly_move_attachment_video",
+        prompt="讓這張圖動起來，做成 6 秒自然鏡頭",
+        attachments=("/tmp/ref.png",),
+        expect_image=False,
+        expect_video=True,
+        min_candidate_budget=2,
+        expect_reason="attachment_to_video_image_first_request",
     ),
     ConversationRouteCase(
         case_id="friendly_storyboard_video",

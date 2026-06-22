@@ -25,7 +25,24 @@ _IMAGE_TOKENS = (
     "動漫圖",
     "角色設計",
 )
-_VIDEO_TOKENS = ("video", "clip", "motion", "影片", "視頻", "短片", "動畫")
+_VIDEO_TOKENS = (
+    "video",
+    "clip",
+    "motion",
+    "animate",
+    "animated",
+    "make it move",
+    "bring it to life",
+    "影片",
+    "視頻",
+    "短片",
+    "動畫",
+    "動圖",
+    "動態",
+    "動起來",
+    "動態化",
+    "做成動態",
+)
 _STORYBOARD_TOKENS = (
     "storyboard",
     "shot list",
@@ -253,7 +270,17 @@ def _infer_aspect_ratio(value: str) -> str | None:
 
 def _looks_like_image_to_video(value: str) -> bool:
     lowered = value.lower()
-    return any(token in lowered for token in ("這張圖", "this image", "this photo", "用這張"))
+    return any(
+        token in lowered
+        for token in (
+            "這張圖",
+            "這張照片",
+            "this image",
+            "this photo",
+            "this picture",
+            "用這張",
+        )
+    )
 
 
 def _requests_new_image_output(value: str) -> bool:
