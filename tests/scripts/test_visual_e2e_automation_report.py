@@ -12,6 +12,7 @@ def test_visual_e2e_automation_fixture_default(tmp_path):
     assert report["mode"] == "fixture"
     assert report["fixture_e2e"]["success"] is True
     assert report["agent_mode"]["success"] is True
+    assert report["conversation_route"]["success"] is True
     assert report["live_e2e"]["status"] == "not_requested"
     assert report["health"]["success"] is True
     assert report["quality_calibration"]["success"] is True
@@ -262,6 +263,22 @@ def test_visual_e2e_automation_fails_when_agent_mode_regression_fails(monkeypatc
 
     assert report["success"] is False
     assert "agent_mode_failed" in report["failures"]
+
+
+def test_visual_e2e_automation_fails_when_conversation_route_fails(monkeypatch, tmp_path):
+    from scripts import visual_e2e_automation_report
+
+    monkeypatch.setattr(
+        visual_e2e_automation_report,
+        "build_visual_conversation_route_report",
+        lambda: {"success": False, "failures": ["visual_agent_guidance_missing"]},
+    )
+
+    report = visual_e2e_automation_report.build_visual_e2e_automation_report(work_dir=tmp_path)
+
+    assert report["success"] is False
+    assert "conversation_route_failed" in report["failures"]
+    assert report["conversation_route"]["failures"] == ["visual_agent_guidance_missing"]
 
 
 def test_visual_e2e_automation_fails_when_quality_calibration_fails(monkeypatch, tmp_path):
