@@ -26,6 +26,38 @@ reviewing any change:
   high. Most new capability should arrive as a CLI command + skill, a
   service-gated tool, or a plugin — not as core surface.
 
+## Product Engineering Operating Style
+
+Hermes should become a useful product, not a collection of clever mechanisms.
+When requirements are ambiguous, optimize for the user's visible outcome and
+then prove the real runtime behavior.
+
+- **Keep the user's requested artifact as the target.** Internal assets,
+  candidates, references, logs, and scores are means to an end. Do not deliver
+  intermediate artifacts unless the user asked for them or they are needed for
+  review.
+- **Prefer live evidence over plausible reasoning.** For provider, gateway,
+  Slack, media, cron, autonomy, and learning changes, unit tests are necessary
+  but not sufficient. Add the smallest fixture regression, then run a focused
+  live or runtime smoke when the behavior depends on a real provider or
+  platform.
+- **Self-validate before asking the user.** Each agentic loop should record
+  enough evidence to classify provider failures, quality failures, delivery
+  failures, and learning-policy failures. The next run should be able to act on
+  that evidence without requiring the user to manually trigger every test.
+- **Separate internal generation from delivery.** Image-first video may create
+  several candidate source images, rank them, and use the best one for video.
+  A video-only request should still deliver only the selected video. Multi-shot
+  video should use one selected source image per shot, not a candidate collage
+  as a single video source.
+- **Make self-improvement auditable and reversible.** Learning proposals should
+  record source evidence, confidence, affected dimensions, provider-vs-aesthetic
+  attribution, and rollback conditions. Do not let weak self-judgment silently
+  mutate prompts or policy.
+- **Avoid busywork loops.** If work is not moving the product toward higher
+  quality, higher delivery reliability, lower user intervention, or clearer
+  recovery, stop and re-evaluate the objective before adding more machinery.
+
 ## Contribution Rubric — What We Want / What We Don't
 
 This is the project's intent layer. Use it two ways:
