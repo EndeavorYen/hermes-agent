@@ -172,6 +172,48 @@ def test_visual_self_validation_status_surfaces_non_live_and_staleness(tmp_path)
     assert "refresh_stale_self_validation" in status["next_steps"]
 
 
+def test_visual_self_validation_status_accepts_recent_carried_live_burn_on_interval_skip(tmp_path):
+    from scripts.visual_self_validation_status import build_visual_self_validation_status
+
+    report = _scheduled_report(live_decision="skip_interval")
+    report["mode"] = "fixture"
+    report["live_policy"] = {
+        "mode": "auto",
+        "decision": "skip_interval",
+        "live_enabled": True,
+        "min_live_interval_hours": 6,
+        "last_live_run_at": "2026-06-22T11:35:17+00:00",
+        "elapsed_hours": 5.2,
+    }
+    report["slack_live_upload_policy"] = {
+        "decision": "not_requested",
+        "enabled": True,
+        "target": "D_SECRET",
+    }
+    report["summary"]["live_quality_gate_success"] = None
+    report["summary"]["live_quality_gate_min_score"] = None
+    report["summary"]["live_quality_suite_success"] = None
+    report["summary"]["live_quality_suite_case_count"] = 0
+    report["summary"]["live_quality_suite_failure_count"] = 0
+    report["summary"]["live_slack_upload_native_delivery_covered"] = None
+    report["summary"]["live_slack_upload_uploaded_video_file_count"] = None
+    latest_path = _write_latest(tmp_path, report)
+
+    status = build_visual_self_validation_status(
+        latest_path=latest_path,
+        now=datetime(2026, 6, 22, 16, 47, tzinfo=timezone.utc),
+    )
+
+    assert status["success"] is True
+    assert status["health_status"] == "pass"
+    assert status["live_e2e_ran"] is False
+    assert status["live"]["burn_success"] is True
+    assert status["live"]["image_first_video_source_covered"] is True
+    assert status["next_steps"] == ["continue_visual_agent_mode_rollout"]
+    assert status["self_review"]["reduces_human_intervention"] is True
+    assert "D_SECRET" not in json.dumps(status, ensure_ascii=False)
+
+
 def test_visual_self_validation_status_warns_when_live_slack_upload_not_covered(tmp_path):
     from scripts.visual_self_validation_status import build_visual_self_validation_status
 

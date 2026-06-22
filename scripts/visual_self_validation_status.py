@@ -51,6 +51,11 @@ def build_visual_self_validation_status(
     generated_at = _parse_datetime(payload.get("generated_at"))
     age_hours = _age_hours(now, generated_at)
     is_stale = age_hours is not None and age_hours > max(0, float(stale_after_hours))
+    carried_live_evidence_current = _carried_live_evidence_current(
+        live_decision=live_decision,
+        summary=summary,
+        is_stale=is_stale,
+    )
     failures = _strings(payload.get("failures"))
     action_types = _action_types(summary, payload)
     provider_failure_classes = _aggregate_counts(_collect_actions(payload), "provider_failure_classes")
@@ -60,6 +65,7 @@ def build_visual_self_validation_status(
         report_success=payload.get("success") is True,
         failures=failures,
         live_e2e_ran=live_e2e_ran,
+        carried_live_evidence_current=carried_live_evidence_current,
         live_decision=live_decision,
         is_stale=is_stale,
         summary=summary,
@@ -69,6 +75,7 @@ def build_visual_self_validation_status(
         report_success=payload.get("success") is True,
         next_steps=next_steps,
         live_e2e_ran=live_e2e_ran,
+        carried_live_evidence_current=carried_live_evidence_current,
         failures=failures,
     )
     return {
@@ -106,6 +113,7 @@ def build_visual_self_validation_status(
             "preference_dimensions": _strings(summary.get("live_quality_burn_preference_dimensions")),
             "provider_failure_classes": provider_failure_classes,
             "provider_error_codes": provider_error_codes,
+            "carried_evidence_current": carried_live_evidence_current,
         },
         "delivery": {
             "native_video_upload_covered": summary.get("live_slack_upload_native_delivery_covered"),
@@ -209,6 +217,7 @@ def _next_steps(
     report_success: bool,
     failures: list[str],
     live_e2e_ran: bool,
+    carried_live_evidence_current: bool,
     live_decision: str,
     is_stale: bool,
     summary: dict[str, Any],
@@ -219,7 +228,7 @@ def _next_steps(
         steps.append("inspect_self_validation_failures")
     if summary.get("closed_loop_regression_success") is False or "closed_loop_regression_failed" in failures:
         steps.append("inspect_closed_loop_policy_application")
-    if live_decision != "run" or not live_e2e_ran:
+    if (live_decision != "run" or not live_e2e_ran) and not carried_live_evidence_current:
         steps.append("enable_or_force_live_self_validation")
     if is_stale:
         steps.append("refresh_stale_self_validation")
@@ -246,15 +255,37 @@ def _health_status(
     report_success: bool,
     next_steps: list[str],
     live_e2e_ran: bool,
+    carried_live_evidence_current: bool,
     failures: list[str],
 ) -> str:
     if not report_success or failures:
         return "fail"
-    if not live_e2e_ran:
+    if not live_e2e_ran and not carried_live_evidence_current:
         return "warn"
     if any(step != "continue_visual_agent_mode_rollout" for step in next_steps):
         return "warn"
     return "pass"
+
+
+def _carried_live_evidence_current(
+    *,
+    live_decision: str,
+    summary: dict[str, Any],
+    is_stale: bool,
+) -> bool:
+    if live_decision != "skip_interval" or is_stale:
+        return False
+    if summary.get("live_quality_burn_success") is not True:
+        return False
+    if _int(summary.get("live_quality_burn_case_count")) <= 0:
+        return False
+    if summary.get("live_quality_burn_image_first_video_source_covered") is False:
+        return False
+    if _int(summary.get("live_quality_burn_image_first_video_source_failure_count")) > 0:
+        return False
+    if _int(summary.get("live_quality_burn_quality_focus_failure_count")) > 0:
+        return False
+    return True
 
 
 def _parse_datetime(value: Any) -> datetime | None:
