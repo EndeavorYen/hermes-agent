@@ -234,6 +234,114 @@ async def test_visual_package_blocks_low_quality_video_delivery(monkeypatch, tmp
 
 
 @pytest.mark.asyncio
+async def test_visual_package_repairs_blocked_video_before_delivery(monkeypatch, tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image = tmp_path / "source.png"
+    bad_video = tmp_path / "bad-video.mp4"
+    good_video = tmp_path / "good-video.mp4"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    bad_video.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+    good_video.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isomgood")
+    video_calls = []
+
+    def fake_probe_media_reference(ref):
+        is_video = str(ref).endswith(".mp4")
+        return SimpleNamespace(
+            sha256=f"hash:{ref}",
+            is_stable=True,
+            freshness_status="fresh",
+            local_path=str(ref),
+            mime_type="video/mp4" if is_video else "image/png",
+            bytes=10,
+            width=768,
+            height=768,
+            duration_seconds=4.0 if is_video else None,
+        )
+
+    monkeypatch.setattr(visual_package_tool, "probe_media_reference", fake_probe_media_reference)
+    monkeypatch.setattr(
+        visual_package_tool,
+        "generate_image",
+        lambda **kwargs: {
+            "success": True,
+            "image": str(image),
+            "provider": "fixture",
+            "model": "image-fixture",
+        },
+    )
+
+    def fake_generate_video(**kwargs):
+        video_calls.append(kwargs)
+        if len(video_calls) == 1:
+            return {
+                "success": True,
+                "video": str(bad_video),
+                "provider": "fixture",
+                "model": "video-fixture",
+                "vision_observation": {
+                    "aspect_integrity": 0.2,
+                    "motion_quality": 0.25,
+                    "artifact_defects": ["weak_aspect_integrity", "weak_motion_or_duration_evidence"],
+                },
+            }
+        return {
+            "success": True,
+            "video": str(good_video),
+            "provider": "fixture",
+            "model": "video-fixture",
+            "vision_observation": {
+                "aspect_integrity": 0.95,
+                "motion_quality": 0.9,
+                "artifact_defects": [],
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_video", fake_generate_video)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "請產出一張圖片和一段影片：乾淨產品攝影。",
+                "aspect_ratio": "1:1",
+                "candidate_budget": 1,
+                "video_budget": 1,
+                "duration": 4,
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["videos"] == [str(good_video)]
+    assert len(video_calls) == 2
+    assert "Video quality repair pass" in video_calls[1]["prompt"]
+    assert payload["delivery_gate"]["video"]["allowed"] is True
+    assert payload["delivery_gate"]["video"]["repair_attempted"] is True
+    assert payload["delivery_gate"]["video"]["repaired_from"]["quality_issues"] == [
+        "aspect_integrity_bad",
+        "motion_bad",
+    ]
+    assert payload["delivery_metadata"]["selected_visual_artifact_ids"] == [
+        payload["generation_strategy"]["video_source_artifact_id"],
+        payload["rankings"]["video"]["selected_artifact_id"],
+    ]
+
+    attempts = VisualAttemptLedger(default_visual_ledger_path())._list("visual_attempts")
+    repair_attempts = [
+        attempt
+        for attempt in attempts
+        if isinstance(attempt.get("metadata"), dict)
+        and isinstance(attempt["metadata"].get("quality_repair"), dict)
+        and attempt["metadata"]["quality_repair"].get("modality") == "video"
+    ]
+    assert len(repair_attempts) == 1
+    assert repair_attempts[0]["metadata"]["quality_repair"]["reason"] == "active_learning_fail_closed"
+
+
+@pytest.mark.asyncio
 async def test_visual_package_video_only_with_attachment_animates_attachment(monkeypatch, tmp_path):
     from tools import visual_package_tool
 

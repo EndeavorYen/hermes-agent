@@ -615,6 +615,95 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         selected_video = _selected_candidate(video_candidates, video_decision.selected_artifact_id)
         video_gate = _delivery_gate_decision(video_learning, selected_video, prompt=prompt)
         delivery_gate["video"] = video_gate
+        if selected_video and not video_gate["allowed"] and video_image_url and _string_list(video_gate.get("quality_issues")):
+            repair_prompt = _video_quality_repair_prompt(video_prompt, video_gate)
+            repair_kwargs = {
+                "prompt": repair_prompt,
+                "image_url": video_image_url,
+                "duration": duration,
+                "aspect_ratio": video_aspect_ratio,
+            }
+            repair_payload = generate_video(**repair_kwargs)
+            repair_payload["quality_repair"] = {
+                "modality": "video",
+                "reason": video_gate.get("reason"),
+                "quality_issues": _string_list(video_gate.get("quality_issues")),
+            }
+            if not repair_payload.get("success"):
+                _annotate_generation_failure(
+                    repair_payload,
+                    base_kwargs=repair_kwargs,
+                    request={
+                        "prompt": prompt,
+                        "arguments": repair_kwargs,
+                        "source_media": _source_media_from_attachments([video_image_url]),
+                        "video_hardening": hardened_video.get("metadata", {}),
+                    },
+                    retry_budget_remaining=0,
+                )
+            video_payloads.append(repair_payload)
+            repair_candidate = _record_payload_candidate(
+                ledger,
+                request_id=request_id,
+                payload=repair_payload,
+                artifact_key="video",
+                expected_kind="video",
+                prompt=repair_prompt,
+                provider=str(repair_payload.get("provider") or ""),
+                model=str(repair_payload.get("model") or ""),
+                requested_parameters={
+                    "duration_seconds": duration,
+                    "aspect_ratio": video_aspect_ratio,
+                    "motion_mode": hardened_video.get("metadata", {}).get("motion_mode"),
+                    "source_image_artifact_id": video_source_artifact_id,
+                    "quality_repair": True,
+                },
+                candidate_index=len(video_candidates),
+            )
+            if repair_candidate:
+                video_candidates.append(repair_candidate)
+                all_artifact_ids.append(repair_candidate["artifact_id"])
+                all_artifact_paths.append(repair_candidate["artifact_path"])
+                _score_candidates(
+                    ledger,
+                    request_id=request_id,
+                    intent_signature=intent_signature,
+                    strategy_signature=strategy_plan.strategy_signature,
+                    modality="video",
+                    has_reference_image=bool(video_image_url),
+                    request_category=request_category,
+                    candidates=[repair_candidate],
+                    inline_vision_judge=False,
+                    vision_analyzer=analyze_candidate_with_vision_tool,
+                )
+                repair_decision = rank_visual_candidates(
+                    request_id=request_id,
+                    candidates=[repair_candidate],
+                    post_threshold=0.0,
+                    ask_threshold=0.0,
+                )
+                rankings["video"] = repair_decision.__dict__
+                repair_learning = _record_learning_trace(
+                    ledger,
+                    request_id=request_id,
+                    intent_signature=intent_signature,
+                    strategy_signature=strategy_plan.strategy_signature,
+                    strategy_plan=strategy_plan.to_record(),
+                    modality="video",
+                    rank_decision=repair_decision.__dict__,
+                    candidates=[repair_candidate],
+                    has_reference_image=bool(video_image_url),
+                )
+                learning["active_learning"]["video"] = repair_learning
+                selected_video = _selected_candidate([repair_candidate], repair_decision.selected_artifact_id)
+                repaired_gate = _delivery_gate_decision(repair_learning, selected_video, prompt=prompt)
+                repaired_gate["repair_attempted"] = True
+                repaired_gate["repaired_from"] = video_gate
+                video_gate = repaired_gate
+                delivery_gate["video"] = video_gate
+            else:
+                video_gate["repair_attempted"] = True
+            generation_payloads["video"] = video_payloads[0] if len(video_payloads) == 1 else video_payloads
         if selected_video and video_gate["allowed"]:
             selected_artifact_ids.append(selected_video["artifact_id"])
             selected_videos.append(selected_video["artifact_path"])
@@ -1087,6 +1176,23 @@ def _quality_repair_prompt(prompt: str, gate: dict[str, Any], *, mode: str = "de
         f"{policy_instruction}Quality repair pass: "
         f"{repair}. Avoid distorted anatomy, awkward face rendering, weak composition, "
         "and low-quality surface detail."
+    )
+
+
+def _video_quality_repair_prompt(prompt: str, gate: dict[str, Any]) -> str:
+    issues = _string_list(gate.get("quality_issues"))
+    instructions: list[str] = []
+    if "aspect_integrity_bad" in issues:
+        instructions.append("preserve the source image aspect ratio exactly with no horizontal or vertical stretching")
+    if "motion_bad" in issues:
+        instructions.append("use natural real-time motion, steady subject anatomy, and avoid slow motion or frozen-frame drift")
+    if not instructions:
+        instructions.append("improve video coherence while preserving the source image and original composition")
+    repair = "; ".join(instructions)
+    return (
+        f"{prompt}\n\n"
+        f"Video quality repair pass: {repair}. "
+        "Keep the same subject, framing, lighting, and user intent."
     )
 
 
