@@ -2327,6 +2327,62 @@ def test_score_candidates_uses_candidate_vision_observation_for_aesthetic_issues
     assert judgment["metadata"]["judge_sources"]["aesthetic_fit"] == "vision"
 
 
+def test_score_candidates_carries_preference_dimensions_into_reward(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from tools import visual_package_tool
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+    request_id = ledger.record_request(
+        user_prompt="redacted",
+        normalized_intent={"kind": "visual_package"},
+        modality="package",
+        operation="visual_package_generate",
+        status="started",
+        metadata={"intent_signature": "visig_demo"},
+    )
+    candidate = {
+        "attempt_id": "vat_demo",
+        "artifact_id": "var_demo",
+        "artifact_path": str(tmp_path / "candidate.png"),
+        "kind": "image",
+        "provider": "fixture",
+        "model": "image",
+        "content_hash": "hash-demo",
+        "hard_gate": {"passed": True, "delivery_possible": True},
+        "scores": {"resolution": 0.9, "aspect_match": 0.9, "final_score": 0.9},
+        "vision_observation": {
+            "subject_quality": 0.34,
+            "face_quality": 0.28,
+            "fashion_material_quality": 0.31,
+            "pose_composition": 0.42,
+            "composition": 0.7,
+            "visual_appeal": 0.7,
+        },
+    }
+
+    visual_package_tool._score_candidates(
+        ledger,
+        request_id=request_id,
+        intent_signature="visig_demo",
+        strategy_signature="vstrat_demo",
+        modality="image",
+        has_reference_image=False,
+        candidates=[candidate],
+    )
+
+    judgment = ledger._list("visual_judgments")[0]
+    assert candidate["preference_dimensions"] == {
+        "subject_beauty": 0.34,
+        "face_naturalness": 0.28,
+        "glamour_impact": 0.7,
+        "fashion_material_quality": 0.31,
+        "pose_composition": 0.42,
+    }
+    assert candidate["reward"]["dimensions"]["preference_dimension_fit"] < 0.5
+    assert judgment["details"]["preference_dimensions"] == candidate["preference_dimensions"]
+
+
 def test_score_candidates_runs_inline_vision_before_reward(tmp_path):
     from agent.visual.attempt_ledger import VisualAttemptLedger
     from tools import visual_package_tool

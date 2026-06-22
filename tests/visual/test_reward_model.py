@@ -80,3 +80,56 @@ def test_reward_model_penalizes_candidate_quality_issues_matching_preferences():
     assert clean["dimensions"]["user_preference_fit"] > flawed["dimensions"]["user_preference_fit"]
     assert clean["final_score"] > flawed["final_score"]
     assert "matched_preference_issue_subject_not_attractive" in flawed["uncertainty_reasons"]
+
+
+def test_reward_model_penalizes_low_preference_dimensions_even_before_human_profile():
+    from agent.visual.reward_model import score_visual_candidate
+
+    base_candidate = {
+        "kind": "image",
+        "provider": "fixture",
+        "model": "image",
+        "hard_gate": {"passed": True},
+        "scores": {"final_score": 0.9},
+        "judge_scores": {
+            "aesthetic_fit": 0.9,
+            "reference_adherence": 0.8,
+            "novelty": 1.0,
+            "motion_quality": 1.0,
+        },
+        "quality_issues": [],
+    }
+
+    clean = score_visual_candidate(
+        {
+            **base_candidate,
+            "artifact_id": "clean",
+            "preference_dimensions": {
+                "subject_beauty": 0.84,
+                "face_naturalness": 0.86,
+                "fashion_material_quality": 0.82,
+                "pose_composition": 0.78,
+            },
+        },
+        provider_stats={"fixture:image": {"generation_success_rate": 1.0, "delivery_success_rate": 1.0}},
+        preference_profile={"signals": {}, "issues": {}, "sample_count": 0},
+    )
+    flawed = score_visual_candidate(
+        {
+            **base_candidate,
+            "artifact_id": "flawed",
+            "preference_dimensions": {
+                "subject_beauty": 0.34,
+                "face_naturalness": 0.28,
+                "fashion_material_quality": 0.31,
+                "pose_composition": 0.42,
+            },
+        },
+        provider_stats={"fixture:image": {"generation_success_rate": 1.0, "delivery_success_rate": 1.0}},
+        preference_profile={"signals": {}, "issues": {}, "sample_count": 0},
+    )
+
+    assert clean["dimensions"]["preference_dimension_fit"] > 0.8
+    assert flawed["dimensions"]["preference_dimension_fit"] < 0.4
+    assert clean["final_score"] > flawed["final_score"]
+    assert "low_preference_dimension_face_naturalness" in flawed["uncertainty_reasons"]

@@ -5,7 +5,7 @@ from typing import Any
 from agent.visual.eval_dimensions import combine_weighted_scores
 
 
-VERSION = "visual_reward_model.v0.1"
+VERSION = "visual_reward_model.v0.2"
 
 DEFAULT_WEIGHTS = {
     "artifact_validity": 0.20,
@@ -15,7 +15,8 @@ DEFAULT_WEIGHTS = {
     "aesthetic_fit": 0.15,
     "novelty": 0.05,
     "motion_quality": 0.10,
-    "user_preference_fit": 0.10,
+    "user_preference_fit": 0.05,
+    "preference_dimension_fit": 0.05,
 }
 
 
@@ -40,6 +41,7 @@ def score_visual_candidate(
         "novelty": _dimension(judge_scores, "novelty", 0.5),
         "motion_quality": _motion_quality(candidate, judge_scores),
         "user_preference_fit": _preference_fit(candidate, preference_profile),
+        "preference_dimension_fit": _preference_dimension_fit(candidate),
     }
     final_score = 0.0 if not hard_gate_passed else combine_weighted_scores(dimensions, DEFAULT_WEIGHTS)
     confidence = _confidence(
@@ -108,6 +110,16 @@ def _preference_fit(candidate: dict[str, Any], preference_profile: dict[str, Any
     signal_score = _candidate_signal_score(candidate, preference_profile)
     issue_penalty = _candidate_issue_penalty(quality_issues, preference_profile)
     return _clamp(0.5 + signal_score * 0.35 - issue_penalty * 0.35)
+
+
+def _preference_dimension_fit(candidate: dict[str, Any]) -> float:
+    dimensions = candidate.get("preference_dimensions")
+    if not isinstance(dimensions, dict) or not dimensions:
+        return 0.5
+    values = [_clamp(value) for value in dimensions.values() if value is not None]
+    if not values:
+        return 0.5
+    return round(sum(values) / len(values), 4)
 
 
 def _candidate_signal_score(candidate: dict[str, Any], preference_profile: dict[str, Any]) -> float:
@@ -181,6 +193,12 @@ def _uncertainty_reasons(
             reasons.append(f"matched_preference_issue_{issue}")
         else:
             reasons.append(f"candidate_quality_issue_{issue}")
+    dimensions = candidate.get("preference_dimensions")
+    if isinstance(dimensions, dict):
+        for dimension, value in dimensions.items():
+            dimension_text = str(dimension or "").strip()
+            if dimension_text and _clamp(value) < 0.5:
+                reasons.append(f"low_preference_dimension_{dimension_text}")
     return reasons
 
 
