@@ -159,3 +159,26 @@ def test_quality_judge_surfaces_video_artifact_defects_from_observation():
     assert result["scores"]["motion_quality"] == 0.3
     assert "vision_defect_weak_aspect_integrity" in result["uncertainty_reasons"]
     assert "vision_defect_weak_motion_or_duration_evidence" in result["uncertainty_reasons"]
+
+
+def test_quality_judge_maps_artifact_defects_to_preference_issue_tags():
+    from agent.visual.judges.quality import judge_visual_quality
+
+    result = judge_visual_quality(
+        {
+            "artifact_id": "var_1",
+            "kind": "image",
+            "hard_gate": {"passed": True, "delivery_possible": True},
+            "scores": {"resolution": 0.9, "aspect_match": 0.9, "final_score": 0.9},
+        },
+        request_context={"category": "fashion"},
+        vision_observation={
+            "visual_appeal": 0.9,
+            "composition": 0.8,
+            "confidence": 0.8,
+            "artifact_defects": ["face_quality_low", "stockings_quality_low"],
+        },
+    )
+
+    assert result["quality_issues"] == ["subject_not_attractive", "stockings_bad"]
+    assert "face_quality_low" not in result["quality_issues"]

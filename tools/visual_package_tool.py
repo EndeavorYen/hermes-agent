@@ -660,6 +660,7 @@ def _score_candidates(
         if isinstance(content_hash, str) and content_hash:
             recent_hashes.add(content_hash)
         candidate["judge_scores"] = quality["scores"]
+        candidate["quality_issues"] = quality.get("quality_issues", [])
         ledger.record_judgment(
             request_id=request_id,
             attempt_id=candidate.get("attempt_id"),

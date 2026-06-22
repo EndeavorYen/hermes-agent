@@ -39,7 +39,7 @@ def score_visual_candidate(
         "aesthetic_fit": _dimension(judge_scores, "aesthetic_fit", 0.5),
         "novelty": _dimension(judge_scores, "novelty", 0.5),
         "motion_quality": _motion_quality(candidate, judge_scores),
-        "user_preference_fit": _preference_fit(preference_profile),
+        "user_preference_fit": _preference_fit(candidate, preference_profile),
     }
     final_score = 0.0 if not hard_gate_passed else combine_weighted_scores(dimensions, DEFAULT_WEIGHTS)
     confidence = _confidence(
@@ -56,6 +56,7 @@ def score_visual_candidate(
         "confidence": confidence,
         "uncertainty_reasons": _uncertainty_reasons(
             judge_scores=judge_scores,
+            candidate=candidate,
             preference_profile=preference_profile,
             provider_confidence=provider_confidence,
         ),
@@ -99,25 +100,45 @@ def _motion_quality(candidate: dict[str, Any], judge_scores: dict[str, Any]) -> 
     return 1.0 if candidate.get("kind") != "video" else 0.5
 
 
-def _preference_fit(preference_profile: dict[str, Any]) -> float:
+def _preference_fit(candidate: dict[str, Any], preference_profile: dict[str, Any]) -> float:
+    quality_issues = _string_list(candidate.get("quality_issues"))
     sample_count = int(_coerce_float(preference_profile.get("sample_count", 0)))
     if sample_count <= 0:
-        return 0.5
-    signal_score = _average_preference_value(preference_profile.get("signals"), "weight")
-    issue_penalty = _average_preference_value(preference_profile.get("issues"), "penalty")
+        return 0.45 if quality_issues else 0.5
+    signal_score = _candidate_signal_score(candidate, preference_profile)
+    issue_penalty = _candidate_issue_penalty(quality_issues, preference_profile)
     return _clamp(0.5 + signal_score * 0.35 - issue_penalty * 0.35)
 
 
-def _average_preference_value(value: Any, key: str) -> float:
-    if not isinstance(value, dict) or not value:
+def _candidate_signal_score(candidate: dict[str, Any], preference_profile: dict[str, Any]) -> float:
+    quality_signals = _string_list(candidate.get("quality_signals"))
+    if not quality_signals:
+        return 0.0
+    signals = preference_profile.get("signals")
+    if not isinstance(signals, dict):
         return 0.0
     values = [
-        _coerce_float(row.get(key))
-        for row in value.values()
-        if isinstance(row, dict)
+        _coerce_float(signals.get(signal, {}).get("weight"))
+        for signal in quality_signals
+        if isinstance(signals.get(signal), dict)
     ]
     if not values:
         return 0.0
+    return sum(values) / len(values)
+
+
+def _candidate_issue_penalty(quality_issues: list[str], preference_profile: dict[str, Any]) -> float:
+    if not quality_issues:
+        return 0.0
+    issues = preference_profile.get("issues")
+    if not isinstance(issues, dict):
+        return 0.35
+    values = [
+        _coerce_float(issues.get(issue, {}).get("penalty"))
+        if isinstance(issues.get(issue), dict)
+        else 0.35
+        for issue in quality_issues
+    ]
     return sum(values) / len(values)
 
 
@@ -140,6 +161,7 @@ def _confidence(
 def _uncertainty_reasons(
     *,
     judge_scores: dict[str, Any],
+    candidate: dict[str, Any],
     preference_profile: dict[str, Any],
     provider_confidence: float,
 ) -> list[str]:
@@ -152,6 +174,13 @@ def _uncertainty_reasons(
         reasons.append("low_preference_sample_count")
     if provider_confidence < 0.5:
         reasons.append("low_provider_sample_count")
+    profile_issues = preference_profile.get("issues")
+    profile_issues = profile_issues if isinstance(profile_issues, dict) else {}
+    for issue in _string_list(candidate.get("quality_issues")):
+        if issue in profile_issues:
+            reasons.append(f"matched_preference_issue_{issue}")
+        else:
+            reasons.append(f"candidate_quality_issue_{issue}")
     return reasons
 
 
@@ -168,3 +197,9 @@ def _coerce_float(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str) and item]

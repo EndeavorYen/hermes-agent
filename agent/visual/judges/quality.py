@@ -83,6 +83,7 @@ def judge_visual_quality(
     return {
         "version": VERSION,
         "scores": {key: round(value, 4) for key, value in scores.items()},
+        "quality_issues": _quality_issues_from_observation(vision),
         "confidence": confidence,
         "uncertainty_reasons": sorted(set(uncertainty_reasons)),
         "judge_sources": judge_sources,
@@ -200,6 +201,32 @@ def _surface_artifact_defects(vision: dict[str, Any], uncertainty_reasons: list[
             "composition_weak",
         }:
             uncertainty_reasons.append(f"vision_defect_{defect_text}")
+
+
+def _quality_issues_from_observation(vision: dict[str, Any]) -> list[str]:
+    defects = vision.get("artifact_defects")
+    if not isinstance(defects, list):
+        return []
+    issues: list[str] = []
+    for defect in defects:
+        issue = _issue_for_defect(str(defect))
+        if issue and issue not in issues:
+            issues.append(issue)
+    return issues
+
+
+def _issue_for_defect(defect: str) -> str | None:
+    return {
+        "blurred_face": "subject_not_attractive",
+        "distorted_face": "subject_not_attractive",
+        "face_quality_low": "subject_not_attractive",
+        "visual_appeal_low": "not_beautiful",
+        "stocking_quality_low": "stockings_bad",
+        "stockings_quality_low": "stockings_bad",
+        "bad_stockings": "stockings_bad",
+        "composition_weak": "composition_bad",
+        "reference_identity_drift": "reference_identity_drift",
+    }.get(defect)
 
 
 def _has_vision_dimension(vision: dict[str, Any], key: str) -> bool:

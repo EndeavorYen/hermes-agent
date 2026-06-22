@@ -616,6 +616,57 @@ async def test_visual_package_quality_judge_flags_duplicate_candidate_hash(monke
     assert duplicate_judgments
 
 
+def test_score_candidates_carries_quality_issues_into_reward(monkeypatch, tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from tools import visual_package_tool
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+    request_id = ledger.record_request(
+        user_prompt="redacted",
+        normalized_intent={"kind": "visual_package"},
+        modality="package",
+        operation="visual_package_generate",
+        status="started",
+        metadata={"intent_signature": "visig_demo"},
+    )
+    candidate = {
+        "attempt_id": "vat_demo",
+        "artifact_id": "var_demo",
+        "artifact_path": str(tmp_path / "candidate.png"),
+        "kind": "image",
+        "provider": "fixture",
+        "model": "image",
+        "content_hash": "hash-demo",
+        "hard_gate": {"passed": True, "delivery_possible": True},
+        "scores": {"resolution": 0.9, "aspect_match": 0.9, "final_score": 0.9},
+    }
+
+    monkeypatch.setattr(
+        visual_package_tool,
+        "build_artifact_observation",
+        lambda _candidate: {
+            "visual_appeal": 0.8,
+            "composition": 0.8,
+            "confidence": 0.8,
+            "artifact_defects": ["face_quality_low"],
+        },
+    )
+
+    visual_package_tool._score_candidates(
+        ledger,
+        request_id=request_id,
+        intent_signature="visig_demo",
+        strategy_signature="vstrat_demo",
+        modality="image",
+        has_reference_image=False,
+        candidates=[candidate],
+    )
+
+    assert candidate["quality_issues"] == ["subject_not_attractive"]
+    assert candidate["reward"]["dimensions"]["user_preference_fit"] <= 0.5
+
+
 @pytest.mark.asyncio
 async def test_visual_package_hardens_video_prompt_without_stretch(monkeypatch, tmp_path):
     from tools import visual_package_tool
