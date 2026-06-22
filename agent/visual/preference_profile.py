@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from agent.visual.attempt_ledger import VisualAttemptLedger
+from agent.visual.calibration import build_quality_calibration_report
 
 
 EXPLICIT_FEEDBACK_WEIGHT = 1.0
@@ -44,6 +45,7 @@ class PreferenceProfile:
     self_supervised_sample_count: int
     effective_sample_count: float
     confidence: float
+    calibration: dict[str, Any]
     signals: dict[str, dict[str, Any]]
     issues: dict[str, dict[str, Any]]
 
@@ -55,6 +57,7 @@ class PreferenceProfile:
             "self_supervised_sample_count": self.self_supervised_sample_count,
             "effective_sample_count": round(self.effective_sample_count, 4),
             "confidence": self.confidence,
+            "calibration": self.calibration,
             "minimum_confidence_sample_count": MINIMUM_CONFIDENCE_SAMPLE_COUNT,
             "signals": self.signals,
             "issues": self.issues,
@@ -72,6 +75,10 @@ def build_preference_profile(
         request_ids = _matching_request_ids(conn, bucket=bucket)
         feedback_rows = _feedback_rows(conn, request_ids=request_ids)
         judgment_rows = _quality_judgment_rows(conn, request_ids=request_ids)
+    calibration = _calibration_summary(build_quality_calibration_report(ledger.db_path))
+    weak_label_weight = WEAK_LABEL_WEIGHT * _coerce_float(
+        calibration.get("self_supervised_weight_multiplier")
+    )
 
     signal_stats: dict[str, _RunningPreference] = {}
     issue_stats: dict[str, _RunningPreference] = {}
@@ -98,11 +105,11 @@ def build_preference_profile(
         if not issue_updates and not signal_updates:
             continue
         self_supervised_sample_count += 1
-        effective_sample_count += WEAK_LABEL_WEIGHT
+        effective_sample_count += weak_label_weight
         for signal, value in sorted(signal_updates.items()):
-            _update(signal_stats, signal, value=value, weight=WEAK_LABEL_WEIGHT)
+            _update(signal_stats, signal, value=value, weight=weak_label_weight)
         for issue, value in sorted(issue_updates.items()):
-            _update(issue_stats, issue, value=value, weight=WEAK_LABEL_WEIGHT)
+            _update(issue_stats, issue, value=value, weight=weak_label_weight)
 
     sample_count = len(feedback_rows) + self_supervised_sample_count
     profile = PreferenceProfile(
@@ -112,6 +119,7 @@ def build_preference_profile(
         self_supervised_sample_count=self_supervised_sample_count,
         effective_sample_count=effective_sample_count,
         confidence=round(min(1.0, effective_sample_count / MINIMUM_CONFIDENCE_SAMPLE_COUNT), 4),
+        calibration=calibration,
         signals={
             key: value.to_record("weight")
             for key, value in sorted(signal_stats.items())
@@ -122,6 +130,31 @@ def build_preference_profile(
         },
     )
     return profile.to_record()
+
+
+def _calibration_summary(report: dict[str, Any]) -> dict[str, Any]:
+    matched_feedback_count = int(_coerce_float(report.get("matched_feedback_count")))
+    disagreement_rate = _clamp(_coerce_float(report.get("judge_human_disagreement_rate")))
+    multiplier = _self_supervised_weight_multiplier(
+        matched_feedback_count=matched_feedback_count,
+        disagreement_rate=disagreement_rate,
+    )
+    return {
+        "matched_feedback_count": matched_feedback_count,
+        "judge_human_disagreement_rate": round(disagreement_rate, 4),
+        "self_supervised_weight_multiplier": round(multiplier, 4),
+        "failures": _string_list(report.get("failures")),
+    }
+
+
+def _self_supervised_weight_multiplier(
+    *,
+    matched_feedback_count: int,
+    disagreement_rate: float,
+) -> float:
+    if matched_feedback_count < 5:
+        return 1.0
+    return _clamp(1.0 - disagreement_rate)
 
 
 @dataclass
@@ -145,6 +178,8 @@ def _update(
     value: float,
     weight: float,
 ) -> None:
+    if weight <= 0:
+        return
     value = _clamp(value)
     if tag not in stats:
         stats[tag] = _RunningPreference(

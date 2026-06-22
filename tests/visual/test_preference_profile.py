@@ -142,6 +142,51 @@ def test_preference_profile_learns_positive_signals_from_high_quality_judgments(
     assert profile["signals"]["composition_positive"]["weight"] > 0
 
 
+def test_preference_profile_downweights_self_supervised_labels_when_judge_disagrees_with_human_feedback(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.preference_profile import build_preference_profile
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+    request_id = ledger.record_request(status="completed", metadata={"intent_signature": "visig_demo"})
+    for index in range(6):
+        artifact_id = ledger.record_artifact(request_id=request_id, kind="image", content_hash=f"bad-{index}")
+        ledger.record_judgment(
+            request_id=request_id,
+            artifact_id=artifact_id,
+            judge_name="visual_quality_judge",
+            score=0.91,
+            verdict="pass",
+            details={
+                "quality_issues": [],
+                "preference_dimensions": {
+                    "subject_beauty": 0.86,
+                    "face_naturalness": 0.88,
+                    "glamour_impact": 0.82,
+                },
+            },
+        )
+        ledger.record_feedback(
+            request_id=request_id,
+            artifact_id=artifact_id,
+            feedback_text="private negative feedback",
+            polarity=-1.0,
+            parsed={"issues": ["subject_not_attractive"], "signals": []},
+        )
+
+    profile = build_preference_profile(ledger, bucket="visig_demo")
+
+    assert profile["calibration"]["judge_human_disagreement_rate"] == 1.0
+    assert profile["calibration"]["self_supervised_weight_multiplier"] == 0.0
+    assert profile["explicit_feedback_sample_count"] == 6
+    assert profile["self_supervised_sample_count"] == 6
+    assert profile["effective_sample_count"] == 6.0
+    assert "subject_not_attractive" in profile["issues"]
+    assert "subject_beauty_positive" not in profile["signals"]
+    assert "glamour_positive" not in profile["signals"]
+    assert "private negative feedback" not in str(profile)
+
+
 def test_preference_profile_does_not_learn_from_non_quality_judges(tmp_path):
     from agent.visual.attempt_ledger import VisualAttemptLedger
     from agent.visual.preference_profile import build_preference_profile
