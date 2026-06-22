@@ -267,6 +267,111 @@ def test_visual_slack_conversation_e2e_retries_provider_failure_with_repair_poli
     assert report["next_actions"]
 
 
+def test_visual_slack_conversation_e2e_retries_quality_failure_with_dimension_policy(
+    monkeypatch,
+    tmp_path,
+):
+    from scripts import visual_slack_conversation_e2e
+
+    delivery_calls = []
+
+    def low_quality_delivery(**kwargs):
+        return {
+            "success": False,
+            "mode": kwargs["mode"],
+            "failures": ["quality_gate_failed", "selected_quality_issue_detected"],
+            "target": {
+                "platform": "slack",
+                "destination_id": kwargs["target"],
+                "thread_id": kwargs["thread_id"],
+            },
+            "visual": {
+                "request_id": "vrq_low_quality",
+                "image_count": 1,
+                "video_count": 1,
+                "quality_gate": {
+                    "success": False,
+                    "quality_issues": ["subject_not_attractive", "stockings_bad"],
+                    "preference_dimension_failures": [
+                        {
+                            "artifact_id": "var_face",
+                            "dimension": "face_naturalness",
+                            "issue": "face_unnatural",
+                            "score": 0.28,
+                        },
+                        {
+                            "artifact_id": "var_stockings",
+                            "dimension": "fashion_material_quality",
+                            "issue": "stockings_bad",
+                            "score": 0.31,
+                        },
+                    ],
+                },
+            },
+            "delivery": {"deliverable_count": 0, "sent_count": 0},
+        }
+
+    def fake_delivery(**kwargs):
+        delivery_calls.append(kwargs)
+        latest_path = tmp_path / "visual" / "self_validation" / "latest.json"
+        if len(delivery_calls) == 1:
+            assert not latest_path.exists()
+            return low_quality_delivery(**kwargs)
+
+        latest = json.loads(latest_path.read_text(encoding="utf-8"))
+        actions = latest["automation"]["self_improvement"]["next_actions"]
+        assert {
+            "type": "repair_low_preference_dimension",
+            "track": "aesthetic",
+            "reason": "slack_conversation_preference_dimension_low",
+            "confidence": 0.72,
+            "evidence_count": 1,
+            "requires_human_feedback": False,
+            "activation_status": "next_run",
+            "source": "slack_conversation_e2e",
+            "dimension": "face_naturalness",
+            "quality_issue": "face_unnatural",
+            "repair_hint": "improve_face_naturalness",
+        } in actions
+        assert {
+            "type": "repair_low_preference_dimension",
+            "track": "aesthetic",
+            "reason": "slack_conversation_preference_dimension_low",
+            "confidence": 0.72,
+            "evidence_count": 1,
+            "requires_human_feedback": False,
+            "activation_status": "next_run",
+            "source": "slack_conversation_e2e",
+            "dimension": "fashion_material_quality",
+            "quality_issue": "stockings_bad",
+            "repair_hint": "improve_fashion_material_quality",
+        } in actions
+        return _fake_delivery_report(**kwargs)
+
+    monkeypatch.setattr(
+        visual_slack_conversation_e2e,
+        "build_visual_slack_delivery_e2e_report",
+        fake_delivery,
+    )
+
+    report = visual_slack_conversation_e2e.build_visual_slack_conversation_e2e_report(
+        mode="fixture",
+        work_dir=tmp_path,
+        target="D_TEST",
+        repair_budget=1,
+    )
+
+    assert report["success"] is True
+    assert len(delivery_calls) == 2
+    assert report["initial_slack_delivery"]["success"] is False
+    assert report["slack_delivery"]["success"] is True
+    assert report["repair_attempt"]["attempted"] is True
+    assert report["repair_attempt"]["success"] is True
+    assert "repair_low_preference_dimension" in report["repair_attempt"]["action_types"]
+    assert "increase_candidate_budget" in [action["type"] for action in report["next_actions"]]
+    assert "rerank_before_slack" in [action["type"] for action in report["next_actions"]]
+
+
 def test_visual_slack_conversation_e2e_live_repair_policy_uses_runtime_home(
     monkeypatch,
     tmp_path,

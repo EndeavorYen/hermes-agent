@@ -234,25 +234,29 @@ def _attempt_repair_delivery(
     repair_budget: int,
 ) -> dict[str, Any]:
     budget = _int(repair_budget)
-    action = _repair_action(next_actions)
+    repair_actions = _repair_actions(next_actions)
     if budget <= 0:
         return {"attempted": False, "reason": "repair_budget_exhausted"}
-    if action is None:
+    if not repair_actions:
         return {"attempted": False, "reason": "no_supported_repair_action"}
+    first_action = repair_actions[0]
+    action_types = _action_types(repair_actions)
     if policy_home is None:
         return {
             "attempted": False,
             "reason": "missing_policy_home",
-            "action_type": action.get("type"),
+            "action_type": first_action.get("type"),
+            "action_types": action_types,
         }
 
-    policy_write = _write_repair_policy_latest(policy_home=policy_home, action=action)
+    policy_write = _write_repair_policy_latest(policy_home=policy_home, actions=repair_actions)
     if policy_write.get("success") is not True:
         return {
             "attempted": True,
             "success": False,
             "reason": "repair_policy_write_failed",
-            "action_type": action.get("type"),
+            "action_type": first_action.get("type"),
+            "action_types": action_types,
             "policy_written": False,
             "failures": policy_write.get("failures", []),
         }
@@ -264,7 +268,8 @@ def _attempt_repair_delivery(
         "reason": "repair_delivery_succeeded"
         if repaired_delivery.get("success") is True
         else "repair_delivery_failed",
-        "action_type": action.get("type"),
+        "action_type": first_action.get("type"),
+        "action_types": action_types,
         "policy_written": True,
         "slack_delivery": repaired_delivery,
         "failures": list(repaired_delivery.get("failures") or []),
@@ -277,16 +282,25 @@ def _repair_policy_home(*, mode: str, work_dir: str | Path | None) -> Path | Non
     return Path(work_dir) if work_dir is not None else None
 
 
-def _repair_action(next_actions: list[dict[str, Any]]) -> dict[str, Any] | None:
+def _repair_actions(next_actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    safe_reframe_actions: list[dict[str, Any]] = []
+    quality_actions: list[dict[str, Any]] = []
     for action in next_actions:
         if action.get("requires_human_feedback") is True:
             continue
-        if action.get("type") == "safe_reframe_provider_retry":
-            return dict(action)
-    return None
+        action_type = action.get("type")
+        if action_type == "safe_reframe_provider_retry":
+            safe_reframe_actions.append(dict(action))
+        elif action_type in {"repair_low_preference_dimension", "increase_candidate_budget", "rerank_before_slack"}:
+            quality_actions.append(dict(action))
+    if safe_reframe_actions:
+        return [safe_reframe_actions[0]]
+    if any(action.get("type") == "repair_low_preference_dimension" for action in quality_actions):
+        return _dedupe_actions(quality_actions)
+    return []
 
 
-def _write_repair_policy_latest(*, policy_home: str | Path, action: dict[str, Any]) -> dict[str, Any]:
+def _write_repair_policy_latest(*, policy_home: str | Path, actions: list[dict[str, Any]]) -> dict[str, Any]:
     latest_path = Path(policy_home) / "visual" / "self_validation" / "latest.json"
     try:
         payload = _read_json(latest_path)
@@ -298,7 +312,7 @@ def _write_repair_policy_latest(*, policy_home: str | Path, action: dict[str, An
         )
         self_improvement = dict(self_improvement)
         self_improvement["next_actions"] = _dedupe_actions(
-            _action_list(self_improvement.get("next_actions")) + [action]
+            _action_list(self_improvement.get("next_actions")) + actions
         )
         self_improvement["action_count"] = len(self_improvement["next_actions"])
         self_improvement["reduces_human_intervention"] = bool(self_improvement["next_actions"])
@@ -339,55 +353,161 @@ def _action_list(value: Any) -> list[dict[str, Any]]:
 
 
 def _next_actions_from_slack_delivery(slack_delivery: dict[str, Any]) -> list[dict[str, Any]]:
+    actions: list[dict[str, Any]] = []
     visual = slack_delivery.get("visual") if isinstance(slack_delivery.get("visual"), dict) else {}
     recovery = visual.get("recovery_summary") if isinstance(visual.get("recovery_summary"), dict) else {}
     provider_failure_count = _int(recovery.get("provider_failure_count"))
-    if provider_failure_count <= 0:
+    if provider_failure_count > 0:
+        provider_failure_classes = _int_mapping(
+            recovery.get("provider_failure_classes") or visual.get("provider_failure_classes")
+        )
+        provider_error_codes = _int_mapping(
+            recovery.get("provider_error_codes") or visual.get("provider_error_codes")
+        )
+        content_moderation_count = provider_failure_classes.get("content_moderation", 0)
+        if content_moderation_count > 0:
+            actions.append(
+                _action(
+                    "safe_reframe_provider_retry",
+                    "provider",
+                    "slack_conversation_content_moderation_failure",
+                    confidence=0.75,
+                    evidence_count=content_moderation_count,
+                    provider_failure_classes=provider_failure_classes,
+                    provider_error_codes=provider_error_codes,
+                )
+            )
+        elif any(provider_failure_classes.get(key, 0) > 0 for key in ("timeout", "empty_response")):
+            actions.append(
+                _action(
+                    "retry_provider_feasible_variant",
+                    "provider",
+                    "slack_conversation_retryable_provider_failure",
+                    confidence=0.65,
+                    evidence_count=provider_failure_count,
+                    provider_failure_classes=provider_failure_classes,
+                    provider_error_codes=provider_error_codes,
+                )
+            )
+        elif any(provider_failure_classes.get(key, 0) > 0 for key in ("provider_unavailable", "rate_limited")):
+            actions.append(
+                _action(
+                    "retry_provider_later",
+                    "provider",
+                    "slack_conversation_provider_temporarily_unavailable",
+                    confidence=0.6,
+                    evidence_count=provider_failure_count,
+                    provider_failure_classes=provider_failure_classes,
+                    provider_error_codes=provider_error_codes,
+                )
+            )
+
+    if _quality_repair_failure(slack_delivery):
+        actions.extend(_next_actions_from_quality_gate(_dict(visual.get("quality_gate"))))
+    return _dedupe_actions(actions)
+
+
+def _quality_repair_failure(slack_delivery: dict[str, Any]) -> bool:
+    if slack_delivery.get("success") is True:
+        return False
+    failures = {str(item) for item in slack_delivery.get("failures") or [] if item}
+    return any(
+        key in failures
+        for key in {
+            "quality_gate_failed",
+            "selected_quality_issue_detected",
+            "pre_slack_preference_dimension_low",
+        }
+    )
+
+
+def _next_actions_from_quality_gate(quality_gate: dict[str, Any]) -> list[dict[str, Any]]:
+    if not quality_gate:
         return []
-    provider_failure_classes = _int_mapping(
-        recovery.get("provider_failure_classes") or visual.get("provider_failure_classes")
-    )
-    provider_error_codes = _int_mapping(
-        recovery.get("provider_error_codes") or visual.get("provider_error_codes")
-    )
-    content_moderation_count = provider_failure_classes.get("content_moderation", 0)
-    if content_moderation_count > 0:
-        return [
+    quality_issues = _string_list(quality_gate.get("quality_issues"))
+    preference_failures = _preference_dimension_failures(quality_gate.get("preference_dimension_failures"))
+    if quality_gate.get("success") is not False and not quality_issues and not preference_failures:
+        return []
+
+    evidence_count = max(1, len(quality_issues), len(preference_failures))
+    actions = [
+        _action(
+            "increase_candidate_budget",
+            "aesthetic",
+            "slack_conversation_quality_gate_failed",
+            confidence=0.75,
+            evidence_count=evidence_count,
+            max_candidate_budget=4,
+        ),
+        _action(
+            "rerank_before_slack",
+            "aesthetic",
+            "slack_conversation_low_quality_candidates",
+            confidence=0.8,
+            evidence_count=evidence_count,
+        ),
+    ]
+    for failure in preference_failures:
+        actions.append(
             _action(
-                "safe_reframe_provider_retry",
-                "provider",
-                "slack_conversation_content_moderation_failure",
-                confidence=0.75,
-                evidence_count=content_moderation_count,
-                provider_failure_classes=provider_failure_classes,
-                provider_error_codes=provider_error_codes,
+                "repair_low_preference_dimension",
+                "aesthetic",
+                "slack_conversation_preference_dimension_low",
+                confidence=0.72,
+                evidence_count=1,
+                dimension=failure["dimension"],
+                quality_issue=failure.get("issue", ""),
+                repair_hint=_repair_hint_for_dimension(failure["dimension"]),
             )
-        ]
-    if any(provider_failure_classes.get(key, 0) > 0 for key in ("timeout", "empty_response")):
-        return [
-            _action(
-                "retry_provider_feasible_variant",
-                "provider",
-                "slack_conversation_retryable_provider_failure",
-                confidence=0.65,
-                evidence_count=provider_failure_count,
-                provider_failure_classes=provider_failure_classes,
-                provider_error_codes=provider_error_codes,
-            )
-        ]
-    if any(provider_failure_classes.get(key, 0) > 0 for key in ("provider_unavailable", "rate_limited")):
-        return [
-            _action(
-                "retry_provider_later",
-                "provider",
-                "slack_conversation_provider_temporarily_unavailable",
-                confidence=0.6,
-                evidence_count=provider_failure_count,
-                provider_failure_classes=provider_failure_classes,
-                provider_error_codes=provider_error_codes,
-            )
-        ]
-    return []
+        )
+    return actions
+
+
+def _preference_dimension_failures(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    failures: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        dimension = str(item.get("dimension") or "").strip()
+        if not dimension or dimension in seen:
+            continue
+        seen.add(dimension)
+        failures.append(
+            {
+                "dimension": dimension,
+                "issue": str(item.get("issue") or "").strip(),
+            }
+        )
+    return failures
+
+
+def _repair_hint_for_dimension(dimension: str) -> str:
+    return {
+        "subject_beauty": "improve_subject_beauty",
+        "face_naturalness": "improve_face_naturalness",
+        "glamour_impact": "increase_glamour_impact",
+        "fashion_material_quality": "improve_fashion_material_quality",
+        "pose_composition": "improve_pose_composition",
+        "motion_quality": "improve_motion_quality",
+    }.get(dimension, f"improve_{dimension}")
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str) and item]
+
+
+def _action_types(actions: list[dict[str, Any]]) -> list[str]:
+    values: list[str] = []
+    for action in actions:
+        action_type = str(action.get("type") or "")
+        if action_type and action_type not in values:
+            values.append(action_type)
+    return values
 
 
 def _action(
@@ -414,19 +534,25 @@ def _action(
 
 
 def _dedupe_actions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[tuple[str, str, str, str, str]] = set()
     deduped: list[dict[str, Any]] = []
     for action in actions:
-        key = (
-            str(action.get("type") or ""),
-            str(action.get("source") or ""),
-            str(action.get("modality") or ""),
-        )
+        key = _dedupe_action_key(action)
         if key in seen:
             continue
         seen.add(key)
         deduped.append(action)
     return deduped
+
+
+def _dedupe_action_key(action: dict[str, Any]) -> tuple[str, str, str, str, str]:
+    return (
+        str(action.get("type") or ""),
+        str(action.get("source") or ""),
+        str(action.get("modality") or ""),
+        str(action.get("dimension") or ""),
+        str(action.get("strategy_signature") or ""),
+    )
 
 
 def _int_mapping(value: Any) -> dict[str, int]:

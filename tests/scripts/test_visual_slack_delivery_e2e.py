@@ -112,6 +112,57 @@ def test_visual_slack_delivery_fixture_records_selected_media(tmp_path):
     assert {row["destination_id"] for row in deliveries} == {"D_TEST"}
 
 
+def test_visual_slack_delivery_surfaces_quality_gate_evidence(monkeypatch, tmp_path):
+    from scripts import visual_slack_delivery_e2e
+
+    quality_gate = {
+        "success": False,
+        "quality_issues": ["subject_not_attractive", "stockings_bad"],
+        "preference_dimension_failures": [
+            {"artifact_id": "var_face", "dimension": "face_naturalness", "issue": "face_unnatural", "score": 0.28},
+            {
+                "artifact_id": "var_stockings",
+                "dimension": "fashion_material_quality",
+                "issue": "stockings_bad",
+                "score": 0.31,
+            },
+        ],
+    }
+
+    monkeypatch.setattr(
+        visual_slack_delivery_e2e,
+        "run_visual_package",
+        lambda _args: _fake_visual_package_payload(tmp_path),
+    )
+    monkeypatch.setattr(
+        visual_slack_delivery_e2e,
+        "inspect_visual_e2e_evidence",
+        lambda _payload, *, require_video: {
+            "request_id": "vrq_low_quality",
+            "image_count": 1,
+            "video_count": 1,
+            "artifact_count": 2,
+            "judgment_count": 2,
+            "ranking_count": 2,
+            "video_source": {"image_first_for_video": True, "uses_ranked_selected_image": True},
+            "provider_failure_classes": {},
+            "provider_error_codes": {},
+            "retry_attempt_count": 0,
+            "recovery_summary": {},
+            "quality_repair_summary": {},
+            "quality_gate": quality_gate,
+        },
+    )
+
+    report = visual_slack_delivery_e2e.build_visual_slack_delivery_e2e_report(
+        mode="fixture",
+        work_dir=tmp_path,
+        target="D_TEST",
+    )
+
+    assert report["visual"]["quality_gate"] == quality_gate
+
+
 def test_visual_slack_delivery_live_requires_upload_gate(monkeypatch, tmp_path):
     from scripts import visual_slack_delivery_e2e
 

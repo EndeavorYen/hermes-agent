@@ -135,6 +135,7 @@ def build_visual_slack_delivery_e2e_report(
             "retry_attempt_count": visual_evidence.get("retry_attempt_count", 0),
             "recovery_summary": visual_evidence.get("recovery_summary", {}),
             "quality_repair_summary": visual_evidence.get("quality_repair_summary", {}),
+            "quality_gate": visual_evidence.get("quality_gate", {}),
         },
         "delivery": delivery_evidence,
         "delivery_manifest": {
