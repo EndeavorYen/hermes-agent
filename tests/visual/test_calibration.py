@@ -122,3 +122,37 @@ def test_quality_calibration_report_fails_when_judge_disagrees_with_enough_feedb
     assert report["judge_human_disagreement_rate"] == 1.0
     assert "judge_human_disagreement_rate_high" in report["failures"]
     assert "private feedback text" not in str(report)
+
+
+def test_quality_calibration_report_fails_when_human_feedback_has_no_matching_judgments(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.calibration import build_quality_calibration_report
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+    request_id = ledger.record_request(status="completed")
+    attempt_id = ledger.record_attempt(request_id=request_id, status="completed", provider="fixture", model="image")
+
+    for index in range(5):
+        artifact_id = ledger.record_artifact(
+            request_id=request_id,
+            attempt_id=attempt_id,
+            kind="image",
+            content_hash=f"unjudged-{index}",
+            freshness_status="fresh",
+            is_stable=True,
+        )
+        ledger.record_feedback(
+            request_id=request_id,
+            artifact_id=artifact_id,
+            feedback_text="private unmatched feedback",
+            polarity=-1.0,
+            parsed={"source": "explicit"},
+        )
+
+    report = build_quality_calibration_report(tmp_path / "visual.sqlite3")
+
+    assert report["success"] is False
+    assert report["unmatched_human_feedback_count"] == 5
+    assert "human_feedback_unmatched_to_judgments" in report["failures"]
+    assert "private unmatched feedback" not in str(report)

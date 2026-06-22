@@ -37,7 +37,17 @@ def build_quality_calibration_report(db_path: str | Path) -> dict[str, Any]:
         else:
             disagreement += 1
 
+    judged_artifact_ids = {
+        str(_row_value(row, "artifact_id") or "")
+        for row in judgments
+        if str(_row_value(row, "artifact_id") or "")
+    }
     human_polarities = list(feedback_by_artifact.values())
+    unmatched_human_feedback_count = sum(
+        1
+        for artifact_id, polarity in feedback_by_artifact.items()
+        if artifact_id not in judged_artifact_ids and polarity != 0
+    )
     matched_feedback_count = agreement + disagreement
     disagreement_rate = (
         round(disagreement / matched_feedback_count, 4)
@@ -50,11 +60,17 @@ def build_quality_calibration_report(db_path: str | Path) -> dict[str, Any]:
         and disagreement_rate > MAX_JUDGE_HUMAN_DISAGREEMENT_RATE
     ):
         failures.append("judge_human_disagreement_rate_high")
+    if (
+        matched_feedback_count == 0
+        and unmatched_human_feedback_count >= MIN_MATCHED_FEEDBACK_FOR_FAILURE
+    ):
+        failures.append("human_feedback_unmatched_to_judgments")
     return {
         "success": not failures,
         "db_path": str(db_path),
         "failures": failures,
         "matched_feedback_count": matched_feedback_count,
+        "unmatched_human_feedback_count": unmatched_human_feedback_count,
         "judge_human_disagreement_rate": disagreement_rate,
         "thresholds": {
             "min_matched_feedback_for_failure": MIN_MATCHED_FEEDBACK_FOR_FAILURE,
@@ -85,6 +101,7 @@ def _empty_report(db_path: Path) -> dict[str, Any]:
         "db_path": str(db_path),
         "failures": [],
         "matched_feedback_count": 0,
+        "unmatched_human_feedback_count": 0,
         "judge_human_disagreement_rate": 0.0,
         "thresholds": {
             "min_matched_feedback_for_failure": MIN_MATCHED_FEEDBACK_FOR_FAILURE,
