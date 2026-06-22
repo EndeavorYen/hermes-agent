@@ -26,6 +26,29 @@ reviewing any change:
   high. Most new capability should arrive as a CLI command + skill, a
   service-gated tool, or a plugin — not as core surface.
 
+## Execution Discipline
+
+Hermes work should change real behavior and preserve evidence. Use this section
+when deciding whether to plan, implement, test, or stop and re-align.
+
+- **Newest scope wins.** When the user corrects the target, immediately drop
+  stale assumptions from earlier turns.
+- **Execution beats planning drift.** Unless the user asks for planning only,
+  make the smallest useful change, verify it, and report evidence.
+- **Ask only blocking questions.** If ambiguity would cause major rework or
+  unsafe action, ask. Otherwise choose the smallest defensible path and keep
+  moving.
+- **Prefer runtime proof.** For gateway, provider, Slack, cron, media,
+  autonomy, and learning changes, combine focused tests with the smallest
+  practical runtime or live smoke.
+- **Do not accept fake green.** Passing mocks, metadata-only success, or stale
+  logs do not prove user-visible behavior.
+- **Keep the interface simple.** Advanced flags, budgets, strategy names, and
+  provider routing are operator controls, not required user syntax.
+- **Stop busywork loops.** If a loop is not improving quality, delivery
+  reliability, autonomy, or recovery clarity, re-check the active goal before
+  adding more machinery.
+
 ## Product Engineering Operating Style
 
 Hermes should become a useful product, not a collection of clever mechanisms.
