@@ -587,6 +587,17 @@ def _build_quality_run(report: dict[str, Any]) -> dict[str, Any]:
         "video_missing_after_image_case_ids": [run_id] if video_missing_after_image_count else [],
         "provider_failure_count": _int(recovery.get("provider_failure_count")),
     }
+    provider_fallback_attempt_count = _int(recovery.get("provider_fallback_attempt_count"))
+    if provider_fallback_attempt_count > 0:
+        summary.update(
+            {
+                "provider_fallback_attempt_count": provider_fallback_attempt_count,
+                "provider_fallback_success_count": _int(recovery.get("provider_fallback_success_count")),
+                "provider_fallback_recovered_classes": _string_list(
+                    recovery.get("provider_fallback_recovered_classes")
+                ),
+            }
+        )
     return {
         "success": report.get("success") is True,
         "run_id": run_id,

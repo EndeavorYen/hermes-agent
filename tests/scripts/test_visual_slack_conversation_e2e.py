@@ -808,6 +808,59 @@ def test_visual_slack_conversation_e2e_live_records_quality_trend_run(
     assert trend["summary"]["recent_avg_min_quality_score"] == 1.0
 
 
+def test_visual_slack_conversation_e2e_live_records_provider_fallback_summary(monkeypatch, tmp_path):
+    from scripts import visual_slack_conversation_e2e
+
+    runtime_home = tmp_path / "runtime-home"
+    monkeypatch.setenv("HERMES_HOME", str(runtime_home))
+    monkeypatch.setattr(
+        visual_slack_conversation_e2e,
+        "_resolve_target",
+        lambda *, mode, target: "D_LIVE" if mode == "live" and target is None else target,
+    )
+
+    def fallback_delivery(**kwargs):
+        report = _fake_delivery_report(**kwargs)
+        report["success"] = False
+        report["failures"] = ["visual_generation_failed"]
+        report["visual"]["video_count"] = 0
+        report["visual"]["recovery_summary"] = {
+            "provider_failure_count": 2,
+            "provider_failure_classes": {"quota_exceeded": 2},
+            "provider_error_codes": {"personal-team-blocked:spending-limit": 2},
+            "provider_fallback_attempt_count": 1,
+            "provider_fallback_success_count": 1,
+            "provider_fallback_recovered_classes": ["quota_exceeded"],
+        }
+        report["delivery"]["deliverable_count"] = 1
+        report["delivery"]["sent_count"] = 1
+        report["delivery"]["uploaded_video_file_count"] = 0
+        return report
+
+    monkeypatch.setattr(
+        visual_slack_conversation_e2e,
+        "build_visual_slack_delivery_e2e_report",
+        fallback_delivery,
+    )
+
+    report = visual_slack_conversation_e2e.build_visual_slack_conversation_e2e_report(
+        mode="live",
+        work_dir=tmp_path / "work",
+        prompt="make an image and video of a matte black pen",
+        target=None,
+        upload=True,
+        record_quality_run=True,
+    )
+
+    quality_run_path = runtime_home / "visual" / "live_quality_burn" / "latest.json"
+    quality_run = json.loads(quality_run_path.read_text(encoding="utf-8"))
+    assert report["success"] is False
+    assert quality_run["summary"]["provider_failure_count"] == 2
+    assert quality_run["summary"]["provider_fallback_attempt_count"] == 1
+    assert quality_run["summary"]["provider_fallback_success_count"] == 1
+    assert quality_run["summary"]["provider_fallback_recovered_classes"] == ["quota_exceeded"]
+
+
 def test_visual_slack_conversation_e2e_live_fails_without_runtime_target(monkeypatch, tmp_path):
     from scripts import visual_slack_conversation_e2e
 

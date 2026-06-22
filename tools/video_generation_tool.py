@@ -283,21 +283,22 @@ def check_video_generation_requirements() -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _resolve_active_provider():
+def _resolve_active_provider(provider_override: Optional[str] = None):
     """Return the active provider object or None.
 
     Forces plugin discovery before checking the registry — handles cases
     where a long-lived session was started before a plugin was installed.
     """
     try:
-        from agent.video_gen_registry import get_active_provider
+        from agent.video_gen_registry import get_active_provider, get_provider
         from hermes_cli.plugins import _ensure_plugins_discovered
 
         _ensure_plugins_discovered()
-        provider = get_active_provider()
+        override = provider_override.strip() if isinstance(provider_override, str) else ""
+        provider = get_provider(override) if override else get_active_provider()
         if provider is None:
             _ensure_plugins_discovered(force=True)
-            provider = get_active_provider()
+            provider = get_provider(override) if override else get_active_provider()
         return provider
     except Exception as exc:
         logger.debug("video_gen provider resolution failed: %s", exc)
@@ -420,7 +421,8 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
     negative_prompt = (args.get("negative_prompt") or "").strip() or None
     audio = _coerce_bool(args.get("audio"))
     seed = _coerce_int(args.get("seed"))
-    model_override = (args.get("model") or "").strip() or None
+    provider_override = (args.get("_provider") or "").strip() or None
+    model_override = (args.get("_model") or args.get("model") or "").strip() or None
 
     # Soft validation — providers do their own. Prompt is required by the
     # schema; the backend may still accept image-only on its image-to-video
@@ -429,13 +431,14 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
         return tool_error("prompt is required for video generation")
 
     # Resolve the active provider.
-    configured = _read_configured_video_provider()
-    provider = _resolve_active_provider()
+    configured = provider_override or _read_configured_video_provider()
+    provider = _resolve_active_provider(provider_override=provider_override)
     if provider is None:
         return _missing_provider_error(configured)
 
     # Resolve model: explicit arg wins, then config, then provider default.
-    model = model_override or _read_configured_video_model() or provider.default_model()
+    configured_model = None if provider_override else _read_configured_video_model()
+    model = model_override or configured_model or provider.default_model()
 
     kwargs: Dict[str, Any] = {
         "model": model,

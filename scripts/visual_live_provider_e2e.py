@@ -915,7 +915,7 @@ def _recovery_summary(
     negotiation_attempted = provider_failure_count > 0 and retry_attempt_count > 0
     negotiation_success = negotiation_attempted and payload.get("success") is True
     recovered_failure_classes = sorted(provider_failure_classes) if negotiation_success else []
-    return {
+    summary = {
         "provider_failure_count": provider_failure_count,
         "provider_failure_classes": dict(provider_failure_classes),
         "provider_error_codes": dict(provider_error_codes),
@@ -925,6 +925,46 @@ def _recovery_summary(
         "content_moderation_recovered": "content_moderation" in recovered_failure_classes,
         "recovered_failure_classes": recovered_failure_classes,
     }
+    fallback_summary = _provider_fallback_summary(payload)
+    if fallback_summary["provider_fallback_attempt_count"] > 0:
+        summary.update(fallback_summary)
+    return summary
+
+
+def _provider_fallback_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    attempt_count = 0
+    success_count = 0
+    recovered_classes: set[str] = set()
+    for item in _generation_payload_items(payload):
+        if not isinstance(item, dict):
+            continue
+        fallback = item.get("provider_fallback")
+        if not isinstance(fallback, dict):
+            continue
+        attempt_count += 1
+        failure_class = str(fallback.get("failure_class") or "").strip()
+        if item.get("success") is True:
+            success_count += 1
+            if failure_class:
+                recovered_classes.add(failure_class)
+    return {
+        "provider_fallback_attempt_count": attempt_count,
+        "provider_fallback_success_count": success_count,
+        "provider_fallback_recovered_classes": sorted(recovered_classes),
+    }
+
+
+def _generation_payload_items(payload: dict[str, Any]) -> list[Any]:
+    generation_payloads = payload.get("generation_payloads")
+    if not isinstance(generation_payloads, dict):
+        return []
+    items: list[Any] = []
+    for value in generation_payloads.values():
+        if isinstance(value, list):
+            items.extend(value)
+        else:
+            items.append(value)
+    return items
 
 
 def _suite_recovery_summary(case_reports: list[dict[str, Any]]) -> dict[str, Any]:
@@ -935,11 +975,20 @@ def _suite_recovery_summary(case_reports: list[dict[str, Any]]) -> dict[str, Any
     negotiation_attempted_case_count = 0
     negotiation_success_case_count = 0
     content_moderation_recovered_case_count = 0
+    provider_fallback_attempt_count = 0
+    provider_fallback_success_count = 0
     recovered_failure_classes: set[str] = set()
+    provider_fallback_recovered_classes: set[str] = set()
     for case in case_reports:
         summary = case.get("recovery_summary") if isinstance(case.get("recovery_summary"), dict) else {}
         provider_failure_count += int(_coerce_score(summary.get("provider_failure_count")) or 0)
         retry_attempt_count += int(_coerce_score(summary.get("retry_attempt_count")) or 0)
+        provider_fallback_attempt_count += int(
+            _coerce_score(summary.get("provider_fallback_attempt_count")) or 0
+        )
+        provider_fallback_success_count += int(
+            _coerce_score(summary.get("provider_fallback_success_count")) or 0
+        )
         provider_failure_classes.update(_counter_from_mapping(summary.get("provider_failure_classes")))
         provider_error_codes.update(_counter_from_mapping(summary.get("provider_error_codes")))
         if summary.get("negotiation_attempted") is True:
@@ -951,7 +1000,10 @@ def _suite_recovery_summary(case_reports: list[dict[str, Any]]) -> dict[str, Any
         for failure_class in summary.get("recovered_failure_classes") or []:
             if isinstance(failure_class, str) and failure_class:
                 recovered_failure_classes.add(failure_class)
-    return {
+        for failure_class in summary.get("provider_fallback_recovered_classes") or []:
+            if isinstance(failure_class, str) and failure_class:
+                provider_fallback_recovered_classes.add(failure_class)
+    suite_summary = {
         "provider_failure_count": provider_failure_count,
         "provider_failure_classes": dict(provider_failure_classes),
         "provider_error_codes": dict(provider_error_codes),
@@ -961,6 +1013,15 @@ def _suite_recovery_summary(case_reports: list[dict[str, Any]]) -> dict[str, Any
         "content_moderation_recovered_case_count": content_moderation_recovered_case_count,
         "recovered_failure_classes": sorted(recovered_failure_classes),
     }
+    if provider_fallback_attempt_count > 0:
+        suite_summary.update(
+            {
+                "provider_fallback_attempt_count": provider_fallback_attempt_count,
+                "provider_fallback_success_count": provider_fallback_success_count,
+                "provider_fallback_recovered_classes": sorted(provider_fallback_recovered_classes),
+            }
+        )
+    return suite_summary
 
 
 def _quality_repair_summary(

@@ -96,6 +96,26 @@ class TestUnifiedDispatch:
         assert provider.last_kwargs["aspect_ratio"] == "16:9"
         assert provider.last_kwargs["resolution"] == "720p"
 
+    def test_internal_provider_override_routes_to_fallback_provider(self):
+        primary = _RecordingProvider("xai", default_model="xai-model")
+        fallback = _RecordingProvider("fallback", default_model="fallback-model")
+        video_gen_registry.register_provider(primary)
+        video_gen_registry.register_provider(fallback)
+
+        result = self._run(
+            {
+                "prompt": "a happy dog",
+                "_provider": "fallback",
+            },
+            configured="xai",
+        )
+
+        assert result["success"] is True
+        assert result["provider"] == "fallback"
+        assert result["model"] == "fallback-model"
+        assert primary.last_kwargs == {}
+        assert fallback.last_kwargs["model"] == "fallback-model"
+
     def test_xai_text_visual_video_routes_to_visual_package(self, monkeypatch):
         from tools import visual_package_tool
 

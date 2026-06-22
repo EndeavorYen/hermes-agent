@@ -13,8 +13,6 @@ def plan_visual_recovery(
 ) -> dict[str, Any]:
     failure_class = str(failure.get("failure_class") or "unknown")
     arguments = dict(request.get("arguments") or {})
-    if retry_budget_remaining <= 0:
-        return _decision("fail", "retry_budget_exhausted", arguments, failure_class, retry_budget_remaining)
     if failure_class == "quota_exceeded":
         decision = _decision(
             "fail",
@@ -27,6 +25,8 @@ def plan_visual_recovery(
         if provider_message_code:
             decision["audit"]["provider_message_code"] = provider_message_code
         return decision
+    if retry_budget_remaining <= 0:
+        return _decision("fail", "retry_budget_exhausted", arguments, failure_class, retry_budget_remaining)
     if failure.get("retryable") is False:
         return _decision("fail", "provider_failure_not_retryable", arguments, failure_class, retry_budget_remaining)
 

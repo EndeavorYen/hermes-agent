@@ -1308,6 +1308,8 @@ def _dispatch_to_plugin_provider(
     aspect_ratio: str,
     image_url: Optional[str] = None,
     reference_image_urls: Optional[list] = None,
+    provider_override: Optional[str] = None,
+    model_override: Optional[str] = None,
 ):
     """Route the call to a plugin-registered provider when one is selected.
 
@@ -1324,12 +1326,20 @@ def _dispatch_to_plugin_provider(
     they are forwarded to the provider's ``generate()`` so the backend can
     route to its edit endpoint.
     """
-    configured = _read_configured_image_provider()
+    configured = (
+        provider_override.strip()
+        if isinstance(provider_override, str) and provider_override.strip()
+        else _read_configured_image_provider()
+    )
     if not configured:
         return None
 
     # Also read configured model so we can pass it to the plugin
-    configured_model = _read_configured_image_model()
+    configured_model = (
+        model_override.strip()
+        if isinstance(model_override, str) and model_override.strip()
+        else (None if provider_override else _read_configured_image_model())
+    )
 
     try:
         # Import locally so plugin discovery isn't triggered just by
@@ -1456,6 +1466,8 @@ def _handle_image_generate(args, **kw):
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
     image_url = args.get("image_url") or args.get("input_image")
     reference_image_urls = _legacy_reference_image_urls(args)
+    provider_override = args.get("_provider")
+    model_override = args.get("_model")
     task_id = kw.get("task_id")
 
     # Route to a plugin-registered provider if one is active (and it's
@@ -1464,6 +1476,8 @@ def _handle_image_generate(args, **kw):
         prompt, aspect_ratio,
         image_url=image_url,
         reference_image_urls=reference_image_urls,
+        provider_override=provider_override,
+        model_override=model_override,
     )
     if dispatched is not None:
         postprocessed = _postprocess_image_generate_result(dispatched, task_id=task_id)

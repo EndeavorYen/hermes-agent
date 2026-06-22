@@ -550,6 +550,9 @@ def test_visual_live_provider_e2e_suite_aggregates_recovery_summary(monkeypatch,
                     "negotiation_success": True,
                     "content_moderation_recovered": True,
                     "recovered_failure_classes": ["content_moderation"],
+                    "provider_fallback_attempt_count": 1,
+                    "provider_fallback_success_count": 1,
+                    "provider_fallback_recovered_classes": ["quota_exceeded"],
                 }
             },
         },
@@ -597,6 +600,9 @@ def test_visual_live_provider_e2e_suite_aggregates_recovery_summary(monkeypatch,
         "negotiation_success_case_count": 1,
         "content_moderation_recovered_case_count": 1,
         "recovered_failure_classes": ["content_moderation"],
+        "provider_fallback_attempt_count": 1,
+        "provider_fallback_success_count": 1,
+        "provider_fallback_recovered_classes": ["quota_exceeded"],
     }
 
 
@@ -1190,6 +1196,132 @@ def test_visual_live_provider_e2e_reports_moderation_recovery_summary(monkeypatc
         "content_moderation_recovered": True,
         "recovered_failure_classes": ["content_moderation"],
     }
+
+
+def test_visual_live_provider_e2e_reports_provider_fallback_recovery(monkeypatch, tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+    from scripts.visual_live_provider_e2e import inspect_visual_e2e_evidence
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ledger = VisualAttemptLedger(default_visual_ledger_path())
+    ledger.initialize()
+    request_id = ledger.record_request(
+        user_prompt="product photo and video",
+        normalized_intent={"kind": "visual_package"},
+        modality="package",
+        operation="visual_package_generate",
+        status="started",
+    )
+    ledger.record_attempt(
+        request_id=request_id,
+        candidate_index=0,
+        provider="xai",
+        model="grok-imagine-image-quality",
+        prompt_original="product photo",
+        prompt_mediated="product photo",
+        parameters_requested={},
+        parameters_effective={},
+        status="failed",
+        error_type="api_error",
+        error_message=(
+            'xAI image gen failed (403): {"code":"personal-team-blocked:spending-limit",'
+            '"error":"You have run out of credits or need a Grok subscription."}'
+        ),
+    )
+    fallback_attempt_id = ledger.record_attempt(
+        request_id=request_id,
+        candidate_index=1,
+        provider="openai-codex",
+        model="gpt-image-2",
+        prompt_original="product photo",
+        prompt_mediated="product photo",
+        parameters_requested={},
+        parameters_effective={},
+        status="completed",
+    )
+    artifact_id = ledger.record_artifact(
+        request_id=request_id,
+        attempt_id=fallback_attempt_id,
+        kind="image",
+        local_path=str(tmp_path / "image.png"),
+        uri=str(tmp_path / "image.png"),
+        content_hash="sha256:fallback-image",
+        mime_type="image/png",
+        is_stable=True,
+        freshness_status="fresh",
+    )
+    ledger.record_judgment(
+        request_id=request_id,
+        attempt_id=fallback_attempt_id,
+        artifact_id=artifact_id,
+        judge_name="visual_quality_judge",
+        score=0.92,
+        verdict="pass",
+        details={"quality_issues": [], "scores": {"composition": 0.92}},
+        metadata={
+            "intent_signature": "visig_product",
+            "strategy_signature": "vstrat_product",
+            "modality": "image",
+        },
+    )
+    ledger.record_attempt(
+        request_id=request_id,
+        candidate_index=0,
+        provider="xai",
+        model="grok-imagine-video",
+        prompt_original="product video",
+        prompt_mediated="product video",
+        parameters_requested={},
+        parameters_effective={},
+        status="failed",
+        error_type="api_error",
+        error_message=(
+            'xAI video gen failed (403): {"code":"personal-team-blocked:spending-limit",'
+            '"error":"You have run out of credits or need a Grok subscription."}'
+        ),
+    )
+
+    evidence = inspect_visual_e2e_evidence(
+        {
+            "success": False,
+            "visual_request_id": request_id,
+            "images": [str(tmp_path / "image.png")],
+            "videos": [],
+            "generation_payloads": {
+                "image": [
+                    {"success": False, "provider": "xai", "error_type": "api_error"},
+                    {
+                        "success": True,
+                        "provider": "openai-codex",
+                        "retry_of": 0,
+                        "provider_fallback": {
+                            "from_provider": "xai",
+                            "to_provider": "openai-codex",
+                            "failure_class": "quota_exceeded",
+                            "retry_of": 0,
+                        },
+                    },
+                ],
+                "video": {
+                    "success": False,
+                    "provider": "xai",
+                    "error_type": "api_error",
+                },
+            },
+            "delivery_metadata": {
+                "selected_visual_artifact_ids": [artifact_id],
+            },
+        },
+        require_video=True,
+    )
+
+    assert evidence["recovery_summary"]["negotiation_success"] is False
+    assert evidence["recovery_summary"]["provider_fallback_attempt_count"] == 1
+    assert evidence["recovery_summary"]["provider_fallback_success_count"] == 1
+    assert evidence["recovery_summary"]["provider_fallback_recovered_classes"] == [
+        "quota_exceeded"
+    ]
 
 
 def test_visual_live_provider_e2e_inspects_selected_artifact_quality_gate(monkeypatch, tmp_path):

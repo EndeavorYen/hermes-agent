@@ -437,6 +437,37 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             if image_candidate:
                 image_candidates.append(image_candidate)
             elif not image_payload.get("success"):
+                fallback_candidate_added = False
+                for fallback_offset, fallback_payload in enumerate(_provider_fallback_payloads(
+                    generator=generate_image,
+                    payload=image_payload,
+                    base_kwargs=image_kwargs,
+                    request=image_request,
+                    modality="image",
+                    retry_of=candidate_index,
+                )):
+                    image_payloads.append(fallback_payload)
+                    fallback_candidate = _record_payload_candidate(
+                        ledger,
+                        request_id=request_id,
+                        payload=fallback_payload,
+                        artifact_key="image",
+                        expected_kind="image",
+                        prompt=str(fallback_payload.get("prompt") or prompt),
+                        provider=str(fallback_payload.get("provider") or ""),
+                        model=str(fallback_payload.get("model") or ""),
+                        requested_parameters={
+                            "aspect_ratio": _judge_aspect_ratio(aspect_ratio),
+                            "provider_fallback_of": candidate_index,
+                        },
+                        candidate_index=candidate_index + (candidate_budget * (fallback_offset + 1)),
+                    )
+                    if fallback_candidate:
+                        image_candidates.append(fallback_candidate)
+                        fallback_candidate_added = True
+                        break
+                if fallback_candidate_added:
+                    continue
                 for retry_offset, retry_payload in enumerate(_retry_generation_payloads(
                     generator=generate_image,
                     payload=image_payload,
@@ -759,6 +790,40 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 if video_candidate:
                     video_candidates.append(video_candidate)
                 elif not video_payload.get("success"):
+                    fallback_candidate_added = False
+                    for fallback_offset, fallback_payload in enumerate(_provider_fallback_payloads(
+                        generator=generate_video,
+                        payload=video_payload,
+                        base_kwargs=video_kwargs,
+                        request=video_request,
+                        modality="video",
+                        retry_of=candidate_index,
+                    )):
+                        video_payloads.append(fallback_payload)
+                        fallback_candidate = _record_payload_candidate(
+                            ledger,
+                            request_id=request_id,
+                            payload=fallback_payload,
+                            artifact_key="video",
+                            expected_kind="video",
+                            prompt=str(fallback_payload.get("prompt") or prompt),
+                            provider=str(fallback_payload.get("provider") or ""),
+                            model=str(fallback_payload.get("model") or ""),
+                            requested_parameters={
+                                "duration_seconds": fallback_payload.get("duration", duration),
+                                "aspect_ratio": video_aspect_ratio,
+                                "motion_mode": hardened_video.get("metadata", {}).get("motion_mode"),
+                                "source_image_artifact_id": video_source_artifact_id,
+                                "provider_fallback_of": candidate_index,
+                            },
+                            candidate_index=candidate_index + (video_budget * (fallback_offset + 1)),
+                        )
+                        if fallback_candidate:
+                            video_candidates.append(fallback_candidate)
+                            fallback_candidate_added = True
+                            break
+                    if fallback_candidate_added:
+                        continue
                     for retry_offset, retry_payload in enumerate(_retry_generation_payloads(
                         generator=generate_video,
                         payload=video_payload,
@@ -1849,6 +1914,112 @@ def _retry_generation_payloads(
     return retries
 
 
+def _provider_fallback_payloads(
+    *,
+    generator,
+    payload: dict[str, Any],
+    base_kwargs: dict[str, Any],
+    request: dict[str, Any],
+    modality: str,
+    retry_of: int,
+) -> list[dict[str, Any]]:
+    failure_class = _payload_failure_class(payload)
+    if failure_class not in {"quota_exceeded", "provider_unavailable", "rate_limited"}:
+        return []
+    failed_provider = str(payload.get("provider") or "").strip()
+    fallback_providers = (
+        _available_image_provider_fallbacks(failed_provider=failed_provider)
+        if modality == "image"
+        else _available_video_provider_fallbacks(failed_provider=failed_provider)
+    )
+    fallbacks: list[dict[str, Any]] = []
+    for provider_name in fallback_providers:
+        if not provider_name or provider_name == failed_provider:
+            continue
+        fallback_kwargs = {**base_kwargs, "_provider": provider_name}
+        fallback_payload = generator(**fallback_kwargs)
+        fallback_payload["retry_of"] = retry_of
+        fallback_payload["provider_fallback"] = {
+            "from_provider": failed_provider,
+            "to_provider": provider_name,
+            "failure_class": failure_class,
+            "retry_of": retry_of,
+        }
+        fallbacks.append(fallback_payload)
+        if not fallback_payload.get("success"):
+            _annotate_generation_failure(
+                fallback_payload,
+                base_kwargs=fallback_kwargs,
+                request={**request, "arguments": fallback_kwargs},
+                retry_budget_remaining=0,
+            )
+            continue
+        return fallbacks
+    return fallbacks
+
+
+def _payload_failure_class(payload: dict[str, Any]) -> str:
+    failure = payload.get("failure") if isinstance(payload.get("failure"), dict) else {}
+    if not failure:
+        failure = classify_visual_provider_failure(payload)
+        payload["failure"] = failure
+    return str(failure.get("failure_class") or "").strip()
+
+
+def _available_image_provider_fallbacks(*, failed_provider: str | None = None) -> list[str]:
+    failed = str(failed_provider or "").strip()
+    try:
+        from agent.image_gen_registry import list_providers
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        providers = list_providers()
+    except Exception as exc:  # noqa: BLE001 - fallback discovery must not block primary error handling
+        logger.debug("image provider fallback discovery unavailable: %s", exc)
+        return []
+
+    names: list[str] = []
+    for provider in providers:
+        name = str(getattr(provider, "name", "") or "").strip()
+        if not name or name == failed or name in names:
+            continue
+        try:
+            available = provider.is_available()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("image provider fallback %s availability failed: %s", name, exc)
+            continue
+        if available:
+            names.append(name)
+    return names
+
+
+def _available_video_provider_fallbacks(*, failed_provider: str | None = None) -> list[str]:
+    failed = str(failed_provider or "").strip()
+    try:
+        from agent.video_gen_registry import list_providers
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        providers = list_providers()
+    except Exception as exc:  # noqa: BLE001 - fallback discovery must not block primary error handling
+        logger.debug("video provider fallback discovery unavailable: %s", exc)
+        return []
+
+    names: list[str] = []
+    for provider in providers:
+        name = str(getattr(provider, "name", "") or "").strip()
+        if not name or name == failed or name in names:
+            continue
+        try:
+            available = provider.is_available()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("video provider fallback %s availability failed: %s", name, exc)
+            continue
+        if available:
+            names.append(name)
+    return names
+
+
 def _retry_generation_payload(
     *,
     generator,
@@ -2685,7 +2856,9 @@ def _visual_feedback_policy(
 
 def _provider_retry_budget(feedback_policy: dict[str, Any]) -> int:
     value = _coerce_int(feedback_policy.get("provider_retry_budget"))
-    return _clamp_budget(value or 1, minimum=1, maximum=2)
+    if value is not None:
+        return _clamp_budget(value, minimum=0, maximum=2)
+    return 1
 
 
 def _candidate_budget_policy_inputs(args: dict[str, Any]) -> tuple[int | None, int]:

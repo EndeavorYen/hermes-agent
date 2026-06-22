@@ -122,6 +122,38 @@ class TestPluginDispatch:
         assert payload["provider"] == "codex"
         assert payload["aspect_ratio"] == "portrait"
 
+    def test_handle_internal_provider_override_routes_to_fallback_provider(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from agent import image_gen_registry as registry_module
+        from hermes_cli import plugins as plugins_module
+
+        primary = _RecordingProvider()
+        fallback = _FakeCodexProvider()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "recording")
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_model", lambda: "primary-model")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda *a, **k: None)
+        monkeypatch.setattr(
+            registry_module,
+            "get_provider",
+            lambda name: {"recording": primary, "codex": fallback}.get(name),
+        )
+
+        payload = json.loads(
+            image_generation_tool._handle_image_generate(
+                {
+                    "prompt": "draw cat",
+                    "aspect_ratio": "square",
+                    "_provider": "codex",
+                }
+            )
+        )
+
+        assert payload["success"] is True
+        assert payload["provider"] == "codex"
+        assert payload["image"] == "/tmp/codex-test.png"
+        assert primary.last_kwargs == {}
+
     def test_handle_accepts_reference_images_alias_for_runtime_plugins(self, monkeypatch, tmp_path):
         """Machine-local plugins still call image_generate with reference_images.
 
