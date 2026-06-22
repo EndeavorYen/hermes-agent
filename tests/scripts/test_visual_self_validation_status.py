@@ -177,6 +177,25 @@ def test_visual_self_validation_status_warns_when_live_slack_upload_not_covered(
     assert "D_SECRET" not in json.dumps(status, ensure_ascii=False)
 
 
+def test_visual_self_validation_status_asks_for_slack_target_when_upload_enabled_without_target(tmp_path):
+    from scripts.visual_self_validation_status import build_visual_self_validation_status
+
+    report = _scheduled_report()
+    report["slack_live_upload_policy"] = {
+        "decision": "skip_missing_target",
+        "enabled": True,
+        "target": None,
+    }
+    report["summary"]["live_slack_upload_native_delivery_covered"] = None
+    latest_path = _write_latest(tmp_path, report)
+
+    status = build_visual_self_validation_status(latest_path=latest_path)
+
+    assert status["health_status"] == "warn"
+    assert "configure_live_slack_upload_target" in status["next_steps"]
+    assert "enable_live_slack_upload_self_validation" not in status["next_steps"]
+
+
 def test_visual_self_validation_status_cli_json(capsys, tmp_path):
     from scripts.visual_self_validation_status import main
 

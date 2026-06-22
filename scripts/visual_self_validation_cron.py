@@ -29,6 +29,7 @@ def ensure_visual_self_validation_cron(
     schedule: str = "every 6h",
     live_mode: str = "auto",
     enable_live_provider: bool = True,
+    enable_live_slack_upload: bool = True,
     case_timeout_seconds: int | float = 240,
     min_live_interval_hours: int = 6,
     deliver: str = "local",
@@ -50,6 +51,7 @@ def ensure_visual_self_validation_cron(
         repo_root=repo,
         live_mode=live_mode,
         enable_live_provider=enable_live_provider,
+        enable_live_slack_upload=enable_live_slack_upload,
         case_timeout_seconds=case_timeout_seconds,
         min_live_interval_hours=min_live_interval_hours,
     )
@@ -93,6 +95,7 @@ def ensure_visual_self_validation_cron(
         },
         "live_mode": live_mode,
         "enable_live_provider": enable_live_provider,
+        "enable_live_slack_upload": enable_live_slack_upload,
         "case_timeout_seconds": case_timeout_seconds,
         "min_live_interval_hours": min_live_interval_hours,
         "self_review": {
@@ -100,6 +103,7 @@ def ensure_visual_self_validation_cron(
             "privacy_safe": True,
             "reduces_human_intervention": True,
             "live_provider_enabled": enable_live_provider,
+            "live_slack_upload_enabled": enable_live_slack_upload,
             "prompt_mutation": "disabled",
             "provider_health_separate_from_preference": True,
         },
@@ -111,10 +115,12 @@ def _script_body(
     repo_root: Path,
     live_mode: str,
     enable_live_provider: bool,
+    enable_live_slack_upload: bool,
     case_timeout_seconds: int | float,
     min_live_interval_hours: int,
 ) -> str:
     live_value = "1" if enable_live_provider else "0"
+    live_slack_upload_value = "1" if enable_live_slack_upload else "0"
     python_bin = repo_root / "venv" / "bin" / "python"
     python_ref = str(python_bin if python_bin.exists() else Path(sys.executable))
     return "\n".join(
@@ -122,6 +128,7 @@ def _script_body(
             "#!/usr/bin/env bash",
             "set -euo pipefail",
             f"export HERMES_VISUAL_LIVE_E2E={live_value}",
+            f"export HERMES_VISUAL_SLACK_LIVE_UPLOAD={live_slack_upload_value}",
             f"cd {json.dumps(str(repo_root))}",
             (
                 f"exec {json.dumps(python_ref)} "
@@ -177,6 +184,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--schedule", default="every 6h")
     parser.add_argument("--live-mode", choices=["off", "auto", "on"], default="auto")
     parser.add_argument("--disable-live-provider", action="store_true")
+    parser.add_argument("--disable-live-slack-upload", action="store_true")
     parser.add_argument("--case-timeout-seconds", type=float, default=240)
     parser.add_argument("--min-live-interval-hours", type=int, default=6)
     parser.add_argument("--deliver", default="local")
@@ -188,6 +196,7 @@ def main(argv: list[str] | None = None) -> int:
         schedule=args.schedule,
         live_mode=args.live_mode,
         enable_live_provider=not args.disable_live_provider,
+        enable_live_slack_upload=not args.disable_live_slack_upload,
         case_timeout_seconds=args.case_timeout_seconds,
         min_live_interval_hours=args.min_live_interval_hours,
         deliver=args.deliver,

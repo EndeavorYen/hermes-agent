@@ -224,7 +224,10 @@ def _next_steps(
         and summary.get("live_slack_upload_native_delivery_covered") is None
         and slack_upload_policy.get("decision") != "run"
     ):
-        steps.append("enable_live_slack_upload_self_validation")
+        if slack_upload_policy.get("decision") == "skip_missing_target":
+            steps.append("configure_live_slack_upload_target")
+        else:
+            steps.append("enable_live_slack_upload_self_validation")
     if not steps:
         steps.append("continue_visual_agent_mode_rollout")
     return steps
