@@ -25,6 +25,7 @@ def resolve_visual_feedback_policy(
             "quality_repair_mode": "default",
             "provider_recovery_mode": "default",
             "provider_retry_budget": 1,
+            "strategy_preference": None,
             "applied_action_types": [],
         }
 
@@ -41,6 +42,7 @@ def resolve_visual_feedback_policy(
     quality_repair_modes = {"image": "default", "video": "default"}
     provider_recovery_mode = "default"
     provider_retry_budget = 1
+    strategy_preference: dict[str, Any] | None = None
     applied_action_types: list[str] = []
     repair_dimensions: list[dict[str, str]] = []
 
@@ -83,6 +85,17 @@ def resolve_visual_feedback_policy(
             provider_recovery_mode = "safe_reframe"
             provider_retry_budget = 2
             _append_once(applied_action_types, action_type)
+        elif action_type == "prefer_strategy":
+            preference = _strategy_preference(action)
+            if preference:
+                strategy_preference = preference
+                if wants_video and preference.get("strategy_signature") == "image_first_rank_then_video":
+                    prefer_image_first_video = True
+                    rerank_before_delivery = True
+                    if not budget_locked_by_user and candidate_budget < 2:
+                        candidate_budget = 2
+                        candidate_budget_source = "feedback_loop"
+                _append_once(applied_action_types, action_type)
 
     return {
         "candidate_budget": candidate_budget,
@@ -93,6 +106,7 @@ def resolve_visual_feedback_policy(
         "quality_repair_modes": quality_repair_modes,
         "provider_recovery_mode": provider_recovery_mode,
         "provider_retry_budget": provider_retry_budget,
+        "strategy_preference": strategy_preference,
         "repair_dimensions": repair_dimensions,
         "applied_action_types": applied_action_types,
         "policy_sources": _string_list(feedback_report.get("policy_sources")) or ["feedback_loop"],
@@ -144,6 +158,20 @@ def _append_repair_dimension(values: list[dict[str, str]], action: dict[str, Any
     values.append(entry)
 
 
+def _strategy_preference(action: dict[str, Any]) -> dict[str, Any] | None:
+    strategy_signature = str(action.get("strategy_signature") or "").strip()
+    if not strategy_signature:
+        return None
+    return {
+        "strategy_signature": strategy_signature,
+        "source": str(action.get("source") or "").strip(),
+        "bucket": str(action.get("bucket") or action.get("intent_signature") or "").strip(),
+        "activation_status": str(action.get("activation_status") or "shadow").strip() or "shadow",
+        "confidence": _float(action.get("confidence")),
+        "prompt_mutation_allowed": False,
+    }
+
+
 def _action_modalities(action: dict[str, Any]) -> list[str]:
     value = action.get("modalities")
     if not isinstance(value, list):
@@ -160,3 +188,10 @@ def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item) for item in value if isinstance(item, str) and item.strip()]
+
+
+def _float(value: Any) -> float:
+    try:
+        return round(max(0.0, min(1.0, float(value))), 4)
+    except (TypeError, ValueError):
+        return 0.0

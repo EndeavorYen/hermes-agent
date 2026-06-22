@@ -46,6 +46,46 @@ def test_feedback_policy_applies_next_actions_to_runtime_strategy():
     ]
 
 
+def test_feedback_policy_exposes_preferred_strategy_without_prompt_mutation():
+    from agent.visual.feedback_policy import resolve_visual_feedback_policy
+
+    policy = resolve_visual_feedback_policy(
+        {
+            "next_actions": [
+                {
+                    "type": "prefer_strategy",
+                    "track": "aesthetic",
+                    "strategy_signature": "image_first_rank_then_video",
+                    "source": "live_quality_burn",
+                    "bucket": "live_visual_agent_mode",
+                    "activation_status": "shadow",
+                    "confidence": 0.91,
+                    "requires_human_feedback": False,
+                }
+            ],
+            "policy_sources": ["scheduled_self_validation"],
+        },
+        wants_image=True,
+        wants_video=True,
+        explicit_candidate_budget=None,
+        default_candidate_budget=1,
+    )
+
+    assert policy["candidate_budget"] == 2
+    assert policy["candidate_budget_source"] == "feedback_loop"
+    assert policy["prefer_image_first_video"] is True
+    assert policy["rerank_before_delivery"] is True
+    assert policy["strategy_preference"] == {
+        "strategy_signature": "image_first_rank_then_video",
+        "source": "live_quality_burn",
+        "bucket": "live_visual_agent_mode",
+        "activation_status": "shadow",
+        "confidence": 0.91,
+        "prompt_mutation_allowed": False,
+    }
+    assert policy["applied_action_types"] == ["prefer_strategy"]
+
+
 def test_feedback_policy_respects_explicit_user_candidate_budget():
     from agent.visual.feedback_policy import resolve_visual_feedback_policy
 

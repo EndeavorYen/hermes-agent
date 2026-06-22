@@ -27,6 +27,7 @@ from agent.visual.ranker import rank_visual_candidates
 from agent.visual.recovery import plan_visual_recovery
 from agent.visual.reward_model import score_visual_candidate
 from agent.visual.shadow_learning import record_shadow_update
+from agent.visual.strategy_policy import StrategyPlan
 from agent.visual.strategy_policy import find_controlled_strategy_plan
 from agent.visual.strategy_policy import select_strategy_plan
 from agent.visual.tracking import default_visual_ledger_path
@@ -256,10 +257,22 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         ledger,
         intent_signature=intent_signature,
     )
+    feedback_strategy_plan = None
     if controlled_strategy_plan is not None:
         strategy_plan = controlled_strategy_plan
+    else:
+        feedback_strategy_plan = _strategy_plan_from_feedback_preference(
+            strategy_plan,
+            feedback_policy=feedback_policy,
+            intent_signature=intent_signature,
+        )
+        if feedback_strategy_plan is not None:
+            strategy_plan = feedback_strategy_plan
     learning: dict[str, Any] = {
-        "mode": "controlled_read_only" if controlled_strategy_plan is not None else "shadow",
+        "mode": _learning_mode(
+            controlled_strategy_plan=controlled_strategy_plan,
+            feedback_strategy_plan=feedback_strategy_plan,
+        ),
         "strategy_plan": strategy_plan.to_record(),
         "active_learning": {},
     }
@@ -1526,6 +1539,13 @@ def _coerce_int(value: Any) -> int | None:
         return None
 
 
+def _coerce_float(value: Any) -> float:
+    try:
+        return round(max(0.0, min(1.0, float(value))), 4)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _coerce_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -1538,6 +1558,41 @@ def _candidate_visual_source(candidate: dict[str, Any]) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return ""
+
+
+def _learning_mode(
+    *,
+    controlled_strategy_plan: StrategyPlan | None,
+    feedback_strategy_plan: StrategyPlan | None,
+) -> str:
+    if controlled_strategy_plan is not None:
+        return "controlled_read_only"
+    if feedback_strategy_plan is not None:
+        return "feedback_preferred_read_only"
+    return "shadow"
+
+
+def _strategy_plan_from_feedback_preference(
+    base_plan: StrategyPlan,
+    *,
+    feedback_policy: dict[str, Any],
+    intent_signature: str,
+) -> StrategyPlan | None:
+    preference = feedback_policy.get("strategy_preference")
+    if not isinstance(preference, dict):
+        return None
+    strategy_signature = str(preference.get("strategy_signature") or "").strip()
+    if not strategy_signature:
+        return None
+    return StrategyPlan(
+        intent_signature=intent_signature,
+        mode="feedback_preferred",
+        confidence=_coerce_float(preference.get("confidence")),
+        strategy_signature=strategy_signature,
+        atom_signatures=list(base_plan.atom_signatures),
+        activation_status=str(preference.get("activation_status") or "shadow").strip() or "shadow",
+        prompt_mutation_allowed=False,
+    )
 
 
 def _visual_feedback_policy(

@@ -1610,6 +1610,96 @@ async def test_visual_package_applies_self_validation_next_actions(monkeypatch, 
 
 
 @pytest.mark.asyncio
+async def test_visual_package_applies_self_validation_strategy_preference(monkeypatch, tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
+    latest_report.parent.mkdir(parents=True)
+    latest_report.write_text(
+        json.dumps(
+            {
+                "success": True,
+                "automation": {
+                    "self_improvement": {
+                        "next_actions": [
+                            {
+                                "type": "prefer_strategy",
+                                "requires_human_feedback": False,
+                                "activation_status": "shadow",
+                                "confidence": 0.91,
+                                "source": "live_quality_burn",
+                                "bucket": "live_visual_agent_mode",
+                                "strategy_signature": "image_first_rank_then_video",
+                            }
+                        ]
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    image = tmp_path / "image.png"
+    video = tmp_path / "video.mp4"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    video.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+    image_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(image),
+            "provider": "fixture",
+            "model": "image",
+            "vision_observation": {
+                "face_quality": 0.9,
+                "visual_appeal": 0.9,
+                "composition": 0.9,
+                "stocking_quality": 0.9,
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+    monkeypatch.setattr(
+        visual_package_tool,
+        "generate_video",
+        lambda **kwargs: {
+            "success": True,
+            "video": str(video),
+            "provider": "fixture",
+            "model": "video",
+        },
+    )
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "請產出一張圖片和一段影片：霧黑鋼筆。",
+                "candidate_budget": 1,
+                "candidate_budget_source": "planner_default",
+                "video_budget": 1,
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert len(image_calls) == 2
+    assert payload["generation_strategy"]["candidate_budget"] == 2
+    assert payload["generation_strategy"]["feedback_policy"]["strategy_preference"]["strategy_signature"] == (
+        "image_first_rank_then_video"
+    )
+    assert payload["learning"]["mode"] == "feedback_preferred_read_only"
+    assert payload["learning"]["strategy_plan"]["strategy_signature"] == "image_first_rank_then_video"
+    assert payload["learning"]["strategy_plan"]["prompt_mutation_allowed"] is False
+    learning_rows = VisualAttemptLedger(default_visual_ledger_path())._list("visual_shadow_updates")
+    assert {row["strategy_signature"] for row in learning_rows} == {"image_first_rank_then_video"}
+
+
+@pytest.mark.asyncio
 async def test_visual_package_applies_preference_dimension_guidance_from_self_validation(monkeypatch, tmp_path):
     from tools import visual_package_tool
 
