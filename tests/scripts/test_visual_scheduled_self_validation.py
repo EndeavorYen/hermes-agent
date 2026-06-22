@@ -133,6 +133,13 @@ def _automation_report(*, include_live: bool, include_live_slack_upload: bool = 
                         "requires_human_feedback": False,
                         "source": "live_quality_burn",
                         "dimension": "face_naturalness",
+                    },
+                    {
+                        "type": "safe_reframe_provider_retry",
+                        "requires_human_feedback": False,
+                        "source": "live_quality_burn",
+                        "provider_failure_classes": {"content_moderation": 2},
+                        "provider_error_codes": {"api_error": 2},
                     }
                 ],
             }
@@ -429,10 +436,18 @@ def test_scheduled_self_validation_carries_forward_recent_live_burn_actions(monk
     assert report["automation"]["live_quality_burn"]["status"] == "carried_forward"
     assert "increase_candidate_budget" in report["summary"]["live_quality_burn_action_types"]
     assert "repair_low_preference_dimension" in report["summary"]["live_quality_burn_action_types"]
+    assert "safe_reframe_provider_retry" in report["summary"]["live_quality_burn_action_types"]
     assert {
         "type": "increase_candidate_budget",
         "requires_human_feedback": False,
         "source": "live_quality_burn",
+    } in report["automation"]["self_improvement"]["next_actions"]
+    assert {
+        "type": "safe_reframe_provider_retry",
+        "requires_human_feedback": False,
+        "source": "live_quality_burn",
+        "provider_failure_classes": {"content_moderation": 2},
+        "provider_error_codes": {"api_error": 2},
     } in report["automation"]["self_improvement"]["next_actions"]
 
 

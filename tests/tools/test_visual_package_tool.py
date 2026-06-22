@@ -1810,6 +1810,8 @@ async def test_visual_package_applies_safe_reframe_retry_budget_from_self_valida
                                 "activation_status": "next_run",
                                 "confidence": 0.7,
                                 "source": "live_quality_burn",
+                                "provider_failure_classes": {"content_moderation": 2},
+                                "provider_error_codes": {"api_error": 2},
                             }
                         ]
                     }
@@ -1856,6 +1858,10 @@ async def test_visual_package_applies_safe_reframe_retry_budget_from_self_valida
     assert len(calls) == 3
     assert payload["generation_strategy"]["feedback_policy"]["provider_recovery_mode"] == "safe_reframe"
     assert payload["generation_strategy"]["feedback_policy"]["provider_retry_budget"] == 2
+    assert payload["generation_strategy"]["feedback_policy"]["provider_failure_context"] == {
+        "provider_failure_classes": {"content_moderation": 2},
+        "provider_error_codes": {"api_error": 2},
+    }
     assert payload["generation_strategy"]["feedback_policy"]["applied_action_types"] == [
         "safe_reframe_provider_retry"
     ]

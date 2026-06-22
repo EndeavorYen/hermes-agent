@@ -25,6 +25,10 @@ def resolve_visual_feedback_policy(
             "quality_repair_mode": "default",
             "provider_recovery_mode": "default",
             "provider_retry_budget": 1,
+            "provider_failure_context": {
+                "provider_failure_classes": {},
+                "provider_error_codes": {},
+            },
             "strategy_preference": None,
             "applied_action_types": [],
         }
@@ -42,6 +46,10 @@ def resolve_visual_feedback_policy(
     quality_repair_modes = {"image": "default", "video": "default"}
     provider_recovery_mode = "default"
     provider_retry_budget = 1
+    provider_failure_context = {
+        "provider_failure_classes": {},
+        "provider_error_codes": {},
+    }
     strategy_preference: dict[str, Any] | None = None
     applied_action_types: list[str] = []
     repair_dimensions: list[dict[str, str]] = []
@@ -84,6 +92,7 @@ def resolve_visual_feedback_policy(
         elif action_type == "safe_reframe_provider_retry":
             provider_recovery_mode = "safe_reframe"
             provider_retry_budget = 2
+            provider_failure_context = _provider_failure_context(action)
             _append_once(applied_action_types, action_type)
         elif action_type == "prefer_strategy":
             preference = _strategy_preference(action)
@@ -106,6 +115,7 @@ def resolve_visual_feedback_policy(
         "quality_repair_modes": quality_repair_modes,
         "provider_recovery_mode": provider_recovery_mode,
         "provider_retry_budget": provider_retry_budget,
+        "provider_failure_context": provider_failure_context,
         "strategy_preference": strategy_preference,
         "repair_dimensions": repair_dimensions,
         "applied_action_types": applied_action_types,
@@ -172,6 +182,13 @@ def _strategy_preference(action: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _provider_failure_context(action: dict[str, Any]) -> dict[str, dict[str, int]]:
+    return {
+        "provider_failure_classes": _int_mapping(action.get("provider_failure_classes")),
+        "provider_error_codes": _int_mapping(action.get("provider_error_codes")),
+    }
+
+
 def _action_modalities(action: dict[str, Any]) -> list[str]:
     value = action.get("modalities")
     if not isinstance(value, list):
@@ -195,3 +212,15 @@ def _float(value: Any) -> float:
         return round(max(0.0, min(1.0, float(value))), 4)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _int_mapping(value: Any) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    mapping: dict[str, int] = {}
+    for key, count in value.items():
+        text = str(key or "").strip()
+        parsed = _int(count)
+        if text and parsed is not None and parsed > 0:
+            mapping[text] = parsed
+    return mapping

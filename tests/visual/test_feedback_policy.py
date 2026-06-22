@@ -198,6 +198,8 @@ def test_feedback_policy_applies_safe_reframe_provider_retry():
                     "track": "provider",
                     "confidence": 0.7,
                     "requires_human_feedback": False,
+                    "provider_failure_classes": {"content_moderation": 2, "timeout": 1},
+                    "provider_error_codes": {"api_error": 2, "case_timeout": 1},
                 }
             ]
         },
@@ -209,4 +211,8 @@ def test_feedback_policy_applies_safe_reframe_provider_retry():
 
     assert policy["provider_recovery_mode"] == "safe_reframe"
     assert policy["provider_retry_budget"] == 2
+    assert policy["provider_failure_context"] == {
+        "provider_failure_classes": {"content_moderation": 2, "timeout": 1},
+        "provider_error_codes": {"api_error": 2, "case_timeout": 1},
+    }
     assert policy["applied_action_types"] == ["safe_reframe_provider_retry"]

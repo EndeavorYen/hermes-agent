@@ -221,6 +221,46 @@ def test_visual_live_quality_burn_exports_repair_action(monkeypatch, tmp_path):
     ]
 
 
+def test_visual_live_quality_burn_exports_provider_failure_context(monkeypatch, tmp_path):
+    from scripts import visual_live_quality_burn
+
+    suite = _suite_with_quality_failure()
+    suite["recovery_summary"] = {
+        "provider_failure_count": 3,
+        "provider_failure_classes": {"content_moderation": 2, "timeout": 1},
+        "provider_error_codes": {"api_error": 2, "case_timeout": 1},
+        "retry_attempt_count": 2,
+        "negotiation_attempted_case_count": 2,
+        "negotiation_success_case_count": 1,
+        "content_moderation_recovered_case_count": 1,
+        "recovered_failure_classes": ["content_moderation"],
+    }
+
+    monkeypatch.setattr(
+        visual_live_quality_burn,
+        "build_visual_live_provider_e2e_suite_report",
+        lambda **_kwargs: suite,
+    )
+
+    report = visual_live_quality_burn.build_visual_live_quality_burn_report(
+        mode="live",
+        output_dir=tmp_path,
+    )
+
+    assert {
+        "type": "safe_reframe_provider_retry",
+        "track": "provider",
+        "reason": "live_quality_burn_provider_failures",
+        "confidence": 0.7,
+        "evidence_count": 3,
+        "requires_human_feedback": False,
+        "activation_status": "next_run",
+        "source": "live_quality_burn",
+        "provider_failure_classes": {"content_moderation": 2, "timeout": 1},
+        "provider_error_codes": {"api_error": 2, "case_timeout": 1},
+    } in report["next_actions"]
+
+
 def test_visual_live_quality_burn_promotes_high_quality_pass_without_repair(monkeypatch, tmp_path):
     from scripts import visual_live_quality_burn
 

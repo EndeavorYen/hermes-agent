@@ -238,6 +238,8 @@ def _next_actions(suite: dict[str, Any], summary: dict[str, Any]) -> list[dict[s
                 "live_quality_burn_provider_failures",
                 confidence=0.7,
                 evidence_count=_int(recovery.get("provider_failure_count")),
+                provider_failure_classes=_int_mapping(recovery.get("provider_failure_classes")),
+                provider_error_codes=_int_mapping(recovery.get("provider_error_codes")),
             )
         )
     repair = suite.get("quality_repair_summary") if isinstance(suite.get("quality_repair_summary"), dict) else {}
@@ -384,6 +386,18 @@ def _int(value: Any, *, default: int = 0) -> int:
         return max(0, int(value))
     except (TypeError, ValueError):
         return default
+
+
+def _int_mapping(value: Any) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    mapping: dict[str, int] = {}
+    for key, count in value.items():
+        text = str(key or "").strip()
+        parsed = _int(count)
+        if text and parsed > 0:
+            mapping[text] = parsed
+    return mapping
 
 
 def _float_or_none(value: Any) -> float | None:
