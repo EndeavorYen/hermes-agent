@@ -203,6 +203,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
     video_budget = _video_budget(args, wants_video=wants_video)
     inline_vision_judge = _inline_vision_judge_mode(args)
     request_category = _visual_request_category(prompt)
+    quality_guidance = _quality_guidance_plan(feedback_policy, request_category=request_category)
     normalized_intent = {
         "kind": "visual_package",
         "wants_image": requested_image,
@@ -263,9 +264,10 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
     if should_generate_image:
         image_payloads = []
         image_candidates = []
+        image_generation_prompt = _apply_first_pass_quality_guidance(prompt, quality_guidance["image"])
         for candidate_index in range(candidate_budget):
             image_kwargs = {
-                "prompt": prompt,
+                "prompt": image_generation_prompt,
                 "aspect_ratio": image_aspect_ratio,
                 "reference_image_urls": attachments or None,
             }
@@ -275,7 +277,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                     image_payload,
                     base_kwargs=image_kwargs,
                     request={
-                        "prompt": prompt,
+                        "prompt": image_generation_prompt,
                         "arguments": image_kwargs,
                         "source_media": _source_media_from_attachments(attachments),
                     },
@@ -288,7 +290,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 payload=image_payload,
                 artifact_key="image",
                 expected_kind="image",
-                prompt=prompt,
+                prompt=image_generation_prompt,
                 provider=str(image_payload.get("provider") or ""),
                 model=str(image_payload.get("model") or ""),
                 requested_parameters={"aspect_ratio": _judge_aspect_ratio(aspect_ratio)},
@@ -304,7 +306,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                     payload=image_payload,
                     base_kwargs=image_kwargs,
                     request={
-                        "prompt": prompt,
+                        "prompt": image_generation_prompt,
                         "arguments": image_kwargs,
                         "source_media": _source_media_from_attachments(attachments),
                     },
@@ -491,8 +493,9 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 },
             )
         else:
+            video_generation_base_prompt = _apply_first_pass_quality_guidance(prompt, quality_guidance["video"])
             hardened_video = build_hardened_video_request(
-                prompt=prompt,
+                prompt=video_generation_base_prompt,
                 requested_aspect_ratio=_video_tool_aspect_ratio(
                     requested_aspect_ratio=_judge_aspect_ratio(aspect_ratio),
                     source_ref=video_image_url,
@@ -515,7 +518,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                         video_payload,
                         base_kwargs=video_kwargs,
                         request={
-                            "prompt": prompt,
+                            "prompt": video_generation_base_prompt,
                             "arguments": video_kwargs,
                             "source_media": _source_media_from_attachments([video_image_url]),
                             "video_hardening": hardened_video.get("metadata", {}),
@@ -550,7 +553,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                         payload=video_payload,
                         base_kwargs=video_kwargs,
                         request={
-                            "prompt": prompt,
+                            "prompt": video_generation_base_prompt,
                             "arguments": video_kwargs,
                             "source_media": _source_media_from_attachments([video_image_url]),
                             "video_hardening": hardened_video.get("metadata", {}),
@@ -742,6 +745,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             "candidate_budget_source": candidate_budget_source,
             "video_budget": video_budget,
             "feedback_policy": feedback_policy,
+            "quality_guidance": quality_guidance,
         },
         "delivery_metadata": delivery_metadata,
         "generation_payloads": generation_payloads,
@@ -1215,6 +1219,61 @@ def _quality_repair_policy_mode(feedback_policy: dict[str, Any], modality: str) 
         return mode if mode in {"default", "preferred", "escalated"} else "default"
     mode = str(feedback_policy.get("quality_repair_mode") or "default").strip().lower()
     return mode if mode in {"default", "preferred", "escalated"} else "default"
+
+
+def _quality_guidance_plan(feedback_policy: dict[str, Any], *, request_category: str) -> dict[str, dict[str, Any]]:
+    return {
+        "image": _quality_guidance_entry(feedback_policy, "image", request_category=request_category),
+        "video": _quality_guidance_entry(feedback_policy, "video", request_category=request_category),
+    }
+
+
+def _quality_guidance_entry(
+    feedback_policy: dict[str, Any],
+    modality: str,
+    *,
+    request_category: str,
+) -> dict[str, Any]:
+    mode = _quality_repair_policy_mode(feedback_policy, modality)
+    if mode == "default":
+        return {
+            "enabled": False,
+            "mode": mode,
+            "prompt_suffix": "",
+        }
+    if modality == "video":
+        suffix = (
+            "First-pass video quality guidance: use natural real-time motion, "
+            "preserve the source aspect ratio, avoid slow motion, avoid stretching, "
+            "and keep subject anatomy stable."
+        )
+    elif _portrait_like_category(request_category):
+        suffix = (
+            "First-pass visual quality guidance: clean facial features, naturally polished subject, "
+            "refined wardrobe and legwear texture, strong editorial composition, realistic details."
+        )
+    else:
+        suffix = (
+            "First-pass visual quality guidance: clean product detail, strong composition, "
+            "realistic material texture, polished commercial lighting."
+        )
+    return {
+        "enabled": True,
+        "mode": mode,
+        "prompt_suffix": suffix,
+        "source_action_types": list(feedback_policy.get("applied_action_types") or []),
+    }
+
+
+def _apply_first_pass_quality_guidance(prompt: str, guidance: dict[str, Any]) -> str:
+    suffix = str(guidance.get("prompt_suffix") or "").strip() if isinstance(guidance, dict) else ""
+    if not suffix or suffix in prompt:
+        return prompt
+    return f"{prompt}\n\n{suffix}"
+
+
+def _portrait_like_category(category: str) -> bool:
+    return any(token in str(category or "").lower() for token in ("portrait", "fashion", "character", "cosplay"))
 
 
 def _portrait_like_prompt(prompt: str) -> bool:

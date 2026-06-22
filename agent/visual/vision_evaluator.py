@@ -65,14 +65,18 @@ def _merge_observations(
     ):
         if key in vision:
             merged[key] = vision[key]
+    fallback_defects = _filter_contradicted_fallback_defects(
+        [
+            str(item)
+            for item in (fallback or {}).get("artifact_defects", [])
+            if isinstance(item, str) and item.strip()
+        ],
+        vision,
+    )
     merged["artifact_defects"] = list(
         dict.fromkeys(
             [
-                *[
-                    str(item)
-                    for item in (fallback or {}).get("artifact_defects", [])
-                    if isinstance(item, str) and item.strip()
-                ],
+                *fallback_defects,
                 *[
                     str(item)
                     for item in vision.get("artifact_defects", [])
@@ -86,3 +90,27 @@ def _merge_observations(
         "summary": "privacy-safe independent visual quality observation",
     }
     return merged
+
+
+def _filter_contradicted_fallback_defects(defects: list[str], vision: dict[str, Any]) -> list[str]:
+    contradicted: set[str] = set()
+    if _dimension_at_least(vision, "aspect_integrity", 0.5):
+        contradicted.update({"aspect_mismatch", "weak_aspect_integrity"})
+    if _dimension_at_least(vision, "motion_quality", 0.4):
+        contradicted.update(
+            {
+                "duration_mismatch",
+                "weak_motion_evidence",
+                "weak_motion_or_duration_evidence",
+            }
+        )
+    return [defect for defect in defects if defect not in contradicted]
+
+
+def _dimension_at_least(vision: dict[str, Any], key: str, threshold: float) -> bool:
+    if key not in vision:
+        return False
+    try:
+        return float(vision.get(key)) >= threshold
+    except (TypeError, ValueError):
+        return False
