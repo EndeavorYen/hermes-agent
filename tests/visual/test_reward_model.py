@@ -197,3 +197,34 @@ def test_reward_model_strongly_penalizes_low_glamour_preference_dimensions():
     assert aligned["final_score"] > generic["final_score"]
     assert generic["dimensions"]["preference_dimension_fit"] < 0.3
     assert "preference_dimension_soft_gate_penalty" in generic["uncertainty_reasons"]
+
+
+def test_reward_model_uses_effective_preference_sample_count_for_confidence():
+    from agent.visual.reward_model import score_visual_candidate
+
+    result = score_visual_candidate(
+        {
+            "artifact_id": "candidate",
+            "kind": "image",
+            "provider": "fixture",
+            "model": "image",
+            "hard_gate": {"passed": True},
+            "scores": {"final_score": 0.9},
+            "judge_scores": {
+                "aesthetic_fit": 0.9,
+                "reference_adherence": 0.9,
+                "novelty": 0.9,
+                "motion_quality": 0.9,
+            },
+        },
+        provider_stats={"fixture:image": {"generation_success_rate": 1.0, "delivery_success_rate": 1.0, "attempt_count": 20}},
+        preference_profile={
+            "signals": {},
+            "issues": {},
+            "sample_count": 20,
+            "effective_sample_count": 1.0,
+        },
+    )
+
+    assert result["confidence"] < 0.8
+    assert "low_preference_sample_count" in result["uncertainty_reasons"]

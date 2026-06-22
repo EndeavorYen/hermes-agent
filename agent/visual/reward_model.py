@@ -173,7 +173,7 @@ def _confidence(
     preference_profile: dict[str, Any],
 ) -> float:
     judge_confidence = min(1.0, len(judge_scores) / 4.0)
-    sample_count = int(_coerce_float(preference_profile.get("sample_count", 0)))
+    sample_count = _preference_effective_sample_count(preference_profile)
     preference_confidence = min(1.0, sample_count / 5.0)
     confidence = provider_confidence * 0.30 + judge_confidence * 0.35 + preference_confidence * 0.35
     if not hard_gate_passed:
@@ -193,7 +193,7 @@ def _uncertainty_reasons(
         reasons.append("reference_adherence_missing")
     if "aesthetic_fit" not in judge_scores:
         reasons.append("aesthetic_fit_missing")
-    if int(_coerce_float(preference_profile.get("sample_count", 0))) < 5:
+    if _preference_effective_sample_count(preference_profile) < 5:
         reasons.append("low_preference_sample_count")
     if provider_confidence < 0.5:
         reasons.append("low_provider_sample_count")
@@ -214,6 +214,12 @@ def _uncertainty_reasons(
             if dimension_text and _clamp(value) < 0.5:
                 reasons.append(f"low_preference_dimension_{dimension_text}")
     return reasons
+
+
+def _preference_effective_sample_count(preference_profile: dict[str, Any]) -> float:
+    if "effective_sample_count" in preference_profile:
+        return _coerce_float(preference_profile.get("effective_sample_count"))
+    return _coerce_float(preference_profile.get("sample_count", 0))
 
 
 def _dimension(judge_scores: dict[str, Any], key: str, default: float) -> float:

@@ -66,3 +66,132 @@ def test_preference_profile_tracks_stocking_quality_penalty(tmp_path):
 
     assert profile["issues"]["subject_not_attractive"]["penalty"] > 0
     assert profile["issues"]["stockings_bad"]["penalty"] > 0
+
+
+def test_preference_profile_uses_quality_judgments_as_weak_self_supervised_labels(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.preference_profile import build_preference_profile
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+    request_id = ledger.record_request(status="completed", metadata={"intent_signature": "visig_demo"})
+    artifact_id = ledger.record_artifact(request_id=request_id, kind="image", content_hash="weak-bad")
+    ledger.record_judgment(
+        request_id=request_id,
+        artifact_id=artifact_id,
+        judge_name="visual_quality_judge",
+        score=0.42,
+        verdict="review",
+        details={
+            "quality_issues": ["subject_not_attractive"],
+            "preference_dimensions": {
+                "subject_beauty": 0.24,
+                "face_naturalness": 0.31,
+                "glamour_impact": 0.38,
+                "fashion_material_quality": 0.44,
+            },
+        },
+    )
+
+    profile = build_preference_profile(ledger, bucket="visig_demo")
+
+    assert profile["explicit_feedback_sample_count"] == 0
+    assert profile["self_supervised_sample_count"] == 1
+    assert profile["effective_sample_count"] < profile["sample_count"]
+    assert profile["issues"]["subject_not_attractive"]["penalty"] > 0
+    assert profile["issues"]["face_unnatural"]["penalty"] > 0
+    assert profile["issues"]["not_glamorous"]["penalty"] > 0
+    assert profile["issues"]["stockings_bad"]["penalty"] > 0
+
+
+def test_preference_profile_does_not_learn_from_non_quality_judges(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.preference_profile import build_preference_profile
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+    request_id = ledger.record_request(status="completed", metadata={"intent_signature": "visig_demo"})
+    artifact_id = ledger.record_artifact(request_id=request_id, kind="image", content_hash="weak-bad")
+    ledger.record_judgment(
+        request_id=request_id,
+        artifact_id=artifact_id,
+        judge_name="debug_judge",
+        score=0.1,
+        verdict="review",
+        details={"quality_issues": ["subject_not_attractive"]},
+    )
+
+    profile = build_preference_profile(ledger, bucket="visig_demo")
+
+    assert profile["sample_count"] == 0
+    assert profile["self_supervised_sample_count"] == 0
+    assert profile["issues"] == {}
+
+
+def test_preference_profile_filters_legacy_quality_judgments_without_request_id(tmp_path):
+    import json
+    import sqlite3
+
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.preference_profile import build_preference_profile
+
+    db_path = tmp_path / "legacy.sqlite3"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE visual_requests (
+                request_id TEXT PRIMARY KEY,
+                policy_context_json TEXT
+            );
+            CREATE TABLE visual_artifacts (
+                artifact_id TEXT PRIMARY KEY,
+                request_id TEXT NOT NULL,
+                attempt_id TEXT NOT NULL,
+                kind TEXT
+            );
+            CREATE TABLE visual_judgments (
+                judgment_id TEXT PRIMARY KEY,
+                artifact_id TEXT NOT NULL,
+                attempt_id TEXT NOT NULL,
+                judge_name TEXT NOT NULL,
+                score_json TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                created_at TEXT
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO visual_requests (request_id, policy_context_json) VALUES (?, ?)",
+            ("vrq_legacy", json.dumps({"intent_signature": "visig_demo"})),
+        )
+        conn.execute(
+            "INSERT INTO visual_artifacts (artifact_id, request_id, attempt_id, kind) VALUES (?, ?, ?, ?)",
+            ("var_legacy", "vrq_legacy", "vat_legacy", "image"),
+        )
+        conn.execute(
+            """
+            INSERT INTO visual_judgments (
+                judgment_id, artifact_id, attempt_id, judge_name, score_json, confidence, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "vjd_legacy",
+                "var_legacy",
+                "vat_legacy",
+                "visual_quality_judge",
+                json.dumps(
+                    {
+                        "quality_issues": ["subject_not_attractive"],
+                        "preference_dimensions": {"face_naturalness": 0.2},
+                    }
+                ),
+                0.3,
+                "2026-06-22T00:00:00+00:00",
+            ),
+        )
+
+    profile = build_preference_profile(VisualAttemptLedger(db_path), bucket="visig_demo")
+
+    assert profile["self_supervised_sample_count"] == 1
+    assert profile["issues"]["subject_not_attractive"]["penalty"] > 0
+    assert profile["issues"]["face_unnatural"]["penalty"] > 0

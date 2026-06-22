@@ -31,6 +31,24 @@ def test_strategy_policy_stays_shadow_and_private_safe():
     assert "private" not in json.dumps(payload)
 
 
+def test_strategy_policy_uses_effective_preference_sample_count_for_confidence():
+    from agent.visual.strategy_policy import select_strategy_plan
+
+    plan = select_strategy_plan(
+        "visig_demo",
+        provider_stats={"xai:image": {"generation_success_rate": 1.0, "attempt_count": 20}},
+        preference_profile={
+            "signals": {"legs_positive": {"weight": 0.8}},
+            "sample_count": 20,
+            "effective_sample_count": 0.0,
+        },
+        exploration_rate=0.2,
+    )
+
+    assert plan.mode == "explore"
+    assert plan.confidence < 0.7
+
+
 def test_strategy_policy_reads_latest_safe_controlled_activation(tmp_path):
     from agent.visual.attempt_ledger import VisualAttemptLedger
     from agent.visual.strategy_activation import record_strategy_activation

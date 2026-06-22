@@ -117,7 +117,7 @@ def _policy_confidence(
     preference_profile: dict[str, Any],
 ) -> float:
     provider_confidence = _provider_confidence(provider_stats)
-    sample_count = int(_coerce_float(preference_profile.get("sample_count", 0)))
+    sample_count = _preference_effective_sample_count(preference_profile)
     preference_confidence = min(1.0, sample_count / 5.0)
     confidence = provider_confidence * 0.55 + preference_confidence * 0.35 + 0.10
     return round(max(0.0, min(1.0, confidence)), 4)
@@ -160,3 +160,9 @@ def _coerce_float(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _preference_effective_sample_count(preference_profile: dict[str, Any]) -> float:
+    if "effective_sample_count" in preference_profile:
+        return _coerce_float(preference_profile.get("effective_sample_count"))
+    return _coerce_float(preference_profile.get("sample_count", 0))
