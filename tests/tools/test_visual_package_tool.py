@@ -987,6 +987,65 @@ async def test_visual_package_text_only_video_uses_single_ranked_image_when_cand
 
 
 @pytest.mark.asyncio
+async def test_visual_package_does_not_animate_candidate_grid_source(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    grid_image = tmp_path / "candidate-grid.png"
+    grid_image.write_bytes(_ONE_PIXEL_PNG)
+    video_calls = []
+
+    monkeypatch.setattr(
+        visual_package_tool,
+        "generate_image",
+        lambda **_kwargs: {
+            "success": True,
+            "image": str(grid_image),
+            "provider": "fixture",
+            "model": "image-fixture",
+            "vision_observation": {
+                "visual_appeal": 0.9,
+                "composition": 0.9,
+                "confidence": 0.9,
+                "artifact_defects": ["candidate_grid_layout"],
+            },
+        },
+    )
+
+    def fake_generate_video(**kwargs):
+        video_calls.append(kwargs)
+        return {
+            "success": True,
+            "video": str(tmp_path / "should-not-exist.mp4"),
+            "provider": "fixture",
+            "model": "video-fixture",
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_video", fake_generate_video)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "幫我產生一段 6 秒產品展示短片，主體是霧黑鋼筆",
+                "include_image": False,
+                "include_video": True,
+                "candidate_budget": 1,
+                "video_budget": 1,
+            }
+        )
+    )
+
+    assert payload["success"] is False
+    assert payload["videos"] == []
+    assert video_calls == []
+    assert payload["generation_strategy"]["image_first_for_video"] is True
+    assert payload["generation_strategy"]["video_source_image"] is None
+    assert payload["delivery_gate"]["image"]["allowed"] is False
+    assert payload["delivery_gate"]["image"]["quality_issues"] == ["source_frame_grid"]
+    assert payload["generation_payloads"]["video"]["error_type"] == "missing_video_source_image"
+
+
+@pytest.mark.asyncio
 async def test_visual_package_storyboard_generates_ranked_clip_per_shot(monkeypatch, tmp_path):
     from tools import visual_package_tool
 

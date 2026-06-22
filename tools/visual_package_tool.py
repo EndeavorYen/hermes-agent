@@ -49,6 +49,7 @@ MAX_REMOTE_MEDIA_BYTES = 150 * 1024 * 1024
 ALWAYS_BLOCKING_QUALITY_ISSUES = {
     "composition_bad",
     "reference_identity_drift",
+    "source_frame_grid",
 }
 VIDEO_BLOCKING_QUALITY_ISSUES = {
     "aspect_integrity_bad",
@@ -1947,6 +1948,14 @@ def _delivery_gate_decision(
         prompt=prompt,
     )
     action = str(active_learning.get("action") or "")
+    if "source_frame_grid" in quality_issues:
+        return {
+            "allowed": False,
+            "reason": "invalid_video_source_frame",
+            "active_learning_action": action,
+            "quality_issues": quality_issues,
+            "ignored_quality_issues": ignored_quality_issues,
+        }
     if action == "fail_closed" and quality_issues:
         return {
             "allowed": False,

@@ -233,6 +233,28 @@ def test_quality_judge_maps_artifact_defects_to_preference_issue_tags():
     assert "face_quality_low" not in result["quality_issues"]
 
 
+def test_quality_judge_maps_candidate_grid_defect_to_source_frame_issue():
+    from agent.visual.judges.quality import judge_visual_quality
+
+    result = judge_visual_quality(
+        {
+            "artifact_id": "var_grid_source",
+            "kind": "image",
+            "hard_gate": {"passed": True, "delivery_possible": True},
+            "scores": {"resolution": 0.9, "aspect_match": 0.9, "final_score": 0.9},
+        },
+        request_context={"category": "product"},
+        vision_observation={
+            "visual_appeal": 0.9,
+            "composition": 0.9,
+            "confidence": 0.8,
+            "artifact_defects": ["candidate_grid_layout"],
+        },
+    )
+
+    assert result["quality_issues"] == ["source_frame_grid"]
+
+
 def test_quality_judge_filters_portrait_reference_defects_for_product_context():
     from agent.visual.judges.quality import judge_visual_quality
 
