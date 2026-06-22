@@ -20,6 +20,7 @@ from scripts.visual_quality_calibration_report import build_quality_calibration_
 from scripts.visual_live_provider_e2e import build_visual_live_provider_e2e_report
 from scripts.visual_live_provider_e2e import build_visual_live_provider_e2e_suite_report
 from scripts.visual_live_quality_burn import build_visual_live_quality_burn_report
+from scripts.visual_slack_conversation_e2e import build_visual_slack_conversation_e2e_report
 from scripts.visual_slack_delivery_e2e import build_visual_slack_delivery_e2e_report
 
 
@@ -37,6 +38,7 @@ def build_visual_e2e_automation_report(
     if case_timeout_seconds is not None:
         fixture_quality_suite_kwargs["case_timeout_seconds"] = case_timeout_seconds
     fixture_quality_suite = build_visual_live_provider_e2e_suite_report(**fixture_quality_suite_kwargs)
+    slack_conversation = build_visual_slack_conversation_e2e_report(mode="fixture", work_dir=work_dir)
     slack_delivery = build_visual_slack_delivery_e2e_report(mode="fixture", work_dir=work_dir)
     live_slack_delivery = (
         build_visual_slack_delivery_e2e_report(mode="live", work_dir=None, upload=True)
@@ -85,6 +87,8 @@ def build_visual_e2e_automation_report(
         failures.append("fixture_e2e_failed")
     if fixture_quality_suite.get("success") is not True:
         failures.append("fixture_quality_suite_failed")
+    if slack_conversation.get("success") is not True:
+        failures.append("slack_conversation_failed")
     if slack_delivery.get("success") is not True:
         failures.append("slack_delivery_failed")
     if health.get("success") is not True:
@@ -107,6 +111,7 @@ def build_visual_e2e_automation_report(
         "conversation_route": conversation_route,
         "fixture_e2e": fixture_e2e,
         "fixture_quality_suite": fixture_quality_suite,
+        "slack_conversation": slack_conversation,
         "slack_delivery": slack_delivery,
         "live_slack_delivery": live_slack_delivery,
         "live_e2e": live_e2e,

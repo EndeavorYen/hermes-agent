@@ -128,6 +128,7 @@ def build_visual_slack_delivery_e2e_report(
             "artifact_count": visual_evidence.get("artifact_count", 0),
             "judgment_count": visual_evidence.get("judgment_count", 0),
             "ranking_count": visual_evidence.get("ranking_count", 0),
+            "video_source": visual_evidence.get("video_source", {}),
         },
         "delivery": delivery_evidence,
         "delivery_manifest": {

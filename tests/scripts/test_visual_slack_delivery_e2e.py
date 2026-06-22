@@ -101,6 +101,8 @@ def test_visual_slack_delivery_fixture_records_selected_media(tmp_path):
     assert report["delivery"]["sent_count"] == 2
     assert report["delivery"]["missing_delivery_artifact_ids"] == []
     assert report["delivery"]["duplicate_delivery_count"] == 0
+    assert report["visual"]["video_source"]["image_first_for_video"] is True
+    assert report["visual"]["video_source"]["uses_ranked_selected_image"] is True
 
     ledger = VisualAttemptLedger(tmp_path / "visual" / "attempt_ledger.sqlite3")
     deliveries = ledger.list_deliveries(request_id=report["delivery"]["request_id"])

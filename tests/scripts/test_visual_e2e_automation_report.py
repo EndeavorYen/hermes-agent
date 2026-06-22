@@ -13,6 +13,7 @@ def test_visual_e2e_automation_fixture_default(tmp_path):
     assert report["fixture_e2e"]["success"] is True
     assert report["agent_mode"]["success"] is True
     assert report["conversation_route"]["success"] is True
+    assert report["slack_conversation"]["success"] is True
     assert report["live_e2e"]["status"] == "not_requested"
     assert report["health"]["success"] is True
     assert report["quality_calibration"]["success"] is True
@@ -279,6 +280,22 @@ def test_visual_e2e_automation_fails_when_conversation_route_fails(monkeypatch, 
     assert report["success"] is False
     assert "conversation_route_failed" in report["failures"]
     assert report["conversation_route"]["failures"] == ["visual_agent_guidance_missing"]
+
+
+def test_visual_e2e_automation_fails_when_slack_conversation_fails(monkeypatch, tmp_path):
+    from scripts import visual_e2e_automation_report
+
+    monkeypatch.setattr(
+        visual_e2e_automation_report,
+        "build_visual_slack_conversation_e2e_report",
+        lambda **_kwargs: {"success": False, "failures": ["slack_ingress_not_dispatched"]},
+    )
+
+    report = visual_e2e_automation_report.build_visual_e2e_automation_report(work_dir=tmp_path)
+
+    assert report["success"] is False
+    assert "slack_conversation_failed" in report["failures"]
+    assert report["slack_conversation"]["failures"] == ["slack_ingress_not_dispatched"]
 
 
 def test_visual_e2e_automation_fails_when_quality_calibration_fails(monkeypatch, tmp_path):

@@ -192,8 +192,9 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
     wants_video = _wants_video(prompt, args)
     explicit_image_url = str(args.get("image_url") or "").strip() or None
     explicit_video_source = explicit_image_url
-    image_first_for_video = wants_video and not requested_image and not explicit_video_source
-    should_generate_image = requested_image or image_first_for_video
+    needs_generated_video_source = wants_video and not requested_image and not explicit_video_source
+    should_generate_image = requested_image or needs_generated_video_source
+    image_first_for_video = wants_video and should_generate_image and not explicit_video_source
     if not should_generate_image and not wants_video:
         requested_image = True
         should_generate_image = True

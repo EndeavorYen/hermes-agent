@@ -718,7 +718,12 @@ async def test_visual_package_image_plus_video_with_attachment_animates_selected
     assert payload["success"] is True
     assert payload["images"] == [str(selected)]
     assert payload["videos"] == [str(video)]
+    assert payload["generation_strategy"]["image_first_for_video"] is True
     assert video_calls[0]["image_url"] == str(selected)
+    assert (
+        payload["generation_strategy"]["video_source_artifact_id"]
+        == payload["rankings"]["image"]["selected_artifact_id"]
+    )
 
 
 @pytest.mark.asyncio
