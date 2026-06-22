@@ -228,3 +228,66 @@ def test_reward_model_uses_effective_preference_sample_count_for_confidence():
 
     assert result["confidence"] < 0.8
     assert "low_preference_sample_count" in result["uncertainty_reasons"]
+
+
+def test_reward_model_matches_positive_dimension_signals_from_profile():
+    from agent.visual.reward_model import score_visual_candidate
+
+    provider_stats = {"fixture:image": {"generation_success_rate": 1.0, "delivery_success_rate": 1.0, "attempt_count": 20}}
+    preference_profile = {
+        "sample_count": 6,
+        "effective_sample_count": 6,
+        "issues": {},
+        "signals": {
+            "glamour_positive": {"weight": 0.9},
+            "fashion_material_positive": {"weight": 0.8},
+        },
+    }
+    base_candidate = {
+        "kind": "image",
+        "provider": "fixture",
+        "model": "image",
+        "hard_gate": {"passed": True},
+        "scores": {"final_score": 0.8},
+        "judge_scores": {
+            "aesthetic_fit": 0.8,
+            "reference_adherence": 0.8,
+            "novelty": 0.8,
+            "motion_quality": 1.0,
+        },
+        "quality_issues": [],
+    }
+
+    aligned = score_visual_candidate(
+        {
+            **base_candidate,
+            "artifact_id": "aligned",
+            "preference_dimensions": {
+                "glamour_impact": 0.86,
+                "fashion_material_quality": 0.84,
+                "subject_beauty": 0.75,
+                "face_naturalness": 0.75,
+                "pose_composition": 0.75,
+            },
+        },
+        provider_stats=provider_stats,
+        preference_profile=preference_profile,
+    )
+    generic = score_visual_candidate(
+        {
+            **base_candidate,
+            "artifact_id": "generic",
+            "preference_dimensions": {
+                "glamour_impact": 0.55,
+                "fashion_material_quality": 0.55,
+                "subject_beauty": 0.87,
+                "face_naturalness": 0.87,
+                "pose_composition": 0.87,
+            },
+        },
+        provider_stats=provider_stats,
+        preference_profile=preference_profile,
+    )
+
+    assert aligned["dimensions"]["user_preference_fit"] > generic["dimensions"]["user_preference_fit"]
+    assert aligned["final_score"] > generic["final_score"]

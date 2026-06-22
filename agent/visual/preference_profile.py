@@ -14,6 +14,8 @@ MINIMUM_CONFIDENCE_SAMPLE_COUNT = 5
 EWMA_ALPHA = 0.35
 QUALITY_JUDGE_NAME = "visual_quality_judge"
 PREFERENCE_DIMENSION_LOW_THRESHOLD = 0.5
+PREFERENCE_DIMENSION_POSITIVE_THRESHOLD = 0.75
+QUALITY_JUDGMENT_POSITIVE_CONFIDENCE_THRESHOLD = 0.75
 
 _PREFERENCE_DIMENSION_ISSUES = {
     "subject_beauty": "subject_not_attractive",
@@ -22,6 +24,15 @@ _PREFERENCE_DIMENSION_ISSUES = {
     "fashion_material_quality": "stockings_bad",
     "pose_composition": "composition_bad",
     "motion_quality": "motion_bad",
+}
+
+_PREFERENCE_DIMENSION_SIGNALS = {
+    "subject_beauty": "subject_beauty_positive",
+    "face_naturalness": "face_naturalness_positive",
+    "glamour_impact": "glamour_positive",
+    "fashion_material_quality": "fashion_material_positive",
+    "pose_composition": "composition_positive",
+    "motion_quality": "motion_good",
 }
 
 
@@ -82,12 +93,15 @@ def build_preference_profile(
 
     self_supervised_sample_count = 0
     for row in judgment_rows:
-        updates = _quality_judgment_issue_updates(row)
-        if not updates:
+        issue_updates = _quality_judgment_issue_updates(row)
+        signal_updates = _quality_judgment_signal_updates(row)
+        if not issue_updates and not signal_updates:
             continue
         self_supervised_sample_count += 1
         effective_sample_count += WEAK_LABEL_WEIGHT
-        for issue, value in sorted(updates.items()):
+        for signal, value in sorted(signal_updates.items()):
+            _update(signal_stats, signal, value=value, weight=WEAK_LABEL_WEIGHT)
+        for issue, value in sorted(issue_updates.items()):
             _update(issue_stats, issue, value=value, weight=WEAK_LABEL_WEIGHT)
 
     sample_count = len(feedback_rows) + self_supervised_sample_count
@@ -328,6 +342,33 @@ def _quality_judgment_issue_updates(row: sqlite3.Row) -> dict[str, float]:
                 continue
             updates[issue] = max(updates.get(issue, 0.0), _clamp(1.0 - score))
     return updates
+
+
+def _quality_judgment_signal_updates(row: sqlite3.Row) -> dict[str, float]:
+    payload = _parsed_judgment(row)
+    if not payload or _string_list(payload.get("quality_issues")):
+        return {}
+    row_score = _quality_judgment_score(row, payload)
+    if row_score is None or row_score < QUALITY_JUDGMENT_POSITIVE_CONFIDENCE_THRESHOLD:
+        return {}
+    dimensions = payload.get("preference_dimensions")
+    if not isinstance(dimensions, dict):
+        return {}
+    updates: dict[str, float] = {}
+    for dimension, raw_score in dimensions.items():
+        signal = _PREFERENCE_DIMENSION_SIGNALS.get(str(dimension or ""))
+        score = _coerce_float_or_none(raw_score)
+        if signal is None or score is None or score < PREFERENCE_DIMENSION_POSITIVE_THRESHOLD:
+            continue
+        updates[signal] = max(updates.get(signal, 0.0), _clamp(score))
+    return updates
+
+
+def _quality_judgment_score(row: sqlite3.Row, payload: dict[str, Any]) -> float | None:
+    row_score = _coerce_float_or_none(_row_value(row, "score", "confidence"))
+    if row_score is not None:
+        return row_score
+    return _coerce_float_or_none(payload.get("confidence"))
 
 
 def _parsed_judgment(row: sqlite3.Row) -> dict[str, Any]:

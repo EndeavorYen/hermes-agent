@@ -6,6 +6,16 @@ from agent.visual.eval_dimensions import combine_weighted_scores
 
 
 VERSION = "visual_reward_model.v0.3"
+PREFERENCE_DIMENSION_POSITIVE_THRESHOLD = 0.75
+
+_PREFERENCE_DIMENSION_SIGNALS = {
+    "subject_beauty": "subject_beauty_positive",
+    "face_naturalness": "face_naturalness_positive",
+    "glamour_impact": "glamour_positive",
+    "fashion_material_quality": "fashion_material_positive",
+    "pose_composition": "composition_positive",
+    "motion_quality": "motion_good",
+}
 
 DEFAULT_WEIGHTS = {
     "artifact_validity": 0.20,
@@ -134,7 +144,7 @@ def _apply_preference_dimension_soft_gate(score: float, preference_dimension_fit
 
 
 def _candidate_signal_score(candidate: dict[str, Any], preference_profile: dict[str, Any]) -> float:
-    quality_signals = _string_list(candidate.get("quality_signals"))
+    quality_signals = _candidate_quality_signals(candidate)
     if not quality_signals:
         return 0.0
     signals = preference_profile.get("signals")
@@ -148,6 +158,19 @@ def _candidate_signal_score(candidate: dict[str, Any], preference_profile: dict[
     if not values:
         return 0.0
     return sum(values) / len(values)
+
+
+def _candidate_quality_signals(candidate: dict[str, Any]) -> list[str]:
+    signals = _string_list(candidate.get("quality_signals"))
+    dimensions = candidate.get("preference_dimensions")
+    if isinstance(dimensions, dict):
+        for dimension, raw_score in dimensions.items():
+            signal = _PREFERENCE_DIMENSION_SIGNALS.get(str(dimension or ""))
+            if signal is None or signal in signals:
+                continue
+            if _clamp(raw_score) >= PREFERENCE_DIMENSION_POSITIVE_THRESHOLD:
+                signals.append(signal)
+    return signals
 
 
 def _candidate_issue_penalty(quality_issues: list[str], preference_profile: dict[str, Any]) -> float:

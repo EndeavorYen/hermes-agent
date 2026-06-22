@@ -104,6 +104,44 @@ def test_preference_profile_uses_quality_judgments_as_weak_self_supervised_label
     assert profile["issues"]["stockings_bad"]["penalty"] > 0
 
 
+def test_preference_profile_learns_positive_signals_from_high_quality_judgments(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.preference_profile import build_preference_profile
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+    request_id = ledger.record_request(status="completed", metadata={"intent_signature": "visig_demo"})
+    artifact_id = ledger.record_artifact(request_id=request_id, kind="image", content_hash="weak-good")
+    ledger.record_judgment(
+        request_id=request_id,
+        artifact_id=artifact_id,
+        judge_name="visual_quality_judge",
+        score=0.91,
+        verdict="pass",
+        details={
+            "quality_issues": [],
+            "preference_dimensions": {
+                "subject_beauty": 0.86,
+                "face_naturalness": 0.88,
+                "glamour_impact": 0.82,
+                "fashion_material_quality": 0.8,
+                "pose_composition": 0.84,
+            },
+        },
+    )
+
+    profile = build_preference_profile(ledger, bucket="visig_demo")
+
+    assert profile["self_supervised_sample_count"] == 1
+    assert profile["effective_sample_count"] == 0.25
+    assert profile["issues"] == {}
+    assert profile["signals"]["subject_beauty_positive"]["weight"] > 0
+    assert profile["signals"]["face_naturalness_positive"]["weight"] > 0
+    assert profile["signals"]["glamour_positive"]["weight"] > 0
+    assert profile["signals"]["fashion_material_positive"]["weight"] > 0
+    assert profile["signals"]["composition_positive"]["weight"] > 0
+
+
 def test_preference_profile_does_not_learn_from_non_quality_judges(tmp_path):
     from agent.visual.attempt_ledger import VisualAttemptLedger
     from agent.visual.preference_profile import build_preference_profile
