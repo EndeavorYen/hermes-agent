@@ -1701,6 +1701,82 @@ async def test_visual_package_applies_preference_dimension_guidance_from_self_va
 
 
 @pytest.mark.asyncio
+async def test_visual_package_applies_safe_reframe_retry_budget_from_self_validation(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
+    latest_report.parent.mkdir(parents=True)
+    latest_report.write_text(
+        json.dumps(
+            {
+                "success": True,
+                "automation": {
+                    "self_improvement": {
+                        "next_actions": [
+                            {
+                                "type": "safe_reframe_provider_retry",
+                                "requires_human_feedback": False,
+                                "activation_status": "next_run",
+                                "confidence": 0.7,
+                                "source": "live_quality_burn",
+                            }
+                        ]
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    image = tmp_path / "image.png"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    calls = []
+
+    def fake_generate_image(**kwargs):
+        calls.append(kwargs)
+        if len(calls) < 3:
+            return {
+                "success": False,
+                "error_type": "api_error",
+                "error": "Generated image rejected by content moderation.",
+                "provider": "xai",
+                "model": "grok-imagine-image-quality",
+            }
+        return {
+            "success": True,
+            "image": str(image),
+            "provider": "xai",
+            "model": "grok-imagine-image-quality",
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "請產出一張圖片：時尚寫真。",
+                "include_video": False,
+                "candidate_budget": 1,
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert len(calls) == 3
+    assert payload["generation_strategy"]["feedback_policy"]["provider_recovery_mode"] == "safe_reframe"
+    assert payload["generation_strategy"]["feedback_policy"]["provider_retry_budget"] == 2
+    assert payload["generation_strategy"]["feedback_policy"]["applied_action_types"] == [
+        "safe_reframe_provider_retry"
+    ]
+    assert "policy-compliant editorial visual variant" in calls[1]["prompt"]
+    assert "policy-compliant editorial visual variant" in calls[2]["prompt"]
+    assert payload["generation_payloads"]["image"][0]["recovery"]["audit"]["retry_budget_remaining"] == 2
+    assert payload["generation_payloads"]["image"][1]["recovery"]["audit"]["retry_budget_remaining"] == 1
+    assert payload["generation_payloads"]["image"][2]["retry_of"] == 1
+
+
+@pytest.mark.asyncio
 async def test_visual_package_ignores_failed_self_validation_next_actions(monkeypatch, tmp_path):
     from tools import visual_package_tool
 

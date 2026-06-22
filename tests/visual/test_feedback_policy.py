@@ -145,3 +145,28 @@ def test_feedback_policy_applies_preference_dimension_repair_actions():
         },
     ]
     assert policy["applied_action_types"] == ["repair_low_preference_dimension"]
+
+
+def test_feedback_policy_applies_safe_reframe_provider_retry():
+    from agent.visual.feedback_policy import resolve_visual_feedback_policy
+
+    policy = resolve_visual_feedback_policy(
+        {
+            "next_actions": [
+                {
+                    "type": "safe_reframe_provider_retry",
+                    "track": "provider",
+                    "confidence": 0.7,
+                    "requires_human_feedback": False,
+                }
+            ]
+        },
+        wants_image=True,
+        wants_video=True,
+        explicit_candidate_budget=None,
+        default_candidate_budget=1,
+    )
+
+    assert policy["provider_recovery_mode"] == "safe_reframe"
+    assert policy["provider_retry_budget"] == 2
+    assert policy["applied_action_types"] == ["safe_reframe_provider_retry"]

@@ -202,6 +202,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         wants_image=should_generate_image,
         wants_video=wants_video,
     )
+    provider_retry_budget = _provider_retry_budget(feedback_policy)
     candidate_budget = int(feedback_policy.get("candidate_budget") or 0)
     candidate_budget_source = str(feedback_policy.get("candidate_budget_source") or "default")
     video_budget = _video_budget(args, wants_video=wants_video)
@@ -273,17 +274,18 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 "aspect_ratio": image_aspect_ratio,
                 "reference_image_urls": attachments or None,
             }
+            image_request = {
+                "prompt": image_generation_prompt,
+                "arguments": image_kwargs,
+                "source_media": _source_media_from_attachments(attachments),
+            }
             image_payload = generate_image(**image_kwargs)
             if not image_payload.get("success"):
                 _annotate_generation_failure(
                     image_payload,
                     base_kwargs=image_kwargs,
-                    request={
-                        "prompt": image_generation_prompt,
-                        "arguments": image_kwargs,
-                        "source_media": _source_media_from_attachments(attachments),
-                    },
-                    retry_budget_remaining=1,
+                    request=image_request,
+                    retry_budget_remaining=provider_retry_budget,
                 )
             image_payloads.append(image_payload)
             image_candidate = _record_payload_candidate(
@@ -301,19 +303,14 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             if image_candidate:
                 image_candidates.append(image_candidate)
             elif not image_payload.get("success"):
-                retry_payload = _retry_generation_payload(
+                for retry_offset, retry_payload in enumerate(_retry_generation_payloads(
                     generator=generate_image,
                     payload=image_payload,
                     base_kwargs=image_kwargs,
-                    request={
-                        "prompt": image_generation_prompt,
-                        "arguments": image_kwargs,
-                        "source_media": _source_media_from_attachments(attachments),
-                    },
-                    retry_budget_remaining=1,
+                    request=image_request,
+                    retry_budget_remaining=provider_retry_budget,
                     retry_of=candidate_index,
-                )
-                if retry_payload is not None:
+                )):
                     image_payloads.append(retry_payload)
                     retry_candidate = _record_payload_candidate(
                         ledger,
@@ -325,10 +322,11 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                         provider=str(retry_payload.get("provider") or ""),
                         model=str(retry_payload.get("model") or ""),
                         requested_parameters={"aspect_ratio": _judge_aspect_ratio(aspect_ratio)},
-                        candidate_index=candidate_index + candidate_budget,
+                        candidate_index=candidate_index + (candidate_budget * (retry_offset + 1)),
                     )
                     if retry_candidate:
                         image_candidates.append(retry_candidate)
+                        break
         generation_payloads["image"] = image_payloads[0] if len(image_payloads) == 1 else image_payloads
         _score_candidates(
             ledger,
@@ -508,18 +506,19 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                     "duration": duration,
                     "aspect_ratio": video_aspect_ratio,
                 }
+                video_request = {
+                    "prompt": video_generation_base_prompt,
+                    "arguments": video_kwargs,
+                    "source_media": _source_media_from_attachments([video_image_url]),
+                    "video_hardening": hardened_video.get("metadata", {}),
+                }
                 video_payload = generate_video(**video_kwargs)
                 if not video_payload.get("success"):
                     _annotate_generation_failure(
                         video_payload,
                         base_kwargs=video_kwargs,
-                        request={
-                            "prompt": video_generation_base_prompt,
-                            "arguments": video_kwargs,
-                            "source_media": _source_media_from_attachments([video_image_url]),
-                            "video_hardening": hardened_video.get("metadata", {}),
-                        },
-                        retry_budget_remaining=1,
+                        request=video_request,
+                        retry_budget_remaining=provider_retry_budget,
                     )
                 video_payloads.append(video_payload)
                 video_candidate = _record_payload_candidate(
@@ -542,20 +541,14 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 if video_candidate:
                     video_candidates.append(video_candidate)
                 elif not video_payload.get("success"):
-                    retry_payload = _retry_generation_payload(
+                    for retry_offset, retry_payload in enumerate(_retry_generation_payloads(
                         generator=generate_video,
                         payload=video_payload,
                         base_kwargs=video_kwargs,
-                        request={
-                            "prompt": video_generation_base_prompt,
-                            "arguments": video_kwargs,
-                            "source_media": _source_media_from_attachments([video_image_url]),
-                            "video_hardening": hardened_video.get("metadata", {}),
-                        },
-                        retry_budget_remaining=1,
+                        request=video_request,
+                        retry_budget_remaining=provider_retry_budget,
                         retry_of=candidate_index,
-                    )
-                    if retry_payload is not None:
+                    )):
                         video_payloads.append(retry_payload)
                         retry_candidate = _record_payload_candidate(
                             ledger,
@@ -572,10 +565,11 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                                 "motion_mode": hardened_video.get("metadata", {}).get("motion_mode"),
                                 "source_image_artifact_id": video_source_artifact_id,
                             },
-                            candidate_index=candidate_index + video_budget,
+                            candidate_index=candidate_index + (video_budget * (retry_offset + 1)),
                         )
                         if retry_candidate:
                             video_candidates.append(retry_candidate)
+                            break
             generation_payloads["video"] = video_payloads[0] if len(video_payloads) == 1 else video_payloads
         _score_candidates(
             ledger,
@@ -845,6 +839,50 @@ def _package_error(
     return {"error_type": None, "error": None}
 
 
+def _retry_generation_payloads(
+    *,
+    generator,
+    payload: dict[str, Any],
+    base_kwargs: dict[str, Any],
+    request: dict[str, Any],
+    retry_budget_remaining: int,
+    retry_of: int,
+) -> list[dict[str, Any]]:
+    retries: list[dict[str, Any]] = []
+    current_payload = payload
+    current_kwargs = dict(base_kwargs)
+    remaining = max(0, _coerce_int(retry_budget_remaining) or 0)
+    current_retry_of = retry_of
+    while remaining > 0:
+        _annotate_generation_failure(
+            current_payload,
+            base_kwargs=current_kwargs,
+            request={**request, "arguments": current_kwargs},
+            retry_budget_remaining=remaining,
+        )
+        recovery = current_payload["recovery"]
+        if recovery.get("decision") != "retry":
+            break
+        retry_kwargs = _retry_kwargs_from_recovery(current_kwargs, recovery)
+        retry_payload = generator(**retry_kwargs)
+        retry_payload["retry_of"] = current_retry_of
+        retries.append(retry_payload)
+        if retry_payload.get("success"):
+            retry_payload["recovery"] = recovery
+            break
+        remaining -= 1
+        _annotate_generation_failure(
+            retry_payload,
+            base_kwargs=retry_kwargs,
+            request={**request, "arguments": retry_kwargs},
+            retry_budget_remaining=remaining,
+        )
+        current_payload = retry_payload
+        current_kwargs = retry_kwargs
+        current_retry_of = current_retry_of + 1
+    return retries
+
+
 def _retry_generation_payload(
     *,
     generator,
@@ -854,31 +892,23 @@ def _retry_generation_payload(
     retry_budget_remaining: int,
     retry_of: int,
 ) -> dict[str, Any] | None:
-    _annotate_generation_failure(
-        payload,
+    retries = _retry_generation_payloads(
+        generator=generator,
+        payload=payload,
         base_kwargs=base_kwargs,
         request=request,
         retry_budget_remaining=retry_budget_remaining,
+        retry_of=retry_of,
     )
-    recovery = payload["recovery"]
-    if recovery.get("decision") != "retry":
-        return None
+    return retries[0] if retries else None
+
+
+def _retry_kwargs_from_recovery(base_kwargs: dict[str, Any], recovery: dict[str, Any]) -> dict[str, Any]:
     retry_kwargs = {**base_kwargs}
     for key in recovery.get("removed_arguments") or []:
         retry_kwargs.pop(str(key), None)
     retry_kwargs.update(_generator_kwargs(recovery.get("modified_arguments")))
-    retry_payload = generator(**retry_kwargs)
-    retry_payload["retry_of"] = retry_of
-    if retry_payload.get("success"):
-        retry_payload["recovery"] = recovery
-    else:
-        _annotate_generation_failure(
-            retry_payload,
-            base_kwargs=retry_kwargs,
-            request={**request, "arguments": retry_kwargs},
-            retry_budget_remaining=max(0, retry_budget_remaining - 1),
-        )
-    return retry_payload
+    return retry_kwargs
 
 
 def _annotate_generation_failure(
@@ -1525,6 +1555,11 @@ def _visual_feedback_policy(
         explicit_candidate_budget=explicit_candidate_budget,
         default_candidate_budget=default_candidate_budget,
     )
+
+
+def _provider_retry_budget(feedback_policy: dict[str, Any]) -> int:
+    value = _coerce_int(feedback_policy.get("provider_retry_budget"))
+    return _clamp_budget(value or 1, minimum=1, maximum=2)
 
 
 def _candidate_budget_policy_inputs(args: dict[str, Any]) -> tuple[int | None, int]:

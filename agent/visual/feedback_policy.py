@@ -23,6 +23,8 @@ def resolve_visual_feedback_policy(
             "prefer_image_first_video": False,
             "rerank_before_delivery": False,
             "quality_repair_mode": "default",
+            "provider_recovery_mode": "default",
+            "provider_retry_budget": 1,
             "applied_action_types": [],
         }
 
@@ -37,6 +39,8 @@ def resolve_visual_feedback_policy(
     rerank_before_delivery = False
     quality_repair_mode = "default"
     quality_repair_modes = {"image": "default", "video": "default"}
+    provider_recovery_mode = "default"
+    provider_retry_budget = 1
     applied_action_types: list[str] = []
     repair_dimensions: list[dict[str, str]] = []
 
@@ -75,6 +79,10 @@ def resolve_visual_feedback_policy(
             _set_quality_repair_mode(quality_repair_modes, action, "preferred")
             _append_once(applied_action_types, action_type)
             _append_repair_dimension(repair_dimensions, action)
+        elif action_type == "safe_reframe_provider_retry":
+            provider_recovery_mode = "safe_reframe"
+            provider_retry_budget = 2
+            _append_once(applied_action_types, action_type)
 
     return {
         "candidate_budget": candidate_budget,
@@ -83,6 +91,8 @@ def resolve_visual_feedback_policy(
         "rerank_before_delivery": rerank_before_delivery,
         "quality_repair_mode": quality_repair_mode,
         "quality_repair_modes": quality_repair_modes,
+        "provider_recovery_mode": provider_recovery_mode,
+        "provider_retry_budget": provider_retry_budget,
         "repair_dimensions": repair_dimensions,
         "applied_action_types": applied_action_types,
         "policy_sources": _string_list(feedback_report.get("policy_sources")) or ["feedback_loop"],
