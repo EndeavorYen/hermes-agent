@@ -81,9 +81,50 @@ def test_feedback_policy_exposes_preferred_strategy_without_prompt_mutation():
         "bucket": "live_visual_agent_mode",
         "activation_status": "shadow",
         "confidence": 0.91,
+        "candidate_budget": None,
         "prompt_mutation_allowed": False,
     }
     assert policy["applied_action_types"] == ["prefer_strategy"]
+
+
+def test_feedback_policy_uses_proven_strategy_budget_over_stale_budget_increase():
+    from agent.visual.feedback_policy import resolve_visual_feedback_policy
+
+    policy = resolve_visual_feedback_policy(
+        {
+            "next_actions": [
+                {
+                    "type": "increase_candidate_budget",
+                    "max_candidate_budget": 4,
+                    "source": "feedback_loop",
+                    "requires_human_feedback": False,
+                },
+                {
+                    "type": "prefer_strategy",
+                    "track": "aesthetic",
+                    "strategy_signature": "image_first_rank_then_video",
+                    "source": "live_quality_burn",
+                    "bucket": "live_visual_agent_mode",
+                    "activation_status": "shadow",
+                    "confidence": 0.82,
+                    "candidate_budget": 2,
+                    "requires_human_feedback": False,
+                },
+            ],
+            "policy_sources": ["feedback_loop", "scheduled_self_validation"],
+        },
+        wants_image=True,
+        wants_video=True,
+        explicit_candidate_budget=None,
+        default_candidate_budget=2,
+    )
+
+    assert policy["candidate_budget"] == 2
+    assert policy["candidate_budget_source"] == "live_quality_burn"
+    assert policy["prefer_image_first_video"] is True
+    assert policy["rerank_before_delivery"] is True
+    assert policy["strategy_preference"]["candidate_budget"] == 2
+    assert policy["applied_action_types"] == ["increase_candidate_budget", "prefer_strategy"]
 
 
 def test_feedback_policy_makes_image_first_video_action_executable():

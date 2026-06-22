@@ -399,5 +399,6 @@ def test_visual_live_quality_burn_promotes_high_quality_pass_without_repair(monk
             "source": "live_quality_burn",
             "bucket": "live_visual_agent_mode",
             "strategy_signature": "image_first_rank_then_video",
+            "candidate_budget": 2,
         }
     ]

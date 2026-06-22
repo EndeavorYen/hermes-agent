@@ -95,7 +95,11 @@ def resolve_visual_feedback_policy(
                 if wants_video and preference.get("strategy_signature") == "image_first_rank_then_video":
                     prefer_image_first_video = True
                     rerank_before_delivery = True
-                    if not budget_locked_by_user and candidate_budget < 2:
+                    preferred_budget = _int(preference.get("candidate_budget"))
+                    if not budget_locked_by_user and preferred_budget is not None:
+                        candidate_budget = _clamp(preferred_budget, minimum=1, maximum=MAX_CANDIDATE_BUDGET)
+                        candidate_budget_source = str(preference.get("source") or "feedback_loop").strip() or "feedback_loop"
+                    elif not budget_locked_by_user and candidate_budget < 2:
                         candidate_budget = 2
                         candidate_budget_source = "feedback_loop"
                 _append_once(applied_action_types, action_type)
@@ -172,6 +176,7 @@ def _strategy_preference(action: dict[str, Any]) -> dict[str, Any] | None:
         "bucket": str(action.get("bucket") or action.get("intent_signature") or "").strip(),
         "activation_status": str(action.get("activation_status") or "shadow").strip() or "shadow",
         "confidence": _float(action.get("confidence")),
+        "candidate_budget": _int(action.get("candidate_budget")),
         "prompt_mutation_allowed": False,
     }
 
