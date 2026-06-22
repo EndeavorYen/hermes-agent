@@ -692,8 +692,27 @@ def _next_actions_from_slack_delivery(slack_delivery: dict[str, Any]) -> list[di
         provider_error_codes = _int_mapping(
             recovery.get("provider_error_codes") or visual.get("provider_error_codes")
         )
+        quota_count = provider_failure_classes.get("quota_exceeded", 0)
+        if quota_count > 0:
+            actions.append(
+                _action(
+                    "resolve_provider_quota_or_switch_provider",
+                    "provider",
+                    "slack_conversation_provider_quota_exceeded",
+                    confidence=0.95,
+                    evidence_count=quota_count,
+                    provider_failure_classes={"quota_exceeded": quota_count},
+                    provider_error_codes=provider_error_codes,
+                )
+            )
+        retryable_failure_count = max(0, provider_failure_count - quota_count)
+        retryable_failure_classes = {
+            key: count
+            for key, count in provider_failure_classes.items()
+            if key != "quota_exceeded"
+        }
         content_moderation_count = provider_failure_classes.get("content_moderation", 0)
-        if content_moderation_count > 0:
+        if retryable_failure_count > 0 and content_moderation_count > 0:
             actions.append(
                 _action(
                     "safe_reframe_provider_retry",
@@ -701,36 +720,48 @@ def _next_actions_from_slack_delivery(slack_delivery: dict[str, Any]) -> list[di
                     "slack_conversation_content_moderation_failure",
                     confidence=0.75,
                     evidence_count=content_moderation_count,
-                    provider_failure_classes=provider_failure_classes,
+                    provider_failure_classes=retryable_failure_classes or provider_failure_classes,
                     provider_error_codes=provider_error_codes,
                 )
             )
-        elif any(provider_failure_classes.get(key, 0) > 0 for key in ("timeout", "empty_response")):
+        elif retryable_failure_count > 0 and any(
+            provider_failure_classes.get(key, 0) > 0 for key in ("timeout", "empty_response")
+        ):
             actions.append(
                 _action(
                     "retry_provider_feasible_variant",
                     "provider",
                     "slack_conversation_retryable_provider_failure",
                     confidence=0.65,
-                    evidence_count=provider_failure_count,
-                    provider_failure_classes=provider_failure_classes,
+                    evidence_count=retryable_failure_count,
+                    provider_failure_classes=retryable_failure_classes or provider_failure_classes,
                     provider_error_codes=provider_error_codes,
                 )
             )
-        elif any(provider_failure_classes.get(key, 0) > 0 for key in ("provider_unavailable", "rate_limited")):
+        elif retryable_failure_count > 0 and any(
+            provider_failure_classes.get(key, 0) > 0 for key in ("provider_unavailable", "rate_limited")
+        ):
             actions.append(
                 _action(
                     "retry_provider_later",
                     "provider",
                     "slack_conversation_provider_temporarily_unavailable",
                     confidence=0.6,
-                    evidence_count=provider_failure_count,
-                    provider_failure_classes=provider_failure_classes,
+                    evidence_count=retryable_failure_count,
+                    provider_failure_classes=retryable_failure_classes or provider_failure_classes,
                     provider_error_codes=provider_error_codes,
                 )
             )
 
-    quality_actions = _next_actions_from_quality_gate(_dict(visual.get("quality_gate")))
+    quality_gate = _dict(visual.get("quality_gate"))
+    quality_actions = []
+    if not _provider_account_blocked_without_quality_evidence(
+        provider_failure_classes=_int_mapping(
+            recovery.get("provider_failure_classes") or visual.get("provider_failure_classes")
+        ),
+        quality_gate=quality_gate,
+    ):
+        quality_actions = _next_actions_from_quality_gate(quality_gate)
     if quality_actions and (slack_delivery.get("success") is True or _quality_repair_failure(slack_delivery)):
         actions.extend(quality_actions)
     return _dedupe_actions(actions)
@@ -748,6 +779,24 @@ def _quality_repair_failure(slack_delivery: dict[str, Any]) -> bool:
             "pre_slack_preference_dimension_low",
         }
     )
+
+
+def _provider_account_blocked_without_quality_evidence(
+    *,
+    provider_failure_classes: dict[str, int],
+    quality_gate: dict[str, Any],
+) -> bool:
+    if provider_failure_classes.get("quota_exceeded", 0) <= 0:
+        return False
+    if _int(quality_gate.get("score_count")) > 0:
+        return False
+    if _float_or_none(quality_gate.get("min_score")) is not None:
+        return False
+    if _string_list(quality_gate.get("quality_issues")):
+        return False
+    if _preference_dimension_failures(quality_gate.get("preference_dimension_failures")):
+        return False
+    return True
 
 
 def _next_actions_from_quality_gate(quality_gate: dict[str, Any]) -> list[dict[str, Any]]:

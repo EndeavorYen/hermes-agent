@@ -452,3 +452,34 @@ def test_feedback_policy_applies_safe_reframe_provider_retry():
         "provider_error_codes": {"api_error": 2, "case_timeout": 1},
     }
     assert policy["applied_action_types"] == ["safe_reframe_provider_retry"]
+
+
+def test_feedback_policy_applies_provider_quota_action_without_retry_budget():
+    from agent.visual.feedback_policy import resolve_visual_feedback_policy
+
+    policy = resolve_visual_feedback_policy(
+        {
+            "next_actions": [
+                {
+                    "type": "resolve_provider_quota_or_switch_provider",
+                    "track": "provider",
+                    "confidence": 0.95,
+                    "requires_human_feedback": False,
+                    "provider_failure_classes": {"quota_exceeded": 1},
+                    "provider_error_codes": {"personal-team-blocked:spending-limit": 1},
+                }
+            ]
+        },
+        wants_image=True,
+        wants_video=True,
+        explicit_candidate_budget=None,
+        default_candidate_budget=2,
+    )
+
+    assert policy["provider_recovery_mode"] == "provider_account_blocked"
+    assert policy["provider_retry_budget"] == 0
+    assert policy["provider_failure_context"] == {
+        "provider_failure_classes": {"quota_exceeded": 1},
+        "provider_error_codes": {"personal-team-blocked:spending-limit": 1},
+    }
+    assert policy["applied_action_types"] == ["resolve_provider_quota_or_switch_provider"]

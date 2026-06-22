@@ -336,7 +336,7 @@ def test_visual_slack_conversation_e2e_exports_repair_action_from_provider_failu
         return {
             "success": False,
             "mode": kwargs["mode"],
-            "failures": ["visual_generation_failed"],
+            "failures": ["missing_deliverables", "quality_gate_failed", "visual_generation_failed"],
             "target": {
                 "platform": "slack",
                 "destination_id": kwargs["target"],
@@ -471,6 +471,78 @@ def test_visual_slack_conversation_e2e_retries_provider_failure_with_repair_poli
     assert report["repair_attempt"]["action_type"] == "safe_reframe_provider_retry"
     assert report["repair_attempt"]["policy_written"] is True
     assert report["next_actions"]
+
+
+def test_visual_slack_conversation_e2e_routes_quota_to_provider_account_action(
+    monkeypatch,
+    tmp_path,
+):
+    from scripts import visual_slack_conversation_e2e
+
+    def quota_blocked_delivery(**kwargs):
+        return {
+            "success": False,
+            "mode": kwargs["mode"],
+            "failures": ["visual_generation_failed"],
+            "target": {
+                "platform": "slack",
+                "destination_id": kwargs["target"],
+                "thread_id": kwargs["thread_id"],
+            },
+            "visual": {
+                "request_id": "vrq_quota_blocked",
+                "image_count": 0,
+                "video_count": 0,
+                "provider_failure_classes": {"quota_exceeded": 1},
+                "provider_error_codes": {"personal-team-blocked:spending-limit": 1},
+                "recovery_summary": {
+                    "provider_failure_count": 1,
+                    "provider_failure_classes": {"quota_exceeded": 1},
+                    "provider_error_codes": {"personal-team-blocked:spending-limit": 1},
+                    "retry_attempt_count": 0,
+                    "negotiation_attempted": False,
+                    "negotiation_success": False,
+                },
+                "quality_gate": {
+                    "success": False,
+                    "score_count": 0,
+                    "min_score": None,
+                    "quality_issues": [],
+                    "preference_dimension_failures": [],
+                },
+            },
+            "delivery": {"deliverable_count": 0, "sent_count": 0},
+        }
+
+    monkeypatch.setattr(
+        visual_slack_conversation_e2e,
+        "build_visual_slack_delivery_e2e_report",
+        quota_blocked_delivery,
+    )
+
+    report = visual_slack_conversation_e2e.build_visual_slack_conversation_e2e_report(
+        mode="fixture",
+        work_dir=tmp_path,
+        target="D_TEST",
+        repair_budget=1,
+    )
+
+    action_types = [action["type"] for action in report["next_actions"]]
+    assert report["success"] is False
+    assert report["repair_attempt"]["attempted"] is False
+    assert action_types == ["resolve_provider_quota_or_switch_provider"]
+    assert {
+        "type": "resolve_provider_quota_or_switch_provider",
+        "track": "provider",
+        "reason": "slack_conversation_provider_quota_exceeded",
+        "confidence": 0.95,
+        "evidence_count": 1,
+        "requires_human_feedback": False,
+        "activation_status": "next_run",
+        "source": "slack_conversation_e2e",
+        "provider_failure_classes": {"quota_exceeded": 1},
+        "provider_error_codes": {"personal-team-blocked:spending-limit": 1},
+    } in report["next_actions"]
 
 
 def test_visual_slack_conversation_e2e_retries_quality_failure_with_dimension_policy(

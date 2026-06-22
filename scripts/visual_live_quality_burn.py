@@ -316,6 +316,11 @@ def _quality_focus_failed_case_ids(summary: dict[str, Any]) -> list[str]:
 def _next_actions(suite: dict[str, Any], summary: dict[str, Any]) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     failures = {str(failure) for failure in suite.get("failures") or []}
+    recovery = suite.get("recovery_summary") if isinstance(suite.get("recovery_summary"), dict) else {}
+    provider_account_blocked_without_quality_evidence = _provider_account_blocked_without_quality_evidence(
+        summary,
+        recovery,
+    )
     promotion_failures = {
         failure for failure in failures if not failure.startswith("video_quality_repair:")
     }
@@ -323,9 +328,12 @@ def _next_actions(suite: dict[str, Any], summary: dict[str, Any]) -> list[dict[s
         summary.get("promotion_quality_issue_count"),
         default=_int(summary.get("quality_issue_count")),
     )
-    if promotion_quality_issue_count > 0 or any(
-        "quality_gate_failed" in failure or "selected_quality_issue_detected" in failure
-        for failure in promotion_failures
+    if not provider_account_blocked_without_quality_evidence and (
+        promotion_quality_issue_count > 0
+        or any(
+            "quality_gate_failed" in failure or "selected_quality_issue_detected" in failure
+            for failure in promotion_failures
+        )
     ):
         evidence_count = max(1, promotion_quality_issue_count)
         actions.append(
@@ -392,19 +400,7 @@ def _next_actions(suite: dict[str, Any], summary: dict[str, Any]) -> list[dict[s
                 evidence_count=_int(summary.get("image_first_video_source_failure_count")),
             )
         )
-    recovery = suite.get("recovery_summary") if isinstance(suite.get("recovery_summary"), dict) else {}
-    if _int(recovery.get("provider_failure_count")) > 0:
-        actions.append(
-            _action(
-                "safe_reframe_provider_retry",
-                "provider",
-                "live_quality_burn_provider_failures",
-                confidence=0.7,
-                evidence_count=_int(recovery.get("provider_failure_count")),
-                provider_failure_classes=_int_mapping(recovery.get("provider_failure_classes")),
-                provider_error_codes=_int_mapping(recovery.get("provider_error_codes")),
-            )
-        )
+    actions.extend(_provider_failure_actions(recovery))
     repair = suite.get("quality_repair_summary") if isinstance(suite.get("quality_repair_summary"), dict) else {}
     actions.extend(_quality_repair_actions(repair))
     if _high_quality_pass(suite, summary) and _strategy_promotion_actions_allowed(actions, suite):
@@ -559,6 +555,73 @@ def _strategy_promotion_actions_allowed(
         return False
     cases = suite.get("cases") if isinstance(suite.get("cases"), list) else []
     return any(_diagnostic_case(case) for case in cases)
+
+
+def _provider_failure_actions(recovery: dict[str, Any]) -> list[dict[str, Any]]:
+    provider_failure_count = _int(recovery.get("provider_failure_count"))
+    if provider_failure_count <= 0:
+        return []
+
+    provider_failure_classes = _int_mapping(recovery.get("provider_failure_classes"))
+    provider_error_codes = _int_mapping(recovery.get("provider_error_codes"))
+    actions: list[dict[str, Any]] = []
+    quota_count = provider_failure_classes.get("quota_exceeded", 0)
+    if quota_count > 0:
+        actions.append(
+            _action(
+                "resolve_provider_quota_or_switch_provider",
+                "provider",
+                "live_quality_burn_provider_quota_exceeded",
+                confidence=0.95,
+                evidence_count=quota_count,
+                provider_failure_classes={"quota_exceeded": quota_count},
+                provider_error_codes=provider_error_codes,
+            )
+        )
+
+    retryable_count = max(0, provider_failure_count - quota_count)
+    if retryable_count > 0:
+        retryable_classes = {
+            key: count
+            for key, count in provider_failure_classes.items()
+            if key != "quota_exceeded"
+        }
+        actions.append(
+            _action(
+                "safe_reframe_provider_retry",
+                "provider",
+                "live_quality_burn_provider_failures",
+                confidence=0.7,
+                evidence_count=retryable_count,
+                provider_failure_classes=retryable_classes or provider_failure_classes,
+                provider_error_codes=provider_error_codes,
+            )
+        )
+    return actions
+
+
+def _provider_account_blocked_without_quality_evidence(
+    summary: dict[str, Any],
+    recovery: dict[str, Any],
+) -> bool:
+    if _int_mapping(recovery.get("provider_failure_classes")).get("quota_exceeded", 0) <= 0:
+        return False
+    if _int(
+        summary.get("promotion_quality_issue_count"),
+        default=_int(summary.get("quality_issue_count")),
+    ) > 0:
+        return False
+    preference_failures = (
+        summary.get("promotion_preference_dimension_failures")
+        if isinstance(summary.get("promotion_preference_dimension_failures"), list)
+        else summary.get("preference_dimension_failures")
+    )
+    if isinstance(preference_failures, list) and preference_failures:
+        return False
+    quality_score = _float_or_none(summary.get("promotion_min_quality_score"))
+    if quality_score is None:
+        quality_score = _float_or_none(summary.get("min_quality_score"))
+    return quality_score is None
 
 
 def _quality_repair_actions(repair: dict[str, Any]) -> list[dict[str, Any]]:

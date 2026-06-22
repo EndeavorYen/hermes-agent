@@ -104,6 +104,8 @@ def _normalised_runs(reports: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "min_quality_score": _float_or_none(summary.get("min_quality_score")),
                 "quality_issue_count": _int(summary.get("quality_issue_count")),
                 "provider_failure_count": _int(summary.get("provider_failure_count")),
+                "provider_failure_classes": _int_mapping(summary.get("provider_failure_classes")),
+                "provider_error_codes": _int_mapping(summary.get("provider_error_codes")),
                 "video_missing_after_image_count": _int(summary.get("video_missing_after_image_count")),
                 "image_first_video_source_failure_count": _int(
                     summary.get("image_first_video_source_failure_count")
@@ -166,6 +168,8 @@ def _summary(
         "recent_preference_dimension_failure_count": preference_recent,
         "baseline_quality_issue_count": quality_issue_baseline,
         "recent_quality_issue_count": quality_issue_recent,
+        "recent_provider_failure_classes": _sum_mapping(recent, "provider_failure_classes"),
+        "recent_provider_error_codes": _sum_mapping(recent, "provider_error_codes"),
         "recent_preference_dimensions": _recent_preference_dimensions(recent),
         "recent_slack_conversation_run_count": len(recent_slack_conversation),
         "recent_slack_conversation_run_ids": [run["run_id"] for run in recent_slack_conversation],
@@ -242,15 +246,39 @@ def _next_actions(
             )
         )
     if "provider_failures_spiked" in degradations:
-        actions.append(
-            _action(
-                "safe_reframe_provider_retry",
-                "provider",
-                "live_quality_trend_provider_failures_spiked",
-                confidence=0.76,
-                evidence_count=_int(summary.get("recent_provider_failure_count")),
+        provider_failure_classes = _int_mapping(summary.get("recent_provider_failure_classes"))
+        provider_error_codes = _int_mapping(summary.get("recent_provider_error_codes"))
+        quota_count = provider_failure_classes.get("quota_exceeded", 0)
+        if quota_count > 0:
+            actions.append(
+                _action(
+                    "resolve_provider_quota_or_switch_provider",
+                    "provider",
+                    "live_quality_trend_provider_quota_exceeded",
+                    confidence=0.95,
+                    evidence_count=quota_count,
+                    provider_failure_classes={"quota_exceeded": quota_count},
+                    provider_error_codes=provider_error_codes,
+                )
             )
-        )
+        retryable_count = max(0, _int(summary.get("recent_provider_failure_count")) - quota_count)
+        if retryable_count > 0:
+            retryable_classes = {
+                key: count
+                for key, count in provider_failure_classes.items()
+                if key != "quota_exceeded"
+            }
+            actions.append(
+                _action(
+                    "safe_reframe_provider_retry",
+                    "provider",
+                    "live_quality_trend_provider_failures_spiked",
+                    confidence=0.76,
+                    evidence_count=retryable_count,
+                    provider_failure_classes=retryable_classes or provider_failure_classes,
+                    provider_error_codes=provider_error_codes,
+                )
+            )
     if "preference_dimension_failures_spiked" in degradations:
         dimension, issue = _top_recent_preference_failure(recent)
         actions.append(
@@ -381,6 +409,26 @@ def _video_failure_count(runs: list[dict[str, Any]]) -> int:
 
 def _sum(runs: list[dict[str, Any]], key: str) -> int:
     return sum(_int(run.get(key)) for run in runs)
+
+
+def _sum_mapping(runs: list[dict[str, Any]], key: str) -> dict[str, int]:
+    totals: dict[str, int] = {}
+    for run in runs:
+        for name, count in _int_mapping(run.get(key)).items():
+            totals[name] = totals.get(name, 0) + count
+    return totals
+
+
+def _int_mapping(value: Any) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    mapping: dict[str, int] = {}
+    for key, count in value.items():
+        text = str(key or "").strip()
+        parsed = _int(count)
+        if text and parsed > 0:
+            mapping[text] = parsed
+    return mapping
 
 
 def _int(value: Any, *, default: int = 0) -> int:

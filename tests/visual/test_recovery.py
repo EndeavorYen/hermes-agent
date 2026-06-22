@@ -84,6 +84,26 @@ def test_plan_visual_recovery_fails_when_retry_budget_exhausted():
     assert result["reason"] == "retry_budget_exhausted"
 
 
+def test_plan_visual_recovery_classifies_quota_as_provider_account_blocker():
+    from agent.visual.recovery import plan_visual_recovery
+
+    result = plan_visual_recovery(
+        {"arguments": {"prompt": "original"}},
+        {
+            "failure_class": "quota_exceeded",
+            "retryable": False,
+            "provider_message_code": "personal-team-blocked:spending-limit",
+        },
+        retry_budget_remaining=2,
+    )
+
+    assert result["decision"] == "fail"
+    assert result["reason"] == "provider_quota_or_subscription_required"
+    assert result["modified_arguments"]["prompt"] == "original"
+    assert result["audit"]["failure_class"] == "quota_exceeded"
+    assert result["audit"]["provider_message_code"] == "personal-team-blocked:spending-limit"
+
+
 def test_plan_visual_recovery_downgrades_unsupported_reference_to_text_only():
     from agent.visual.recovery import plan_visual_recovery
 

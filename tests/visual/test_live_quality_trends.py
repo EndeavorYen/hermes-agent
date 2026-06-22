@@ -8,6 +8,8 @@ def _burn_report(
     *,
     min_score: float,
     provider_failure_count: int = 0,
+    provider_failure_classes: dict[str, int] | None = None,
+    provider_error_codes: dict[str, int] | None = None,
     video_missing_after_image_count: int = 0,
     image_first_video_source_failure_count: int = 0,
     preference_dimension_failures: list[dict] | None = None,
@@ -15,6 +17,8 @@ def _burn_report(
 ) -> dict:
     preference_dimension_failures = preference_dimension_failures or []
     quality_issues = quality_issues or []
+    provider_failure_classes = provider_failure_classes or {}
+    provider_error_codes = provider_error_codes or {}
     return {
         "success": not provider_failure_count and min_score >= 0.75,
         "run_id": run_id,
@@ -26,6 +30,8 @@ def _burn_report(
             "quality_issue_count": len(quality_issues),
             "quality_issues": quality_issues,
             "provider_failure_count": provider_failure_count,
+            "provider_failure_classes": provider_failure_classes,
+            "provider_error_codes": provider_error_codes,
             "video_missing_after_image_count": video_missing_after_image_count,
             "image_first_video_source_failure_count": image_first_video_source_failure_count,
             "preference_dimension_failure_count": len(preference_dimension_failures),
@@ -129,3 +135,46 @@ def test_live_quality_trends_summarizes_recent_slack_conversation_runs():
     assert report["summary"]["recent_slack_conversation_latest_generated_at"] == (
         "2026-06-22T04:00:00+00:00"
     )
+
+
+def test_live_quality_trends_routes_quota_spike_to_provider_account_action():
+    from agent.visual.live_quality_trends import build_live_quality_trend_report
+
+    report = build_live_quality_trend_report(
+        [
+            _burn_report("run01", min_score=0.88),
+            _burn_report("run02", min_score=0.86),
+            _burn_report(
+                "run03",
+                min_score=0.84,
+                provider_failure_count=1,
+                provider_failure_classes={"quota_exceeded": 1},
+                provider_error_codes={"personal-team-blocked:spending-limit": 1},
+            ),
+            _burn_report(
+                "run04",
+                min_score=0.83,
+                provider_failure_count=1,
+                provider_failure_classes={"quota_exceeded": 1},
+                provider_error_codes={"personal-team-blocked:spending-limit": 1},
+            ),
+        ],
+        baseline_window=2,
+        recent_window=2,
+    )
+
+    action_types = [action["type"] for action in report["next_actions"]]
+    assert report["degradations"] == ["provider_failures_spiked"]
+    assert "safe_reframe_provider_retry" not in action_types
+    assert {
+        "type": "resolve_provider_quota_or_switch_provider",
+        "track": "provider",
+        "reason": "live_quality_trend_provider_quota_exceeded",
+        "confidence": 0.95,
+        "evidence_count": 2,
+        "requires_human_feedback": False,
+        "activation_status": "next_run",
+        "source": "live_quality_trends",
+        "provider_failure_classes": {"quota_exceeded": 2},
+        "provider_error_codes": {"personal-team-blocked:spending-limit": 2},
+    } in report["next_actions"]
