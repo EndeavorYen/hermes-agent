@@ -1561,6 +1561,7 @@ class TestVisualPackageToolGuidance:
 
         assert "visual_agent_generate" in prompt
         assert "natural visual requests" in prompt
+        assert "draw/anime/character" in prompt
         assert "visual_package_generate" in prompt
 
     def test_includes_visual_self_validation_status_when_available(self):

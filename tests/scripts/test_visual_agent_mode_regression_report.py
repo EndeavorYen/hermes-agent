@@ -13,6 +13,7 @@ def test_visual_agent_mode_regression_report_passes_default_fixture_set():
         "image_plus_video_reference",
         "attachment_to_video",
         "text_video_image_first",
+        "friendly_draw_character",
     }
     assert all("prompt" not in case for case in report["cases"])
     product_case = next(case for case in report["cases"] if case["case_id"] == "image_only_product")

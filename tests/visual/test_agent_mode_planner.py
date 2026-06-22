@@ -42,6 +42,21 @@ def test_agent_mode_planner_routes_image_only_request():
     assert plan["arguments"]["include_video"] is False
 
 
+def test_agent_mode_planner_routes_friendly_draw_character_request():
+    from agent.visual.agent_mode.planner import plan_visual_agent_request
+
+    plan = plan_visual_agent_request("幫我畫一位銀髮高冷美少女角色，乾淨背景")
+
+    assert plan["should_use_visual_package"] is True
+    assert plan["confidence"] >= 0.75
+    assert plan["reason"] == "image_request"
+    assert plan["arguments"]["include_image"] is True
+    assert plan["arguments"]["include_video"] is False
+    assert plan["arguments"]["candidate_budget"] == 1
+    assert plan["arguments"]["candidate_budget_source"] == "planner_default"
+    assert "autonomy_level" not in plan["arguments"]
+
+
 def test_agent_mode_planner_routes_video_only_request():
     from agent.visual.agent_mode.planner import plan_visual_agent_request
 

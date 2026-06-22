@@ -4,7 +4,25 @@ import re
 from typing import Any
 
 
-_IMAGE_TOKENS = ("image", "photo", "picture", "圖片", "圖", "照片", "寫真", "產品攝影")
+_IMAGE_TOKENS = (
+    "image",
+    "photo",
+    "picture",
+    "illustration",
+    "character art",
+    "anime art",
+    "圖片",
+    "圖",
+    "照片",
+    "寫真",
+    "產品攝影",
+    "插畫",
+    "繪圖",
+    "繪製",
+    "漫畫",
+    "動漫圖",
+    "角色設計",
+)
 _VIDEO_TOKENS = ("video", "clip", "motion", "影片", "視頻", "短片", "動畫")
 _PORTRAIT_ASPECT_TOKENS = (
     "portrait",
@@ -46,7 +64,7 @@ def plan_visual_agent_request(
 ) -> dict[str, Any]:
     prompt = str(prompt or "").strip()
     attachments = [item for item in (attachments or []) if isinstance(item, str) and item.strip()]
-    wants_image = _contains_any(prompt, _IMAGE_TOKENS)
+    wants_image = _contains_any(prompt, _IMAGE_TOKENS) or _looks_like_draw_image_request(prompt)
     wants_video = _contains_any(prompt, _VIDEO_TOKENS)
     if wants_video and attachments and _looks_like_image_to_video(prompt) and not _requests_new_image_output(prompt):
         wants_image = False
@@ -95,6 +113,25 @@ def plan_visual_agent_request(
 def _contains_any(value: str, tokens: tuple[str, ...]) -> bool:
     lowered = value.lower()
     return any(token in lowered for token in tokens)
+
+
+def _looks_like_draw_image_request(value: str) -> bool:
+    lowered = str(value or "").lower()
+    if any(token in lowered for token in ("draw ", "draw a", "draw an", "illustrate ", "sketch ", "render ")):
+        return True
+    compact = re.sub(r"\s+", "", str(value or ""))
+    return any(
+        token in compact
+        for token in (
+            "幫我畫",
+            "請畫",
+            "畫一位",
+            "畫一個",
+            "畫一張",
+            "畫出",
+            "畫成",
+        )
+    )
 
 
 def _duration_seconds(value: str) -> int | None:

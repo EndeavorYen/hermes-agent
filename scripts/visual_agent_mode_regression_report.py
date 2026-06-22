@@ -61,6 +61,14 @@ _CASES: tuple[VisualAgentCase, ...] = (
         expect_reason="image_request",
         expect_aspect_ratio="16:9",
     ),
+    VisualAgentCase(
+        case_id="friendly_draw_character",
+        prompt="幫我畫一位銀髮高冷美少女角色，乾淨背景",
+        expect_image=True,
+        expect_video=False,
+        min_candidate_budget=1,
+        expect_reason="image_request",
+    ),
 )
 
 
