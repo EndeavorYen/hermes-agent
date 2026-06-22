@@ -53,6 +53,7 @@ PORTRAIT_BLOCKING_QUALITY_ISSUES = {
     "not_beautiful",
     "stockings_bad",
 }
+PREFERENCE_DIMENSION_DELIVERY_THRESHOLD = 0.5
 INLINE_VISION_JUDGE_PROMPT = """\
 Evaluate this generated visual artifact for automated quality ranking.
 Return only a JSON object with numeric values from 0.0 to 1.0:
@@ -1187,6 +1188,21 @@ def _delivery_gate_decision(
             "quality_issues": quality_issues,
             "ignored_quality_issues": ignored_quality_issues,
         }
+    preference_dimension_fit = _candidate_preference_dimension_fit(candidate)
+    if (
+        preference_dimension_fit is not None
+        and preference_dimension_fit < PREFERENCE_DIMENSION_DELIVERY_THRESHOLD
+        and quality_issues
+    ):
+        return {
+            "allowed": False,
+            "reason": "pre_slack_preference_dimension_low",
+            "active_learning_action": action,
+            "quality_issues": quality_issues,
+            "ignored_quality_issues": ignored_quality_issues,
+            "preference_dimension_fit": preference_dimension_fit,
+            "threshold": PREFERENCE_DIMENSION_DELIVERY_THRESHOLD,
+        }
     return {
         "allowed": True,
         "reason": "delivery_allowed",
@@ -1209,6 +1225,17 @@ def _blocking_quality_issues(issues: list[str], *, prompt: str) -> tuple[list[st
             else:
                 ignored.append(issue)
     return blocking, ignored
+
+
+def _candidate_preference_dimension_fit(candidate: dict[str, Any]) -> float | None:
+    reward = candidate.get("reward")
+    dimensions = reward.get("dimensions") if isinstance(reward, dict) else None
+    if not isinstance(dimensions, dict) or dimensions.get("preference_dimension_fit") is None:
+        return None
+    try:
+        return float(dimensions.get("preference_dimension_fit") or 0.0)
+    except (TypeError, ValueError):
+        return None
 
 
 def _quality_repair_prompt(prompt: str, gate: dict[str, Any], *, mode: str = "default") -> str:

@@ -2181,6 +2181,87 @@ async def test_visual_package_repairs_blocked_image_before_delivery(monkeypatch,
 
 
 @pytest.mark.asyncio
+async def test_visual_package_repairs_low_preference_dimension_image_before_delivery(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    bad_image = tmp_path / "bad-preference-dimensions.png"
+    good_image = tmp_path / "good-preference-dimensions.png"
+    bad_image.write_bytes(_ONE_PIXEL_PNG)
+    good_image.write_bytes(_ONE_PIXEL_PNG)
+    calls = []
+
+    def fake_generate_image(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return {
+                "success": True,
+                "image": str(bad_image),
+                "provider": "fixture",
+                "model": "image",
+                "vision_observation": {
+                    "subject_quality": 0.4,
+                    "face_quality": 0.4,
+                    "glamour_impact": 0.8,
+                    "fashion_material_quality": 0.4,
+                    "pose_composition": 0.4,
+                    "composition": 0.95,
+                    "visual_appeal": 0.95,
+                    "confidence": 0.9,
+                },
+            }
+        return {
+            "success": True,
+            "image": str(good_image),
+            "provider": "fixture",
+            "model": "image",
+            "vision_observation": {
+                "subject_quality": 0.92,
+                "face_quality": 0.9,
+                "glamour_impact": 0.86,
+                "fashion_material_quality": 0.88,
+                "pose_composition": 0.84,
+                "composition": 0.95,
+                "visual_appeal": 0.95,
+                "confidence": 0.94,
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+    monkeypatch.setattr(
+        visual_package_tool,
+        "compute_provider_reliability",
+        lambda _ledger, request_id: {
+            "fixture:image": {
+                "generation_success_rate": 1.0,
+                "delivery_success_rate": 1.0,
+                "attempt_count": 10,
+            }
+        },
+    )
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {"prompt": "請產出一張圖片：時尚寫真。", "include_video": False, "candidate_budget": 1}
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["images"] == [str(good_image)]
+    assert len(calls) == 2
+    assert "Quality repair pass" in calls[1]["prompt"]
+    assert payload["delivery_gate"]["image"]["allowed"] is True
+    assert payload["delivery_gate"]["image"]["repair_attempted"] is True
+    assert payload["delivery_gate"]["image"]["repaired_from"]["reason"] == "pre_slack_preference_dimension_low"
+    assert payload["delivery_gate"]["image"]["repaired_from"]["preference_dimension_fit"] < 0.5
+    assert set(payload["delivery_gate"]["image"]["repaired_from"]["quality_issues"]) >= {
+        "subject_not_attractive",
+        "stockings_bad",
+        "composition_bad",
+    }
+
+
+@pytest.mark.asyncio
 async def test_visual_package_does_not_block_product_delivery_on_portrait_only_issues(monkeypatch, tmp_path):
     from tools import visual_package_tool
 
