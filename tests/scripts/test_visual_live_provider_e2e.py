@@ -176,6 +176,17 @@ def test_visual_live_provider_suite_reports_quality_focus_outcomes(monkeypatch, 
 
     def fake_report(**kwargs):
         is_fashion = "fashion" in kwargs["prompt"].lower()
+        preference_dimension_evidence = (
+            {
+                "subject_beauty": [{"artifact_id": "var_image", "score": 0.9}],
+                "face_naturalness": [{"artifact_id": "var_image", "score": 0.88}],
+                "glamour_impact": [{"artifact_id": "var_image", "score": 0.87}],
+                "fashion_material_quality": [{"artifact_id": "var_image", "score": 0.91}],
+                "pose_composition": [{"artifact_id": "var_image", "score": 0.86}],
+            }
+            if is_fashion
+            else {}
+        )
         return {
             "success": True,
             "failures": [],
@@ -186,6 +197,7 @@ def test_visual_live_provider_suite_reports_quality_focus_outcomes(monkeypatch, 
                     "min_score": 0.83 if is_fashion else 0.79,
                     "quality_issues": [],
                     "preference_dimension_failures": [],
+                    "preference_dimension_evidence": preference_dimension_evidence,
                 },
                 "video_source": {
                     "uses_ranked_selected_image": True,
@@ -233,10 +245,77 @@ def test_visual_live_provider_suite_reports_quality_focus_outcomes(monkeypatch, 
         "focus": "adult_fashion_portrait",
         "success": True,
         "dimension": "subject_beauty",
+        "dimension_evidence_count": 1,
         "min_quality_score": 0.83,
         "quality_issues": [],
         "preference_dimension_failures": [],
     }
+
+
+def test_visual_live_provider_suite_fails_when_quality_focus_lacks_dimension_evidence(monkeypatch, tmp_path):
+    from scripts import visual_live_provider_e2e
+
+    def fake_report(**kwargs):
+        is_fashion = "fashion" in kwargs["prompt"].lower()
+        return {
+            "success": True,
+            "failures": [],
+            "payload": {"success": True},
+            "evidence": {
+                "quality_gate": {
+                    "success": True,
+                    "min_score": 0.83 if is_fashion else 0.79,
+                    "quality_issues": [],
+                    "preference_dimension_failures": [],
+                    "preference_dimension_evidence": (
+                        {
+                            "face_naturalness": [{"artifact_id": "var_image", "score": 0.88}],
+                        }
+                        if is_fashion
+                        else {}
+                    ),
+                },
+                "video_source": {
+                    "uses_ranked_selected_image": True,
+                },
+                "image_count": 1,
+                "video_count": 1,
+                "recovery_summary": {
+                    "provider_failure_count": 0,
+                    "provider_failure_classes": {},
+                    "provider_error_codes": {},
+                    "retry_attempt_count": 0,
+                    "negotiation_attempted": False,
+                    "negotiation_success": False,
+                    "content_moderation_recovered": False,
+                    "recovered_failure_classes": [],
+                },
+            },
+        }
+
+    monkeypatch.setattr(
+        visual_live_provider_e2e,
+        "build_visual_live_provider_e2e_report",
+        fake_report,
+    )
+
+    suite = visual_live_provider_e2e.build_visual_live_provider_e2e_suite_report(
+        mode="fixture",
+        work_dir=tmp_path,
+    )
+
+    assert suite["success"] is False
+    assert "fashion_portrait_video:quality_focus_failed:adult_fashion_portrait" in suite["failures"]
+    assert "fashion_portrait_video:quality_focus_failed:legwear_material" in suite["failures"]
+    adult = next(
+        outcome
+        for outcome in suite["quality_focus_summary"]["outcomes"]
+        if outcome["focus"] == "adult_fashion_portrait"
+    )
+    assert adult["success"] is False
+    assert adult["dimension"] == "subject_beauty"
+    assert adult["dimension_evidence_count"] == 0
+    assert adult["quality_issues"] == ["missing_preference_dimension_evidence:subject_beauty"]
 
 
 def test_visual_live_provider_suite_marks_failed_quality_focus(monkeypatch, tmp_path):
@@ -306,6 +385,7 @@ def test_visual_live_provider_suite_marks_failed_quality_focus(monkeypatch, tmp_
         "focus": "legwear_material",
         "success": False,
         "dimension": "fashion_material_quality",
+        "dimension_evidence_count": 0,
         "min_quality_score": 0.42,
         "quality_issues": ["stockings_bad"],
         "preference_dimension_failures": [
@@ -323,6 +403,17 @@ def test_visual_live_provider_focus_outcomes_ignore_unrelated_video_metadata_iss
 
     def fake_report(**kwargs):
         is_fashion = "fashion" in kwargs["prompt"].lower()
+        preference_dimension_evidence = (
+            {
+                "subject_beauty": [{"artifact_id": "var_image", "score": 0.88}],
+                "face_naturalness": [{"artifact_id": "var_image", "score": 0.86}],
+                "glamour_impact": [{"artifact_id": "var_image", "score": 0.84}],
+                "fashion_material_quality": [{"artifact_id": "var_image", "score": 0.89}],
+                "pose_composition": [{"artifact_id": "var_image", "score": 0.85}],
+            }
+            if is_fashion
+            else {}
+        )
         return {
             "success": True,
             "failures": [],
@@ -333,6 +424,7 @@ def test_visual_live_provider_focus_outcomes_ignore_unrelated_video_metadata_iss
                     "min_score": 0.42 if is_fashion else 0.79,
                     "quality_issues": ["video_metadata_missing"] if is_fashion else [],
                     "preference_dimension_failures": [],
+                    "preference_dimension_evidence": preference_dimension_evidence,
                 },
                 "video_source": {
                     "uses_ranked_selected_image": True,
@@ -384,6 +476,31 @@ def test_visual_live_provider_fashion_probe_uses_provider_safe_prompt_wording():
         "fashion_material_quality",
         "pose_composition",
     ]
+
+
+def test_visual_live_provider_fixture_quality_suite_exports_portrait_dimension_evidence(tmp_path):
+    from scripts.visual_live_provider_e2e import DEFAULT_E2E_CASES
+    from scripts.visual_live_provider_e2e import build_visual_live_provider_e2e_suite_report
+
+    fashion_case = next(case for case in DEFAULT_E2E_CASES if case["case_id"] == "fashion_portrait_video")
+
+    suite = build_visual_live_provider_e2e_suite_report(
+        mode="fixture",
+        work_dir=tmp_path,
+        cases=[fashion_case],
+    )
+
+    assert suite["success"] is True
+    outcomes = suite["quality_focus_summary"]["outcomes"]
+    dimension_outcomes = [outcome for outcome in outcomes if outcome.get("dimension")]
+    assert {outcome["dimension"] for outcome in dimension_outcomes} == {
+        "subject_beauty",
+        "face_naturalness",
+        "glamour_impact",
+        "fashion_material_quality",
+        "pose_composition",
+    }
+    assert all(outcome["dimension_evidence_count"] >= 1 for outcome in dimension_outcomes)
 
 
 def test_visual_live_provider_e2e_suite_aggregates_recovery_summary(monkeypatch, tmp_path):

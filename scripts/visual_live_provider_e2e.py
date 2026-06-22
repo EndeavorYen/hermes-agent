@@ -243,6 +243,8 @@ def build_visual_live_provider_e2e_suite_report(
         case_report["quality_repair_summary"] = evidence.get("quality_repair_summary", {})
         case_reports.append(case_report)
         failures.extend(f"{case_id}:{failure}" for failure in case_report["failures"])
+    quality_focus_summary = _suite_quality_focus_summary(case_reports)
+    failures.extend(_suite_quality_focus_failures(quality_focus_summary))
     return {
         "success": not failures,
         "provider_mode": mode,
@@ -252,7 +254,7 @@ def build_visual_live_provider_e2e_suite_report(
         "recovery_summary": _suite_recovery_summary(case_reports),
         "quality_repair_summary": _suite_quality_repair_summary(case_reports),
         "quality_contract_summary": _suite_quality_contract_summary(case_reports),
-        "quality_focus_summary": _suite_quality_focus_summary(case_reports),
+        "quality_focus_summary": quality_focus_summary,
         "cases": case_reports,
     }
 
@@ -364,6 +366,19 @@ def _suite_quality_focus_summary(case_reports: list[dict[str, Any]]) -> dict[str
     }
 
 
+def _suite_quality_focus_failures(summary: dict[str, Any]) -> list[str]:
+    failures: list[str] = []
+    outcomes = summary.get("outcomes") if isinstance(summary.get("outcomes"), list) else []
+    for outcome in outcomes:
+        if not isinstance(outcome, dict) or outcome.get("success") is True:
+            continue
+        case_id = str(outcome.get("case_id") or "").strip()
+        focus = str(outcome.get("focus") or "").strip()
+        if case_id and focus:
+            failures.append(f"{case_id}:quality_focus_failed:{focus}")
+    return failures
+
+
 def _case_quality_focus_outcomes(case: dict[str, Any]) -> list[dict[str, Any]]:
     contract = case.get("quality_contract") if isinstance(case.get("quality_contract"), dict) else {}
     focuses = _string_list(contract.get("quality_focus"))
@@ -373,10 +388,12 @@ def _case_quality_focus_outcomes(case: dict[str, Any]) -> list[dict[str, Any]]:
     gate = evidence.get("quality_gate") if isinstance(evidence.get("quality_gate"), dict) else {}
     quality_issues = _string_list(gate.get("quality_issues"))
     preference_failures = _preference_dimension_failures(gate.get("preference_dimension_failures"))
+    preference_evidence = _preference_dimension_evidence(gate.get("preference_dimension_evidence"))
     min_score = _coerce_score(gate.get("min_score"))
     outcomes: list[dict[str, Any]] = []
     for focus in focuses:
         dimension = QUALITY_FOCUS_DIMENSIONS.get(focus, "")
+        dimension_evidence = preference_evidence.get(dimension, []) if dimension else []
         focus_failures = [
             failure
             for failure in preference_failures
@@ -387,6 +404,8 @@ def _case_quality_focus_outcomes(case: dict[str, Any]) -> list[dict[str, Any]]:
             quality_issues=quality_issues,
             preference_failures=focus_failures,
         )
+        if dimension and not dimension_evidence and not focus_failures:
+            focus_issues.append(f"missing_preference_dimension_evidence:{dimension}")
         success = _positive_int(evidence.get("image_count")) and not focus_issues
         if focus == "image_first_video":
             video_source = evidence.get("video_source") if isinstance(evidence.get("video_source"), dict) else {}
@@ -399,12 +418,14 @@ def _case_quality_focus_outcomes(case: dict[str, Any]) -> list[dict[str, Any]]:
             "focus": focus,
             "success": success,
             "dimension": dimension,
+            "dimension_evidence_count": len(dimension_evidence),
             "min_quality_score": round(min_score, 4) if min_score is not None else None,
             "quality_issues": focus_issues,
             "preference_dimension_failures": focus_failures,
         }
         if not dimension:
             outcome.pop("dimension")
+            outcome.pop("dimension_evidence_count")
         outcomes.append(outcome)
     return outcomes
 
@@ -456,6 +477,28 @@ def _preference_dimension_failures(value: Any) -> list[dict[str, Any]]:
             entry["score"] = round(score, 4)
         failures.append(entry)
     return failures
+
+
+def _preference_dimension_evidence(value: Any) -> dict[str, list[dict[str, Any]]]:
+    if not isinstance(value, dict):
+        return {}
+    evidence: dict[str, list[dict[str, Any]]] = {}
+    for dimension, raw_entries in value.items():
+        dimension_text = str(dimension or "").strip()
+        if not dimension_text or not isinstance(raw_entries, list):
+            continue
+        entries: list[dict[str, Any]] = []
+        for item in raw_entries:
+            if not isinstance(item, dict):
+                continue
+            artifact_id = str(item.get("artifact_id") or "").strip()
+            score = _coerce_score(item.get("score"))
+            if not artifact_id or score is None:
+                continue
+            entries.append({"artifact_id": artifact_id, "score": round(score, 4)})
+        if entries:
+            evidence[dimension_text] = entries
+    return evidence
 
 
 def inspect_visual_e2e_evidence(
@@ -1148,6 +1191,7 @@ def _quality_gate(
     latest_scores: dict[str, float] = {}
     quality_issues_by_artifact: dict[str, list[str]] = {}
     preference_dimension_failures_by_artifact: dict[str, list[dict[str, Any]]] = {}
+    preference_dimension_evidence: dict[str, list[dict[str, Any]]] = {}
     for row in judgments:
         if row.get("judge_name") != "visual_quality_judge":
             continue
@@ -1164,6 +1208,10 @@ def _quality_gate(
         preference_dimension_failures = _judgment_preference_dimension_failures(row, artifact_id=artifact_id)
         if preference_dimension_failures:
             preference_dimension_failures_by_artifact[artifact_id] = preference_dimension_failures
+        for dimension, score in _judgment_preference_dimension_scores(row).items():
+            preference_dimension_evidence.setdefault(dimension, []).append(
+                {"artifact_id": artifact_id, "score": round(score, 4)}
+            )
     low_quality_artifacts = [
         artifact_id
         for artifact_id, score in latest_scores.items()
@@ -1195,6 +1243,7 @@ def _quality_gate(
         "quality_issues_by_artifact": quality_issues_by_artifact,
         "preference_dimension_failures": preference_dimension_failures,
         "preference_dimension_failures_by_artifact": preference_dimension_failures_by_artifact,
+        "preference_dimension_evidence": preference_dimension_evidence,
     }
 
 
@@ -1275,6 +1324,25 @@ def _judgment_preference_dimension_failures(
                 }
             )
     return failures
+
+
+def _judgment_preference_dimension_scores(row: dict[str, Any]) -> dict[str, float]:
+    scores: dict[str, float] = {}
+    for payload in (row.get("details"), row.get("score_json")):
+        if not isinstance(payload, dict):
+            continue
+        dimensions = payload.get("preference_dimensions")
+        if not isinstance(dimensions, dict):
+            continue
+        for dimension, raw_score in dimensions.items():
+            dimension_text = str(dimension or "").strip()
+            if not dimension_text:
+                continue
+            score = _coerce_score(raw_score)
+            if score is None:
+                continue
+            scores[dimension_text] = score
+    return scores
 
 
 def _preference_dimension_issue(dimension: str, quality_issues: list[str]) -> str:
@@ -1506,6 +1574,30 @@ def _fixture_provider_context(
             ),
         }
 
+    def fixture_image(**kwargs):
+        return {
+            "success": True,
+            "image": str(image_path),
+            "provider": "fixture",
+            "model": "image-fixture",
+            "vision_observation": {
+                "visual_appeal": 0.88,
+                "composition": 0.86,
+                "aspect_integrity": 1.0,
+                "subject_quality": 0.9,
+                "face_quality": 0.88,
+                "glamour_impact": 0.84,
+                "fashion_material_quality": 0.9,
+                "pose_composition": 0.87,
+                "confidence": 0.86,
+                "artifact_defects": [],
+                "evidence": {
+                    "source": "fixture_quality_suite",
+                    "summary": "deterministic fixture vision observation",
+                },
+            },
+        }
+
     def fixture_probe_media_reference(ref):
         is_video = str(ref).lower().endswith((".mp4", ".mov", ".webm"))
         return SimpleNamespace(
@@ -1520,12 +1612,7 @@ def _fixture_provider_context(
             duration_seconds=4.0 if is_video else None,
         )
 
-    visual_package_tool.generate_image = lambda **kwargs: {
-        "success": True,
-        "image": str(image_path),
-        "provider": "fixture",
-        "model": "image-fixture",
-    }
+    visual_package_tool.generate_image = fixture_image
     visual_package_tool.generate_video = fixture_video
     if force_video_quality_repair:
         visual_package_tool.probe_media_reference = fixture_probe_media_reference
