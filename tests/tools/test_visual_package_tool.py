@@ -163,6 +163,69 @@ async def test_visual_package_video_only_uses_single_ranked_source_without_deliv
 
 
 @pytest.mark.asyncio
+async def test_visual_package_image_first_video_prompts_single_source_frame(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image = tmp_path / "source.png"
+    video = tmp_path / "video.mp4"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    video.write_bytes(b"video")
+    image_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(image),
+            "provider": "fixture",
+            "model": "image-fixture",
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+    monkeypatch.setattr(
+        visual_package_tool,
+        "generate_video",
+        lambda **_kwargs: {
+            "success": True,
+            "video": str(video),
+            "provider": "fixture",
+            "model": "video-fixture",
+        },
+    )
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "請產生一段影片：一支霧黑鋼筆放在白紙上，柔和窗光。",
+                "include_image": False,
+                "include_video": True,
+                "candidate_budget": 2,
+                "candidate_budget_source": "planner_default",
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert image_calls
+    image_prompt = image_calls[0]["prompt"]
+    assert "single still source frame" in image_prompt
+    assert "not a video storyboard" in image_prompt
+    assert "Do not create a collage" in image_prompt
+    assert "four-panel layout" in image_prompt
+
+
+def test_visual_package_schema_exposes_agent_mode_controls():
+    from tools.visual_package_tool import VISUAL_PACKAGE_SCHEMA
+
+    properties = VISUAL_PACKAGE_SCHEMA["parameters"]["properties"]
+
+    assert "include_image" in properties
+    assert "include_video" in properties
+    assert "storyboard" in properties
+
+
+@pytest.mark.asyncio
 async def test_visual_package_product_video_ignores_portrait_only_vision_defects(monkeypatch, tmp_path):
     from tools import visual_package_tool
 

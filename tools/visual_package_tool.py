@@ -117,9 +117,27 @@ VISUAL_PACKAGE_SCHEMA: dict[str, Any] = {
                 "type": "integer",
                 "description": "Optional image candidate budget. Defaults to 2.",
             },
+            "include_image": {
+                "type": "boolean",
+                "description": (
+                    "Whether to deliver a selected image. For video-only requests, set false; "
+                    "the tool may still generate internal source images for image-first video."
+                ),
+            },
+            "include_video": {
+                "type": "boolean",
+                "description": "Whether to generate and deliver selected video output.",
+            },
             "video_budget": {
                 "type": "integer",
                 "description": "Optional video candidate budget. Defaults to 1.",
+            },
+            "storyboard": {
+                "type": "object",
+                "description": (
+                    "Optional multi-shot video contract. Each shot must use one ranked source image; "
+                    "do not pass a collage or candidate grid as a single video source."
+                ),
             },
             "autonomy_level": {
                 "type": "integer",
@@ -381,7 +399,8 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
     if should_generate_image:
         image_payloads = []
         image_candidates = []
-        image_generation_prompt = _apply_first_pass_quality_guidance(prompt, quality_guidance["image"])
+        image_prompt_base = _image_first_source_frame_prompt(prompt) if image_first_for_video else prompt
+        image_generation_prompt = _apply_first_pass_quality_guidance(image_prompt_base, quality_guidance["image"])
         for candidate_index in range(candidate_budget):
             image_kwargs = {
                 "prompt": image_generation_prompt,
@@ -477,7 +496,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         image_gate = _delivery_gate_decision(image_learning, selected_image, prompt=prompt)
         delivery_gate["image"] = image_gate
         if selected_image and not image_gate["allowed"] and _should_escalate_candidate_budget(image_gate):
-            escalation_prompt = _candidate_escalation_prompt(prompt, image_gate)
+            escalation_prompt = _candidate_escalation_prompt(image_prompt_base, image_gate)
             escalation_kwargs = {
                 "prompt": escalation_prompt,
                 "aspect_ratio": image_aspect_ratio,
@@ -560,7 +579,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         if selected_image and not image_gate["allowed"]:
             image_repair_mode = _quality_repair_policy_mode(feedback_policy, "image")
             repair_prompt = _quality_repair_prompt(
-                prompt,
+                image_prompt_base,
                 image_gate,
                 mode=image_repair_mode,
             )
@@ -1508,6 +1527,18 @@ def _storyboard_shot_prompt(prompt: str, shot: dict[str, Any], *, shot_index: in
         "Do not create a collage, contact sheet, split-screen, grid, or four-panel layout. "
         "Preserve continuity with the overall request while varying framing for this shot."
     )
+
+
+def _image_first_source_frame_prompt(prompt: str) -> str:
+    source_frame_contract = (
+        "Image-first video source frame contract: generate exactly one single still source frame "
+        "for the requested video, not a video storyboard. Do not create a collage, contact sheet, "
+        "split-screen, grid, four-panel layout, timeline preview, or multiple frames in one image. "
+        "The output must be one coherent camera frame that can be animated directly."
+    )
+    if source_frame_contract in prompt:
+        return prompt
+    return f"{prompt}\n\n{source_frame_contract}"
 
 
 def _default_storyboard_role(index: int) -> str:
