@@ -162,6 +162,68 @@ def test_visual_live_quality_burn_excludes_repair_probe_from_promotion_min_score
     assert report["summary"]["promotion_min_quality_score"] == 0.78
 
 
+def test_visual_live_quality_burn_promotes_strategy_despite_diagnostic_repair_action(monkeypatch, tmp_path):
+    from scripts import visual_live_quality_burn
+
+    suite = _suite_with_quality_failure()
+    suite["success"] = True
+    suite["failures"] = []
+    suite["case_count"] = 3
+    for case in suite["cases"]:
+        case["success"] = True
+        case["failures"] = []
+        case["evidence"]["quality_gate"]["success"] = True
+        case["evidence"]["quality_gate"]["min_score"] = 0.84
+        case["evidence"]["quality_gate"]["quality_issues"] = []
+    suite["cases"].append(
+        {
+            "case_id": "video_quality_repair",
+            "success": True,
+            "failures": [],
+            "evidence": {
+                "quality_gate": {
+                    "success": True,
+                    "min_score": 0.6643,
+                    "quality_issues": [],
+                },
+                "image_count": 1,
+                "video_count": 1,
+                "ranking_count": 3,
+            },
+        }
+    )
+    suite["quality_repair_summary"] = {
+        "attempt_count": 1,
+        "success_count": 1,
+        "selected_repair_count": 1,
+        "by_modality": {
+            "video": {
+                "attempt_count": 1,
+                "success_count": 1,
+                "selected_repair_count": 1,
+            }
+        },
+    }
+
+    monkeypatch.setattr(
+        visual_live_quality_burn,
+        "build_visual_live_provider_e2e_suite_report",
+        lambda **_kwargs: suite,
+    )
+
+    report = visual_live_quality_burn.build_visual_live_quality_burn_report(
+        mode="live",
+        output_dir=tmp_path,
+    )
+
+    action_types = [action["type"] for action in report["next_actions"]]
+    assert action_types == ["prefer_quality_repair_retry", "prefer_strategy"]
+    strategy = report["next_actions"][1]
+    assert strategy["activation_status"] == "shadow"
+    assert strategy["confidence"] == 0.84
+    assert strategy["evidence_count"] == 2
+
+
 def test_visual_live_quality_burn_summarizes_core_quality_contract_coverage(monkeypatch, tmp_path):
     from scripts import visual_live_quality_burn
 

@@ -99,17 +99,23 @@ def _float_timeout(value: float | int | None) -> float:
 
 def _summary(suite: dict[str, Any]) -> dict[str, Any]:
     cases = suite.get("cases") if isinstance(suite.get("cases"), list) else []
+    promotion_cases = [case for case in cases if not _diagnostic_case(case)]
     quality_scores = _case_quality_scores(cases)
-    promotion_quality_scores = _case_quality_scores(
-        [case for case in cases if not _diagnostic_case(case)]
-    )
+    promotion_quality_scores = _case_quality_scores(promotion_cases)
     quality_issues = _quality_issues(cases)
+    promotion_quality_issues = _quality_issues(promotion_cases)
     preference_dimension_failures = _preference_dimension_failures(cases)
+    promotion_preference_dimension_failures = _preference_dimension_failures(promotion_cases)
     video_missing_after_image_case_ids = _video_missing_after_image_case_ids(cases)
     video_source_summary = _image_first_video_source_summary(cases)
     failed_cases = [
         str(case.get("case_id") or "")
         for case in cases
+        if isinstance(case, dict) and case.get("success") is not True
+    ]
+    promotion_failed_cases = [
+        str(case.get("case_id") or "")
+        for case in promotion_cases
         if isinstance(case, dict) and case.get("success") is not True
     ]
     recovery = suite.get("recovery_summary") if isinstance(suite.get("recovery_summary"), dict) else {}
@@ -126,16 +132,29 @@ def _summary(suite: dict[str, Any]) -> dict[str, Any]:
     )
     return {
         "case_count": _int(suite.get("case_count"), default=len(cases)),
+        "promotion_case_count": len([case for case in promotion_cases if isinstance(case, dict)]),
         "failed_case_count": len([case_id for case_id in failed_cases if case_id]),
         "failed_case_ids": [case_id for case_id in failed_cases if case_id],
+        "promotion_failed_case_count": len(
+            [case_id for case_id in promotion_failed_cases if case_id]
+        ),
+        "promotion_failed_case_ids": [
+            case_id for case_id in promotion_failed_cases if case_id
+        ],
         "min_quality_score": min(quality_scores) if quality_scores else None,
         "promotion_min_quality_score": min(promotion_quality_scores)
         if promotion_quality_scores
         else None,
         "quality_issue_count": len(quality_issues),
         "quality_issues": quality_issues,
+        "promotion_quality_issue_count": len(promotion_quality_issues),
+        "promotion_quality_issues": promotion_quality_issues,
         "preference_dimension_failure_count": len(preference_dimension_failures),
         "preference_dimension_failures": preference_dimension_failures,
+        "promotion_preference_dimension_failure_count": len(
+            promotion_preference_dimension_failures
+        ),
+        "promotion_preference_dimension_failures": promotion_preference_dimension_failures,
         "image_first_video_source_case_count": video_source_summary["case_count"],
         "image_first_video_source_covered_count": video_source_summary["covered_count"],
         "image_first_video_source_failure_count": video_source_summary["failure_count"],
@@ -297,11 +316,18 @@ def _quality_focus_failed_case_ids(summary: dict[str, Any]) -> list[str]:
 def _next_actions(suite: dict[str, Any], summary: dict[str, Any]) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     failures = {str(failure) for failure in suite.get("failures") or []}
-    if summary.get("quality_issue_count", 0) > 0 or any(
+    promotion_failures = {
+        failure for failure in failures if not failure.startswith("video_quality_repair:")
+    }
+    promotion_quality_issue_count = _int(
+        summary.get("promotion_quality_issue_count"),
+        default=_int(summary.get("quality_issue_count")),
+    )
+    if promotion_quality_issue_count > 0 or any(
         "quality_gate_failed" in failure or "selected_quality_issue_detected" in failure
-        for failure in failures
+        for failure in promotion_failures
     ):
-        evidence_count = max(1, _int(summary.get("quality_issue_count")))
+        evidence_count = max(1, promotion_quality_issue_count)
         actions.append(
             _action(
                 "increase_candidate_budget",
@@ -321,7 +347,12 @@ def _next_actions(suite: dict[str, Any], summary: dict[str, Any]) -> list[dict[s
                 evidence_count=evidence_count,
             )
         )
-    for failure in summary.get("preference_dimension_failures") or []:
+    preference_dimension_failures = (
+        summary.get("promotion_preference_dimension_failures")
+        if isinstance(summary.get("promotion_preference_dimension_failures"), list)
+        else summary.get("preference_dimension_failures")
+    )
+    for failure in preference_dimension_failures or []:
         if not isinstance(failure, dict):
             continue
         dimension = str(failure.get("dimension") or "").strip()
@@ -376,14 +407,21 @@ def _next_actions(suite: dict[str, Any], summary: dict[str, Any]) -> list[dict[s
         )
     repair = suite.get("quality_repair_summary") if isinstance(suite.get("quality_repair_summary"), dict) else {}
     actions.extend(_quality_repair_actions(repair))
-    if not actions and _high_quality_pass(suite, summary):
+    if _high_quality_pass(suite, summary) and _strategy_promotion_actions_allowed(actions, suite):
         actions.append(
             {
                 "type": "prefer_strategy",
                 "track": "aesthetic",
                 "reason": "live_quality_burn_high_quality_pass",
-                "confidence": _float_confidence(summary.get("min_quality_score")),
-                "evidence_count": _int(summary.get("case_count")),
+                "confidence": _float_confidence(
+                    summary.get("promotion_min_quality_score")
+                    if summary.get("promotion_min_quality_score") is not None
+                    else summary.get("min_quality_score")
+                ),
+                "evidence_count": _int(
+                    summary.get("promotion_case_count"),
+                    default=_int(summary.get("case_count")),
+                ),
                 "requires_human_feedback": False,
                 "activation_status": "shadow",
                 "source": "live_quality_burn",
@@ -492,13 +530,35 @@ def _only_missing_preference_dimension_evidence(quality_issues: list[str]) -> bo
 def _high_quality_pass(suite: dict[str, Any], summary: dict[str, Any]) -> bool:
     if suite.get("success") is not True:
         return False
-    min_quality = _float_or_none(summary.get("min_quality_score"))
+    min_quality = _float_or_none(summary.get("promotion_min_quality_score"))
+    if min_quality is None:
+        min_quality = _float_or_none(summary.get("min_quality_score"))
     return (
         min_quality is not None
         and min_quality >= 0.75
-        and _int(summary.get("quality_issue_count")) == 0
-        and _int(summary.get("failed_case_count")) == 0
+        and _int(
+            summary.get("promotion_quality_issue_count"),
+            default=_int(summary.get("quality_issue_count")),
+        )
+        == 0
+        and _int(
+            summary.get("promotion_failed_case_count"),
+            default=_int(summary.get("failed_case_count")),
+        )
+        == 0
     )
+
+
+def _strategy_promotion_actions_allowed(
+    actions: list[dict[str, Any]],
+    suite: dict[str, Any],
+) -> bool:
+    if not actions:
+        return True
+    if not all(str(action.get("track") or "") == "repair" for action in actions):
+        return False
+    cases = suite.get("cases") if isinstance(suite.get("cases"), list) else []
+    return any(_diagnostic_case(case) for case in cases)
 
 
 def _quality_repair_actions(repair: dict[str, Any]) -> list[dict[str, Any]]:
