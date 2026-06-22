@@ -98,3 +98,50 @@ def test_feedback_policy_escalates_failed_quality_repair_strategy():
     assert policy["candidate_budget_source"] == "feedback_loop"
     assert policy["quality_repair_mode"] == "escalated"
     assert policy["applied_action_types"] == ["escalate_quality_repair_strategy"]
+
+
+def test_feedback_policy_applies_preference_dimension_repair_actions():
+    from agent.visual.feedback_policy import resolve_visual_feedback_policy
+
+    policy = resolve_visual_feedback_policy(
+        {
+            "next_actions": [
+                {
+                    "type": "repair_low_preference_dimension",
+                    "dimension": "face_naturalness",
+                    "quality_issue": "face_unnatural",
+                    "repair_hint": "improve_face_naturalness",
+                    "confidence": 0.72,
+                },
+                {
+                    "type": "repair_low_preference_dimension",
+                    "dimension": "fashion_material_quality",
+                    "quality_issue": "stockings_bad",
+                    "repair_hint": "improve_fashion_material_quality",
+                    "confidence": 0.72,
+                },
+            ]
+        },
+        wants_image=True,
+        wants_video=True,
+        explicit_candidate_budget=None,
+        default_candidate_budget=1,
+    )
+
+    assert policy["quality_repair_mode"] == "preferred"
+    assert policy["rerank_before_delivery"] is True
+    assert policy["candidate_budget"] == 2
+    assert policy["candidate_budget_source"] == "feedback_loop"
+    assert policy["repair_dimensions"] == [
+        {
+            "dimension": "face_naturalness",
+            "quality_issue": "face_unnatural",
+            "repair_hint": "improve_face_naturalness",
+        },
+        {
+            "dimension": "fashion_material_quality",
+            "quality_issue": "stockings_bad",
+            "repair_hint": "improve_fashion_material_quality",
+        },
+    ]
+    assert policy["applied_action_types"] == ["repair_low_preference_dimension"]

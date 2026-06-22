@@ -5,10 +5,13 @@ from typing import Any
 
 NUMERIC_KEYS = {
     "subject_quality",
+    "face_quality",
     "reference_adherence",
     "composition",
+    "pose_composition",
     "visual_appeal",
     "glamour_impact",
+    "fashion_material_quality",
     "product_appeal",
     "aspect_integrity",
     "motion_quality",

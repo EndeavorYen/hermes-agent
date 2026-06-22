@@ -100,6 +100,7 @@ def _summary(suite: dict[str, Any]) -> dict[str, Any]:
     cases = suite.get("cases") if isinstance(suite.get("cases"), list) else []
     quality_scores = _case_quality_scores(cases)
     quality_issues = _quality_issues(cases)
+    preference_dimension_failures = _preference_dimension_failures(cases)
     failed_cases = [
         str(case.get("case_id") or "")
         for case in cases
@@ -114,6 +115,8 @@ def _summary(suite: dict[str, Any]) -> dict[str, Any]:
         "min_quality_score": min(quality_scores) if quality_scores else None,
         "quality_issue_count": len(quality_issues),
         "quality_issues": quality_issues,
+        "preference_dimension_failure_count": len(preference_dimension_failures),
+        "preference_dimension_failures": preference_dimension_failures,
         "provider_failure_count": _int(recovery.get("provider_failure_count")),
         "negotiation_success_case_count": _int(recovery.get("negotiation_success_case_count")),
         "quality_repair_attempt_count": _int(repair.get("attempt_count")),
@@ -148,6 +151,39 @@ def _quality_issues(cases: list[Any]) -> list[str]:
     return issues
 
 
+def _preference_dimension_failures(cases: list[Any]) -> list[dict[str, Any]]:
+    failures: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for case in cases:
+        if not isinstance(case, dict):
+            continue
+        evidence = case.get("evidence") if isinstance(case.get("evidence"), dict) else {}
+        gate = evidence.get("quality_gate") if isinstance(evidence.get("quality_gate"), dict) else {}
+        raw_failures = gate.get("preference_dimension_failures")
+        if not isinstance(raw_failures, list):
+            continue
+        for failure in raw_failures:
+            if not isinstance(failure, dict):
+                continue
+            dimension = str(failure.get("dimension") or "").strip()
+            issue = str(failure.get("issue") or "").strip()
+            score = _float_or_none(failure.get("score"))
+            if not dimension:
+                continue
+            key = (dimension, issue)
+            if key in seen:
+                continue
+            seen.add(key)
+            entry: dict[str, Any] = {
+                "dimension": dimension,
+                "issue": issue,
+            }
+            if score is not None:
+                entry["score"] = round(max(0.0, min(1.0, score)), 4)
+            failures.append(entry)
+    return failures
+
+
 def _next_actions(suite: dict[str, Any], summary: dict[str, Any]) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     failures = {str(failure) for failure in suite.get("failures") or []}
@@ -173,6 +209,24 @@ def _next_actions(suite: dict[str, Any], summary: dict[str, Any]) -> list[dict[s
                 "live_quality_burn_low_quality_candidates",
                 confidence=0.8,
                 evidence_count=evidence_count,
+            )
+        )
+    for failure in summary.get("preference_dimension_failures") or []:
+        if not isinstance(failure, dict):
+            continue
+        dimension = str(failure.get("dimension") or "").strip()
+        if not dimension:
+            continue
+        actions.append(
+            _action(
+                "repair_low_preference_dimension",
+                "aesthetic",
+                "live_quality_burn_preference_dimension_low",
+                confidence=0.72,
+                evidence_count=1,
+                dimension=dimension,
+                quality_issue=str(failure.get("issue") or "").strip(),
+                repair_hint=_repair_hint_for_dimension(dimension),
             )
         )
     recovery = suite.get("recovery_summary") if isinstance(suite.get("recovery_summary"), dict) else {}
@@ -245,6 +299,17 @@ def _quality_repair_actions(repair: dict[str, Any]) -> list[dict[str, Any]]:
             )
         )
     return actions
+
+
+def _repair_hint_for_dimension(dimension: str) -> str:
+    return {
+        "subject_beauty": "improve_subject_beauty",
+        "face_naturalness": "improve_face_naturalness",
+        "glamour_impact": "increase_glamour_impact",
+        "fashion_material_quality": "improve_fashion_material_quality",
+        "pose_composition": "improve_pose_composition",
+        "motion_quality": "improve_motion_quality",
+    }.get(dimension, f"improve_{dimension}")
 
 
 def _action(

@@ -452,6 +452,54 @@ def test_visual_live_provider_e2e_ignores_internal_missing_video_source_error():
     assert codes == {"connection_error": 1}
 
 
+def test_visual_live_provider_quality_gate_exports_preference_dimension_failures():
+    from scripts.visual_live_provider_e2e import _quality_gate
+
+    gate = _quality_gate(
+        payload={
+            "delivery_metadata": {
+                "selected_visual_artifact_ids": ["var_bad"],
+            }
+        },
+        artifacts=[{"artifact_id": "var_bad"}],
+        judgments=[
+            {
+                "judge_name": "visual_quality_judge",
+                "artifact_id": "var_bad",
+                "score": 0.42,
+                "details": {
+                    "quality_issues": ["face_unnatural", "stockings_bad"],
+                    "preference_dimensions": {
+                        "face_naturalness": 0.28,
+                        "fashion_material_quality": 0.31,
+                        "pose_composition": 0.76,
+                    },
+                },
+            }
+        ],
+        threshold=0.55,
+    )
+
+    assert gate["success"] is False
+    assert gate["preference_dimension_failures"] == [
+        {
+            "artifact_id": "var_bad",
+            "dimension": "face_naturalness",
+            "score": 0.28,
+            "issue": "face_unnatural",
+        },
+        {
+            "artifact_id": "var_bad",
+            "dimension": "fashion_material_quality",
+            "score": 0.31,
+            "issue": "stockings_bad",
+        },
+    ]
+    assert gate["preference_dimension_failures_by_artifact"] == {
+        "var_bad": gate["preference_dimension_failures"]
+    }
+
+
 def test_visual_live_provider_e2e_reports_moderation_recovery_summary(monkeypatch, tmp_path):
     from agent.visual.attempt_ledger import VisualAttemptLedger
     from agent.visual.tracking import default_visual_ledger_path

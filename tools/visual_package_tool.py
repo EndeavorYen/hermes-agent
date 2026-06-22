@@ -1241,6 +1241,7 @@ def _quality_guidance_entry(
             "mode": mode,
             "prompt_suffix": "",
         }
+    dimension_guidance = _dimension_quality_guidance(feedback_policy)
     if modality == "video":
         suffix = (
             "First-pass video quality guidance: use natural real-time motion, "
@@ -1257,12 +1258,43 @@ def _quality_guidance_entry(
             "First-pass visual quality guidance: clean product detail, strong composition, "
             "realistic material texture, polished commercial lighting."
         )
+    if dimension_guidance:
+        suffix = f"{suffix} {dimension_guidance}"
     return {
         "enabled": True,
         "mode": mode,
         "prompt_suffix": suffix,
         "source_action_types": list(feedback_policy.get("applied_action_types") or []),
     }
+
+
+def _dimension_quality_guidance(feedback_policy: dict[str, Any]) -> str:
+    dimensions = feedback_policy.get("repair_dimensions")
+    if not isinstance(dimensions, list):
+        return ""
+    instructions: list[str] = []
+    for item in dimensions:
+        if not isinstance(item, dict):
+            continue
+        dimension = str(item.get("dimension") or "").strip()
+        hint = str(item.get("repair_hint") or "").strip()
+        instruction = _dimension_quality_instruction(dimension, hint)
+        if instruction and instruction not in instructions:
+            instructions.append(instruction)
+    if not instructions:
+        return ""
+    return "Dimension-specific quality guidance: " + "; ".join(instructions) + "."
+
+
+def _dimension_quality_instruction(dimension: str, repair_hint: str) -> str:
+    return {
+        "subject_beauty": "subject_beauty: raise overall subject attractiveness while keeping natural realism",
+        "face_naturalness": "face_naturalness: prioritize natural facial structure, clean eyes, and non-distorted expression",
+        "glamour_impact": "glamour_impact: increase polished editorial glamour through pose, lighting, and camera angle",
+        "fashion_material_quality": "fashion_material_quality: improve wardrobe and legwear material texture without plastic artifacts",
+        "pose_composition": "pose_composition: use a more dynamic pose and cleaner framing",
+        "motion_quality": "motion_quality: use clear real-time movement with stable anatomy",
+    }.get(dimension, f"{dimension}: {repair_hint}" if repair_hint else "")
 
 
 def _apply_first_pass_quality_guidance(prompt: str, guidance: dict[str, Any]) -> str:

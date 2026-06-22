@@ -262,3 +262,43 @@ def test_quality_judge_filters_portrait_reference_defects_for_product_context():
     assert "vision_defect_reference_identity_drift" not in result["uncertainty_reasons"]
     assert "vision_defect_face_quality_low" not in result["uncertainty_reasons"]
     assert result["scores"]["aesthetic_fit"] >= 0.8
+
+
+def test_quality_judge_exports_portrait_preference_dimensions_and_issue_tags():
+    from agent.visual.judges.quality import judge_visual_quality
+
+    result = judge_visual_quality(
+        {
+            "artifact_id": "var_fashion",
+            "kind": "image",
+            "hard_gate": {"passed": True, "delivery_possible": True},
+            "scores": {"resolution": 0.9, "aspect_match": 0.9, "final_score": 0.9},
+        },
+        request_context={"category": "fashion portrait"},
+        vision_observation={
+            "subject_quality": 0.35,
+            "face_quality": 0.28,
+            "glamour_impact": 0.42,
+            "fashion_material_quality": 0.31,
+            "pose_composition": 0.76,
+            "composition": 0.8,
+            "visual_appeal": 0.7,
+            "confidence": 0.82,
+        },
+    )
+
+    assert result["preference_dimensions"] == {
+        "subject_beauty": 0.35,
+        "face_naturalness": 0.28,
+        "glamour_impact": 0.42,
+        "fashion_material_quality": 0.31,
+        "pose_composition": 0.76,
+    }
+    assert result["quality_issues"] == [
+        "subject_not_attractive",
+        "face_unnatural",
+        "not_glamorous",
+        "stockings_bad",
+    ]
+    assert "preference_dimension_face_naturalness_low" in result["uncertainty_reasons"]
+    assert "preference_dimension_fashion_material_quality_low" in result["uncertainty_reasons"]

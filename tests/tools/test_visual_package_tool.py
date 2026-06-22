@@ -1602,6 +1602,97 @@ async def test_visual_package_applies_self_validation_next_actions(monkeypatch, 
 
 
 @pytest.mark.asyncio
+async def test_visual_package_applies_preference_dimension_guidance_from_self_validation(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
+    latest_report.parent.mkdir(parents=True)
+    latest_report.write_text(
+        json.dumps(
+            {
+                "success": True,
+                "automation": {
+                    "self_improvement": {
+                        "next_actions": [
+                            {
+                                "type": "repair_low_preference_dimension",
+                                "requires_human_feedback": False,
+                                "activation_status": "next_run",
+                                "confidence": 0.72,
+                                "source": "live_quality_burn",
+                                "dimension": "face_naturalness",
+                                "quality_issue": "face_unnatural",
+                                "repair_hint": "improve_face_naturalness",
+                            },
+                            {
+                                "type": "repair_low_preference_dimension",
+                                "requires_human_feedback": False,
+                                "activation_status": "next_run",
+                                "confidence": 0.72,
+                                "source": "live_quality_burn",
+                                "dimension": "fashion_material_quality",
+                                "quality_issue": "stockings_bad",
+                                "repair_hint": "improve_fashion_material_quality",
+                            },
+                        ]
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    image_path = tmp_path / "image.png"
+    image_path.write_bytes(_ONE_PIXEL_PNG)
+    calls = []
+
+    def fake_generate_image(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(image_path),
+            "provider": "fixture",
+            "model": "image",
+            "vision_observation": {
+                "face_quality": 0.9,
+                "fashion_material_quality": 0.9,
+                "visual_appeal": 0.9,
+                "composition": 0.9,
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "請產出一張圖片：時尚寫真。",
+                "include_video": False,
+                "candidate_budget": 1,
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["generation_strategy"]["feedback_policy"]["repair_dimensions"] == [
+        {
+            "dimension": "face_naturalness",
+            "quality_issue": "face_unnatural",
+            "repair_hint": "improve_face_naturalness",
+        },
+        {
+            "dimension": "fashion_material_quality",
+            "quality_issue": "stockings_bad",
+            "repair_hint": "improve_fashion_material_quality",
+        },
+    ]
+    assert "Dimension-specific quality guidance" in calls[0]["prompt"]
+    assert "face_naturalness" in calls[0]["prompt"]
+    assert "fashion_material_quality" in calls[0]["prompt"]
+
+
+@pytest.mark.asyncio
 async def test_visual_package_ignores_failed_self_validation_next_actions(monkeypatch, tmp_path):
     from tools import visual_package_tool
 

@@ -175,6 +175,9 @@ def _summary(automation: dict[str, Any]) -> dict[str, Any]:
         if isinstance(live_quality_burn.get("summary"), dict)
         else {}
     )
+    live_quality_burn_preference_failures = _list(
+        live_quality_burn_summary.get("preference_dimension_failures")
+    )
     fixture_quality_recovery = (
         fixture_quality_suite.get("recovery_summary")
         if isinstance(fixture_quality_suite.get("recovery_summary"), dict)
@@ -258,6 +261,12 @@ def _summary(automation: dict[str, Any]) -> dict[str, Any]:
         "live_quality_burn_case_count": _int(live_quality_burn_summary.get("case_count")),
         "live_quality_burn_min_score": live_quality_burn_summary.get("min_quality_score"),
         "live_quality_burn_action_types": _action_types(live_quality_burn.get("next_actions")),
+        "live_quality_burn_preference_dimension_failure_count": _int(
+            live_quality_burn_summary.get("preference_dimension_failure_count")
+        ),
+        "live_quality_burn_preference_dimensions": _preference_dimensions(
+            live_quality_burn_preference_failures
+        ),
         "live_quality_repair_attempt_count": _int(live_quality_repair.get("attempt_count")),
         "live_quality_repair_success_count": _int(live_quality_repair.get("success_count")),
         "live_video_quality_repair_success_count": _int(live_video_repair.get("success_count")),
@@ -523,6 +532,17 @@ def _int(value: Any) -> int:
 
 def _list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
+
+
+def _preference_dimensions(failures: list[Any]) -> list[str]:
+    dimensions: list[str] = []
+    for failure in failures:
+        if not isinstance(failure, dict):
+            continue
+        dimension = str(failure.get("dimension") or "").strip()
+        if dimension and dimension not in dimensions:
+            dimensions.append(dimension)
+    return dimensions
 
 
 def main(argv: list[str] | None = None) -> int:

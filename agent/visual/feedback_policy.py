@@ -38,6 +38,7 @@ def resolve_visual_feedback_policy(
     quality_repair_mode = "default"
     quality_repair_modes = {"image": "default", "video": "default"}
     applied_action_types: list[str] = []
+    repair_dimensions: list[dict[str, str]] = []
 
     for action in _next_actions(feedback_report):
         action_type = str(action.get("type") or "")
@@ -65,6 +66,15 @@ def resolve_visual_feedback_policy(
             quality_repair_mode = "escalated"
             _set_quality_repair_mode(quality_repair_modes, action, "escalated")
             _append_once(applied_action_types, action_type)
+        elif action_type == "repair_low_preference_dimension":
+            if not budget_locked_by_user and candidate_budget < 2:
+                candidate_budget = 2
+                candidate_budget_source = "feedback_loop"
+            rerank_before_delivery = True
+            quality_repair_mode = "preferred"
+            _set_quality_repair_mode(quality_repair_modes, action, "preferred")
+            _append_once(applied_action_types, action_type)
+            _append_repair_dimension(repair_dimensions, action)
 
     return {
         "candidate_budget": candidate_budget,
@@ -73,6 +83,7 @@ def resolve_visual_feedback_policy(
         "rerank_before_delivery": rerank_before_delivery,
         "quality_repair_mode": quality_repair_mode,
         "quality_repair_modes": quality_repair_modes,
+        "repair_dimensions": repair_dimensions,
         "applied_action_types": applied_action_types,
         "policy_sources": _string_list(feedback_report.get("policy_sources")) or ["feedback_loop"],
     }
@@ -107,6 +118,20 @@ def _set_quality_repair_mode(modes: dict[str, str], action: dict[str, Any], mode
         modalities = ["image", "video"]
     for modality in modalities:
         modes[modality] = mode
+
+
+def _append_repair_dimension(values: list[dict[str, str]], action: dict[str, Any]) -> None:
+    dimension = str(action.get("dimension") or "").strip()
+    if not dimension:
+        return
+    entry = {
+        "dimension": dimension,
+        "quality_issue": str(action.get("quality_issue") or "").strip(),
+        "repair_hint": str(action.get("repair_hint") or "").strip(),
+    }
+    if any(item.get("dimension") == dimension for item in values):
+        return
+    values.append(entry)
 
 
 def _action_modalities(action: dict[str, Any]) -> list[str]:

@@ -115,6 +115,56 @@ def test_visual_live_quality_burn_writes_report_and_actions(monkeypatch, tmp_pat
     assert (tmp_path / "burn" / "runs" / "20260622T100000Z.json").exists()
 
 
+def test_visual_live_quality_burn_exports_preference_dimension_repair_actions(monkeypatch, tmp_path):
+    from scripts import visual_live_quality_burn
+
+    suite = _suite_with_quality_failure()
+    suite["cases"][1]["evidence"]["quality_gate"]["preference_dimension_failures"] = [
+        {
+            "dimension": "face_naturalness",
+            "score": 0.28,
+            "issue": "face_unnatural",
+            "artifact_id": "var_bad",
+        },
+        {
+            "dimension": "fashion_material_quality",
+            "score": 0.31,
+            "issue": "stockings_bad",
+            "artifact_id": "var_bad",
+        },
+    ]
+
+    monkeypatch.setattr(
+        visual_live_quality_burn,
+        "build_visual_live_provider_e2e_suite_report",
+        lambda **_kwargs: suite,
+    )
+
+    report = visual_live_quality_burn.build_visual_live_quality_burn_report(
+        mode="live",
+        output_dir=tmp_path,
+    )
+
+    assert report["summary"]["preference_dimension_failure_count"] == 2
+    assert report["summary"]["preference_dimension_failures"] == [
+        {"dimension": "face_naturalness", "issue": "face_unnatural", "score": 0.28},
+        {"dimension": "fashion_material_quality", "issue": "stockings_bad", "score": 0.31},
+    ]
+    assert {
+        "type": "repair_low_preference_dimension",
+        "track": "aesthetic",
+        "reason": "live_quality_burn_preference_dimension_low",
+        "confidence": 0.72,
+        "evidence_count": 1,
+        "requires_human_feedback": False,
+        "activation_status": "next_run",
+        "source": "live_quality_burn",
+        "dimension": "face_naturalness",
+        "quality_issue": "face_unnatural",
+        "repair_hint": "improve_face_naturalness",
+    } in report["next_actions"]
+
+
 def test_visual_live_quality_burn_exports_repair_action(monkeypatch, tmp_path):
     from scripts import visual_live_quality_burn
 

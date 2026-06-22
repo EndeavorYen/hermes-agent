@@ -796,6 +796,7 @@ def _quality_gate(
         }
     latest_scores: dict[str, float] = {}
     quality_issues_by_artifact: dict[str, list[str]] = {}
+    preference_dimension_failures_by_artifact: dict[str, list[dict[str, Any]]] = {}
     for row in judgments:
         if row.get("judge_name") != "visual_quality_judge":
             continue
@@ -809,6 +810,9 @@ def _quality_gate(
         quality_issues = _judgment_quality_issues(row)
         if quality_issues:
             quality_issues_by_artifact[artifact_id] = quality_issues
+        preference_dimension_failures = _judgment_preference_dimension_failures(row, artifact_id=artifact_id)
+        if preference_dimension_failures:
+            preference_dimension_failures_by_artifact[artifact_id] = preference_dimension_failures
     low_quality_artifacts = [
         artifact_id
         for artifact_id, score in latest_scores.items()
@@ -823,6 +827,11 @@ def _quality_gate(
             for issue in issues
         }
     )
+    preference_dimension_failures = [
+        failure
+        for failures in preference_dimension_failures_by_artifact.values()
+        for failure in failures
+    ]
     return {
         "success": bool(latest_scores) and not low_quality_artifacts,
         "threshold": threshold,
@@ -833,6 +842,8 @@ def _quality_gate(
         "quality_issue_artifacts": quality_issue_artifacts,
         "quality_issues": quality_issues,
         "quality_issues_by_artifact": quality_issues_by_artifact,
+        "preference_dimension_failures": preference_dimension_failures,
+        "preference_dimension_failures_by_artifact": preference_dimension_failures_by_artifact,
     }
 
 
@@ -880,6 +891,53 @@ def _judgment_quality_issues(row: dict[str, Any]) -> list[str]:
             if isinstance(issue, str) and issue and issue not in issues:
                 issues.append(issue)
     return issues
+
+
+def _judgment_preference_dimension_failures(
+    row: dict[str, Any],
+    *,
+    artifact_id: str,
+) -> list[dict[str, Any]]:
+    failures: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for payload in (row.get("details"), row.get("score_json")):
+        if not isinstance(payload, dict):
+            continue
+        dimensions = payload.get("preference_dimensions")
+        if not isinstance(dimensions, dict):
+            continue
+        quality_issues = _judgment_quality_issues(row)
+        for dimension, raw_score in dimensions.items():
+            dimension_text = str(dimension or "").strip()
+            if not dimension_text or dimension_text in seen:
+                continue
+            score = _coerce_score(raw_score)
+            if score is None or score >= 0.5:
+                continue
+            seen.add(dimension_text)
+            failures.append(
+                {
+                    "artifact_id": artifact_id,
+                    "dimension": dimension_text,
+                    "score": round(score, 4),
+                    "issue": _preference_dimension_issue(dimension_text, quality_issues),
+                }
+            )
+    return failures
+
+
+def _preference_dimension_issue(dimension: str, quality_issues: list[str]) -> str:
+    issue = {
+        "subject_beauty": "subject_not_attractive",
+        "face_naturalness": "face_unnatural",
+        "glamour_impact": "not_glamorous",
+        "fashion_material_quality": "stockings_bad",
+        "pose_composition": "composition_bad",
+        "motion_quality": "motion_bad",
+    }.get(dimension, "")
+    if issue in quality_issues:
+        return issue
+    return issue
 
 
 def _nested_value(payload: Any, key: str) -> Any:

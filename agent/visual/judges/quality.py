@@ -80,19 +80,26 @@ def judge_visual_quality(
     }
     if hard_gate.get("passed") is not True:
         uncertainty_reasons.append("hard_gate_not_passed")
+    preference_dimensions = _preference_dimensions(vision, request_context)
+    quality_issues = _quality_issues_from_observation(
+        vision,
+        request_context=request_context,
+        candidate_kind=str(candidate.get("kind") or ""),
+        preference_dimensions=preference_dimensions,
+        uncertainty_reasons=uncertainty_reasons,
+    )
     confidence = _confidence(scores=scores, uncertainty_reasons=uncertainty_reasons)
-    return {
+    result = {
         "version": VERSION,
         "scores": {key: round(value, 4) for key, value in scores.items()},
-        "quality_issues": _quality_issues_from_observation(
-            vision,
-            request_context=request_context,
-            candidate_kind=str(candidate.get("kind") or ""),
-        ),
+        "quality_issues": quality_issues,
         "confidence": confidence,
         "uncertainty_reasons": sorted(set(uncertainty_reasons)),
         "judge_sources": judge_sources,
     }
+    if preference_dimensions:
+        result["preference_dimensions"] = preference_dimensions
+    return result
 
 
 def _reference_adherence(
@@ -221,6 +228,8 @@ def _quality_issues_from_observation(
     *,
     request_context: dict[str, Any],
     candidate_kind: str,
+    preference_dimensions: dict[str, float] | None = None,
+    uncertainty_reasons: list[str] | None = None,
 ) -> list[str]:
     defects = vision.get("artifact_defects")
     if not isinstance(defects, list):
@@ -249,6 +258,53 @@ def _quality_issues_from_observation(
             continue
         if issue and issue not in issues:
             issues.append(issue)
+    for issue in _preference_dimension_issues(
+        preference_dimensions or {},
+        uncertainty_reasons=uncertainty_reasons,
+    ):
+        if issue not in issues:
+            issues.append(issue)
+    return issues
+
+
+def _preference_dimensions(vision: dict[str, Any], request_context: dict[str, Any]) -> dict[str, float]:
+    if not _portrait_like_context(request_context):
+        return {}
+    dimensions: dict[str, float] = {}
+    mapping = {
+        "subject_beauty": "subject_quality",
+        "face_naturalness": "face_quality",
+        "glamour_impact": "glamour_impact",
+        "fashion_material_quality": "fashion_material_quality",
+        "pose_composition": "pose_composition",
+    }
+    for dimension, vision_key in mapping.items():
+        if _has_vision_dimension(vision, vision_key):
+            dimensions[dimension] = round(_clamp(vision.get(vision_key)), 4)
+    return dimensions
+
+
+def _preference_dimension_issues(
+    dimensions: dict[str, float],
+    *,
+    uncertainty_reasons: list[str] | None,
+) -> list[str]:
+    issues: list[str] = []
+    issue_map = {
+        "subject_beauty": "subject_not_attractive",
+        "face_naturalness": "face_unnatural",
+        "glamour_impact": "not_glamorous",
+        "fashion_material_quality": "stockings_bad",
+        "pose_composition": "composition_bad",
+    }
+    for dimension, score in dimensions.items():
+        if score >= 0.5:
+            continue
+        issue = issue_map.get(dimension)
+        if issue:
+            issues.append(issue)
+        if uncertainty_reasons is not None:
+            uncertainty_reasons.append(f"preference_dimension_{dimension}_low")
     return issues
 
 
@@ -257,7 +313,9 @@ def _issue_for_defect(defect: str) -> str | None:
         "blurred_face": "subject_not_attractive",
         "distorted_face": "subject_not_attractive",
         "face_quality_low": "subject_not_attractive",
+        "face_unnatural": "face_unnatural",
         "visual_appeal_low": "not_beautiful",
+        "glamour_impact_low": "not_glamorous",
         "stocking_quality_low": "stockings_bad",
         "stockings_quality_low": "stockings_bad",
         "bad_stockings": "stockings_bad",
