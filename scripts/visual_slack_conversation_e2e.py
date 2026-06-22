@@ -18,6 +18,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 from hermes_constants import get_hermes_home
 from agent.visual.action_dedupe import dedupe_actions as _dedupe_actions
+from agent.visual.agent_mode.planner import plan_visual_agent_request
 from gateway.config import PlatformConfig
 from gateway.platforms.slack import SlackAdapter
 from scripts.visual_conversation_route_report import build_visual_conversation_route_report
@@ -80,19 +81,27 @@ def build_visual_slack_conversation_e2e_report(
             "reason": "slack_ingress_failed",
         }
     else:
-        if not str(getattr(captured_event, "text", "") or "").strip():
+        captured_prompt = str(getattr(captured_event, "text", "") or "")
+        attachments = _string_list(getattr(captured_event, "media_urls", None))
+        if not captured_prompt.strip():
             failures.append("slack_ingress_missing_text")
+        visual_agent_plan = plan_visual_agent_request(captured_prompt, attachments=attachments)
+        planned_args = _dict(visual_agent_plan.get("arguments"))
         delivery_thread_id = getattr(captured_event.source, "thread_id", None)
         delivery_kwargs = {
             "mode": mode,
             "work_dir": work_dir,
-            "prompt": str(getattr(captured_event, "text", "") or ""),
+            "prompt": captured_prompt,
+            "attachments": _string_list(planned_args.get("attachments")),
             "target": str(getattr(captured_event.source, "chat_id", "") or destination_id),
             "thread_id": delivery_thread_id,
-            "candidate_budget": candidate_budget,
-            "video_budget": video_budget,
-            "duration": duration,
-            "require_video": require_video,
+            "candidate_budget": _planned_int(planned_args.get("candidate_budget"), candidate_budget),
+            "video_budget": _planned_int(planned_args.get("video_budget"), video_budget),
+            "duration": _planned_int(planned_args.get("duration"), duration),
+            "require_video": _planned_bool(planned_args.get("include_video"), require_video),
+            "include_image": _planned_optional_bool(planned_args.get("include_image")),
+            "aspect_ratio": _planned_optional_str(planned_args.get("aspect_ratio")),
+            "storyboard": _planned_optional_dict(planned_args.get("storyboard")),
             "upload": upload,
         }
         slack_delivery = build_visual_slack_delivery_e2e_report(**delivery_kwargs)
@@ -120,6 +129,9 @@ def build_visual_slack_conversation_e2e_report(
         "mode": mode,
         "failures": sorted(set(str(item) for item in failures if item)),
         "ingress": ingress_summary,
+        "visual_agent_plan": _summarize_visual_agent_plan(
+            visual_agent_plan if "visual_agent_plan" in locals() else {}
+        ),
         "conversation_route": conversation_route,
         "initial_slack_delivery": initial_slack_delivery,
         "slack_delivery": slack_delivery,
@@ -225,6 +237,59 @@ def _summarize_message_event(message_event: Any) -> dict[str, Any]:
 
 def _dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+def _planned_int(value: Any, fallback: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _planned_bool(value: Any, fallback: bool) -> bool:
+    return value if isinstance(value, bool) else fallback
+
+
+def _planned_optional_bool(value: Any) -> bool | None:
+    return value if isinstance(value, bool) else None
+
+
+def _planned_optional_str(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    return str(value)
+
+
+def _planned_optional_dict(value: Any) -> dict[str, Any] | None:
+    return value if isinstance(value, dict) else None
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [str(item) for item in value if item not in (None, "")]
+
+
+def _summarize_visual_agent_plan(plan: dict[str, Any]) -> dict[str, Any]:
+    args = _dict(plan.get("arguments")) if isinstance(plan, dict) else {}
+    storyboard = _dict(args.get("storyboard"))
+    return {
+        "tool_name": plan.get("tool_name") if isinstance(plan, dict) else None,
+        "should_use_visual_package": plan.get("should_use_visual_package") if isinstance(plan, dict) else None,
+        "reason": plan.get("reason") if isinstance(plan, dict) else None,
+        "confidence": plan.get("confidence") if isinstance(plan, dict) else None,
+        "arguments": {
+            "include_image": args.get("include_image"),
+            "include_video": args.get("include_video"),
+            "candidate_budget": args.get("candidate_budget"),
+            "video_budget": args.get("video_budget"),
+            "duration": args.get("duration"),
+            "aspect_ratio": args.get("aspect_ratio"),
+            "attachment_count": len(_string_list(args.get("attachments"))),
+            "storyboard_enabled": bool(storyboard.get("enabled")),
+            "storyboard_shot_count": storyboard.get("shot_count"),
+        },
+    }
 
 
 def _attempt_repair_delivery(

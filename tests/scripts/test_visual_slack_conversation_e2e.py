@@ -76,16 +76,59 @@ def test_visual_slack_conversation_e2e_fixture_dispatches_slack_ingress_and_deli
             "mode": "fixture",
             "work_dir": tmp_path,
             "prompt": prompt,
+            "attachments": [],
             "target": "D_TEST",
             "thread_id": report["ingress"]["thread_id"],
             "candidate_budget": 1,
             "video_budget": 1,
             "duration": 4,
             "require_video": True,
+            "include_image": True,
+            "aspect_ratio": "16:9",
+            "storyboard": None,
             "upload": None,
         }
     ]
+    assert report["visual_agent_plan"]["arguments"]["include_image"] is True
+    assert report["visual_agent_plan"]["arguments"]["include_video"] is True
+    assert report["visual_agent_plan"]["arguments"]["aspect_ratio"] == "16:9"
     assert "SECRET_VISUAL_PROMPT" not in json.dumps(report, ensure_ascii=False)
+
+
+def test_visual_slack_conversation_e2e_uses_visual_agent_plan_for_text_video(
+    monkeypatch,
+    tmp_path,
+):
+    from scripts import visual_slack_conversation_e2e
+
+    prompt = "幫我做一段 4 秒乾淨產品短片，主體是一支霧黑鋼筆"
+    delivery_calls = []
+
+    def fake_delivery(**kwargs):
+        delivery_calls.append(kwargs)
+        return _fake_delivery_report(**kwargs)
+
+    monkeypatch.setattr(
+        visual_slack_conversation_e2e,
+        "build_visual_slack_delivery_e2e_report",
+        fake_delivery,
+    )
+
+    report = visual_slack_conversation_e2e.build_visual_slack_conversation_e2e_report(
+        mode="fixture",
+        work_dir=tmp_path,
+        prompt=prompt,
+        target="D_TEST",
+    )
+
+    assert report["success"] is True
+    assert delivery_calls[0]["candidate_budget"] == 2
+    assert delivery_calls[0]["video_budget"] == 1
+    assert delivery_calls[0]["duration"] == 4
+    assert delivery_calls[0]["require_video"] is True
+    assert delivery_calls[0]["include_image"] is False
+    assert delivery_calls[0]["aspect_ratio"] == "16:9"
+    assert delivery_calls[0]["storyboard"] is None
 
 
 def test_visual_slack_conversation_e2e_fails_when_slack_ingress_drops_message(

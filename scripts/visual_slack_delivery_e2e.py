@@ -36,8 +36,11 @@ def build_visual_slack_delivery_e2e_report(
     mode: str = "fixture",
     work_dir: str | Path | None = None,
     prompt: str = DEFAULT_PROMPT,
+    attachments: list[str] | None = None,
     target: str | None = None,
     thread_id: str | None = None,
+    include_image: bool | None = None,
+    aspect_ratio: str | None = None,
     candidate_budget: int = 1,
     video_budget: int = 1,
     duration: int = 4,
@@ -61,8 +64,12 @@ def build_visual_slack_delivery_e2e_report(
                 "candidate_budget": candidate_budget,
                 "video_budget": video_budget,
                 "duration": duration,
-                "aspect_ratio": "1:1",
+                "aspect_ratio": aspect_ratio or "1:1",
             }
+            if include_image is not None:
+                package_args["include_image"] = include_image
+            if attachments:
+                package_args["attachments"] = attachments
             if storyboard:
                 package_args["include_image"] = False
                 package_args["storyboard"] = storyboard
