@@ -215,6 +215,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
     selected_images: list[str] = []
     selected_videos: list[str] = []
     video_source_image: str | None = None
+    video_source_artifact_id: str | None = None
     rankings: dict[str, dict[str, Any]] = {}
     generation_payloads: dict[str, Any] = {}
     preference_profile = build_preference_profile(ledger, bucket=intent_signature)
@@ -338,6 +339,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         selected_image = _selected_candidate(image_candidates, image_decision.selected_artifact_id)
         if selected_image:
             video_source_image = selected_image["artifact_path"]
+            video_source_artifact_id = selected_image["artifact_id"]
             if requested_image:
                 selected_artifact_ids.append(selected_image["artifact_id"])
                 selected_images.append(selected_image["artifact_path"])
@@ -417,6 +419,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                         "duration_seconds": duration,
                         "aspect_ratio": video_aspect_ratio,
                         "motion_mode": hardened_video.get("metadata", {}).get("motion_mode"),
+                        "source_image_artifact_id": video_source_artifact_id,
                     },
                     candidate_index=candidate_index,
                 )
@@ -453,6 +456,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                                 "duration_seconds": retry_payload.get("duration", duration),
                                 "aspect_ratio": video_aspect_ratio,
                                 "motion_mode": hardened_video.get("metadata", {}).get("motion_mode"),
+                                "source_image_artifact_id": video_source_artifact_id,
                             },
                             candidate_index=candidate_index + video_budget,
                         )
@@ -517,6 +521,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             "generated_image": should_generate_image,
             "image_first_for_video": image_first_for_video,
             "video_source_image": video_source_image,
+            "video_source_artifact_id": video_source_artifact_id,
         },
         "delivery_metadata": delivery_metadata,
         "generation_payloads": generation_payloads,

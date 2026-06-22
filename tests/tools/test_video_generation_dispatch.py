@@ -111,6 +111,21 @@ class TestUnifiedDispatch:
         assert result["recommended_arguments"]["candidate_budget"] == 2
         assert provider.last_kwargs == {}
 
+    def test_xai_15_text_visual_video_defers_to_visual_package(self):
+        provider = _RecordingProvider("xai", default_model="grok-imagine-video-1.5")
+        video_gen_registry.register_provider(provider)
+
+        result = self._run(
+            {"prompt": "make a high quality fashion portrait video"},
+            configured="xai",
+        )
+
+        assert result["success"] is False
+        assert result["error_type"] == "wrong_visual_route"
+        assert result["route"] == "image_first_visual_package"
+        assert result["recommended_tool"] == "visual_package_generate"
+        assert provider.last_kwargs == {}
+
     def test_image_to_video_routes_with_image_url(self):
         provider = _RecordingProvider("rec")
         video_gen_registry.register_provider(provider)

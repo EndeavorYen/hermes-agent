@@ -562,7 +562,7 @@ def _should_defer_to_visual_package(
     if provider_name.lower() != "xai":
         return False
     model_lc = str(model or "").lower()
-    if "grok-imagine-video" not in model_lc or "1.5" in model_lc:
+    if "grok-imagine-video" not in model_lc:
         return False
     return _looks_like_image_first_visual_video(prompt)
 

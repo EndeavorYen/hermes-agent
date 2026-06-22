@@ -210,6 +210,22 @@ async def test_visual_package_text_only_video_uses_internal_image_first(monkeypa
     assert len(image_calls) == 2
     assert video_calls[0]["image_url"] == str(image)
     assert payload["generation_strategy"]["image_first_for_video"] is True
+    assert (
+        payload["generation_strategy"]["video_source_artifact_id"]
+        == payload["rankings"]["image"]["selected_artifact_id"]
+    )
+
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+
+    ledger = VisualAttemptLedger(default_visual_ledger_path())
+    video_attempts = [
+        row for row in ledger._list("visual_attempts")
+        if row["model"] == "video-fixture"
+    ]
+    assert video_attempts[0]["parameters_requested"]["source_image_artifact_id"] == (
+        payload["generation_strategy"]["video_source_artifact_id"]
+    )
 
 
 @pytest.mark.asyncio
