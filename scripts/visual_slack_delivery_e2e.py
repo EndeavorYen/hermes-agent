@@ -272,9 +272,24 @@ async def _upload_live_slack_deliverables(
     try:
         adapter = _make_live_slack_adapter()
         if image_refs:
-            await adapter.send_multiple_images(destination_id, image_refs, metadata=delivery_metadata)
+            image_result = await adapter.send_multiple_images(destination_id, image_refs, metadata=delivery_metadata)
+            for image_ref, _alt in image_refs:
+                _ensure_live_upload_record(
+                    metadata=delivery_metadata,
+                    artifact_ref=image_ref,
+                    destination_id=destination_id,
+                    thread_id=thread_id,
+                    result=image_result,
+                )
         for video_path in video_paths:
-            await adapter.send_video(destination_id, video_path, metadata=delivery_metadata)
+            video_result = await adapter.send_video(destination_id, video_path, metadata=delivery_metadata)
+            _ensure_live_upload_record(
+                metadata=delivery_metadata,
+                artifact_ref=video_path,
+                destination_id=destination_id,
+                thread_id=thread_id,
+                result=video_result,
+            )
     except Exception as exc:
         errors.append(f"{type(exc).__name__}:{exc}")
 
@@ -287,6 +302,83 @@ async def _upload_live_slack_deliverables(
         "skipped_refs": skipped_refs,
         "errors": errors,
     }
+
+
+def _ensure_live_upload_record(
+    *,
+    metadata: dict[str, Any],
+    artifact_ref: str,
+    destination_id: str,
+    thread_id: str | None,
+    result: Any,
+) -> None:
+    context = visual_delivery_context(
+        metadata,
+        artifact_ref,
+        platform="slack",
+        destination_id=destination_id,
+        thread_id=thread_id,
+    )
+    if context is None or _has_sent_delivery(context):
+        return
+    if not _upload_result_success(result):
+        return
+    record_visual_delivery_status(
+        context,
+        "sent",
+        message_id=_upload_result_message_id(result),
+    )
+
+
+def _has_sent_delivery(context: dict[str, Any]) -> bool:
+    ledger = context.get("ledger")
+    if not isinstance(ledger, VisualAttemptLedger):
+        return False
+    for row in ledger.list_deliveries(request_id=str(context.get("request_id") or "")):
+        if (
+            row.get("artifact_id") == context.get("artifact_id")
+            and row.get("platform") == context.get("platform")
+            and row.get("destination_id") == context.get("destination_id")
+            and row.get("thread_id") == context.get("thread_id")
+            and row.get("delivery_status") == "sent"
+        ):
+            return True
+    return False
+
+
+def _upload_result_success(result: Any) -> bool:
+    if result is None:
+        return True
+    if isinstance(result, dict):
+        return (
+            result.get("success") is not False
+            and result.get("ok") is not False
+            and not result.get("error")
+        )
+    success = getattr(result, "success", None)
+    if success is not None:
+        return bool(success)
+    error = getattr(result, "error", None)
+    return error in (None, "")
+
+
+def _upload_result_message_id(result: Any) -> str | None:
+    if isinstance(result, dict):
+        for key in ("message_id", "ts", "message_ts", "id"):
+            value = result.get(key)
+            if value not in (None, ""):
+                return str(value)
+        raw = result.get("raw_response")
+        if raw is not result:
+            return _upload_result_message_id(raw)
+    for attr in ("message_id", "ts", "message_ts", "id"):
+        value = getattr(result, attr, None)
+        if value not in (None, ""):
+            return str(value)
+    raw_response = getattr(result, "raw_response", None)
+    if raw_response is not None and raw_response is not result:
+        return _upload_result_message_id(raw_response)
+    return None
 
 
 def _make_live_slack_adapter() -> Any:

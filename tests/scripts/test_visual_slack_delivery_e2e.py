@@ -183,6 +183,51 @@ def test_visual_slack_delivery_live_uploads_images_and_videos(monkeypatch, tmp_p
     assert report["delivery"]["message_ids"] == ["live-image-msg", "live-video-msg"]
 
 
+def test_visual_slack_delivery_live_records_adapter_returned_uploads(monkeypatch, tmp_path):
+    from scripts import visual_slack_delivery_e2e
+
+    calls = {"images": [], "videos": []}
+
+    class FakeSlackAdapter:
+        async def send_multiple_images(self, chat_id, images, metadata=None):
+            calls["images"].append((chat_id, images, metadata))
+            return {
+                "success": True,
+                "message_id": "live-image-msg",
+            }
+
+        async def send_video(self, chat_id, video_path, metadata=None):
+            calls["videos"].append((chat_id, video_path, metadata))
+            return {
+                "success": True,
+                "message_id": "live-video-msg",
+            }
+
+    monkeypatch.setattr(
+        visual_slack_delivery_e2e,
+        "run_visual_package",
+        lambda _args: _fake_visual_package_payload(tmp_path),
+    )
+    monkeypatch.setattr(
+        visual_slack_delivery_e2e,
+        "_make_live_slack_adapter",
+        lambda: FakeSlackAdapter(),
+    )
+
+    report = visual_slack_delivery_e2e.build_visual_slack_delivery_e2e_report(
+        mode="live",
+        upload=True,
+        work_dir=tmp_path,
+        target="D_TEST",
+    )
+
+    assert calls["images"]
+    assert calls["videos"]
+    assert report["success"] is True
+    assert report["delivery"]["sent_count"] == 2
+    assert report["delivery"]["message_ids"] == ["live-image-msg", "live-video-msg"]
+
+
 def test_visual_slack_delivery_live_reports_upload_adapter_failures(monkeypatch, tmp_path):
     from scripts import visual_slack_delivery_e2e
 
