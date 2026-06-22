@@ -70,25 +70,17 @@ def build_visual_e2e_automation_report(
     feedback_loop = build_visual_feedback_loop_report(_ledger_path_for_work_dir(work_dir))
     quality_calibration = build_quality_calibration_report(_ledger_path_for_work_dir(work_dir))
     if include_live:
-        live_e2e = (
-            build_visual_live_provider_e2e_report(mode="live", work_dir=None)
-            if live_provider_enabled()
-            else {"status": "skipped", "reason": "live_provider_not_enabled"}
+        live_e2e = build_visual_live_provider_e2e_report(mode="live", work_dir=None)
+        live_quality_suite_kwargs = {"mode": "live", "work_dir": None}
+        if case_timeout_seconds is not None:
+            live_quality_suite_kwargs["case_timeout_seconds"] = case_timeout_seconds
+        live_quality_suite = build_visual_live_provider_e2e_suite_report(**live_quality_suite_kwargs)
+        live_quality_burn = build_visual_live_quality_burn_report(
+            mode="live",
+            work_dir=None,
+            case_timeout_seconds=case_timeout_seconds,
+            suite_report=live_quality_suite,
         )
-        if live_provider_enabled():
-            live_quality_suite_kwargs = {"mode": "live", "work_dir": None}
-            if case_timeout_seconds is not None:
-                live_quality_suite_kwargs["case_timeout_seconds"] = case_timeout_seconds
-            live_quality_suite = build_visual_live_provider_e2e_suite_report(**live_quality_suite_kwargs)
-            live_quality_burn = build_visual_live_quality_burn_report(
-                mode="live",
-                work_dir=None,
-                case_timeout_seconds=case_timeout_seconds,
-                suite_report=live_quality_suite,
-            )
-        else:
-            live_quality_suite = {"status": "skipped", "reason": "live_provider_not_enabled"}
-            live_quality_burn = {"status": "skipped", "reason": "live_provider_not_enabled"}
     else:
         live_e2e = {"status": "not_requested"}
         live_quality_suite = {"status": "not_requested"}

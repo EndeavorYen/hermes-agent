@@ -445,10 +445,55 @@ def test_visual_e2e_automation_fails_when_quality_calibration_fails(monkeypatch,
     assert report["quality_calibration"]["failures"] == ["judge_human_disagreement_rate_high"]
 
 
-def test_visual_e2e_automation_live_skips_without_enable(monkeypatch, tmp_path):
+def test_visual_e2e_automation_include_live_bypasses_env_gate(monkeypatch, tmp_path):
     from scripts import visual_e2e_automation_report
 
+    calls = []
+
+    def fake_build_live_provider_e2e_report(*, mode, work_dir=None, **kwargs):
+        calls.append({"tool": "live_e2e", "mode": mode, "work_dir": work_dir})
+        return {
+            "success": True,
+            "provider_mode": mode,
+            "payload": {"success": True, "image_count": 1, "video_count": 1},
+            "evidence": {"quality_gate": {"success": True, "min_score": 0.82}},
+            "failures": [],
+        }
+
+    def fake_build_live_provider_e2e_suite_report(*, mode, work_dir=None, **kwargs):
+        calls.append({"tool": "live_suite", "mode": mode, "work_dir": work_dir})
+        return {
+            "success": True,
+            "case_count": 1,
+            "failures": [],
+            "quality_repair_summary": {},
+            "recovery_summary": {},
+        }
+
+    def fake_build_live_quality_burn_report(**kwargs):
+        calls.append({"tool": "live_burn", "mode": kwargs.get("mode"), "work_dir": kwargs.get("work_dir")})
+        return {
+            "success": True,
+            "summary": {"case_count": 1, "min_quality_score": 0.82},
+            "next_actions": [],
+        }
+
     monkeypatch.setattr(visual_e2e_automation_report, "live_provider_enabled", lambda: False)
+    monkeypatch.setattr(
+        visual_e2e_automation_report,
+        "build_visual_live_provider_e2e_report",
+        fake_build_live_provider_e2e_report,
+    )
+    monkeypatch.setattr(
+        visual_e2e_automation_report,
+        "build_visual_live_provider_e2e_suite_report",
+        fake_build_live_provider_e2e_suite_report,
+    )
+    monkeypatch.setattr(
+        visual_e2e_automation_report,
+        "build_visual_live_quality_burn_report",
+        fake_build_live_quality_burn_report,
+    )
 
     report = visual_e2e_automation_report.build_visual_e2e_automation_report(
         work_dir=tmp_path,
@@ -456,8 +501,12 @@ def test_visual_e2e_automation_live_skips_without_enable(monkeypatch, tmp_path):
     )
 
     assert report["success"] is True
-    assert report["live_e2e"]["status"] == "skipped"
-    assert report["live_e2e"]["reason"] == "live_provider_not_enabled"
+    assert report["live_e2e"]["success"] is True
+    assert report["live_quality_suite"]["success"] is True
+    assert report["live_quality_burn"]["success"] is True
+    assert {"tool": "live_e2e", "mode": "live", "work_dir": None} in calls
+    assert {"tool": "live_suite", "mode": "live", "work_dir": None} in calls
+    assert {"tool": "live_burn", "mode": "live", "work_dir": None} in calls
 
 
 def test_visual_e2e_automation_live_uses_runtime_home_not_fixture_work_dir(monkeypatch, tmp_path):
