@@ -301,6 +301,57 @@ def test_visual_live_quality_burn_prefers_image_first_when_video_missing_after_i
     } in report["next_actions"]
 
 
+def test_visual_live_quality_burn_flags_video_source_not_ranked_image(monkeypatch, tmp_path):
+    from scripts import visual_live_quality_burn
+
+    suite = _suite_with_quality_failure()
+    suite["success"] = False
+    suite["failures"] = ["fashion_portrait_video:video_not_using_ranked_image_source"]
+    suite["cases"][0]["evidence"]["video_source"] = {
+        "source_image_artifact_id": "var_product_selected",
+        "ranked_selected_image_artifact_id": "var_product_selected",
+        "uses_ranked_selected_image": True,
+    }
+    suite["cases"][1]["success"] = False
+    suite["cases"][1]["failures"] = ["video_not_using_ranked_image_source"]
+    suite["cases"][1]["evidence"]["video_source"] = {
+        "source_image_artifact_id": None,
+        "ranked_selected_image_artifact_id": "var_fashion_selected",
+        "uses_ranked_selected_image": False,
+    }
+    suite["cases"][1]["evidence"]["quality_gate"] = {
+        "success": True,
+        "min_score": 0.82,
+        "quality_issues": [],
+    }
+
+    monkeypatch.setattr(
+        visual_live_quality_burn,
+        "build_visual_live_provider_e2e_suite_report",
+        lambda **_kwargs: suite,
+    )
+
+    report = visual_live_quality_burn.build_visual_live_quality_burn_report(
+        mode="live",
+        output_dir=tmp_path,
+    )
+
+    assert report["summary"]["image_first_video_source_case_count"] == 2
+    assert report["summary"]["image_first_video_source_covered_count"] == 1
+    assert report["summary"]["image_first_video_source_failure_count"] == 1
+    assert report["summary"]["image_first_video_source_failure_case_ids"] == ["fashion_portrait_video"]
+    assert {
+        "type": "prefer_image_first_video",
+        "track": "provider",
+        "reason": "live_quality_burn_video_source_not_ranked_image",
+        "confidence": 0.82,
+        "evidence_count": 1,
+        "requires_human_feedback": False,
+        "activation_status": "next_run",
+        "source": "live_quality_burn",
+    } in report["next_actions"]
+
+
 def test_visual_live_quality_burn_promotes_high_quality_pass_without_repair(monkeypatch, tmp_path):
     from scripts import visual_live_quality_burn
 

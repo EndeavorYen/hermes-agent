@@ -823,6 +823,65 @@ def test_visual_live_provider_e2e_fails_when_selected_quality_issue_present():
     assert "selected_quality_issue_detected" in failures
 
 
+def test_visual_live_provider_e2e_fails_when_video_skips_ranked_image_source():
+    from scripts.visual_live_provider_e2e import _payload_failures
+
+    failures = _payload_failures(
+        {"success": True, "images": ["/tmp/image.png"], "videos": ["/tmp/video.mp4"]},
+        {
+            "image_count": 1,
+            "video_count": 1,
+            "judgment_count": 2,
+            "ranking_count": 2,
+            "learning_trace_count": 2,
+            "judgments_with_learning_metadata": 2,
+            "inline_vision_judgment_count": 1,
+            "quality_gate": {
+                "success": True,
+                "min_score": 0.82,
+                "threshold": 0.55,
+                "quality_issues": [],
+            },
+            "video_source": {
+                "source_image_artifact_id": None,
+                "ranked_selected_image_artifact_id": "var_selected_image",
+                "uses_ranked_selected_image": False,
+            },
+            "providers": ["xai"],
+        },
+        mode="live",
+        require_video=True,
+    )
+
+    assert "video_not_using_ranked_image_source" in failures
+
+
+def test_visual_live_provider_e2e_extracts_video_source_evidence_from_payload():
+    from scripts.visual_live_provider_e2e import _video_source_evidence
+
+    evidence = _video_source_evidence(
+        {
+            "generation_strategy": {
+                "image_first_for_video": True,
+                "video_source_artifact_id": "var_selected_image",
+            },
+            "rankings": {
+                "image": {"selected_artifact_id": "var_selected_image"},
+                "video": {"selected_artifact_id": "var_selected_video"},
+            },
+        },
+        require_video=True,
+    )
+
+    assert evidence == {
+        "require_video": True,
+        "image_first_for_video": True,
+        "source_image_artifact_id": "var_selected_image",
+        "ranked_selected_image_artifact_id": "var_selected_image",
+        "uses_ranked_selected_image": True,
+    }
+
+
 def test_visual_live_provider_e2e_cli_fixture_json(capsys, tmp_path):
     from scripts.visual_live_provider_e2e import main
 

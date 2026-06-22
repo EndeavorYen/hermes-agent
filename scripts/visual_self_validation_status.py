@@ -91,6 +91,12 @@ def build_visual_self_validation_status(
             "burn_success": summary.get("live_quality_burn_success"),
             "burn_case_count": _optional_int(summary.get("live_quality_burn_case_count")),
             "burn_min_score": summary.get("live_quality_burn_min_score"),
+            "image_first_video_source_covered": summary.get(
+                "live_quality_burn_image_first_video_source_covered"
+            ),
+            "image_first_video_source_failure_count": _optional_int(
+                summary.get("live_quality_burn_image_first_video_source_failure_count")
+            ),
             "content_moderation_recovered_count": _optional_int(
                 summary.get("live_quality_suite_content_moderation_recovered_case_count")
             ),

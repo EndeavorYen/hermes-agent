@@ -261,6 +261,21 @@ def _summary(automation: dict[str, Any]) -> dict[str, Any]:
         "live_quality_burn_case_count": _int(live_quality_burn_summary.get("case_count")),
         "live_quality_burn_min_score": live_quality_burn_summary.get("min_quality_score"),
         "live_quality_burn_action_types": _action_types(live_quality_burn.get("next_actions")),
+        "live_quality_burn_image_first_video_source_case_count": _int(
+            live_quality_burn_summary.get("image_first_video_source_case_count")
+        ),
+        "live_quality_burn_image_first_video_source_covered_count": _int(
+            live_quality_burn_summary.get("image_first_video_source_covered_count")
+        ),
+        "live_quality_burn_image_first_video_source_failure_count": _int(
+            live_quality_burn_summary.get("image_first_video_source_failure_count")
+        ),
+        "live_quality_burn_image_first_video_source_failure_case_ids": _list(
+            live_quality_burn_summary.get("image_first_video_source_failure_case_ids")
+        ),
+        "live_quality_burn_image_first_video_source_covered": _image_first_video_source_covered(
+            live_quality_burn_summary
+        ),
         "live_quality_burn_preference_dimension_failure_count": _int(
             live_quality_burn_summary.get("preference_dimension_failure_count")
         ),
@@ -532,6 +547,16 @@ def _int(value: Any) -> int:
 
 def _list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
+
+
+def _image_first_video_source_covered(summary: dict[str, Any]) -> bool | None:
+    case_count = _int(summary.get("image_first_video_source_case_count"))
+    if case_count <= 0:
+        return None
+    return (
+        _int(summary.get("image_first_video_source_failure_count")) == 0
+        and _int(summary.get("image_first_video_source_covered_count")) >= case_count
+    )
 
 
 def _preference_dimensions(failures: list[Any]) -> list[str]:

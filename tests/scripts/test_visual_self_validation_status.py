@@ -40,6 +40,8 @@ def _scheduled_report(*, success=True, live_decision="run"):
             "live_quality_burn_success": True,
             "live_quality_burn_case_count": 2,
             "live_quality_burn_min_score": 0.74,
+            "live_quality_burn_image_first_video_source_covered": True,
+            "live_quality_burn_image_first_video_source_failure_count": 0,
             "live_quality_burn_action_types": [
                 "repair_low_preference_dimension",
                 "safe_reframe_provider_retry",
@@ -96,6 +98,8 @@ def test_visual_self_validation_status_summarizes_latest_live_report(tmp_path):
     assert status["live"]["quality_gate_min_score"] == 0.8206
     assert status["live"]["suite_success"] is True
     assert status["live"]["burn_success"] is True
+    assert status["live"]["image_first_video_source_covered"] is True
+    assert status["live"]["image_first_video_source_failure_count"] == 0
     assert status["live"]["content_moderation_recovered_count"] == 1
     assert status["live"]["provider_failure_classes"] == {"content_moderation": 1}
     assert status["live"]["provider_error_codes"] == {"api_error": 1}

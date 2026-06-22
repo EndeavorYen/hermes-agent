@@ -222,6 +222,7 @@ def inspect_visual_e2e_evidence(
             "request_id": "",
             "image_count": len(payload.get("images") or []),
             "video_count": len(payload.get("videos") or []),
+            "video_source": _video_source_evidence(payload, require_video=require_video),
         }
     ledger = VisualAttemptLedger(default_visual_ledger_path())
     attempts = _rows_for_request(ledger, "visual_attempts", request_id)
@@ -287,6 +288,7 @@ def inspect_visual_e2e_evidence(
         "providers": providers,
         "require_video": require_video,
         "quality_gate": quality_gate,
+        "video_source": _video_source_evidence(payload, require_video=require_video),
     }
 
 
@@ -421,6 +423,14 @@ def _payload_failures(
         failures.append("quality_gate_failed")
     if mode == "live" and isinstance(quality_gate, dict) and quality_gate.get("quality_issues"):
         failures.append("selected_quality_issue_detected")
+    video_source = evidence.get("video_source") if isinstance(evidence.get("video_source"), dict) else {}
+    if (
+        mode == "live"
+        and require_video
+        and evidence.get("video_count", 0) >= 1
+        and video_source.get("uses_ranked_selected_image") is not True
+    ):
+        failures.append("video_not_using_ranked_image_source")
     if mode == "live" and _contains_fixture_provider(payload, evidence):
         failures.append("non_live_provider_detected")
     return sorted(set(failures))
@@ -455,6 +465,35 @@ def _safe_payload_summary(payload: dict[str, Any] | None) -> dict[str, Any] | No
         "error_type": payload.get("error_type"),
         "error": payload.get("error"),
     }
+
+
+def _video_source_evidence(payload: dict[str, Any], *, require_video: bool) -> dict[str, Any]:
+    generation_strategy = (
+        payload.get("generation_strategy")
+        if isinstance(payload.get("generation_strategy"), dict)
+        else {}
+    )
+    rankings = payload.get("rankings") if isinstance(payload.get("rankings"), dict) else {}
+    image_ranking = rankings.get("image") if isinstance(rankings.get("image"), dict) else {}
+    source_image_artifact_id = _string_or_none(generation_strategy.get("video_source_artifact_id"))
+    ranked_selected_image_artifact_id = _string_or_none(image_ranking.get("selected_artifact_id"))
+    return {
+        "require_video": bool(require_video),
+        "image_first_for_video": generation_strategy.get("image_first_for_video") is True,
+        "source_image_artifact_id": source_image_artifact_id,
+        "ranked_selected_image_artifact_id": ranked_selected_image_artifact_id,
+        "uses_ranked_selected_image": bool(
+            source_image_artifact_id
+            and ranked_selected_image_artifact_id
+            and source_image_artifact_id == ranked_selected_image_artifact_id
+        ),
+    }
+
+
+def _string_or_none(value: Any) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value
+    return None
 
 
 def _provider_failure_counters(attempts: list[dict[str, Any]]) -> tuple[Counter[str], Counter[str]]:

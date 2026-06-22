@@ -102,6 +102,7 @@ def _summary(suite: dict[str, Any]) -> dict[str, Any]:
     quality_issues = _quality_issues(cases)
     preference_dimension_failures = _preference_dimension_failures(cases)
     video_missing_after_image_case_ids = _video_missing_after_image_case_ids(cases)
+    video_source_summary = _image_first_video_source_summary(cases)
     failed_cases = [
         str(case.get("case_id") or "")
         for case in cases
@@ -118,6 +119,10 @@ def _summary(suite: dict[str, Any]) -> dict[str, Any]:
         "quality_issues": quality_issues,
         "preference_dimension_failure_count": len(preference_dimension_failures),
         "preference_dimension_failures": preference_dimension_failures,
+        "image_first_video_source_case_count": video_source_summary["case_count"],
+        "image_first_video_source_covered_count": video_source_summary["covered_count"],
+        "image_first_video_source_failure_count": video_source_summary["failure_count"],
+        "image_first_video_source_failure_case_ids": video_source_summary["failure_case_ids"],
         "video_missing_after_image_count": len(video_missing_after_image_case_ids),
         "video_missing_after_image_case_ids": video_missing_after_image_case_ids,
         "provider_failure_count": _int(recovery.get("provider_failure_count")),
@@ -212,6 +217,32 @@ def _case_requires_video(case: dict[str, Any], evidence: dict[str, Any]) -> bool
     return any(str(failure) == "missing_video_output" for failure in failures)
 
 
+def _image_first_video_source_summary(cases: list[Any]) -> dict[str, Any]:
+    case_count = 0
+    covered_count = 0
+    failure_case_ids: list[str] = []
+    for case in cases:
+        if not isinstance(case, dict):
+            continue
+        evidence = case.get("evidence") if isinstance(case.get("evidence"), dict) else {}
+        video_source = evidence.get("video_source") if isinstance(evidence.get("video_source"), dict) else {}
+        if not video_source:
+            continue
+        case_count += 1
+        if video_source.get("uses_ranked_selected_image") is True:
+            covered_count += 1
+            continue
+        case_id = str(case.get("case_id") or "").strip()
+        if case_id:
+            failure_case_ids.append(case_id)
+    return {
+        "case_count": case_count,
+        "covered_count": covered_count,
+        "failure_count": len(failure_case_ids),
+        "failure_case_ids": failure_case_ids,
+    }
+
+
 def _next_actions(suite: dict[str, Any], summary: dict[str, Any]) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     failures = {str(failure) for failure in suite.get("failures") or []}
@@ -265,6 +296,16 @@ def _next_actions(suite: dict[str, Any], summary: dict[str, Any]) -> list[dict[s
                 "live_quality_burn_video_missing_after_image",
                 confidence=0.78,
                 evidence_count=_int(summary.get("video_missing_after_image_count")),
+            )
+        )
+    if _int(summary.get("image_first_video_source_failure_count")) > 0:
+        actions.append(
+            _action(
+                "prefer_image_first_video",
+                "provider",
+                "live_quality_burn_video_source_not_ranked_image",
+                confidence=0.82,
+                evidence_count=_int(summary.get("image_first_video_source_failure_count")),
             )
         )
     recovery = suite.get("recovery_summary") if isinstance(suite.get("recovery_summary"), dict) else {}
