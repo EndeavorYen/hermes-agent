@@ -109,6 +109,41 @@ def test_visual_e2e_automation_live_uses_runtime_home_not_fixture_work_dir(monke
     assert calls[1]["work_dir"] is None
 
 
+def test_visual_e2e_automation_can_run_live_slack_upload_with_runtime_home(monkeypatch, tmp_path):
+    from scripts import visual_e2e_automation_report
+
+    calls = []
+
+    def fake_slack_delivery(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success": True,
+            "mode": kwargs["mode"],
+            "failures": [],
+            "delivery": {"deliverable_count": 2, "sent_count": 2},
+        }
+
+    monkeypatch.setattr(
+        visual_e2e_automation_report,
+        "build_visual_slack_delivery_e2e_report",
+        fake_slack_delivery,
+    )
+
+    report = visual_e2e_automation_report.build_visual_e2e_automation_report(
+        work_dir=tmp_path,
+        include_live_slack_upload=True,
+    )
+
+    assert report["success"] is True
+    assert calls[0]["mode"] == "fixture"
+    assert calls[0]["work_dir"] == tmp_path
+    assert calls[0].get("upload") is None
+    assert calls[1]["mode"] == "live"
+    assert calls[1]["work_dir"] is None
+    assert calls[1]["upload"] is True
+    assert report["live_slack_delivery"]["success"] is True
+
+
 def test_visual_e2e_automation_cli_json(capsys, tmp_path):
     from scripts.visual_e2e_automation_report import main
 

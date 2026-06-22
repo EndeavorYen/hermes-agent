@@ -24,10 +24,16 @@ def build_visual_e2e_automation_report(
     *,
     work_dir: str | Path | None = None,
     include_live: bool = False,
+    include_live_slack_upload: bool = False,
 ) -> dict[str, Any]:
     agent_mode = build_visual_agent_mode_regression_report()
     fixture_e2e = build_visual_live_provider_e2e_report(mode="fixture", work_dir=work_dir)
     slack_delivery = build_visual_slack_delivery_e2e_report(mode="fixture", work_dir=work_dir)
+    live_slack_delivery = (
+        build_visual_slack_delivery_e2e_report(mode="live", work_dir=None, upload=True)
+        if include_live_slack_upload
+        else {"status": "not_requested"}
+    )
     health = build_visual_autonomous_healthcheck(_ledger_path_for_work_dir(work_dir), autonomy_level=2)
     feedback_loop = build_visual_feedback_loop_report(_ledger_path_for_work_dir(work_dir))
     quality_calibration = build_quality_calibration_report(_ledger_path_for_work_dir(work_dir))
@@ -55,6 +61,8 @@ def build_visual_e2e_automation_report(
         failures.append("quality_calibration_failed")
     if isinstance(live_e2e, dict) and live_e2e.get("success") is False:
         failures.append("live_e2e_failed")
+    if isinstance(live_slack_delivery, dict) and live_slack_delivery.get("success") is False:
+        failures.append("live_slack_delivery_failed")
     return {
         "success": not failures,
         "mode": "fixture+live" if include_live else "fixture",
@@ -62,6 +70,7 @@ def build_visual_e2e_automation_report(
         "agent_mode": agent_mode,
         "fixture_e2e": fixture_e2e,
         "slack_delivery": slack_delivery,
+        "live_slack_delivery": live_slack_delivery,
         "live_e2e": live_e2e,
         "health": health,
         "feedback_loop": feedback_loop,
@@ -82,6 +91,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run visual E2E automation with fixture-first gating.")
     parser.add_argument("--work-dir", type=Path, default=None)
     parser.add_argument("--include-live", action="store_true")
+    parser.add_argument("--include-live-slack-upload", action="store_true")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--allow-failures", action="store_true")
     args = parser.parse_args(argv)
@@ -89,6 +99,7 @@ def main(argv: list[str] | None = None) -> int:
     payload = build_visual_e2e_automation_report(
         work_dir=args.work_dir,
         include_live=args.include_live,
+        include_live_slack_upload=args.include_live_slack_upload,
     )
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True))

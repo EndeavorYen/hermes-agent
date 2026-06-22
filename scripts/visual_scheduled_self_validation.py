@@ -41,7 +41,13 @@ def build_visual_scheduled_self_validation_report(
         now=now,
     )
     include_live = live_policy["decision"] == "run"
-    automation = build_visual_e2e_automation_report(work_dir=work_dir, include_live=include_live)
+    slack_live_upload_policy = _slack_live_upload_policy(live_policy)
+    include_live_slack_upload = slack_live_upload_policy["decision"] == "run"
+    automation = build_visual_e2e_automation_report(
+        work_dir=work_dir,
+        include_live=include_live,
+        include_live_slack_upload=include_live_slack_upload,
+    )
     report = {
         "success": automation.get("success") is True,
         "run_id": _run_id(now),
@@ -49,6 +55,7 @@ def build_visual_scheduled_self_validation_report(
         "mode": "fixture+live" if include_live else "fixture",
         "failures": list(automation.get("failures") or []),
         "live_policy": live_policy,
+        "slack_live_upload_policy": slack_live_upload_policy,
         "summary": _summary(automation),
         "automation": automation,
         "self_review": {
@@ -118,6 +125,16 @@ def _summary(automation: dict[str, Any]) -> dict[str, Any]:
     quality_gate = live_evidence.get("quality_gate") if isinstance(live_evidence.get("quality_gate"), dict) else {}
     slack_delivery = automation.get("slack_delivery") if isinstance(automation.get("slack_delivery"), dict) else {}
     delivery = slack_delivery.get("delivery") if isinstance(slack_delivery.get("delivery"), dict) else {}
+    live_slack_delivery = (
+        automation.get("live_slack_delivery")
+        if isinstance(automation.get("live_slack_delivery"), dict)
+        else {}
+    )
+    live_slack_delivery_record = (
+        live_slack_delivery.get("delivery")
+        if isinstance(live_slack_delivery.get("delivery"), dict)
+        else {}
+    )
     health = automation.get("health") if isinstance(automation.get("health"), dict) else {}
     self_review = health.get("self_review") if isinstance(health.get("self_review"), dict) else {}
     feedback_action_types = [
@@ -146,6 +163,12 @@ def _summary(automation: dict[str, Any]) -> dict[str, Any]:
         "slack_unexpected_delivery_count": slack_unexpected_delivery_count,
         "scheduled_self_validation_reduces_human_intervention": scheduled_validation_reduces_human_intervention,
         "autonomous_rollout_reduces_human_intervention": self_review.get("reduces_human_intervention") is True,
+        "live_slack_upload_success": live_slack_delivery.get("success")
+        if "success" in live_slack_delivery
+        else None,
+        "live_slack_upload_sent_count": _int(live_slack_delivery_record.get("sent_count"))
+        if live_slack_delivery_record
+        else None,
     }
 
 
@@ -176,6 +199,52 @@ def _live_enabled() -> bool:
         "yes",
         "on",
     }
+
+
+def _slack_live_upload_policy(live_policy: dict[str, Any]) -> dict[str, Any]:
+    enabled = _live_slack_upload_enabled()
+    target = _resolve_live_slack_target()
+    if live_policy.get("decision") != "run":
+        return {
+            "decision": "not_requested",
+            "enabled": enabled,
+            "target": target,
+        }
+    if not enabled:
+        return {
+            "decision": "skip_not_enabled",
+            "enabled": False,
+            "target": target,
+        }
+    if not target:
+        return {
+            "decision": "skip_missing_target",
+            "enabled": True,
+            "target": None,
+        }
+    return {
+        "decision": "run",
+        "enabled": True,
+        "target": target,
+    }
+
+
+def _live_slack_upload_enabled() -> bool:
+    return str(os.environ.get("HERMES_VISUAL_SLACK_LIVE_UPLOAD") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _resolve_live_slack_target() -> str | None:
+    try:
+        from scripts.visual_slack_delivery_e2e import _resolve_target
+
+        return _resolve_target(mode="live", target=None)
+    except Exception:
+        return None
 
 
 def _normalise_now(now: datetime | None) -> datetime:

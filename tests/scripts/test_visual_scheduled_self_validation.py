@@ -5,7 +5,7 @@ from datetime import datetime
 from datetime import timezone
 
 
-def _automation_report(*, include_live: bool) -> dict:
+def _automation_report(*, include_live: bool, include_live_slack_upload: bool = False) -> dict:
     live_e2e = (
         {
             "success": True,
@@ -26,6 +26,21 @@ def _automation_report(*, include_live: bool) -> dict:
         "mode": "fixture+live" if include_live else "fixture",
         "failures": [],
         "live_e2e": live_e2e,
+        "live_slack_delivery": (
+            {
+                "success": True,
+                "mode": "live",
+                "failures": [],
+                "delivery": {
+                    "deliverable_count": 2,
+                    "sent_count": 2,
+                    "duplicate_delivery_count": 0,
+                    "unexpected_delivery_artifact_ids": [],
+                },
+            }
+            if include_live_slack_upload
+            else {"status": "not_requested"}
+        ),
         "slack_delivery": {
             "success": True,
             "delivery": {
@@ -55,9 +70,18 @@ def test_scheduled_self_validation_defaults_to_fixture_and_writes_reports(monkey
 
     calls = []
 
-    def fake_automation(*, work_dir, include_live):
-        calls.append({"work_dir": work_dir, "include_live": include_live})
-        return _automation_report(include_live=include_live)
+    def fake_automation(*, work_dir, include_live, include_live_slack_upload=False):
+        calls.append(
+            {
+                "work_dir": work_dir,
+                "include_live": include_live,
+                "include_live_slack_upload": include_live_slack_upload,
+            }
+        )
+        return _automation_report(
+            include_live=include_live,
+            include_live_slack_upload=include_live_slack_upload,
+        )
 
     monkeypatch.setattr(
         visual_scheduled_self_validation,
@@ -72,7 +96,7 @@ def test_scheduled_self_validation_defaults_to_fixture_and_writes_reports(monkey
 
     assert report["success"] is True
     assert report["live_policy"]["decision"] == "not_requested"
-    assert calls == [{"work_dir": tmp_path / "work", "include_live": False}]
+    assert calls == [{"work_dir": tmp_path / "work", "include_live": False, "include_live_slack_upload": False}]
     assert report["summary"]["feedback_action_types"] == [
         "increase_candidate_budget",
         "rerank_before_slack",
@@ -89,9 +113,18 @@ def test_scheduled_self_validation_runs_live_when_due(monkeypatch, tmp_path):
 
     calls = []
 
-    def fake_automation(*, work_dir, include_live):
-        calls.append({"work_dir": work_dir, "include_live": include_live})
-        return _automation_report(include_live=include_live)
+    def fake_automation(*, work_dir, include_live, include_live_slack_upload=False):
+        calls.append(
+            {
+                "work_dir": work_dir,
+                "include_live": include_live,
+                "include_live_slack_upload": include_live_slack_upload,
+            }
+        )
+        return _automation_report(
+            include_live=include_live,
+            include_live_slack_upload=include_live_slack_upload,
+        )
 
     monkeypatch.setattr(
         visual_scheduled_self_validation,
@@ -126,7 +159,13 @@ def test_scheduled_self_validation_skips_live_until_interval_elapsed(monkeypatch
     monkeypatch.setattr(
         visual_scheduled_self_validation,
         "build_visual_e2e_automation_report",
-        lambda *, work_dir, include_live: (calls.append(include_live) or _automation_report(include_live=include_live)),
+        lambda *, work_dir, include_live, include_live_slack_upload=False: (
+            calls.append({"include_live": include_live, "include_live_slack_upload": include_live_slack_upload})
+            or _automation_report(
+                include_live=include_live,
+                include_live_slack_upload=include_live_slack_upload,
+            )
+        ),
     )
 
     report = visual_scheduled_self_validation.build_visual_scheduled_self_validation_report(
@@ -138,14 +177,17 @@ def test_scheduled_self_validation_skips_live_until_interval_elapsed(monkeypatch
     )
 
     assert report["live_policy"]["decision"] == "skip_interval"
-    assert calls == [False]
+    assert calls == [{"include_live": False, "include_live_slack_upload": False}]
 
 
 def test_scheduled_self_validation_separates_rollout_autonomy_from_validation(monkeypatch, tmp_path):
     from scripts import visual_scheduled_self_validation
 
-    def fake_automation(*, work_dir, include_live):
-        payload = _automation_report(include_live=include_live)
+    def fake_automation(*, work_dir, include_live, include_live_slack_upload=False):
+        payload = _automation_report(
+            include_live=include_live,
+            include_live_slack_upload=include_live_slack_upload,
+        )
         payload["health"]["self_review"]["reduces_human_intervention"] = False
         return payload
 
@@ -162,3 +204,73 @@ def test_scheduled_self_validation_separates_rollout_autonomy_from_validation(mo
 
     assert report["summary"]["scheduled_self_validation_reduces_human_intervention"] is True
     assert report["summary"]["autonomous_rollout_reduces_human_intervention"] is False
+
+
+def test_scheduled_self_validation_skips_live_slack_upload_without_target(monkeypatch, tmp_path):
+    from scripts import visual_scheduled_self_validation
+
+    calls = []
+
+    def fake_automation(*, work_dir, include_live, include_live_slack_upload=False):
+        calls.append({"include_live": include_live, "include_live_slack_upload": include_live_slack_upload})
+        return _automation_report(
+            include_live=include_live,
+            include_live_slack_upload=include_live_slack_upload,
+        )
+
+    monkeypatch.setattr(
+        visual_scheduled_self_validation,
+        "build_visual_e2e_automation_report",
+        fake_automation,
+    )
+    monkeypatch.setattr(visual_scheduled_self_validation, "_live_slack_upload_enabled", lambda: True)
+    monkeypatch.setattr(visual_scheduled_self_validation, "_resolve_live_slack_target", lambda: None)
+
+    report = visual_scheduled_self_validation.build_visual_scheduled_self_validation_report(
+        output_dir=tmp_path,
+        live_mode="on",
+        live_enabled=True,
+        now=datetime(2026, 6, 22, 8, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["live_policy"]["decision"] == "run"
+    assert report["slack_live_upload_policy"]["decision"] == "skip_missing_target"
+    assert calls == [{"include_live": True, "include_live_slack_upload": False}]
+    assert report["summary"]["live_slack_upload_success"] is None
+
+
+def test_scheduled_self_validation_runs_live_slack_upload_when_target_is_ready(monkeypatch, tmp_path):
+    from scripts import visual_scheduled_self_validation
+
+    calls = []
+
+    def fake_automation(*, work_dir, include_live, include_live_slack_upload=False):
+        calls.append({"include_live": include_live, "include_live_slack_upload": include_live_slack_upload})
+        return _automation_report(
+            include_live=include_live,
+            include_live_slack_upload=include_live_slack_upload,
+        )
+
+    monkeypatch.setattr(
+        visual_scheduled_self_validation,
+        "build_visual_e2e_automation_report",
+        fake_automation,
+    )
+    monkeypatch.setattr(visual_scheduled_self_validation, "_live_slack_upload_enabled", lambda: True)
+    monkeypatch.setattr(visual_scheduled_self_validation, "_resolve_live_slack_target", lambda: "D_TEST")
+
+    report = visual_scheduled_self_validation.build_visual_scheduled_self_validation_report(
+        output_dir=tmp_path,
+        live_mode="on",
+        live_enabled=True,
+        now=datetime(2026, 6, 22, 8, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["slack_live_upload_policy"] == {
+        "decision": "run",
+        "enabled": True,
+        "target": "D_TEST",
+    }
+    assert calls == [{"include_live": True, "include_live_slack_upload": True}]
+    assert report["summary"]["live_slack_upload_success"] is True
+    assert report["summary"]["live_slack_upload_sent_count"] == 2
