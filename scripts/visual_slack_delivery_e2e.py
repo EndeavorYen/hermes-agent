@@ -43,6 +43,7 @@ def build_visual_slack_delivery_e2e_report(
     duration: int = 4,
     require_video: bool = True,
     upload: bool | None = None,
+    storyboard: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     mode = mode.strip().lower()
     if mode not in {"fixture", "live"}:
@@ -53,17 +54,19 @@ def build_visual_slack_delivery_e2e_report(
         return _failure_result(mode, ["missing_slack_target"], target=target, thread_id=thread_id)
 
     with _hermes_home_context(_hermes_home_for_mode(mode=mode, work_dir=work_dir)):
-        with _fixture_provider_context(mode, work_dir):
-            payload = run_visual_package(
-                {
-                    "prompt": prompt,
-                    "include_video": require_video,
-                    "candidate_budget": candidate_budget,
-                    "video_budget": video_budget,
-                    "duration": duration,
-                    "aspect_ratio": "1:1",
-                }
-            )
+        with _fixture_provider_context(mode, work_dir, force_storyboard_composition=bool(storyboard)):
+            package_args = {
+                "prompt": prompt,
+                "include_video": require_video,
+                "candidate_budget": candidate_budget,
+                "video_budget": video_budget,
+                "duration": duration,
+                "aspect_ratio": "1:1",
+            }
+            if storyboard:
+                package_args["include_image"] = False
+                package_args["storyboard"] = storyboard
+            payload = run_visual_package(package_args)
 
         visual_evidence = inspect_visual_e2e_evidence(payload, require_video=require_video)
         manifest = build_visual_delivery_manifest(payload)
@@ -136,6 +139,7 @@ def build_visual_slack_delivery_e2e_report(
             "recovery_summary": visual_evidence.get("recovery_summary", {}),
             "quality_repair_summary": visual_evidence.get("quality_repair_summary", {}),
             "quality_gate": visual_evidence.get("quality_gate", {}),
+            "storyboard_execution": visual_evidence.get("storyboard_execution", {}),
         },
         "delivery": delivery_evidence,
         "delivery_manifest": {

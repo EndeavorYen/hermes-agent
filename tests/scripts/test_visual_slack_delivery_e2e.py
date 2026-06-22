@@ -112,6 +112,38 @@ def test_visual_slack_delivery_fixture_records_selected_media(tmp_path):
     assert {row["destination_id"] for row in deliveries} == {"D_TEST"}
 
 
+def test_visual_slack_delivery_fixture_records_composed_storyboard_video(tmp_path):
+    from scripts.visual_slack_delivery_e2e import build_visual_slack_delivery_e2e_report
+
+    report = build_visual_slack_delivery_e2e_report(
+        mode="fixture",
+        work_dir=tmp_path,
+        target="D_TEST",
+        prompt="請做一支 2 段分鏡的連貫產品影片：霧黑鋼筆放在白紙上，柔和窗光。",
+        candidate_budget=2,
+        video_budget=1,
+        storyboard={
+            "enabled": True,
+            "shot_count": 2,
+            "candidate_budget_per_shot": 2,
+            "source_image_policy": "one_ranked_image_per_shot",
+            "composition_target": "single_coherent_video",
+            "delivery_policy": "deliver_composed_video_when_available_else_selected_clips",
+        },
+    )
+
+    assert report["success"] is True
+    assert report["visual"]["image_count"] == 0
+    assert report["visual"]["video_count"] == 1
+    assert report["visual"]["storyboard_execution"]["status"] == "composed"
+    assert report["visual"]["storyboard_execution"]["delivers_composed_video"] is True
+    assert report["visual"]["storyboard_execution"]["delivers_source_clips"] is False
+    assert report["delivery"]["deliverable_count"] == 1
+    assert report["delivery"]["sent_count"] == 1
+    assert report["delivery"]["missing_delivery_artifact_ids"] == []
+    assert report["delivery_manifest"]["failures"] == []
+
+
 def test_visual_slack_delivery_surfaces_quality_gate_evidence(monkeypatch, tmp_path):
     from scripts import visual_slack_delivery_e2e
 

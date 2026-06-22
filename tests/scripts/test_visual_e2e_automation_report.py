@@ -16,6 +16,9 @@ def test_visual_e2e_automation_fixture_default(tmp_path):
     assert report["conversation_route"]["success"] is True
     assert report["storyboard_execution"]["success"] is True
     assert report["storyboard_execution"]["evidence"]["storyboard_execution"]["delivers_composed_video"] is True
+    assert report["storyboard_slack_delivery"]["success"] is True
+    assert report["storyboard_slack_delivery"]["delivery"]["deliverable_count"] == 1
+    assert report["storyboard_slack_delivery"]["visual"]["storyboard_execution"]["delivers_composed_video"] is True
     assert report["slack_conversation"]["success"] is True
     assert report["live_e2e"]["status"] == "not_requested"
     assert report["health"]["success"] is True
@@ -509,9 +512,12 @@ def test_visual_e2e_automation_can_run_live_slack_upload_with_runtime_home(monke
     assert calls[0]["mode"] == "fixture"
     assert calls[0]["work_dir"] == tmp_path
     assert calls[0].get("upload") is None
-    assert calls[1]["mode"] == "live"
-    assert calls[1]["work_dir"] is None
-    assert calls[1]["upload"] is True
+    fixture_calls = [call for call in calls if call["mode"] == "fixture"]
+    live_call = next(call for call in calls if call["mode"] == "live")
+    assert len(fixture_calls) == 2
+    assert any(call.get("storyboard") for call in fixture_calls)
+    assert live_call["work_dir"] is None
+    assert live_call["upload"] is True
     assert report["live_slack_delivery"]["success"] is True
 
 

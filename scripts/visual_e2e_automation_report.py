@@ -38,12 +38,28 @@ def build_visual_e2e_automation_report(
     conversation_route = build_visual_conversation_route_report()
     fixture_e2e = build_visual_live_provider_e2e_report(mode="fixture", work_dir=work_dir)
     storyboard_execution = build_visual_storyboard_execution_report(mode="fixture", work_dir=work_dir)
+    storyboard_contract = {
+        "enabled": True,
+        "shot_count": 2,
+        "candidate_budget_per_shot": 2,
+        "source_image_policy": "one_ranked_image_per_shot",
+        "composition_target": "single_coherent_video",
+        "delivery_policy": "deliver_composed_video_when_available_else_selected_clips",
+    }
     fixture_quality_suite_kwargs = {"mode": "fixture", "work_dir": work_dir}
     if case_timeout_seconds is not None:
         fixture_quality_suite_kwargs["case_timeout_seconds"] = case_timeout_seconds
     fixture_quality_suite = build_visual_live_provider_e2e_suite_report(**fixture_quality_suite_kwargs)
     slack_conversation = build_visual_slack_conversation_e2e_report(mode="fixture", work_dir=work_dir)
     slack_delivery = build_visual_slack_delivery_e2e_report(mode="fixture", work_dir=work_dir)
+    storyboard_slack_delivery = build_visual_slack_delivery_e2e_report(
+        mode="fixture",
+        work_dir=work_dir,
+        prompt="請做一支 2 段分鏡的連貫產品影片：霧黑鋼筆放在白紙上，柔和窗光。",
+        candidate_budget=2,
+        video_budget=1,
+        storyboard=storyboard_contract,
+    )
     live_slack_delivery = (
         build_visual_slack_delivery_e2e_report(mode="live", work_dir=None, upload=True)
         if include_live_slack_upload
@@ -101,6 +117,8 @@ def build_visual_e2e_automation_report(
         failures.append("slack_conversation_failed")
     if slack_delivery.get("success") is not True:
         failures.append("slack_delivery_failed")
+    if storyboard_slack_delivery.get("success") is not True:
+        failures.append("storyboard_slack_delivery_failed")
     if health.get("success") is not True:
         failures.append("health_failed")
     if feedback_loop.get("success") is not True:
@@ -125,6 +143,7 @@ def build_visual_e2e_automation_report(
         "fixture_quality_suite": fixture_quality_suite,
         "slack_conversation": slack_conversation,
         "slack_delivery": slack_delivery,
+        "storyboard_slack_delivery": storyboard_slack_delivery,
         "live_slack_delivery": live_slack_delivery,
         "live_e2e": live_e2e,
         "live_quality_suite": live_quality_suite,
