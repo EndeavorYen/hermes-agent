@@ -293,6 +293,42 @@ caption
         assert tags == ["MEDIA:/tmp/current.png", "MEDIA:/tmp/current.mp4"]
         assert voice is False
 
+    def test_gateway_auto_append_visual_package_exposes_delivery_metadata_by_ref(self):
+        """visual_package_generate auto-append must preserve artifact metadata for upload tracking."""
+        from gateway.run import _collect_auto_append_media_delivery
+
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_visual", "function": {"name": "visual_package_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_visual",
+                "content": (
+                    '{"success": true, "visual_request_id": "vrq_1", '
+                    '"images": ["/tmp/current.png"], "videos": ["/tmp/current.mp4"], '
+                    '"delivery_metadata": {'
+                    '"selected_visual_artifact_ids": ["var_img", "var_vid"], '
+                    '"visual_artifacts": {'
+                    '"/tmp/current.png": {"request_id": "vrq_1", "artifact_id": "var_img", "kind": "image", "content_hash": "hash-img"}, '
+                    '"/tmp/current.mp4": {"request_id": "vrq_1", "artifact_id": "var_vid", "kind": "video", "content_hash": "hash-vid"}'
+                    "}}}"
+                ),
+            },
+        ]
+
+        delivery = _collect_auto_append_media_delivery(messages, history_offset=0)
+
+        assert delivery.media_tags == ["MEDIA:/tmp/current.png", "MEDIA:/tmp/current.mp4"]
+        assert delivery.has_voice_directive is False
+        video_metadata = delivery.delivery_metadata_by_ref["/tmp/current.mp4"]
+        assert video_metadata["visual_request_id"] == "vrq_1"
+        assert video_metadata["selected_visual_artifact_ids"] == ["var_img", "var_vid"]
+        assert video_metadata["visual_artifacts"]["/tmp/current.mp4"]["artifact_id"] == "var_vid"
+
     def test_media_tags_not_extracted_from_history(self):
         """MEDIA tags from previous turns should NOT be extracted again."""
         # Simulate conversation history with a TTS call from a previous turn

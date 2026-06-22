@@ -985,11 +985,72 @@ _TOOL_MEDIA_RE = re.compile(
 )
 
 
-def _collect_auto_append_media_tags(
+@dataclasses.dataclass(frozen=True)
+class AutoAppendMediaDelivery:
+    media_tags: List[str]
+    has_voice_directive: bool
+    delivery_metadata_by_ref: Dict[str, Dict[str, Any]]
+
+
+def _media_ref_lookup_keys(artifact_ref: str) -> List[str]:
+    keys = [artifact_ref]
+    try:
+        from urllib.parse import unquote, urlparse
+
+        parsed = urlparse(artifact_ref)
+        if parsed.scheme == "file":
+            local_path = unquote(parsed.path)
+            keys.extend([local_path, str(Path(local_path))])
+        elif parsed.scheme == "":
+            path = str(Path(artifact_ref))
+            keys.append(path)
+            if Path(path).is_absolute():
+                keys.append(Path(path).as_uri())
+    except Exception:
+        pass
+    return list(dict.fromkeys(key for key in keys if key))
+
+
+def _package_visual_delivery_metadata(payload: Dict[str, Any]) -> Dict[str, Any]:
+    delivery_metadata = payload.get("delivery_metadata")
+    if not isinstance(delivery_metadata, dict):
+        return {}
+    metadata = dict(delivery_metadata)
+    for key in ("visual_request_id", "visual_attempt_id", "visual_thread_id"):
+        value = payload.get(key) or metadata.get(key)
+        if value not in (None, ""):
+            metadata[key] = value
+    return metadata
+
+
+def _merge_visual_delivery_metadata(
+    base_metadata: Optional[Dict[str, Any]],
+    artifact_ref: str,
+    visual_delivery_metadata_by_ref: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Optional[Dict[str, Any]]:
+    if not visual_delivery_metadata_by_ref:
+        return base_metadata
+
+    visual_metadata = None
+    for key in _media_ref_lookup_keys(artifact_ref):
+        candidate = visual_delivery_metadata_by_ref.get(key)
+        if isinstance(candidate, dict):
+            visual_metadata = candidate
+            break
+    if not visual_metadata:
+        return base_metadata
+
+    merged = dict(visual_metadata)
+    if base_metadata:
+        merged.update(base_metadata)
+    return merged
+
+
+def _collect_auto_append_media_delivery(
     messages: List[Dict[str, Any]],
     history_offset: int = 0,
     history_media_paths: Optional[set] = None,
-) -> tuple[List[str], bool]:
+) -> AutoAppendMediaDelivery:
     """Collect real media tags from current-turn producer-tool results only.
 
     Two layered guards keep stale/example MEDIA: strings out of the reply:
@@ -1029,6 +1090,7 @@ def _collect_auto_append_media_tags(
 
     media_tags: List[str] = []
     has_voice_directive = False
+    delivery_metadata_by_ref: Dict[str, Dict[str, Any]] = {}
     for msg in new_messages:
         if msg.get("role") not in ("tool", "function"):
             continue
@@ -1064,6 +1126,7 @@ def _collect_auto_append_media_tags(
                 from agent.visual.delivery_manifest import select_deliverable_artifacts
 
                 manifest = build_visual_delivery_manifest(payload)
+                delivery_metadata = _package_visual_delivery_metadata(payload)
                 for artifact in select_deliverable_artifacts(manifest):
                     ref = artifact.get("ref")
                     if (
@@ -1072,6 +1135,9 @@ def _collect_auto_append_media_tags(
                         and ref not in history_media_paths
                     ):
                         media_tags.append(f"MEDIA:{ref}")
+                        if delivery_metadata:
+                            for key in _media_ref_lookup_keys(ref):
+                                delivery_metadata_by_ref[key] = delivery_metadata
             continue
         if "MEDIA:" not in content:
             continue
@@ -1082,7 +1148,32 @@ def _collect_auto_append_media_tags(
         if "[[audio_as_voice]]" in content:
             has_voice_directive = True
 
-    return media_tags, has_voice_directive
+    if delivery_metadata_by_ref:
+        try:
+            from agent.visual.tracking import register_visual_delivery_metadata_by_ref
+
+            register_visual_delivery_metadata_by_ref(delivery_metadata_by_ref)
+        except Exception as exc:
+            logger.debug("Visual delivery metadata registration skipped: %s", exc)
+
+    return AutoAppendMediaDelivery(
+        media_tags=media_tags,
+        has_voice_directive=has_voice_directive,
+        delivery_metadata_by_ref=delivery_metadata_by_ref,
+    )
+
+
+def _collect_auto_append_media_tags(
+    messages: List[Dict[str, Any]],
+    history_offset: int = 0,
+    history_media_paths: Optional[set] = None,
+) -> tuple[List[str], bool]:
+    delivery = _collect_auto_append_media_delivery(
+        messages,
+        history_offset=history_offset,
+        history_media_paths=history_media_paths,
+    )
+    return delivery.media_tags, delivery.has_voice_directive
 
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
@@ -9880,7 +9971,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _media_adapter = self.adapters.get(source.platform)
                     if _media_adapter:
                         await self._deliver_media_from_response(
-                            response, event, _media_adapter,
+                            response,
+                            event,
+                            _media_adapter,
+                            visual_delivery_metadata_by_ref=agent_result.get(
+                                "auto_append_visual_delivery_metadata"
+                            ),
                         )
                 # Streaming already delivered the body text, but the footer was
                 # intentionally held back (see the `not already_sent` gate above).
@@ -10872,6 +10968,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         response: str,
         event: MessageEvent,
         adapter,
+        visual_delivery_metadata_by_ref: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> None:
         """Extract MEDIA: tags and local file paths from a response and deliver them.
 
@@ -10935,10 +11032,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if image_paths:
                 try:
                     images = [(f"file://{_quote(p)}", "") for p in image_paths]
+                    image_metadata = _merge_visual_delivery_metadata(
+                        _thread_meta,
+                        image_paths[0],
+                        visual_delivery_metadata_by_ref,
+                    )
                     await adapter.send_multiple_images(
                         chat_id=event.source.chat_id,
                         images=images,
-                        metadata=_thread_meta,
+                        metadata=image_metadata,
                     )
                 except Exception as e:
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
@@ -10956,7 +11058,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         await adapter.send_video(
                             chat_id=event.source.chat_id,
                             video_path=media_path,
-                            metadata=_thread_meta,
+                            metadata=_merge_visual_delivery_metadata(
+                                _thread_meta,
+                                media_path,
+                                visual_delivery_metadata_by_ref,
+                            ),
                         )
                     else:
                         await adapter.send_document(
@@ -10974,7 +11080,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         await adapter.send_video(
                             chat_id=event.source.chat_id,
                             video_path=file_path,
-                            metadata=_thread_meta,
+                            metadata=_merge_visual_delivery_metadata(
+                                _thread_meta,
+                                file_path,
+                                visual_delivery_metadata_by_ref,
+                            ),
                         )
                     else:
                         await adapter.send_document(
@@ -15932,12 +16042,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # also the sole guard on the fallback branch taken when mid-run
             # context compression shrinks the message list below the original
             # history length, preserving the compression-safe behaviour of #160.
+            auto_append_media_delivery = _collect_auto_append_media_delivery(
+                result.get("messages", []),
+                history_offset=len(agent_history),
+                history_media_paths=_history_media_paths,
+            )
+            _auto_append_visual_delivery_metadata = (
+                auto_append_media_delivery.delivery_metadata_by_ref
+            )
             if "MEDIA:" not in final_response:
-                media_tags, has_voice_directive = _collect_auto_append_media_tags(
-                    result.get("messages", []),
-                    history_offset=len(agent_history),
-                    history_media_paths=_history_media_paths,
-                )
+                media_tags = auto_append_media_delivery.media_tags
+                has_voice_directive = auto_append_media_delivery.has_voice_directive
 
                 if media_tags:
                     seen = set()
@@ -16012,6 +16127,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "session_id": effective_session_id,
                 "response_previewed": result.get("response_previewed", False),
                 "response_transformed": result.get("response_transformed", False),
+                "auto_append_visual_delivery_metadata": _auto_append_visual_delivery_metadata,
             }
         
         # Start progress message sender if enabled

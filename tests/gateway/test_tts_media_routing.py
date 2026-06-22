@@ -225,6 +225,53 @@ async def test_streaming_delivery_routes_telegram_mp3_media_tag_to_voice_sender(
 
 
 @pytest.mark.asyncio
+async def test_streaming_delivery_passes_visual_metadata_to_video_sender(tmp_path, monkeypatch):
+    event = _event(thread_id="topic-1")
+    media_file = _allowed_media_path(tmp_path, monkeypatch, "render.mp4")
+    visual_metadata = {
+        "visual_request_id": "vrq_1",
+        "visual_attempt_id": "vat_1",
+        "selected_visual_artifact_ids": ["var_vid"],
+        "visual_artifacts": {
+            str(media_file): {
+                "request_id": "vrq_1",
+                "attempt_id": "vat_1",
+                "artifact_id": "var_vid",
+                "kind": "video",
+                "content_hash": "sha256:vid",
+            }
+        },
+    }
+    adapter = SimpleNamespace(
+        name="test",
+        extract_media=BasePlatformAdapter.extract_media,
+        extract_images=BasePlatformAdapter.extract_images,
+        extract_local_files=BasePlatformAdapter.extract_local_files,
+        send_voice=AsyncMock(return_value=SendResult(success=True, message_id="voice")),
+        send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc")),
+        send_image_file=AsyncMock(return_value=SendResult(success=True, message_id="image")),
+        send_video=AsyncMock(return_value=SendResult(success=True, message_id="video")),
+    )
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner({"thread_id": "topic-1"}),
+        f"MEDIA:{media_file}",
+        event,
+        adapter,
+        visual_delivery_metadata_by_ref={str(media_file): visual_metadata},
+    )
+
+    adapter.send_video.assert_awaited_once()
+    kwargs = adapter.send_video.await_args.kwargs
+    assert kwargs["video_path"] == str(media_file)
+    assert kwargs["metadata"]["thread_id"] == "topic-1"
+    assert kwargs["metadata"]["visual_request_id"] == "vrq_1"
+    assert kwargs["metadata"]["visual_artifacts"][str(media_file)]["artifact_id"] == "var_vid"
+    adapter.send_document.assert_not_awaited()
+    adapter.send_voice.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_streaming_delivery_blocks_media_path_outside_allowed_roots(tmp_path, monkeypatch):
     event = _event(thread_id="topic-1")
     allowed_root = tmp_path / "media-cache"

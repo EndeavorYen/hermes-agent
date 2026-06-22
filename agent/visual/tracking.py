@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
@@ -14,9 +15,43 @@ from agent.visual.media_probe import probe_media_reference
 
 logger = logging.getLogger(__name__)
 
+_VISUAL_DELIVERY_METADATA_TTL_SECONDS = 600.0
+_VISUAL_DELIVERY_METADATA_BY_REF: dict[str, tuple[float, dict[str, Any]]] = {}
+
 
 def default_visual_ledger_path() -> Path:
     return get_hermes_home() / "visual" / "attempt_ledger.sqlite3"
+
+
+def register_visual_delivery_metadata_by_ref(metadata_by_ref: dict[str, dict[str, Any]]) -> None:
+    now = time.time()
+    _prune_visual_delivery_metadata(now)
+    for ref, metadata in metadata_by_ref.items():
+        if not isinstance(ref, str) or not isinstance(metadata, dict):
+            continue
+        for key in _artifact_lookup_keys(ref):
+            _VISUAL_DELIVERY_METADATA_BY_REF[key] = (now, dict(metadata))
+
+
+def lookup_visual_delivery_metadata(artifact_ref: str) -> dict[str, Any] | None:
+    now = time.time()
+    _prune_visual_delivery_metadata(now)
+    for key in _artifact_lookup_keys(artifact_ref):
+        entry = _VISUAL_DELIVERY_METADATA_BY_REF.get(key)
+        if entry is not None:
+            return dict(entry[1])
+    return None
+
+
+def _prune_visual_delivery_metadata(now: float) -> None:
+    cutoff = now - _VISUAL_DELIVERY_METADATA_TTL_SECONDS
+    stale = [
+        key
+        for key, (registered_at, _) in _VISUAL_DELIVERY_METADATA_BY_REF.items()
+        if registered_at < cutoff
+    ]
+    for key in stale:
+        _VISUAL_DELIVERY_METADATA_BY_REF.pop(key, None)
 
 
 def visual_delivery_metadata(
@@ -57,6 +92,7 @@ def visual_delivery_context(
     destination_id: str,
     thread_id: str | None = None,
 ) -> dict[str, Any] | None:
+    metadata = _merge_registered_visual_delivery_metadata(metadata, artifact_ref)
     if not metadata:
         return None
 
@@ -103,6 +139,21 @@ def visual_delivery_context(
         "thread_id": effective_thread_id,
         "skip_status": skip_status,
     }
+
+
+def _merge_registered_visual_delivery_metadata(
+    metadata: dict[str, Any] | None,
+    artifact_ref: str,
+) -> dict[str, Any] | None:
+    if isinstance(metadata, dict) and isinstance(metadata.get("visual_artifacts"), dict):
+        return metadata
+    registered = lookup_visual_delivery_metadata(artifact_ref)
+    if not registered:
+        return metadata
+    merged = dict(registered)
+    if isinstance(metadata, dict):
+        merged.update(metadata)
+    return merged
 
 
 def record_visual_delivery_status(

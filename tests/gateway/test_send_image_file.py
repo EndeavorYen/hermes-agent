@@ -173,6 +173,60 @@ async def test_generated_artifact_delivery_records_sent_status(tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_generated_artifact_delivery_uses_registered_metadata_when_response_metadata_is_thread_only(
+    tmp_path,
+    monkeypatch,
+):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import register_visual_delivery_metadata_by_ref
+    from agent.visual.tracking import visual_delivery_metadata
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ledger = VisualAttemptLedger(tmp_path / "visual" / "attempt_ledger.sqlite3")
+    ledger.initialize()
+    request_id = ledger.record_request(
+        platform="slack",
+        channel_id="C123",
+        thread_id="T123",
+        normalized_intent={"kind": "image"},
+        modality="image",
+        operation="visual_package_generate",
+    )
+    attempt_id = ledger.record_attempt(request_id=request_id, provider="xai")
+    image_path = tmp_path / "candidate.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+    artifact_id = ledger.record_artifact(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        kind="image",
+        uri=image_path.as_uri(),
+        local_path=str(image_path),
+        content_hash="sha256:registered-current",
+        mime_type="image/png",
+    )
+    visual_metadata = visual_delivery_metadata(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        artifact_ids=[artifact_id],
+        artifact_paths=[str(image_path)],
+        thread_id="T123",
+    )
+    register_visual_delivery_metadata_by_ref({str(image_path): visual_metadata})
+    adapter = _VisualDeliveryStubAdapter(PlatformConfig(enabled=True, token="redacted"))
+
+    await adapter.send_multiple_images(
+        "C123",
+        [(image_path.as_uri(), "caption")],
+        metadata={"thread_id": "T123"},
+    )
+
+    deliveries = ledger.list_deliveries(request_id=request_id)
+    assert adapter.image_file_sends == [str(image_path)]
+    assert [delivery["delivery_status"] for delivery in deliveries] == ["sent"]
+    assert deliveries[0]["artifact_id"] == artifact_id
+
+
+@pytest.mark.asyncio
 async def test_generated_artifact_delivery_skips_duplicate_for_same_request_destination(tmp_path, monkeypatch):
     from agent.visual.attempt_ledger import VisualAttemptLedger
     from agent.visual.tracking import visual_delivery_metadata
