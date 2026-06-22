@@ -2181,7 +2181,7 @@ async def test_visual_package_repairs_blocked_image_before_delivery(monkeypatch,
 
 
 @pytest.mark.asyncio
-async def test_visual_package_repairs_low_preference_dimension_image_before_delivery(monkeypatch, tmp_path):
+async def test_visual_package_adds_candidate_for_low_preference_dimension_before_repair(monkeypatch, tmp_path):
     from tools import visual_package_tool
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -2249,16 +2249,31 @@ async def test_visual_package_repairs_low_preference_dimension_image_before_deli
     assert payload["success"] is True
     assert payload["images"] == [str(good_image)]
     assert len(calls) == 2
-    assert "Quality repair pass" in calls[1]["prompt"]
+    assert "Additional candidate pass" in calls[1]["prompt"]
+    assert "Quality repair pass" not in calls[1]["prompt"]
     assert payload["delivery_gate"]["image"]["allowed"] is True
-    assert payload["delivery_gate"]["image"]["repair_attempted"] is True
-    assert payload["delivery_gate"]["image"]["repaired_from"]["reason"] == "pre_slack_preference_dimension_low"
-    assert payload["delivery_gate"]["image"]["repaired_from"]["preference_dimension_fit"] < 0.5
-    assert set(payload["delivery_gate"]["image"]["repaired_from"]["quality_issues"]) >= {
+    assert payload["delivery_gate"]["image"]["candidate_budget_escalated"] is True
+    assert payload["delivery_gate"]["image"]["escalated_from"]["reason"] == "pre_slack_preference_dimension_low"
+    assert payload["delivery_gate"]["image"]["escalated_from"]["preference_dimension_fit"] < 0.5
+    assert set(payload["delivery_gate"]["image"]["escalated_from"]["quality_issues"]) >= {
         "subject_not_attractive",
         "stockings_bad",
         "composition_bad",
     }
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+
+    attempts = VisualAttemptLedger(default_visual_ledger_path())._list("visual_attempts")
+    escalation_attempts = [
+        attempt
+        for attempt in attempts
+        if isinstance(attempt.get("metadata"), dict)
+        and isinstance(attempt["metadata"].get("candidate_escalation"), dict)
+    ]
+    assert len(escalation_attempts) == 1
+    assert escalation_attempts[0]["metadata"]["candidate_escalation"]["reason"] == (
+        "pre_slack_preference_dimension_low"
+    )
 
 
 @pytest.mark.asyncio

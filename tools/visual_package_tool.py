@@ -388,6 +388,87 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         selected_image = _selected_candidate(image_candidates, image_decision.selected_artifact_id)
         image_gate = _delivery_gate_decision(image_learning, selected_image, prompt=prompt)
         delivery_gate["image"] = image_gate
+        if selected_image and not image_gate["allowed"] and _should_escalate_candidate_budget(image_gate):
+            escalation_prompt = _candidate_escalation_prompt(prompt, image_gate)
+            escalation_kwargs = {
+                "prompt": escalation_prompt,
+                "aspect_ratio": image_aspect_ratio,
+                "reference_image_urls": attachments or None,
+            }
+            escalation_payload = generate_image(**escalation_kwargs)
+            escalation_payload["candidate_escalation"] = {
+                "reason": image_gate.get("reason"),
+                "quality_issues": image_gate.get("quality_issues", []),
+                "preference_dimension_fit": image_gate.get("preference_dimension_fit"),
+                "threshold": image_gate.get("threshold"),
+            }
+            image_payloads.append(escalation_payload)
+            if not escalation_payload.get("success"):
+                _annotate_generation_failure(
+                    escalation_payload,
+                    base_kwargs=escalation_kwargs,
+                    request={
+                        "prompt": escalation_prompt,
+                        "arguments": escalation_kwargs,
+                        "source_media": _source_media_from_attachments(attachments),
+                        "candidate_escalation": escalation_payload["candidate_escalation"],
+                    },
+                    retry_budget_remaining=0,
+                )
+            escalation_candidate = _record_payload_candidate(
+                ledger,
+                request_id=request_id,
+                payload=escalation_payload,
+                artifact_key="image",
+                expected_kind="image",
+                prompt=escalation_prompt,
+                provider=str(escalation_payload.get("provider") or ""),
+                model=str(escalation_payload.get("model") or ""),
+                requested_parameters={
+                    "aspect_ratio": _judge_aspect_ratio(aspect_ratio),
+                    "candidate_escalation_of": selected_image.get("artifact_id"),
+                },
+                candidate_index=len(image_candidates),
+            )
+            if escalation_candidate:
+                image_candidates.append(escalation_candidate)
+                _score_candidates(
+                    ledger,
+                    request_id=request_id,
+                    intent_signature=intent_signature,
+                    strategy_signature=strategy_plan.strategy_signature,
+                    modality="image",
+                    has_reference_image=bool(attachments),
+                    request_category=request_category,
+                    candidates=[escalation_candidate],
+                    inline_vision_judge=inline_vision_judge,
+                    vision_analyzer=analyze_candidate_with_vision_tool,
+                )
+                escalation_decision = rank_visual_candidates(
+                    request_id=request_id,
+                    candidates=image_candidates,
+                    post_threshold=0.0,
+                    ask_threshold=0.0,
+                )
+                rankings["image"] = escalation_decision.__dict__
+                escalation_learning = _record_learning_trace(
+                    ledger,
+                    request_id=request_id,
+                    intent_signature=intent_signature,
+                    strategy_signature=strategy_plan.strategy_signature,
+                    strategy_plan=strategy_plan.to_record(),
+                    modality="image",
+                    rank_decision=escalation_decision.__dict__,
+                    candidates=image_candidates,
+                    has_reference_image=bool(attachments),
+                )
+                learning["active_learning"]["image"] = escalation_learning
+                escalated_from = image_gate
+                selected_image = _selected_candidate(image_candidates, escalation_decision.selected_artifact_id)
+                image_gate = _delivery_gate_decision(escalation_learning, selected_image, prompt=prompt)
+                image_gate["candidate_budget_escalated"] = True
+                image_gate["escalated_from"] = escalated_from
+                delivery_gate["image"] = image_gate
         if selected_image and not image_gate["allowed"]:
             image_repair_mode = _quality_repair_policy_mode(feedback_policy, "image")
             repair_prompt = _quality_repair_prompt(
@@ -959,7 +1040,7 @@ def _annotate_generation_failure(
 
 def _attempt_metadata(payload: dict[str, Any]) -> dict[str, Any]:
     metadata: dict[str, Any] = {}
-    for key in ("failure", "recovery", "retry_of", "quality_repair"):
+    for key in ("failure", "recovery", "retry_of", "quality_repair", "candidate_escalation"):
         if key in payload:
             metadata[key] = payload[key]
     return metadata
@@ -1212,6 +1293,10 @@ def _delivery_gate_decision(
     }
 
 
+def _should_escalate_candidate_budget(gate: dict[str, Any]) -> bool:
+    return str(gate.get("reason") or "") == "pre_slack_preference_dimension_low"
+
+
 def _blocking_quality_issues(issues: list[str], *, prompt: str) -> tuple[list[str], list[str]]:
     portrait_like = _portrait_like_prompt(prompt)
     blocking: list[str] = []
@@ -1236,6 +1321,27 @@ def _candidate_preference_dimension_fit(candidate: dict[str, Any]) -> float | No
         return float(dimensions.get("preference_dimension_fit") or 0.0)
     except (TypeError, ValueError):
         return None
+
+
+def _candidate_escalation_prompt(prompt: str, gate: dict[str, Any]) -> str:
+    issues = _string_list(gate.get("quality_issues"))
+    instructions: list[str] = []
+    if "subject_not_attractive" in issues or "not_beautiful" in issues:
+        instructions.append("choose a clearly more attractive subject rendering with natural facial features")
+    if "face_unnatural" in issues:
+        instructions.append("use a cleaner, more natural face structure and expression")
+    if "stockings_bad" in issues:
+        instructions.append("use refined realistic wardrobe and legwear material texture")
+    if "composition_bad" in issues:
+        instructions.append("try a different stronger editorial pose and framing")
+    if not instructions:
+        instructions.append("try a distinct higher-quality candidate while preserving the user's intent")
+    return (
+        f"{prompt}\n\n"
+        "Additional candidate pass: generate a new alternative candidate instead of repairing the same draft; "
+        + "; ".join(instructions)
+        + ". Keep the user's intent, but vary pose, framing, and visual execution enough to escape the failed draft."
+    )
 
 
 def _quality_repair_prompt(prompt: str, gate: dict[str, Any], *, mode: str = "default") -> str:
