@@ -118,6 +118,34 @@ def test_visual_live_provider_e2e_suite_aggregates_recovery_summary(monkeypatch,
     }
 
 
+def test_visual_live_provider_e2e_fixture_suite_exercises_video_quality_repair(tmp_path):
+    from scripts.visual_live_provider_e2e import build_visual_live_provider_e2e_suite_report
+
+    suite = build_visual_live_provider_e2e_suite_report(
+        mode="fixture",
+        work_dir=tmp_path,
+        cases=[
+            {
+                "case_id": "video_quality_repair",
+                "prompt": "Create one image and one short video: clean product photography.",
+                "candidate_budget": 1,
+                "video_budget": 1,
+                "duration": 4,
+                "force_video_quality_repair": True,
+            }
+        ],
+    )
+
+    assert suite["success"] is True
+    assert suite["quality_repair_summary"]["attempt_count"] == 1
+    assert suite["quality_repair_summary"]["success_count"] == 1
+    assert suite["quality_repair_summary"]["selected_repair_count"] == 1
+    assert suite["quality_repair_summary"]["by_modality"]["video"]["attempt_count"] == 1
+    case = suite["cases"][0]
+    assert case["evidence"]["quality_repair_summary"]["success_count"] == 1
+    assert case["payload"]["video_count"] == 1
+
+
 def test_visual_live_provider_e2e_suite_times_out_one_case_and_continues(monkeypatch, tmp_path):
     from scripts import visual_live_provider_e2e
 

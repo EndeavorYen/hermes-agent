@@ -53,7 +53,7 @@ def _automation_report(*, include_live: bool, include_live_slack_upload: bool = 
         },
         "fixture_quality_suite": {
             "success": True,
-            "case_count": 2,
+            "case_count": 3,
             "failures": [],
             "recovery_summary": {
                 "provider_failure_count": 0,
@@ -62,9 +62,22 @@ def _automation_report(*, include_live: bool, include_live_slack_upload: bool = 
                 "negotiation_success_case_count": 0,
                 "content_moderation_recovered_case_count": 0,
             },
+            "quality_repair_summary": {
+                "attempt_count": 1,
+                "success_count": 1,
+                "selected_repair_count": 1,
+                "by_modality": {
+                    "video": {
+                        "attempt_count": 1,
+                        "success_count": 1,
+                        "selected_repair_count": 1,
+                    }
+                },
+            },
             "cases": [
                 {"case_id": "product_photo_video", "success": True, "failures": []},
                 {"case_id": "fashion_portrait_video", "success": True, "failures": []},
+                {"case_id": "video_quality_repair", "success": True, "failures": []},
             ],
         },
         "live_quality_suite": (
@@ -140,7 +153,8 @@ def test_scheduled_self_validation_defaults_to_fixture_and_writes_reports(monkey
     assert report["summary"]["scheduled_self_validation_reduces_human_intervention"] is True
     assert report["summary"]["autonomous_rollout_reduces_human_intervention"] is True
     assert report["summary"]["fixture_quality_suite_success"] is True
-    assert report["summary"]["fixture_quality_suite_case_count"] == 2
+    assert report["summary"]["fixture_quality_suite_case_count"] == 3
+    assert report["summary"]["scheduled_self_validation_video_repair_covered"] is True
     assert report["summary"]["fixture_quality_suite_negotiation_success_case_count"] == 0
     assert (tmp_path / "latest.json").exists()
     assert json.loads((tmp_path / "latest.json").read_text())["run_id"] == report["run_id"]
@@ -189,6 +203,46 @@ def test_scheduled_self_validation_runs_live_when_due(monkeypatch, tmp_path):
     assert report["summary"]["live_quality_suite_content_moderation_recovered_case_count"] == 1
     state = json.loads((tmp_path / "state.json").read_text())
     assert state["last_live_run_at"] == "2026-06-22T08:00:00+00:00"
+
+
+def test_scheduled_self_validation_summarizes_quality_repair_coverage(monkeypatch, tmp_path):
+    from scripts import visual_scheduled_self_validation
+
+    def fake_automation(*, work_dir, include_live, include_live_slack_upload=False):
+        payload = _automation_report(
+            include_live=include_live,
+            include_live_slack_upload=include_live_slack_upload,
+        )
+        payload["fixture_quality_suite"]["quality_repair_summary"] = {
+            "attempt_count": 1,
+            "success_count": 1,
+            "selected_repair_count": 1,
+            "by_modality": {
+                "video": {
+                    "attempt_count": 1,
+                    "success_count": 1,
+                    "selected_repair_count": 1,
+                }
+            },
+        }
+        return payload
+
+    monkeypatch.setattr(
+        visual_scheduled_self_validation,
+        "build_visual_e2e_automation_report",
+        fake_automation,
+    )
+
+    report = visual_scheduled_self_validation.build_visual_scheduled_self_validation_report(
+        output_dir=tmp_path,
+        now=datetime(2026, 6, 22, 4, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["summary"]["fixture_quality_repair_attempt_count"] == 1
+    assert report["summary"]["fixture_quality_repair_success_count"] == 1
+    assert report["summary"]["fixture_quality_repair_selected_count"] == 1
+    assert report["summary"]["fixture_video_quality_repair_success_count"] == 1
+    assert report["summary"]["scheduled_self_validation_video_repair_covered"] is True
 
 
 def test_scheduled_self_validation_passes_case_timeout_to_automation(monkeypatch, tmp_path):

@@ -11,6 +11,7 @@ import tempfile
 import threading
 from collections import Counter
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -46,6 +47,15 @@ DEFAULT_E2E_CASES = [
         "video_budget": 1,
     },
 ]
+FIXTURE_VIDEO_REPAIR_CASE = {
+    "case_id": "video_quality_repair",
+    "prompt": "Create one image and one short video: clean product photography with stable natural motion.",
+    "require_video": True,
+    "duration": 4,
+    "candidate_budget": 1,
+    "video_budget": 1,
+    "force_video_quality_repair": True,
+}
 DEFAULT_MIN_QUALITY_SCORE = 0.55
 DEFAULT_CASE_TIMEOUT_SECONDS = 240.0
 _ONE_PIXEL_PNG = (
@@ -67,6 +77,7 @@ def build_visual_live_provider_e2e_report(
     video_budget: int = 1,
     duration: int = 4,
     require_video: bool = True,
+    force_video_quality_repair: bool = False,
 ) -> dict[str, Any]:
     mode = mode.strip().lower()
     if mode not in {"live", "fixture"}:
@@ -93,7 +104,11 @@ def build_visual_live_provider_e2e_report(
         )
 
     with _hermes_home_context(work_dir):
-        with _fixture_provider_context(mode, work_dir):
+        with _fixture_provider_context(
+            mode,
+            work_dir,
+            force_video_quality_repair=force_video_quality_repair,
+        ):
             package_args = {
                 "prompt": prompt,
                 "include_video": require_video,
@@ -127,7 +142,7 @@ def build_visual_live_provider_e2e_suite_report(
     cases: list[dict[str, Any]] | None = None,
     case_timeout_seconds: float | int | None = None,
 ) -> dict[str, Any]:
-    case_specs = cases or DEFAULT_E2E_CASES
+    case_specs = cases or _default_e2e_cases(mode)
     case_reports = []
     failures: list[str] = []
     for case in case_specs:
@@ -145,6 +160,7 @@ def build_visual_live_provider_e2e_suite_report(
                     video_budget=int(case.get("video_budget") or 1),
                     duration=int(case.get("duration") or 4),
                     require_video=case.get("require_video") is not False,
+                    force_video_quality_repair=case.get("force_video_quality_repair") is True,
                 )
         except VisualE2ECaseTimeout:
             report = _case_timeout_report(mode=mode, timeout_seconds=timeout_seconds)
@@ -157,6 +173,7 @@ def build_visual_live_provider_e2e_suite_report(
         }
         evidence = report.get("evidence") if isinstance(report.get("evidence"), dict) else {}
         case_report["recovery_summary"] = evidence.get("recovery_summary", {})
+        case_report["quality_repair_summary"] = evidence.get("quality_repair_summary", {})
         case_reports.append(case_report)
         failures.extend(f"{case_id}:{failure}" for failure in case_report["failures"])
     return {
@@ -166,6 +183,7 @@ def build_visual_live_provider_e2e_suite_report(
         "case_timeout_seconds": _case_timeout_seconds(case_timeout_seconds),
         "failures": failures,
         "recovery_summary": _suite_recovery_summary(case_reports),
+        "quality_repair_summary": _suite_quality_repair_summary(case_reports),
         "cases": case_reports,
     }
 
@@ -182,6 +200,13 @@ def run_visual_package(args: dict[str, Any]) -> dict[str, Any]:
             "error_type": "invalid_json",
             "error": raw[:500],
         }
+
+
+def _default_e2e_cases(mode: str) -> list[dict[str, Any]]:
+    cases = [dict(case) for case in DEFAULT_E2E_CASES]
+    if str(mode or "").strip().lower() == "fixture":
+        cases.append(dict(FIXTURE_VIDEO_REPAIR_CASE))
+    return cases
 
 
 def inspect_visual_e2e_evidence(
@@ -231,6 +256,11 @@ def inspect_visual_e2e_evidence(
         provider_error_codes=provider_error_codes,
         retry_attempt_count=retry_attempt_count,
     )
+    quality_repair_summary = _quality_repair_summary(
+        payload=payload,
+        attempts=attempts,
+        artifacts=artifacts,
+    )
     quality_gate = _quality_gate(
         payload=payload,
         artifacts=artifacts,
@@ -253,6 +283,7 @@ def inspect_visual_e2e_evidence(
         "provider_error_codes": dict(provider_error_codes),
         "retry_attempt_count": retry_attempt_count,
         "recovery_summary": recovery_summary,
+        "quality_repair_summary": quality_repair_summary,
         "providers": providers,
         "require_video": require_video,
         "quality_gate": quality_gate,
@@ -509,6 +540,107 @@ def _suite_recovery_summary(case_reports: list[dict[str, Any]]) -> dict[str, Any
     }
 
 
+def _quality_repair_summary(
+    *,
+    payload: dict[str, Any],
+    attempts: list[dict[str, Any]],
+    artifacts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    repair_attempts: dict[str, dict[str, Any]] = {}
+    for attempt in attempts:
+        attempt_id = _row_id(attempt, "attempt_id", "id")
+        metadata = _quality_repair_metadata(attempt)
+        if attempt_id and metadata:
+            repair_attempts[attempt_id] = metadata
+
+    selected_ids = _selected_artifact_ids(payload)
+    repair_artifacts = [
+        artifact
+        for artifact in artifacts
+        if str(artifact.get("attempt_id") or "") in repair_attempts
+    ]
+    selected_repair_artifacts = [
+        artifact
+        for artifact in repair_artifacts
+        if _row_id(artifact, "artifact_id", "id") in selected_ids
+    ]
+    by_modality: dict[str, dict[str, int]] = {}
+    for attempt_id, metadata in repair_attempts.items():
+        modality = str(metadata.get("modality") or "unknown")
+        row = by_modality.setdefault(
+            modality,
+            {"attempt_count": 0, "success_count": 0, "selected_repair_count": 0},
+        )
+        row["attempt_count"] += 1
+        selected_for_attempt = [
+            artifact
+            for artifact in selected_repair_artifacts
+            if str(artifact.get("attempt_id") or "") == attempt_id
+        ]
+        if selected_for_attempt:
+            row["success_count"] += 1
+            row["selected_repair_count"] += len(selected_for_attempt)
+
+    attempt_count = len(repair_attempts)
+    selected_repair_count = len(selected_repair_artifacts)
+    success_count = sum(row["success_count"] for row in by_modality.values())
+    return {
+        "attempt_count": attempt_count,
+        "success_count": success_count,
+        "selected_repair_count": selected_repair_count,
+        "success_rate": _rate(success_count, attempt_count),
+        "selected_repair_rate": _rate(selected_repair_count, attempt_count),
+        "by_modality": by_modality,
+    }
+
+
+def _suite_quality_repair_summary(case_reports: list[dict[str, Any]]) -> dict[str, Any]:
+    by_modality: dict[str, dict[str, int]] = {}
+    attempt_count = 0
+    success_count = 0
+    selected_repair_count = 0
+    for case in case_reports:
+        summary = case.get("quality_repair_summary") if isinstance(case.get("quality_repair_summary"), dict) else {}
+        attempt_count += int(_coerce_score(summary.get("attempt_count")) or 0)
+        success_count += int(_coerce_score(summary.get("success_count")) or 0)
+        selected_repair_count += int(_coerce_score(summary.get("selected_repair_count")) or 0)
+        modality_summary = summary.get("by_modality")
+        if not isinstance(modality_summary, dict):
+            continue
+        for modality, values in modality_summary.items():
+            if not isinstance(modality, str) or not isinstance(values, dict):
+                continue
+            row = by_modality.setdefault(
+                modality,
+                {"attempt_count": 0, "success_count": 0, "selected_repair_count": 0},
+            )
+            row["attempt_count"] += int(_coerce_score(values.get("attempt_count")) or 0)
+            row["success_count"] += int(_coerce_score(values.get("success_count")) or 0)
+            row["selected_repair_count"] += int(_coerce_score(values.get("selected_repair_count")) or 0)
+    return {
+        "attempt_count": attempt_count,
+        "success_count": success_count,
+        "selected_repair_count": selected_repair_count,
+        "success_rate": _rate(success_count, attempt_count),
+        "selected_repair_rate": _rate(selected_repair_count, attempt_count),
+        "by_modality": by_modality,
+    }
+
+
+def _quality_repair_metadata(row: dict[str, Any]) -> dict[str, Any]:
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    repair = metadata.get("quality_repair") if isinstance(metadata, dict) else None
+    return repair if isinstance(repair, dict) else {}
+
+
+def _row_id(row: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = row.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
 def _counter_from_mapping(value: Any) -> Counter[str]:
     counter: Counter[str] = Counter()
     if not isinstance(value, dict):
@@ -753,6 +885,12 @@ def _coerce_score(value: Any) -> float | None:
     return max(0.0, min(1.0, numeric))
 
 
+def _rate(numerator: int, denominator: int) -> float:
+    if denominator <= 0:
+        return 0.0
+    return round(numerator / denominator, 4)
+
+
 def _min_quality_score_threshold() -> float:
     raw = os.environ.get("HERMES_VISUAL_E2E_MIN_QUALITY_SCORE")
     if raw is None or not raw.strip():
@@ -884,7 +1022,12 @@ def _hermes_home_context(work_dir: str | Path | None):
 
 
 @contextlib.contextmanager
-def _fixture_provider_context(mode: str, work_dir: str | Path | None):
+def _fixture_provider_context(
+    mode: str,
+    work_dir: str | Path | None,
+    *,
+    force_video_quality_repair: bool = False,
+):
     if mode != "fixture":
         yield
         return
@@ -894,28 +1037,76 @@ def _fixture_provider_context(mode: str, work_dir: str | Path | None):
     fixture_dir.mkdir(parents=True, exist_ok=True)
     image_path = fixture_dir / "live-e2e-fixture.png"
     video_path = fixture_dir / "live-e2e-fixture.mp4"
+    repaired_video_path = fixture_dir / "live-e2e-fixture-repaired.mp4"
     image_path.write_bytes(_ONE_PIXEL_PNG)
     video_path.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+    repaired_video_path.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isomrepaired")
 
     old_image = visual_package_tool.generate_image
     old_video = visual_package_tool.generate_video
+    old_probe = visual_package_tool.probe_media_reference
+    video_calls = 0
+
+    def fixture_video(**kwargs):
+        nonlocal video_calls
+        video_calls += 1
+        if force_video_quality_repair and video_calls == 1:
+            return {
+                "success": True,
+                "video": str(video_path),
+                "provider": "fixture",
+                "model": "video-fixture",
+                "vision_observation": {
+                    "aspect_integrity": 0.2,
+                    "motion_quality": 0.25,
+                    "artifact_defects": ["weak_aspect_integrity", "weak_motion_or_duration_evidence"],
+                },
+            }
+        return {
+            "success": True,
+            "video": str(repaired_video_path if force_video_quality_repair else video_path),
+            "provider": "fixture",
+            "model": "video-fixture",
+            "vision_observation": (
+                {
+                    "aspect_integrity": 0.95,
+                    "motion_quality": 0.9,
+                    "artifact_defects": [],
+                }
+                if force_video_quality_repair
+                else {}
+            ),
+        }
+
+    def fixture_probe_media_reference(ref):
+        is_video = str(ref).lower().endswith((".mp4", ".mov", ".webm"))
+        return SimpleNamespace(
+            sha256=f"fixture:{ref}",
+            is_stable=True,
+            freshness_status="fresh",
+            local_path=str(ref) if str(ref).startswith("/") else None,
+            mime_type="video/mp4" if is_video else "image/png",
+            bytes=10,
+            width=768,
+            height=768,
+            duration_seconds=4.0 if is_video else None,
+        )
+
     visual_package_tool.generate_image = lambda **kwargs: {
         "success": True,
         "image": str(image_path),
         "provider": "fixture",
         "model": "image-fixture",
     }
-    visual_package_tool.generate_video = lambda **kwargs: {
-        "success": True,
-        "video": str(video_path),
-        "provider": "fixture",
-        "model": "video-fixture",
-    }
+    visual_package_tool.generate_video = fixture_video
+    if force_video_quality_repair:
+        visual_package_tool.probe_media_reference = fixture_probe_media_reference
     try:
         yield
     finally:
         visual_package_tool.generate_image = old_image
         visual_package_tool.generate_video = old_video
+        visual_package_tool.probe_media_reference = old_probe
 
 
 if __name__ == "__main__":

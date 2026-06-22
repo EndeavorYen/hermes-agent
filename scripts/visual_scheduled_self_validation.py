@@ -154,11 +154,23 @@ def _summary(automation: dict[str, Any]) -> dict[str, Any]:
         if isinstance(fixture_quality_suite.get("recovery_summary"), dict)
         else {}
     )
+    fixture_quality_repair = (
+        fixture_quality_suite.get("quality_repair_summary")
+        if isinstance(fixture_quality_suite.get("quality_repair_summary"), dict)
+        else {}
+    )
     live_quality_recovery = (
         live_quality_suite.get("recovery_summary")
         if isinstance(live_quality_suite.get("recovery_summary"), dict)
         else {}
     )
+    live_quality_repair = (
+        live_quality_suite.get("quality_repair_summary")
+        if isinstance(live_quality_suite.get("quality_repair_summary"), dict)
+        else {}
+    )
+    fixture_video_repair = _modality_summary(fixture_quality_repair, "video")
+    live_video_repair = _modality_summary(live_quality_repair, "video")
     health = automation.get("health") if isinstance(automation.get("health"), dict) else {}
     self_review = health.get("self_review") if isinstance(health.get("self_review"), dict) else {}
     feedback_action_types = [
@@ -198,6 +210,11 @@ def _summary(automation: dict[str, Any]) -> dict[str, Any]:
         "fixture_quality_suite_content_moderation_recovered_case_count": _int(
             fixture_quality_recovery.get("content_moderation_recovered_case_count")
         ),
+        "fixture_quality_repair_attempt_count": _int(fixture_quality_repair.get("attempt_count")),
+        "fixture_quality_repair_success_count": _int(fixture_quality_repair.get("success_count")),
+        "fixture_quality_repair_selected_count": _int(fixture_quality_repair.get("selected_repair_count")),
+        "fixture_video_quality_repair_success_count": _int(fixture_video_repair.get("success_count")),
+        "scheduled_self_validation_video_repair_covered": _int(fixture_video_repair.get("success_count")) > 0,
         "live_quality_suite_success": live_quality_suite.get("success")
         if "success" in live_quality_suite
         else None,
@@ -209,6 +226,9 @@ def _summary(automation: dict[str, Any]) -> dict[str, Any]:
         "live_quality_suite_content_moderation_recovered_case_count": _int(
             live_quality_recovery.get("content_moderation_recovered_case_count")
         ),
+        "live_quality_repair_attempt_count": _int(live_quality_repair.get("attempt_count")),
+        "live_quality_repair_success_count": _int(live_quality_repair.get("success_count")),
+        "live_video_quality_repair_success_count": _int(live_video_repair.get("success_count")),
         "live_slack_upload_success": live_slack_delivery.get("success")
         if "success" in live_slack_delivery
         else None,
@@ -216,6 +236,14 @@ def _summary(automation: dict[str, Any]) -> dict[str, Any]:
         if live_slack_delivery_record
         else None,
     }
+
+
+def _modality_summary(summary: dict[str, Any], modality: str) -> dict[str, Any]:
+    by_modality = summary.get("by_modality")
+    if not isinstance(by_modality, dict):
+        return {}
+    value = by_modality.get(modality)
+    return value if isinstance(value, dict) else {}
 
 
 def _write_report(output_dir: Path, report: dict[str, Any]) -> None:
