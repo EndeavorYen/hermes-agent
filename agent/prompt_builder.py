@@ -369,11 +369,23 @@ VISUAL_AGENT_TOOL_GUIDANCE = (
     "current-media delivery, and image-first video generation."
 )
 
+VISUAL_SELF_VALIDATION_STATUS_GUIDANCE = (
+    "\nWhen `visual_self_validation_status` is available and the user asks why "
+    "image/video quality regressions happened, why delivery failed, what the "
+    "current visual agent mode status is, or what to fix next, call "
+    "`visual_self_validation_status` before giving a diagnosis. Treat live E2E, "
+    "provider failure classes, duplicate delivery counts, and native upload "
+    "coverage as evidence."
+)
+
 
 def build_visual_package_tool_guidance(valid_tool_names: "set[str] | None" = None) -> str:
     valid = set(valid_tool_names or set())
     if "visual_agent_generate" in valid:
-        return VISUAL_AGENT_TOOL_GUIDANCE
+        guidance = VISUAL_AGENT_TOOL_GUIDANCE
+        if "visual_self_validation_status" in valid:
+            guidance += VISUAL_SELF_VALIDATION_STATUS_GUIDANCE
+        return guidance
     if "visual_package_generate" not in valid:
         return ""
     return VISUAL_PACKAGE_TOOL_GUIDANCE

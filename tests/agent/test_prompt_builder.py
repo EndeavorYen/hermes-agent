@@ -1563,6 +1563,20 @@ class TestVisualPackageToolGuidance:
         assert "natural visual requests" in prompt
         assert "visual_package_generate" in prompt
 
+    def test_includes_visual_self_validation_status_when_available(self):
+        prompt = build_visual_package_tool_guidance(
+            {
+                "visual_agent_generate",
+                "visual_package_generate",
+                "visual_self_validation_status",
+                "image_generate",
+            }
+        )
+
+        assert "visual_self_validation_status" in prompt
+        assert "quality regressions" in prompt
+        assert "live E2E" in prompt
+
 
 # =========================================================================
 # Budget warning history stripping
