@@ -1,4 +1,5 @@
 import json
+import os
 import time
 
 
@@ -28,6 +29,39 @@ def test_visual_live_provider_e2e_leaves_candidate_budget_to_feedback_policy_by_
     )
 
     assert "candidate_budget" not in captured
+
+
+def test_visual_live_provider_e2e_live_preserves_runtime_hermes_home(monkeypatch, tmp_path):
+    from scripts import visual_live_provider_e2e
+
+    runtime_home = tmp_path / "runtime-home"
+    work_dir = tmp_path / "work"
+    captured = {}
+    monkeypatch.setenv("HERMES_HOME", str(runtime_home))
+    monkeypatch.setattr(visual_live_provider_e2e, "image_requirements_available", lambda: True)
+    monkeypatch.setattr(visual_live_provider_e2e, "video_requirements_available", lambda: True)
+
+    def fake_package(_args):
+        captured["hermes_home"] = os.environ.get("HERMES_HOME")
+        return {
+            "success": True,
+            "visual_request_id": "",
+            "images": [str(tmp_path / "image.png")],
+            "videos": [str(tmp_path / "video.mp4")],
+            "generation_payloads": {
+                "image": {"success": True, "provider": "xai", "model": "image"},
+                "video": {"success": True, "provider": "xai", "model": "video"},
+            },
+        }
+
+    monkeypatch.setattr(visual_live_provider_e2e, "run_visual_package", fake_package)
+
+    visual_live_provider_e2e.build_visual_live_provider_e2e_report(
+        mode="live",
+        work_dir=work_dir,
+    )
+
+    assert captured["hermes_home"] == str(runtime_home)
 
 
 def test_visual_live_provider_e2e_fixture_records_learning_evidence(tmp_path):

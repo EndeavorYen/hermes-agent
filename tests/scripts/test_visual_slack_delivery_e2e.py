@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 
 def _fake_visual_package_payload(tmp_path):
     from agent.visual.attempt_ledger import VisualAttemptLedger
@@ -128,6 +130,30 @@ def test_visual_slack_delivery_live_requires_upload_gate(monkeypatch, tmp_path):
 
     assert report["success"] is False
     assert "live_upload_not_enabled" in report["failures"]
+
+
+def test_visual_slack_delivery_live_preserves_runtime_hermes_home(monkeypatch, tmp_path):
+    from scripts import visual_slack_delivery_e2e
+
+    runtime_home = tmp_path / "runtime-home"
+    work_dir = tmp_path / "work"
+    captured = {}
+    monkeypatch.setenv("HERMES_HOME", str(runtime_home))
+
+    def fake_package(_args):
+        captured["hermes_home"] = os.environ.get("HERMES_HOME")
+        return _fake_visual_package_payload(tmp_path)
+
+    monkeypatch.setattr(visual_slack_delivery_e2e, "run_visual_package", fake_package)
+
+    visual_slack_delivery_e2e.build_visual_slack_delivery_e2e_report(
+        mode="live",
+        upload=False,
+        work_dir=work_dir,
+        target="D_TEST",
+    )
+
+    assert captured["hermes_home"] == str(runtime_home)
 
 
 def test_visual_slack_delivery_exports_provider_recovery_evidence(monkeypatch, tmp_path):

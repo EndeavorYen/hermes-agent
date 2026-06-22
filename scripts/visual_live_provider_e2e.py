@@ -103,7 +103,7 @@ def build_visual_live_provider_e2e_report(
             evidence={},
         )
 
-    with _hermes_home_context(work_dir):
+    with _hermes_home_context(_hermes_home_for_mode(mode=mode, work_dir=work_dir)):
         with _fixture_provider_context(
             mode,
             work_dir,
@@ -1109,6 +1109,12 @@ def _case_work_dir(work_dir: str | Path | None, case_id: str) -> Path | None:
     if work_dir is None:
         return None
     return Path(work_dir) / "quality-suite" / case_id
+
+
+def _hermes_home_for_mode(*, mode: str, work_dir: str | Path | None) -> str | Path | None:
+    if str(mode or "").strip().lower() == "live":
+        return None
+    return work_dir
 
 
 @contextlib.contextmanager

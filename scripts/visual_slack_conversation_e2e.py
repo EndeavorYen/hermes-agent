@@ -6,6 +6,8 @@ import asyncio
 import hashlib
 import json
 import sys
+from datetime import datetime
+from datetime import timezone
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -14,6 +16,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from hermes_constants import get_hermes_home
 from gateway.config import PlatformConfig
 from gateway.platforms.slack import SlackAdapter
 from scripts.visual_conversation_route_report import build_visual_conversation_route_report
@@ -34,6 +37,7 @@ def build_visual_slack_conversation_e2e_report(
     duration: int = 4,
     require_video: bool = True,
     upload: bool | None = None,
+    repair_budget: int = 1,
 ) -> dict[str, Any]:
     mode = mode.strip().lower()
     if mode not in {"fixture", "live"}:
@@ -67,6 +71,8 @@ def build_visual_slack_conversation_e2e_report(
     if conversation_route.get("success") is not True:
         failures.append("conversation_route_failed")
 
+    initial_slack_delivery: dict[str, Any] = {}
+    repair_attempt: dict[str, Any] = {"attempted": False, "reason": "not_needed"}
     if captured_event is None:
         slack_delivery: dict[str, Any] = {
             "status": "skipped",
@@ -76,29 +82,47 @@ def build_visual_slack_conversation_e2e_report(
         if not str(getattr(captured_event, "text", "") or "").strip():
             failures.append("slack_ingress_missing_text")
         delivery_thread_id = getattr(captured_event.source, "thread_id", None)
-        slack_delivery = build_visual_slack_delivery_e2e_report(
-            mode=mode,
-            work_dir=work_dir,
-            prompt=str(getattr(captured_event, "text", "") or ""),
-            target=str(getattr(captured_event.source, "chat_id", "") or destination_id),
-            thread_id=delivery_thread_id,
-            candidate_budget=candidate_budget,
-            video_budget=video_budget,
-            duration=duration,
-            require_video=require_video,
-            upload=upload,
-        )
+        delivery_kwargs = {
+            "mode": mode,
+            "work_dir": work_dir,
+            "prompt": str(getattr(captured_event, "text", "") or ""),
+            "target": str(getattr(captured_event.source, "chat_id", "") or destination_id),
+            "thread_id": delivery_thread_id,
+            "candidate_budget": candidate_budget,
+            "video_budget": video_budget,
+            "duration": duration,
+            "require_video": require_video,
+            "upload": upload,
+        }
+        slack_delivery = build_visual_slack_delivery_e2e_report(**delivery_kwargs)
+        initial_slack_delivery = slack_delivery
         if slack_delivery.get("success") is not True:
-            failures.append("slack_delivery_failed")
+            initial_next_actions = _next_actions_from_slack_delivery(slack_delivery)
+            repair_attempt = _attempt_repair_delivery(
+                delivery_kwargs=delivery_kwargs,
+                next_actions=initial_next_actions,
+                policy_home=_repair_policy_home(mode=mode, work_dir=work_dir),
+                repair_budget=repair_budget,
+            )
+            repaired_delivery = repair_attempt.get("slack_delivery")
+            if repair_attempt.get("success") is True and isinstance(repaired_delivery, dict):
+                slack_delivery = repaired_delivery
+            else:
+                failures.append("slack_delivery_failed")
 
-    next_actions = _next_actions_from_slack_delivery(slack_delivery)
+    next_actions = _dedupe_actions(
+        _next_actions_from_slack_delivery(initial_slack_delivery)
+        + _next_actions_from_slack_delivery(slack_delivery)
+    )
     return {
         "success": not failures,
         "mode": mode,
         "failures": sorted(set(str(item) for item in failures if item)),
         "ingress": ingress_summary,
         "conversation_route": conversation_route,
+        "initial_slack_delivery": initial_slack_delivery,
         "slack_delivery": slack_delivery,
+        "repair_attempt": repair_attempt,
         "next_actions": next_actions,
         "privacy": {
             "raw_prompt_omitted": True,
@@ -202,6 +226,118 @@ def _dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _attempt_repair_delivery(
+    *,
+    delivery_kwargs: dict[str, Any],
+    next_actions: list[dict[str, Any]],
+    policy_home: str | Path | None,
+    repair_budget: int,
+) -> dict[str, Any]:
+    budget = _int(repair_budget)
+    action = _repair_action(next_actions)
+    if budget <= 0:
+        return {"attempted": False, "reason": "repair_budget_exhausted"}
+    if action is None:
+        return {"attempted": False, "reason": "no_supported_repair_action"}
+    if policy_home is None:
+        return {
+            "attempted": False,
+            "reason": "missing_policy_home",
+            "action_type": action.get("type"),
+        }
+
+    policy_write = _write_repair_policy_latest(policy_home=policy_home, action=action)
+    if policy_write.get("success") is not True:
+        return {
+            "attempted": True,
+            "success": False,
+            "reason": "repair_policy_write_failed",
+            "action_type": action.get("type"),
+            "policy_written": False,
+            "failures": policy_write.get("failures", []),
+        }
+
+    repaired_delivery = build_visual_slack_delivery_e2e_report(**delivery_kwargs)
+    return {
+        "attempted": True,
+        "success": repaired_delivery.get("success") is True,
+        "reason": "repair_delivery_succeeded"
+        if repaired_delivery.get("success") is True
+        else "repair_delivery_failed",
+        "action_type": action.get("type"),
+        "policy_written": True,
+        "slack_delivery": repaired_delivery,
+        "failures": list(repaired_delivery.get("failures") or []),
+    }
+
+
+def _repair_policy_home(*, mode: str, work_dir: str | Path | None) -> Path | None:
+    if str(mode or "").strip().lower() == "live":
+        return get_hermes_home()
+    return Path(work_dir) if work_dir is not None else None
+
+
+def _repair_action(next_actions: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for action in next_actions:
+        if action.get("requires_human_feedback") is True:
+            continue
+        if action.get("type") == "safe_reframe_provider_retry":
+            return dict(action)
+    return None
+
+
+def _write_repair_policy_latest(*, policy_home: str | Path, action: dict[str, Any]) -> dict[str, Any]:
+    latest_path = Path(policy_home) / "visual" / "self_validation" / "latest.json"
+    try:
+        payload = _read_json(latest_path)
+        automation = payload.get("automation") if isinstance(payload.get("automation"), dict) else {}
+        self_improvement = (
+            automation.get("self_improvement")
+            if isinstance(automation.get("self_improvement"), dict)
+            else {}
+        )
+        self_improvement = dict(self_improvement)
+        self_improvement["next_actions"] = _dedupe_actions(
+            _action_list(self_improvement.get("next_actions")) + [action]
+        )
+        self_improvement["action_count"] = len(self_improvement["next_actions"])
+        self_improvement["reduces_human_intervention"] = bool(self_improvement["next_actions"])
+        self_improvement["privacy_safe"] = True
+        automation = dict(automation)
+        automation["self_improvement"] = self_improvement
+        payload = dict(payload)
+        payload["success"] = True
+        payload["mode"] = str(payload.get("mode") or "slack_conversation_repair_policy")
+        payload["generated_at"] = datetime.now(timezone.utc).isoformat()
+        payload["automation"] = automation
+        payload["privacy"] = {
+            "raw_prompt_omitted": True,
+            "stores_prompt_hash_only": True,
+        }
+        latest_path.parent.mkdir(parents=True, exist_ok=True)
+        latest_path.write_text(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        return {"success": True}
+    except Exception as exc:  # noqa: BLE001 - repair retry must return evidence, not crash the gate
+        return {"success": False, "failures": [f"{type(exc).__name__}:{exc}"]}
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _action_list(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
 def _next_actions_from_slack_delivery(slack_delivery: dict[str, Any]) -> list[dict[str, Any]]:
     visual = slack_delivery.get("visual") if isinstance(slack_delivery.get("visual"), dict) else {}
     recovery = visual.get("recovery_summary") if isinstance(visual.get("recovery_summary"), dict) else {}
@@ -277,6 +413,22 @@ def _action(
     return payload
 
 
+def _dedupe_actions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[tuple[str, str, str]] = set()
+    deduped: list[dict[str, Any]] = []
+    for action in actions:
+        key = (
+            str(action.get("type") or ""),
+            str(action.get("source") or ""),
+            str(action.get("modality") or ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(action)
+    return deduped
+
+
 def _int_mapping(value: Any) -> dict[str, int]:
     if not isinstance(value, dict):
         return {}
@@ -324,6 +476,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--duration", type=int, default=4)
     parser.add_argument("--no-video", action="store_true")
     parser.add_argument("--upload", action="store_true")
+    parser.add_argument("--repair-budget", type=int, default=1)
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--allow-failures", action="store_true")
     args = parser.parse_args(argv)
@@ -339,6 +492,7 @@ def main(argv: list[str] | None = None) -> int:
         duration=args.duration,
         require_video=not args.no_video,
         upload=True if args.upload else None,
+        repair_budget=args.repair_budget,
     )
     if args.json:
         print(json.dumps(report, ensure_ascii=False, sort_keys=True))

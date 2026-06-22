@@ -182,6 +182,160 @@ def test_visual_slack_conversation_e2e_exports_repair_action_from_provider_failu
     } in report["next_actions"]
 
 
+def test_visual_slack_conversation_e2e_retries_provider_failure_with_repair_policy(
+    monkeypatch,
+    tmp_path,
+):
+    from scripts import visual_slack_conversation_e2e
+
+    delivery_calls = []
+
+    def failed_delivery(**kwargs):
+        return {
+            "success": False,
+            "mode": kwargs["mode"],
+            "failures": ["visual_generation_failed"],
+            "target": {
+                "platform": "slack",
+                "destination_id": kwargs["target"],
+                "thread_id": kwargs["thread_id"],
+            },
+            "visual": {
+                "request_id": "vrq_failed",
+                "image_count": 0,
+                "video_count": 0,
+                "provider_failure_classes": {"content_moderation": 2},
+                "provider_error_codes": {"api_error": 2},
+                "recovery_summary": {
+                    "provider_failure_count": 2,
+                    "provider_failure_classes": {"content_moderation": 2},
+                    "provider_error_codes": {"api_error": 2},
+                    "retry_attempt_count": 1,
+                    "negotiation_attempted": True,
+                    "negotiation_success": False,
+                },
+            },
+            "delivery": {"deliverable_count": 0, "sent_count": 0},
+        }
+
+    def fake_delivery(**kwargs):
+        delivery_calls.append(kwargs)
+        latest_path = tmp_path / "visual" / "self_validation" / "latest.json"
+        if len(delivery_calls) == 1:
+            assert not latest_path.exists()
+            return failed_delivery(**kwargs)
+
+        assert latest_path.exists()
+        latest = json.loads(latest_path.read_text(encoding="utf-8"))
+        assert latest["success"] is True
+        assert {
+            "type": "safe_reframe_provider_retry",
+            "track": "provider",
+            "reason": "slack_conversation_content_moderation_failure",
+            "confidence": 0.75,
+            "evidence_count": 2,
+            "requires_human_feedback": False,
+            "activation_status": "next_run",
+            "source": "slack_conversation_e2e",
+            "provider_failure_classes": {"content_moderation": 2},
+            "provider_error_codes": {"api_error": 2},
+        } in latest["automation"]["self_improvement"]["next_actions"]
+        return _fake_delivery_report(**kwargs)
+
+    monkeypatch.setattr(
+        visual_slack_conversation_e2e,
+        "build_visual_slack_delivery_e2e_report",
+        fake_delivery,
+    )
+
+    report = visual_slack_conversation_e2e.build_visual_slack_conversation_e2e_report(
+        mode="fixture",
+        work_dir=tmp_path,
+        target="D_TEST",
+        repair_budget=1,
+    )
+
+    assert report["success"] is True
+    assert "slack_delivery_failed" not in report["failures"]
+    assert len(delivery_calls) == 2
+    assert report["initial_slack_delivery"]["success"] is False
+    assert report["slack_delivery"]["success"] is True
+    assert report["repair_attempt"]["attempted"] is True
+    assert report["repair_attempt"]["success"] is True
+    assert report["repair_attempt"]["action_type"] == "safe_reframe_provider_retry"
+    assert report["repair_attempt"]["policy_written"] is True
+    assert report["next_actions"]
+
+
+def test_visual_slack_conversation_e2e_live_repair_policy_uses_runtime_home(
+    monkeypatch,
+    tmp_path,
+):
+    from scripts import visual_slack_conversation_e2e
+
+    runtime_home = tmp_path / "runtime-home"
+    work_dir = tmp_path / "work"
+    delivery_calls = []
+    monkeypatch.setenv("HERMES_HOME", str(runtime_home))
+
+    def failed_delivery(**kwargs):
+        return {
+            "success": False,
+            "mode": kwargs["mode"],
+            "failures": ["visual_generation_failed"],
+            "target": {
+                "platform": "slack",
+                "destination_id": kwargs["target"],
+                "thread_id": kwargs["thread_id"],
+            },
+            "visual": {
+                "request_id": "vrq_failed",
+                "image_count": 0,
+                "video_count": 0,
+                "provider_failure_classes": {"content_moderation": 1},
+                "provider_error_codes": {"api_error": 1},
+                "recovery_summary": {
+                    "provider_failure_count": 1,
+                    "provider_failure_classes": {"content_moderation": 1},
+                    "provider_error_codes": {"api_error": 1},
+                    "retry_attempt_count": 1,
+                },
+            },
+            "delivery": {"deliverable_count": 0, "sent_count": 0},
+        }
+
+    def fake_delivery(**kwargs):
+        delivery_calls.append(kwargs)
+        runtime_latest = runtime_home / "visual" / "self_validation" / "latest.json"
+        work_latest = work_dir / "visual" / "self_validation" / "latest.json"
+        if len(delivery_calls) == 1:
+            assert not runtime_latest.exists()
+            assert not work_latest.exists()
+            return failed_delivery(**kwargs)
+
+        assert runtime_latest.exists()
+        assert not work_latest.exists()
+        return _fake_delivery_report(**kwargs)
+
+    monkeypatch.setattr(
+        visual_slack_conversation_e2e,
+        "build_visual_slack_delivery_e2e_report",
+        fake_delivery,
+    )
+
+    report = visual_slack_conversation_e2e.build_visual_slack_conversation_e2e_report(
+        mode="live",
+        work_dir=work_dir,
+        target="D_TEST",
+        upload=False,
+        repair_budget=1,
+    )
+
+    assert report["success"] is True
+    assert len(delivery_calls) == 2
+    assert report["repair_attempt"]["policy_written"] is True
+
+
 def test_visual_slack_conversation_e2e_live_uses_runtime_target_resolution(
     monkeypatch,
     tmp_path,

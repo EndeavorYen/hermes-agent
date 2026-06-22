@@ -25,6 +25,7 @@ from agent.visual.tracking import record_visual_delivery_status
 from agent.visual.tracking import visual_delivery_context
 from scripts.visual_live_provider_e2e import DEFAULT_PROMPT
 from scripts.visual_live_provider_e2e import _fixture_provider_context
+from scripts.visual_live_provider_e2e import _hermes_home_for_mode
 from scripts.visual_live_provider_e2e import _hermes_home_context
 from scripts.visual_live_provider_e2e import inspect_visual_e2e_evidence
 from scripts.visual_live_provider_e2e import run_visual_package
@@ -51,7 +52,7 @@ def build_visual_slack_delivery_e2e_report(
     if not destination_id:
         return _failure_result(mode, ["missing_slack_target"], target=target, thread_id=thread_id)
 
-    with _hermes_home_context(work_dir):
+    with _hermes_home_context(_hermes_home_for_mode(mode=mode, work_dir=work_dir)):
         with _fixture_provider_context(mode, work_dir):
             payload = run_visual_package(
                 {
