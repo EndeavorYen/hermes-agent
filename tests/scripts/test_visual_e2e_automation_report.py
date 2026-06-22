@@ -12,6 +12,7 @@ def test_visual_e2e_automation_fixture_default(tmp_path):
     assert report["mode"] == "fixture"
     assert report["fixture_e2e"]["success"] is True
     assert report["agent_mode"]["success"] is True
+    assert report["closed_loop_regression"]["success"] is True
     assert report["conversation_route"]["success"] is True
     assert report["slack_conversation"]["success"] is True
     assert report["live_e2e"]["status"] == "not_requested"
@@ -115,6 +116,28 @@ def test_visual_e2e_automation_includes_quality_suite(monkeypatch, tmp_path):
     assert calls[0]["work_dir"] == tmp_path
     assert burn_calls[0]["mode"] == "live"
     assert burn_calls[0]["work_dir"] is None
+
+
+def test_visual_e2e_automation_fails_when_closed_loop_regression_fails(monkeypatch, tmp_path):
+    from scripts import visual_e2e_automation_report
+
+    monkeypatch.setattr(
+        visual_e2e_automation_report,
+        "build_visual_closed_loop_regression_report",
+        lambda: {
+            "success": False,
+            "case_count": 1,
+            "failure_count": 1,
+            "failures": [{"case_id": "focus_operator_legwear", "failures": ["policy_not_applied"]}],
+            "cases": [],
+        },
+    )
+
+    report = visual_e2e_automation_report.build_visual_e2e_automation_report(work_dir=tmp_path)
+
+    assert report["success"] is False
+    assert "closed_loop_regression_failed" in report["failures"]
+    assert report["closed_loop_regression"]["failure_count"] == 1
 
 
 def test_visual_e2e_automation_exports_quality_suite_next_actions(monkeypatch, tmp_path):

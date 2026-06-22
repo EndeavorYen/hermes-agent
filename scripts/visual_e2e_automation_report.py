@@ -14,6 +14,7 @@ if str(_REPO_ROOT) not in sys.path:
 from agent.visual.tracking import default_visual_ledger_path
 from scripts.visual_agent_mode_regression_report import build_visual_agent_mode_regression_report
 from scripts.visual_autonomous_healthcheck import build_visual_autonomous_healthcheck
+from scripts.visual_closed_loop_regression_report import build_visual_closed_loop_regression_report
 from scripts.visual_conversation_route_report import build_visual_conversation_route_report
 from scripts.visual_feedback_loop_report import build_visual_feedback_loop_report
 from scripts.visual_quality_calibration_report import build_quality_calibration_report
@@ -32,6 +33,7 @@ def build_visual_e2e_automation_report(
     case_timeout_seconds: float | int | None = None,
 ) -> dict[str, Any]:
     agent_mode = build_visual_agent_mode_regression_report()
+    closed_loop_regression = build_visual_closed_loop_regression_report()
     conversation_route = build_visual_conversation_route_report()
     fixture_e2e = build_visual_live_provider_e2e_report(mode="fixture", work_dir=work_dir)
     fixture_quality_suite_kwargs = {"mode": "fixture", "work_dir": work_dir}
@@ -82,6 +84,8 @@ def build_visual_e2e_automation_report(
     failures = []
     if agent_mode.get("success") is not True:
         failures.append("agent_mode_failed")
+    if closed_loop_regression.get("success") is not True:
+        failures.append("closed_loop_regression_failed")
     if conversation_route.get("success") is not True:
         failures.append("conversation_route_failed")
     if fixture_e2e.get("success") is not True:
@@ -109,6 +113,7 @@ def build_visual_e2e_automation_report(
         "mode": "fixture+live" if include_live else "fixture",
         "failures": failures,
         "agent_mode": agent_mode,
+        "closed_loop_regression": closed_loop_regression,
         "conversation_route": conversation_route,
         "fixture_e2e": fixture_e2e,
         "fixture_quality_suite": fixture_quality_suite,

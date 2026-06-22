@@ -217,6 +217,8 @@ def _next_steps(
     steps: list[str] = []
     if not report_success or failures:
         steps.append("inspect_self_validation_failures")
+    if summary.get("closed_loop_regression_success") is False or "closed_loop_regression_failed" in failures:
+        steps.append("inspect_closed_loop_policy_application")
     if live_decision != "run" or not live_e2e_ran:
         steps.append("enable_or_force_live_self_validation")
     if is_stale:

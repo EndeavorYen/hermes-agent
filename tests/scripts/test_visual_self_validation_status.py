@@ -120,6 +120,22 @@ def test_visual_self_validation_status_summarizes_latest_live_report(tmp_path):
     assert "artifact_path" not in encoded
 
 
+def test_visual_self_validation_status_surfaces_closed_loop_regression_failure(tmp_path):
+    from scripts.visual_self_validation_status import build_visual_self_validation_status
+
+    payload = _scheduled_report(success=False)
+    payload["failures"] = ["closed_loop_regression_failed"]
+    payload["summary"]["closed_loop_regression_success"] = False
+    payload["summary"]["closed_loop_regression_failure_count"] = 1
+    latest_path = _write_latest(tmp_path, payload)
+
+    status = build_visual_self_validation_status(latest_path=latest_path)
+
+    assert status["success"] is False
+    assert status["health_status"] == "fail"
+    assert "inspect_closed_loop_policy_application" in status["next_steps"]
+
+
 def test_visual_self_validation_status_marks_missing_report(tmp_path):
     from scripts.visual_self_validation_status import build_visual_self_validation_status
 

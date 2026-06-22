@@ -26,6 +26,12 @@ def _automation_report(*, include_live: bool, include_live_slack_upload: bool = 
         "mode": "fixture+live" if include_live else "fixture",
         "failures": [],
         "live_e2e": live_e2e,
+        "closed_loop_regression": {
+            "success": True,
+            "case_count": 3,
+            "failure_count": 0,
+            "failures": [],
+        },
         "live_slack_delivery": (
             {
                 "success": True,
@@ -245,6 +251,9 @@ def test_scheduled_self_validation_defaults_to_fixture_and_writes_reports(monkey
     assert report["summary"]["autonomous_rollout_reduces_human_intervention"] is True
     assert report["summary"]["fixture_quality_suite_success"] is True
     assert report["summary"]["fixture_quality_suite_case_count"] == 3
+    assert report["summary"]["closed_loop_regression_success"] is True
+    assert report["summary"]["closed_loop_regression_case_count"] == 3
+    assert report["summary"]["closed_loop_regression_failure_count"] == 0
     assert report["summary"]["scheduled_self_validation_video_repair_covered"] is True
     assert report["summary"]["fixture_quality_suite_negotiation_success_case_count"] == 0
     assert (tmp_path / "latest.json").exists()

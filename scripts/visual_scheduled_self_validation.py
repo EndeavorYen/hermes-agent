@@ -137,6 +137,11 @@ def _live_policy(
 def _summary(automation: dict[str, Any], live_quality_trends: dict[str, Any] | None = None) -> dict[str, Any]:
     live_quality_trends = live_quality_trends if isinstance(live_quality_trends, dict) else {}
     feedback_loop = automation.get("feedback_loop") if isinstance(automation.get("feedback_loop"), dict) else {}
+    closed_loop_regression = (
+        automation.get("closed_loop_regression")
+        if isinstance(automation.get("closed_loop_regression"), dict)
+        else {}
+    )
     self_improvement = (
         automation.get("self_improvement")
         if isinstance(automation.get("self_improvement"), dict)
@@ -237,6 +242,11 @@ def _summary(automation: dict[str, Any], live_quality_trends: dict[str, Any] | N
         "slack_unexpected_delivery_count": slack_unexpected_delivery_count,
         "scheduled_self_validation_reduces_human_intervention": scheduled_validation_reduces_human_intervention,
         "autonomous_rollout_reduces_human_intervention": self_review.get("reduces_human_intervention") is True,
+        "closed_loop_regression_success": closed_loop_regression.get("success")
+        if "success" in closed_loop_regression
+        else None,
+        "closed_loop_regression_case_count": _int(closed_loop_regression.get("case_count")),
+        "closed_loop_regression_failure_count": _int(closed_loop_regression.get("failure_count")),
         "fixture_quality_suite_success": fixture_quality_suite.get("success")
         if "success" in fixture_quality_suite
         else None,
