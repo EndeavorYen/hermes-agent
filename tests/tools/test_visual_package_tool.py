@@ -914,6 +914,8 @@ async def test_visual_package_storyboard_generates_ranked_clip_per_shot(monkeypa
                 "prompt": "請做一支 2 段分鏡的連貫產品影片：霧黑鋼筆放在白紙上。",
                 "include_image": False,
                 "include_video": True,
+                "aspect_ratio": "1:1",
+                "duration": 4,
                 "candidate_budget": 2,
                 "video_budget": 1,
                 "storyboard": {
@@ -964,6 +966,8 @@ async def test_visual_package_storyboard_generates_ranked_clip_per_shot(monkeypa
 
 @pytest.mark.asyncio
 async def test_visual_package_storyboard_delivers_composed_video_when_composition_succeeds(monkeypatch, tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
     from tools import visual_package_tool
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -1028,6 +1032,8 @@ async def test_visual_package_storyboard_delivers_composed_video_when_compositio
                 "prompt": "請做一支 2 段分鏡的連貫產品影片：霧黑鋼筆放在白紙上。",
                 "include_image": False,
                 "include_video": True,
+                "aspect_ratio": "1:1",
+                "duration": 4,
                 "candidate_budget": 2,
                 "video_budget": 1,
                 "storyboard": {
@@ -1061,6 +1067,27 @@ async def test_visual_package_storyboard_delivers_composed_video_when_compositio
         assert str(clip) not in generation_json
     assert str(composed_video) in delivery_json
     assert str(composed_video) in generation_json
+
+    selected_artifact_id = payload["delivery_metadata"]["selected_visual_artifact_ids"][0]
+    judgments = VisualAttemptLedger(default_visual_ledger_path())._list("visual_judgments")
+    composed_judgments = [
+        row
+        for row in judgments
+        if row["artifact_id"] == selected_artifact_id and row["judge_name"] == "visual_quality_judge"
+    ]
+    assert composed_judgments
+
+    ledger = VisualAttemptLedger(default_visual_ledger_path())
+    selected_artifact = next(
+        row for row in ledger._list("visual_artifacts") if row.get("artifact_id") == selected_artifact_id or row.get("id") == selected_artifact_id
+    )
+    selected_attempt_id = selected_artifact.get("attempt_id")
+    composed_attempt = next(
+        row for row in ledger._list("visual_attempts") if row.get("attempt_id") == selected_attempt_id or row.get("id") == selected_attempt_id
+    )
+    requested_parameters = composed_attempt["parameters_requested"]
+    assert requested_parameters["aspect_ratio"] == "1:1"
+    assert requested_parameters["duration_seconds"] == 8
 
 
 @pytest.mark.asyncio

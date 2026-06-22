@@ -1226,6 +1226,48 @@ def test_visual_live_provider_e2e_allows_video_only_without_delivered_image_when
     assert failures == []
 
 
+def test_visual_live_provider_e2e_allows_storyboard_video_without_single_ranked_source():
+    from scripts.visual_live_provider_e2e import _payload_failures
+
+    failures = _payload_failures(
+        {"success": True, "images": [], "videos": ["/tmp/composed.mp4"]},
+        {
+            "image_count": 0,
+            "video_count": 1,
+            "judgment_count": 7,
+            "ranking_count": 5,
+            "learning_trace_count": 5,
+            "judgments_with_learning_metadata": 7,
+            "inline_vision_judgment_count": 4,
+            "quality_gate": {
+                "success": True,
+                "min_score": 0.76,
+                "threshold": 0.55,
+                "quality_issues": [],
+            },
+            "storyboard_execution": {
+                "status": "composed",
+                "clip_count": 2,
+                "composition_status": "composed",
+                "delivers_composed_video": True,
+                "delivers_source_clips": False,
+            },
+            "video_source": {
+                "source_image_artifact_id": "var_first_shot_source",
+                "ranked_selected_image_artifact_id": None,
+                "uses_ranked_selected_image": False,
+            },
+            "providers": ["xai", "local"],
+        },
+        mode="live",
+        require_video=True,
+    )
+
+    assert "missing_image_output" not in failures
+    assert "video_not_using_ranked_image_source" not in failures
+    assert failures == []
+
+
 def test_visual_live_provider_e2e_extracts_video_source_evidence_from_payload():
     from scripts.visual_live_provider_e2e import _video_source_evidence
 

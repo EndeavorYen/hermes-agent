@@ -694,6 +694,7 @@ def _payload_failures(
         and require_video
         and evidence.get("video_count", 0) >= 1
         and video_source.get("uses_ranked_selected_image") is not True
+        and not has_storyboard_video_source
     ):
         failures.append("video_not_using_ranked_image_source")
     if mode == "live" and _contains_fixture_provider(payload, evidence):

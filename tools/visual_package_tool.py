@@ -1192,14 +1192,28 @@ def _run_storyboard_execution(
                 provider=str(composition_payload.get("provider") or "local"),
                 model=str(composition_payload.get("model") or "ffmpeg-concat"),
                 requested_parameters={
+                    "aspect_ratio": _judge_aspect_ratio(aspect_ratio),
                     "composition": "storyboard_concat",
                     "composition_target": storyboard.get("composition_target"),
+                    "duration_seconds": duration * source_clip_count,
                     "source_clip_count": source_clip_count,
                     "source_video_artifact_ids": source_clip_artifact_ids,
                 },
                 candidate_index=len(_storyboard_shots(storyboard)) * candidate_budget_per_shot + source_clip_count,
             )
             if composed_candidate:
+                _score_candidates(
+                    ledger,
+                    request_id=request_id,
+                    intent_signature=intent_signature,
+                    strategy_signature=strategy_plan.strategy_signature,
+                    modality="video",
+                    has_reference_image=bool(attachments),
+                    request_category=request_category,
+                    candidates=[composed_candidate],
+                    inline_vision_judge=False,
+                    vision_analyzer=analyze_candidate_with_vision_tool,
+                )
                 selected_artifact_ids = [composed_candidate["artifact_id"]]
                 selected_videos = [composed_candidate["artifact_path"]]
                 composed_video = composed_candidate["artifact_path"]
