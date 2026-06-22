@@ -179,7 +179,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         requested_image = True
         should_generate_image = True
         wants_video = True
-    candidate_budget = _candidate_budget(args, wants_image=should_generate_image)
+    candidate_budget, candidate_budget_source = _candidate_budget(args, wants_image=should_generate_image)
     video_budget = _video_budget(args, wants_video=wants_video)
     inline_vision_judge = _inline_vision_judge_mode(args)
     normalized_intent = {
@@ -522,6 +522,9 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             "image_first_for_video": image_first_for_video,
             "video_source_image": video_source_image,
             "video_source_artifact_id": video_source_artifact_id,
+            "candidate_budget": candidate_budget,
+            "candidate_budget_source": candidate_budget_source,
+            "video_budget": video_budget,
         },
         "delivery_metadata": delivery_metadata,
         "generation_payloads": generation_payloads,
@@ -980,11 +983,34 @@ def _candidate_visual_source(candidate: dict[str, Any]) -> str:
     return ""
 
 
-def _candidate_budget(args: dict[str, Any], *, wants_image: bool) -> int:
+def _candidate_budget(args: dict[str, Any], *, wants_image: bool) -> tuple[int, str]:
     if not wants_image:
-        return 0
+        return 0, "not_requested"
     value = _coerce_int(args.get("candidate_budget"))
-    return _clamp_budget(value or 2, minimum=1, maximum=4)
+    if value is not None:
+        return _clamp_budget(value, minimum=1, maximum=4), "user"
+    default_budget = 2
+    feedback_budget = _candidate_budget_from_feedback_loop(default_budget)
+    if feedback_budget > default_budget:
+        return feedback_budget, "feedback_loop"
+    return default_budget, "default"
+
+
+def _candidate_budget_from_feedback_loop(default_budget: int) -> int:
+    try:
+        from scripts.visual_feedback_loop_report import build_visual_feedback_loop_report
+
+        report = build_visual_feedback_loop_report(default_visual_ledger_path())
+    except Exception as exc:  # noqa: BLE001 - feedback loop must never block generation
+        logger.debug("visual feedback loop candidate budget unavailable: %s", exc)
+        return default_budget
+    for action in report.get("next_actions", []):
+        if not isinstance(action, dict) or action.get("type") != "increase_candidate_budget":
+            continue
+        value = _coerce_int(action.get("max_candidate_budget"))
+        if value is not None:
+            return _clamp_budget(value, minimum=default_budget, maximum=4)
+    return default_budget
 
 
 def _video_budget(args: dict[str, Any], *, wants_video: bool) -> int:

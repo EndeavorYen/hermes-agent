@@ -661,6 +661,133 @@ async def test_visual_package_quality_judge_flags_duplicate_candidate_hash(monke
 
 
 @pytest.mark.asyncio
+async def test_visual_package_auto_increases_candidate_budget_from_feedback_loop(monkeypatch, tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ledger = VisualAttemptLedger(default_visual_ledger_path())
+    ledger.initialize()
+    seed_request_id = ledger.record_request(status="completed", metadata={"intent_signature": "visig_seed"})
+    seed_attempt_id = ledger.record_attempt(
+        request_id=seed_request_id,
+        provider="xai",
+        model="grok-imagine-image-quality",
+        status="completed",
+    )
+    seed_artifact_id = ledger.record_artifact(
+        request_id=seed_request_id,
+        attempt_id=seed_attempt_id,
+        kind="image",
+        local_path=str(tmp_path / "seed.png"),
+        content_hash="sha256:seed-low-quality",
+        freshness_status="fresh",
+    )
+    ledger.record_judgment(
+        request_id=seed_request_id,
+        attempt_id=seed_attempt_id,
+        artifact_id=seed_artifact_id,
+        judge_name="visual_quality_judge",
+        score=0.35,
+        verdict="fail",
+    )
+
+    paths = []
+    for index in range(4):
+        path = tmp_path / f"image-{index}.png"
+        path.write_bytes(_ONE_PIXEL_PNG)
+        paths.append(path)
+    calls = []
+
+    def fake_generate_image(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(paths[len(calls) - 1]),
+            "provider": "fixture",
+            "model": "image",
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {"prompt": "請產出一張圖片：霧黑鋼筆。", "include_video": False}
+        )
+    )
+
+    assert payload["success"] is True
+    assert len(calls) == 4
+    assert payload["generation_strategy"]["candidate_budget"] == 4
+    assert payload["generation_strategy"]["candidate_budget_source"] == "feedback_loop"
+
+
+@pytest.mark.asyncio
+async def test_visual_package_respects_explicit_candidate_budget_over_feedback_loop(monkeypatch, tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ledger = VisualAttemptLedger(default_visual_ledger_path())
+    ledger.initialize()
+    seed_request_id = ledger.record_request(status="completed", metadata={"intent_signature": "visig_seed"})
+    seed_attempt_id = ledger.record_attempt(
+        request_id=seed_request_id,
+        provider="xai",
+        model="grok-imagine-image-quality",
+        status="completed",
+    )
+    seed_artifact_id = ledger.record_artifact(
+        request_id=seed_request_id,
+        attempt_id=seed_attempt_id,
+        kind="image",
+        local_path=str(tmp_path / "seed.png"),
+        content_hash="sha256:seed-low-quality",
+        freshness_status="fresh",
+    )
+    ledger.record_judgment(
+        request_id=seed_request_id,
+        attempt_id=seed_attempt_id,
+        artifact_id=seed_artifact_id,
+        judge_name="visual_quality_judge",
+        score=0.35,
+        verdict="fail",
+    )
+
+    image = tmp_path / "image.png"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    calls = []
+
+    def fake_generate_image(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(image),
+            "provider": "fixture",
+            "model": "image",
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "請產出一張圖片：霧黑鋼筆。",
+                "include_video": False,
+                "candidate_budget": 1,
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert len(calls) == 1
+    assert payload["generation_strategy"]["candidate_budget"] == 1
+    assert payload["generation_strategy"]["candidate_budget_source"] == "user"
+
+
+@pytest.mark.asyncio
 async def test_visual_package_carries_provider_vision_observation_into_judgment(monkeypatch, tmp_path):
     from agent.visual.attempt_ledger import VisualAttemptLedger
     from agent.visual.tracking import default_visual_ledger_path
