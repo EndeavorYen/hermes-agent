@@ -23,6 +23,7 @@ def build_quality_calibration_report(db_path: str | Path) -> dict[str, Any]:
         feedback_by_artifact = _feedback_by_artifact(conn)
 
     confidence_values = [_float(_row_value(row, "score", "confidence")) for row in judgments]
+    alignment_values = [_judgment_alignment_score(row) for row in judgments]
     uncertainty_reasons = _uncertainty_reasons(judgments)
     agreement = 0
     disagreement = 0
@@ -30,7 +31,7 @@ def build_quality_calibration_report(db_path: str | Path) -> dict[str, Any]:
         artifact_id = str(_row_value(row, "artifact_id") or "")
         if not artifact_id or artifact_id not in feedback_by_artifact:
             continue
-        judge_positive = _float(_row_value(row, "score", "confidence")) >= 0.5
+        judge_positive = _judgment_alignment_score(row) >= 0.5
         human_positive = feedback_by_artifact[artifact_id] > 0
         if judge_positive == human_positive:
             agreement += 1
@@ -88,6 +89,10 @@ def build_quality_calibration_report(db_path: str | Path) -> dict[str, Any]:
             sum(confidence_values) / len(confidence_values),
             4,
         ) if confidence_values else 0.0,
+        "average_judge_alignment": round(
+            sum(alignment_values) / len(alignment_values),
+            4,
+        ) if alignment_values else 0.0,
         "top_uncertainty_reasons": [
             {"reason": reason, "count": count}
             for reason, count in uncertainty_reasons.most_common(10)
@@ -116,12 +121,22 @@ def _empty_report(db_path: Path) -> dict[str, Any]:
             "judge_human_disagreement": 0,
         },
         "average_judge_confidence": 0.0,
+        "average_judge_alignment": 0.0,
         "top_uncertainty_reasons": [],
     }
 
 
 def _judgment_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    return conn.execute("SELECT * FROM visual_judgments ORDER BY created_at, rowid").fetchall()
+    rows = conn.execute("SELECT * FROM visual_judgments ORDER BY created_at, rowid").fetchall()
+    latest_by_artifact: dict[str, sqlite3.Row] = {}
+    for row in rows:
+        if _row_value(row, "judge_name") != "visual_quality_judge":
+            continue
+        artifact_id = str(_row_value(row, "artifact_id") or "")
+        if not artifact_id:
+            continue
+        latest_by_artifact[artifact_id] = row
+    return list(latest_by_artifact.values())
 
 
 def _feedback_by_artifact(conn: sqlite3.Connection) -> dict[str, float]:
@@ -151,6 +166,21 @@ def _uncertainty_reasons(rows: list[sqlite3.Row]) -> Counter[str]:
         for reason in sorted({str(item) for item in reasons if isinstance(item, str) and item.strip()}):
             counter[reason] += 1
     return counter
+
+
+def _judgment_alignment_score(row: sqlite3.Row) -> float:
+    details = _json_value(_row_value(row, "details", "score_json"))
+    if not isinstance(details, dict):
+        return _float(_row_value(row, "score", "confidence"))
+    scores = details.get("scores") if isinstance(details.get("scores"), dict) else {}
+    alignment = _float(scores.get("aesthetic_fit", _row_value(row, "score", "confidence")))
+    quality_issues = details.get("quality_issues")
+    if isinstance(quality_issues, list) and any(
+        isinstance(item, str) and item.strip()
+        for item in quality_issues
+    ):
+        alignment = min(alignment, 0.45)
+    return max(0.0, min(1.0, alignment))
 
 
 def _json_value(value: Any) -> Any:

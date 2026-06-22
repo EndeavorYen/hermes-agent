@@ -30,6 +30,7 @@ from agent.visual.strategy_policy import select_strategy_plan
 from agent.visual.tracking import default_visual_ledger_path
 from agent.visual.tracking import visual_delivery_metadata
 from agent.visual.video_hardening import build_hardened_video_request
+from agent.visual.vision_evaluator import build_candidate_vision_observation
 from tools.registry import registry
 from tools.registry import tool_error
 
@@ -560,6 +561,7 @@ def _record_payload_candidate(
         "requested_parameters": requested_parameters,
         "hard_gate": score["hard_gate"],
         "scores": score["scores"],
+        "vision_observation": _payload_vision_observation(payload),
     }
 
 
@@ -616,6 +618,14 @@ def _attempt_metadata(payload: dict[str, Any]) -> dict[str, Any]:
     return metadata
 
 
+def _payload_vision_observation(payload: dict[str, Any]) -> dict[str, Any] | None:
+    for key in ("vision_observation", "visual_quality_observation"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            return value
+    return None
+
+
 def _generator_kwargs(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
@@ -654,7 +664,10 @@ def _score_candidates(
             candidate,
             request_context={"has_reference_image": has_reference_image},
             recent_artifact_hashes=recent_hashes,
-            vision_observation=build_artifact_observation(candidate),
+            vision_observation=build_candidate_vision_observation(
+                candidate,
+                fallback_observation=build_artifact_observation(candidate),
+            ),
         )
         content_hash = candidate.get("content_hash")
         if isinstance(content_hash, str) and content_hash:

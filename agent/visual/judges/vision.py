@@ -10,6 +10,7 @@ def build_vision_judge_observation(raw: dict[str, Any]) -> dict[str, Any]:
     visual_appeal = _dimension(source, "visual_appeal", 0.5)
     composition = _dimension(source, "composition", 0.5)
     pose_novelty = _dimension(source, "pose_novelty", 0.5)
+    stocking_quality = _dimension(source, "stocking_quality", _dimension(source, "tights_quality", 0.5))
 
     defects: list[str] = []
     if reference_adherence < 0.5:
@@ -20,6 +21,8 @@ def build_vision_judge_observation(raw: dict[str, Any]) -> dict[str, Any]:
         defects.append("visual_appeal_low")
     if composition < 0.45:
         defects.append("composition_weak")
+    if stocking_quality < 0.5:
+        defects.append("stockings_quality_low")
 
     confidence = sum(
         (

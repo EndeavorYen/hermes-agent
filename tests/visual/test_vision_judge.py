@@ -43,3 +43,20 @@ def test_vision_judge_good_observation_has_high_confidence():
     assert observation["confidence"] >= 0.8
     assert observation["artifact_defects"] == []
 
+
+def test_vision_judge_maps_stocking_quality_defect():
+    from agent.visual.judges.vision import build_vision_judge_observation
+
+    observation = build_vision_judge_observation(
+        {
+            "reference_adherence": 0.8,
+            "face_quality": 0.8,
+            "visual_appeal": 0.8,
+            "composition": 0.75,
+            "pose_novelty": 0.7,
+            "stocking_quality": 0.2,
+        }
+    )
+
+    assert "stockings_quality_low" in observation["artifact_defects"]
+    assert "stocking_quality" not in observation

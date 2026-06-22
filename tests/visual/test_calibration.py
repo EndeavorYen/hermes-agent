@@ -156,3 +156,98 @@ def test_quality_calibration_report_fails_when_human_feedback_has_no_matching_ju
     assert report["unmatched_human_feedback_count"] == 5
     assert "human_feedback_unmatched_to_judgments" in report["failures"]
     assert "private unmatched feedback" not in str(report)
+
+
+def test_quality_calibration_report_uses_latest_quality_judgment_per_artifact(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.calibration import build_quality_calibration_report
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+    request_id = ledger.record_request(status="completed")
+    attempt_id = ledger.record_attempt(request_id=request_id, status="completed", provider="fixture", model="image")
+    artifact_id = ledger.record_artifact(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        kind="image",
+        content_hash="same-artifact",
+        freshness_status="fresh",
+        is_stable=True,
+    )
+    ledger.record_judgment(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        artifact_id=artifact_id,
+        judge_name="visual_quality_judge",
+        score=0.9,
+        verdict="pass",
+        details={"source": "old_weak_judge"},
+    )
+    ledger.record_judgment(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        artifact_id=artifact_id,
+        judge_name="visual_quality_judge",
+        score=0.2,
+        verdict="review",
+        details={"source": "new_vision_judge"},
+    )
+    ledger.record_feedback(
+        request_id=request_id,
+        artifact_id=artifact_id,
+        feedback_text="private negative feedback",
+        polarity=-1.0,
+        parsed={"source": "explicit"},
+    )
+
+    report = build_quality_calibration_report(tmp_path / "visual.sqlite3")
+
+    assert report["matched_feedback_count"] == 1
+    assert report["counts"]["judge_human_agreement"] == 1
+    assert report["counts"]["judge_human_disagreement"] == 0
+    assert "private negative feedback" not in str(report)
+
+
+def test_quality_calibration_report_uses_quality_alignment_not_confidence_as_sentiment(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.calibration import build_quality_calibration_report
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+    request_id = ledger.record_request(status="completed")
+    attempt_id = ledger.record_attempt(request_id=request_id, status="completed", provider="fixture", model="image")
+    artifact_id = ledger.record_artifact(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        kind="image",
+        content_hash="quality-issue-artifact",
+        freshness_status="fresh",
+        is_stable=True,
+    )
+    ledger.record_judgment(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        artifact_id=artifact_id,
+        judge_name="visual_quality_judge",
+        score=0.9,
+        verdict="pass",
+        details={
+            "confidence": 0.9,
+            "scores": {"aesthetic_fit": 0.9},
+            "quality_issues": ["stockings_bad"],
+        },
+    )
+    ledger.record_feedback(
+        request_id=request_id,
+        artifact_id=artifact_id,
+        feedback_text="private negative feedback",
+        polarity=-1.0,
+        parsed={"source": "explicit"},
+    )
+
+    report = build_quality_calibration_report(tmp_path / "visual.sqlite3")
+
+    assert report["matched_feedback_count"] == 1
+    assert report["counts"]["judge_human_agreement"] == 1
+    assert report["counts"]["judge_human_disagreement"] == 0
+    assert "private negative feedback" not in str(report)

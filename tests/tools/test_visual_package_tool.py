@@ -616,6 +616,52 @@ async def test_visual_package_quality_judge_flags_duplicate_candidate_hash(monke
     assert duplicate_judgments
 
 
+@pytest.mark.asyncio
+async def test_visual_package_carries_provider_vision_observation_into_judgment(monkeypatch, tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image = tmp_path / "image.png"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    monkeypatch.setattr(
+        visual_package_tool,
+        "generate_image",
+        lambda **kwargs: {
+            "success": True,
+            "image": str(image),
+            "provider": "fixture",
+            "model": "image",
+            "vision_observation": {
+                "face_quality": 0.2,
+                "visual_appeal": 0.3,
+                "composition": 0.7,
+                "stocking_quality": 0.2,
+            },
+        },
+    )
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {"prompt": "請產出一張圖片：時尚寫真。", "include_video": False, "candidate_budget": 1}
+        )
+    )
+
+    quality_judgments = [
+        row
+        for row in VisualAttemptLedger(default_visual_ledger_path())._list("visual_judgments")
+        if row["judge_name"] == "visual_quality_judge"
+    ]
+
+    assert payload["success"] is True
+    assert quality_judgments[0]["details"]["quality_issues"] == [
+        "subject_not_attractive",
+        "not_beautiful",
+        "stockings_bad",
+    ]
+
+
 def test_score_candidates_carries_quality_issues_into_reward(monkeypatch, tmp_path):
     from agent.visual.attempt_ledger import VisualAttemptLedger
     from tools import visual_package_tool
@@ -665,6 +711,55 @@ def test_score_candidates_carries_quality_issues_into_reward(monkeypatch, tmp_pa
 
     assert candidate["quality_issues"] == ["subject_not_attractive"]
     assert candidate["reward"]["dimensions"]["user_preference_fit"] <= 0.5
+
+
+def test_score_candidates_uses_candidate_vision_observation_for_aesthetic_issues(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from tools import visual_package_tool
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+    request_id = ledger.record_request(
+        user_prompt="redacted",
+        normalized_intent={"kind": "visual_package"},
+        modality="package",
+        operation="visual_package_generate",
+        status="started",
+        metadata={"intent_signature": "visig_demo"},
+    )
+    candidate = {
+        "attempt_id": "vat_demo",
+        "artifact_id": "var_demo",
+        "artifact_path": str(tmp_path / "candidate.png"),
+        "kind": "image",
+        "provider": "fixture",
+        "model": "image",
+        "content_hash": "hash-demo",
+        "hard_gate": {"passed": True, "delivery_possible": True},
+        "scores": {"resolution": 0.9, "aspect_match": 0.9, "final_score": 0.9},
+        "vision_observation": {
+            "reference_adherence": 0.85,
+            "face_quality": 0.2,
+            "visual_appeal": 0.35,
+            "composition": 0.7,
+            "stocking_quality": 0.2,
+        },
+    }
+
+    visual_package_tool._score_candidates(
+        ledger,
+        request_id=request_id,
+        intent_signature="visig_demo",
+        strategy_signature="vstrat_demo",
+        modality="image",
+        has_reference_image=False,
+        candidates=[candidate],
+    )
+
+    judgment = ledger._list("visual_judgments")[0]
+    assert candidate["quality_issues"] == ["subject_not_attractive", "not_beautiful", "stockings_bad"]
+    assert candidate["reward"]["dimensions"]["aesthetic_fit"] < 0.5
+    assert judgment["metadata"]["judge_sources"]["aesthetic_fit"] == "vision"
 
 
 @pytest.mark.asyncio
