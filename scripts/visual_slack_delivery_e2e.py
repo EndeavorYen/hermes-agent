@@ -100,6 +100,7 @@ def build_visual_slack_delivery_e2e_report(
             deliverables=deliverables,
             destination_id=destination_id,
             thread_id=thread_id,
+            record_summary=record_summary,
         )
 
     failures = _delivery_failures(
@@ -143,6 +144,7 @@ def inspect_slack_delivery_evidence(
     deliverables: list[dict[str, Any]],
     destination_id: str,
     thread_id: str | None,
+    record_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     request_id = ""
     if isinstance(payload, dict):
@@ -171,6 +173,10 @@ def inspect_slack_delivery_evidence(
         if row.get("artifact_id")
     }
     duplicate_delivery_count = _duplicate_delivery_count(sent_rows)
+    upload_gate = _upload_gate_evidence(
+        deliverables=deliverables,
+        record_summary=record_summary,
+    )
     return {
         "request_id": request_id,
         "deliverable_count": len(deliverables),
@@ -190,6 +196,7 @@ def inspect_slack_delivery_evidence(
             for row in sent_rows
             if row.get("message_id")
         ),
+        **upload_gate,
     }
 
 
@@ -250,8 +257,8 @@ async def _upload_live_slack_deliverables(
         delivery_metadata["thread_id"] = thread_id
         delivery_metadata["visual_thread_id"] = thread_id
 
-    image_refs: list[tuple[str, str]] = []
-    video_paths: list[str] = []
+    image_uploads: list[dict[str, str]] = []
+    video_uploads: list[dict[str, str]] = []
     skipped_refs: list[str] = []
     errors: list[str] = []
     for item in deliverables:
@@ -263,30 +270,38 @@ async def _upload_live_slack_deliverables(
         if not local_path:
             skipped_refs.append(ref)
             continue
+        upload = {
+            "artifact_id": str(item.get("artifact_id") or ""),
+            "ref": ref,
+            "local_path": local_path,
+        }
         if kind == "image" or local_path.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
-            image_refs.append((_file_uri(local_path), ""))
+            upload["upload_ref"] = _file_uri(local_path)
+            image_uploads.append(upload)
         elif kind == "video" or local_path.lower().endswith((".mp4", ".mov", ".webm", ".mkv")):
-            video_paths.append(local_path)
+            upload["upload_ref"] = local_path
+            video_uploads.append(upload)
         else:
             skipped_refs.append(ref)
 
     try:
         adapter = _make_live_slack_adapter()
-        if image_refs:
+        if image_uploads:
+            image_refs = [(item["upload_ref"], "") for item in image_uploads]
             image_result = await adapter.send_multiple_images(destination_id, image_refs, metadata=delivery_metadata)
-            for image_ref, _alt in image_refs:
+            for upload in image_uploads:
                 _ensure_live_upload_record(
                     metadata=delivery_metadata,
-                    artifact_ref=image_ref,
+                    artifact_ref=upload["upload_ref"],
                     destination_id=destination_id,
                     thread_id=thread_id,
                     result=image_result,
                 )
-        for video_path in video_paths:
-            video_result = await adapter.send_video(destination_id, video_path, metadata=delivery_metadata)
+        for upload in video_uploads:
+            video_result = await adapter.send_video(destination_id, upload["upload_ref"], metadata=delivery_metadata)
             _ensure_live_upload_record(
                 metadata=delivery_metadata,
-                artifact_ref=video_path,
+                artifact_ref=upload["upload_ref"],
                 destination_id=destination_id,
                 thread_id=thread_id,
                 result=video_result,
@@ -298,8 +313,12 @@ async def _upload_live_slack_deliverables(
         "recorded_count": 0,
         "missing_context_refs": [],
         "upload_enabled": True,
-        "uploaded_image_count": len(image_refs),
-        "uploaded_video_count": len(video_paths),
+        "uploaded_image_count": len(image_uploads),
+        "uploaded_video_count": len(video_uploads),
+        "uploaded_image_artifact_ids": _artifact_ids(image_uploads),
+        "uploaded_video_artifact_ids": _artifact_ids(video_uploads),
+        "uploaded_image_refs": [item["upload_ref"] for item in image_uploads],
+        "uploaded_video_refs": [item["upload_ref"] for item in video_uploads],
         "skipped_refs": skipped_refs,
         "errors": errors,
     }
@@ -448,7 +467,65 @@ def _delivery_failures(
         failures.append("unexpected_delivery_artifacts")
     if delivery_evidence.get("duplicate_delivery_count", 0) > 0:
         failures.append("duplicate_delivery_records")
+    if mode == "live" and record_summary.get("upload_enabled") is True:
+        if delivery_evidence.get("missing_uploaded_artifact_ids"):
+            failures.append("missing_native_uploads")
+        if delivery_evidence.get("unexpected_uploaded_artifact_ids"):
+            failures.append("unexpected_native_uploads")
+        if delivery_evidence.get("uploaded_remote_video_url_count", 0) > 0:
+            failures.append("video_uploaded_as_remote_url")
     return sorted(set(failures))
+
+
+def _upload_gate_evidence(
+    *,
+    deliverables: list[dict[str, Any]],
+    record_summary: dict[str, Any] | None,
+) -> dict[str, Any]:
+    summary = record_summary if isinstance(record_summary, dict) else {}
+    expected_uploadable = [
+        item
+        for item in deliverables
+        if item.get("uploadable_file") is True and item.get("artifact_id")
+    ]
+    expected_artifact_ids = {
+        str(item.get("artifact_id") or "")
+        for item in expected_uploadable
+        if item.get("artifact_id")
+    }
+    uploaded_image_ids = _string_set(summary.get("uploaded_image_artifact_ids"))
+    uploaded_video_ids = _string_set(summary.get("uploaded_video_artifact_ids"))
+    uploaded_artifact_ids = uploaded_image_ids | uploaded_video_ids
+    upload_enabled = summary.get("upload_enabled") is True
+
+    missing = expected_artifact_ids - uploaded_artifact_ids if upload_enabled else set()
+    unexpected = uploaded_artifact_ids - expected_artifact_ids if upload_enabled else set()
+    uploaded_video_refs = _string_list(summary.get("uploaded_video_refs"))
+    return {
+        "uploaded_image_file_count": len(uploaded_image_ids),
+        "uploaded_video_file_count": len(uploaded_video_ids),
+        "uploaded_remote_video_url_count": sum(
+            1 for ref in uploaded_video_refs if _delivery_ref_type(ref) == "remote_url"
+        ),
+        "expected_uploaded_artifact_ids": sorted(expected_artifact_ids),
+        "uploaded_artifact_ids": sorted(uploaded_artifact_ids),
+        "missing_uploaded_artifact_ids": sorted(missing),
+        "unexpected_uploaded_artifact_ids": sorted(unexpected),
+    }
+
+
+def _artifact_ids(uploaded: list[dict[str, str]]) -> list[str]:
+    return [item["artifact_id"] for item in uploaded if item.get("artifact_id")]
+
+
+def _string_set(value: Any) -> set[str]:
+    return set(_string_list(value))
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if item not in (None, "")]
 
 
 def _duplicate_delivery_count(rows: list[dict[str, Any]]) -> int:
@@ -533,6 +610,17 @@ def _local_path_from_ref(ref: str) -> str | None:
     if parsed.scheme == "":
         return str(Path(ref))
     return None
+
+
+def _delivery_ref_type(ref: str) -> str:
+    parsed = urlparse(ref)
+    if parsed.scheme == "file":
+        return "file_uri"
+    if parsed.scheme in {"http", "https"}:
+        return "remote_url"
+    if parsed.scheme == "":
+        return "local_path"
+    return "other"
 
 
 def _file_uri(path: str) -> str:

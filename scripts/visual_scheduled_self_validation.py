@@ -149,6 +149,12 @@ def _summary(automation: dict[str, Any]) -> dict[str, Any]:
         if isinstance(live_slack_delivery.get("delivery"), dict)
         else {}
     )
+    live_slack_missing_native_uploads = _list(
+        live_slack_delivery_record.get("missing_uploaded_artifact_ids")
+    )
+    live_slack_unexpected_native_uploads = _list(
+        live_slack_delivery_record.get("unexpected_uploaded_artifact_ids")
+    )
     fixture_quality_suite = (
         automation.get("fixture_quality_suite")
         if isinstance(automation.get("fixture_quality_suite"), dict)
@@ -259,6 +265,36 @@ def _summary(automation: dict[str, Any]) -> dict[str, Any]:
         if "success" in live_slack_delivery
         else None,
         "live_slack_upload_sent_count": _int(live_slack_delivery_record.get("sent_count"))
+        if live_slack_delivery_record
+        else None,
+        "live_slack_upload_uploaded_image_file_count": _int(
+            live_slack_delivery_record.get("uploaded_image_file_count")
+        )
+        if live_slack_delivery_record
+        else None,
+        "live_slack_upload_uploaded_video_file_count": _int(
+            live_slack_delivery_record.get("uploaded_video_file_count")
+        )
+        if live_slack_delivery_record
+        else None,
+        "live_slack_upload_uploaded_remote_video_url_count": _int(
+            live_slack_delivery_record.get("uploaded_remote_video_url_count")
+        )
+        if live_slack_delivery_record
+        else None,
+        "live_slack_upload_missing_native_upload_count": len(live_slack_missing_native_uploads)
+        if live_slack_delivery_record
+        else None,
+        "live_slack_upload_unexpected_native_upload_count": len(live_slack_unexpected_native_uploads)
+        if live_slack_delivery_record
+        else None,
+        "live_slack_upload_native_delivery_covered": (
+            live_slack_delivery.get("success") is True
+            and _int(live_slack_delivery_record.get("uploaded_video_file_count")) > 0
+            and _int(live_slack_delivery_record.get("uploaded_remote_video_url_count")) == 0
+            and len(live_slack_missing_native_uploads) == 0
+            and len(live_slack_unexpected_native_uploads) == 0
+        )
         if live_slack_delivery_record
         else None,
     }
@@ -483,6 +519,10 @@ def _int(value: Any) -> int:
         return max(0, int(value))
     except (TypeError, ValueError):
         return 0
+
+
+def _list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
 
 
 def main(argv: list[str] | None = None) -> int:

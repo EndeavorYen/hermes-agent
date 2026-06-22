@@ -36,6 +36,11 @@ def _automation_report(*, include_live: bool, include_live_slack_upload: bool = 
                     "sent_count": 2,
                     "duplicate_delivery_count": 0,
                     "unexpected_delivery_artifact_ids": [],
+                    "uploaded_image_file_count": 1,
+                    "uploaded_video_file_count": 1,
+                    "uploaded_remote_video_url_count": 0,
+                    "missing_uploaded_artifact_ids": [],
+                    "unexpected_uploaded_artifact_ids": [],
                 },
             }
             if include_live_slack_upload
@@ -503,3 +508,9 @@ def test_scheduled_self_validation_runs_live_slack_upload_when_target_is_ready(m
     assert calls == [{"include_live": True, "include_live_slack_upload": True}]
     assert report["summary"]["live_slack_upload_success"] is True
     assert report["summary"]["live_slack_upload_sent_count"] == 2
+    assert report["summary"]["live_slack_upload_uploaded_image_file_count"] == 1
+    assert report["summary"]["live_slack_upload_uploaded_video_file_count"] == 1
+    assert report["summary"]["live_slack_upload_uploaded_remote_video_url_count"] == 0
+    assert report["summary"]["live_slack_upload_missing_native_upload_count"] == 0
+    assert report["summary"]["live_slack_upload_unexpected_native_upload_count"] == 0
+    assert report["summary"]["live_slack_upload_native_delivery_covered"] is True

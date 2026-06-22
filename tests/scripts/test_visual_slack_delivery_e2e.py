@@ -181,6 +181,11 @@ def test_visual_slack_delivery_live_uploads_images_and_videos(monkeypatch, tmp_p
     assert calls["videos"]
     assert report["delivery"]["sent_count"] == 2
     assert report["delivery"]["message_ids"] == ["live-image-msg", "live-video-msg"]
+    assert report["delivery"]["uploaded_image_file_count"] == 1
+    assert report["delivery"]["uploaded_video_file_count"] == 1
+    assert report["delivery"]["uploaded_remote_video_url_count"] == 0
+    assert report["delivery"]["missing_uploaded_artifact_ids"] == []
+    assert report["delivery"]["unexpected_uploaded_artifact_ids"] == []
 
 
 def test_visual_slack_delivery_live_records_adapter_returned_uploads(monkeypatch, tmp_path):
@@ -226,6 +231,68 @@ def test_visual_slack_delivery_live_records_adapter_returned_uploads(monkeypatch
     assert report["success"] is True
     assert report["delivery"]["sent_count"] == 2
     assert report["delivery"]["message_ids"] == ["live-image-msg", "live-video-msg"]
+
+
+def test_visual_slack_delivery_live_fails_without_native_video_upload_proof(monkeypatch, tmp_path):
+    from agent.visual.tracking import record_visual_delivery_status
+    from agent.visual.tracking import visual_delivery_context
+    from scripts import visual_slack_delivery_e2e
+
+    monkeypatch.setattr(
+        visual_slack_delivery_e2e,
+        "run_visual_package",
+        lambda _args: _fake_visual_package_payload(tmp_path),
+    )
+
+    async def fake_upload(*, metadata, deliverables, destination_id, thread_id):
+        image_artifact_ids = []
+        for item in deliverables:
+            context = visual_delivery_context(
+                metadata,
+                item["ref"],
+                platform="slack",
+                destination_id=destination_id,
+                thread_id=thread_id,
+            )
+            record_visual_delivery_status(
+                context,
+                "sent",
+                message_id=f"live-msg-{item['artifact_id']}",
+            )
+            if item["kind"] == "image":
+                image_artifact_ids.append(item["artifact_id"])
+        return {
+            "upload_enabled": True,
+            "uploaded_image_count": 1,
+            "uploaded_video_count": 0,
+            "uploaded_image_artifact_ids": image_artifact_ids,
+            "uploaded_video_artifact_ids": [],
+            "uploaded_image_refs": [item["ref"] for item in deliverables if item["kind"] == "image"],
+            "uploaded_video_refs": [],
+            "errors": [],
+            "skipped_refs": [],
+            "missing_context_refs": [],
+            "recorded_count": 0,
+        }
+
+    monkeypatch.setattr(
+        visual_slack_delivery_e2e,
+        "_upload_live_slack_deliverables",
+        fake_upload,
+    )
+
+    report = visual_slack_delivery_e2e.build_visual_slack_delivery_e2e_report(
+        mode="live",
+        upload=True,
+        work_dir=tmp_path,
+        target="D_TEST",
+    )
+
+    assert report["success"] is False
+    assert "missing_native_uploads" in report["failures"]
+    assert report["delivery"]["sent_count"] == 2
+    assert report["delivery"]["uploaded_video_file_count"] == 0
+    assert len(report["delivery"]["missing_uploaded_artifact_ids"]) == 1
 
 
 def test_visual_slack_delivery_live_reports_upload_adapter_failures(monkeypatch, tmp_path):
