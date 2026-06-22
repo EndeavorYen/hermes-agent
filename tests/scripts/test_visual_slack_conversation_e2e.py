@@ -908,6 +908,19 @@ def test_visual_slack_conversation_e2e_live_records_no_video_fallback_summary(mo
     assert quality_run["summary"]["no_video_fallback_available_count"] == 1
     assert quality_run["summary"]["provider_quarantine_count"] == 1
     assert quality_run["summary"]["provider_quarantine_classes"] == ["quota_exceeded"]
+    assert {
+        "type": "configure_video_fallback_provider",
+        "track": "provider",
+        "reason": "slack_conversation_no_video_fallback_available",
+        "confidence": 0.9,
+        "evidence_count": 1,
+        "requires_human_feedback": False,
+        "activation_status": "next_run",
+        "source": "slack_conversation_e2e",
+        "provider_failure_classes": {"quota_exceeded": 2},
+        "provider_error_codes": {"personal-team-blocked:spending-limit": 2},
+    } in report["next_actions"]
+    assert quality_run["next_actions"] == report["next_actions"]
 
 
 def test_visual_slack_conversation_e2e_live_records_inline_vision_failure_summary(monkeypatch, tmp_path):

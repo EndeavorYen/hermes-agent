@@ -483,3 +483,34 @@ def test_feedback_policy_applies_provider_quota_action_without_retry_budget():
         "provider_error_codes": {"personal-team-blocked:spending-limit": 1},
     }
     assert policy["applied_action_types"] == ["resolve_provider_quota_or_switch_provider"]
+
+
+def test_feedback_policy_applies_missing_video_fallback_action_without_retry_budget():
+    from agent.visual.feedback_policy import resolve_visual_feedback_policy
+
+    policy = resolve_visual_feedback_policy(
+        {
+            "next_actions": [
+                {
+                    "type": "configure_video_fallback_provider",
+                    "track": "provider",
+                    "confidence": 0.9,
+                    "requires_human_feedback": False,
+                    "provider_failure_classes": {"quota_exceeded": 2},
+                    "provider_error_codes": {"personal-team-blocked:spending-limit": 2},
+                }
+            ]
+        },
+        wants_image=True,
+        wants_video=True,
+        explicit_candidate_budget=None,
+        default_candidate_budget=2,
+    )
+
+    assert policy["provider_recovery_mode"] == "video_fallback_unavailable"
+    assert policy["provider_retry_budget"] == 0
+    assert policy["provider_failure_context"] == {
+        "provider_failure_classes": {"quota_exceeded": 2},
+        "provider_error_codes": {"personal-team-blocked:spending-limit": 2},
+    }
+    assert policy["applied_action_types"] == ["configure_video_fallback_provider"]

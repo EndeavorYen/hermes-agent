@@ -735,6 +735,19 @@ def _next_actions_from_slack_delivery(slack_delivery: dict[str, Any]) -> list[di
                     provider_error_codes=provider_error_codes,
                 )
             )
+        no_video_fallback_count = _int(recovery.get("no_video_fallback_available_count"))
+        if no_video_fallback_count > 0:
+            actions.append(
+                _action(
+                    "configure_video_fallback_provider",
+                    "provider",
+                    "slack_conversation_no_video_fallback_available",
+                    confidence=0.9,
+                    evidence_count=no_video_fallback_count,
+                    provider_failure_classes=provider_failure_classes,
+                    provider_error_codes=provider_error_codes,
+                )
+            )
         retryable_failure_count = max(0, provider_failure_count - quota_count)
         retryable_failure_classes = {
             key: count

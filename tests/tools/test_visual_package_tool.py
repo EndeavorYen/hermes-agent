@@ -3413,6 +3413,93 @@ async def test_visual_package_honors_provider_account_blocked_zero_retry_budget(
 
 
 @pytest.mark.asyncio
+async def test_visual_package_surfaces_missing_video_fallback_policy(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
+    latest_report.parent.mkdir(parents=True)
+    latest_report.write_text(
+        json.dumps(
+            {
+                "success": True,
+                "automation": {
+                    "self_improvement": {
+                        "next_actions": [
+                            {
+                                "type": "configure_video_fallback_provider",
+                                "requires_human_feedback": False,
+                                "activation_status": "next_run",
+                                "confidence": 0.9,
+                                "source": "live_quality_burn",
+                                "provider_failure_classes": {"quota_exceeded": 2},
+                                "provider_error_codes": {
+                                    "personal-team-blocked:spending-limit": 2
+                                },
+                            }
+                        ]
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    image = tmp_path / "image.png"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"video")
+
+    monkeypatch.setattr(
+        visual_package_tool,
+        "generate_image",
+        lambda **_kwargs: {
+            "success": True,
+            "image": str(image),
+            "provider": "codex",
+            "model": "gpt-image-fallback",
+            "vision_observation": {
+                "face_quality": 0.9,
+                "fashion_material_quality": 0.9,
+                "visual_appeal": 0.9,
+                "composition": 0.9,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        visual_package_tool,
+        "generate_video",
+        lambda **_kwargs: {
+            "success": True,
+            "video": str(video),
+            "provider": "xai",
+            "model": "grok-imagine-video",
+        },
+    )
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "請產出一張圖片和一段影片：產品攝影。",
+                "include_image": True,
+                "include_video": True,
+                "candidate_budget": 1,
+                "video_budget": 1,
+            }
+        )
+    )
+
+    policy = payload["generation_strategy"]["feedback_policy"]
+    assert policy["provider_recovery_mode"] == "video_fallback_unavailable"
+    assert policy["provider_retry_budget"] == 0
+    assert policy["provider_failure_context"] == {
+        "provider_failure_classes": {"quota_exceeded": 2},
+        "provider_error_codes": {"personal-team-blocked:spending-limit": 2},
+    }
+    assert policy["applied_action_types"] == ["configure_video_fallback_provider"]
+
+
+@pytest.mark.asyncio
 async def test_visual_package_falls_back_to_available_image_provider_after_quota_block(
     monkeypatch,
     tmp_path,

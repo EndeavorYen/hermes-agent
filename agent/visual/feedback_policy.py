@@ -122,6 +122,12 @@ def resolve_visual_feedback_policy(
             provider_failure_context = _provider_failure_context(action)
             _append_once(applied_action_types, action_type)
             _append_once(applied_action_sources, action_source)
+        elif action_type == "configure_video_fallback_provider":
+            provider_recovery_mode = "video_fallback_unavailable"
+            provider_retry_budget = 0
+            provider_failure_context = _provider_failure_context(action)
+            _append_once(applied_action_types, action_type)
+            _append_once(applied_action_sources, action_source)
         elif action_type == "prefer_strategy":
             preference = _strategy_preference(action)
             if preference:

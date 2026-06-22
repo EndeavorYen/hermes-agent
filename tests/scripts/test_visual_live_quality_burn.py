@@ -703,6 +703,64 @@ def test_visual_live_quality_burn_routes_quota_to_provider_account_action(monkey
     } in report["next_actions"]
 
 
+def test_visual_live_quality_burn_routes_missing_video_fallback_to_provider_action(monkeypatch, tmp_path):
+    from scripts import visual_live_quality_burn
+
+    suite = _suite_with_quality_failure()
+    suite["case_count"] = 1
+    suite["failures"] = ["video_quota_blocked:visual_generation_failed"]
+    suite["cases"] = [
+        {
+            "case_id": "video_quota_blocked",
+            "success": False,
+            "failures": ["visual_generation_failed"],
+            "evidence": {
+                "quality_gate": {
+                    "success": False,
+                    "min_score": None,
+                    "quality_issues": [],
+                },
+                "image_count": 1,
+                "video_count": 0,
+                "ranking_count": 1,
+                "require_video": True,
+            },
+        }
+    ]
+    suite["recovery_summary"] = {
+        "provider_failure_count": 2,
+        "provider_failure_classes": {"quota_exceeded": 2},
+        "provider_error_codes": {"personal-team-blocked:spending-limit": 2},
+        "no_video_fallback_available_count": 1,
+        "provider_quarantine_count": 1,
+        "provider_quarantine_classes": ["quota_exceeded"],
+    }
+
+    monkeypatch.setattr(
+        visual_live_quality_burn,
+        "build_visual_live_provider_e2e_suite_report",
+        lambda **_kwargs: suite,
+    )
+
+    report = visual_live_quality_burn.build_visual_live_quality_burn_report(
+        mode="live",
+        output_dir=tmp_path,
+    )
+
+    assert {
+        "type": "configure_video_fallback_provider",
+        "track": "provider",
+        "reason": "live_quality_burn_no_video_fallback_available",
+        "confidence": 0.9,
+        "evidence_count": 1,
+        "requires_human_feedback": False,
+        "activation_status": "next_run",
+        "source": "live_quality_burn",
+        "provider_failure_classes": {"quota_exceeded": 2},
+        "provider_error_codes": {"personal-team-blocked:spending-limit": 2},
+    } in report["next_actions"]
+
+
 def test_visual_live_quality_burn_prefers_image_first_when_video_missing_after_image(monkeypatch, tmp_path):
     from scripts import visual_live_quality_burn
 

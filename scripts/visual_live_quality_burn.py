@@ -578,6 +578,19 @@ def _provider_failure_actions(recovery: dict[str, Any]) -> list[dict[str, Any]]:
                 provider_error_codes=provider_error_codes,
             )
         )
+    no_video_fallback_count = _int(recovery.get("no_video_fallback_available_count"))
+    if no_video_fallback_count > 0:
+        actions.append(
+            _action(
+                "configure_video_fallback_provider",
+                "provider",
+                "live_quality_burn_no_video_fallback_available",
+                confidence=0.9,
+                evidence_count=no_video_fallback_count,
+                provider_failure_classes=provider_failure_classes,
+                provider_error_codes=provider_error_codes,
+            )
+        )
 
     retryable_count = max(0, provider_failure_count - quota_count)
     if retryable_count > 0:
