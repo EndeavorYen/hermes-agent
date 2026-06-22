@@ -2993,6 +2993,69 @@ async def test_visual_package_retries_transient_image_failure_before_image_first
     assert payload["generation_strategy"]["video_source_image"] == str(image)
 
 
+@pytest.mark.asyncio
+async def test_visual_package_retries_transient_video_timeout(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image = tmp_path / "image.png"
+    video = tmp_path / "retry-video.mp4"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    video.write_bytes(b"video")
+    video_calls = []
+
+    monkeypatch.setattr(
+        visual_package_tool,
+        "generate_image",
+        lambda **_kwargs: {
+            "success": True,
+            "image": str(image),
+            "provider": "xai",
+            "model": "grok-imagine-image-quality",
+        },
+    )
+
+    def fake_generate_video(**kwargs):
+        video_calls.append(kwargs)
+        if len(video_calls) == 1:
+            return {
+                "success": False,
+                "error_type": "timeout",
+                "error": "xAI video generation failed: ReadTimeout",
+                "provider": "xai",
+                "model": "grok-imagine-video-1.5",
+            }
+        return {
+            "success": True,
+            "video": str(video),
+            "provider": "xai",
+            "model": "grok-imagine-video-1.5",
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_video", fake_generate_video)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "請產出一張圖片和一段影片：霧黑鋼筆放在白紙上，柔和窗光。",
+                "include_image": True,
+                "include_video": True,
+                "candidate_budget": 1,
+                "video_budget": 1,
+                "duration": 8,
+            }
+        )
+    )
+
+    assert len(video_calls) == 2
+    assert video_calls[1]["duration"] == 4
+    assert payload["success"] is True
+    assert payload["videos"] == [str(video)]
+    assert payload["generation_payloads"]["video"][0]["failure"]["failure_class"] == "timeout"
+    assert payload["generation_payloads"]["video"][0]["recovery"]["decision"] == "retry"
+    assert payload["generation_payloads"]["video"][1]["retry_of"] == 0
+
+
 def test_retry_generation_payload_records_retry_failure_with_exhausted_recovery():
     from tools.visual_package_tool import _retry_generation_payload
 

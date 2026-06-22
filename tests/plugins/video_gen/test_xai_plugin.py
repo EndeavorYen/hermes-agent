@@ -155,6 +155,25 @@ def test_xai_no_operation_kwarg():
     assert result["error_type"] in {"auth_required", "api_error"}
 
 
+def test_xai_generate_preserves_read_timeout_as_timeout(monkeypatch):
+    import httpx
+    import plugins.video_gen.xai as xai_plugin
+
+    provider = xai_plugin.XAIVideoGenProvider()
+
+    async def fake_generate_async(**_kwargs):
+        raise httpx.ReadTimeout("")
+
+    monkeypatch.setattr(provider, "_generate_async", fake_generate_async)
+
+    result = provider.generate("animate the selected image", image_url="/tmp/image.png")
+
+    assert result["success"] is False
+    assert result["error_type"] == "timeout"
+    assert "ReadTimeout" in result["error"]
+    assert result["provider"] == "xai"
+
+
 @pytest.mark.asyncio
 async def test_xai_generate_can_run_inside_existing_event_loop(monkeypatch):
     """The sync provider API is called from async Hermes tool handlers."""

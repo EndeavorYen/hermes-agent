@@ -422,9 +422,10 @@ class XAIVideoGenProvider(VideoGenProvider):
             )
         except Exception as exc:
             logger.warning("xAI video gen unexpected failure: %s", exc, exc_info=True)
+            error_type = _unexpected_exception_error_type(exc)
             return error_response(
-                error=f"xAI video generation failed: {exc}",
-                error_type="api_error",
+                error=f"xAI video generation failed: {type(exc).__name__}: {exc}",
+                error_type=error_type,
                 provider="xai",
                 model=model or DEFAULT_MODEL,
                 prompt=prompt,
@@ -594,6 +595,14 @@ class XAIVideoGenProvider(VideoGenProvider):
             model=resolved_model,
             prompt=prompt,
         )
+
+
+def _unexpected_exception_error_type(exc: Exception) -> str:
+    if isinstance(exc, (TimeoutError, httpx.TimeoutException)):
+        return "timeout"
+    if isinstance(exc, httpx.TransportError):
+        return "connection_error"
+    return "api_error"
 
 
 # ---------------------------------------------------------------------------
