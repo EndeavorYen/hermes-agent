@@ -97,6 +97,32 @@ then prove the real runtime behavior.
   quality, higher delivery reliability, lower user intervention, or clearer
   recovery, stop and re-evaluate the objective before adding more machinery.
 
+## Proof Ladder And Self-Validation
+
+Match the proof to the claim. A narrow test can justify a narrow fix, but it
+cannot prove a user-visible workflow is good.
+
+- **Static checks prove shape only.** Type checks, lint, import checks, and
+  diff hygiene catch local defects. They do not prove runtime behavior,
+  provider behavior, Slack delivery, visual quality, or learning quality.
+- **Focused tests prove behavior contracts.** Unit and fixture tests should
+  reproduce the bug class, assert the repair path, and protect against
+  regressions in routing, scoring, retries, deduplication, geometry, and
+  delivery policy.
+- **Runtime smoke proves integration.** Gateway, auth, config, cron, provider,
+  Slack, media, and ledger changes need the smallest practical runtime smoke
+  when they depend on live wiring.
+- **Live E2E proves product paths.** When live testing is enabled, use it for
+  provider generation, image-first video, native upload, quality repair, and
+  duplicate-delivery checks. Record attempts, selected artifacts, failures,
+  cost-relevant counts, and the next learned action.
+- **Quality gates need artifact evidence.** A generation is not good because a
+  tool returned success. It needs artifact-level evidence for aesthetics,
+  reference adherence, composition, geometry, motion, and delivery cleanliness.
+- **Self-review must change the next action.** A useful self-review identifies
+  what improved, what is still weak, and the next concrete fix. If it only
+  restates success, it is not a learning mechanism.
+
 ## Regression Response
 
 When the user reports that behavior got worse, treat it as a product regression
