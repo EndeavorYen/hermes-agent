@@ -1,0 +1,160 @@
+from __future__ import annotations
+
+import json
+
+
+def test_visual_feedback_loop_proposes_candidate_budget_without_human_feedback(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from scripts.visual_feedback_loop_report import build_visual_feedback_loop_report
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+    request_id = ledger.record_request(
+        user_prompt="private prompt must not leak",
+        status="completed",
+        metadata={"intent_signature": "visig_glamour"},
+    )
+    attempt_id = ledger.record_attempt(
+        request_id=request_id,
+        provider="xai",
+        model="grok-imagine-image-quality",
+        status="completed",
+    )
+    artifact_id = ledger.record_artifact(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        kind="image",
+        local_path="/tmp/private-result.jpg",
+        content_hash="sha256:low-quality",
+        freshness_status="fresh",
+    )
+    ledger.record_judgment(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        artifact_id=artifact_id,
+        judge_name="visual_quality_judge",
+        score=0.41,
+        verdict="fail",
+        details={"scores": {"beauty": 0.35, "composition": 0.44}},
+    )
+    ledger.record_delivery(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        artifact_id=artifact_id,
+        platform="slack",
+        destination_id="C123",
+        delivery_status="sent",
+    )
+
+    report = build_visual_feedback_loop_report(tmp_path / "visual.sqlite3")
+    encoded = json.dumps(report, ensure_ascii=False)
+
+    assert report["success"] is True
+    assert report["counts"]["human_feedback_count"] == 0
+    assert report["signals"]["aesthetic"]["low_quality_judgment_count"] == 1
+    assert report["self_review"]["reduces_human_intervention"] is True
+    assert _action_types(report) >= {"increase_candidate_budget", "rerank_before_slack"}
+    assert "private prompt must not leak" not in encoded
+    assert "/tmp/private-result.jpg" not in encoded
+
+
+def test_visual_feedback_loop_prefers_image_first_after_video_failure(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from scripts.visual_feedback_loop_report import build_visual_feedback_loop_report
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+    request_id = ledger.record_request(
+        status="completed",
+        metadata={"intent_signature": "visig_video"},
+        normalized_intent={"wants_image": True, "wants_video": True},
+    )
+    image_attempt = ledger.record_attempt(
+        request_id=request_id,
+        provider="xai",
+        model="grok-imagine-image-quality",
+        status="completed",
+    )
+    ledger.record_artifact(
+        request_id=request_id,
+        attempt_id=image_attempt,
+        kind="image",
+        local_path="/tmp/source-image.jpg",
+        content_hash="sha256:source-image",
+        freshness_status="fresh",
+    )
+    ledger.record_attempt(
+        request_id=request_id,
+        provider="xai",
+        model="grok-imagine-video-1.5",
+        status="failed",
+        error_type="provider_timeout",
+        error_message="timed out",
+        parameters_requested={"kind": "video", "duration_seconds": 8},
+    )
+
+    report = build_visual_feedback_loop_report(tmp_path / "visual.sqlite3")
+
+    assert report["success"] is True
+    assert report["signals"]["provider"]["video_failure_count"] == 1
+    assert "prefer_image_first_video" in _action_types(report)
+
+
+def test_visual_feedback_loop_fails_closed_on_duplicate_delivery(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from scripts.visual_feedback_loop_report import build_visual_feedback_loop_report
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+    request_id = ledger.record_request(status="completed", metadata={"intent_signature": "visig_delivery"})
+    attempt_id = ledger.record_attempt(
+        request_id=request_id,
+        provider="xai",
+        model="grok-imagine-image-quality",
+        status="completed",
+    )
+    artifact_id = ledger.record_artifact(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        kind="image",
+        local_path="/tmp/current.jpg",
+        content_hash="sha256:duplicate",
+        freshness_status="fresh",
+    )
+    for _ in range(2):
+        ledger.record_delivery(
+            request_id=request_id,
+            attempt_id=attempt_id,
+            artifact_id=artifact_id,
+            platform="slack",
+            destination_id="C123",
+            thread_id="T123",
+            delivery_status="sent",
+        )
+
+    report = build_visual_feedback_loop_report(tmp_path / "visual.sqlite3")
+
+    assert report["success"] is False
+    assert "duplicate_delivery" in report["failures"]
+    assert report["signals"]["delivery"]["duplicate_delivery_count"] == 1
+    assert "repair_delivery_dedup" in _action_types(report)
+
+
+def test_visual_e2e_automation_includes_feedback_loop_gate(monkeypatch, tmp_path):
+    from scripts import visual_e2e_automation_report
+
+    monkeypatch.setattr(
+        visual_e2e_automation_report,
+        "build_visual_feedback_loop_report",
+        lambda _path: {"success": False, "failures": ["duplicate_delivery"]},
+    )
+
+    report = visual_e2e_automation_report.build_visual_e2e_automation_report(work_dir=tmp_path)
+
+    assert report["success"] is False
+    assert "feedback_loop_failed" in report["failures"]
+    assert report["feedback_loop"]["failures"] == ["duplicate_delivery"]
+
+
+def _action_types(report: dict) -> set[str]:
+    return {str(action.get("type")) for action in report["next_actions"]}

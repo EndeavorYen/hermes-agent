@@ -14,6 +14,7 @@ if str(_REPO_ROOT) not in sys.path:
 from agent.visual.tracking import default_visual_ledger_path
 from scripts.visual_agent_mode_regression_report import build_visual_agent_mode_regression_report
 from scripts.visual_autonomous_healthcheck import build_visual_autonomous_healthcheck
+from scripts.visual_feedback_loop_report import build_visual_feedback_loop_report
 from scripts.visual_quality_calibration_report import build_quality_calibration_report
 from scripts.visual_live_provider_e2e import build_visual_live_provider_e2e_report
 from scripts.visual_slack_delivery_e2e import build_visual_slack_delivery_e2e_report
@@ -28,6 +29,7 @@ def build_visual_e2e_automation_report(
     fixture_e2e = build_visual_live_provider_e2e_report(mode="fixture", work_dir=work_dir)
     slack_delivery = build_visual_slack_delivery_e2e_report(mode="fixture", work_dir=work_dir)
     health = build_visual_autonomous_healthcheck(_ledger_path_for_work_dir(work_dir), autonomy_level=2)
+    feedback_loop = build_visual_feedback_loop_report(_ledger_path_for_work_dir(work_dir))
     quality_calibration = build_quality_calibration_report(_ledger_path_for_work_dir(work_dir))
     if include_live:
         live_e2e = (
@@ -47,6 +49,8 @@ def build_visual_e2e_automation_report(
         failures.append("slack_delivery_failed")
     if health.get("success") is not True:
         failures.append("health_failed")
+    if feedback_loop.get("success") is not True:
+        failures.append("feedback_loop_failed")
     if quality_calibration.get("success") is not True:
         failures.append("quality_calibration_failed")
     if isinstance(live_e2e, dict) and live_e2e.get("success") is False:
@@ -60,6 +64,7 @@ def build_visual_e2e_automation_report(
         "slack_delivery": slack_delivery,
         "live_e2e": live_e2e,
         "health": health,
+        "feedback_loop": feedback_loop,
         "quality_calibration": quality_calibration,
     }
 
