@@ -1700,6 +1700,94 @@ async def test_visual_package_applies_self_validation_strategy_preference(monkey
 
 
 @pytest.mark.asyncio
+async def test_visual_package_uses_image_first_video_policy_for_attachment_video(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
+    latest_report.parent.mkdir(parents=True)
+    latest_report.write_text(
+        json.dumps(
+            {
+                "success": True,
+                "automation": {
+                    "self_improvement": {
+                        "next_actions": [
+                            {
+                                "type": "prefer_image_first_video",
+                                "requires_human_feedback": False,
+                                "activation_status": "next_run",
+                                "confidence": 0.78,
+                                "source": "live_quality_burn",
+                            }
+                        ]
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    reference = tmp_path / "reference.png"
+    generated_image = tmp_path / "generated-image.png"
+    video = tmp_path / "video.mp4"
+    reference.write_bytes(_ONE_PIXEL_PNG)
+    generated_image.write_bytes(_ONE_PIXEL_PNG)
+    video.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+    image_calls = []
+    video_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(generated_image),
+            "provider": "fixture",
+            "model": "image",
+            "vision_observation": {
+                "face_quality": 0.9,
+                "visual_appeal": 0.9,
+                "composition": 0.9,
+                "stocking_quality": 0.9,
+            },
+        }
+
+    def fake_generate_video(**kwargs):
+        video_calls.append(kwargs)
+        return {
+            "success": True,
+            "video": str(video),
+            "provider": "fixture",
+            "model": "video",
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+    monkeypatch.setattr(visual_package_tool, "generate_video", fake_generate_video)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "請產出一段短影片：優雅產品展示。",
+                "attachments": [str(reference)],
+                "include_video": True,
+                "video_budget": 1,
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert len(image_calls) == 2
+    assert image_calls[0]["reference_image_urls"] == [str(reference)]
+    assert video_calls[0]["image_url"] == str(generated_image)
+    assert payload["images"] == []
+    assert payload["videos"] == [str(video)]
+    assert payload["generation_strategy"]["generated_image"] is True
+    assert payload["generation_strategy"]["image_first_for_video"] is True
+    assert payload["generation_strategy"]["video_source_image"] == str(generated_image)
+    assert payload["generation_strategy"]["feedback_policy"]["prefer_image_first_video"] is True
+
+
+@pytest.mark.asyncio
 async def test_visual_package_applies_preference_dimension_guidance_from_self_validation(monkeypatch, tmp_path):
     from tools import visual_package_tool
 

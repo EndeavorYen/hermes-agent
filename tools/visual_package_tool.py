@@ -203,9 +203,21 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         wants_image=should_generate_image,
         wants_video=wants_video,
     )
+    policy_image_first_for_video = (
+        wants_video
+        and not requested_image
+        and feedback_policy.get("prefer_image_first_video") is True
+    )
+    if policy_image_first_for_video:
+        image_first_for_video = True
+        should_generate_image = True
     provider_retry_budget = _provider_retry_budget(feedback_policy)
-    candidate_budget = int(feedback_policy.get("candidate_budget") or 0)
-    candidate_budget_source = str(feedback_policy.get("candidate_budget_source") or "default")
+    candidate_budget = int(feedback_policy.get("candidate_budget") or 0) if should_generate_image else 0
+    candidate_budget_source = (
+        str(feedback_policy.get("candidate_budget_source") or "default")
+        if should_generate_image
+        else "not_requested"
+    )
     video_budget = _video_budget(args, wants_video=wants_video)
     inline_vision_judge = _inline_vision_judge_mode(args)
     request_category = _visual_request_category(prompt)
@@ -471,7 +483,10 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 selected_images.append(selected_image["artifact_path"])
 
     if wants_video:
-        video_image_url = explicit_video_source or video_source_image
+        if policy_image_first_for_video and video_source_image:
+            video_image_url = video_source_image
+        else:
+            video_image_url = explicit_video_source or video_source_image
         video_candidates = []
         if not video_image_url:
             video_payload = {

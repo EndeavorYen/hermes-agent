@@ -101,6 +101,7 @@ def _summary(suite: dict[str, Any]) -> dict[str, Any]:
     quality_scores = _case_quality_scores(cases)
     quality_issues = _quality_issues(cases)
     preference_dimension_failures = _preference_dimension_failures(cases)
+    video_missing_after_image_case_ids = _video_missing_after_image_case_ids(cases)
     failed_cases = [
         str(case.get("case_id") or "")
         for case in cases
@@ -117,6 +118,8 @@ def _summary(suite: dict[str, Any]) -> dict[str, Any]:
         "quality_issues": quality_issues,
         "preference_dimension_failure_count": len(preference_dimension_failures),
         "preference_dimension_failures": preference_dimension_failures,
+        "video_missing_after_image_count": len(video_missing_after_image_case_ids),
+        "video_missing_after_image_case_ids": video_missing_after_image_case_ids,
         "provider_failure_count": _int(recovery.get("provider_failure_count")),
         "negotiation_success_case_count": _int(recovery.get("negotiation_success_case_count")),
         "quality_repair_attempt_count": _int(repair.get("attempt_count")),
@@ -184,6 +187,31 @@ def _preference_dimension_failures(cases: list[Any]) -> list[dict[str, Any]]:
     return failures
 
 
+def _video_missing_after_image_case_ids(cases: list[Any]) -> list[str]:
+    case_ids: list[str] = []
+    for case in cases:
+        if not isinstance(case, dict):
+            continue
+        evidence = case.get("evidence") if isinstance(case.get("evidence"), dict) else {}
+        if _int(evidence.get("image_count")) < 1 or _int(evidence.get("video_count")) > 0:
+            continue
+        if not _case_requires_video(case, evidence):
+            continue
+        case_id = str(case.get("case_id") or "").strip()
+        if case_id:
+            case_ids.append(case_id)
+    return case_ids
+
+
+def _case_requires_video(case: dict[str, Any], evidence: dict[str, Any]) -> bool:
+    if evidence.get("require_video") is True or case.get("require_video") is True:
+        return True
+    failures = case.get("failures")
+    if not isinstance(failures, list):
+        failures = []
+    return any(str(failure) == "missing_video_output" for failure in failures)
+
+
 def _next_actions(suite: dict[str, Any], summary: dict[str, Any]) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     failures = {str(failure) for failure in suite.get("failures") or []}
@@ -227,6 +255,16 @@ def _next_actions(suite: dict[str, Any], summary: dict[str, Any]) -> list[dict[s
                 dimension=dimension,
                 quality_issue=str(failure.get("issue") or "").strip(),
                 repair_hint=_repair_hint_for_dimension(dimension),
+            )
+        )
+    if _int(summary.get("video_missing_after_image_count")) > 0:
+        actions.append(
+            _action(
+                "prefer_image_first_video",
+                "provider",
+                "live_quality_burn_video_missing_after_image",
+                confidence=0.78,
+                evidence_count=_int(summary.get("video_missing_after_image_count")),
             )
         )
     recovery = suite.get("recovery_summary") if isinstance(suite.get("recovery_summary"), dict) else {}

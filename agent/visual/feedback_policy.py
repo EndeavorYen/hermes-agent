@@ -16,30 +16,16 @@ def resolve_visual_feedback_policy(
 ) -> dict[str, Any]:
     """Convert feedback-loop next_actions into runtime-safe generation policy."""
 
-    if not wants_image:
-        return {
-            "candidate_budget": 0,
-            "candidate_budget_source": "not_requested",
-            "prefer_image_first_video": False,
-            "rerank_before_delivery": False,
-            "quality_repair_mode": "default",
-            "provider_recovery_mode": "default",
-            "provider_retry_budget": 1,
-            "provider_failure_context": {
-                "provider_failure_classes": {},
-                "provider_error_codes": {},
-            },
-            "strategy_preference": None,
-            "applied_action_types": [],
-        }
-
     budget_locked_by_user = explicit_candidate_budget is not None
-    if budget_locked_by_user:
+    if wants_image and budget_locked_by_user:
         candidate_budget = _clamp(explicit_candidate_budget or 1, minimum=1, maximum=MAX_CANDIDATE_BUDGET)
         candidate_budget_source = "user"
-    else:
+    elif wants_image:
         candidate_budget = _clamp(default_candidate_budget, minimum=1, maximum=MAX_CANDIDATE_BUDGET)
         candidate_budget_source = "default"
+    else:
+        candidate_budget = 0
+        candidate_budget_source = "not_requested"
     prefer_image_first_video = False
     rerank_before_delivery = False
     quality_repair_mode = "default"
@@ -58,12 +44,20 @@ def resolve_visual_feedback_policy(
         action_type = str(action.get("type") or "")
         if action_type == "increase_candidate_budget":
             value = _int(action.get("max_candidate_budget"))
-            if not budget_locked_by_user and value is not None and value > candidate_budget:
+            if wants_image and not budget_locked_by_user and value is not None and value > candidate_budget:
                 candidate_budget = _clamp(value, minimum=candidate_budget, maximum=MAX_CANDIDATE_BUDGET)
                 candidate_budget_source = "feedback_loop"
                 _append_once(applied_action_types, action_type)
         elif action_type == "prefer_image_first_video" and wants_video:
             prefer_image_first_video = True
+            rerank_before_delivery = True
+            if candidate_budget < 2:
+                candidate_budget = 2 if not budget_locked_by_user else _clamp(
+                    explicit_candidate_budget or 1,
+                    minimum=1,
+                    maximum=MAX_CANDIDATE_BUDGET,
+                )
+                candidate_budget_source = "feedback_loop" if not budget_locked_by_user else "user"
             _append_once(applied_action_types, action_type)
         elif action_type == "rerank_before_slack":
             rerank_before_delivery = True

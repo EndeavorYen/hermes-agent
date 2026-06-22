@@ -261,6 +261,46 @@ def test_visual_live_quality_burn_exports_provider_failure_context(monkeypatch, 
     } in report["next_actions"]
 
 
+def test_visual_live_quality_burn_prefers_image_first_when_video_missing_after_image(monkeypatch, tmp_path):
+    from scripts import visual_live_quality_burn
+
+    suite = _suite_with_quality_failure()
+    suite["failures"] = ["fashion_portrait_video:missing_video_output"]
+    suite["cases"][1]["failures"] = ["missing_video_output"]
+    suite["cases"][1]["evidence"]["image_count"] = 1
+    suite["cases"][1]["evidence"]["video_count"] = 0
+    suite["cases"][1]["evidence"]["require_video"] = True
+    suite["cases"][1]["evidence"]["quality_gate"] = {
+        "success": True,
+        "min_score": 0.79,
+        "quality_issues": [],
+    }
+
+    monkeypatch.setattr(
+        visual_live_quality_burn,
+        "build_visual_live_provider_e2e_suite_report",
+        lambda **_kwargs: suite,
+    )
+
+    report = visual_live_quality_burn.build_visual_live_quality_burn_report(
+        mode="live",
+        output_dir=tmp_path,
+    )
+
+    assert report["summary"]["video_missing_after_image_count"] == 1
+    assert report["summary"]["video_missing_after_image_case_ids"] == ["fashion_portrait_video"]
+    assert {
+        "type": "prefer_image_first_video",
+        "track": "provider",
+        "reason": "live_quality_burn_video_missing_after_image",
+        "confidence": 0.78,
+        "evidence_count": 1,
+        "requires_human_feedback": False,
+        "activation_status": "next_run",
+        "source": "live_quality_burn",
+    } in report["next_actions"]
+
+
 def test_visual_live_quality_burn_promotes_high_quality_pass_without_repair(monkeypatch, tmp_path):
     from scripts import visual_live_quality_burn
 
