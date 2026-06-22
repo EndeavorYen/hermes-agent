@@ -326,6 +326,8 @@ def _next_actions(suite: dict[str, Any], summary: dict[str, Any]) -> list[dict[s
                 repair_hint=_repair_hint_for_dimension(dimension),
             )
         )
+    quality_focus = suite.get("quality_focus_summary") if isinstance(suite.get("quality_focus_summary"), dict) else {}
+    actions.extend(_quality_focus_actions(quality_focus))
     if _int(summary.get("video_missing_after_image_count")) > 0:
         actions.append(
             _action(
@@ -380,6 +382,76 @@ def _next_actions(suite: dict[str, Any], summary: dict[str, Any]) -> list[dict[s
     return _dedupe_actions(actions)
 
 
+def _quality_focus_actions(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    outcomes = summary.get("outcomes") if isinstance(summary.get("outcomes"), list) else []
+    failed_by_focus: dict[str, dict[str, Any]] = {}
+    for outcome in outcomes:
+        if not isinstance(outcome, dict) or outcome.get("success") is True:
+            continue
+        focus = str(outcome.get("focus") or "").strip()
+        if not focus:
+            continue
+        entry = failed_by_focus.setdefault(
+            focus,
+            {
+                "case_ids": [],
+                "dimension": str(outcome.get("dimension") or "").strip(),
+                "quality_issues": [],
+            },
+        )
+        case_id = str(outcome.get("case_id") or "").strip()
+        if case_id and case_id not in entry["case_ids"]:
+            entry["case_ids"].append(case_id)
+        for issue in _list(outcome.get("quality_issues")):
+            if issue not in entry["quality_issues"]:
+                entry["quality_issues"].append(issue)
+        if not entry["dimension"]:
+            entry["dimension"] = _dimension_for_focus(focus)
+    if not failed_by_focus:
+        for focus in _list(summary.get("failed_focuses")):
+            failed_by_focus[focus] = {
+                "case_ids": [],
+                "dimension": _dimension_for_focus(focus),
+                "quality_issues": [],
+            }
+
+    actions: list[dict[str, Any]] = []
+    for focus, details in failed_by_focus.items():
+        case_ids = _list(details.get("case_ids"))
+        evidence_count = max(1, len(case_ids))
+        if focus == "image_first_video":
+            actions.append(
+                _action(
+                    "prefer_image_first_video",
+                    "provider",
+                    "live_quality_burn_quality_focus_image_first_video_failed",
+                    confidence=0.82,
+                    evidence_count=evidence_count,
+                    focus=focus,
+                    strategy_operator="image_first_rank_then_video",
+                    case_ids=case_ids,
+                )
+            )
+            continue
+        dimension = str(details.get("dimension") or _dimension_for_focus(focus)).strip()
+        actions.append(
+            _action(
+                "apply_quality_focus_operator",
+                "aesthetic",
+                "live_quality_burn_quality_focus_failed",
+                confidence=0.76,
+                evidence_count=evidence_count,
+                focus=focus,
+                dimension=dimension,
+                strategy_operator=_strategy_operator_for_focus(focus),
+                repair_hint=_repair_hint_for_dimension(dimension),
+                case_ids=case_ids,
+                quality_issues=_list(details.get("quality_issues")),
+            )
+        )
+    return actions
+
+
 def _high_quality_pass(suite: dict[str, Any], summary: dict[str, Any]) -> bool:
     if suite.get("success") is not True:
         return False
@@ -432,6 +504,26 @@ def _repair_hint_for_dimension(dimension: str) -> str:
     }.get(dimension, f"improve_{dimension}")
 
 
+def _dimension_for_focus(focus: str) -> str:
+    return {
+        "adult_fashion_portrait": "subject_beauty",
+        "natural_face": "face_naturalness",
+        "legwear_material": "fashion_material_quality",
+        "long_leg_composition": "pose_composition",
+        "tasteful_glamour": "glamour_impact",
+    }.get(focus, "")
+
+
+def _strategy_operator_for_focus(focus: str) -> str:
+    return {
+        "adult_fashion_portrait": "refine_adult_fashion_portrait",
+        "natural_face": "refine_face_naturalness",
+        "legwear_material": "refine_legwear_material",
+        "long_leg_composition": "refine_long_leg_composition",
+        "tasteful_glamour": "refine_tasteful_glamour",
+    }.get(focus, f"refine_{focus}")
+
+
 def _action(
     action_type: str,
     track: str,
@@ -455,13 +547,16 @@ def _action(
 
 
 def _dedupe_actions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[tuple[str, str, str, str, str, str]] = set()
     deduped: list[dict[str, Any]] = []
     for action in actions:
         key = (
             str(action.get("type") or ""),
             str(action.get("source") or ""),
             str(action.get("modality") or ""),
+            str(action.get("focus") or ""),
+            str(action.get("dimension") or ""),
+            str(action.get("strategy_operator") or action.get("strategy_signature") or ""),
         )
         if key in seen:
             continue

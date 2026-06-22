@@ -222,6 +222,116 @@ def test_visual_live_quality_burn_summarizes_quality_focus_outcomes(monkeypatch,
     assert report["summary"]["quality_focus_failed_case_ids"] == ["fashion_portrait_video"]
 
 
+def test_visual_live_quality_burn_exports_quality_focus_operator_actions(monkeypatch, tmp_path):
+    from scripts import visual_live_quality_burn
+
+    suite = _suite_with_quality_failure()
+    suite["quality_focus_summary"] = {
+        "outcome_count": 3,
+        "success_count": 0,
+        "failure_count": 3,
+        "successful_focuses": [],
+        "failed_focuses": ["natural_face", "legwear_material", "image_first_video"],
+        "outcomes": [
+            {
+                "case_id": "fashion_portrait_video",
+                "focus": "natural_face",
+                "success": False,
+                "dimension": "face_naturalness",
+                "min_quality_score": 0.28,
+                "quality_issues": ["face_unnatural"],
+                "preference_dimension_failures": [
+                    {
+                        "dimension": "face_naturalness",
+                        "issue": "face_unnatural",
+                        "score": 0.28,
+                    }
+                ],
+            },
+            {
+                "case_id": "fashion_portrait_video",
+                "focus": "legwear_material",
+                "success": False,
+                "dimension": "fashion_material_quality",
+                "min_quality_score": 0.31,
+                "quality_issues": ["stockings_bad"],
+                "preference_dimension_failures": [
+                    {
+                        "dimension": "fashion_material_quality",
+                        "issue": "stockings_bad",
+                        "score": 0.31,
+                    }
+                ],
+            },
+            {
+                "case_id": "fashion_portrait_video",
+                "focus": "image_first_video",
+                "success": False,
+                "min_quality_score": 0.31,
+                "quality_issues": [],
+                "preference_dimension_failures": [],
+            },
+        ],
+    }
+
+    monkeypatch.setattr(
+        visual_live_quality_burn,
+        "build_visual_live_provider_e2e_suite_report",
+        lambda **_kwargs: suite,
+    )
+
+    report = visual_live_quality_burn.build_visual_live_quality_burn_report(
+        mode="live",
+        output_dir=tmp_path,
+    )
+
+    assert {
+        "type": "apply_quality_focus_operator",
+        "track": "aesthetic",
+        "reason": "live_quality_burn_quality_focus_failed",
+        "confidence": 0.76,
+        "evidence_count": 1,
+        "requires_human_feedback": False,
+        "activation_status": "next_run",
+        "source": "live_quality_burn",
+        "focus": "natural_face",
+        "dimension": "face_naturalness",
+        "strategy_operator": "refine_face_naturalness",
+        "repair_hint": "improve_face_naturalness",
+        "case_ids": ["fashion_portrait_video"],
+        "quality_issues": ["face_unnatural"],
+    } in report["next_actions"]
+    assert {
+        "type": "apply_quality_focus_operator",
+        "track": "aesthetic",
+        "reason": "live_quality_burn_quality_focus_failed",
+        "confidence": 0.76,
+        "evidence_count": 1,
+        "requires_human_feedback": False,
+        "activation_status": "next_run",
+        "source": "live_quality_burn",
+        "focus": "legwear_material",
+        "dimension": "fashion_material_quality",
+        "strategy_operator": "refine_legwear_material",
+        "repair_hint": "improve_fashion_material_quality",
+        "case_ids": ["fashion_portrait_video"],
+        "quality_issues": ["stockings_bad"],
+    } in report["next_actions"]
+    assert {
+        "type": "prefer_image_first_video",
+        "track": "provider",
+        "reason": "live_quality_burn_quality_focus_image_first_video_failed",
+        "confidence": 0.82,
+        "evidence_count": 1,
+        "requires_human_feedback": False,
+        "activation_status": "next_run",
+        "source": "live_quality_burn",
+        "focus": "image_first_video",
+        "strategy_operator": "image_first_rank_then_video",
+        "case_ids": ["fashion_portrait_video"],
+    } in report["next_actions"]
+
+
 def test_visual_live_quality_burn_exports_preference_dimension_repair_actions(monkeypatch, tmp_path):
     from scripts import visual_live_quality_burn
 

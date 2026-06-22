@@ -161,6 +161,14 @@ def _automation_report(*, include_live: bool, include_live_slack_upload: bool = 
                         "dimension": "face_naturalness",
                     },
                     {
+                        "type": "apply_quality_focus_operator",
+                        "requires_human_feedback": False,
+                        "source": "live_quality_burn",
+                        "focus": "legwear_material",
+                        "dimension": "fashion_material_quality",
+                        "strategy_operator": "refine_legwear_material",
+                    },
+                    {
                         "type": "safe_reframe_provider_retry",
                         "requires_human_feedback": False,
                         "source": "live_quality_burn",
@@ -287,6 +295,7 @@ def test_scheduled_self_validation_runs_live_when_due(monkeypatch, tmp_path):
     assert report["summary"]["live_quality_burn_min_score"] == 0.74
     assert "increase_candidate_budget" in report["summary"]["live_quality_burn_action_types"]
     assert "repair_low_preference_dimension" in report["summary"]["live_quality_burn_action_types"]
+    assert "apply_quality_focus_operator" in report["summary"]["live_quality_burn_action_types"]
     assert report["summary"]["live_quality_burn_preference_dimension_failure_count"] == 2
     assert report["summary"]["live_quality_burn_preference_dimensions"] == [
         "face_naturalness",
