@@ -305,6 +305,56 @@ def test_feedback_policy_applies_preference_dimension_repair_actions():
     assert policy["applied_action_types"] == ["repair_low_preference_dimension"]
 
 
+def test_feedback_policy_applies_quality_focus_operator_actions():
+    from agent.visual.feedback_policy import resolve_visual_feedback_policy
+
+    policy = resolve_visual_feedback_policy(
+        {
+            "next_actions": [
+                {
+                    "type": "apply_quality_focus_operator",
+                    "track": "aesthetic",
+                    "source": "live_quality_burn",
+                    "focus": "legwear_material",
+                    "dimension": "fashion_material_quality",
+                    "strategy_operator": "refine_legwear_material",
+                    "repair_hint": "improve_fashion_material_quality",
+                    "quality_issues": ["stockings_bad"],
+                    "requires_human_feedback": False,
+                }
+            ],
+            "policy_sources": ["feedback_loop", "scheduled_self_validation"],
+        },
+        wants_image=True,
+        wants_video=True,
+        explicit_candidate_budget=None,
+        default_candidate_budget=1,
+    )
+
+    assert policy["candidate_budget"] == 2
+    assert policy["candidate_budget_source"] == "live_quality_burn"
+    assert policy["rerank_before_delivery"] is True
+    assert policy["quality_repair_mode"] == "preferred"
+    assert policy["quality_repair_modes"]["image"] == "preferred"
+    assert policy["repair_dimensions"] == [
+        {
+            "dimension": "fashion_material_quality",
+            "quality_issue": "stockings_bad",
+            "repair_hint": "improve_fashion_material_quality",
+        }
+    ]
+    assert policy["quality_focus_operators"] == [
+        {
+            "focus": "legwear_material",
+            "dimension": "fashion_material_quality",
+            "strategy_operator": "refine_legwear_material",
+            "source": "live_quality_burn",
+        }
+    ]
+    assert policy["applied_action_types"] == ["apply_quality_focus_operator"]
+    assert policy["applied_action_sources"] == ["live_quality_burn"]
+
+
 def test_feedback_policy_applies_safe_reframe_provider_retry():
     from agent.visual.feedback_policy import resolve_visual_feedback_policy
 

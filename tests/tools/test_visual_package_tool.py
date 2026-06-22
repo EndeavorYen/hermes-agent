@@ -2103,6 +2103,90 @@ async def test_visual_package_applies_preference_dimension_guidance_from_self_va
 
 
 @pytest.mark.asyncio
+async def test_visual_package_applies_quality_focus_operator_guidance_from_self_validation(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
+    latest_report.parent.mkdir(parents=True)
+    latest_report.write_text(
+        json.dumps(
+            {
+                "success": True,
+                "automation": {
+                    "self_improvement": {
+                        "next_actions": [
+                            {
+                                "type": "apply_quality_focus_operator",
+                                "requires_human_feedback": False,
+                                "activation_status": "next_run",
+                                "confidence": 0.76,
+                                "source": "live_quality_burn",
+                                "focus": "legwear_material",
+                                "dimension": "fashion_material_quality",
+                                "strategy_operator": "refine_legwear_material",
+                                "repair_hint": "improve_fashion_material_quality",
+                                "quality_issues": ["stockings_bad"],
+                            }
+                        ]
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    image_path = tmp_path / "image.png"
+    image_path.write_bytes(_ONE_PIXEL_PNG)
+    calls = []
+
+    def fake_generate_image(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(image_path),
+            "provider": "fixture",
+            "model": "image",
+            "vision_observation": {
+                "fashion_material_quality": 0.9,
+                "visual_appeal": 0.9,
+                "composition": 0.9,
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "請產出一張圖片：時尚寫真。",
+                "include_video": False,
+                "candidate_budget": 1,
+                "candidate_budget_source": "planner_default",
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert len(calls) == 2
+    assert payload["generation_strategy"]["candidate_budget"] == 2
+    assert payload["generation_strategy"]["candidate_budget_source"] == "live_quality_burn"
+    assert payload["generation_strategy"]["feedback_policy"]["quality_focus_operators"] == [
+        {
+            "focus": "legwear_material",
+            "dimension": "fashion_material_quality",
+            "strategy_operator": "refine_legwear_material",
+            "source": "live_quality_burn",
+        }
+    ]
+    assert payload["generation_strategy"]["feedback_policy"]["applied_action_types"] == [
+        "apply_quality_focus_operator"
+    ]
+    assert "Dimension-specific quality guidance" in calls[0]["prompt"]
+    assert "fashion_material_quality" in calls[0]["prompt"]
+
+
+@pytest.mark.asyncio
 async def test_visual_package_applies_live_quality_trend_actions_with_source(monkeypatch, tmp_path):
     from tools import visual_package_tool
 

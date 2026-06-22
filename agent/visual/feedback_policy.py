@@ -40,6 +40,7 @@ def resolve_visual_feedback_policy(
     applied_action_types: list[str] = []
     applied_action_sources: list[str] = []
     repair_dimensions: list[dict[str, str]] = []
+    quality_focus_operators: list[dict[str, str]] = []
 
     for action in _next_actions(feedback_report):
         action_type = str(action.get("type") or "")
@@ -91,6 +92,17 @@ def resolve_visual_feedback_policy(
             _append_once(applied_action_types, action_type)
             _append_once(applied_action_sources, action_source)
             _append_repair_dimension(repair_dimensions, action)
+        elif action_type == "apply_quality_focus_operator":
+            if wants_image and not budget_locked_by_user and candidate_budget < 2:
+                candidate_budget = 2
+                candidate_budget_source = action_source
+            rerank_before_delivery = True
+            quality_repair_mode = "preferred"
+            _set_quality_repair_mode(quality_repair_modes, {"modality": "image"}, "preferred")
+            _append_once(applied_action_types, action_type)
+            _append_once(applied_action_sources, action_source)
+            _append_repair_dimension(repair_dimensions, action)
+            _append_quality_focus_operator(quality_focus_operators, action)
         elif action_type == "safe_reframe_provider_retry":
             provider_recovery_mode = "safe_reframe"
             provider_retry_budget = 2
@@ -126,6 +138,7 @@ def resolve_visual_feedback_policy(
         "provider_failure_context": provider_failure_context,
         "strategy_preference": strategy_preference,
         "repair_dimensions": repair_dimensions,
+        "quality_focus_operators": quality_focus_operators,
         "applied_action_types": applied_action_types,
         "applied_action_sources": applied_action_sources,
         "policy_sources": _string_list(feedback_report.get("policy_sources")) or ["feedback_loop"],
@@ -169,7 +182,7 @@ def _append_repair_dimension(values: list[dict[str, str]], action: dict[str, Any
         return
     entry = {
         "dimension": dimension,
-        "quality_issue": str(action.get("quality_issue") or "").strip(),
+        "quality_issue": _action_quality_issue(action),
         "repair_hint": str(action.get("repair_hint") or "").strip(),
     }
     action_source = _action_source(action)
@@ -178,6 +191,40 @@ def _append_repair_dimension(values: list[dict[str, str]], action: dict[str, Any
     if any(item.get("dimension") == dimension for item in values):
         return
     values.append(entry)
+
+
+def _append_quality_focus_operator(values: list[dict[str, str]], action: dict[str, Any]) -> None:
+    focus = str(action.get("focus") or "").strip()
+    operator = str(action.get("strategy_operator") or "").strip()
+    if not focus or not operator:
+        return
+    entry = {
+        "focus": focus,
+        "dimension": str(action.get("dimension") or "").strip(),
+        "strategy_operator": operator,
+        "source": _action_source(action),
+    }
+    if any(
+        item.get("focus") == entry["focus"]
+        and item.get("strategy_operator") == entry["strategy_operator"]
+        for item in values
+    ):
+        return
+    values.append(entry)
+
+
+def _action_quality_issue(action: dict[str, Any]) -> str:
+    issue = str(action.get("quality_issue") or "").strip()
+    if issue:
+        return issue
+    issues = action.get("quality_issues")
+    if not isinstance(issues, list):
+        return ""
+    for item in issues:
+        text = str(item or "").strip()
+        if text:
+            return text
+    return ""
 
 
 def _strategy_preference(action: dict[str, Any]) -> dict[str, Any] | None:
