@@ -74,6 +74,43 @@ then prove the real runtime behavior.
   quality, higher delivery reliability, lower user intervention, or clearer
   recovery, stop and re-evaluate the objective before adding more machinery.
 
+## Visual Agent Mode Contract
+
+Visual agent mode is the target product behavior for image and video work. It
+should act like an assistant that understands a natural creative request and
+returns finished media, not like a prompt experiment harness.
+
+- **Natural language is the user interface.** Requests such as "make an image",
+  "make a video", "turn this into a short clip", or "generate image + video"
+  should route to the correct visual workflow without requiring the user to know
+  internal flags such as autonomy level, candidate budget, provider routing, or
+  reference locking.
+- **Use image-first video for reliability.** Generate and rank source images
+  before video, then animate the best selected source. For multi-shot output,
+  use one selected source image per shot; never feed a candidate grid or collage
+  as the video source.
+- **Deliver only current selected artifacts.** Slack should receive newly
+  generated, selected files as native uploads when possible. Do not re-post
+  stale artifacts, rejected candidates, duplicate media, or provider links as
+  the primary deliverable unless file upload is unavailable and the fallback is
+  explicit.
+- **Preserve geometry from evidence.** Choose video and packaging settings from
+  the actual source image dimensions and provider capabilities. Do not hard-code
+  an aspect ratio that can stretch or crop the subject incorrectly.
+- **Make learning reduce future user labor.** Record attempts, provider errors,
+  judge dimensions, selected artifacts, rejected artifacts, retry policy, and
+  user feedback. Use weak self-supervised signals by default, treat human
+  feedback as a stronger signal, and promote durable strategy only when
+  confidence, rollback conditions, and audit evidence are present.
+- **Separate provider health from aesthetic preference.** A moderation refusal,
+  timeout, upload failure, duplicate delivery, ugly face, weak pose, bad
+  wardrobe, or poor motion quality must be attributed to the correct subsystem
+  so repair does not optimize the wrong thing.
+- **Treat live E2E as a quality tool when enabled.** If live testing or
+  quality-burn mode is allowed, spend candidates and retries to improve output,
+  then record selected evidence, failure classes, cost/attempt counts, and what
+  the next run learned.
+
 ## Contribution Rubric — What We Want / What We Don't
 
 This is the project's intent layer. Use it two ways:
