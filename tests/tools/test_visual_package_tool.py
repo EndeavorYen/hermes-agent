@@ -825,10 +825,99 @@ async def test_visual_package_carries_provider_vision_observation_into_judgment(
         if row["judge_name"] == "visual_quality_judge"
     ]
 
-    assert payload["success"] is True
+    assert payload["success"] is False
+    assert payload["delivery_gate"]["image"]["allowed"] is False
     assert quality_judgments[0]["details"]["quality_issues"] == [
         "subject_not_attractive",
         "not_beautiful",
+        "stockings_bad",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_visual_package_blocks_delivery_when_active_learning_fails_closed(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image = tmp_path / "bad-image.png"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    monkeypatch.setattr(
+        visual_package_tool,
+        "generate_image",
+        lambda **kwargs: {
+            "success": True,
+            "image": str(image),
+            "provider": "fixture",
+            "model": "image",
+            "vision_observation": {
+                "face_quality": 0.2,
+                "visual_appeal": 0.2,
+                "composition": 0.2,
+                "stocking_quality": 0.2,
+            },
+        },
+    )
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {"prompt": "請產出一張圖片：時尚寫真。", "include_video": False, "candidate_budget": 1}
+        )
+    )
+
+    assert payload["success"] is False
+    assert payload["package_status"] == "failed"
+    assert payload["images"] == []
+    assert payload["delivery_metadata"]["selected_visual_artifact_ids"] == []
+    assert payload["learning"]["active_learning"]["image"]["action"] == "fail_closed"
+    assert payload["delivery_gate"]["image"]["allowed"] is False
+    assert payload["delivery_gate"]["image"]["reason"] == "active_learning_fail_closed"
+    assert payload["delivery_gate"]["image"]["quality_issues"] == [
+        "subject_not_attractive",
+        "not_beautiful",
+        "composition_bad",
+        "stockings_bad",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_visual_package_does_not_block_product_delivery_on_portrait_only_issues(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image = tmp_path / "product.png"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    monkeypatch.setattr(
+        visual_package_tool,
+        "generate_image",
+        lambda **kwargs: {
+            "success": True,
+            "image": str(image),
+            "provider": "fixture",
+            "model": "image",
+            "vision_observation": {
+                "face_quality": 0.2,
+                "visual_appeal": 0.8,
+                "composition": 0.8,
+                "stocking_quality": 0.2,
+            },
+        },
+    )
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "Clean product photography of a matte black fountain pen on white paper.",
+                "include_video": False,
+                "candidate_budget": 1,
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["images"] == [str(image)]
+    assert payload["delivery_gate"]["image"]["allowed"] is True
+    assert payload["delivery_gate"]["image"]["ignored_quality_issues"] == [
+        "subject_not_attractive",
         "stockings_bad",
     ]
 

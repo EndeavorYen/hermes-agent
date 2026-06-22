@@ -38,6 +38,15 @@ from tools.registry import tool_error
 logger = logging.getLogger(__name__)
 
 MAX_REMOTE_MEDIA_BYTES = 150 * 1024 * 1024
+ALWAYS_BLOCKING_QUALITY_ISSUES = {
+    "composition_bad",
+    "reference_identity_drift",
+}
+PORTRAIT_BLOCKING_QUALITY_ISSUES = {
+    "subject_not_attractive",
+    "not_beautiful",
+    "stockings_bad",
+}
 INLINE_VISION_JUDGE_PROMPT = """\
 Evaluate this generated visual artifact for automated quality ranking.
 Return only a JSON object with numeric values from 0.0 to 1.0:
@@ -218,6 +227,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
     video_source_artifact_id: str | None = None
     rankings: dict[str, dict[str, Any]] = {}
     generation_payloads: dict[str, Any] = {}
+    delivery_gate: dict[str, dict[str, Any]] = {}
     preference_profile = build_preference_profile(ledger, bucket=intent_signature)
     strategy_plan = select_strategy_plan(
         intent_signature,
@@ -325,7 +335,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             ask_threshold=0.0,
         )
         rankings["image"] = image_decision.__dict__
-        learning["active_learning"]["image"] = _record_learning_trace(
+        image_learning = _record_learning_trace(
             ledger,
             request_id=request_id,
             intent_signature=intent_signature,
@@ -336,8 +346,11 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             candidates=image_candidates,
             has_reference_image=bool(attachments),
         )
+        learning["active_learning"]["image"] = image_learning
         selected_image = _selected_candidate(image_candidates, image_decision.selected_artifact_id)
-        if selected_image:
+        image_gate = _delivery_gate_decision(image_learning, selected_image, prompt=prompt)
+        delivery_gate["image"] = image_gate
+        if selected_image and image_gate["allowed"]:
             video_source_image = selected_image["artifact_path"]
             video_source_artifact_id = selected_image["artifact_id"]
             if requested_image:
@@ -483,7 +496,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             ask_threshold=0.0,
         )
         rankings["video"] = video_decision.__dict__
-        learning["active_learning"]["video"] = _record_learning_trace(
+        video_learning = _record_learning_trace(
             ledger,
             request_id=request_id,
             intent_signature=intent_signature,
@@ -494,8 +507,11 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             candidates=video_candidates,
             has_reference_image=bool(video_image_url),
         )
+        learning["active_learning"]["video"] = video_learning
         selected_video = _selected_candidate(video_candidates, video_decision.selected_artifact_id)
-        if selected_video:
+        video_gate = _delivery_gate_decision(video_learning, selected_video, prompt=prompt)
+        delivery_gate["video"] = video_gate
+        if selected_video and video_gate["allowed"]:
             selected_artifact_ids.append(selected_video["artifact_id"])
             selected_videos.append(selected_video["artifact_path"])
 
@@ -529,6 +545,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         "delivery_metadata": delivery_metadata,
         "generation_payloads": generation_payloads,
         "learning": learning,
+        "delivery_gate": delivery_gate,
     }
     autonomous_validation = validate_visual_generation_payload(
         payload,
@@ -860,6 +877,84 @@ def _selected_candidate(
     )
 
 
+def _delivery_gate_decision(
+    active_learning: dict[str, Any],
+    candidate: dict[str, Any] | None,
+    *,
+    prompt: str,
+) -> dict[str, Any]:
+    if candidate is None:
+        return {
+            "allowed": False,
+            "reason": "no_selected_candidate",
+            "active_learning_action": active_learning.get("action"),
+            "quality_issues": [],
+            "ignored_quality_issues": [],
+        }
+    quality_issues, ignored_quality_issues = _blocking_quality_issues(
+        _string_list(candidate.get("quality_issues")),
+        prompt=prompt,
+    )
+    action = str(active_learning.get("action") or "")
+    if action == "fail_closed" and quality_issues:
+        return {
+            "allowed": False,
+            "reason": "active_learning_fail_closed",
+            "active_learning_action": action,
+            "quality_issues": quality_issues,
+            "ignored_quality_issues": ignored_quality_issues,
+        }
+    return {
+        "allowed": True,
+        "reason": "delivery_allowed",
+        "active_learning_action": action,
+        "quality_issues": quality_issues,
+        "ignored_quality_issues": ignored_quality_issues,
+    }
+
+
+def _blocking_quality_issues(issues: list[str], *, prompt: str) -> tuple[list[str], list[str]]:
+    portrait_like = _portrait_like_prompt(prompt)
+    blocking: list[str] = []
+    ignored: list[str] = []
+    for issue in issues:
+        if issue in ALWAYS_BLOCKING_QUALITY_ISSUES:
+            blocking.append(issue)
+        elif issue in PORTRAIT_BLOCKING_QUALITY_ISSUES:
+            if portrait_like:
+                blocking.append(issue)
+            else:
+                ignored.append(issue)
+    return blocking, ignored
+
+
+def _portrait_like_prompt(prompt: str) -> bool:
+    text = prompt.lower()
+    return any(
+        token in text
+        for token in (
+            "portrait",
+            "fashion",
+            "cosplay",
+            "character",
+            "girl",
+            "woman",
+            "model",
+            "person",
+            "寫真",
+            "人像",
+            "人物",
+            "角色",
+            "美少女",
+            "美女",
+            "性感",
+            "絲襪",
+            "腿",
+            "臉",
+        )
+    )
+
+
 def _top_ranked_candidate(
     candidates: list[dict[str, Any]],
     ranked_artifact_ids: Any,
@@ -867,6 +962,12 @@ def _top_ranked_candidate(
     if isinstance(ranked_artifact_ids, list) and ranked_artifact_ids:
         return _selected_candidate(candidates, str(ranked_artifact_ids[0]))
     return candidates[0] if candidates else None
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str) and item]
 
 
 def _record_artifact_ref(

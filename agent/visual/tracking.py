@@ -79,7 +79,7 @@ def visual_delivery_metadata(
         "visual_request_id": request_id,
         "visual_attempt_id": attempt_id,
         "visual_thread_id": thread_id,
-        "selected_visual_artifact_ids": selected_artifact_ids or artifact_ids,
+        "selected_visual_artifact_ids": artifact_ids if selected_artifact_ids is None else selected_artifact_ids,
         "visual_artifacts": artifacts,
     }
 
