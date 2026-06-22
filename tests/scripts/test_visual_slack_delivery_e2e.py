@@ -66,6 +66,28 @@ def _fake_visual_package_payload(tmp_path):
         is_stable=True,
         freshness_status="fresh",
     )
+    for artifact_id, attempt_id, modality in (
+        (image_artifact_id, image_attempt_id, "image"),
+        (video_artifact_id, video_attempt_id, "video"),
+    ):
+        ledger.record_judgment(
+            request_id=request_id,
+            attempt_id=attempt_id,
+            artifact_id=artifact_id,
+            judge_name="visual_quality_judge",
+            score=0.91,
+            verdict="pass",
+            details={
+                "overall_score": 0.91,
+                "quality_issues": [],
+                "preference_dimensions": {"composition": 0.9, "artifact_integrity": 0.92},
+            },
+            metadata={
+                "intent_signature": "test-live-upload-fixture",
+                "strategy_signature": "selected-artifact-quality-proof",
+                "modality": modality,
+            },
+        )
     return {
         "success": True,
         "visual_request_id": request_id,
@@ -291,6 +313,52 @@ def test_visual_slack_delivery_surfaces_quality_gate_evidence(monkeypatch, tmp_p
         target="D_TEST",
     )
 
+    assert report["visual"]["quality_gate"] == quality_gate
+
+
+def test_visual_slack_delivery_fails_when_quality_gate_fails(monkeypatch, tmp_path):
+    from scripts import visual_slack_delivery_e2e
+
+    quality_gate = {
+        "success": False,
+        "quality_issues": ["subject_not_attractive", "stockings_bad"],
+        "low_quality_artifacts": ["var_face"],
+    }
+
+    monkeypatch.setattr(
+        visual_slack_delivery_e2e,
+        "run_visual_package",
+        lambda _args: _fake_visual_package_payload(tmp_path),
+    )
+    monkeypatch.setattr(
+        visual_slack_delivery_e2e,
+        "inspect_visual_e2e_evidence",
+        lambda _payload, *, require_video: {
+            "request_id": "vrq_low_quality",
+            "image_count": 1,
+            "video_count": 1,
+            "artifact_count": 2,
+            "judgment_count": 2,
+            "ranking_count": 2,
+            "video_source": {"image_first_for_video": True, "uses_ranked_selected_image": True},
+            "provider_failure_classes": {},
+            "provider_error_codes": {},
+            "retry_attempt_count": 0,
+            "recovery_summary": {},
+            "quality_repair_summary": {},
+            "quality_gate": quality_gate,
+        },
+    )
+
+    report = visual_slack_delivery_e2e.build_visual_slack_delivery_e2e_report(
+        mode="fixture",
+        work_dir=tmp_path,
+        target="D_TEST",
+    )
+
+    assert report["success"] is False
+    assert "quality_gate_failed" in report["failures"]
+    assert "selected_quality_issue_detected" in report["failures"]
     assert report["visual"]["quality_gate"] == quality_gate
 
 

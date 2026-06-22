@@ -1563,15 +1563,12 @@ def _fixture_provider_context(
             "video": str(repaired_video_path if force_video_quality_repair else video_path),
             "provider": "fixture",
             "model": "video-fixture",
-            "vision_observation": (
-                {
-                    "aspect_integrity": 0.95,
-                    "motion_quality": 0.9,
-                    "artifact_defects": [],
-                }
-                if force_video_quality_repair
-                else {}
-            ),
+            "vision_observation": {
+                "aspect_integrity": 0.95,
+                "motion_quality": 0.9,
+                "confidence": 0.9,
+                "artifact_defects": [],
+            },
         }
 
     def fixture_image(**kwargs):
@@ -1614,8 +1611,7 @@ def _fixture_provider_context(
 
     visual_package_tool.generate_image = fixture_image
     visual_package_tool.generate_video = fixture_video
-    if force_video_quality_repair:
-        visual_package_tool.probe_media_reference = fixture_probe_media_reference
+    visual_package_tool.probe_media_reference = fixture_probe_media_reference
     if force_storyboard_composition:
         visual_package_tool._compose_storyboard_clips = lambda video_paths, **_kwargs: {
             "success": True,

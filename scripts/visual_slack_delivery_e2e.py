@@ -116,6 +116,7 @@ def build_visual_slack_delivery_e2e_report(
 
     failures = _delivery_failures(
         payload=payload,
+        visual_evidence=visual_evidence,
         deliverables=deliverables,
         delivery_metadata=delivery_metadata,
         delivery_evidence=delivery_evidence,
@@ -458,6 +459,7 @@ def _load_runtime_env() -> None:
 def _delivery_failures(
     *,
     payload: dict[str, Any] | None,
+    visual_evidence: dict[str, Any] | None = None,
     deliverables: list[dict[str, Any]],
     delivery_metadata: Any,
     delivery_evidence: dict[str, Any],
@@ -471,6 +473,12 @@ def _delivery_failures(
         return ["missing_payload"]
     if payload.get("success") is not True:
         failures.append(str(payload.get("error_type") or "visual_generation_failed"))
+    quality_gate = visual_evidence.get("quality_gate") if isinstance(visual_evidence, dict) else None
+    quality_gate_failed = isinstance(quality_gate, dict) and quality_gate.get("success") is False
+    if quality_gate_failed:
+        failures.append("quality_gate_failed")
+    if quality_gate_failed and quality_gate.get("quality_issues"):
+        failures.append("selected_quality_issue_detected")
     if not isinstance(delivery_metadata, dict):
         failures.append("missing_delivery_metadata")
     if not deliverables:
