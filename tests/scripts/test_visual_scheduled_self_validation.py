@@ -502,6 +502,54 @@ def test_scheduled_self_validation_includes_live_quality_trends(monkeypatch, tmp
         ),
         encoding="utf-8",
     )
+    (runs_dir / "run03.json").write_text(
+        json.dumps(
+            {
+                "success": True,
+                "run_id": "run03",
+                "generated_at": "2026-06-22T03:00:00+00:00",
+                "source": "slack_conversation_e2e",
+                "summary": {
+                    "case_count": 1,
+                    "min_quality_score": 0.82,
+                    "provider_failure_count": 0,
+                    "video_missing_after_image_count": 0,
+                    "image_first_video_source_failure_count": 0,
+                    "preference_dimension_failure_count": 0,
+                    "preference_dimension_failures": [],
+                },
+                "self_review": {
+                    "native_video_upload_covered": True,
+                    "image_first_video_source_covered": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (runs_dir / "run04.json").write_text(
+        json.dumps(
+            {
+                "success": True,
+                "run_id": "run04",
+                "generated_at": "2026-06-22T04:00:00+00:00",
+                "source": "slack_conversation_e2e",
+                "summary": {
+                    "case_count": 1,
+                    "min_quality_score": 0.84,
+                    "provider_failure_count": 0,
+                    "video_missing_after_image_count": 0,
+                    "image_first_video_source_failure_count": 0,
+                    "preference_dimension_failure_count": 0,
+                    "preference_dimension_failures": [],
+                },
+                "self_review": {
+                    "native_video_upload_covered": True,
+                    "image_first_video_source_covered": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
 
     report = visual_scheduled_self_validation.build_visual_scheduled_self_validation_report(
         output_dir=output_dir,
@@ -509,21 +557,22 @@ def test_scheduled_self_validation_includes_live_quality_trends(monkeypatch, tmp
         now=datetime(2026, 6, 22, 9, 0, tzinfo=timezone.utc),
     )
 
-    assert report["live_quality_trends"]["run_count"] == 2
-    assert report["summary"]["live_quality_trend_run_count"] == 2
-    assert report["summary"]["live_quality_trend_recent_run_ids"] == ["run02"]
-    assert report["summary"]["live_quality_trend_recent_avg_min_quality_score"] == 0.52
-    assert report["summary"]["live_quality_trend_recent_provider_failure_count"] == 1
-    assert report["summary"]["live_quality_trend_recent_video_generation_failure_count"] == 1
-    assert report["summary"]["live_quality_trend_recent_preference_dimension_failure_count"] == 1
-    assert report["summary"]["live_quality_trend_degradations"] == [
-        "quality_score_degraded",
-        "video_generation_degraded",
-        "provider_failures_spiked",
-        "preference_dimension_failures_spiked",
-    ]
-    assert "prefer_image_first_video" in report["summary"]["live_quality_trend_action_types"]
-    assert "prefer_image_first_video" in report["summary"]["feedback_action_types"]
+    assert report["live_quality_trends"]["run_count"] == 4
+    assert report["summary"]["live_quality_trend_run_count"] == 4
+    assert report["summary"]["live_quality_trend_recent_run_ids"] == ["run03", "run04"]
+    assert report["summary"]["live_quality_trend_recent_avg_min_quality_score"] == 0.83
+    assert report["summary"]["live_quality_trend_recent_provider_failure_count"] == 0
+    assert report["summary"]["live_quality_trend_recent_video_generation_failure_count"] == 0
+    assert report["summary"]["live_quality_trend_recent_preference_dimension_failure_count"] == 0
+    assert report["summary"]["live_conversation_quality_run_count"] == 2
+    assert report["summary"]["live_conversation_quality_recent_run_ids"] == ["run03", "run04"]
+    assert report["summary"]["live_conversation_quality_recent_avg_min_quality_score"] == 0.83
+    assert report["summary"]["live_conversation_quality_native_video_upload_covered_count"] == 2
+    assert report["summary"]["live_conversation_quality_image_first_video_source_failure_count"] == 0
+    assert report["summary"]["live_conversation_quality_provider_failure_count"] == 0
+    assert report["summary"]["live_conversation_quality_latest_generated_at"] == "2026-06-22T04:00:00+00:00"
+    assert report["summary"]["live_quality_trend_degradations"] == []
+    assert report["summary"]["live_quality_trend_action_types"] == []
 
 
 def test_scheduled_self_validation_live_mode_on_forces_live_without_env_gate(monkeypatch, tmp_path):

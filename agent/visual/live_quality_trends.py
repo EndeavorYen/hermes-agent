@@ -91,11 +91,13 @@ def _normalised_runs(reports: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not isinstance(report, dict):
             continue
         summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+        self_review = report.get("self_review") if isinstance(report.get("self_review"), dict) else {}
         preference_failures = _preference_dimension_failures(summary.get("preference_dimension_failures"))
         runs.append(
             {
                 "run_id": str(report.get("run_id") or f"run_{index + 1}"),
                 "generated_at": str(report.get("generated_at") or ""),
+                "source": str(report.get("source") or ""),
                 "success": report.get("success") is True,
                 "case_count": _int(summary.get("case_count")),
                 "min_quality_score": _float_or_none(summary.get("min_quality_score")),
@@ -107,6 +109,9 @@ def _normalised_runs(reports: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 ),
                 "preference_dimension_failure_count": _int(summary.get("preference_dimension_failure_count")),
                 "preference_dimension_failures": preference_failures,
+                "native_video_upload_covered": self_review.get("native_video_upload_covered") is True,
+                "image_first_video_source_covered": self_review.get("image_first_video_source_covered")
+                is True,
             }
         )
     return sorted(runs, key=lambda run: (run["generated_at"], run["run_id"]))
@@ -144,6 +149,7 @@ def _summary(
     preference_recent = _sum(recent, "preference_dimension_failure_count")
     quality_issue_baseline = _sum(baseline, "quality_issue_count")
     quality_issue_recent = _sum(recent, "quality_issue_count")
+    recent_slack_conversation = _source_runs(recent, "slack_conversation_e2e")
     return {
         "run_ids": [run["run_id"] for run in runs],
         "baseline_run_ids": [run["run_id"] for run in baseline],
@@ -160,6 +166,22 @@ def _summary(
         "baseline_quality_issue_count": quality_issue_baseline,
         "recent_quality_issue_count": quality_issue_recent,
         "recent_preference_dimensions": _recent_preference_dimensions(recent),
+        "recent_slack_conversation_run_count": len(recent_slack_conversation),
+        "recent_slack_conversation_run_ids": [run["run_id"] for run in recent_slack_conversation],
+        "recent_slack_conversation_avg_min_quality_score": _avg_score(recent_slack_conversation),
+        "recent_slack_conversation_native_video_upload_covered_count": _bool_count(
+            recent_slack_conversation,
+            "native_video_upload_covered",
+        ),
+        "recent_slack_conversation_image_first_video_source_failure_count": _sum(
+            recent_slack_conversation,
+            "image_first_video_source_failure_count",
+        ),
+        "recent_slack_conversation_provider_failure_count": _sum(
+            recent_slack_conversation,
+            "provider_failure_count",
+        ),
+        "recent_slack_conversation_latest_generated_at": _latest_generated_at(recent_slack_conversation),
     }
 
 
@@ -325,6 +347,21 @@ def _avg_score(runs: list[dict[str, Any]]) -> float | None:
     if not scores:
         return None
     return round(sum(scores) / len(scores), 4)
+
+
+def _source_runs(runs: list[dict[str, Any]], source: str) -> list[dict[str, Any]]:
+    return [run for run in runs if str(run.get("source") or "") == source]
+
+
+def _bool_count(runs: list[dict[str, Any]], key: str) -> int:
+    return sum(1 for run in runs if run.get(key) is True)
+
+
+def _latest_generated_at(runs: list[dict[str, Any]]) -> str | None:
+    values = [str(run.get("generated_at") or "") for run in runs if str(run.get("generated_at") or "")]
+    if not values:
+        return None
+    return sorted(values)[-1]
 
 
 def _score_delta(recent_score: float | None, baseline_score: float | None) -> float | None:

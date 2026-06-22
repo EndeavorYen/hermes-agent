@@ -60,6 +60,16 @@ def _scheduled_report(*, success=True, live_decision="run"):
             "live_quality_trend_recent_provider_failure_count": 0,
             "live_quality_trend_recent_video_generation_failure_count": 0,
             "live_quality_trend_recent_preference_dimension_failure_count": 0,
+            "live_conversation_quality_run_count": 2,
+            "live_conversation_quality_recent_run_ids": [
+                "20260622T183138Z",
+                "20260622T191850Z-6407540a",
+            ],
+            "live_conversation_quality_recent_avg_min_quality_score": 0.8206,
+            "live_conversation_quality_native_video_upload_covered_count": 2,
+            "live_conversation_quality_image_first_video_source_failure_count": 0,
+            "live_conversation_quality_provider_failure_count": 0,
+            "live_conversation_quality_latest_generated_at": "2026-06-22T19:18:50+00:00",
             "live_video_quality_repair_success_count": 1,
             "live_slack_upload_native_delivery_covered": True,
             "live_slack_upload_uploaded_video_file_count": 1,
@@ -131,6 +141,16 @@ def test_visual_self_validation_status_summarizes_latest_live_report(tmp_path):
     assert status["live"]["trend_recent_provider_failure_count"] == 0
     assert status["live"]["trend_recent_video_generation_failure_count"] == 0
     assert status["live"]["trend_recent_preference_dimension_failure_count"] == 0
+    assert status["live"]["conversation_quality_run_count"] == 2
+    assert status["live"]["conversation_quality_recent_run_ids"] == [
+        "20260622T183138Z",
+        "20260622T191850Z-6407540a",
+    ]
+    assert status["live"]["conversation_quality_recent_avg_min_quality_score"] == 0.8206
+    assert status["live"]["conversation_quality_native_video_upload_covered_count"] == 2
+    assert status["live"]["conversation_quality_image_first_video_source_failure_count"] == 0
+    assert status["live"]["conversation_quality_provider_failure_count"] == 0
+    assert status["live"]["conversation_quality_latest_generated_at"] == "2026-06-22T19:18:50+00:00"
     assert status["live"]["preference_dimensions"] == [
         "face_naturalness",
         "fashion_material_quality",

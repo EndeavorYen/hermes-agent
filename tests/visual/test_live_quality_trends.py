@@ -95,3 +95,37 @@ def test_live_quality_trends_detect_regression_and_emit_autonomous_actions():
     }
     assert "private prompt" not in json.dumps(report, ensure_ascii=False)
 
+
+def test_live_quality_trends_summarizes_recent_slack_conversation_runs():
+    from agent.visual.live_quality_trends import build_live_quality_trend_report
+
+    generic_baseline = _burn_report("run01", min_score=0.90, provider_failure_count=1)
+    generic_recent = _burn_report("run02", min_score=0.88)
+    first_conversation = _burn_report("run03", min_score=0.82)
+    first_conversation["source"] = "slack_conversation_e2e"
+    first_conversation["self_review"] = {
+        "native_video_upload_covered": True,
+        "image_first_video_source_covered": True,
+    }
+    second_conversation = _burn_report("run04", min_score=0.84)
+    second_conversation["source"] = "slack_conversation_e2e"
+    second_conversation["self_review"] = {
+        "native_video_upload_covered": True,
+        "image_first_video_source_covered": True,
+    }
+
+    report = build_live_quality_trend_report(
+        [generic_baseline, generic_recent, first_conversation, second_conversation],
+        baseline_window=1,
+        recent_window=2,
+    )
+
+    assert report["summary"]["recent_slack_conversation_run_count"] == 2
+    assert report["summary"]["recent_slack_conversation_run_ids"] == ["run03", "run04"]
+    assert report["summary"]["recent_slack_conversation_avg_min_quality_score"] == 0.83
+    assert report["summary"]["recent_slack_conversation_native_video_upload_covered_count"] == 2
+    assert report["summary"]["recent_slack_conversation_image_first_video_source_failure_count"] == 0
+    assert report["summary"]["recent_slack_conversation_provider_failure_count"] == 0
+    assert report["summary"]["recent_slack_conversation_latest_generated_at"] == (
+        "2026-06-22T04:00:00+00:00"
+    )

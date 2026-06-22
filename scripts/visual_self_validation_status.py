@@ -143,6 +143,27 @@ def build_visual_self_validation_status(
             "trend_recent_preference_dimension_failure_count": _optional_int(
                 summary.get("live_quality_trend_recent_preference_dimension_failure_count")
             ),
+            "conversation_quality_run_count": _optional_int(
+                summary.get("live_conversation_quality_run_count")
+            ),
+            "conversation_quality_recent_run_ids": _strings(
+                summary.get("live_conversation_quality_recent_run_ids")
+            ),
+            "conversation_quality_recent_avg_min_quality_score": summary.get(
+                "live_conversation_quality_recent_avg_min_quality_score"
+            ),
+            "conversation_quality_native_video_upload_covered_count": _optional_int(
+                summary.get("live_conversation_quality_native_video_upload_covered_count")
+            ),
+            "conversation_quality_image_first_video_source_failure_count": _optional_int(
+                summary.get("live_conversation_quality_image_first_video_source_failure_count")
+            ),
+            "conversation_quality_provider_failure_count": _optional_int(
+                summary.get("live_conversation_quality_provider_failure_count")
+            ),
+            "conversation_quality_latest_generated_at": summary.get(
+                "live_conversation_quality_latest_generated_at"
+            ),
         },
         "delivery": {
             "native_video_upload_covered": summary.get("live_slack_upload_native_delivery_covered"),
