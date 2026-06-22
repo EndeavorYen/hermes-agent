@@ -27,6 +27,7 @@ def build_visual_scheduled_self_validation_report(
     live_mode: str = "off",
     live_enabled: bool | None = None,
     min_live_interval_hours: int = DEFAULT_MIN_LIVE_INTERVAL_HOURS,
+    case_timeout_seconds: float | int | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     now = _normalise_now(now)
@@ -43,11 +44,14 @@ def build_visual_scheduled_self_validation_report(
     include_live = live_policy["decision"] == "run"
     slack_live_upload_policy = _slack_live_upload_policy(live_policy)
     include_live_slack_upload = slack_live_upload_policy["decision"] == "run"
-    automation = build_visual_e2e_automation_report(
-        work_dir=work_dir,
-        include_live=include_live,
-        include_live_slack_upload=include_live_slack_upload,
-    )
+    automation_kwargs: dict[str, Any] = {
+        "work_dir": work_dir,
+        "include_live": include_live,
+        "include_live_slack_upload": include_live_slack_upload,
+    }
+    if case_timeout_seconds is not None:
+        automation_kwargs["case_timeout_seconds"] = case_timeout_seconds
+    automation = build_visual_e2e_automation_report(**automation_kwargs)
     report = {
         "success": automation.get("success") is True,
         "run_id": _run_id(now),
@@ -324,6 +328,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--work-dir", type=Path, default=None)
     parser.add_argument("--live-mode", choices=["off", "auto", "on"], default="off")
     parser.add_argument("--min-live-interval-hours", type=int, default=DEFAULT_MIN_LIVE_INTERVAL_HOURS)
+    parser.add_argument("--case-timeout-seconds", type=float, default=None)
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--allow-failures", action="store_true")
     args = parser.parse_args(argv)
@@ -333,6 +338,7 @@ def main(argv: list[str] | None = None) -> int:
         work_dir=args.work_dir,
         live_mode=args.live_mode,
         min_live_interval_hours=args.min_live_interval_hours,
+        case_timeout_seconds=args.case_timeout_seconds,
     )
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True))

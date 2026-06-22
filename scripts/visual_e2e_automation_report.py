@@ -26,10 +26,14 @@ def build_visual_e2e_automation_report(
     work_dir: str | Path | None = None,
     include_live: bool = False,
     include_live_slack_upload: bool = False,
+    case_timeout_seconds: float | int | None = None,
 ) -> dict[str, Any]:
     agent_mode = build_visual_agent_mode_regression_report()
     fixture_e2e = build_visual_live_provider_e2e_report(mode="fixture", work_dir=work_dir)
-    fixture_quality_suite = build_visual_live_provider_e2e_suite_report(mode="fixture", work_dir=work_dir)
+    fixture_quality_suite_kwargs = {"mode": "fixture", "work_dir": work_dir}
+    if case_timeout_seconds is not None:
+        fixture_quality_suite_kwargs["case_timeout_seconds"] = case_timeout_seconds
+    fixture_quality_suite = build_visual_live_provider_e2e_suite_report(**fixture_quality_suite_kwargs)
     slack_delivery = build_visual_slack_delivery_e2e_report(mode="fixture", work_dir=work_dir)
     live_slack_delivery = (
         build_visual_slack_delivery_e2e_report(mode="live", work_dir=None, upload=True)
@@ -45,11 +49,13 @@ def build_visual_e2e_automation_report(
             if live_provider_enabled()
             else {"status": "skipped", "reason": "live_provider_not_enabled"}
         )
-        live_quality_suite = (
-            build_visual_live_provider_e2e_suite_report(mode="live", work_dir=None)
-            if live_provider_enabled()
-            else {"status": "skipped", "reason": "live_provider_not_enabled"}
-        )
+        if live_provider_enabled():
+            live_quality_suite_kwargs = {"mode": "live", "work_dir": None}
+            if case_timeout_seconds is not None:
+                live_quality_suite_kwargs["case_timeout_seconds"] = case_timeout_seconds
+            live_quality_suite = build_visual_live_provider_e2e_suite_report(**live_quality_suite_kwargs)
+        else:
+            live_quality_suite = {"status": "skipped", "reason": "live_provider_not_enabled"}
     else:
         live_e2e = {"status": "not_requested"}
         live_quality_suite = {"status": "not_requested"}
@@ -106,6 +112,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--work-dir", type=Path, default=None)
     parser.add_argument("--include-live", action="store_true")
     parser.add_argument("--include-live-slack-upload", action="store_true")
+    parser.add_argument("--case-timeout-seconds", type=float, default=None)
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--allow-failures", action="store_true")
     args = parser.parse_args(argv)
@@ -114,6 +121,7 @@ def main(argv: list[str] | None = None) -> int:
         work_dir=args.work_dir,
         include_live=args.include_live,
         include_live_slack_upload=args.include_live_slack_upload,
+        case_timeout_seconds=args.case_timeout_seconds,
     )
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True))

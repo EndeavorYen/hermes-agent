@@ -191,6 +191,56 @@ def test_scheduled_self_validation_runs_live_when_due(monkeypatch, tmp_path):
     assert state["last_live_run_at"] == "2026-06-22T08:00:00+00:00"
 
 
+def test_scheduled_self_validation_passes_case_timeout_to_automation(monkeypatch, tmp_path):
+    from scripts import visual_scheduled_self_validation
+
+    calls = []
+
+    def fake_automation(
+        *,
+        work_dir,
+        include_live,
+        include_live_slack_upload=False,
+        case_timeout_seconds=None,
+    ):
+        calls.append(
+            {
+                "work_dir": work_dir,
+                "include_live": include_live,
+                "include_live_slack_upload": include_live_slack_upload,
+                "case_timeout_seconds": case_timeout_seconds,
+            }
+        )
+        return _automation_report(
+            include_live=include_live,
+            include_live_slack_upload=include_live_slack_upload,
+        )
+
+    monkeypatch.setattr(
+        visual_scheduled_self_validation,
+        "build_visual_e2e_automation_report",
+        fake_automation,
+    )
+
+    report = visual_scheduled_self_validation.build_visual_scheduled_self_validation_report(
+        output_dir=tmp_path,
+        live_mode="auto",
+        live_enabled=True,
+        case_timeout_seconds=321,
+        now=datetime(2026, 6, 22, 8, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["success"] is True
+    assert calls == [
+        {
+            "work_dir": tmp_path / "work",
+            "include_live": True,
+            "include_live_slack_upload": False,
+            "case_timeout_seconds": 321,
+        }
+    ]
+
+
 def test_scheduled_self_validation_skips_live_until_interval_elapsed(monkeypatch, tmp_path):
     from scripts import visual_scheduled_self_validation
 

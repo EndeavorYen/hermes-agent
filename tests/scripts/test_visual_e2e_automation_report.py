@@ -82,6 +82,67 @@ def test_visual_e2e_automation_includes_quality_suite(monkeypatch, tmp_path):
     assert calls[1]["work_dir"] is None
 
 
+def test_visual_e2e_automation_passes_case_timeout_to_quality_suites(monkeypatch, tmp_path):
+    from scripts import visual_e2e_automation_report
+
+    suite_calls = []
+
+    def fake_quality_suite(**kwargs):
+        suite_calls.append(kwargs)
+        return {
+            "success": True,
+            "provider_mode": kwargs["mode"],
+            "case_count": 1,
+            "failures": [],
+            "cases": [],
+        }
+
+    def fake_live_provider_e2e_report(*, mode, work_dir=None, **kwargs):
+        return {
+            "success": True,
+            "provider_mode": mode,
+            "failures": [],
+            "payload": {"success": True, "image_count": 1, "video_count": 1},
+            "evidence": {
+                "request_id": f"{mode}_request",
+                "image_count": 1,
+                "video_count": 1,
+                "attempt_count": 2,
+                "artifact_count": 2,
+                "judgment_count": 2,
+                "ranking_count": 2,
+                "learning_trace_count": 2,
+                "judgments_with_learning_metadata": 2,
+                "providers": ["fixture" if mode == "fixture" else "xai"],
+                "require_video": True,
+            },
+        }
+
+    monkeypatch.setattr(
+        visual_e2e_automation_report,
+        "build_visual_live_provider_e2e_report",
+        fake_live_provider_e2e_report,
+    )
+    monkeypatch.setattr(
+        visual_e2e_automation_report,
+        "build_visual_live_provider_e2e_suite_report",
+        fake_quality_suite,
+    )
+    monkeypatch.setattr(visual_e2e_automation_report, "live_provider_enabled", lambda: True)
+
+    report = visual_e2e_automation_report.build_visual_e2e_automation_report(
+        work_dir=tmp_path,
+        include_live=True,
+        case_timeout_seconds=123,
+    )
+
+    assert report["success"] is True
+    assert suite_calls == [
+        {"mode": "fixture", "work_dir": tmp_path, "case_timeout_seconds": 123},
+        {"mode": "live", "work_dir": None, "case_timeout_seconds": 123},
+    ]
+
+
 def test_visual_e2e_automation_fails_when_quality_suite_fails(monkeypatch, tmp_path):
     from scripts import visual_e2e_automation_report
 

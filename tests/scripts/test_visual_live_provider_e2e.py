@@ -1,4 +1,5 @@
 import json
+import time
 
 
 def test_visual_live_provider_e2e_leaves_candidate_budget_to_feedback_policy_by_default(monkeypatch, tmp_path):
@@ -115,6 +116,63 @@ def test_visual_live_provider_e2e_suite_aggregates_recovery_summary(monkeypatch,
         "content_moderation_recovered_case_count": 1,
         "recovered_failure_classes": ["content_moderation"],
     }
+
+
+def test_visual_live_provider_e2e_suite_times_out_one_case_and_continues(monkeypatch, tmp_path):
+    from scripts import visual_live_provider_e2e
+
+    calls = []
+
+    def fake_report(**kwargs):
+        calls.append(kwargs["prompt"])
+        if kwargs["prompt"] == "slow prompt":
+            time.sleep(1)
+        return {
+            "success": True,
+            "failures": [],
+            "payload": {"success": True},
+            "evidence": {
+                "recovery_summary": {
+                    "provider_failure_count": 0,
+                    "provider_failure_classes": {},
+                    "provider_error_codes": {},
+                    "retry_attempt_count": 0,
+                    "negotiation_attempted": False,
+                    "negotiation_success": False,
+                    "content_moderation_recovered": False,
+                    "recovered_failure_classes": [],
+                }
+            },
+        }
+
+    monkeypatch.setattr(
+        visual_live_provider_e2e,
+        "build_visual_live_provider_e2e_report",
+        fake_report,
+    )
+
+    suite = visual_live_provider_e2e.build_visual_live_provider_e2e_suite_report(
+        mode="fixture",
+        work_dir=tmp_path,
+        case_timeout_seconds=0.01,
+        cases=[
+            {"case_id": "slow_case", "prompt": "slow prompt"},
+            {"case_id": "fast_case", "prompt": "fast prompt"},
+        ],
+    )
+
+    assert calls == ["slow prompt", "fast prompt"]
+    assert suite["success"] is False
+    assert suite["failures"] == ["slow_case:case_timeout"]
+    assert suite["case_count"] == 2
+    assert suite["cases"][0]["success"] is False
+    assert suite["cases"][0]["failures"] == ["case_timeout"]
+    assert suite["cases"][0]["evidence"]["case_timeout_seconds"] == 0.01
+    assert suite["cases"][0]["recovery_summary"]["provider_failure_classes"] == {
+        "case_timeout": 1,
+    }
+    assert suite["cases"][1]["success"] is True
+    assert suite["recovery_summary"]["provider_failure_classes"] == {"case_timeout": 1}
 
 
 def test_visual_live_provider_e2e_fails_closed_when_provider_unavailable(monkeypatch, tmp_path):

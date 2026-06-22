@@ -5,8 +5,10 @@ import asyncio
 import contextlib
 import json
 import os
+import signal
 import sys
 import tempfile
+import threading
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -45,6 +47,7 @@ DEFAULT_E2E_CASES = [
     },
 ]
 DEFAULT_MIN_QUALITY_SCORE = 0.55
+DEFAULT_CASE_TIMEOUT_SECONDS = 240.0
 _ONE_PIXEL_PNG = (
     b"\x89PNG\r\n\x1a\n"
     b"\x00\x00\x00\rIHDR"
@@ -122,21 +125,29 @@ def build_visual_live_provider_e2e_suite_report(
     mode: str = "live",
     work_dir: str | Path | None = None,
     cases: list[dict[str, Any]] | None = None,
+    case_timeout_seconds: float | int | None = None,
 ) -> dict[str, Any]:
     case_specs = cases or DEFAULT_E2E_CASES
     case_reports = []
     failures: list[str] = []
     for case in case_specs:
         case_id = str(case.get("case_id") or f"case_{len(case_reports) + 1}")
-        report = build_visual_live_provider_e2e_report(
-            mode=mode,
-            work_dir=_case_work_dir(work_dir, case_id),
-            prompt=str(case.get("prompt") or DEFAULT_PROMPT),
-            candidate_budget=case.get("candidate_budget"),
-            video_budget=int(case.get("video_budget") or 1),
-            duration=int(case.get("duration") or 4),
-            require_video=case.get("require_video") is not False,
+        timeout_seconds = _case_timeout_seconds(
+            case.get("case_timeout_seconds", case_timeout_seconds)
         )
+        try:
+            with _case_timeout_alarm(timeout_seconds):
+                report = build_visual_live_provider_e2e_report(
+                    mode=mode,
+                    work_dir=_case_work_dir(work_dir, case_id),
+                    prompt=str(case.get("prompt") or DEFAULT_PROMPT),
+                    candidate_budget=case.get("candidate_budget"),
+                    video_budget=int(case.get("video_budget") or 1),
+                    duration=int(case.get("duration") or 4),
+                    require_video=case.get("require_video") is not False,
+                )
+        except VisualE2ECaseTimeout:
+            report = _case_timeout_report(mode=mode, timeout_seconds=timeout_seconds)
         case_report = {
             "case_id": case_id,
             "success": report.get("success") is True,
@@ -152,6 +163,7 @@ def build_visual_live_provider_e2e_suite_report(
         "success": not failures,
         "provider_mode": mode,
         "case_count": len(case_reports),
+        "case_timeout_seconds": _case_timeout_seconds(case_timeout_seconds),
         "failures": failures,
         "recovery_summary": _suite_recovery_summary(case_reports),
         "cases": case_reports,
@@ -776,6 +788,77 @@ def _failure_result(
         "payload": _safe_payload_summary(payload),
         "evidence": evidence,
     }
+
+
+class VisualE2ECaseTimeout(TimeoutError):
+    pass
+
+
+def _case_timeout_seconds(value: Any) -> float | None:
+    if value is None:
+        return DEFAULT_CASE_TIMEOUT_SECONDS
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return DEFAULT_CASE_TIMEOUT_SECONDS
+    if seconds <= 0:
+        return None
+    return seconds
+
+
+@contextlib.contextmanager
+def _case_timeout_alarm(timeout_seconds: float | None):
+    if (
+        timeout_seconds is None
+        or threading.current_thread() is not threading.main_thread()
+        or not _case_timeout_alarm_supported()
+    ):
+        yield
+        return
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_timer = signal.getitimer(signal.ITIMER_REAL)
+
+    def _handle_timeout(_signum, _frame):
+        raise VisualE2ECaseTimeout(f"visual E2E case exceeded {timeout_seconds:g}s")
+
+    signal.signal(signal.SIGALRM, _handle_timeout)
+    signal.setitimer(signal.ITIMER_REAL, timeout_seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer[0] > 0 or previous_timer[1] > 0:
+            signal.setitimer(signal.ITIMER_REAL, previous_timer[0], previous_timer[1])
+
+
+def _case_timeout_report(*, mode: str, timeout_seconds: float | None) -> dict[str, Any]:
+    return {
+        "success": False,
+        "provider_mode": mode,
+        "failures": ["case_timeout"],
+        "provider_checks": {},
+        "payload": None,
+        "evidence": {
+            "request_id": "",
+            "case_timeout_seconds": timeout_seconds,
+            "recovery_summary": {
+                "provider_failure_count": 1,
+                "provider_failure_classes": {"case_timeout": 1},
+                "provider_error_codes": {"case_timeout": 1},
+                "retry_attempt_count": 0,
+                "negotiation_attempted": False,
+                "negotiation_success": False,
+                "content_moderation_recovered": False,
+                "recovered_failure_classes": [],
+            },
+        },
+    }
+
+
+def _case_timeout_alarm_supported() -> bool:
+    return all(hasattr(signal, name) for name in ("SIGALRM", "ITIMER_REAL", "getitimer", "setitimer"))
 
 
 def _case_work_dir(work_dir: str | Path | None, case_id: str) -> Path | None:
