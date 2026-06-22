@@ -21,6 +21,7 @@ def test_visual_e2e_automation_includes_quality_suite(monkeypatch, tmp_path):
     from scripts import visual_e2e_automation_report
 
     calls = []
+    burn_calls = []
 
     def fake_quality_suite(**kwargs):
         calls.append(kwargs)
@@ -66,6 +67,36 @@ def test_visual_e2e_automation_includes_quality_suite(monkeypatch, tmp_path):
         "build_visual_live_provider_e2e_suite_report",
         fake_quality_suite,
     )
+    monkeypatch.setattr(
+        visual_e2e_automation_report,
+        "build_visual_live_quality_burn_report",
+        lambda **kwargs: (
+            burn_calls.append(kwargs)
+            or {
+                "success": True,
+                "mode": "live",
+                "suite": {
+                    "success": True,
+                    "provider_mode": "live",
+                    "case_count": 2,
+                    "failures": [],
+                    "cases": [],
+                },
+                "next_actions": [
+                    {
+                        "type": "increase_candidate_budget",
+                        "track": "aesthetic",
+                        "reason": "live_quality_burn_quality_gate_failed",
+                        "confidence": 0.7,
+                        "evidence_count": 1,
+                        "requires_human_feedback": False,
+                        "activation_status": "next_run",
+                        "source": "live_quality_burn",
+                    }
+                ],
+            }
+        ),
+    )
     monkeypatch.setattr(visual_e2e_automation_report, "live_provider_enabled", lambda: True)
 
     report = visual_e2e_automation_report.build_visual_e2e_automation_report(
@@ -76,10 +107,12 @@ def test_visual_e2e_automation_includes_quality_suite(monkeypatch, tmp_path):
     assert report["success"] is True
     assert report["fixture_quality_suite"]["case_count"] == 2
     assert report["live_quality_suite"]["case_count"] == 2
+    assert report["live_quality_burn"]["success"] is True
+    assert report["self_improvement"]["next_actions"][-1]["source"] == "live_quality_burn"
     assert calls[0]["mode"] == "fixture"
     assert calls[0]["work_dir"] == tmp_path
-    assert calls[1]["mode"] == "live"
-    assert calls[1]["work_dir"] is None
+    assert burn_calls[0]["mode"] == "live"
+    assert burn_calls[0]["work_dir"] is None
 
 
 def test_visual_e2e_automation_exports_quality_suite_next_actions(monkeypatch, tmp_path):

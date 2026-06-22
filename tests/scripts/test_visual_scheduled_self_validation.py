@@ -100,6 +100,25 @@ def _automation_report(*, include_live: bool, include_live_slack_upload: bool = 
             if include_live
             else {"status": "not_requested"}
         ),
+        "live_quality_burn": (
+            {
+                "success": True,
+                "summary": {
+                    "case_count": 2,
+                    "min_quality_score": 0.74,
+                    "failed_case_count": 0,
+                },
+                "next_actions": [
+                    {
+                        "type": "increase_candidate_budget",
+                        "requires_human_feedback": False,
+                        "source": "live_quality_burn",
+                    }
+                ],
+            }
+            if include_live
+            else {"status": "not_requested"}
+        ),
         "feedback_loop": {
             "success": True,
             "next_actions": [
@@ -210,6 +229,10 @@ def test_scheduled_self_validation_runs_live_when_due(monkeypatch, tmp_path):
     assert report["summary"]["live_quality_gate_min_score"] == 0.82
     assert report["summary"]["live_quality_suite_success"] is True
     assert report["summary"]["live_quality_suite_case_count"] == 2
+    assert report["summary"]["live_quality_burn_success"] is True
+    assert report["summary"]["live_quality_burn_case_count"] == 2
+    assert report["summary"]["live_quality_burn_min_score"] == 0.74
+    assert "increase_candidate_budget" in report["summary"]["live_quality_burn_action_types"]
     assert report["summary"]["live_quality_suite_negotiation_success_case_count"] == 1
     assert report["summary"]["live_quality_suite_content_moderation_recovered_case_count"] == 1
     state = json.loads((tmp_path / "state.json").read_text())

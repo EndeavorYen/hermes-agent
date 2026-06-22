@@ -18,6 +18,7 @@ from scripts.visual_feedback_loop_report import build_visual_feedback_loop_repor
 from scripts.visual_quality_calibration_report import build_quality_calibration_report
 from scripts.visual_live_provider_e2e import build_visual_live_provider_e2e_report
 from scripts.visual_live_provider_e2e import build_visual_live_provider_e2e_suite_report
+from scripts.visual_live_quality_burn import build_visual_live_quality_burn_report
 from scripts.visual_slack_delivery_e2e import build_visual_slack_delivery_e2e_report
 
 
@@ -54,15 +55,24 @@ def build_visual_e2e_automation_report(
             if case_timeout_seconds is not None:
                 live_quality_suite_kwargs["case_timeout_seconds"] = case_timeout_seconds
             live_quality_suite = build_visual_live_provider_e2e_suite_report(**live_quality_suite_kwargs)
+            live_quality_burn = build_visual_live_quality_burn_report(
+                mode="live",
+                work_dir=None,
+                case_timeout_seconds=case_timeout_seconds,
+                suite_report=live_quality_suite,
+            )
         else:
             live_quality_suite = {"status": "skipped", "reason": "live_provider_not_enabled"}
+            live_quality_burn = {"status": "skipped", "reason": "live_provider_not_enabled"}
     else:
         live_e2e = {"status": "not_requested"}
         live_quality_suite = {"status": "not_requested"}
+        live_quality_burn = {"status": "not_requested"}
 
     self_improvement = _self_improvement_summary(
         fixture_quality_suite=fixture_quality_suite,
         live_quality_suite=live_quality_suite,
+        live_quality_burn=live_quality_burn,
     )
     failures = []
     if agent_mode.get("success") is not True:
@@ -96,6 +106,7 @@ def build_visual_e2e_automation_report(
         "live_slack_delivery": live_slack_delivery,
         "live_e2e": live_e2e,
         "live_quality_suite": live_quality_suite,
+        "live_quality_burn": live_quality_burn,
         "health": health,
         "feedback_loop": feedback_loop,
         "self_improvement": self_improvement,
@@ -116,6 +127,7 @@ def _self_improvement_summary(
     *,
     fixture_quality_suite: dict[str, Any],
     live_quality_suite: dict[str, Any],
+    live_quality_burn: dict[str, Any],
 ) -> dict[str, Any]:
     actions: list[dict[str, Any]] = []
     actions.extend(
@@ -130,6 +142,7 @@ def _self_improvement_summary(
             source="live_quality_suite",
         )
     )
+    actions.extend(_action_list(live_quality_burn.get("next_actions") if isinstance(live_quality_burn, dict) else []))
     actions = _dedupe_actions(actions)
     return {
         "next_actions": actions,
@@ -173,6 +186,12 @@ def _quality_suite_next_actions(suite: dict[str, Any], *, source: str) -> list[d
             }
         )
     return actions
+
+
+def _action_list(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
 
 
 def _dedupe_actions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:

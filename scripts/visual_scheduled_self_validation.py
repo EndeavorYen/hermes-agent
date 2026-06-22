@@ -154,6 +154,16 @@ def _summary(automation: dict[str, Any]) -> dict[str, Any]:
         if isinstance(automation.get("live_quality_suite"), dict)
         else {}
     )
+    live_quality_burn = (
+        automation.get("live_quality_burn")
+        if isinstance(automation.get("live_quality_burn"), dict)
+        else {}
+    )
+    live_quality_burn_summary = (
+        live_quality_burn.get("summary")
+        if isinstance(live_quality_burn.get("summary"), dict)
+        else {}
+    )
     fixture_quality_recovery = (
         fixture_quality_suite.get("recovery_summary")
         if isinstance(fixture_quality_suite.get("recovery_summary"), dict)
@@ -181,6 +191,7 @@ def _summary(automation: dict[str, Any]) -> dict[str, Any]:
     feedback_action_types = _action_types(
         feedback_loop.get("next_actions"),
         self_improvement.get("next_actions"),
+        live_quality_burn.get("next_actions"),
     )
     slack_sent_count = _int(delivery.get("sent_count"))
     slack_deliverable_count = _int(delivery.get("deliverable_count"))
@@ -230,6 +241,12 @@ def _summary(automation: dict[str, Any]) -> dict[str, Any]:
         "live_quality_suite_content_moderation_recovered_case_count": _int(
             live_quality_recovery.get("content_moderation_recovered_case_count")
         ),
+        "live_quality_burn_success": live_quality_burn.get("success")
+        if "success" in live_quality_burn
+        else None,
+        "live_quality_burn_case_count": _int(live_quality_burn_summary.get("case_count")),
+        "live_quality_burn_min_score": live_quality_burn_summary.get("min_quality_score"),
+        "live_quality_burn_action_types": _action_types(live_quality_burn.get("next_actions")),
         "live_quality_repair_attempt_count": _int(live_quality_repair.get("attempt_count")),
         "live_quality_repair_success_count": _int(live_quality_repair.get("success_count")),
         "live_video_quality_repair_success_count": _int(live_video_repair.get("success_count")),
