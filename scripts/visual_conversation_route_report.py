@@ -104,6 +104,9 @@ def build_visual_conversation_route_report() -> dict[str, Any]:
             "visual_agent_guidance_present": "visual_agent_generate" in guidance,
             "advanced_parameters_not_required": "Do not ask the user for advanced" in guidance,
             "draw_character_guidance_present": "draw/anime/character" in guidance,
+            "raw_image_video_tool_avoidance_present": (
+                "Do not call `image_generate` or `video_generate` directly" in guidance
+            ),
             "schema_supports_friendly_prompts": "draw/anime/character art prompts" in schema_description,
         },
         "cases": cases,
@@ -118,6 +121,8 @@ def _contract_failures(*, guidance: str, schema_description: str) -> list[str]:
         failures.append("advanced_parameter_avoidance_missing")
     if "draw/anime/character" not in guidance:
         failures.append("draw_character_guidance_missing")
+    if "Do not call `image_generate` or `video_generate` directly" not in guidance:
+        failures.append("raw_image_video_tool_avoidance_missing")
     if "draw/anime/character art prompts" not in schema_description:
         failures.append("visual_agent_schema_friendly_prompt_missing")
     return failures

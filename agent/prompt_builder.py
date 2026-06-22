@@ -369,7 +369,9 @@ VISUAL_AGENT_TOOL_GUIDANCE = (
     "ask the user for advanced "
     "parameters first; `visual_agent_generate` plans the request and dispatches "
     "to `visual_package_generate` for candidate generation, ranking, selected "
-    "current-media delivery, and image-first video generation."
+    "current-media delivery, and image-first video generation. "
+    "Do not call `image_generate` or `video_generate` directly for natural "
+    "visual requests unless the user explicitly asks for the low-level tool."
 )
 
 VISUAL_SELF_VALIDATION_STATUS_GUIDANCE = (

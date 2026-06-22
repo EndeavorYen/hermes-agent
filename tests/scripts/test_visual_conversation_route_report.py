@@ -12,6 +12,7 @@ def test_visual_conversation_route_report_verifies_friendly_agent_entrypoint():
     assert report["recommended_tool"] == "visual_agent_generate"
     assert report["case_count"] >= 3
     assert report["failures"] == []
+    assert report["contract"]["raw_image_video_tool_avoidance_present"] is True
     assert {case["case_id"] for case in report["cases"]} >= {
         "friendly_product_image_video",
         "friendly_draw_character",

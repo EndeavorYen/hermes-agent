@@ -87,6 +87,7 @@ def test_visual_slack_conversation_e2e_fixture_dispatches_slack_ingress_and_deli
     assert report["ingress"]["prompt_sha256"]
     assert report["ingress"]["prompt_length"] == len(prompt)
     assert report["conversation_route"]["success"] is True
+    assert report["conversation_route"]["contract"]["raw_image_video_tool_avoidance_present"] is True
     assert report["slack_delivery"]["delivery"]["sent_count"] == 2
     assert delivery_calls == [
         {

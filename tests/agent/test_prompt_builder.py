@@ -1565,6 +1565,7 @@ class TestVisualPackageToolGuidance:
         assert "storyboard" in prompt
         assert "multi-shot" in prompt
         assert "visual_package_generate" in prompt
+        assert "Do not call `image_generate` or `video_generate` directly" in prompt
 
     def test_includes_visual_self_validation_status_when_available(self):
         prompt = build_visual_package_tool_guidance(
