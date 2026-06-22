@@ -214,6 +214,33 @@ def test_visual_self_validation_status_accepts_recent_carried_live_burn_on_inter
     assert "D_SECRET" not in json.dumps(status, ensure_ascii=False)
 
 
+def test_visual_self_validation_status_warns_on_live_quality_trend_degradation(tmp_path):
+    from scripts.visual_self_validation_status import build_visual_self_validation_status
+
+    report = _scheduled_report()
+    report["summary"]["live_quality_trend_degradations"] = [
+        "video_generation_degraded",
+        "provider_failures_spiked",
+    ]
+    report["summary"]["live_quality_trend_action_types"] = [
+        "prefer_image_first_video",
+        "safe_reframe_provider_retry",
+    ]
+    latest_path = _write_latest(tmp_path, report)
+
+    status = build_visual_self_validation_status(latest_path=latest_path)
+
+    assert status["success"] is False
+    assert status["health_status"] == "warn"
+    assert status["live"]["trend_degradations"] == [
+        "video_generation_degraded",
+        "provider_failures_spiked",
+    ]
+    assert "stabilize_live_quality_trends" in status["next_steps"]
+    assert "prefer_image_first_video" in status["self_improvement"]["action_types"]
+    assert "safe_reframe_provider_retry" in status["self_improvement"]["action_types"]
+
+
 def test_visual_self_validation_status_warns_when_live_slack_upload_not_covered(tmp_path):
     from scripts.visual_self_validation_status import build_visual_self_validation_status
 

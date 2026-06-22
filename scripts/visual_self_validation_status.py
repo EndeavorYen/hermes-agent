@@ -58,6 +58,7 @@ def build_visual_self_validation_status(
     )
     failures = _strings(payload.get("failures"))
     action_types = _action_types(summary, payload)
+    trend_degradations = _strings(summary.get("live_quality_trend_degradations"))
     provider_failure_classes = _aggregate_counts(_collect_actions(payload), "provider_failure_classes")
     provider_error_codes = _aggregate_counts(_collect_actions(payload), "provider_error_codes")
 
@@ -69,6 +70,7 @@ def build_visual_self_validation_status(
         live_decision=live_decision,
         is_stale=is_stale,
         summary=summary,
+        trend_degradations=trend_degradations,
         slack_upload_policy=slack_upload_policy,
     )
     health_status = _health_status(
@@ -114,6 +116,7 @@ def build_visual_self_validation_status(
             "provider_failure_classes": provider_failure_classes,
             "provider_error_codes": provider_error_codes,
             "carried_evidence_current": carried_live_evidence_current,
+            "trend_degradations": trend_degradations,
         },
         "delivery": {
             "native_video_upload_covered": summary.get("live_slack_upload_native_delivery_covered"),
@@ -165,7 +168,7 @@ def _sanitise_slack_upload_policy(value: Any) -> dict[str, Any]:
 
 def _action_types(summary: dict[str, Any], payload: dict[str, Any]) -> list[str]:
     values: list[str] = []
-    for key in ("live_quality_burn_action_types", "feedback_action_types"):
+    for key in ("live_quality_burn_action_types", "live_quality_trend_action_types", "feedback_action_types"):
         values.extend(_strings(summary.get(key)))
     for action in _collect_actions(payload):
         if action.get("requires_human_feedback") is True:
@@ -221,6 +224,7 @@ def _next_steps(
     live_decision: str,
     is_stale: bool,
     summary: dict[str, Any],
+    trend_degradations: list[str],
     slack_upload_policy: dict[str, Any],
 ) -> list[str]:
     steps: list[str] = []
@@ -232,6 +236,8 @@ def _next_steps(
         steps.append("enable_or_force_live_self_validation")
     if is_stale:
         steps.append("refresh_stale_self_validation")
+    if trend_degradations:
+        steps.append("stabilize_live_quality_trends")
     if summary.get("slack_duplicate_delivery_count") not in (None, 0):
         steps.append("fix_duplicate_delivery")
     if summary.get("live_slack_upload_native_delivery_covered") is False:
