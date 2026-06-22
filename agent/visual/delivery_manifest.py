@@ -45,9 +45,13 @@ def select_deliverable_artifacts(manifest: dict[str, Any]) -> list[dict[str, Any
         if not isinstance(item, dict):
             continue
         identity = str(item.get("identity") or item.get("ref") or "")
-        if not identity or identity in seen:
+        artifact_id = str(item.get("artifact_id") or "")
+        dedupe_keys = [f"identity:{identity}"] if identity else []
+        if artifact_id:
+            dedupe_keys.append(f"artifact:{artifact_id}")
+        if not dedupe_keys or any(key in seen for key in dedupe_keys):
             continue
-        seen.add(identity)
+        seen.update(dedupe_keys)
         selected.append(item)
     return selected
 

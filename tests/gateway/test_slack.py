@@ -1237,6 +1237,72 @@ class TestSendVideo:
 
         adapter._app.client.chat_postMessage.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_send_video_records_visual_delivery_and_skips_duplicate(
+        self,
+        adapter,
+        tmp_path,
+        monkeypatch,
+    ):
+        from agent.visual.attempt_ledger import VisualAttemptLedger
+        from agent.visual.tracking import default_visual_ledger_path
+        from agent.visual.tracking import visual_delivery_metadata
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        ledger = VisualAttemptLedger(default_visual_ledger_path())
+        ledger.initialize()
+        request_id = ledger.record_request(
+            platform="slack",
+            channel_id="C123",
+            thread_id="T123",
+            normalized_intent={"kind": "visual_package"},
+            modality="package",
+            operation="visual_package_generate",
+        )
+        attempt_id = ledger.record_attempt(
+            request_id=request_id,
+            candidate_index=0,
+            provider="xai",
+            model="grok-imagine-video-1.5",
+            prompt_original="prompt",
+            prompt_mediated="prompt",
+            parameters_requested={},
+            parameters_effective={},
+            status="completed",
+        )
+        video = tmp_path / "clip.mp4"
+        video.write_bytes(b"fake video data")
+        artifact_id = ledger.record_artifact(
+            request_id=request_id,
+            attempt_id=attempt_id,
+            kind="video",
+            uri=str(video),
+            local_path=str(video),
+            content_hash="sha256:slack-video-duplicate",
+            mime_type="video/mp4",
+            is_stable=True,
+            freshness_status="fresh",
+        )
+        metadata = visual_delivery_metadata(
+            request_id=request_id,
+            attempt_id=attempt_id,
+            artifact_ids=[artifact_id],
+            artifact_paths=[str(video)],
+            selected_artifact_ids=[artifact_id],
+            thread_id="T123",
+        )
+        adapter._app.client.files_upload_v2 = AsyncMock(return_value={"ok": True})
+
+        first = await adapter.send_video("C123", str(video), metadata=metadata)
+        second = await adapter.send_video("C123", str(video), metadata=metadata)
+
+        assert first.success is True
+        assert second.success is True
+        adapter._app.client.files_upload_v2.assert_awaited_once()
+        deliveries = ledger.list_deliveries(request_id=request_id)
+        assert [delivery["artifact_id"] for delivery in deliveries] == [artifact_id, artifact_id]
+        assert [delivery["delivery_status"] for delivery in deliveries] == ["sent", "skipped_duplicate"]
+
 
 # ---------------------------------------------------------------------------
 # TestBangPrefixCommands

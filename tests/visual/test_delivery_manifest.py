@@ -65,6 +65,29 @@ def test_delivery_manifest_deduplicates_selected_artifacts_by_identity():
     assert [item["artifact_id"] for item in select_deliverable_artifacts(manifest)] == ["var_a"]
 
 
+def test_delivery_manifest_deduplicates_same_artifact_with_multiple_lookup_refs():
+    from agent.visual.delivery_manifest import build_visual_delivery_manifest
+    from agent.visual.delivery_manifest import select_deliverable_artifacts
+
+    payload = {
+        "visual_request_id": "vrq_1",
+        "images": ["/tmp/current.png"],
+        "delivery_metadata": {
+            "selected_visual_artifact_ids": ["var_img"],
+            "visual_artifacts": {
+                "/tmp/current.png": {"request_id": "vrq_1", "artifact_id": "var_img"},
+                "file:///tmp/current.png": {"request_id": "vrq_1", "artifact_id": "var_img"},
+            },
+        },
+    }
+
+    manifest = build_visual_delivery_manifest(payload)
+
+    deliverables = select_deliverable_artifacts(manifest)
+    assert [item["artifact_id"] for item in deliverables] == ["var_img"]
+    assert deliverables[0]["ref"] == "/tmp/current.png"
+
+
 def test_delivery_manifest_empty_payload_is_safe():
     from agent.visual.delivery_manifest import build_visual_delivery_manifest
     from agent.visual.delivery_manifest import select_deliverable_artifacts

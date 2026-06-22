@@ -61,6 +61,31 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
+
+def _slack_upload_message_id(result: Any) -> str | None:
+    if not isinstance(result, dict):
+        return None
+    for key in ("ts", "message_ts", "id"):
+        value = result.get(key)
+        if value not in (None, ""):
+            return str(value)
+    file_payload = result.get("file")
+    if isinstance(file_payload, dict):
+        for key in ("id", "permalink", "url_private"):
+            value = file_payload.get(key)
+            if value not in (None, ""):
+                return str(value)
+    files_payload = result.get("files")
+    if isinstance(files_payload, list) and files_payload:
+        first = files_payload[0]
+        if isinstance(first, dict):
+            for key in ("id", "permalink", "url_private"):
+                value = first.get(key)
+                if value not in (None, ""):
+                    return str(value)
+    return None
+
+
 # ContextVar carrying the user_id of the slash-command invoker.
 # Set in _handle_slash_command, read in send() to match the correct
 # stashed response_url when multiple users issue commands on the same
@@ -1917,10 +1942,58 @@ class SlackAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a video file to Slack."""
+        visual_context = None
+        visual_deduper = None
+        record_delivery_status = None
+        try:
+            from agent.visual.delivery_dedupe import get_artifact_delivery_deduper
+            from agent.visual.tracking import record_visual_delivery_status as _record_visual_delivery_status
+            from agent.visual.tracking import visual_delivery_context
+
+            record_delivery_status = _record_visual_delivery_status
+            visual_context = visual_delivery_context(
+                metadata,
+                video_path,
+                platform=self.platform.value,
+                destination_id=str(chat_id),
+                thread_id=(metadata or {}).get("thread_id") or (metadata or {}).get("visual_thread_id"),
+            )
+            if visual_context and visual_context.get("skip_status"):
+                record_delivery_status(visual_context, visual_context["skip_status"])
+                return SendResult(
+                    success=True,
+                    raw_response={"skipped": visual_context["skip_status"]},
+                )
+            if visual_context and visual_context.get("content_hash"):
+                visual_deduper = get_artifact_delivery_deduper()
+                if visual_deduper.is_duplicate(
+                    visual_context["content_hash"],
+                    visual_context["destination"],
+                    visual_context["request_id"],
+                ):
+                    record_delivery_status(visual_context, "skipped_duplicate")
+                    return SendResult(success=True, raw_response={"skipped": "duplicate"})
+        except Exception as visual_err:
+            logger.debug("[%s] Visual video delivery attribution skipped: %s", self.name, visual_err)
+
         if not self._app:
+            if visual_context and record_delivery_status:
+                record_delivery_status(
+                    visual_context,
+                    "failed",
+                    error_type="not_connected",
+                    error_message="Not connected",
+                )
             return SendResult(success=False, error="Not connected")
 
         if not os.path.exists(video_path):
+            if visual_context and record_delivery_status:
+                record_delivery_status(
+                    visual_context,
+                    "failed",
+                    error_type="missing_file",
+                    error_message=f"Video file not found: {video_path}",
+                )
             return SendResult(
                 success=False, error=f"Video file not found: {video_path}"
             )
@@ -1937,8 +2010,21 @@ class SlackAdapter(BasePlatformAdapter):
                         initial_comment=caption or "",
                         thread_ts=thread_ts,
                     )
+                    message_id = _slack_upload_message_id(result)
+                    if visual_context and record_delivery_status:
+                        if visual_deduper and visual_context.get("content_hash"):
+                            visual_deduper.mark(
+                                visual_context["content_hash"],
+                                visual_context["destination"],
+                                visual_context["request_id"],
+                            )
+                        record_delivery_status(
+                            visual_context,
+                            "sent",
+                            message_id=message_id,
+                        )
                     self._record_uploaded_file_thread(chat_id, thread_ts)
-                    return SendResult(success=True, raw_response=result)
+                    return SendResult(success=True, message_id=message_id, raw_response=result)
                 except Exception as exc:
                     last_exc = exc
                     if not self._is_retryable_upload_error(exc) or attempt >= 2:
@@ -1964,6 +2050,13 @@ class SlackAdapter(BasePlatformAdapter):
             text = f"🎬 Video: {video_path}"
             if caption:
                 text = f"{caption}\n{text}"
+            if visual_context and record_delivery_status:
+                record_delivery_status(
+                    visual_context,
+                    "failed",
+                    error_type=type(e).__name__,
+                    error_message=str(e),
+                )
             return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
 
     async def send_document(
