@@ -27,6 +27,13 @@ DEFAULT_PROMPT = (
     "Clean product photography of a matte black fountain pen on white paper, "
     "soft window light, minimal desk scene, professional commercial style."
 )
+CORE_PORTRAIT_QUALITY_DIMENSIONS = [
+    "subject_beauty",
+    "face_naturalness",
+    "glamour_impact",
+    "fashion_material_quality",
+    "pose_composition",
+]
 DEFAULT_E2E_CASES = [
     {
         "case_id": "product_photo_video",
@@ -38,13 +45,25 @@ DEFAULT_E2E_CASES = [
     {
         "case_id": "fashion_portrait_video",
         "prompt": (
-            "Create one image and one short video: professional fashion editorial portrait of an adult woman model in refined black tights, "
-            "beautiful natural face, elegant full-body pose, long-leg composition, tasteful studio glamour."
+            "Create one image and one short video: professional fashion editorial portrait of an adult fashion model in refined black eveningwear "
+            "with semi-opaque legwear, beautiful natural face, elegant full-body runway pose, long-leg composition, polished editorial studio lighting."
         ),
         "require_video": True,
         "duration": 4,
         "candidate_budget": 2,
         "video_budget": 1,
+        "quality_contract": {
+            "required_dimensions": CORE_PORTRAIT_QUALITY_DIMENSIONS,
+            "quality_focus": [
+                "adult_fashion_portrait",
+                "natural_face",
+                "legwear_material",
+                "long_leg_composition",
+                "tasteful_glamour",
+                "image_first_video",
+            ],
+            "requires_image_first_video": True,
+        },
     },
 ]
 FIXTURE_VIDEO_REPAIR_CASE = {
@@ -170,6 +189,7 @@ def build_visual_live_provider_e2e_suite_report(
             "failures": list(report.get("failures") or []),
             "payload": report.get("payload"),
             "evidence": report.get("evidence"),
+            "quality_contract": _case_quality_contract(case),
         }
         evidence = report.get("evidence") if isinstance(report.get("evidence"), dict) else {}
         case_report["recovery_summary"] = evidence.get("recovery_summary", {})
@@ -184,6 +204,7 @@ def build_visual_live_provider_e2e_suite_report(
         "failures": failures,
         "recovery_summary": _suite_recovery_summary(case_reports),
         "quality_repair_summary": _suite_quality_repair_summary(case_reports),
+        "quality_contract_summary": _suite_quality_contract_summary(case_reports),
         "cases": case_reports,
     }
 
@@ -207,6 +228,65 @@ def _default_e2e_cases(mode: str) -> list[dict[str, Any]]:
     if str(mode or "").strip().lower() == "fixture":
         cases.append(dict(FIXTURE_VIDEO_REPAIR_CASE))
     return cases
+
+
+def _case_quality_contract(case: dict[str, Any]) -> dict[str, Any]:
+    contract = case.get("quality_contract")
+    if not isinstance(contract, dict):
+        return {}
+    required_dimensions = _string_list(contract.get("required_dimensions"))
+    quality_focus = _string_list(contract.get("quality_focus"))
+    result: dict[str, Any] = {}
+    if required_dimensions:
+        result["required_dimensions"] = required_dimensions
+    if quality_focus:
+        result["quality_focus"] = quality_focus
+    if contract.get("requires_image_first_video") is True:
+        result["requires_image_first_video"] = True
+    return result
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    strings: list[str] = []
+    for item in value:
+        text = str(item or "").strip()
+        if text and text not in strings:
+            strings.append(text)
+    return strings
+
+
+def _suite_quality_contract_summary(case_reports: list[dict[str, Any]]) -> dict[str, Any]:
+    contract_case_ids: list[str] = []
+    required_dimensions: list[str] = []
+    image_first_video_case_ids: list[str] = []
+    for case in case_reports:
+        contract = case.get("quality_contract") if isinstance(case.get("quality_contract"), dict) else {}
+        if not contract:
+            continue
+        case_id = str(case.get("case_id") or "").strip()
+        if case_id:
+            contract_case_ids.append(case_id)
+        for dimension in _string_list(contract.get("required_dimensions")):
+            if dimension not in required_dimensions:
+                required_dimensions.append(dimension)
+        if contract.get("requires_image_first_video") is True and case_id:
+            image_first_video_case_ids.append(case_id)
+    missing = [
+        dimension
+        for dimension in CORE_PORTRAIT_QUALITY_DIMENSIONS
+        if dimension not in required_dimensions
+    ]
+    return {
+        "contract_case_count": len(contract_case_ids),
+        "contract_case_ids": contract_case_ids,
+        "required_dimensions": required_dimensions,
+        "core_quality_dimensions": list(CORE_PORTRAIT_QUALITY_DIMENSIONS),
+        "core_quality_dimensions_missing": missing,
+        "core_quality_coverage_ready": not missing,
+        "image_first_video_contract_case_ids": image_first_video_case_ids,
+    }
 
 
 def inspect_visual_e2e_evidence(

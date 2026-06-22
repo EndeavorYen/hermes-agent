@@ -112,6 +112,16 @@ def _automation_report(*, include_live: bool, include_live_slack_upload: bool = 
                     "case_count": 2,
                     "min_quality_score": 0.74,
                     "failed_case_count": 0,
+                    "core_quality_contract_case_count": 1,
+                    "core_quality_coverage_ready": True,
+                    "core_quality_dimensions": [
+                        "subject_beauty",
+                        "face_naturalness",
+                        "glamour_impact",
+                        "fashion_material_quality",
+                        "pose_composition",
+                    ],
+                    "core_quality_dimensions_missing": [],
                     "image_first_video_source_case_count": 2,
                     "image_first_video_source_covered_count": 2,
                     "image_first_video_source_failure_count": 0,
@@ -270,6 +280,15 @@ def test_scheduled_self_validation_runs_live_when_due(monkeypatch, tmp_path):
         "face_naturalness",
         "fashion_material_quality",
     ]
+    assert report["summary"]["live_quality_burn_core_quality_coverage_ready"] is True
+    assert report["summary"]["live_quality_burn_core_quality_dimensions"] == [
+        "subject_beauty",
+        "face_naturalness",
+        "glamour_impact",
+        "fashion_material_quality",
+        "pose_composition",
+    ]
+    assert report["summary"]["live_quality_burn_core_quality_dimensions_missing"] == []
     assert report["summary"]["live_quality_burn_image_first_video_source_covered"] is True
     assert report["summary"]["live_quality_burn_image_first_video_source_failure_count"] == 0
     assert report["summary"]["live_quality_suite_negotiation_success_case_count"] == 1

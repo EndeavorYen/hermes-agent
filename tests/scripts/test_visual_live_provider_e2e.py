@@ -84,6 +84,94 @@ def test_visual_live_provider_e2e_fixture_records_learning_evidence(tmp_path):
     assert report["evidence"]["judgments_with_learning_metadata"] >= 2
 
 
+def test_visual_live_provider_default_suite_declares_core_portrait_quality_contract(monkeypatch, tmp_path):
+    from scripts import visual_live_provider_e2e
+
+    def fake_report(**_kwargs):
+        return {
+            "success": True,
+            "failures": [],
+            "payload": {"success": True},
+            "evidence": {
+                "quality_gate": {"success": True, "min_score": 0.82, "quality_issues": []},
+                "image_count": 1,
+                "video_count": 1,
+                "recovery_summary": {
+                    "provider_failure_count": 0,
+                    "provider_failure_classes": {},
+                    "provider_error_codes": {},
+                    "retry_attempt_count": 0,
+                    "negotiation_attempted": False,
+                    "negotiation_success": False,
+                    "content_moderation_recovered": False,
+                    "recovered_failure_classes": [],
+                },
+            },
+        }
+
+    monkeypatch.setattr(
+        visual_live_provider_e2e,
+        "build_visual_live_provider_e2e_report",
+        fake_report,
+    )
+
+    suite = visual_live_provider_e2e.build_visual_live_provider_e2e_suite_report(
+        mode="fixture",
+        work_dir=tmp_path,
+    )
+
+    assert suite["quality_contract_summary"] == {
+        "contract_case_count": 1,
+        "contract_case_ids": ["fashion_portrait_video"],
+        "required_dimensions": [
+            "subject_beauty",
+            "face_naturalness",
+            "glamour_impact",
+            "fashion_material_quality",
+            "pose_composition",
+        ],
+        "core_quality_dimensions": [
+            "subject_beauty",
+            "face_naturalness",
+            "glamour_impact",
+            "fashion_material_quality",
+            "pose_composition",
+        ],
+        "core_quality_dimensions_missing": [],
+        "core_quality_coverage_ready": True,
+        "image_first_video_contract_case_ids": ["fashion_portrait_video"],
+    }
+    fashion_case = next(case for case in suite["cases"] if case["case_id"] == "fashion_portrait_video")
+    assert fashion_case["quality_contract"]["quality_focus"] == [
+        "adult_fashion_portrait",
+        "natural_face",
+        "legwear_material",
+        "long_leg_composition",
+        "tasteful_glamour",
+        "image_first_video",
+    ]
+    assert "prompt" not in json.dumps(suite, ensure_ascii=False)
+
+
+def test_visual_live_provider_fashion_probe_uses_provider_safe_prompt_wording():
+    from scripts.visual_live_provider_e2e import DEFAULT_E2E_CASES
+
+    fashion_case = next(case for case in DEFAULT_E2E_CASES if case["case_id"] == "fashion_portrait_video")
+    prompt = fashion_case["prompt"].lower()
+
+    assert "tights" not in prompt
+    assert "glamour" not in prompt
+    assert "semi-opaque legwear" in prompt
+    assert "polished editorial" in prompt
+    assert fashion_case["quality_contract"]["required_dimensions"] == [
+        "subject_beauty",
+        "face_naturalness",
+        "glamour_impact",
+        "fashion_material_quality",
+        "pose_composition",
+    ]
+
+
 def test_visual_live_provider_e2e_suite_aggregates_recovery_summary(monkeypatch, tmp_path):
     from scripts import visual_live_provider_e2e
 

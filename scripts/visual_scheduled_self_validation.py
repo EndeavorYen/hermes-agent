@@ -291,6 +291,20 @@ def _summary(automation: dict[str, Any], live_quality_trends: dict[str, Any] | N
         "live_quality_burn_preference_dimensions": _preference_dimensions(
             live_quality_burn_preference_failures
         ),
+        "live_quality_burn_core_quality_contract_case_count": _int(
+            live_quality_burn_summary.get("core_quality_contract_case_count")
+        ),
+        "live_quality_burn_core_quality_coverage_ready": live_quality_burn_summary.get(
+            "core_quality_coverage_ready"
+        )
+        if "core_quality_coverage_ready" in live_quality_burn_summary
+        else None,
+        "live_quality_burn_core_quality_dimensions": _list(
+            live_quality_burn_summary.get("core_quality_dimensions")
+        ),
+        "live_quality_burn_core_quality_dimensions_missing": _list(
+            live_quality_burn_summary.get("core_quality_dimensions_missing")
+        ),
         "live_quality_trend_run_count": _int(live_quality_trends.get("run_count")),
         "live_quality_trend_degradations": _list(live_quality_trends.get("degradations")),
         "live_quality_trend_action_types": _action_types(live_quality_trends.get("next_actions")),

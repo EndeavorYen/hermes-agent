@@ -110,6 +110,11 @@ def _summary(suite: dict[str, Any]) -> dict[str, Any]:
     ]
     recovery = suite.get("recovery_summary") if isinstance(suite.get("recovery_summary"), dict) else {}
     repair = suite.get("quality_repair_summary") if isinstance(suite.get("quality_repair_summary"), dict) else {}
+    quality_contract = (
+        suite.get("quality_contract_summary")
+        if isinstance(suite.get("quality_contract_summary"), dict)
+        else {}
+    )
     return {
         "case_count": _int(suite.get("case_count"), default=len(cases)),
         "failed_case_count": len([case_id for case_id in failed_cases if case_id]),
@@ -130,6 +135,14 @@ def _summary(suite: dict[str, Any]) -> dict[str, Any]:
         "quality_repair_attempt_count": _int(repair.get("attempt_count")),
         "quality_repair_success_count": _int(repair.get("success_count")),
         "quality_repair_selected_count": _int(repair.get("selected_repair_count")),
+        "core_quality_contract_case_count": _int(quality_contract.get("contract_case_count")),
+        "core_quality_contract_case_ids": _list(quality_contract.get("contract_case_ids")),
+        "core_quality_dimensions": _list(quality_contract.get("core_quality_dimensions")),
+        "core_quality_dimensions_missing": _list(quality_contract.get("core_quality_dimensions_missing")),
+        "core_quality_coverage_ready": quality_contract.get("core_quality_coverage_ready")
+        if "core_quality_coverage_ready" in quality_contract
+        else None,
+        "core_quality_required_dimensions": _list(quality_contract.get("required_dimensions")),
     }
 
 
@@ -478,6 +491,17 @@ def _int_mapping(value: Any) -> dict[str, int]:
         if text and parsed > 0:
             mapping[text] = parsed
     return mapping
+
+
+def _list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    strings: list[str] = []
+    for item in value:
+        text = str(item or "").strip()
+        if text and text not in strings:
+            strings.append(text)
+    return strings
 
 
 def _float_or_none(value: Any) -> float | None:

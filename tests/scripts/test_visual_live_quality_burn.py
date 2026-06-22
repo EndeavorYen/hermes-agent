@@ -115,6 +115,56 @@ def test_visual_live_quality_burn_writes_report_and_actions(monkeypatch, tmp_pat
     assert (tmp_path / "burn" / "runs" / "20260622T100000Z.json").exists()
 
 
+def test_visual_live_quality_burn_summarizes_core_quality_contract_coverage(monkeypatch, tmp_path):
+    from scripts import visual_live_quality_burn
+
+    suite = _suite_with_quality_failure()
+    suite["quality_contract_summary"] = {
+        "contract_case_count": 1,
+        "contract_case_ids": ["fashion_portrait_video"],
+        "required_dimensions": [
+            "subject_beauty",
+            "face_naturalness",
+            "glamour_impact",
+            "fashion_material_quality",
+            "pose_composition",
+        ],
+        "core_quality_dimensions": [
+            "subject_beauty",
+            "face_naturalness",
+            "glamour_impact",
+            "fashion_material_quality",
+            "pose_composition",
+        ],
+        "core_quality_dimensions_missing": [],
+        "core_quality_coverage_ready": True,
+        "image_first_video_contract_case_ids": ["fashion_portrait_video"],
+    }
+
+    monkeypatch.setattr(
+        visual_live_quality_burn,
+        "build_visual_live_provider_e2e_suite_report",
+        lambda **_kwargs: suite,
+    )
+
+    report = visual_live_quality_burn.build_visual_live_quality_burn_report(
+        mode="live",
+        output_dir=tmp_path,
+    )
+
+    assert report["summary"]["core_quality_contract_case_count"] == 1
+    assert report["summary"]["core_quality_dimensions"] == [
+        "subject_beauty",
+        "face_naturalness",
+        "glamour_impact",
+        "fashion_material_quality",
+        "pose_composition",
+    ]
+    assert report["summary"]["core_quality_dimensions_missing"] == []
+    assert report["summary"]["core_quality_coverage_ready"] is True
+    assert report["summary"]["core_quality_contract_case_ids"] == ["fashion_portrait_video"]
+
+
 def test_visual_live_quality_burn_exports_preference_dimension_repair_actions(monkeypatch, tmp_path):
     from scripts import visual_live_quality_burn
 
