@@ -4,6 +4,7 @@ from typing import Any
 
 from agent.visual.independent_vision_audit import parse_vision_judge_analysis
 from agent.visual.judges.vision import build_vision_judge_observation
+from agent.visual.provider_failures import classify_visual_provider_failure
 
 
 def build_candidate_vision_observation(
@@ -23,15 +24,46 @@ def build_candidate_vision_observation(
         )
     if inline_enabled and analyzer is not None and candidate.get("kind") == "image":
         try:
-            vision = parse_vision_judge_analysis(analyzer(candidate))
-        except Exception:
-            return fallback_observation
+            raw_inline = analyzer(candidate)
+            failure = _inline_vision_failure(raw_inline)
+            if failure:
+                return _vision_unavailable_observation(fallback_observation, failure)
+            vision = parse_vision_judge_analysis(raw_inline)
+        except Exception as exc:
+            failure = classify_visual_provider_failure(exc)
+            return _vision_unavailable_observation(fallback_observation, failure)
         return _merge_observations(
             fallback_observation,
             vision,
             source="inline_vision_judge",
         )
     return fallback_observation
+
+
+def _inline_vision_failure(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict) or value.get("success") is not False:
+        return None
+    payload = {
+        "success": False,
+        "error_type": value.get("error_type"),
+        "error": value.get("error"),
+        "message": value.get("message") or value.get("analysis"),
+        "code": value.get("code"),
+        "status_code": value.get("status_code"),
+    }
+    failure = classify_visual_provider_failure(payload)
+    failure["source"] = "inline_vision_judge"
+    return failure
+
+
+def _vision_unavailable_observation(fallback: dict[str, Any], failure: dict[str, Any]) -> dict[str, Any]:
+    observation = dict(fallback or {})
+    observation["vision_failure"] = dict(failure)
+    observation["evidence"] = {
+        "source": "inline_vision_unavailable",
+        "summary": failure.get("operator_summary") or "inline vision judge unavailable",
+    }
+    return observation
 
 
 def _raw_candidate_vision_observation(candidate: dict[str, Any]) -> dict[str, Any]:

@@ -2126,6 +2126,13 @@ def _score_candidates(
         )
         evidence = vision_observation.get("evidence") if isinstance(vision_observation.get("evidence"), dict) else {}
         candidate["vision_observation_source"] = evidence.get("source")
+        vision_failure = (
+            vision_observation.get("vision_failure")
+            if isinstance(vision_observation.get("vision_failure"), dict)
+            else None
+        )
+        if vision_failure:
+            candidate["vision_failure"] = vision_failure
         quality = judge_visual_quality(
             candidate,
             request_context={
@@ -2140,6 +2147,8 @@ def _score_candidates(
                 "source": evidence.get("source"),
                 "summary": evidence.get("summary", ""),
             }
+        if vision_failure:
+            quality["vision_failure"] = vision_failure
         content_hash = candidate.get("content_hash")
         if isinstance(content_hash, str) and content_hash:
             recent_hashes.add(content_hash)
@@ -2161,6 +2170,7 @@ def _score_candidates(
                 "judge_sources": quality.get("judge_sources", {}),
                 "uncertainty_reasons": quality.get("uncertainty_reasons", []),
                 "vision_observation_source": candidate.get("vision_observation_source"),
+                **({"vision_failure": vision_failure} if vision_failure else {}),
             },
         )
         candidate["reward"] = score_visual_candidate(

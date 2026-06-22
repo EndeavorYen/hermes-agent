@@ -60,3 +60,32 @@ def test_candidate_vision_observation_merges_preference_dimensions_from_inline_j
     assert observation["fashion_material_quality"] == 0.3
     assert observation["pose_composition"] == 0.8
     assert observation["evidence"]["source"] == "inline_vision_judge"
+
+
+def test_candidate_vision_observation_records_inline_provider_failure():
+    observation = build_candidate_vision_observation(
+        {
+            "kind": "image",
+            "artifact_path": "/tmp/current.png",
+        },
+        fallback_observation={
+            "composition": 0.5,
+            "visual_appeal": 0.5,
+            "confidence": 0.2,
+            "artifact_defects": [],
+        },
+        inline_enabled=True,
+        analyzer=lambda _candidate: {
+            "success": False,
+            "error": (
+                "Error code: 403 - {'code':'personal-team-blocked:spending-limit',"
+                "'error':'You have run out of credits or need a Grok subscription.'}"
+            ),
+            "analysis": "Insufficient credits or payment required.",
+        },
+    )
+
+    assert observation["composition"] == 0.5
+    assert observation["evidence"]["source"] == "inline_vision_unavailable"
+    assert observation["vision_failure"]["failure_class"] == "quota_exceeded"
+    assert observation["vision_failure"]["provider_message_code"] == "personal-team-blocked:spending-limit"

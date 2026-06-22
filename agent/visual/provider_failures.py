@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 
@@ -170,8 +171,15 @@ def _embedded_json_code(text: str) -> str | None:
     try:
         payload = json.loads(text[start : end + 1])
     except json.JSONDecodeError:
-        return None
+        return _embedded_repr_code(text[start : end + 1])
     return _nested_code(payload)
+
+
+def _embedded_repr_code(text: str) -> str | None:
+    match = re.search(r"['\"]code['\"]\s*:\s*['\"]([^'\"]+)['\"]", text)
+    if not match:
+        return None
+    return match.group(1)
 
 
 def _nested_code(value: Any) -> str | None:

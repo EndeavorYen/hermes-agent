@@ -553,6 +553,8 @@ def inspect_visual_e2e_evidence(
     inline_vision_judgment_count = sum(
         1 for row in judgments if _judgment_uses_inline_vision(row)
     )
+    inline_vision_failure_classes = _inline_vision_failure_classes(judgments)
+    inline_vision_failure_count = sum(inline_vision_failure_classes.values())
     retry_attempt_count = _retry_attempt_count(payload=payload, attempts=attempts)
     recovery_summary = _recovery_summary(
         payload=payload,
@@ -583,6 +585,8 @@ def inspect_visual_e2e_evidence(
         "learning_trace_count": learning_trace_count,
         "judgments_with_learning_metadata": judgments_with_learning_metadata,
         "inline_vision_judgment_count": inline_vision_judgment_count,
+        "inline_vision_failure_count": inline_vision_failure_count,
+        "inline_vision_failure_classes": dict(inline_vision_failure_classes),
         "provider_failure_classes": dict(provider_failure_classes),
         "provider_error_codes": dict(provider_error_codes),
         "retry_attempt_count": retry_attempt_count,
@@ -737,7 +741,10 @@ def _payload_failures(
     ):
         failures.append("provider_unavailable_after_retry")
     if mode == "live" and evidence.get("image_count", 0) >= 1 and evidence.get("inline_vision_judgment_count", 0) < 1:
-        failures.append("missing_inline_vision_judgment")
+        if evidence.get("inline_vision_failure_count", 0) >= 1:
+            failures.append("inline_vision_provider_failure")
+        else:
+            failures.append("missing_inline_vision_judgment")
     quality_gate = evidence.get("quality_gate")
     if mode == "live" and isinstance(quality_gate, dict) and quality_gate.get("success") is False:
         failures.append("quality_gate_failed")
@@ -1265,6 +1272,21 @@ def _judgment_uses_inline_vision(row: dict[str, Any]) -> bool:
         if evidence.get("source") == "inline_vision_judge":
             return True
     return False
+
+
+def _inline_vision_failure_classes(rows: list[dict[str, Any]]) -> Counter[str]:
+    classes: Counter[str] = Counter()
+    for row in rows:
+        failure = {}
+        for key in ("metadata", "details", "score_json"):
+            payload = row.get(key) if isinstance(row.get(key), dict) else {}
+            failure = payload.get("vision_failure") if isinstance(payload.get("vision_failure"), dict) else {}
+            if failure:
+                break
+        failure_class = str(failure.get("failure_class") or "").strip()
+        if failure_class:
+            classes[failure_class] += 1
+    return classes
 
 
 def _quality_gate(

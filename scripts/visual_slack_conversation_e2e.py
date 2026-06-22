@@ -598,6 +598,14 @@ def _build_quality_run(report: dict[str, Any]) -> dict[str, Any]:
                 ),
             }
         )
+    inline_vision_failure_count = _int(visual.get("inline_vision_failure_count"))
+    if inline_vision_failure_count > 0:
+        summary.update(
+            {
+                "inline_vision_failure_count": inline_vision_failure_count,
+                "inline_vision_failure_classes": _int_mapping(visual.get("inline_vision_failure_classes")),
+            }
+        )
     return {
         "success": report.get("success") is True,
         "run_id": run_id,

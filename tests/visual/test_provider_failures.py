@@ -59,6 +59,24 @@ def test_classify_visual_provider_failure_detects_xai_spending_limit_before_bloc
     assert result["provider_message_code"] == "personal-team-blocked:spending-limit"
 
 
+def test_classify_visual_provider_failure_extracts_python_repr_provider_code():
+    from agent.visual.provider_failures import classify_visual_provider_failure
+
+    result = classify_visual_provider_failure(
+        {
+            "success": False,
+            "error_type": "api_error",
+            "error": (
+                "Error code: 403 - {'code': 'personal-team-blocked:spending-limit', "
+                "'error': 'You have run out of credits or need a Grok subscription.'}"
+            ),
+        }
+    )
+
+    assert result["failure_class"] == "quota_exceeded"
+    assert result["provider_message_code"] == "personal-team-blocked:spending-limit"
+
+
 def test_classify_visual_provider_failure_detects_timeout_and_empty_response():
     from agent.visual.provider_failures import classify_visual_provider_failure
 

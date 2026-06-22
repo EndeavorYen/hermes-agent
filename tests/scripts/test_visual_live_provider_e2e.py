@@ -1774,6 +1774,31 @@ def test_visual_live_provider_e2e_requires_inline_vision_for_live_image_outputs(
     assert "missing_inline_vision_judgment" in failures
 
 
+def test_visual_live_provider_e2e_reports_inline_vision_provider_failure():
+    from scripts.visual_live_provider_e2e import _payload_failures
+
+    failures = _payload_failures(
+        {"success": True, "images": ["/tmp/image.png"], "videos": []},
+        {
+            "image_count": 1,
+            "video_count": 0,
+            "judgment_count": 1,
+            "ranking_count": 1,
+            "learning_trace_count": 1,
+            "judgments_with_learning_metadata": 1,
+            "inline_vision_judgment_count": 0,
+            "inline_vision_failure_count": 1,
+            "inline_vision_failure_classes": {"quota_exceeded": 1},
+            "providers": ["openai-codex", "xai"],
+        },
+        mode="live",
+        require_video=False,
+    )
+
+    assert "inline_vision_provider_failure" in failures
+    assert "missing_inline_vision_judgment" not in failures
+
+
 def test_visual_live_provider_e2e_fails_when_quality_score_below_threshold():
     from scripts.visual_live_provider_e2e import _payload_failures
 
@@ -1817,3 +1842,27 @@ def test_visual_live_provider_e2e_counts_legacy_score_json_inline_vision():
             },
         }
     )
+
+
+def test_visual_live_provider_e2e_counts_legacy_score_json_inline_vision_failure():
+    from scripts.visual_live_provider_e2e import _inline_vision_failure_classes
+
+    result = _inline_vision_failure_classes(
+        [
+            {
+                "judge_name": "visual_quality_judge",
+                "score_json": {
+                    "evidence": {
+                        "source": "inline_vision_unavailable",
+                        "summary": "provider account quota or subscription limit was hit",
+                    },
+                    "vision_failure": {
+                        "failure_class": "quota_exceeded",
+                        "provider_message_code": "personal-team-blocked:spending-limit",
+                    },
+                },
+            }
+        ]
+    )
+
+    assert result == {"quota_exceeded": 1}

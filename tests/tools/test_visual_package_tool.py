@@ -4144,6 +4144,59 @@ def test_score_candidates_runs_inline_vision_before_reward(tmp_path):
     assert judgment["details"]["evidence"]["source"] == "inline_vision_judge"
 
 
+def test_score_candidates_records_inline_vision_provider_failure(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from tools import visual_package_tool
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+    request_id = ledger.record_request(
+        user_prompt="redacted",
+        normalized_intent={"kind": "visual_package"},
+        modality="package",
+        operation="visual_package_generate",
+        status="started",
+        metadata={"intent_signature": "visig_demo"},
+    )
+    candidate = {
+        "attempt_id": "vat_demo",
+        "artifact_id": "var_demo",
+        "artifact_path": str(tmp_path / "candidate.png"),
+        "kind": "image",
+        "provider": "openai-codex",
+        "model": "gpt-image-2",
+        "content_hash": "hash-demo",
+        "hard_gate": {"passed": True, "delivery_possible": True},
+        "scores": {"resolution": 0.9, "aspect_match": 0.9, "final_score": 0.9},
+    }
+
+    visual_package_tool._score_candidates(
+        ledger,
+        request_id=request_id,
+        intent_signature="visig_demo",
+        strategy_signature="vstrat_demo",
+        modality="image",
+        has_reference_image=False,
+        candidates=[candidate],
+        inline_vision_judge=True,
+        vision_analyzer=lambda _candidate: {
+            "success": False,
+            "error": (
+                "Error code: 403 - {'code':'personal-team-blocked:spending-limit',"
+                "'error':'You have run out of credits or need a Grok subscription.'}"
+            ),
+            "analysis": "Insufficient credits or payment required.",
+        },
+    )
+
+    judgment = ledger._list("visual_judgments")[0]
+    assert candidate["vision_observation_source"] == "inline_vision_unavailable"
+    assert judgment["metadata"]["vision_observation_source"] == "inline_vision_unavailable"
+    assert judgment["metadata"]["vision_failure"]["failure_class"] == "quota_exceeded"
+    assert judgment["details"]["evidence"]["source"] == "inline_vision_unavailable"
+    assert judgment["details"]["vision_failure"]["failure_class"] == "quota_exceeded"
+
+
 def test_inline_vision_prompt_requests_preference_dimension_metrics():
     from tools.visual_package_tool import INLINE_VISION_JUDGE_PROMPT
 

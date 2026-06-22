@@ -316,6 +316,46 @@ def test_visual_slack_delivery_surfaces_quality_gate_evidence(monkeypatch, tmp_p
     assert report["visual"]["quality_gate"] == quality_gate
 
 
+def test_visual_slack_delivery_surfaces_inline_vision_failure_evidence(monkeypatch, tmp_path):
+    from scripts import visual_slack_delivery_e2e
+
+    monkeypatch.setattr(
+        visual_slack_delivery_e2e,
+        "run_visual_package",
+        lambda _args: _fake_visual_package_payload(tmp_path),
+    )
+    monkeypatch.setattr(
+        visual_slack_delivery_e2e,
+        "inspect_visual_e2e_evidence",
+        lambda _payload, *, require_video: {
+            "request_id": "vrq_vision_failure",
+            "image_count": 1,
+            "video_count": 1,
+            "artifact_count": 2,
+            "judgment_count": 2,
+            "ranking_count": 2,
+            "video_source": {"image_first_for_video": True, "uses_ranked_selected_image": True},
+            "provider_failure_classes": {},
+            "provider_error_codes": {},
+            "retry_attempt_count": 0,
+            "inline_vision_failure_count": 1,
+            "inline_vision_failure_classes": {"quota_exceeded": 1},
+            "recovery_summary": {},
+            "quality_repair_summary": {},
+            "quality_gate": {},
+        },
+    )
+
+    report = visual_slack_delivery_e2e.build_visual_slack_delivery_e2e_report(
+        mode="fixture",
+        work_dir=tmp_path,
+        target="D_TEST",
+    )
+
+    assert report["visual"]["inline_vision_failure_count"] == 1
+    assert report["visual"]["inline_vision_failure_classes"] == {"quota_exceeded": 1}
+
+
 def test_visual_slack_delivery_fails_when_quality_gate_fails(monkeypatch, tmp_path):
     from scripts import visual_slack_delivery_e2e
 

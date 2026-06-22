@@ -861,6 +861,44 @@ def test_visual_slack_conversation_e2e_live_records_provider_fallback_summary(mo
     assert quality_run["summary"]["provider_fallback_recovered_classes"] == ["quota_exceeded"]
 
 
+def test_visual_slack_conversation_e2e_live_records_inline_vision_failure_summary(monkeypatch, tmp_path):
+    from scripts import visual_slack_conversation_e2e
+
+    runtime_home = tmp_path / "runtime-home"
+    monkeypatch.setenv("HERMES_HOME", str(runtime_home))
+    monkeypatch.setattr(
+        visual_slack_conversation_e2e,
+        "_resolve_target",
+        lambda *, mode, target: "D_LIVE" if mode == "live" and target is None else target,
+    )
+
+    def vision_failure_delivery(**kwargs):
+        report = _fake_delivery_report(**kwargs)
+        report["visual"]["inline_vision_failure_count"] = 1
+        report["visual"]["inline_vision_failure_classes"] = {"quota_exceeded": 1}
+        return report
+
+    monkeypatch.setattr(
+        visual_slack_conversation_e2e,
+        "build_visual_slack_delivery_e2e_report",
+        vision_failure_delivery,
+    )
+
+    visual_slack_conversation_e2e.build_visual_slack_conversation_e2e_report(
+        mode="live",
+        work_dir=tmp_path / "work",
+        prompt="make an image and video of a matte black pen",
+        target=None,
+        upload=True,
+        record_quality_run=True,
+    )
+
+    quality_run_path = runtime_home / "visual" / "live_quality_burn" / "latest.json"
+    quality_run = json.loads(quality_run_path.read_text(encoding="utf-8"))
+    assert quality_run["summary"]["inline_vision_failure_count"] == 1
+    assert quality_run["summary"]["inline_vision_failure_classes"] == {"quota_exceeded": 1}
+
+
 def test_visual_slack_conversation_e2e_live_fails_without_runtime_target(monkeypatch, tmp_path):
     from scripts import visual_slack_conversation_e2e
 

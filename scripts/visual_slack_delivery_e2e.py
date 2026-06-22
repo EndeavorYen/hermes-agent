@@ -144,6 +144,8 @@ def build_visual_slack_delivery_e2e_report(
             "provider_failure_classes": visual_evidence.get("provider_failure_classes", {}),
             "provider_error_codes": visual_evidence.get("provider_error_codes", {}),
             "retry_attempt_count": visual_evidence.get("retry_attempt_count", 0),
+            "inline_vision_failure_count": visual_evidence.get("inline_vision_failure_count", 0),
+            "inline_vision_failure_classes": visual_evidence.get("inline_vision_failure_classes", {}),
             "recovery_summary": visual_evidence.get("recovery_summary", {}),
             "quality_repair_summary": visual_evidence.get("quality_repair_summary", {}),
             "quality_gate": visual_evidence.get("quality_gate", {}),
