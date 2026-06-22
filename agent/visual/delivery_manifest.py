@@ -34,12 +34,16 @@ def build_visual_delivery_manifest(package_payload: dict[str, Any]) -> dict[str,
     for ref, entry in artifacts.items():
         if not isinstance(entry, dict):
             continue
+        entry = _entry_with_ledger_artifact(entry)
         artifact_id = str(entry.get("artifact_id") or "")
         if selected_ids and artifact_id not in selected_ids:
             continue
         artifact_request_id = str(entry.get("request_id") or "")
         if request_id and artifact_request_id and artifact_request_id != request_id:
             failures.append("cross_request_visual_artifact")
+            continue
+        if _stale_or_unstable_artifact(entry):
+            failures.append("stale_visual_artifact")
             continue
         deliverable = _deliverable(str(ref), entry, package_payload)
         if deliverable.get("kind") == "video" and deliverable.get("uploadable_file") is not True:
@@ -73,6 +77,44 @@ def select_deliverable_artifacts(manifest: dict[str, Any]) -> list[dict[str, Any
         seen.update(dedupe_keys)
         selected.append(item)
     return selected
+
+
+def _entry_with_ledger_artifact(entry: dict[str, Any]) -> dict[str, Any]:
+    artifact_id = str(entry.get("artifact_id") or "")
+    if not artifact_id:
+        return entry
+    try:
+        from agent.visual.attempt_ledger import VisualAttemptLedger
+        from agent.visual.tracking import default_visual_ledger_path
+
+        artifact = VisualAttemptLedger(default_visual_ledger_path()).get_artifact(artifact_id)
+    except Exception:
+        return entry
+    merged = dict(entry)
+    for key in (
+        "request_id",
+        "attempt_id",
+        "kind",
+        "content_hash",
+        "mime_type",
+        "width",
+        "height",
+        "freshness_status",
+        "is_stable",
+    ):
+        if artifact.get(key) is not None:
+            merged[key] = artifact.get(key)
+    return merged
+
+
+def _stale_or_unstable_artifact(entry: dict[str, Any]) -> bool:
+    freshness = entry.get("freshness_status")
+    if freshness is not None and str(freshness).strip().lower() != "fresh":
+        return True
+    stable = entry.get("is_stable")
+    if stable is False or stable == 0 or str(stable).strip().lower() in {"0", "false", "no"}:
+        return True
+    return False
 
 
 def _deliverable(ref: str, entry: dict[str, Any], package_payload: dict[str, Any]) -> dict[str, Any]:

@@ -157,6 +157,51 @@ def test_delivery_manifest_skips_selected_artifacts_from_other_requests():
     assert "cross_request_visual_artifact" in manifest["failures"]
 
 
+def test_delivery_manifest_fails_closed_for_selected_stale_artifact_from_ledger(monkeypatch, tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.delivery_manifest import build_visual_delivery_manifest
+    from agent.visual.delivery_manifest import select_deliverable_artifacts
+    from agent.visual.tracking import default_visual_ledger_path
+    from agent.visual.tracking import visual_delivery_metadata
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ledger = VisualAttemptLedger(default_visual_ledger_path())
+    ledger.initialize()
+    request_id = ledger.record_request(
+        user_prompt="current request",
+        normalized_intent={"kind": "visual_package"},
+        modality="package",
+        operation="visual_package_generate",
+        status="completed",
+    )
+    artifact_id = ledger.record_artifact(
+        request_id=request_id,
+        kind="image",
+        local_path="/tmp/stale-selected.png",
+        uri="/tmp/stale-selected.png",
+        content_hash="sha256:old",
+        mime_type="image/png",
+        is_stable=True,
+        freshness_status="stale",
+    )
+    payload = {
+        "visual_request_id": request_id,
+        "images": ["/tmp/stale-selected.png"],
+        "delivery_metadata": visual_delivery_metadata(
+            request_id=request_id,
+            attempt_id=None,
+            artifact_ids=[artifact_id],
+            artifact_paths=["/tmp/stale-selected.png"],
+            selected_artifact_ids=[artifact_id],
+        ),
+    }
+
+    manifest = build_visual_delivery_manifest(payload)
+
+    assert select_deliverable_artifacts(manifest) == []
+    assert "stale_visual_artifact" in manifest["failures"]
+
+
 def test_delivery_manifest_marks_remote_video_unuploadable():
     from agent.visual.delivery_manifest import build_visual_delivery_manifest
     from agent.visual.delivery_manifest import select_deliverable_artifacts
