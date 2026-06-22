@@ -722,6 +722,49 @@ class TestSendToPlatformChunking:
         sent_text = send.await_args.args[2]
         assert "<https://en.wikipedia.org/wiki/Foo_(bar)|Foo>" in sent_text
 
+    def test_slack_media_only_uses_live_adapter_upload(self, monkeypatch, tmp_path):
+        """Slack MEDIA-only sends must upload the file, not return an unsupported-media error."""
+        video = tmp_path / "clip.mp4"
+        video.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+
+        calls = []
+
+        class FakeSlackAdapter:
+            async def send(self, **kwargs):
+                calls.append(("send", kwargs))
+                return SimpleNamespace(success=True, message_id="text-ts")
+
+            async def send_video(self, chat_id, video_path, metadata=None):
+                calls.append(("send_video", chat_id, video_path, metadata))
+                return SimpleNamespace(success=True, message_id="video-ts")
+
+        monkeypatch.setattr(
+            "gateway.run._gateway_runner_ref",
+            lambda: SimpleNamespace(adapters={Platform.SLACK: FakeSlackAdapter()}),
+        )
+
+        result = asyncio.run(
+            _send_to_platform(
+                Platform.SLACK,
+                SimpleNamespace(enabled=True, token="***", extra={}),
+                "C123",
+                " ",
+                media_files=[(str(video), False)],
+                thread_id="171.000001",
+            )
+        )
+
+        assert result["success"] is True
+        assert result["message_id"] == "video-ts"
+        assert calls == [
+            (
+                "send_video",
+                "C123",
+                str(video),
+                {"thread_id": "171.000001"},
+            )
+        ]
+
     def test_telegram_media_attaches_to_last_chunk(self):
 
         sent_calls = []

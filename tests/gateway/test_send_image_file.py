@@ -678,6 +678,57 @@ class TestSlackSendImageFile:
         assert not result.success
         assert "Not connected" in result.error
 
+    def test_send_multiple_images_records_visual_delivery(self, adapter, tmp_path, monkeypatch):
+        from agent.visual.attempt_ledger import VisualAttemptLedger
+        from agent.visual.tracking import visual_delivery_metadata
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        ledger = VisualAttemptLedger(tmp_path / "visual" / "attempt_ledger.sqlite3")
+        ledger.initialize()
+        request_id = ledger.record_request(
+            platform="slack",
+            channel_id="C12345",
+            thread_id="171.000001",
+            normalized_intent={"kind": "image"},
+            modality="image",
+            operation="visual_package_generate",
+        )
+        attempt_id = ledger.record_attempt(request_id=request_id, provider="xai")
+        image_path = tmp_path / "candidate.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+        artifact_id = ledger.record_artifact(
+            request_id=request_id,
+            attempt_id=attempt_id,
+            kind="image",
+            uri=image_path.as_uri(),
+            local_path=str(image_path),
+            content_hash="sha256:slack-batch-current",
+            mime_type="image/png",
+        )
+        metadata = visual_delivery_metadata(
+            request_id=request_id,
+            attempt_id=attempt_id,
+            artifact_ids=[artifact_id],
+            artifact_paths=[str(image_path)],
+            thread_id="171.000001",
+        )
+        adapter._app.client.files_upload_v2 = AsyncMock(return_value={"ts": "upload-ts"})
+
+        _run(
+            adapter.send_multiple_images(
+                "C12345",
+                [(image_path.as_uri(), "caption")],
+                metadata=metadata,
+            )
+        )
+
+        deliveries = ledger.list_deliveries(request_id=request_id)
+        assert len(deliveries) == 1
+        assert deliveries[0]["artifact_id"] == artifact_id
+        assert deliveries[0]["delivery_status"] == "sent"
+        assert deliveries[0]["message_id"] == "upload-ts"
+        assert deliveries[0]["destination"] == "slack:C12345:171.000001"
+
 
 # ---------------------------------------------------------------------------
 # browser_vision screenshot cleanup tests

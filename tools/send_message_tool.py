@@ -700,6 +700,114 @@ async def _send_via_adapter(
     }
 
 
+def _adapter_send_success(result) -> bool:
+    if isinstance(result, dict):
+        return bool(result.get("success"))
+    return bool(getattr(result, "success", False))
+
+
+def _adapter_send_error(result) -> str | None:
+    if isinstance(result, dict):
+        error = result.get("error")
+    else:
+        error = getattr(result, "error", None)
+    return str(error) if error else None
+
+
+def _adapter_send_message_id(result) -> str | None:
+    if isinstance(result, dict):
+        value = result.get("message_id") or result.get("id") or result.get("ts")
+    else:
+        value = getattr(result, "message_id", None)
+    return str(value) if value not in (None, "") else None
+
+
+async def _send_slack_via_live_adapter(
+    platform,
+    chat_id,
+    message,
+    *,
+    thread_id=None,
+    media_files=None,
+    force_document=False,
+):
+    media_files = media_files or []
+    runner = None
+    try:
+        from gateway.run import _gateway_runner_ref
+        runner = _gateway_runner_ref()
+    except Exception:
+        runner = None
+
+    adapter = None
+    if runner is not None:
+        try:
+            adapter = runner.adapters.get(platform)
+        except Exception:
+            adapter = None
+        if adapter is None:
+            try:
+                platform_name = platform.value if hasattr(platform, "value") else str(platform)
+                adapter = runner.adapters.get(platform_name)
+            except Exception:
+                adapter = None
+
+    if adapter is None:
+        return {
+            "error": (
+                "Slack media delivery requires the live gateway Slack adapter. "
+                "Text-only Slack sends can use chat.postMessage, but media files "
+                "must be uploaded through the connected adapter."
+            )
+        }
+
+    metadata = {"thread_id": thread_id} if thread_id else None
+    last_result = None
+
+    if message.strip():
+        try:
+            last_result = await adapter.send(chat_id=chat_id, content=message, metadata=metadata)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            return _error(f"Slack adapter text send failed: {exc}")
+        if not _adapter_send_success(last_result):
+            return _error(f"Slack adapter text send failed: {_adapter_send_error(last_result) or 'unknown'}")
+
+    for media_path, is_voice in media_files:
+        if not os.path.exists(media_path):
+            return _error(f"Media file not found: {media_path}")
+
+        ext = os.path.splitext(media_path)[1].lower()
+        try:
+            if ext in _IMAGE_EXTS and not force_document:
+                last_result = await adapter.send_image_file(chat_id, media_path, metadata=metadata)
+            elif ext in _VIDEO_EXTS:
+                last_result = await adapter.send_video(chat_id, media_path, metadata=metadata)
+            elif ext in _VOICE_EXTS and is_voice:
+                last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
+            elif ext in _AUDIO_EXTS:
+                last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
+            else:
+                last_result = await adapter.send_document(chat_id, media_path, metadata=metadata)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            return _error(f"Slack adapter media send failed: {exc}")
+        if not _adapter_send_success(last_result):
+            return _error(f"Slack adapter media send failed: {_adapter_send_error(last_result) or 'unknown'}")
+
+    if last_result is None:
+        return {"error": "No deliverable text or media remained after processing MEDIA tags"}
+
+    return {
+        "success": True,
+        "platform": "slack",
+        "chat_id": chat_id,
+        "message_id": _adapter_send_message_id(last_result),
+    }
+
+
 async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
     """Route a message to the appropriate platform sender.
 
@@ -883,11 +991,29 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- Slack: native media upload through the live gateway adapter ---
+    if platform == Platform.SLACK and media_files:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_slack_via_live_adapter(
+                platform,
+                chat_id,
+                chunk,
+                thread_id=thread_id,
+                media_files=media_files if is_last else [],
+                force_document=force_document,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- Non-media platforms ---
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, slack, matrix, weixin, signal, yuanbao and feishu; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -895,7 +1021,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu"
+            "native send_message media delivery is currently only supported for telegram, discord, slack, matrix, weixin, signal, yuanbao and feishu"
         )
 
     last_result = None

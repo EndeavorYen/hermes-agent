@@ -1480,8 +1480,23 @@ class SlackAdapter(BasePlatformAdapter):
                 await asyncio.sleep(human_delay)
 
             file_uploads: List[Dict[str, Any]] = []
+            visual_deliveries: List[Tuple[Dict[str, Any], Any]] = []
             initial_comment_parts: List[str] = []
             try:
+                record_delivery_status = None
+                get_delivery_deduper = None
+                visual_delivery_context = None
+                try:
+                    from agent.visual.delivery_dedupe import get_artifact_delivery_deduper
+                    from agent.visual.tracking import record_visual_delivery_status
+                    from agent.visual.tracking import visual_delivery_context as _visual_delivery_context
+
+                    get_delivery_deduper = get_artifact_delivery_deduper
+                    record_delivery_status = record_visual_delivery_status
+                    visual_delivery_context = _visual_delivery_context
+                except Exception as visual_err:
+                    logger.debug("[%s] Visual batch delivery attribution unavailable: %s", self.name, visual_err)
+
                 async with _httpx.AsyncClient(
                     timeout=30.0, follow_redirects=True
                 ) as http_client:
@@ -1489,12 +1504,56 @@ class SlackAdapter(BasePlatformAdapter):
                         if alt_text:
                             initial_comment_parts.append(alt_text)
 
+                        visual_context = None
+                        visual_deduper = None
+                        if visual_delivery_context is not None:
+                            try:
+                                visual_context = visual_delivery_context(
+                                    metadata,
+                                    image_url,
+                                    platform=self.platform.value,
+                                    destination_id=str(chat_id),
+                                    thread_id=(metadata or {}).get("thread_id") or (metadata or {}).get("visual_thread_id"),
+                                )
+                                if visual_context and visual_context.get("skip_status"):
+                                    record_delivery_status(visual_context, visual_context["skip_status"])
+                                    logger.info(
+                                        "[Slack] Skipping generated image delivery (%s): %s",
+                                        visual_context["skip_status"],
+                                        safe_url_for_log(image_url),
+                                    )
+                                    continue
+                                if visual_context and visual_context.get("content_hash") and get_delivery_deduper is not None:
+                                    visual_deduper = get_delivery_deduper()
+                                    if visual_deduper.is_duplicate(
+                                        visual_context["content_hash"],
+                                        visual_context["destination"],
+                                        visual_context["request_id"],
+                                    ):
+                                        record_delivery_status(visual_context, "skipped_duplicate")
+                                        logger.info(
+                                            "[Slack] Skipping duplicate generated image delivery: %s",
+                                            safe_url_for_log(image_url),
+                                        )
+                                        continue
+                            except Exception as visual_err:
+                                logger.debug("[%s] Visual batch delivery attribution skipped: %s", self.name, visual_err)
+                                visual_context = None
+                                visual_deduper = None
+
                         if image_url.startswith("file://"):
                             local_path = _unquote(image_url[7:])
                             if not os.path.exists(local_path):
                                 logger.warning(
                                     "[Slack] Skipping missing image: %s", local_path
                                 )
+                                if visual_context and record_delivery_status:
+                                    record_delivery_status(
+                                        visual_context,
+                                        "failed",
+                                        error_type="missing_file",
+                                        error_message=f"Image file not found: {local_path}",
+                                    )
                                 continue
                             file_uploads.append(
                                 {
@@ -1502,11 +1561,20 @@ class SlackAdapter(BasePlatformAdapter):
                                     "filename": os.path.basename(local_path),
                                 }
                             )
+                            if visual_context:
+                                visual_deliveries.append((visual_context, visual_deduper))
                         else:
                             if not _is_safe_url(image_url):
                                 logger.warning(
                                     "[Slack] Blocked unsafe image URL in batch"
                                 )
+                                if visual_context and record_delivery_status:
+                                    record_delivery_status(
+                                        visual_context,
+                                        "failed",
+                                        error_type="unsafe_url",
+                                        error_message="Blocked unsafe image URL in batch",
+                                    )
                                 continue
                             try:
                                 response = await http_client.get(image_url)
@@ -1525,12 +1593,21 @@ class SlackAdapter(BasePlatformAdapter):
                                         "filename": f"image_{len(file_uploads)}.{ext}",
                                     }
                                 )
+                                if visual_context:
+                                    visual_deliveries.append((visual_context, visual_deduper))
                             except Exception as dl_err:
                                 logger.warning(
                                     "[Slack] Download failed for %s: %s",
                                     safe_url_for_log(image_url),
                                     dl_err,
                                 )
+                                if visual_context and record_delivery_status:
+                                    record_delivery_status(
+                                        visual_context,
+                                        "failed",
+                                        error_type=type(dl_err).__name__,
+                                        error_message=str(dl_err),
+                                    )
                                 continue
 
                 if not file_uploads:
@@ -1552,7 +1629,20 @@ class SlackAdapter(BasePlatformAdapter):
                     thread_ts=thread_ts,
                 )
                 self._record_uploaded_file_thread(chat_id, thread_ts)
-                _ = result
+                message_id = _slack_upload_message_id(result)
+                if record_delivery_status:
+                    for visual_context, visual_deduper in visual_deliveries:
+                        if visual_deduper and visual_context.get("content_hash"):
+                            visual_deduper.mark(
+                                visual_context["content_hash"],
+                                visual_context["destination"],
+                                visual_context["request_id"],
+                            )
+                        record_delivery_status(
+                            visual_context,
+                            "sent",
+                            message_id=message_id,
+                        )
             except Exception as e:
                 logger.warning(
                     "[Slack] Multi-image files_upload_v2 failed (chunk %d/%d), falling back to per-image: %s",
