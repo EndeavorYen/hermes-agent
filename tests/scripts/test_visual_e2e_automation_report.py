@@ -16,6 +16,10 @@ def test_visual_e2e_automation_fixture_default(tmp_path):
     assert report["conversation_route"]["success"] is True
     assert report["storyboard_execution"]["success"] is True
     assert report["storyboard_execution"]["evidence"]["storyboard_execution"]["delivers_composed_video"] is True
+    assert (
+        report["storyboard_execution"]["evidence"]["storyboard_execution"]["shots_use_single_ranked_images"]
+        is True
+    )
     assert report["storyboard_slack_delivery"]["success"] is True
     assert report["storyboard_slack_delivery"]["delivery"]["deliverable_count"] == 1
     assert report["storyboard_slack_delivery"]["visual"]["storyboard_execution"]["delivers_composed_video"] is True

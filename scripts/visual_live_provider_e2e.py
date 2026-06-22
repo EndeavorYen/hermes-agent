@@ -794,6 +794,11 @@ def _storyboard_execution_evidence(payload: dict[str, Any]) -> dict[str, Any]:
         for shot in shots
         if isinstance(shot, dict) and isinstance(shot.get("clip_path"), str)
     ]
+    bad_source_shot_ids = [
+        str(shot.get("shot_id") or f"shot_{index + 1}")
+        for index, shot in enumerate(shots)
+        if isinstance(shot, dict) and shot.get("uses_single_ranked_image") is not True
+    ]
     composed_video = _string_or_none(execution.get("composed_video"))
     return {
         "status": execution.get("status"),
@@ -804,6 +809,8 @@ def _storyboard_execution_evidence(payload: dict[str, Any]) -> dict[str, Any]:
         "composed_video": composed_video,
         "delivers_composed_video": bool(composed_video and videos == [composed_video]),
         "delivers_source_clips": any(clip in videos for clip in source_clips),
+        "shots_use_single_ranked_images": (not bad_source_shot_ids) if shots else None,
+        "bad_source_shot_ids": bad_source_shot_ids,
     }
 
 
@@ -819,6 +826,8 @@ def _storyboard_execution_failures(evidence: dict[str, Any]) -> list[str]:
         failures.append("storyboard_composed_video_not_delivered")
     if evidence.get("delivers_source_clips") is True:
         failures.append("storyboard_source_clips_delivered")
+    if evidence.get("shots_use_single_ranked_images") is not True:
+        failures.append("storyboard_shot_source_not_single_ranked_image")
     return failures
 
 
