@@ -14,6 +14,7 @@ def test_visual_e2e_automation_fixture_default(tmp_path):
     assert report["agent_mode"]["success"] is True
     assert report["live_e2e"]["status"] == "not_requested"
     assert report["health"]["success"] is True
+    assert report["quality_calibration"]["success"] is True
 
 
 def test_visual_e2e_automation_fails_when_agent_mode_regression_fails(monkeypatch, tmp_path):
@@ -29,6 +30,22 @@ def test_visual_e2e_automation_fails_when_agent_mode_regression_fails(monkeypatc
 
     assert report["success"] is False
     assert "agent_mode_failed" in report["failures"]
+
+
+def test_visual_e2e_automation_fails_when_quality_calibration_fails(monkeypatch, tmp_path):
+    from scripts import visual_e2e_automation_report
+
+    monkeypatch.setattr(
+        visual_e2e_automation_report,
+        "build_quality_calibration_report",
+        lambda _path: {"success": False, "failures": ["judge_human_disagreement_rate_high"]},
+    )
+
+    report = visual_e2e_automation_report.build_visual_e2e_automation_report(work_dir=tmp_path)
+
+    assert report["success"] is False
+    assert "quality_calibration_failed" in report["failures"]
+    assert report["quality_calibration"]["failures"] == ["judge_human_disagreement_rate_high"]
 
 
 def test_visual_e2e_automation_live_skips_without_enable(monkeypatch, tmp_path):

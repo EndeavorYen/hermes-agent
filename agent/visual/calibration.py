@@ -6,6 +6,9 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+MIN_MATCHED_FEEDBACK_FOR_FAILURE = 5
+MAX_JUDGE_HUMAN_DISAGREEMENT_RATE = 0.5
+
 
 def build_quality_calibration_report(db_path: str | Path) -> dict[str, Any]:
     db_path = Path(db_path)
@@ -35,9 +38,28 @@ def build_quality_calibration_report(db_path: str | Path) -> dict[str, Any]:
             disagreement += 1
 
     human_polarities = list(feedback_by_artifact.values())
+    matched_feedback_count = agreement + disagreement
+    disagreement_rate = (
+        round(disagreement / matched_feedback_count, 4)
+        if matched_feedback_count
+        else 0.0
+    )
+    failures = []
+    if (
+        matched_feedback_count >= MIN_MATCHED_FEEDBACK_FOR_FAILURE
+        and disagreement_rate > MAX_JUDGE_HUMAN_DISAGREEMENT_RATE
+    ):
+        failures.append("judge_human_disagreement_rate_high")
     return {
-        "success": True,
+        "success": not failures,
         "db_path": str(db_path),
+        "failures": failures,
+        "matched_feedback_count": matched_feedback_count,
+        "judge_human_disagreement_rate": disagreement_rate,
+        "thresholds": {
+            "min_matched_feedback_for_failure": MIN_MATCHED_FEEDBACK_FOR_FAILURE,
+            "max_judge_human_disagreement_rate": MAX_JUDGE_HUMAN_DISAGREEMENT_RATE,
+        },
         "counts": {
             "judged_artifacts": len(judgments),
             "low_confidence": sum(1 for value in confidence_values if value < 0.5),
@@ -61,6 +83,13 @@ def _empty_report(db_path: Path) -> dict[str, Any]:
     return {
         "success": True,
         "db_path": str(db_path),
+        "failures": [],
+        "matched_feedback_count": 0,
+        "judge_human_disagreement_rate": 0.0,
+        "thresholds": {
+            "min_matched_feedback_for_failure": MIN_MATCHED_FEEDBACK_FOR_FAILURE,
+            "max_judge_human_disagreement_rate": MAX_JUDGE_HUMAN_DISAGREEMENT_RATE,
+        },
         "counts": {
             "judged_artifacts": 0,
             "low_confidence": 0,
