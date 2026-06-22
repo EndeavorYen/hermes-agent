@@ -1012,13 +1012,21 @@ async def test_visual_package_generates_multiple_image_candidates_and_posts_only
 
     assert len(calls) == 2
     assert len(payload["images"]) == 1
+    selected_refs = set(payload["images"] + payload["videos"])
+    rejected_refs = {str(path) for path in paths} - selected_refs
+    assert rejected_refs
     assert len(
         {
             entry["artifact_id"]
             for entry in payload["delivery_metadata"]["visual_artifacts"].values()
         }
-    ) == 2
+    ) == 1
     assert len(payload["delivery_metadata"]["selected_visual_artifact_ids"]) == 1
+    delivery_json = json.dumps(payload["delivery_metadata"], ensure_ascii=False)
+    generation_json = json.dumps(payload["generation_payloads"], ensure_ascii=False)
+    for ref in rejected_refs:
+        assert ref not in delivery_json
+        assert ref not in generation_json
 
 
 @pytest.mark.asyncio

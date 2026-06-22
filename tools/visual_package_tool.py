@@ -236,8 +236,6 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         metadata={"intent_signature": intent_signature},
     )
 
-    all_artifact_ids: list[str] = []
-    all_artifact_paths: list[str] = []
     selected_artifact_ids: list[str] = []
     selected_images: list[str] = []
     selected_videos: list[str] = []
@@ -302,8 +300,6 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             )
             if image_candidate:
                 image_candidates.append(image_candidate)
-                all_artifact_ids.append(image_candidate["artifact_id"])
-                all_artifact_paths.append(image_candidate["artifact_path"])
             elif not image_payload.get("success"):
                 retry_payload = _retry_generation_payload(
                     generator=generate_image,
@@ -333,8 +329,6 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                     )
                     if retry_candidate:
                         image_candidates.append(retry_candidate)
-                        all_artifact_ids.append(retry_candidate["artifact_id"])
-                        all_artifact_paths.append(retry_candidate["artifact_path"])
         generation_payloads["image"] = image_payloads[0] if len(image_payloads) == 1 else image_payloads
         _score_candidates(
             ledger,
@@ -420,8 +414,6 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             )
             if repair_candidate:
                 image_candidates.append(repair_candidate)
-                all_artifact_ids.append(repair_candidate["artifact_id"])
-                all_artifact_paths.append(repair_candidate["artifact_path"])
                 _score_candidates(
                     ledger,
                     request_id=request_id,
@@ -549,8 +541,6 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 )
                 if video_candidate:
                     video_candidates.append(video_candidate)
-                    all_artifact_ids.append(video_candidate["artifact_id"])
-                    all_artifact_paths.append(video_candidate["artifact_path"])
                 elif not video_payload.get("success"):
                     retry_payload = _retry_generation_payload(
                         generator=generate_video,
@@ -586,8 +576,6 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                         )
                         if retry_candidate:
                             video_candidates.append(retry_candidate)
-                            all_artifact_ids.append(retry_candidate["artifact_id"])
-                            all_artifact_paths.append(retry_candidate["artifact_path"])
             generation_payloads["video"] = video_payloads[0] if len(video_payloads) == 1 else video_payloads
         _score_candidates(
             ledger,
@@ -673,8 +661,6 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             )
             if repair_candidate:
                 video_candidates.append(repair_candidate)
-                all_artifact_ids.append(repair_candidate["artifact_id"])
-                all_artifact_paths.append(repair_candidate["artifact_path"])
                 _score_candidates(
                     ledger,
                     request_id=request_id,
@@ -722,13 +708,15 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
     success = (not requested_image or bool(selected_images)) and (not wants_video or bool(selected_videos))
     package_status = "success" if success else ("partial" if selected_images or selected_videos else "failed")
     package_error = _package_error(success=success, delivery_gate=delivery_gate)
+    selected_artifact_paths = selected_images + selected_videos
     delivery_metadata = visual_delivery_metadata(
         request_id=request_id,
         attempt_id=None,
-        artifact_ids=all_artifact_ids,
-        artifact_paths=all_artifact_paths,
+        artifact_ids=selected_artifact_ids,
+        artifact_paths=selected_artifact_paths,
         selected_artifact_ids=selected_artifact_ids,
     )
+    selected_delivery_refs = set(selected_artifact_paths)
 
     payload = {
         "success": success,
@@ -752,7 +740,10 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             "quality_guidance": quality_guidance,
         },
         "delivery_metadata": delivery_metadata,
-        "generation_payloads": generation_payloads,
+        "generation_payloads": _delivery_safe_generation_payloads(
+            generation_payloads,
+            selected_refs=selected_delivery_refs,
+        ),
         "learning": learning,
         "delivery_gate": delivery_gate,
     }
@@ -1373,6 +1364,36 @@ def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, str) and item]
+
+
+def _delivery_safe_generation_payloads(value: Any, *, selected_refs: set[str]) -> Any:
+    if isinstance(value, list):
+        return [
+            _delivery_safe_generation_payloads(item, selected_refs=selected_refs)
+            for item in value
+        ]
+    if not isinstance(value, dict):
+        return value
+    sanitized: dict[str, Any] = {}
+    redacted = False
+    for key, item in value.items():
+        if key in {"image", "video", "source_video_url"} and isinstance(item, str):
+            if item in selected_refs:
+                sanitized[key] = item
+            else:
+                sanitized[key] = None
+                redacted = True
+            continue
+        if key in {"images", "videos"} and isinstance(item, list):
+            filtered = [ref for ref in item if isinstance(ref, str) and ref in selected_refs]
+            if len(filtered) != len([ref for ref in item if isinstance(ref, str)]):
+                redacted = True
+            sanitized[key] = filtered
+            continue
+        sanitized[key] = _delivery_safe_generation_payloads(item, selected_refs=selected_refs)
+    if redacted:
+        sanitized["unselected_media_redacted"] = True
+    return sanitized
 
 
 def _record_artifact_ref(
