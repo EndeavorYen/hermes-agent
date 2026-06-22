@@ -49,6 +49,25 @@ when deciding whether to plan, implement, test, or stop and re-align.
   reliability, autonomy, or recovery clarity, re-check the active goal before
   adding more machinery.
 
+## Repository, Runtime, And Privacy Boundaries
+
+Keep durable rules in versionable documents and keep private runtime evidence
+local.
+
+- `AGENTS.md` is for long-lived operating rules, not per-run prompts, personal
+  visual preferences, generated artifacts, provider logs, or ledger dumps.
+- Put implementation plans, phase roadmaps, and review notes in `docs/` when
+  they should travel with the repo. Keep raw experiment traces under local
+  runtime state unless they are sanitized fixtures.
+- Before committing visual, autonomy, provider, or Slack changes, inspect staged
+  paths for caches, media files, JSONL ledgers, private prompts, platform
+  metadata, and provider responses.
+- Generated images, videos, cache files, Slack delivery artifacts, and quality
+  burn outputs should stay local by default. Commit only explicit sanitized
+  fixtures or schemas needed by tests.
+- Push local Hermes integration branches to `origin` unless the user explicitly
+  asks for an upstream PR workflow.
+
 ## Product Engineering Operating Style
 
 Hermes should become a useful product, not a collection of clever mechanisms.
