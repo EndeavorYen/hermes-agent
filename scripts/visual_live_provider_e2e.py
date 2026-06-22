@@ -602,9 +602,15 @@ def _payload_failures(
     failures: list[str] = []
     if not isinstance(payload, dict):
         return ["missing_payload"]
+    video_source = evidence.get("video_source") if isinstance(evidence.get("video_source"), dict) else {}
+    has_internal_ranked_video_source = (
+        require_video
+        and evidence.get("video_count", 0) >= 1
+        and video_source.get("uses_ranked_selected_image") is True
+    )
     if payload.get("success") is not True:
         failures.append(str(payload.get("error_type") or "provider_generation_failed"))
-    if evidence.get("image_count", 0) < 1:
+    if evidence.get("image_count", 0) < 1 and not has_internal_ranked_video_source:
         failures.append("missing_image_output")
     if require_video and evidence.get("video_count", 0) < 1:
         failures.append("missing_video_output")
@@ -632,7 +638,6 @@ def _payload_failures(
         failures.append("quality_gate_failed")
     if mode == "live" and isinstance(quality_gate, dict) and quality_gate.get("quality_issues"):
         failures.append("selected_quality_issue_detected")
-    video_source = evidence.get("video_source") if isinstance(evidence.get("video_source"), dict) else {}
     if (
         mode == "live"
         and require_video

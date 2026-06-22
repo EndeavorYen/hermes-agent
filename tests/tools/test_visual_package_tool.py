@@ -785,6 +785,75 @@ async def test_visual_package_text_only_video_uses_internal_image_first(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_visual_package_text_only_video_uses_single_ranked_image_when_candidate_budget_is_four(
+    monkeypatch,
+    tmp_path,
+):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    generated_images = []
+    for index in range(4):
+        image = tmp_path / f"candidate-{index}.png"
+        image.write_bytes(_ONE_PIXEL_PNG)
+        generated_images.append(image)
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+    image_calls = []
+    video_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        image = generated_images[len(image_calls) - 1]
+        return {
+            "success": True,
+            "image": str(image),
+            "provider": "fixture",
+            "model": "image-fixture",
+            "vision_observation": {
+                "face_quality": 0.9,
+                "visual_appeal": 0.9,
+                "composition": 0.9,
+                "fashion_material_quality": 0.9,
+            },
+        }
+
+    def fake_generate_video(**kwargs):
+        video_calls.append(kwargs)
+        return {"success": True, "video": str(video), "provider": "fixture", "model": "video-fixture"}
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+    monkeypatch.setattr(visual_package_tool, "generate_video", fake_generate_video)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "幫我產生一段 6 秒時尚短片，主體是霧黑鋼筆",
+                "include_image": False,
+                "include_video": True,
+                "candidate_budget": 4,
+                "video_budget": 1,
+            }
+        )
+    )
+
+    image_paths = {str(image) for image in generated_images}
+    assert payload["success"] is True
+    assert payload["images"] == []
+    assert payload["videos"] == [str(video)]
+    assert len(image_calls) == 4
+    assert len(video_calls) == 1
+    assert isinstance(video_calls[0]["image_url"], str)
+    assert video_calls[0]["image_url"] == payload["generation_strategy"]["video_source_image"]
+    assert video_calls[0]["image_url"] in image_paths
+    assert "reference_image_urls" not in video_calls[0]
+    assert "image_urls" not in video_calls[0]
+    assert "images" not in video_calls[0]
+    assert len(payload["rankings"]["image"]["ranked_artifact_ids"]) == 4
+    assert payload["generation_strategy"]["image_first_for_video"] is True
+
+
+@pytest.mark.asyncio
 async def test_visual_package_uses_preference_aligned_image_for_video_source(monkeypatch, tmp_path):
     from tools import visual_package_tool
 

@@ -42,7 +42,7 @@ _CASES: tuple[ConversationRouteCase, ...] = (
     ConversationRouteCase(
         case_id="friendly_text_video",
         prompt="幫我做一段 4 秒乾淨產品短片，主體是一支霧黑鋼筆",
-        expect_image=True,
+        expect_image=False,
         expect_video=True,
         min_candidate_budget=2,
         expect_reason="text_to_video_image_first_request",

@@ -73,7 +73,7 @@ def plan_visual_agent_request(
     if not wants_image and not wants_video and attachments:
         wants_video = True
     image_first_for_video = wants_video and not wants_image
-    include_image = wants_image or (image_first_for_video and not attachments)
+    include_image = wants_image
     should_use_visual_package = wants_image or wants_video
     arguments: dict[str, Any] = {
         "prompt": prompt,

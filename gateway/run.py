@@ -869,6 +869,7 @@ _AUTO_APPEND_MEDIA_TOOL_NAMES = {
     "text_to_speech_tool",
     "image_generate",
     "video_generate",
+    "visual_agent_generate",
     "visual_package_generate",
 }
 
@@ -1187,7 +1188,7 @@ def _collect_auto_append_media_delivery(
                 ):
                     media_tags.append(f"MEDIA:{path}")
             continue
-        if tool_name == "visual_package_generate" and "MEDIA:" not in content:
+        if tool_name in {"visual_agent_generate", "visual_package_generate"} and "MEDIA:" not in content:
             try:
                 payload = json.loads(content)
             except Exception:

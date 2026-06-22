@@ -46,7 +46,7 @@ _CASES: tuple[VisualAgentCase, ...] = (
     VisualAgentCase(
         case_id="text_video_image_first",
         prompt="幫我產生一段 6 秒時尚短片，主體是霧黑鋼筆",
-        expect_image=True,
+        expect_image=False,
         expect_video=True,
         min_candidate_budget=2,
         expect_reason="text_to_video_image_first_request",

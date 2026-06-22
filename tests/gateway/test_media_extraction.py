@@ -341,6 +341,39 @@ caption
         assert tags == ["MEDIA:/tmp/current.png", "MEDIA:/tmp/current.mp4"]
         assert voice is False
 
+    def test_gateway_auto_append_visual_agent_video_only_selected_video_not_internal_source_image(self):
+        """visual_agent_generate video-only output should upload the selected video, not internal source images."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {"role": "user", "content": "請產生一段 6 秒影片"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_visual_agent", "function": {"name": "visual_agent_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_visual_agent",
+                "content": (
+                    '{"success": true, "visual_request_id": "vrq_2", '
+                    '"images": [], "videos": ["/tmp/current.mp4"], '
+                    '"delivery_metadata": {'
+                    '"selected_visual_artifact_ids": ["var_vid"], '
+                    '"visual_artifacts": {'
+                    '"/tmp/internal-source.png": {"request_id": "vrq_2", "artifact_id": "var_img", "kind": "image", "content_hash": "hash-img"}, '
+                    '"/tmp/current.mp4": {"request_id": "vrq_2", "artifact_id": "var_vid", "kind": "video", "content_hash": "hash-vid"}'
+                    "}}}"
+                ),
+            },
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+
+        assert tags == ["MEDIA:/tmp/current.mp4"]
+        assert voice is False
+
     def test_gateway_auto_append_visual_package_exposes_delivery_metadata_by_ref(self):
         """visual_package_generate auto-append must preserve artifact metadata for upload tracking."""
         from gateway.run import _collect_auto_append_media_delivery
