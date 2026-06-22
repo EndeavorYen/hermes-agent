@@ -1257,6 +1257,8 @@ def _append_auto_append_media_tags_to_response(
     if not media_tags:
         return final_response
 
+    current_tags = set(media_tags)
+    final_response = _strip_non_current_media_tags(final_response or "", current_tags).rstrip()
     existing_tags = set()
     for match in _TOOL_MEDIA_RE.finditer(final_response or ""):
         path = match.group(1).strip().rstrip('",}')
@@ -1275,6 +1277,15 @@ def _append_auto_append_media_tags_to_response(
         unique_tags.insert(0, "[[audio_as_voice]]")
     separator = "\n" if final_response else ""
     return final_response + separator + "\n".join(unique_tags)
+
+
+def _strip_non_current_media_tags(final_response: str, current_tags: set[str]) -> str:
+    def replace(match):
+        path = match.group(1).strip().rstrip('",}')
+        tag = f"MEDIA:{path}" if path else ""
+        return match.group(0) if tag in current_tags else ""
+
+    return _TOOL_MEDIA_RE.sub(replace, final_response)
 
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.

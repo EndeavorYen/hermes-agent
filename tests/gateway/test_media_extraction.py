@@ -410,8 +410,8 @@ caption
         assert video_metadata["selected_visual_artifact_ids"] == ["var_img", "var_vid"]
         assert video_metadata["visual_artifacts"]["/tmp/current.mp4"]["artifact_id"] == "var_vid"
 
-    def test_gateway_appends_current_media_even_when_final_response_contains_stale_media(self):
-        """Current-turn visual media must still be appended when final text mentions an older MEDIA tag."""
+    def test_gateway_replaces_stale_media_when_current_media_is_auto_appended(self):
+        """Current-turn visual media should be delivered without stale prior-turn attachments."""
         from gateway.run import _append_auto_append_media_tags_to_response
 
         final = "Previous batch:\nMEDIA:/tmp/old-image.png"
@@ -422,8 +422,8 @@ caption
             has_voice_directive=False,
         )
 
-        assert "MEDIA:/tmp/old-image.png" in updated
-        assert updated.endswith("MEDIA:/tmp/current-image.png")
+        assert "MEDIA:/tmp/old-image.png" not in updated
+        assert updated == "Previous batch:\nMEDIA:/tmp/current-image.png"
 
     def test_gateway_does_not_duplicate_existing_current_media_tag(self):
         from gateway.run import _append_auto_append_media_tags_to_response

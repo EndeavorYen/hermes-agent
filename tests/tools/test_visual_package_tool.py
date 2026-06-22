@@ -93,6 +93,76 @@ async def test_visual_package_generate_uses_selected_image_for_video(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_visual_package_video_only_uses_single_ranked_source_without_delivering_images(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    first_source = tmp_path / "first-source.png"
+    second_source = tmp_path / "second-source.png"
+    video = tmp_path / "video.mp4"
+    first_source.write_bytes(_ONE_PIXEL_PNG)
+    second_source.write_bytes(_ONE_PIXEL_PNG + b"second")
+    video.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+    image_calls = []
+    video_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        image_path = first_source if len(image_calls) == 1 else second_source
+        return {
+            "success": True,
+            "image": str(image_path),
+            "provider": "fixture",
+            "model": "image-fixture",
+        }
+
+    def fake_generate_video(**kwargs):
+        video_calls.append(kwargs)
+        return {
+            "success": True,
+            "video": str(video),
+            "provider": "fixture",
+            "model": "video-fixture",
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+    monkeypatch.setattr(visual_package_tool, "generate_video", fake_generate_video)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "請產生一段產品展示影片：霧黑鋼筆放在白紙上，柔和窗光。",
+                "candidate_budget": 2,
+                "candidate_budget_source": "planner_default",
+                "video_budget": 1,
+            }
+        )
+    )
+
+    assert len(image_calls) == 2
+    assert payload["success"] is True
+    assert payload["images"] == []
+    assert payload["videos"] == [str(video)]
+    selected_source = payload["generation_strategy"]["video_source_image"]
+    assert selected_source in {str(first_source), str(second_source)}
+    assert video_calls[0]["image_url"] == selected_source
+    assert isinstance(video_calls[0]["image_url"], str)
+    assert video_calls[0]["image_url"] not in {str([str(first_source), str(second_source)])}
+    assert video_calls[0]["duration"] == 6
+    assert payload["generation_strategy"]["video_source_artifact_id"]
+    assert payload["delivery_metadata"]["selected_visual_artifact_ids"] == [
+        payload["rankings"]["video"]["selected_artifact_id"]
+    ]
+    assert set(payload["delivery_metadata"]["visual_artifacts"]) >= {str(video)}
+    assert {
+        entry["artifact_id"]
+        for entry in payload["delivery_metadata"]["visual_artifacts"].values()
+    } == {payload["rankings"]["video"]["selected_artifact_id"]}
+    assert payload["generation_payloads"]["image"][0]["image"] is None
+    assert payload["generation_payloads"]["image"][1]["image"] is None
+
+
+@pytest.mark.asyncio
 async def test_visual_package_product_video_ignores_portrait_only_vision_defects(monkeypatch, tmp_path):
     from tools import visual_package_tool
 
