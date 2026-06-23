@@ -13,6 +13,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 from agent.visual.tracking import default_visual_ledger_path
 from agent.visual.action_dedupe import dedupe_actions as _dedupe_actions
+from agent.visual.runtime_environment import build_visual_runtime_environment_diagnostic
 from scripts.visual_agent_mode_regression_report import build_visual_agent_mode_regression_report
 from scripts.visual_autonomous_healthcheck import build_visual_autonomous_healthcheck
 from scripts.visual_closed_loop_regression_report import build_visual_closed_loop_regression_report
@@ -34,6 +35,12 @@ def build_visual_e2e_automation_report(
     include_live_slack_upload: bool = False,
     case_timeout_seconds: float | int | None = None,
 ) -> dict[str, Any]:
+    runtime_environment = build_visual_runtime_environment_diagnostic(
+        include_live=include_live,
+        include_live_slack_upload=include_live_slack_upload,
+    )
+    if runtime_environment.get("success") is not True:
+        return _runtime_environment_failure_report(runtime_environment)
     agent_mode = build_visual_agent_mode_regression_report()
     closed_loop_regression = build_visual_closed_loop_regression_report()
     conversation_route = build_visual_conversation_route_report()
@@ -136,6 +143,7 @@ def build_visual_e2e_automation_report(
         "success": not failures,
         "mode": "fixture+live" if include_live else "fixture",
         "failures": failures,
+        "runtime_environment": runtime_environment,
         "agent_mode": agent_mode,
         "closed_loop_regression": closed_loop_regression,
         "conversation_route": conversation_route,
@@ -153,6 +161,47 @@ def build_visual_e2e_automation_report(
         "feedback_loop": feedback_loop,
         "self_improvement": self_improvement,
         "quality_calibration": quality_calibration,
+    }
+
+
+def _runtime_environment_failure_report(runtime_environment: dict[str, Any]) -> dict[str, Any]:
+    reason = "runtime_environment_missing_dependencies"
+    skipped = _skipped_component(reason)
+    next_actions = _action_list(runtime_environment.get("next_actions"))
+    return {
+        "success": False,
+        "mode": "runtime_environment_failed",
+        "failures": [reason],
+        "runtime_environment": runtime_environment,
+        "agent_mode": skipped,
+        "closed_loop_regression": skipped,
+        "conversation_route": skipped,
+        "fixture_e2e": skipped,
+        "storyboard_execution": skipped,
+        "fixture_quality_suite": skipped,
+        "slack_conversation": skipped,
+        "slack_delivery": skipped,
+        "storyboard_slack_delivery": skipped,
+        "live_slack_delivery": skipped,
+        "live_e2e": skipped,
+        "live_quality_suite": skipped,
+        "live_quality_burn": skipped,
+        "health": skipped,
+        "feedback_loop": skipped,
+        "self_improvement": {
+            "next_actions": next_actions,
+            "action_count": len(next_actions),
+            "reduces_human_intervention": False,
+            "privacy_safe": True,
+        },
+        "quality_calibration": skipped,
+    }
+
+
+def _skipped_component(reason: str) -> dict[str, str]:
+    return {
+        "status": "skipped",
+        "reason": reason,
     }
 
 

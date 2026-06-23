@@ -29,6 +29,70 @@ def test_visual_e2e_automation_fixture_default(tmp_path):
     assert report["quality_calibration"]["success"] is True
 
 
+def test_visual_e2e_automation_fails_fast_when_live_runner_missing_dependencies(
+    monkeypatch,
+    tmp_path,
+):
+    from scripts import visual_e2e_automation_report
+
+    called = []
+    action = {
+        "type": "configure_visual_runtime_dependencies",
+        "track": "operator_setup",
+        "reason": "visual_runtime_missing_python_modules",
+        "requires_human_feedback": False,
+        "requires_operator_setup": True,
+        "activation_status": "operator_setup",
+        "source": "visual_runtime_environment",
+        "missing_modules": ["openai", "aiohttp"],
+        "operator_setup_actions": [
+            {
+                "provider": "python_runtime",
+                "missing_env_vars": [],
+                "post_setup": "Run with project venv.",
+            }
+        ],
+    }
+
+    monkeypatch.setattr(
+        visual_e2e_automation_report,
+        "build_visual_runtime_environment_diagnostic",
+        lambda **_kwargs: {
+            "success": False,
+            "required_modules": ["aiohttp", "openai"],
+            "missing_modules": ["openai", "aiohttp"],
+            "next_actions": [action],
+        },
+    )
+    monkeypatch.setattr(
+        visual_e2e_automation_report,
+        "build_visual_agent_mode_regression_report",
+        lambda: called.append("agent_mode") or {"success": True},
+    )
+
+    report = visual_e2e_automation_report.build_visual_e2e_automation_report(
+        work_dir=tmp_path,
+        include_live=True,
+        include_live_slack_upload=True,
+    )
+
+    assert called == []
+    assert report["success"] is False
+    assert report["mode"] == "runtime_environment_failed"
+    assert report["failures"] == ["runtime_environment_missing_dependencies"]
+    assert report["runtime_environment"]["missing_modules"] == ["openai", "aiohttp"]
+    assert report["self_improvement"] == {
+        "next_actions": [action],
+        "action_count": 1,
+        "reduces_human_intervention": False,
+        "privacy_safe": True,
+    }
+    assert report["live_e2e"] == {
+        "status": "skipped",
+        "reason": "runtime_environment_missing_dependencies",
+    }
+
+
 def test_visual_e2e_automation_includes_quality_suite(monkeypatch, tmp_path):
     from scripts import visual_e2e_automation_report
 
