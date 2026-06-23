@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import contextlib
 import json
+import math
 import os
 import signal
 import sys
@@ -20,6 +21,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from agent.visual.aspect_policy import parse_aspect_ratio
 from agent.visual.attempt_ledger import VisualAttemptLedger
 from agent.visual.provider_failures import classify_visual_provider_failure
 from agent.visual.tracking import default_visual_ledger_path
@@ -529,6 +531,7 @@ def inspect_visual_e2e_evidence(
             "image_count": len(payload.get("images") or []),
             "video_count": len(payload.get("videos") or []),
             "video_source": video_source,
+            "video_media_quality": _video_media_quality(payload, artifacts=[], attempts=[]),
             "runtime_policy_effect": _runtime_policy_effect_evidence(
                 payload,
                 quality_gate={},
@@ -582,6 +585,7 @@ def inspect_visual_e2e_evidence(
         threshold=_min_quality_score_threshold(),
     )
     video_source = _video_source_evidence(payload, require_video=require_video)
+    video_media_quality = _video_media_quality(payload, artifacts=artifacts, attempts=attempts)
     return {
         "request_id": request_id,
         "image_count": len(payload.get("images") or []),
@@ -605,6 +609,7 @@ def inspect_visual_e2e_evidence(
         "require_video": require_video,
         "quality_gate": quality_gate,
         "video_source": video_source,
+        "video_media_quality": video_media_quality,
         "storyboard_execution": _storyboard_execution_evidence(payload),
         "runtime_policy_effect": _runtime_policy_effect_evidence(
             payload,
@@ -780,6 +785,13 @@ def _payload_failures(
         and not has_storyboard_video_source
     ):
         failures.append("video_source_not_single_image")
+    video_media_quality = (
+        evidence.get("video_media_quality")
+        if isinstance(evidence.get("video_media_quality"), dict)
+        else {}
+    )
+    if mode == "live" and require_video and video_media_quality.get("success") is False:
+        failures.append("video_aspect_ratio_mismatch")
     if mode == "live" and _contains_fixture_provider(payload, evidence):
         failures.append("non_live_provider_detected")
     runtime_policy_effect = (
@@ -821,6 +833,91 @@ def _safe_payload_summary(payload: dict[str, Any] | None) -> dict[str, Any] | No
         "error_type": payload.get("error_type"),
         "error": payload.get("error"),
     }
+
+
+def _video_media_quality(
+    payload: dict[str, Any],
+    *,
+    artifacts: list[dict[str, Any]],
+    attempts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    selected_ids = _selected_artifact_ids(payload)
+    attempt_by_id = {
+        str(row.get("id") or row.get("attempt_id") or ""): row
+        for row in attempts
+        if row.get("id") or row.get("attempt_id")
+    }
+    videos: list[dict[str, Any]] = []
+    bad_video_artifact_ids: list[str] = []
+    for artifact in artifacts:
+        if str(artifact.get("kind") or "") != "video":
+            continue
+        artifact_id = str(artifact.get("id") or artifact.get("artifact_id") or "")
+        if selected_ids and artifact_id not in selected_ids:
+            continue
+        width = _int_or_none(artifact.get("width"))
+        height = _int_or_none(artifact.get("height"))
+        requested_aspect_ratio = _attempt_aspect_ratio(
+            attempt_by_id.get(str(artifact.get("attempt_id") or ""))
+        )
+        actual_ratio = _actual_ratio(width, height)
+        target_ratio = parse_aspect_ratio(requested_aspect_ratio or "")
+        aspect_ratio_matches = _aspect_ratio_matches(actual_ratio, target_ratio)
+        if aspect_ratio_matches is False:
+            bad_video_artifact_ids.append(artifact_id)
+        videos.append(
+            {
+                "artifact_id": artifact_id,
+                "width": width,
+                "height": height,
+                "actual_aspect_ratio": _aspect_label(width, height),
+                "requested_aspect_ratio": requested_aspect_ratio,
+                "aspect_ratio_matches": aspect_ratio_matches,
+            }
+        )
+    return {
+        "success": not bad_video_artifact_ids,
+        "checked_video_count": len(videos),
+        "bad_video_artifact_ids": bad_video_artifact_ids,
+        "videos": videos,
+    }
+
+
+def _attempt_aspect_ratio(attempt: dict[str, Any] | None) -> str | None:
+    if not isinstance(attempt, dict):
+        return None
+    for key in ("parameters_effective", "parameters_requested"):
+        parameters = attempt.get(key)
+        if not isinstance(parameters, dict):
+            continue
+        value = _string_or_none(parameters.get("aspect_ratio"))
+        if value:
+            return value
+    return None
+
+
+def _actual_ratio(width: int | None, height: int | None) -> float | None:
+    if not width or not height or width <= 0 or height <= 0:
+        return None
+    return width / height
+
+
+def _aspect_ratio_matches(
+    actual_ratio: float | None,
+    target_ratio: float | None,
+    *,
+    tolerance: float = 0.03,
+) -> bool | None:
+    if actual_ratio is None or target_ratio is None or target_ratio <= 0:
+        return None
+    return abs(actual_ratio - target_ratio) / target_ratio <= tolerance
+
+
+def _aspect_label(width: int | None, height: int | None) -> str | None:
+    if not width or not height or width <= 0 or height <= 0:
+        return None
+    divisor = math.gcd(width, height)
+    return f"{width // divisor}:{height // divisor}"
 
 
 def _storyboard_execution_evidence(payload: dict[str, Any]) -> dict[str, Any]:

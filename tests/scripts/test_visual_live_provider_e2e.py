@@ -1272,6 +1272,72 @@ def test_visual_live_provider_quality_gate_exports_preference_dimension_failures
     }
 
 
+def test_visual_live_provider_e2e_detects_selected_video_aspect_ratio_mismatch(
+    monkeypatch,
+    tmp_path,
+):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+    from scripts.visual_live_provider_e2e import _payload_failures
+    from scripts.visual_live_provider_e2e import inspect_visual_e2e_evidence
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ledger = VisualAttemptLedger(default_visual_ledger_path())
+    ledger.initialize()
+    request_id = ledger.record_request(
+        user_prompt="video aspect test",
+        normalized_intent={"kind": "visual_package"},
+        modality="package",
+        operation="visual_package_generate",
+        status="started",
+    )
+    attempt_id = ledger.record_attempt(
+        request_id=request_id,
+        candidate_index=0,
+        provider="xai",
+        model="grok-imagine-video-1.5",
+        prompt_original="video aspect test",
+        prompt_mediated="video aspect test",
+        parameters_requested={"aspect_ratio": "16:9"},
+        parameters_effective={"aspect_ratio": "16:9"},
+        status="completed",
+    )
+    artifact_id = ledger.record_artifact(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        kind="video",
+        local_path=str(tmp_path / "stretched-square.mp4"),
+        uri=str(tmp_path / "stretched-square.mp4"),
+        content_hash="sha256:stretched-square-video",
+        mime_type="video/mp4",
+        width=1024,
+        height=1024,
+        duration_seconds=8.0,
+        is_stable=True,
+        freshness_status="fresh",
+    )
+    payload = {
+        "success": True,
+        "visual_request_id": request_id,
+        "images": [],
+        "videos": [str(tmp_path / "stretched-square.mp4")],
+        "delivery_metadata": {"selected_visual_artifact_ids": [artifact_id]},
+    }
+
+    evidence = inspect_visual_e2e_evidence(payload, require_video=True)
+
+    assert evidence["video_media_quality"]["success"] is False
+    assert evidence["video_media_quality"]["bad_video_artifact_ids"] == [artifact_id]
+    assert evidence["video_media_quality"]["videos"][0]["requested_aspect_ratio"] == "16:9"
+    assert evidence["video_media_quality"]["videos"][0]["actual_aspect_ratio"] == "1:1"
+    assert "video_aspect_ratio_mismatch" in _payload_failures(
+        payload,
+        evidence,
+        mode="live",
+        require_video=True,
+    )
+
+
 def test_visual_live_provider_e2e_reports_moderation_recovery_summary(monkeypatch, tmp_path):
     from agent.visual.attempt_ledger import VisualAttemptLedger
     from agent.visual.tracking import default_visual_ledger_path
