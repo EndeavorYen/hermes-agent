@@ -1532,9 +1532,6 @@ class SlackAdapter(BasePlatformAdapter):
                     timeout=30.0, follow_redirects=True
                 ) as http_client:
                     for image_url, alt_text in chunk:
-                        if alt_text:
-                            initial_comment_parts.append(alt_text)
-
                         visual_context = None
                         visual_deduper = None
                         if visual_delivery_context is not None:
@@ -1592,6 +1589,8 @@ class SlackAdapter(BasePlatformAdapter):
                                     "filename": os.path.basename(local_path),
                                 }
                             )
+                            if alt_text:
+                                initial_comment_parts.append(alt_text)
                             if visual_context:
                                 visual_deliveries.append((visual_context, visual_deduper))
                         else:
@@ -1624,6 +1623,8 @@ class SlackAdapter(BasePlatformAdapter):
                                         "filename": f"image_{len(file_uploads)}.{ext}",
                                     }
                                 )
+                                if alt_text:
+                                    initial_comment_parts.append(alt_text)
                                 if visual_context:
                                     visual_deliveries.append((visual_context, visual_deduper))
                             except Exception as dl_err:

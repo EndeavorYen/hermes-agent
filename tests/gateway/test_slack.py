@@ -1324,6 +1324,98 @@ class TestSendVideo:
         assert [delivery["delivery_status"] for delivery in deliveries] == ["sent", "skipped_duplicate"]
 
 
+@pytest.mark.asyncio
+async def test_send_multiple_images_excludes_skipped_visual_captions(
+    adapter,
+    tmp_path,
+    monkeypatch,
+):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+    from agent.visual.tracking import visual_delivery_metadata
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ledger = VisualAttemptLedger(default_visual_ledger_path())
+    ledger.initialize()
+    request_id = ledger.record_request(
+        platform="slack",
+        channel_id="C123",
+        thread_id="T123",
+        normalized_intent={"kind": "visual_package"},
+        modality="package",
+        operation="visual_package_generate",
+    )
+    attempt_id = ledger.record_attempt(
+        request_id=request_id,
+        candidate_index=0,
+        provider="xai",
+        model="grok-imagine-image-quality",
+        prompt_original="prompt",
+        prompt_mediated="prompt",
+        parameters_requested={},
+        parameters_effective={},
+        status="completed",
+    )
+    old_image = tmp_path / "old.png"
+    selected_image = tmp_path / "selected.png"
+    old_image.write_bytes(b"\x89PNG\r\n\x1a\nold")
+    selected_image.write_bytes(b"\x89PNG\r\n\x1a\nselected")
+    old_artifact_id = ledger.record_artifact(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        kind="image",
+        uri=str(old_image),
+        local_path=str(old_image),
+        content_hash="sha256:old-image",
+        mime_type="image/png",
+        is_stable=True,
+        freshness_status="fresh",
+    )
+    selected_artifact_id = ledger.record_artifact(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        kind="image",
+        uri=str(selected_image),
+        local_path=str(selected_image),
+        content_hash="sha256:selected-image",
+        mime_type="image/png",
+        is_stable=True,
+        freshness_status="fresh",
+    )
+    metadata = visual_delivery_metadata(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        artifact_ids=[old_artifact_id, selected_artifact_id],
+        artifact_paths=[str(old_image), str(selected_image)],
+        selected_artifact_ids=[selected_artifact_id],
+        thread_id="T123",
+    )
+    adapter._app.client.files_upload_v2 = AsyncMock(return_value={"ok": True})
+
+    await adapter.send_multiple_images(
+        "C123",
+        [
+            (old_image.as_uri(), "old round caption"),
+            (selected_image.as_uri(), "new round caption"),
+        ],
+        metadata=metadata,
+    )
+
+    call_kwargs = adapter._app.client.files_upload_v2.call_args.kwargs
+    assert call_kwargs["initial_comment"] == "new round caption"
+    assert len(call_kwargs["file_uploads"]) == 1
+    assert call_kwargs["file_uploads"][0]["file"] == str(selected_image)
+    deliveries = ledger.list_deliveries(request_id=request_id)
+    assert [delivery["artifact_id"] for delivery in deliveries] == [
+        old_artifact_id,
+        selected_artifact_id,
+    ]
+    assert [delivery["delivery_status"] for delivery in deliveries] == [
+        "skipped_unselected",
+        "sent",
+    ]
+
+
 # ---------------------------------------------------------------------------
 # TestBangPrefixCommands
 # ---------------------------------------------------------------------------

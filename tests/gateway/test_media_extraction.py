@@ -374,6 +374,39 @@ caption
         assert tags == ["MEDIA:/tmp/current.mp4"]
         assert voice is False
 
+    def test_gateway_auto_append_visual_package_dedupes_same_selected_video_ref_variants(self):
+        """visual_package_generate must not append the same selected video twice via path and file URI."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {"role": "user", "content": "Make a video"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_visual", "function": {"name": "visual_package_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_visual",
+                "content": (
+                    '{"success": true, "visual_request_id": "vrq_3", '
+                    '"images": [], "videos": ["/tmp/current.mp4"], '
+                    '"delivery_metadata": {'
+                    '"selected_visual_artifact_ids": ["var_vid"], '
+                    '"visual_artifacts": {'
+                    '"/tmp/current.mp4": {"request_id": "vrq_3", "artifact_id": "var_vid", "kind": "video", "content_hash": "hash-vid"}, '
+                    '"file:///tmp/current.mp4": {"request_id": "vrq_3", "artifact_id": "var_vid", "kind": "video", "content_hash": "hash-vid"}'
+                    "}}}"
+                ),
+            },
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+
+        assert tags == ["MEDIA:/tmp/current.mp4"]
+        assert voice is False
+
     def test_gateway_auto_append_visual_package_exposes_delivery_metadata_by_ref(self):
         """visual_package_generate auto-append must preserve artifact metadata for upload tracking."""
         from gateway.run import _collect_auto_append_media_delivery
