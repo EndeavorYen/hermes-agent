@@ -175,6 +175,48 @@ def test_visual_self_validation_status_summarizes_latest_live_report(tmp_path):
     assert "artifact_path" not in encoded
 
 
+def test_visual_self_validation_status_reports_auto_live_trend_override(tmp_path):
+    from scripts.visual_self_validation_status import build_visual_self_validation_status
+
+    payload = _scheduled_report()
+    payload["live_policy"] = {
+        "mode": "auto",
+        "decision": "run",
+        "live_enabled": True,
+        "reason": "live_quality_trend_degraded",
+        "degradations": ["quality_score_degraded"],
+        "min_live_interval_hours": 6,
+        "elapsed_hours": 1.5,
+    }
+    latest_path = _write_latest(tmp_path, payload)
+
+    status = build_visual_self_validation_status(latest_path=latest_path)
+
+    assert status["live_policy"]["reason"] == "live_quality_trend_degraded"
+    assert status["live_policy"]["degradations"] == ["quality_score_degraded"]
+
+
+def test_visual_self_validation_status_sanitizes_auto_live_policy_degradations(tmp_path):
+    from scripts.visual_self_validation_status import build_visual_self_validation_status
+
+    payload = _scheduled_report()
+    payload["live_policy"] = {
+        "mode": "auto",
+        "decision": "run",
+        "live_enabled": True,
+        "reason": "private prompt should not leak",
+        "degradations": ["quality_score_degraded", "private visual prompt"],
+    }
+    latest_path = _write_latest(tmp_path, payload)
+
+    status = build_visual_self_validation_status(latest_path=latest_path)
+
+    assert status["live_policy"].get("reason") is None
+    assert status["live_policy"]["degradations"] == ["quality_score_degraded"]
+    encoded = json.dumps(status, ensure_ascii=False)
+    assert "private visual prompt" not in encoded
+
+
 def test_visual_self_validation_status_flags_internal_source_image_delivery(tmp_path):
     from scripts.visual_self_validation_status import build_visual_self_validation_status
 

@@ -628,6 +628,59 @@ def test_scheduled_self_validation_includes_live_quality_trends(monkeypatch, tmp
     assert report["summary"]["live_quality_trend_action_types"] == []
 
 
+def test_scheduled_self_validation_refreshes_live_quality_trends_after_live_run(
+    monkeypatch,
+    tmp_path,
+):
+    from scripts import visual_scheduled_self_validation
+
+    output_dir = tmp_path / "self_validation"
+    live_runs_dir = tmp_path / "live_quality_burn" / "runs"
+
+    def fake_automation(*, work_dir, include_live, include_live_slack_upload=False):
+        assert include_live is True
+        live_runs_dir.mkdir(parents=True)
+        (live_runs_dir / "current.json").write_text(
+            json.dumps(
+                {
+                    "success": True,
+                    "run_id": "current",
+                    "generated_at": "2026-06-22T08:00:00+00:00",
+                    "summary": {
+                        "case_count": 2,
+                        "min_quality_score": 0.86,
+                        "quality_issue_count": 0,
+                        "provider_failure_count": 0,
+                        "video_missing_after_image_count": 0,
+                        "image_first_video_source_failure_count": 0,
+                        "preference_dimension_failure_count": 0,
+                        "preference_dimension_failures": [],
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        return _automation_report(
+            include_live=include_live,
+            include_live_slack_upload=include_live_slack_upload,
+        )
+
+    monkeypatch.setattr(
+        visual_scheduled_self_validation,
+        "build_visual_e2e_automation_report",
+        fake_automation,
+    )
+
+    report = visual_scheduled_self_validation.build_visual_scheduled_self_validation_report(
+        output_dir=output_dir,
+        live_mode="on",
+        now=datetime(2026, 6, 22, 8, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["live_quality_trends"]["run_count"] == 1
+    assert report["summary"]["live_quality_trend_recent_run_ids"] == ["current"]
+
+
 def test_scheduled_self_validation_live_mode_on_forces_live_without_env_gate(monkeypatch, tmp_path):
     from scripts import visual_scheduled_self_validation
 
@@ -812,6 +865,73 @@ def test_scheduled_self_validation_skips_live_until_interval_elapsed(monkeypatch
 
     assert report["live_policy"]["decision"] == "skip_interval"
     assert calls == [{"include_live": False, "include_live_slack_upload": False}]
+
+
+def test_scheduled_self_validation_auto_runs_live_when_quality_trend_degrades(monkeypatch, tmp_path):
+    from scripts import visual_scheduled_self_validation
+
+    output_dir = tmp_path / "self_validation"
+    output_dir.mkdir(parents=True)
+    (output_dir / "state.json").write_text(
+        json.dumps({"last_live_run_at": "2026-06-22T06:30:00+00:00"}),
+        encoding="utf-8",
+    )
+    runs_dir = tmp_path / "live_quality_burn" / "runs"
+    runs_dir.mkdir(parents=True)
+    for run_id, hour, score in (
+        ("run01", 1, 0.86),
+        ("run02", 2, 0.84),
+        ("run03", 3, 0.48),
+        ("run04", 4, 0.49),
+    ):
+        (runs_dir / f"{run_id}.json").write_text(
+            json.dumps(
+                {
+                    "success": score >= 0.8,
+                    "run_id": run_id,
+                    "generated_at": f"2026-06-22T0{hour}:00:00+00:00",
+                    "summary": {
+                        "case_count": 2,
+                        "min_quality_score": score,
+                        "quality_issue_count": 1 if score < 0.8 else 0,
+                        "provider_failure_count": 0,
+                        "video_missing_after_image_count": 0,
+                        "image_first_video_source_failure_count": 0,
+                        "preference_dimension_failure_count": 0,
+                        "preference_dimension_failures": [],
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+    calls = []
+
+    def fake_automation(*, work_dir, include_live, include_live_slack_upload=False):
+        calls.append({"include_live": include_live, "include_live_slack_upload": include_live_slack_upload})
+        return _automation_report(
+            include_live=include_live,
+            include_live_slack_upload=include_live_slack_upload,
+        )
+
+    monkeypatch.setattr(
+        visual_scheduled_self_validation,
+        "build_visual_e2e_automation_report",
+        fake_automation,
+    )
+
+    report = visual_scheduled_self_validation.build_visual_scheduled_self_validation_report(
+        output_dir=output_dir,
+        live_mode="auto",
+        live_enabled=True,
+        min_live_interval_hours=6,
+        now=datetime(2026, 6, 22, 8, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["live_policy"]["decision"] == "run"
+    assert report["live_policy"]["reason"] == "live_quality_trend_degraded"
+    assert report["live_policy"]["degradations"] == ["quality_score_degraded"]
+    assert calls == [{"include_live": True, "include_live_slack_upload": False}]
+    assert "increase_candidate_budget" in report["summary"]["live_quality_trend_action_types"]
 
 
 def test_scheduled_self_validation_carries_forward_recent_live_burn_actions(monkeypatch, tmp_path):

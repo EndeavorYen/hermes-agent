@@ -36,12 +36,14 @@ def build_visual_scheduled_self_validation_report(
     output_dir = Path(output_dir) if output_dir is not None else get_hermes_home() / "visual" / "self_validation"
     work_dir = Path(work_dir) if work_dir is not None else output_dir / "work"
     state = _read_json(output_dir / "state.json")
+    pre_live_quality_trends = build_live_quality_trend_report_from_dir(_live_quality_burn_dir(output_dir))
     live_policy = _live_policy(
         live_mode=live_mode,
         live_enabled=_live_enabled() if live_enabled is None else live_enabled,
         min_live_interval_hours=min_live_interval_hours,
         state=state,
         now=now,
+        live_quality_trends=pre_live_quality_trends,
     )
     include_live = live_policy["decision"] == "run"
     slack_live_upload_policy = _slack_live_upload_policy(live_policy)
@@ -95,6 +97,7 @@ def _live_policy(
     min_live_interval_hours: int,
     state: dict[str, Any],
     now: datetime,
+    live_quality_trends: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     mode = str(live_mode or "off").strip().lower()
     if mode not in {"off", "auto", "on"}:
@@ -117,6 +120,18 @@ def _live_policy(
         }
     elapsed_hours = (now - last_live_run_at).total_seconds() / 3600
     if elapsed_hours < max(0, min_live_interval_hours):
+        trend_degradations = _live_quality_trend_degradations(live_quality_trends)
+        if trend_degradations:
+            return {
+                "mode": mode,
+                "decision": "run",
+                "live_enabled": True,
+                "reason": "live_quality_trend_degraded",
+                "degradations": trend_degradations,
+                "min_live_interval_hours": min_live_interval_hours,
+                "last_live_run_at": last_live_run_at.isoformat(),
+                "elapsed_hours": round(elapsed_hours, 4),
+            }
         return {
             "mode": mode,
             "decision": "skip_interval",
@@ -133,6 +148,15 @@ def _live_policy(
         "last_live_run_at": last_live_run_at.isoformat(),
         "elapsed_hours": round(elapsed_hours, 4),
     }
+
+
+def _live_quality_trend_degradations(live_quality_trends: dict[str, Any] | None) -> list[str]:
+    if not isinstance(live_quality_trends, dict):
+        return []
+    degradations = live_quality_trends.get("degradations")
+    if not isinstance(degradations, list):
+        return []
+    return [str(item) for item in degradations if isinstance(item, str) and item]
 
 
 def _summary(automation: dict[str, Any], live_quality_trends: dict[str, Any] | None = None) -> dict[str, Any]:

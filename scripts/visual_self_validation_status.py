@@ -246,8 +246,32 @@ def _sanitise_live_policy(value: Any) -> dict[str, Any]:
         "min_live_interval_hours",
         "last_live_run_at",
         "elapsed_hours",
+        "reason",
+        "degradations",
     }
-    return {key: source[key] for key in allowed if key in source}
+    sanitized = {key: source[key] for key in allowed if key in source}
+    if source.get("reason") == "live_quality_trend_degraded":
+        sanitized["reason"] = "live_quality_trend_degraded"
+    else:
+        sanitized.pop("reason", None)
+    degradations = source.get("degradations")
+    if isinstance(degradations, list):
+        allowed_degradations = {
+            "quality_score_degraded",
+            "video_generation_degraded",
+            "provider_failures_spiked",
+            "preference_dimension_failures_spiked",
+        }
+        sanitized_degradations = [
+            item for item in degradations if isinstance(item, str) and item in allowed_degradations
+        ]
+        if sanitized_degradations:
+            sanitized["degradations"] = sanitized_degradations
+        else:
+            sanitized.pop("degradations", None)
+    else:
+        sanitized.pop("degradations", None)
+    return sanitized
 
 
 def _sanitise_slack_upload_policy(value: Any) -> dict[str, Any]:
