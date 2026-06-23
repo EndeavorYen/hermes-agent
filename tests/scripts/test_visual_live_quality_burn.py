@@ -743,11 +743,13 @@ def test_visual_live_quality_burn_routes_missing_video_fallback_to_provider_acti
                 "unavailable_provider_names": ["fal"],
                 "fallback_provider_names": [],
                 "setup_actions": [
-                    {
-                        "provider": "fal",
-                        "env_vars": ["FAL_KEY"],
-                        "post_setup": "",
-                    }
+                        {
+                            "provider": "fal",
+                            "env_vars": ["FAL_KEY"],
+                            "configured_env_vars": [],
+                            "missing_env_vars": ["FAL_KEY"],
+                            "post_setup": "",
+                        }
                 ],
             }
         ],
@@ -787,6 +789,8 @@ def test_visual_live_quality_burn_routes_missing_video_fallback_to_provider_acti
                     {
                         "provider": "fal",
                         "env_vars": ["FAL_KEY"],
+                        "configured_env_vars": [],
+                        "missing_env_vars": ["FAL_KEY"],
                         "post_setup": "",
                     }
                 ],

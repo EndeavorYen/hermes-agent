@@ -1352,6 +1352,8 @@ def test_visual_live_provider_e2e_reports_no_video_fallback_available():
                                 {
                                     "provider": "fal",
                                     "env_vars": ["FAL_KEY"],
+                                    "configured_env_vars": [],
+                                    "missing_env_vars": ["FAL_KEY"],
                                     "post_setup": "",
                                 }
                             ],
@@ -1380,6 +1382,8 @@ def test_visual_live_provider_e2e_reports_no_video_fallback_available():
                 {
                     "provider": "fal",
                     "env_vars": ["FAL_KEY"],
+                    "configured_env_vars": [],
+                    "missing_env_vars": ["FAL_KEY"],
                     "post_setup": "",
                 }
             ],

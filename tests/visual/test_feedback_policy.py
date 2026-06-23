@@ -510,6 +510,8 @@ def test_feedback_policy_applies_missing_video_fallback_action_without_retry_bud
                                 {
                                     "provider": "fal",
                                     "env_vars": ["FAL_KEY"],
+                                    "configured_env_vars": [],
+                                    "missing_env_vars": ["FAL_KEY"],
                                     "post_setup": "",
                                 }
                             ],
@@ -542,6 +544,8 @@ def test_feedback_policy_applies_missing_video_fallback_action_without_retry_bud
                 {
                     "provider": "fal",
                     "env_vars": ["FAL_KEY"],
+                    "configured_env_vars": [],
+                    "missing_env_vars": ["FAL_KEY"],
                     "post_setup": "",
                 }
             ],

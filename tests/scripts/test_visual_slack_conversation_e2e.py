@@ -896,6 +896,8 @@ def test_visual_slack_conversation_e2e_live_records_no_video_fallback_summary(mo
                         {
                             "provider": "fal",
                             "env_vars": ["FAL_KEY"],
+                            "configured_env_vars": [],
+                            "missing_env_vars": ["FAL_KEY"],
                             "post_setup": "",
                         }
                     ],
@@ -937,6 +939,8 @@ def test_visual_slack_conversation_e2e_live_records_no_video_fallback_summary(mo
                 {
                     "provider": "fal",
                     "env_vars": ["FAL_KEY"],
+                    "configured_env_vars": [],
+                    "missing_env_vars": ["FAL_KEY"],
                     "post_setup": "",
                 }
             ],
@@ -965,6 +969,8 @@ def test_visual_slack_conversation_e2e_live_records_no_video_fallback_summary(mo
                     {
                         "provider": "fal",
                         "env_vars": ["FAL_KEY"],
+                        "configured_env_vars": [],
+                        "missing_env_vars": ["FAL_KEY"],
                         "post_setup": "",
                     }
                 ],

@@ -2206,11 +2206,32 @@ def _video_provider_setup_action(provider: Any, *, name: str) -> dict[str, Any]:
         key = str(item.get("key") or "").strip()
         if key and key not in env_vars:
             env_vars.append(key)
+    configured_env_vars = _configured_env_var_names(env_vars)
     return {
         "provider": name,
         "env_vars": env_vars,
+        "configured_env_vars": configured_env_vars,
+        "missing_env_vars": [key for key in env_vars if key not in configured_env_vars],
         "post_setup": str(schema.get("post_setup") or "").strip(),
     }
+
+
+def _configured_env_var_names(env_vars: list[str]) -> list[str]:
+    configured: list[str] = []
+    for key in env_vars:
+        if not key:
+            continue
+        value = os.getenv(key)
+        if value is None:
+            try:
+                from hermes_cli.config import get_env_value
+
+                value = get_env_value(key)
+            except Exception:
+                value = None
+        if value and str(value).strip() and key not in configured:
+            configured.append(key)
+    return configured
 
 
 def _retry_generation_payload(

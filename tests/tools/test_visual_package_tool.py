@@ -3732,11 +3732,13 @@ async def test_visual_package_skips_xai_video_when_quota_known_and_no_video_fall
             "unavailable_provider_names": ["fal"],
             "fallback_provider_names": [],
             "setup_actions": [
-                {
-                    "provider": "fal",
-                    "env_vars": ["FAL_KEY"],
-                    "post_setup": "",
-                }
+                    {
+                        "provider": "fal",
+                        "env_vars": ["FAL_KEY"],
+                        "configured_env_vars": [],
+                        "missing_env_vars": ["FAL_KEY"],
+                        "post_setup": "",
+                    }
             ],
         },
         raising=False,
@@ -3768,19 +3770,24 @@ async def test_visual_package_skips_xai_video_when_quota_known_and_no_video_fall
         "unavailable_provider_names": ["fal"],
         "fallback_provider_names": [],
         "setup_actions": [
-            {
-                "provider": "fal",
-                "env_vars": ["FAL_KEY"],
-                "post_setup": "",
-            }
+                {
+                    "provider": "fal",
+                    "env_vars": ["FAL_KEY"],
+                    "configured_env_vars": [],
+                    "missing_env_vars": ["FAL_KEY"],
+                    "post_setup": "",
+                }
         ],
     }
     assert video_payload["failure"]["failure_class"] == "quota_exceeded"
     assert payload["videos"] == []
 
 
-def test_visual_package_video_fallback_diagnostic_lists_unavailable_setup_actions(monkeypatch):
+def test_visual_package_video_fallback_diagnostic_lists_unavailable_setup_actions(monkeypatch, tmp_path):
     from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("FAL_KEY", raising=False)
 
     class FakeVideoProvider:
         def __init__(self, name, available, setup_schema):
@@ -3831,6 +3838,8 @@ def test_visual_package_video_fallback_diagnostic_lists_unavailable_setup_action
             {
                 "provider": "fal",
                 "env_vars": ["FAL_KEY"],
+                "configured_env_vars": [],
+                "missing_env_vars": ["FAL_KEY"],
                 "post_setup": "",
             }
         ],
