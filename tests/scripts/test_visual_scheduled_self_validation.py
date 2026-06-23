@@ -1042,6 +1042,64 @@ def test_scheduled_self_validation_exports_safe_runtime_policy_even_when_report_
     assert "unknown_prompt_mutation" not in encoded
 
 
+def test_scheduled_self_validation_exports_runtime_dependency_operator_action(monkeypatch, tmp_path):
+    from scripts import visual_scheduled_self_validation
+
+    output_dir = tmp_path / "self_validation"
+    action = {
+        "type": "configure_visual_runtime_dependencies",
+        "track": "operator_setup",
+        "reason": "visual_runtime_missing_python_modules",
+        "requires_human_feedback": False,
+        "requires_operator_setup": True,
+        "activation_status": "operator_setup",
+        "source": "visual_runtime_environment",
+        "missing_modules": ["openai", "slack_sdk"],
+        "operator_setup_actions": [
+            {
+                "provider": "python_runtime",
+                "missing_env_vars": [],
+                "post_setup": "rtk uv run --extra dev --extra slack python3 <script>",
+            }
+        ],
+    }
+
+    def fake_automation(*, work_dir, include_live, include_live_slack_upload=False):
+        return {
+            **_automation_report(
+                include_live=include_live,
+                include_live_slack_upload=include_live_slack_upload,
+            ),
+            "success": False,
+            "failures": ["runtime_environment_missing_dependencies"],
+            "self_improvement": {
+                "next_actions": [action],
+                "action_count": 1,
+                "reduces_human_intervention": False,
+                "privacy_safe": True,
+            },
+        }
+
+    monkeypatch.setattr(
+        visual_scheduled_self_validation,
+        "build_visual_e2e_automation_report",
+        fake_automation,
+    )
+
+    report = visual_scheduled_self_validation.build_visual_scheduled_self_validation_report(
+        output_dir=output_dir,
+        live_mode="on",
+        now=datetime(2026, 6, 22, 8, 30, tzinfo=timezone.utc),
+    )
+
+    assert "configure_visual_runtime_dependencies" in report["summary"]["feedback_action_types"]
+    assert report["runtime_policy"]["success"] is True
+    assert report["runtime_policy"]["decision"] == "apply_next_run"
+    assert report["runtime_policy"]["next_actions"] == [action]
+    encoded = json.dumps(report["runtime_policy"], ensure_ascii=False)
+    assert "private_prompt" not in encoded
+
+
 def test_scheduled_self_validation_summarizes_runtime_policy_effect(monkeypatch, tmp_path):
     from scripts import visual_scheduled_self_validation
 

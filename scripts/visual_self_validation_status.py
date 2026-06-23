@@ -33,6 +33,7 @@ _RUNTIME_POLICY_ACTION_TYPES = {
     "safe_reframe_provider_retry",
     "resolve_provider_quota_or_switch_provider",
     "configure_video_fallback_provider",
+    "configure_visual_runtime_dependencies",
     "prefer_strategy",
 }
 
@@ -418,6 +419,12 @@ def _next_steps(
     steps: list[str] = []
     if not report_success or failures:
         steps.append("inspect_self_validation_failures")
+    if _has_action_type(
+        "configure_visual_runtime_dependencies",
+        summary,
+        runtime_policy,
+    ):
+        steps.append("configure_visual_runtime_dependencies")
     if summary.get("closed_loop_regression_success") is False or "closed_loop_regression_failed" in failures:
         steps.append("inspect_closed_loop_policy_application")
     if (
@@ -480,6 +487,17 @@ def _runtime_policy_quality_regressed(summary: dict[str, Any]) -> bool:
     return False
 
 
+def _has_action_type(
+    action_type: str,
+    summary: dict[str, Any],
+    runtime_policy: dict[str, Any],
+) -> bool:
+    values: list[str] = []
+    values.extend(_strings(summary.get("feedback_action_types")))
+    values.extend(_strings(runtime_policy.get("action_types")))
+    return action_type in values
+
+
 def _health_status(
     *,
     report_success: bool,
@@ -490,6 +508,8 @@ def _health_status(
     failures: list[str],
 ) -> str:
     if not report_success or failures:
+        if _runtime_dependency_setup_pending(failures, next_steps):
+            return "warn"
         return "fail"
     if (
         not live_e2e_ran
@@ -500,6 +520,14 @@ def _health_status(
     if any(step != "continue_visual_agent_mode_rollout" for step in next_steps):
         return "warn"
     return "pass"
+
+
+def _runtime_dependency_setup_pending(failures: list[str], next_steps: list[str]) -> bool:
+    if "configure_visual_runtime_dependencies" not in next_steps:
+        return False
+    if not failures:
+        return False
+    return all(failure == "runtime_environment_missing_dependencies" for failure in failures)
 
 
 def _carried_live_evidence_current(

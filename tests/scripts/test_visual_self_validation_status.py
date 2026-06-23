@@ -525,6 +525,49 @@ def test_visual_self_validation_status_warns_on_slack_conversation_operator_setu
     assert "apply_slack_conversation_self_review_actions" not in status["next_steps"]
 
 
+def test_visual_self_validation_status_warns_on_visual_runtime_dependency_setup(tmp_path):
+    from scripts.visual_self_validation_status import build_visual_self_validation_status
+
+    report = _scheduled_report(success=False)
+    action = {
+        "type": "configure_visual_runtime_dependencies",
+        "track": "operator_setup",
+        "reason": "visual_runtime_missing_python_modules",
+        "requires_human_feedback": False,
+        "requires_operator_setup": True,
+        "activation_status": "operator_setup",
+        "source": "visual_runtime_environment",
+        "missing_modules": ["openai", "slack_sdk"],
+        "operator_setup_actions": [
+            {
+                "provider": "python_runtime",
+                "missing_env_vars": [],
+                "post_setup": "rtk uv run --extra dev --extra slack python3 <script>",
+            }
+        ],
+    }
+    report["failures"] = ["runtime_environment_missing_dependencies"]
+    report["summary"]["feedback_action_types"] = ["configure_visual_runtime_dependencies"]
+    report["runtime_policy"] = {
+        "success": True,
+        "decision": "apply_next_run",
+        "generated_at": "2026-06-22T10:19:00+00:00",
+        "expires_at": "2026-06-23T10:19:00+00:00",
+        "next_actions": [action],
+    }
+    latest_path = _write_latest(tmp_path, report)
+
+    status = build_visual_self_validation_status(latest_path=latest_path)
+
+    assert status["success"] is False
+    assert status["health_status"] == "warn"
+    assert "configure_visual_runtime_dependencies" in status["self_improvement"]["action_types"]
+    assert "configure_visual_runtime_dependencies" in status["runtime_policy"]["action_types"]
+    assert "configure_visual_runtime_dependencies" in status["next_steps"]
+    encoded = json.dumps(status, ensure_ascii=False)
+    assert "private_prompt" not in encoded
+
+
 def test_visual_self_validation_status_warns_on_live_quality_trend_degradation(tmp_path):
     from scripts.visual_self_validation_status import build_visual_self_validation_status
 
