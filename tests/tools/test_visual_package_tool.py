@@ -4957,6 +4957,70 @@ def test_score_candidates_records_inline_vision_provider_failure(tmp_path):
     assert judgment["details"]["vision_failure"]["failure_class"] == "quota_exceeded"
 
 
+def test_score_candidates_disables_inline_vision_after_quota_failure(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from tools import visual_package_tool
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+    request_id = ledger.record_request(
+        user_prompt="redacted",
+        normalized_intent={"kind": "visual_package"},
+        modality="package",
+        operation="visual_package_generate",
+        status="started",
+        metadata={"intent_signature": "visig_demo"},
+    )
+    candidates = [
+        {
+            "attempt_id": f"vat_demo_{index}",
+            "artifact_id": f"var_demo_{index}",
+            "artifact_path": str(tmp_path / f"candidate-{index}.png"),
+            "kind": "image",
+            "provider": "xai",
+            "model": "grok-imagine-image-quality",
+            "content_hash": f"hash-demo-{index}",
+            "hard_gate": {"passed": True, "delivery_possible": True},
+            "scores": {"resolution": 0.9, "aspect_match": 0.9, "final_score": 0.9},
+        }
+        for index in range(3)
+    ]
+    analyzer_calls = []
+
+    def quota_blocked_analyzer(candidate):
+        analyzer_calls.append(candidate["artifact_id"])
+        return {
+            "success": False,
+            "error": (
+                "Error code: 403 - {'code':'personal-team-blocked:spending-limit',"
+                "'error':'You have run out of credits or need a Grok subscription.'}"
+            ),
+            "analysis": "Insufficient credits or payment required.",
+        }
+
+    visual_package_tool._score_candidates(
+        ledger,
+        request_id=request_id,
+        intent_signature="visig_demo",
+        strategy_signature="vstrat_demo",
+        modality="image",
+        has_reference_image=False,
+        candidates=candidates,
+        inline_vision_judge=True,
+        vision_analyzer=quota_blocked_analyzer,
+    )
+
+    judgments = ledger._list("visual_judgments")
+    assert analyzer_calls == ["var_demo_0"]
+    assert candidates[0]["vision_observation_source"] == "inline_vision_unavailable"
+    assert candidates[0]["vision_failure"]["failure_class"] == "quota_exceeded"
+    assert candidates[1]["vision_observation_source"] == "artifact_observation"
+    assert candidates[2]["vision_observation_source"] == "artifact_observation"
+    assert judgments[0]["metadata"]["vision_failure"]["failure_class"] == "quota_exceeded"
+    assert "vision_failure" not in judgments[1]["metadata"]
+    assert "vision_failure" not in judgments[2]["metadata"]
+
+
 def test_inline_vision_prompt_requests_preference_dimension_metrics():
     from tools.visual_package_tool import INLINE_VISION_JUDGE_PROMPT
 

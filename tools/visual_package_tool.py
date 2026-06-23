@@ -2496,11 +2496,16 @@ def _score_candidates(
     provider_stats = compute_provider_reliability(ledger, request_id=request_id)
     preference_profile = build_preference_profile(ledger, bucket=intent_signature)
     recent_hashes: set[str] = set()
+    inline_vision_disabled_for_batch = False
     for candidate in candidates:
+        inline_enabled = (
+            _should_run_inline_vision_judge(candidate, inline_vision_judge)
+            and not inline_vision_disabled_for_batch
+        )
         vision_observation = build_candidate_vision_observation(
             candidate,
             fallback_observation=build_artifact_observation(candidate),
-            inline_enabled=_should_run_inline_vision_judge(candidate, inline_vision_judge),
+            inline_enabled=inline_enabled,
             analyzer=vision_analyzer,
         )
         evidence = vision_observation.get("evidence") if isinstance(vision_observation.get("evidence"), dict) else {}
@@ -2512,6 +2517,8 @@ def _score_candidates(
         )
         if vision_failure:
             candidate["vision_failure"] = vision_failure
+            if _inline_vision_failure_disables_batch(vision_failure):
+                inline_vision_disabled_for_batch = True
         quality = judge_visual_quality(
             candidate,
             request_context={
@@ -2580,6 +2587,14 @@ def _should_run_inline_vision_judge(candidate: dict[str, Any], mode: bool | str)
     provider = str(candidate.get("provider") or "").strip().lower()
     model = str(candidate.get("model") or "").strip().lower()
     return bool(provider) and provider not in {"fixture", "mock", "test"} and "fixture" not in model
+
+
+def _inline_vision_failure_disables_batch(failure: dict[str, Any]) -> bool:
+    return str(failure.get("failure_class") or "") in {
+        "provider_unavailable",
+        "quota_exceeded",
+        "rate_limited",
+    }
 
 
 def _record_learning_trace(
