@@ -198,6 +198,118 @@ def test_visual_e2e_automation_includes_quality_suite(monkeypatch, tmp_path):
     assert burn_calls[0]["include_storyboard_probe"] is True
 
 
+def test_visual_e2e_automation_quarantines_later_live_suites_after_live_e2e_quota(
+    monkeypatch,
+    tmp_path,
+):
+    from scripts import visual_e2e_automation_report
+
+    suite_calls = []
+    burn_calls = []
+
+    def fake_live_provider_e2e_report(*, mode, work_dir=None, **kwargs):
+        if mode == "fixture":
+            return {
+                "success": True,
+                "provider_mode": mode,
+                "failures": [],
+                "payload": {"success": True, "image_count": 1, "video_count": 1},
+                "evidence": {"quality_gate": {"success": True, "min_score": 0.82}},
+            }
+        return {
+            "success": False,
+            "provider_mode": mode,
+            "failures": ["provider_generation_failed"],
+            "payload": {"success": False, "error_type": "api_error"},
+            "evidence": {
+                "recovery_summary": {
+                    "provider_failure_count": 1,
+                    "provider_failure_classes": {"quota_exceeded": 1},
+                    "provider_error_codes": {
+                        "personal-team-blocked:spending-limit": 1,
+                    },
+                    "retry_attempt_count": 0,
+                    "negotiation_attempted": False,
+                    "negotiation_success": False,
+                    "content_moderation_recovered": False,
+                    "recovered_failure_classes": [],
+                }
+            },
+        }
+
+    def fake_quality_suite(**kwargs):
+        suite_calls.append(kwargs)
+        return {
+            "success": True,
+            "provider_mode": kwargs["mode"],
+            "case_count": 1,
+            "failures": [],
+            "recovery_summary": {
+                "provider_failure_count": 0,
+                "provider_failure_classes": {},
+                "provider_error_codes": {},
+            },
+            "quality_repair_summary": {},
+            "cases": [],
+        }
+
+    def fake_live_quality_burn_report(**kwargs):
+        burn_calls.append(kwargs)
+        return {
+            "success": False,
+            "mode": "live",
+            "summary": {"provider_failure_count": 1},
+            "next_actions": [
+                {
+                    "type": "resolve_provider_quota_or_switch_provider",
+                    "track": "provider",
+                    "reason": "live_quality_burn_provider_quota_exceeded",
+                    "requires_human_feedback": False,
+                    "requires_operator_setup": True,
+                    "source": "live_quality_burn",
+                }
+            ],
+            "suite": kwargs["suite_report"],
+        }
+
+    monkeypatch.setattr(
+        visual_e2e_automation_report,
+        "build_visual_live_provider_e2e_report",
+        fake_live_provider_e2e_report,
+    )
+    monkeypatch.setattr(
+        visual_e2e_automation_report,
+        "build_visual_live_provider_e2e_suite_report",
+        fake_quality_suite,
+    )
+    monkeypatch.setattr(
+        visual_e2e_automation_report,
+        "build_visual_live_quality_burn_report",
+        fake_live_quality_burn_report,
+    )
+
+    report = visual_e2e_automation_report.build_visual_e2e_automation_report(
+        work_dir=tmp_path,
+        include_live=True,
+    )
+
+    assert [call["mode"] for call in suite_calls] == ["fixture"]
+    assert report["live_e2e"]["success"] is False
+    assert report["live_quality_suite"]["status"] == "skipped_provider_account_blocked"
+    assert report["live_quality_suite"]["recovery_summary"]["provider_failure_classes"] == {
+        "quota_exceeded": 1
+    }
+    assert report["live_quality_suite"]["recovery_summary"]["provider_error_codes"] == {
+        "personal-team-blocked:spending-limit": 1
+    }
+    assert burn_calls[0]["suite_report"] == report["live_quality_suite"]
+    assert [
+        action["type"]
+        for action in report["self_improvement"]["next_actions"]
+        if action.get("source") == "live_quality_burn"
+    ] == ["resolve_provider_quota_or_switch_provider"]
+
+
 def test_visual_e2e_automation_fails_when_closed_loop_regression_fails(monkeypatch, tmp_path):
     from scripts import visual_e2e_automation_report
 

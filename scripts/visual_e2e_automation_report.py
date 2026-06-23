@@ -83,15 +83,20 @@ def build_visual_e2e_automation_report(
     quality_calibration = build_quality_calibration_report(_ledger_path_for_work_dir(work_dir))
     if include_live:
         live_e2e = build_visual_live_provider_e2e_report(mode="live", work_dir=None)
-        live_quality_suite_kwargs = {
-            "mode": "live",
-            "work_dir": None,
-            "include_video_repair_probe": True,
-            "include_storyboard_probe": True,
-        }
-        if case_timeout_seconds is not None:
-            live_quality_suite_kwargs["case_timeout_seconds"] = case_timeout_seconds
-        live_quality_suite = build_visual_live_provider_e2e_suite_report(**live_quality_suite_kwargs)
+        if _live_provider_account_blocked(live_e2e):
+            live_quality_suite = _skipped_live_quality_suite_after_provider_account_block(
+                live_e2e
+            )
+        else:
+            live_quality_suite_kwargs = {
+                "mode": "live",
+                "work_dir": None,
+                "include_video_repair_probe": True,
+                "include_storyboard_probe": True,
+            }
+            if case_timeout_seconds is not None:
+                live_quality_suite_kwargs["case_timeout_seconds"] = case_timeout_seconds
+            live_quality_suite = build_visual_live_provider_e2e_suite_report(**live_quality_suite_kwargs)
         live_quality_burn = build_visual_live_quality_burn_report(
             mode="live",
             work_dir=None,
@@ -214,6 +219,49 @@ def live_provider_enabled() -> bool:
         "true",
         "yes",
         "on",
+    }
+
+
+def _live_provider_account_blocked(report: dict[str, Any]) -> bool:
+    recovery = _live_report_recovery_summary(report)
+    classes = recovery.get("provider_failure_classes")
+    if not isinstance(classes, dict):
+        return False
+    try:
+        return int(classes.get("quota_exceeded") or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _live_report_recovery_summary(report: dict[str, Any]) -> dict[str, Any]:
+    evidence = report.get("evidence") if isinstance(report.get("evidence"), dict) else {}
+    recovery = (
+        evidence.get("recovery_summary")
+        if isinstance(evidence.get("recovery_summary"), dict)
+        else {}
+    )
+    return dict(recovery)
+
+
+def _skipped_live_quality_suite_after_provider_account_block(
+    live_e2e: dict[str, Any],
+) -> dict[str, Any]:
+    recovery = _live_report_recovery_summary(live_e2e)
+    return {
+        "success": False,
+        "status": "skipped_provider_account_blocked",
+        "provider_mode": "live",
+        "case_count": 0,
+        "failures": ["skipped_provider_account_blocked"],
+        "recovery_summary": recovery,
+        "quality_repair_summary": {},
+        "quality_contract_summary": {},
+        "quality_focus_summary": {},
+        "cases": [],
+        "evidence": {
+            "skip_reason": "provider_account_blocked",
+            "blocked_by": "live_e2e",
+        },
     }
 
 
