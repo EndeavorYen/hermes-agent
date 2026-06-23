@@ -423,6 +423,18 @@ def _next_actions(suite: dict[str, Any], summary: dict[str, Any]) -> list[dict[s
                 evidence_count=_int(summary.get("image_first_video_source_not_single_count")),
             )
         )
+        actions.append(
+            _action(
+                "enforce_single_video_source_image",
+                "provider",
+                "live_quality_burn_video_source_not_single_image",
+                confidence=0.86,
+                evidence_count=_int(summary.get("image_first_video_source_not_single_count")),
+                modality="video",
+                quality_issue="source_frame_grid",
+                repair_hint="use_single_ranked_selected_image",
+            )
+        )
     video_aspect_mismatch_count = _video_aspect_mismatch_count(suite)
     if video_aspect_mismatch_count > 0:
         actions.append(

@@ -962,6 +962,19 @@ def test_visual_live_quality_burn_flags_video_source_not_single_image(monkeypatc
         "activation_status": "next_run",
         "source": "live_quality_burn",
     } in report["next_actions"]
+    assert {
+        "type": "enforce_single_video_source_image",
+        "track": "provider",
+        "reason": "live_quality_burn_video_source_not_single_image",
+        "confidence": 0.86,
+        "evidence_count": 1,
+        "requires_human_feedback": False,
+        "activation_status": "next_run",
+        "source": "live_quality_burn",
+        "modality": "video",
+        "quality_issue": "source_frame_grid",
+        "repair_hint": "use_single_ranked_selected_image",
+    } in report["next_actions"]
 
 
 def test_visual_live_quality_burn_repairs_video_aspect_mismatch(monkeypatch, tmp_path):

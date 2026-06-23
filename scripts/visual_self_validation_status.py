@@ -28,6 +28,7 @@ _RUNTIME_POLICY_ACTION_TYPES = {
     "repair_low_preference_dimension",
     "apply_quality_focus_operator",
     "require_preference_dimension_evidence",
+    "enforce_single_video_source_image",
     "enforce_video_source_aspect_ratio",
     "safe_reframe_provider_retry",
     "resolve_provider_quota_or_switch_provider",
