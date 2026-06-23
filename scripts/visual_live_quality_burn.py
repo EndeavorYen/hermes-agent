@@ -423,6 +423,20 @@ def _next_actions(suite: dict[str, Any], summary: dict[str, Any]) -> list[dict[s
                 evidence_count=_int(summary.get("image_first_video_source_not_single_count")),
             )
         )
+    video_aspect_mismatch_count = _video_aspect_mismatch_count(suite)
+    if video_aspect_mismatch_count > 0:
+        actions.append(
+            _action(
+                "enforce_video_source_aspect_ratio",
+                "provider",
+                "live_quality_burn_video_aspect_ratio_mismatch",
+                confidence=0.86,
+                evidence_count=video_aspect_mismatch_count,
+                modality="video",
+                quality_issue="aspect_integrity_bad",
+                repair_hint="preserve_source_aspect_ratio",
+            )
+        )
     actions.extend(_provider_failure_actions(recovery))
     repair = suite.get("quality_repair_summary") if isinstance(suite.get("quality_repair_summary"), dict) else {}
     actions.extend(_quality_repair_actions(repair))
@@ -450,6 +464,45 @@ def _next_actions(suite: dict[str, Any], summary: dict[str, Any]) -> list[dict[s
             }
         )
     return _dedupe_actions(actions)
+
+
+def _video_aspect_mismatch_count(suite: dict[str, Any]) -> int:
+    count = 0
+    for case in suite.get("cases") or []:
+        if not isinstance(case, dict):
+            continue
+        failures = [str(failure) for failure in case.get("failures") or []]
+        evidence = case.get("evidence") if isinstance(case.get("evidence"), dict) else {}
+        video_media_quality = (
+            evidence.get("video_media_quality")
+            if isinstance(evidence.get("video_media_quality"), dict)
+            else {}
+        )
+        if _has_video_aspect_mismatch_failure(failures) or _has_video_aspect_mismatch_evidence(
+            video_media_quality
+        ):
+            count += 1
+    if count:
+        return count
+    return sum(
+        1
+        for failure in suite.get("failures") or []
+        if "video_aspect_ratio_mismatch" in str(failure)
+    )
+
+
+def _has_video_aspect_mismatch_failure(failures: list[str]) -> bool:
+    return any("video_aspect_ratio_mismatch" in failure for failure in failures)
+
+
+def _has_video_aspect_mismatch_evidence(video_media_quality: dict[str, Any]) -> bool:
+    videos = video_media_quality.get("videos")
+    if not isinstance(videos, list):
+        return False
+    return any(
+        isinstance(video, dict) and video.get("aspect_ratio_matches") is False
+        for video in videos
+    )
 
 
 def _quality_focus_actions(summary: dict[str, Any]) -> list[dict[str, Any]]:

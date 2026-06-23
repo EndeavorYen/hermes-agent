@@ -964,6 +964,96 @@ def test_visual_live_quality_burn_flags_video_source_not_single_image(monkeypatc
     } in report["next_actions"]
 
 
+def test_visual_live_quality_burn_repairs_video_aspect_mismatch(monkeypatch, tmp_path):
+    from scripts import visual_live_quality_burn
+
+    suite = _suite_with_quality_failure()
+    suite["success"] = False
+    suite["failures"] = ["product_photo_video:video_aspect_ratio_mismatch"]
+    suite["cases"][0]["success"] = False
+    suite["cases"][0]["failures"] = ["video_aspect_ratio_mismatch"]
+    suite["cases"][0]["evidence"]["video_media_quality"] = {
+        "success": False,
+        "checked_video_count": 1,
+        "bad_video_artifact_ids": ["var_stretched_video"],
+        "videos": [
+            {
+                "artifact_id": "var_stretched_video",
+                "requested_aspect_ratio": "16:9",
+                "actual_aspect_ratio": "1:1",
+                "aspect_ratio_matches": False,
+            }
+        ],
+    }
+
+    monkeypatch.setattr(
+        visual_live_quality_burn,
+        "build_visual_live_provider_e2e_suite_report",
+        lambda **_kwargs: suite,
+    )
+
+    report = visual_live_quality_burn.build_visual_live_quality_burn_report(
+        mode="live",
+        output_dir=tmp_path,
+    )
+
+    assert {
+        "type": "enforce_video_source_aspect_ratio",
+        "track": "provider",
+        "reason": "live_quality_burn_video_aspect_ratio_mismatch",
+        "confidence": 0.86,
+        "evidence_count": 1,
+        "requires_human_feedback": False,
+        "activation_status": "next_run",
+        "source": "live_quality_burn",
+        "modality": "video",
+        "quality_issue": "aspect_integrity_bad",
+        "repair_hint": "preserve_source_aspect_ratio",
+    } in report["next_actions"]
+
+
+def test_visual_live_quality_burn_does_not_treat_generic_video_media_failure_as_aspect_mismatch(
+    monkeypatch,
+    tmp_path,
+):
+    from scripts import visual_live_quality_burn
+
+    suite = _suite_with_quality_failure()
+    suite["success"] = False
+    suite["failures"] = ["product_photo_video:video_upload_failed"]
+    suite["cases"][0]["success"] = False
+    suite["cases"][0]["failures"] = ["video_upload_failed"]
+    suite["cases"][0]["evidence"]["video_media_quality"] = {
+        "success": False,
+        "checked_video_count": 1,
+        "bad_video_artifact_ids": ["var_missing_video"],
+        "videos": [
+            {
+                "artifact_id": "var_missing_video",
+                "requested_aspect_ratio": "16:9",
+                "actual_aspect_ratio": "",
+                "aspect_ratio_matches": None,
+            }
+        ],
+    }
+
+    monkeypatch.setattr(
+        visual_live_quality_burn,
+        "build_visual_live_provider_e2e_suite_report",
+        lambda **_kwargs: suite,
+    )
+
+    report = visual_live_quality_burn.build_visual_live_quality_burn_report(
+        mode="live",
+        output_dir=tmp_path,
+    )
+
+    assert all(
+        action["type"] != "enforce_video_source_aspect_ratio"
+        for action in report["next_actions"]
+    )
+
+
 def test_visual_live_quality_burn_promotes_high_quality_pass_without_repair(monkeypatch, tmp_path):
     from scripts import visual_live_quality_burn
 

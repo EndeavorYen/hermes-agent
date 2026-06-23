@@ -38,6 +38,7 @@ def resolve_visual_feedback_policy(
         "provider_failure_classes": {},
         "provider_error_codes": {},
     }
+    enforce_video_source_aspect_ratio = False
     video_fallback_diagnostics: list[dict[str, Any]] = []
     operator_setup_actions: list[dict[str, Any]] = []
     strategy_preference: dict[str, Any] | None = None
@@ -114,6 +115,17 @@ def resolve_visual_feedback_policy(
             _append_required_preference_dimension(required_preference_dimensions, action)
             _append_once(applied_action_types, action_type)
             _append_once(applied_action_sources, action_source)
+        elif action_type == "enforce_video_source_aspect_ratio" and wants_video:
+            enforce_video_source_aspect_ratio = True
+            prefer_image_first_video = True
+            rerank_before_delivery = True
+            quality_repair_mode = "preferred"
+            _set_quality_repair_mode(quality_repair_modes, {"modality": "video"}, "preferred")
+            if wants_image and not budget_locked_by_user and candidate_budget < 2:
+                candidate_budget = 2
+                candidate_budget_source = action_source
+            _append_once(applied_action_types, action_type)
+            _append_once(applied_action_sources, action_source)
         elif action_type == "safe_reframe_provider_retry":
             provider_recovery_mode = "safe_reframe"
             provider_retry_budget = 2
@@ -161,6 +173,7 @@ def resolve_visual_feedback_policy(
         "provider_recovery_mode": provider_recovery_mode,
         "provider_retry_budget": provider_retry_budget,
         "provider_failure_context": provider_failure_context,
+        "enforce_video_source_aspect_ratio": enforce_video_source_aspect_ratio,
         "video_fallback_diagnostics": video_fallback_diagnostics,
         "requires_operator_setup": bool(operator_setup_actions),
         "operator_setup_actions": operator_setup_actions,

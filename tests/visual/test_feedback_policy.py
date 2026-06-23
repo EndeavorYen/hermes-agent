@@ -204,6 +204,37 @@ def test_feedback_policy_makes_image_first_video_action_executable():
     assert policy["applied_action_types"] == ["prefer_image_first_video"]
 
 
+def test_feedback_policy_applies_video_aspect_enforcement_action():
+    from agent.visual.feedback_policy import resolve_visual_feedback_policy
+
+    policy = resolve_visual_feedback_policy(
+        {
+            "next_actions": [
+                {
+                    "type": "enforce_video_source_aspect_ratio",
+                    "track": "provider",
+                    "reason": "live_quality_burn_video_aspect_ratio_mismatch",
+                    "modality": "video",
+                    "quality_issue": "aspect_integrity_bad",
+                    "repair_hint": "preserve_source_aspect_ratio",
+                    "requires_human_feedback": False,
+                }
+            ],
+            "policy_sources": ["scheduled_self_validation"],
+        },
+        wants_image=True,
+        wants_video=True,
+        explicit_candidate_budget=None,
+        default_candidate_budget=1,
+    )
+
+    assert policy["prefer_image_first_video"] is True
+    assert policy["rerank_before_delivery"] is True
+    assert policy["enforce_video_source_aspect_ratio"] is True
+    assert policy["quality_repair_modes"]["video"] == "preferred"
+    assert policy["applied_action_types"] == ["enforce_video_source_aspect_ratio"]
+
+
 def test_feedback_policy_respects_explicit_user_candidate_budget():
     from agent.visual.feedback_policy import resolve_visual_feedback_policy
 

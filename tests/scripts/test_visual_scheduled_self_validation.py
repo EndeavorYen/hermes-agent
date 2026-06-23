@@ -961,6 +961,15 @@ def test_scheduled_self_validation_exports_safe_runtime_policy_even_when_report_
                         "private_prompt": "do not leak this prompt",
                     },
                     {
+                        "type": "enforce_video_source_aspect_ratio",
+                        "requires_human_feedback": False,
+                        "activation_status": "next_run",
+                        "source": "live_quality_burn",
+                        "modality": "video",
+                        "quality_issue": "aspect_integrity_bad",
+                        "repair_hint": "preserve_source_aspect_ratio",
+                    },
+                    {
                         "type": "prefer_quality_repair_retry",
                         "requires_human_feedback": True,
                         "activation_status": "next_run",
@@ -999,6 +1008,15 @@ def test_scheduled_self_validation_exports_safe_runtime_policy_even_when_report_
             "requires_human_feedback": False,
             "activation_status": "next_run",
             "source": "live_quality_burn",
+        },
+        {
+            "type": "enforce_video_source_aspect_ratio",
+            "requires_human_feedback": False,
+            "activation_status": "next_run",
+            "source": "live_quality_burn",
+            "modality": "video",
+            "quality_issue": "aspect_integrity_bad",
+            "repair_hint": "preserve_source_aspect_ratio",
         }
     ]
     encoded = json.dumps(report["runtime_policy"], ensure_ascii=False)
