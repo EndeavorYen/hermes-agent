@@ -19,6 +19,20 @@ from agent.visual.promotion_readiness import missing_visual_promotion_readiness
 
 
 DEFAULT_STALE_AFTER_HOURS = 24
+_RUNTIME_POLICY_ACTION_TYPES = {
+    "increase_candidate_budget",
+    "prefer_image_first_video",
+    "rerank_before_slack",
+    "prefer_quality_repair_retry",
+    "escalate_quality_repair_strategy",
+    "repair_low_preference_dimension",
+    "apply_quality_focus_operator",
+    "require_preference_dimension_evidence",
+    "safe_reframe_provider_retry",
+    "resolve_provider_quota_or_switch_provider",
+    "configure_video_fallback_provider",
+    "prefer_strategy",
+}
 
 
 def default_latest_path() -> Path:
@@ -90,6 +104,7 @@ def build_visual_self_validation_status(
         summary=summary,
         trend_degradations=trend_degradations,
         slack_upload_policy=slack_upload_policy,
+        runtime_policy=runtime_policy,
     )
     health_status = _health_status(
         report_success=payload.get("success") is True,
@@ -321,7 +336,7 @@ def _runtime_policy_status(value: Any, *, now: datetime, summary: dict[str, Any]
     expires_at = _parse_datetime(expires_at_value)
     expired = expires_at is not None and expires_at <= now
     actions = _dicts(policy.get("next_actions"))
-    return {
+    status = {
         "success": policy.get("success") is True,
         "decision": policy.get("decision"),
         "generated_at": generated_at,
@@ -331,6 +346,12 @@ def _runtime_policy_status(value: Any, *, now: datetime, summary: dict[str, Any]
         "fixture_effect": _runtime_policy_effect_status(summary, prefix="fixture"),
         "live_effect": _runtime_policy_effect_status(summary, prefix="live"),
     }
+    suspended_action_types = _sanitise_runtime_policy_action_types(
+        policy.get("suspended_action_types")
+    )
+    if suspended_action_types:
+        status["suspended_action_types"] = suspended_action_types
+    return status
 
 
 def _runtime_policy_effect_status(summary: dict[str, Any], *, prefix: str) -> dict[str, Any]:
@@ -345,6 +366,14 @@ def _runtime_policy_effect_status(summary: dict[str, Any], *, prefix: str) -> di
         ),
         "quality_regressed": summary.get(f"{prefix}_runtime_policy_quality_regressed"),
     }
+
+
+def _sanitise_runtime_policy_action_types(value: Any) -> list[str]:
+    return [
+        action_type
+        for action_type in _strings(value)
+        if action_type in _RUNTIME_POLICY_ACTION_TYPES
+    ]
 
 
 def _dict_get(payload: dict[str, Any], *keys: str) -> Any:
@@ -382,6 +411,7 @@ def _next_steps(
     summary: dict[str, Any],
     trend_degradations: list[str],
     slack_upload_policy: dict[str, Any],
+    runtime_policy: dict[str, Any],
 ) -> list[str]:
     steps: list[str] = []
     if not report_success or failures:
@@ -400,6 +430,8 @@ def _next_steps(
         steps.append("stabilize_live_quality_trends")
     if _runtime_policy_not_applied(summary):
         steps.append("verify_runtime_policy_application")
+    if runtime_policy.get("decision") == "suspend_quality_regressed":
+        steps.append("review_suspended_runtime_policy")
     if _runtime_policy_quality_regressed(summary):
         steps.append("inspect_runtime_policy_quality_regression")
     if summary.get("slack_duplicate_delivery_count") not in (None, 0):

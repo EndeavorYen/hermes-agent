@@ -108,7 +108,8 @@ def build_visual_scheduled_self_validation_report(
         automation=automation,
         live_quality_trends=live_quality_trends,
     )
-    runtime_policy = _runtime_policy(automation, now=now)
+    summary = _summary(automation, live_quality_trends=live_quality_trends)
+    runtime_policy = _runtime_policy(automation, now=now, summary=summary)
     report = {
         "success": automation.get("success") is True,
         "run_id": _run_id(now),
@@ -119,7 +120,7 @@ def build_visual_scheduled_self_validation_report(
         "slack_live_upload_policy": slack_live_upload_policy,
         "live_quality_trends": live_quality_trends,
         "runtime_policy": runtime_policy,
-        "summary": _summary(automation, live_quality_trends=live_quality_trends),
+        "summary": summary,
         "automation": automation,
         "self_review": {
             "cron_safe": True,
@@ -766,13 +767,31 @@ def _action_list(value: Any) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)]
 
 
-def _runtime_policy(automation: dict[str, Any], *, now: datetime) -> dict[str, Any]:
+def _runtime_policy(
+    automation: dict[str, Any],
+    *,
+    now: datetime,
+    summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     self_improvement = (
         automation.get("self_improvement")
         if isinstance(automation.get("self_improvement"), dict)
         else {}
     )
     actions = _runtime_policy_actions(_action_list(self_improvement.get("next_actions")))
+    if _runtime_policy_quality_regressed(summary):
+        suspended_action_types = _runtime_policy_suspended_action_types(actions, summary)
+        return {
+            "success": False,
+            "decision": "suspend_quality_regressed",
+            "reason": "runtime_policy_quality_regressed",
+            "generated_at": now.isoformat(),
+            "expires_at": (now + timedelta(hours=DEFAULT_RUNTIME_POLICY_TTL_HOURS)).isoformat(),
+            "next_actions": [],
+            "suspended_action_types": suspended_action_types,
+            "privacy_safe": True,
+            "source": "scheduled_self_validation",
+        }
     if not actions:
         return {
             "success": False,
@@ -791,6 +810,38 @@ def _runtime_policy(automation: dict[str, Any], *, now: datetime) -> dict[str, A
         "privacy_safe": True,
         "source": "scheduled_self_validation",
     }
+
+
+def _runtime_policy_quality_regressed(summary: dict[str, Any] | None) -> bool:
+    if not isinstance(summary, dict):
+        return False
+    return any(
+        summary.get(f"{prefix}_runtime_policy_quality_regressed") is True
+        for prefix in ("fixture", "live")
+    )
+
+
+def _runtime_policy_suspended_action_types(
+    actions: list[dict[str, Any]],
+    summary: dict[str, Any] | None,
+) -> list[str]:
+    values = _action_types(actions)
+    if isinstance(summary, dict):
+        for prefix in ("fixture", "live"):
+            for key in (
+                f"{prefix}_runtime_policy_expected_action_types",
+                f"{prefix}_runtime_policy_missing_action_types",
+            ):
+                raw_action_types = summary.get(key)
+                if not isinstance(raw_action_types, list):
+                    continue
+                for action_type in raw_action_types:
+                    if not isinstance(action_type, str):
+                        continue
+                    action_type = action_type.strip()
+                    if action_type and action_type not in values:
+                        values.append(action_type)
+    return values
 
 
 def _runtime_policy_actions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:

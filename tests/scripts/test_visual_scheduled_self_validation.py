@@ -1084,6 +1084,102 @@ def test_scheduled_self_validation_summarizes_runtime_policy_effect(monkeypatch,
     assert report["summary"]["live_runtime_policy_quality_regressed"] is True
 
 
+def test_scheduled_self_validation_suspends_runtime_policy_after_quality_regression(
+    monkeypatch,
+    tmp_path,
+):
+    from scripts import visual_scheduled_self_validation
+
+    def fake_trends(_output_dir):
+        return {
+            "run_count": 4,
+            "summary": {
+                "recent_run_ids": ["baseline"],
+                "recent_avg_min_quality_score": 0.82,
+            },
+            "degradations": [],
+            "next_actions": [],
+        }
+
+    def fake_automation(*, work_dir, include_live, include_live_slack_upload=False):
+        report = _automation_report(
+            include_live=include_live,
+            include_live_slack_upload=include_live_slack_upload,
+        )
+        report["self_improvement"] = {
+            "next_actions": [
+                {
+                    "type": "increase_candidate_budget",
+                    "requires_human_feedback": False,
+                    "activation_status": "next_run",
+                    "source": "live_quality_trends",
+                    "max_candidate_budget": 4,
+                },
+                {
+                    "type": "prefer_image_first_video",
+                    "requires_human_feedback": False,
+                    "activation_status": "next_run",
+                    "source": "live_quality_trends",
+                },
+            ]
+        }
+        report["live_e2e"] = {
+            "success": True,
+            "evidence": {
+                "runtime_policy_effect": {
+                    "policy_active": True,
+                    "applied": True,
+                    "expected_action_types": [
+                        "increase_candidate_budget",
+                        "prefer_image_first_video",
+                    ],
+                    "applied_action_types": [
+                        "increase_candidate_budget",
+                        "prefer_image_first_video",
+                    ],
+                    "missing_action_types": [],
+                    "quality_gate_success": True,
+                    "quality_gate_min_score": 0.72,
+                },
+                "quality_gate": {"success": True, "min_score": 0.72},
+            },
+        }
+        return report
+
+    monkeypatch.setattr(
+        visual_scheduled_self_validation,
+        "build_visual_e2e_automation_report",
+        fake_automation,
+    )
+    monkeypatch.setattr(
+        visual_scheduled_self_validation,
+        "build_live_quality_trend_report_from_dir",
+        fake_trends,
+    )
+
+    report = visual_scheduled_self_validation.build_visual_scheduled_self_validation_report(
+        output_dir=tmp_path / "self_validation",
+        live_mode="off",
+        now=datetime(2026, 6, 22, 8, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["summary"]["live_runtime_policy_quality_regressed"] is True
+    assert report["runtime_policy"] == {
+        "success": False,
+        "decision": "suspend_quality_regressed",
+        "reason": "runtime_policy_quality_regressed",
+        "generated_at": "2026-06-22T08:00:00+00:00",
+        "expires_at": "2026-06-23T08:00:00+00:00",
+        "next_actions": [],
+        "suspended_action_types": [
+            "increase_candidate_budget",
+            "prefer_image_first_video",
+        ],
+        "privacy_safe": True,
+        "source": "scheduled_self_validation",
+    }
+
+
 def test_scheduled_self_validation_carries_forward_recent_live_burn_actions(monkeypatch, tmp_path):
     from scripts import visual_scheduled_self_validation
 

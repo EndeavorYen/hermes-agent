@@ -314,6 +314,42 @@ def test_visual_self_validation_status_reports_runtime_policy_effect(tmp_path):
     assert "inspect_runtime_policy_quality_regression" in status["next_steps"]
 
 
+def test_visual_self_validation_status_reports_suspended_runtime_policy(tmp_path):
+    from scripts.visual_self_validation_status import build_visual_self_validation_status
+
+    payload = _scheduled_report()
+    payload["runtime_policy"] = {
+        "success": False,
+        "decision": "suspend_quality_regressed",
+        "reason": "runtime_policy_quality_regressed",
+        "generated_at": "2026-06-22T10:19:00+00:00",
+        "expires_at": "2026-06-23T10:19:00+00:00",
+        "next_actions": [],
+        "suspended_action_types": [
+            "increase_candidate_budget",
+            "prefer_image_first_video",
+            "/Users/simon/.hermes/cache/private-prompt.txt",
+        ],
+        "privacy_safe": True,
+    }
+    latest_path = _write_latest(tmp_path, payload)
+
+    status = build_visual_self_validation_status(
+        latest_path=latest_path,
+        now=datetime(2026, 6, 22, 11, 0, tzinfo=timezone.utc),
+    )
+
+    assert status["runtime_policy"]["decision"] == "suspend_quality_regressed"
+    assert status["runtime_policy"]["suspended_action_types"] == [
+        "increase_candidate_budget",
+        "prefer_image_first_video",
+    ]
+    assert "review_suspended_runtime_policy" in status["next_steps"]
+    encoded = json.dumps(status, ensure_ascii=False)
+    assert "/Users/simon" not in encoded
+    assert "private-prompt" not in encoded
+
+
 def test_visual_self_validation_status_flags_internal_source_image_delivery(tmp_path):
     from scripts.visual_self_validation_status import build_visual_self_validation_status
 
