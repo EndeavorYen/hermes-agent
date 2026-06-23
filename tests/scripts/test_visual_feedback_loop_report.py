@@ -156,6 +156,126 @@ def test_visual_feedback_loop_extracts_dimension_repairs_from_judge_details(tmp_
     assert "/tmp/private-low-dimension.jpg" not in encoded
 
 
+def test_visual_feedback_loop_extracts_dimension_repairs_from_human_feedback(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.feedback import parse_visual_feedback
+    from scripts.visual_feedback_loop_report import build_visual_feedback_loop_report
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+    request_id = ledger.record_request(
+        user_prompt="private prompt must not leak",
+        status="completed",
+        metadata={"intent_signature": "visig_glamour"},
+    )
+    feedback = parse_visual_feedback("幾個問題：人物太醜，絲襪太醜，構圖很普普，影片太慢")
+    ledger.record_feedback(
+        request_id=request_id,
+        feedback_text=feedback.text,
+        polarity=feedback.polarity,
+        parsed=feedback.parsed,
+    )
+
+    report = build_visual_feedback_loop_report(tmp_path / "visual.sqlite3")
+    actions = [
+        action
+        for action in report["next_actions"]
+        if action["type"] == "repair_low_preference_dimension"
+    ]
+    encoded = json.dumps(report, ensure_ascii=False)
+
+    assert report["success"] is True
+    assert report["signals"]["human_feedback"]["feedback_issue_counts"] == {
+        "composition_bad": 1,
+        "static_video": 1,
+        "stockings_bad": 1,
+        "subject_not_attractive": 1,
+        "not_beautiful": 1,
+    }
+    assert report["signals"]["aesthetic"]["preference_dimension_failures"] == [
+        {
+            "dimension": "subject_beauty",
+            "issue": "subject_not_attractive",
+            "score": None,
+            "count": 1,
+        },
+        {
+            "dimension": "fashion_material_quality",
+            "issue": "stockings_bad",
+            "score": None,
+            "count": 1,
+        },
+        {
+            "dimension": "pose_composition",
+            "issue": "composition_bad",
+            "score": None,
+            "count": 1,
+        },
+        {
+            "dimension": "motion_quality",
+            "issue": "motion_bad",
+            "score": None,
+            "count": 1,
+        },
+    ]
+    assert actions == [
+        {
+            "type": "repair_low_preference_dimension",
+            "track": "aesthetic",
+            "reason": "feedback_loop_preference_dimension_low",
+            "confidence": 0.74,
+            "evidence_count": 1,
+            "requires_human_feedback": False,
+            "activation_status": "next_run",
+            "dimension": "subject_beauty",
+            "quality_issue": "subject_not_attractive",
+            "repair_hint": "improve_subject_beauty",
+            "modalities": ["image"],
+        },
+        {
+            "type": "repair_low_preference_dimension",
+            "track": "aesthetic",
+            "reason": "feedback_loop_preference_dimension_low",
+            "confidence": 0.74,
+            "evidence_count": 1,
+            "requires_human_feedback": False,
+            "activation_status": "next_run",
+            "dimension": "fashion_material_quality",
+            "quality_issue": "stockings_bad",
+            "repair_hint": "improve_fashion_material_quality",
+            "modalities": ["image"],
+        },
+        {
+            "type": "repair_low_preference_dimension",
+            "track": "aesthetic",
+            "reason": "feedback_loop_preference_dimension_low",
+            "confidence": 0.74,
+            "evidence_count": 1,
+            "requires_human_feedback": False,
+            "activation_status": "next_run",
+            "dimension": "pose_composition",
+            "quality_issue": "composition_bad",
+            "repair_hint": "improve_pose_composition",
+            "modalities": ["image"],
+        },
+        {
+            "type": "repair_low_preference_dimension",
+            "track": "aesthetic",
+            "reason": "feedback_loop_preference_dimension_low",
+            "confidence": 0.74,
+            "evidence_count": 1,
+            "requires_human_feedback": False,
+            "activation_status": "next_run",
+            "dimension": "motion_quality",
+            "quality_issue": "motion_bad",
+            "repair_hint": "improve_motion_quality",
+            "modalities": ["video"],
+        },
+    ]
+    assert "private prompt must not leak" not in encoded
+    assert "幾個問題" not in encoded
+
+
 def test_visual_feedback_loop_prefers_image_first_after_video_failure(tmp_path):
     from agent.visual.attempt_ledger import VisualAttemptLedger
     from scripts.visual_feedback_loop_report import build_visual_feedback_loop_report

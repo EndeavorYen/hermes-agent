@@ -25,7 +25,11 @@ _ISSUE_TO_DIMENSION = {
     "stockings_bad": "fashion_material_quality",
     "composition_bad": "pose_composition",
     "motion_bad": "motion_quality",
+    "static_video": "motion_quality",
     "aspect_integrity_bad": "motion_quality",
+}
+_FEEDBACK_ISSUE_TO_REPAIR_ISSUE = {
+    "static_video": "motion_bad",
 }
 _DIMENSION_TO_ISSUE = {
     "subject_beauty": "subject_not_attractive",
@@ -68,14 +72,16 @@ def build_visual_feedback_loop_report(db_path: str | Path) -> dict[str, Any]:
         request_count = _count(conn, "visual_requests")
 
     evidence = _safe_evidence_report(db_path)
+    human_feedback = _human_feedback_signals(feedback)
     signals = {
         "provider": _provider_signals(attempts, artifacts),
-        "aesthetic": _aesthetic_signals(judgments),
+        "aesthetic": _aesthetic_signals(
+            judgments,
+            feedback_dimension_failures=human_feedback["preference_dimension_failures"],
+        ),
         "delivery": _delivery_signals(evidence, deliveries),
         "repair": _repair_signals(attempts, artifacts, judgments, deliveries),
-        "human_feedback": {
-            "feedback_count": len(feedback),
-        },
+        "human_feedback": human_feedback,
     }
     counts = {
         "request_count": request_count,
@@ -145,7 +151,11 @@ def _provider_signals(
     }
 
 
-def _aesthetic_signals(judgments: list[dict[str, Any]]) -> dict[str, Any]:
+def _aesthetic_signals(
+    judgments: list[dict[str, Any]],
+    *,
+    feedback_dimension_failures: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     scores = [_score(row) for row in judgments]
     pass_count = sum(1 for row in judgments if str(row.get("verdict") or "").lower() == "pass")
     low_quality_count = sum(
@@ -153,13 +163,50 @@ def _aesthetic_signals(judgments: list[dict[str, Any]]) -> dict[str, Any]:
         for row in judgments
         if _score(row) < 0.60 or str(row.get("verdict") or "").lower() == "fail"
     )
+    preference_dimension_failures = _merge_preference_dimension_failures(
+        _preference_dimension_failures(judgments),
+        feedback_dimension_failures or [],
+    )
     return {
         "judgment_count": len(judgments),
         "low_quality_judgment_count": low_quality_count,
         "average_quality_score": _average(scores),
         "pass_rate": _rate(pass_count, len(judgments)),
         "quality_issue_counts": _quality_issue_counts(judgments),
-        "preference_dimension_failures": _preference_dimension_failures(judgments),
+        "preference_dimension_failures": preference_dimension_failures,
+    }
+
+
+def _human_feedback_signals(feedback: list[dict[str, Any]]) -> dict[str, Any]:
+    issue_counts: dict[str, int] = {}
+    dimension_failures: dict[str, dict[str, Any]] = {}
+    feedback_with_issues_count = 0
+    negative_feedback_count = 0
+    for row in feedback:
+        issues = _feedback_issues(row)
+        if issues:
+            feedback_with_issues_count += 1
+        if _float(row.get("polarity")) < 0:
+            negative_feedback_count += 1
+        seen_dimensions: set[str] = set()
+        for issue in issues:
+            issue_counts[issue] = issue_counts.get(issue, 0) + 1
+            dimension = _ISSUE_TO_DIMENSION.get(issue)
+            if not dimension or dimension in seen_dimensions:
+                continue
+            seen_dimensions.add(dimension)
+            _record_dimension_failure(
+                dimension_failures,
+                dimension=dimension,
+                issue=_FEEDBACK_ISSUE_TO_REPAIR_ISSUE.get(issue, issue),
+                score=None,
+            )
+    return {
+        "feedback_count": len(feedback),
+        "negative_feedback_count": negative_feedback_count,
+        "feedback_with_issues_count": feedback_with_issues_count,
+        "feedback_issue_counts": dict(sorted(issue_counts.items())),
+        "preference_dimension_failures": _ordered_dimension_failures(dimension_failures),
     }
 
 
@@ -484,7 +531,44 @@ def _preference_dimension_failures(judgments: list[dict[str, Any]]) -> list[dict
                     issue=issue,
                     score=score,
                 )
-    ordered = sorted(
+    return _ordered_dimension_failures(failures)
+
+
+def _merge_preference_dimension_failures(
+    *groups: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for group in groups:
+        for item in group:
+            if not isinstance(item, dict):
+                continue
+            dimension = str(item.get("dimension") or "").strip()
+            if not dimension:
+                continue
+            entry = merged.setdefault(
+                dimension,
+                {
+                    "dimension": dimension,
+                    "issue": str(item.get("issue") or _DIMENSION_TO_ISSUE.get(dimension, "")).strip(),
+                    "score": _float_or_none(item.get("score")),
+                    "count": 0,
+                },
+            )
+            entry["count"] = _int(entry.get("count")) + (_int(item.get("count")) or 1)
+            issue = str(item.get("issue") or "").strip()
+            if issue and not entry.get("issue"):
+                entry["issue"] = issue
+            score = _float_or_none(item.get("score"))
+            if score is not None:
+                current = _float_or_none(entry.get("score"))
+                entry["score"] = score if current is None else min(current, score)
+    return _ordered_dimension_failures(merged)
+
+
+def _ordered_dimension_failures(
+    failures: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return sorted(
         failures.values(),
         key=lambda item: (
             -_int(item.get("count")),
@@ -492,7 +576,6 @@ def _preference_dimension_failures(judgments: list[dict[str, Any]]) -> list[dict
             str(item.get("dimension") or ""),
         ),
     )
-    return ordered
 
 
 def _record_dimension_failure(
@@ -543,6 +626,16 @@ def _record_dimension_issue(
 def _quality_issues(row: dict[str, Any]) -> list[str]:
     details = _judgment_details(row)
     issues = details.get("quality_issues")
+    if not isinstance(issues, list):
+        return []
+    return [str(issue).strip() for issue in issues if str(issue).strip()]
+
+
+def _feedback_issues(row: dict[str, Any]) -> list[str]:
+    parsed = row.get("parsed")
+    if not isinstance(parsed, dict):
+        parsed = row.get("parsed_json") if isinstance(row.get("parsed_json"), dict) else {}
+    issues = parsed.get("issues") if isinstance(parsed, dict) else None
     if not isinstance(issues, list):
         return []
     return [str(issue).strip() for issue in issues if str(issue).strip()]
