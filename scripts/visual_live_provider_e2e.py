@@ -867,16 +867,14 @@ def _payload_failures(
     if mode == "live" and isinstance(quality_gate, dict) and quality_gate.get("quality_issues"):
         failures.append("selected_quality_issue_detected")
     if (
-        mode == "live"
-        and require_video
+        require_video
         and evidence.get("video_count", 0) >= 1
         and video_source.get("uses_ranked_selected_image") is not True
         and not has_storyboard_video_source
     ):
         failures.append("video_not_using_ranked_image_source")
     if (
-        mode == "live"
-        and require_video
+        require_video
         and evidence.get("video_count", 0) >= 1
         and video_source.get("single_video_source_image") is False
         and not has_storyboard_video_source
