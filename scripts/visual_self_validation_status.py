@@ -282,6 +282,8 @@ def _sanitise_live_policy(value: Any) -> dict[str, Any]:
         sanitized["reason"] = "live_quality_trend_degraded"
     elif source.get("reason") == "operator_setup_env_unresolved":
         sanitized["reason"] = "operator_setup_env_unresolved"
+    elif source.get("reason") == "operator_setup_unresolved":
+        sanitized["reason"] = "operator_setup_unresolved"
     elif source.get("reason") == "no_previous_live_run":
         sanitized["reason"] = "no_previous_live_run"
     elif source.get("reason") == "min_live_interval_elapsed":

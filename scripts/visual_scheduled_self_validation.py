@@ -164,13 +164,14 @@ def _live_policy(
         return {"mode": mode, "decision": "run", "live_enabled": True}
     if not live_enabled:
         return {"mode": mode, "decision": "skip_not_enabled", "live_enabled": False}
-    unresolved_setup = _unresolved_operator_setup_env(state)
+    unresolved_setup = _unresolved_operator_setup(state)
     if unresolved_setup:
+        reason = str(unresolved_setup.pop("reason", "operator_setup_unresolved"))
         return {
             "mode": mode,
             "decision": "skip_operator_setup",
             "live_enabled": True,
-            "reason": "operator_setup_env_unresolved",
+            "reason": reason,
             **unresolved_setup,
         }
 
@@ -787,7 +788,7 @@ def _carried_live_quality_burn(state: dict[str, Any]) -> dict[str, Any]:
     return carried
 
 
-def _unresolved_operator_setup_env(state: dict[str, Any]) -> dict[str, Any]:
+def _unresolved_operator_setup(state: dict[str, Any]) -> dict[str, Any]:
     live_quality_burn = state.get("last_live_quality_burn")
     if not isinstance(live_quality_burn, dict):
         return {}
@@ -801,12 +802,14 @@ def _unresolved_operator_setup_env(state: dict[str, Any]) -> dict[str, Any]:
         if action_type and action_type not in action_types:
             action_types.append(action_type)
         for setup in _dict_list(action.get("operator_setup_actions")):
+            configured_missing_env_vars = _string_list(setup.get("missing_env_vars"))
             unresolved_vars = [
                 env_var
-                for env_var in _string_list(setup.get("missing_env_vars"))
+                for env_var in configured_missing_env_vars
                 if not os.environ.get(env_var)
             ]
-            if not unresolved_vars:
+            post_setup = str(setup.get("post_setup") or "").strip()
+            if not unresolved_vars and (configured_missing_env_vars or not post_setup):
                 continue
             for env_var in unresolved_vars:
                 if env_var not in missing_env_vars:
@@ -815,16 +818,19 @@ def _unresolved_operator_setup_env(state: dict[str, Any]) -> dict[str, Any]:
                 {
                     "provider": str(setup.get("provider") or "").strip(),
                     "missing_env_vars": unresolved_vars,
-                    "post_setup": str(setup.get("post_setup") or "").strip(),
+                    "post_setup": post_setup,
                 }
             )
-    if not missing_env_vars:
+    if not operator_setup_actions:
         return {}
-    return {
-        "missing_env_vars": missing_env_vars,
+    result: dict[str, Any] = {
+        "reason": "operator_setup_env_unresolved" if missing_env_vars else "operator_setup_unresolved",
         "operator_setup_actions": operator_setup_actions,
         "action_types": action_types,
     }
+    if missing_env_vars:
+        result["missing_env_vars"] = missing_env_vars
+    return result
 
 
 def _action_list(value: Any) -> list[dict[str, Any]]:

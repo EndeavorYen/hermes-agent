@@ -865,6 +865,18 @@ def _provider_failure_actions(recovery: dict[str, Any]) -> list[dict[str, Any]]:
                 evidence_count=quota_count,
                 provider_failure_classes={"quota_exceeded": quota_count},
                 provider_error_codes=provider_error_codes,
+                requires_operator_setup=True,
+                activation_status="operator_setup",
+                operator_setup_actions=[
+                    {
+                        "provider": "visual_generation",
+                        "missing_env_vars": [],
+                        "post_setup": (
+                            "Restore quota or credits for the active visual generation provider, "
+                            "or switch Hermes visual generation to a provider with available quota."
+                        ),
+                    }
+                ],
             )
         )
     if unavailable_count > 0:

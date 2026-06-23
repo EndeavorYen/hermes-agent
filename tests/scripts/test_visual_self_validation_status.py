@@ -270,6 +270,56 @@ def test_visual_self_validation_status_reports_unresolved_live_operator_setup(tm
     assert "configure_video_fallback_provider" in status["runtime_policy"]["action_types"]
 
 
+def test_visual_self_validation_status_reports_unresolved_provider_quota_setup(tmp_path):
+    from scripts.visual_self_validation_status import build_visual_self_validation_status
+
+    operator_setup_actions = [
+        {
+            "provider": "visual_generation",
+            "missing_env_vars": [],
+            "post_setup": "Restore quota or credits for the active visual generation provider, or switch Hermes visual generation to a provider with available quota.",
+        }
+    ]
+    action = {
+        "type": "resolve_provider_quota_or_switch_provider",
+        "requires_human_feedback": False,
+        "requires_operator_setup": True,
+        "source": "live_quality_burn",
+        "operator_setup_actions": operator_setup_actions,
+    }
+    payload = _scheduled_report(live_decision="skip_operator_setup")
+    payload["live_policy"] = {
+        "mode": "auto",
+        "decision": "skip_operator_setup",
+        "live_enabled": True,
+        "reason": "operator_setup_unresolved",
+        "operator_setup_actions": operator_setup_actions,
+        "action_types": ["resolve_provider_quota_or_switch_provider"],
+    }
+    payload["summary"]["feedback_action_types"] = ["resolve_provider_quota_or_switch_provider"]
+    payload["runtime_policy"] = {
+        "success": True,
+        "decision": "apply_next_run",
+        "generated_at": "2026-06-22T10:19:00+00:00",
+        "expires_at": "2026-06-23T10:19:00+00:00",
+        "next_actions": [action],
+    }
+    latest_path = _write_latest(tmp_path, payload)
+
+    status = build_visual_self_validation_status(latest_path=latest_path)
+
+    assert status["success"] is False
+    assert status["health_status"] == "warn"
+    assert status["live_e2e_ran"] is False
+    assert status["live_policy"]["decision"] == "skip_operator_setup"
+    assert status["live_policy"]["reason"] == "operator_setup_unresolved"
+    assert "missing_env_vars" not in status["live_policy"]
+    assert status["live_policy"]["operator_setup_actions"] == operator_setup_actions
+    assert status["live_policy"]["action_types"] == ["resolve_provider_quota_or_switch_provider"]
+    assert "configure_operator_setup_prerequisites" in status["next_steps"]
+    assert "enable_or_force_live_self_validation" not in status["next_steps"]
+
+
 def test_visual_self_validation_status_reports_runtime_policy_without_leaking_details(tmp_path):
     from scripts.visual_self_validation_status import build_visual_self_validation_status
 

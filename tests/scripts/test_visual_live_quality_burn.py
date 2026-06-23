@@ -1010,11 +1010,27 @@ def test_visual_live_quality_burn_routes_quota_to_provider_account_action(monkey
         "confidence": 0.95,
         "evidence_count": 1,
         "requires_human_feedback": False,
-        "activation_status": "next_run",
+        "requires_operator_setup": True,
+        "activation_status": "operator_setup",
         "source": "live_quality_burn",
         "provider_failure_classes": {"quota_exceeded": 1},
         "provider_error_codes": {"personal-team-blocked:spending-limit": 1},
+        "operator_setup_actions": [
+            {
+                "provider": "visual_generation",
+                "missing_env_vars": [],
+                "post_setup": "Restore quota or credits for the active visual generation provider, or switch Hermes visual generation to a provider with available quota.",
+            }
+        ],
     } in report["next_actions"]
+    assert report["self_review"]["requires_operator_setup"] is True
+    assert report["self_review"]["operator_setup_actions"] == [
+        {
+            "provider": "visual_generation",
+            "missing_env_vars": [],
+            "post_setup": "Restore quota or credits for the active visual generation provider, or switch Hermes visual generation to a provider with available quota.",
+        }
+    ]
 
 
 def test_visual_live_quality_burn_routes_inline_vision_quota_to_judge_setup_action(
@@ -1200,7 +1216,16 @@ def test_visual_live_quality_burn_routes_missing_video_fallback_to_provider_acti
         }
     ]
     assert report["self_review"]["requires_operator_setup"] is True
-    assert report["self_review"]["operator_setup_actions"] == action["operator_setup_actions"]
+    assert {
+        "provider": "visual_generation",
+        "missing_env_vars": [],
+        "post_setup": "Restore quota or credits for the active visual generation provider, or switch Hermes visual generation to a provider with available quota.",
+    } in report["self_review"]["operator_setup_actions"]
+    assert {
+        "provider": "fal",
+        "missing_env_vars": ["FAL_KEY"],
+        "post_setup": "",
+    } in report["self_review"]["operator_setup_actions"]
     assert report["self_review"]["human_feedback_required"] is False
     assert report["self_review"]["reduces_human_intervention"] is False
 
