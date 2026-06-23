@@ -844,36 +844,19 @@ def _operator_setup_live_gate(
             )
     if not operator_setup_actions:
         return {}
-    recheck_hours = max(0.0, float(operator_setup_recheck_hours))
-    if not missing_env_vars:
-        generated_at = _parse_datetime(live_quality_burn.get("generated_at"))
-        if generated_at is None:
-            return {
-                "reason": "operator_setup_recheck_elapsed",
-                "operator_setup_actions": operator_setup_actions,
-                "action_types": action_types,
-                "operator_setup_recheck_hours": recheck_hours,
-                "operator_setup_recheck_basis_missing": True,
-            }
-        elapsed_hours = (now - generated_at).total_seconds() / 3600
-        recheck_at = generated_at + timedelta(hours=recheck_hours)
-        if elapsed_hours >= recheck_hours:
-            return {
-                "reason": "operator_setup_recheck_elapsed",
-                "operator_setup_actions": operator_setup_actions,
-                "action_types": action_types,
-                "operator_setup_recheck_hours": recheck_hours,
-                "operator_setup_recheck_at": recheck_at.isoformat(),
-                "operator_setup_elapsed_hours": round(elapsed_hours, 4),
-            }
-        return {
-            "reason": "operator_setup_unresolved",
-            "operator_setup_actions": operator_setup_actions,
-            "action_types": action_types,
-            "operator_setup_recheck_hours": recheck_hours,
-            "operator_setup_recheck_at": recheck_at.isoformat(),
-            "operator_setup_recheck_remaining_hours": round(recheck_hours - elapsed_hours, 4),
-        }
+    if not missing_env_vars or _operator_setup_allows_probe_with_missing_env_vars(action_types):
+        result = _operator_setup_recheck_gate(
+            generated_at=_parse_datetime(live_quality_burn.get("generated_at")),
+            now=now,
+            operator_setup_recheck_hours=operator_setup_recheck_hours,
+        )
+        if missing_env_vars and result["reason"] == "operator_setup_unresolved":
+            result["reason"] = "operator_setup_env_unresolved"
+        result["operator_setup_actions"] = operator_setup_actions
+        result["action_types"] = action_types
+        if missing_env_vars:
+            result["missing_env_vars"] = missing_env_vars
+        return result
     result: dict[str, Any] = {
         "reason": "operator_setup_env_unresolved",
         "operator_setup_actions": operator_setup_actions,
@@ -881,6 +864,40 @@ def _operator_setup_live_gate(
     }
     result["missing_env_vars"] = missing_env_vars
     return result
+
+
+def _operator_setup_allows_probe_with_missing_env_vars(action_types: list[str]) -> bool:
+    return bool(action_types) and all(action_type == "configure_video_fallback_provider" for action_type in action_types)
+
+
+def _operator_setup_recheck_gate(
+    *,
+    generated_at: datetime | None,
+    now: datetime,
+    operator_setup_recheck_hours: float | int,
+) -> dict[str, Any]:
+    recheck_hours = max(0.0, float(operator_setup_recheck_hours))
+    if generated_at is None:
+        return {
+            "reason": "operator_setup_recheck_elapsed",
+            "operator_setup_recheck_hours": recheck_hours,
+            "operator_setup_recheck_basis_missing": True,
+        }
+    elapsed_hours = (now - generated_at).total_seconds() / 3600
+    recheck_at = generated_at + timedelta(hours=recheck_hours)
+    if elapsed_hours >= recheck_hours:
+        return {
+            "reason": "operator_setup_recheck_elapsed",
+            "operator_setup_recheck_hours": recheck_hours,
+            "operator_setup_recheck_at": recheck_at.isoformat(),
+            "operator_setup_elapsed_hours": round(elapsed_hours, 4),
+        }
+    return {
+        "reason": "operator_setup_unresolved",
+        "operator_setup_recheck_hours": recheck_hours,
+        "operator_setup_recheck_at": recheck_at.isoformat(),
+        "operator_setup_recheck_remaining_hours": round(recheck_hours - elapsed_hours, 4),
+    }
 
 
 def _action_list(value: Any) -> list[dict[str, Any]]:

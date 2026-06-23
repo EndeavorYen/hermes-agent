@@ -1664,6 +1664,73 @@ def test_scheduled_self_validation_auto_skips_live_when_operator_setup_env_is_un
     ]
 
 
+def test_scheduled_self_validation_auto_rechecks_fallback_env_setup_after_cooldown(
+    monkeypatch,
+    tmp_path,
+):
+    from scripts import visual_scheduled_self_validation
+
+    output_dir = tmp_path / "self_validation"
+    output_dir.mkdir(parents=True)
+    output_dir.joinpath("state.json").write_text(
+        json.dumps(
+            {
+                "last_live_run_at": "2026-06-22T00:00:00+00:00",
+                "last_live_quality_burn": {
+                    "success": False,
+                    "status": None,
+                    "summary": {"provider_failure_count": 2},
+                    "next_actions": [
+                        {
+                            "type": "configure_video_fallback_provider",
+                            "requires_human_feedback": False,
+                            "requires_operator_setup": True,
+                            "source": "live_quality_burn",
+                            "operator_setup_actions": [
+                                {
+                                    "provider": "fal",
+                                    "missing_env_vars": ["FAL_KEY"],
+                                    "post_setup": "",
+                                }
+                            ],
+                        }
+                    ],
+                    "generated_at": "2026-06-22T00:00:00+00:00",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake_automation(*, work_dir, include_live, include_live_slack_upload=False):
+        calls.append({"include_live": include_live, "include_live_slack_upload": include_live_slack_upload})
+        return _automation_report(
+            include_live=include_live,
+            include_live_slack_upload=include_live_slack_upload,
+        )
+
+    monkeypatch.setattr(
+        visual_scheduled_self_validation,
+        "build_visual_e2e_automation_report",
+        fake_automation,
+    )
+
+    report = visual_scheduled_self_validation.build_visual_scheduled_self_validation_report(
+        output_dir=output_dir,
+        live_mode="auto",
+        live_enabled=True,
+        min_live_interval_hours=6,
+        now=datetime(2026, 6, 23, 0, 1, tzinfo=timezone.utc),
+    )
+
+    assert calls == [{"include_live": True, "include_live_slack_upload": False}]
+    assert report["live_policy"]["decision"] == "run"
+    assert report["live_policy"]["reason"] == "operator_setup_recheck_elapsed"
+    assert report["live_policy"]["missing_env_vars"] == ["FAL_KEY"]
+    assert report["live_policy"]["action_types"] == ["configure_video_fallback_provider"]
+
+
 def test_scheduled_self_validation_auto_skips_live_when_provider_quota_setup_is_unresolved(
     monkeypatch,
     tmp_path,
