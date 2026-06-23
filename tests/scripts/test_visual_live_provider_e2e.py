@@ -220,7 +220,9 @@ def test_visual_live_provider_e2e_fixture_storyboard_execution_composes_video(tm
     assert report["evidence"]["storyboard_execution"]["delivers_composed_video"] is True
     assert report["evidence"]["storyboard_execution"]["delivers_source_clips"] is False
     assert report["evidence"]["storyboard_execution"]["shots_use_single_ranked_images"] is True
+    assert report["evidence"]["storyboard_execution"]["shots_use_single_source_media"] is True
     assert report["evidence"]["storyboard_execution"]["bad_source_shot_ids"] == []
+    assert report["evidence"]["storyboard_execution"]["bad_source_media_shot_ids"] == []
 
 
 def test_visual_live_provider_e2e_flags_storyboard_shot_without_single_ranked_source():
@@ -241,13 +243,74 @@ def test_visual_live_provider_e2e_flags_storyboard_shot_without_single_ranked_so
     assert "storyboard_shot_source_not_single_ranked_image" in failures
 
 
+def test_visual_live_provider_e2e_flags_storyboard_shot_without_single_source_media():
+    from scripts.visual_live_provider_e2e import _storyboard_execution_failures
+
+    failures = _storyboard_execution_failures(
+        {
+            "status": "composed",
+            "clip_count": 2,
+            "composition_status": "composed",
+            "delivers_composed_video": True,
+            "delivers_source_clips": False,
+            "shots_use_single_ranked_images": True,
+            "shots_use_single_source_media": False,
+            "bad_source_media_shot_ids": ["shot_2"],
+        }
+    )
+
+    assert "storyboard_shot_source_media_not_single_image" in failures
+
+
+def test_visual_live_provider_e2e_extracts_storyboard_source_media_evidence():
+    from scripts.visual_live_provider_e2e import _storyboard_execution_evidence
+
+    evidence = _storyboard_execution_evidence(
+        {
+            "success": True,
+            "videos": ["/tmp/composed.mp4"],
+            "generation_strategy": {
+                "storyboard_execution": {
+                    "status": "composed",
+                    "shot_count": 2,
+                    "clip_count": 2,
+                    "composition_status": "composed",
+                    "composed_video": "/tmp/composed.mp4",
+                    "shots": [
+                        {
+                            "shot_id": "shot_1",
+                            "clip_path": "/tmp/shot-1.mp4",
+                            "uses_single_ranked_image": True,
+                            "source_media_reference_count": 1,
+                            "source_media_single_source_image": True,
+                        },
+                        {
+                            "shot_id": "shot_2",
+                            "clip_path": "/tmp/shot-2.mp4",
+                            "uses_single_ranked_image": True,
+                            "source_media_reference_count": 2,
+                            "source_media_single_source_image": False,
+                        },
+                    ],
+                }
+            },
+        }
+    )
+
+    assert evidence["shots_use_single_ranked_images"] is True
+    assert evidence["shots_use_single_source_media"] is False
+    assert evidence["bad_source_media_shot_ids"] == ["shot_2"]
+
+
 def test_visual_live_provider_e2e_marks_shot_source_policy_not_applicable_without_storyboard():
     from scripts.visual_live_provider_e2e import _storyboard_execution_evidence
 
     evidence = _storyboard_execution_evidence({"success": True, "videos": ["/tmp/video.mp4"]})
 
     assert evidence["shots_use_single_ranked_images"] is None
+    assert evidence["shots_use_single_source_media"] is None
     assert evidence["bad_source_shot_ids"] == []
+    assert evidence["bad_source_media_shot_ids"] == []
 
 
 def test_visual_live_provider_default_suite_declares_core_portrait_quality_contract(monkeypatch, tmp_path):

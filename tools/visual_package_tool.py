@@ -1393,6 +1393,8 @@ def _run_storyboard_execution(
             "source_image_artifact_id": selected_image.get("artifact_id") if selected_image else None,
             "video_artifact_id": None,
             "uses_single_ranked_image": bool(selected_image and image_gate.get("allowed")),
+            "source_media_reference_count": None,
+            "source_media_single_source_image": None,
         }
         if selected_image and image_gate.get("allowed"):
             if first_source_image is None:
@@ -1410,6 +1412,12 @@ def _run_storyboard_execution(
             video_prompt = hardened_video["prompt"]
             video_aspect_ratio = hardened_video["aspect_ratio"]
             video_source_media = _video_source_media(selected_image["artifact_path"])
+            shot_summary["source_media_reference_count"] = _coerce_int(
+                video_source_media.get("reference_count")
+            )
+            shot_summary["source_media_single_source_image"] = (
+                video_source_media.get("single_source_image") is True
+            )
             video_payloads: list[dict[str, Any]] = []
             video_candidates: list[dict[str, Any]] = []
             for video_index in range(video_budget_per_shot):

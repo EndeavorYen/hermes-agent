@@ -1366,6 +1366,8 @@ async def test_visual_package_storyboard_generates_ranked_clip_per_shot(monkeypa
     assert storyboard_execution["source_image_policy"] == "one_ranked_image_per_shot"
     assert [shot["shot_id"] for shot in storyboard_execution["shots"]] == ["shot_1", "shot_2"]
     assert all(shot["uses_single_ranked_image"] is True for shot in storyboard_execution["shots"])
+    assert all(shot["source_media_reference_count"] == 1 for shot in storyboard_execution["shots"])
+    assert all(shot["source_media_single_source_image"] is True for shot in storyboard_execution["shots"])
     assert len(payload["delivery_metadata"]["selected_visual_artifact_ids"]) == 2
 
 
