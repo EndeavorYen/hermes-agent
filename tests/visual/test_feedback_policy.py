@@ -498,6 +498,23 @@ def test_feedback_policy_applies_missing_video_fallback_action_without_retry_bud
                     "requires_human_feedback": False,
                     "provider_failure_classes": {"quota_exceeded": 2},
                     "provider_error_codes": {"personal-team-blocked:spending-limit": 2},
+                    "video_fallback_diagnostics": [
+                        {
+                            "failed_provider": "xai",
+                            "failed_provider_family": "xai",
+                            "registered_provider_names": ["fal", "xai"],
+                            "available_provider_names": [],
+                            "unavailable_provider_names": ["fal"],
+                            "fallback_provider_names": [],
+                            "setup_actions": [
+                                {
+                                    "provider": "fal",
+                                    "env_vars": ["FAL_KEY"],
+                                    "post_setup": "",
+                                }
+                            ],
+                        }
+                    ],
                 }
             ]
         },
@@ -513,4 +530,21 @@ def test_feedback_policy_applies_missing_video_fallback_action_without_retry_bud
         "provider_failure_classes": {"quota_exceeded": 2},
         "provider_error_codes": {"personal-team-blocked:spending-limit": 2},
     }
+    assert policy["video_fallback_diagnostics"] == [
+        {
+            "failed_provider": "xai",
+            "failed_provider_family": "xai",
+            "registered_provider_names": ["fal", "xai"],
+            "available_provider_names": [],
+            "unavailable_provider_names": ["fal"],
+            "fallback_provider_names": [],
+            "setup_actions": [
+                {
+                    "provider": "fal",
+                    "env_vars": ["FAL_KEY"],
+                    "post_setup": "",
+                }
+            ],
+        }
+    ]
     assert policy["applied_action_types"] == ["configure_video_fallback_provider"]

@@ -600,6 +600,7 @@ def _build_quality_run(report: dict[str, Any]) -> dict[str, Any]:
         )
     provider_quarantine_count = _int(recovery.get("provider_quarantine_count"))
     if provider_quarantine_count > 0:
+        video_fallback_diagnostics = _dict_list(recovery.get("video_fallback_diagnostics"))
         summary.update(
             {
                 "provider_quarantine_count": provider_quarantine_count,
@@ -609,6 +610,8 @@ def _build_quality_run(report: dict[str, Any]) -> dict[str, Any]:
                 "provider_quarantine_classes": _string_list(recovery.get("provider_quarantine_classes")),
             }
         )
+        if video_fallback_diagnostics:
+            summary["video_fallback_diagnostics"] = video_fallback_diagnostics
     inline_vision_failure_count = _int(visual.get("inline_vision_failure_count"))
     if inline_vision_failure_count > 0:
         summary.update(
@@ -710,6 +713,12 @@ def _action_list(value: Any) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)]
 
 
+def _dict_list(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
+
+
 def _next_actions_from_slack_delivery(slack_delivery: dict[str, Any]) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     visual = slack_delivery.get("visual") if isinstance(slack_delivery.get("visual"), dict) else {}
@@ -737,6 +746,7 @@ def _next_actions_from_slack_delivery(slack_delivery: dict[str, Any]) -> list[di
             )
         no_video_fallback_count = _int(recovery.get("no_video_fallback_available_count"))
         if no_video_fallback_count > 0:
+            video_fallback_diagnostics = _dict_list(recovery.get("video_fallback_diagnostics"))
             actions.append(
                 _action(
                     "configure_video_fallback_provider",
@@ -746,6 +756,11 @@ def _next_actions_from_slack_delivery(slack_delivery: dict[str, Any]) -> list[di
                     evidence_count=no_video_fallback_count,
                     provider_failure_classes=provider_failure_classes,
                     provider_error_codes=provider_error_codes,
+                    **(
+                        {"video_fallback_diagnostics": video_fallback_diagnostics}
+                        if video_fallback_diagnostics
+                        else {}
+                    ),
                 )
             )
         retryable_failure_count = max(0, provider_failure_count - quota_count)

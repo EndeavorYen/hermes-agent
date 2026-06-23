@@ -580,6 +580,7 @@ def _provider_failure_actions(recovery: dict[str, Any]) -> list[dict[str, Any]]:
         )
     no_video_fallback_count = _int(recovery.get("no_video_fallback_available_count"))
     if no_video_fallback_count > 0:
+        video_fallback_diagnostics = _dict_list(recovery.get("video_fallback_diagnostics"))
         actions.append(
             _action(
                 "configure_video_fallback_provider",
@@ -589,6 +590,11 @@ def _provider_failure_actions(recovery: dict[str, Any]) -> list[dict[str, Any]]:
                 evidence_count=no_video_fallback_count,
                 provider_failure_classes=provider_failure_classes,
                 provider_error_codes=provider_error_codes,
+                **(
+                    {"video_fallback_diagnostics": video_fallback_diagnostics}
+                    if video_fallback_diagnostics
+                    else {}
+                ),
             )
         )
 
@@ -776,6 +782,12 @@ def _list(value: Any) -> list[str]:
         if text and text not in strings:
             strings.append(text)
     return strings
+
+
+def _dict_list(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
 
 
 def _float_or_none(value: Any) -> float | None:

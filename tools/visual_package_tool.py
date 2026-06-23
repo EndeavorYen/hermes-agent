@@ -2009,6 +2009,9 @@ def _video_provider_quarantine_payload(
             "failure_class": failure.get("failure_class") or "quota_exceeded",
             "provider_message_code": failure.get("provider_message_code") or "unknown",
             "no_video_fallback_available": True,
+            "video_fallback_diagnostic": _video_provider_fallback_diagnostic(
+                failed_provider=provider_label
+            ),
         },
     }
 
@@ -2126,6 +2129,88 @@ def _available_video_provider_fallbacks(*, failed_provider: str | None = None) -
         if available:
             names.append(name)
     return names
+
+
+def _video_provider_fallback_diagnostic(*, failed_provider: str | None = None) -> dict[str, Any]:
+    failed = str(failed_provider or "").strip()
+    failed_family = _provider_family(failed)
+    registered_names: list[str] = []
+    available_names: list[str] = []
+    unavailable_names: list[str] = []
+    fallback_names: list[str] = []
+    setup_actions: list[dict[str, Any]] = []
+
+    for provider in _video_provider_registry_snapshot():
+        name = str(getattr(provider, "name", "") or "").strip()
+        if not name or name in registered_names:
+            continue
+        registered_names.append(name)
+        if name == failed:
+            continue
+        provider_family = _provider_family(name)
+        if failed_family and provider_family == failed_family:
+            continue
+        if _video_provider_is_available(provider):
+            available_names.append(name)
+            fallback_names.append(name)
+            continue
+        unavailable_names.append(name)
+        setup_actions.append(_video_provider_setup_action(provider, name=name))
+
+    return {
+        "failed_provider": failed,
+        "failed_provider_family": failed_family,
+        "registered_provider_names": registered_names,
+        "available_provider_names": available_names,
+        "unavailable_provider_names": unavailable_names,
+        "fallback_provider_names": fallback_names,
+        "setup_actions": setup_actions,
+    }
+
+
+def _video_provider_registry_snapshot() -> list[Any]:
+    try:
+        from agent.video_gen_registry import list_providers
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        return list(list_providers())
+    except Exception as exc:  # noqa: BLE001 - diagnostics must not block recovery
+        logger.debug("video provider fallback diagnostic unavailable: %s", exc)
+        return []
+
+
+def _video_provider_is_available(provider: Any) -> bool:
+    try:
+        return bool(provider.is_available())
+    except Exception as exc:  # noqa: BLE001 - diagnostics must tolerate provider bugs
+        logger.debug(
+            "video provider fallback diagnostic availability failed for %s: %s",
+            getattr(provider, "name", "?"),
+            exc,
+        )
+        return False
+
+
+def _video_provider_setup_action(provider: Any, *, name: str) -> dict[str, Any]:
+    schema: dict[str, Any] = {}
+    try:
+        raw = provider.get_setup_schema()
+        schema = raw if isinstance(raw, dict) else {}
+    except Exception as exc:  # noqa: BLE001 - setup hints are best-effort diagnostics
+        logger.debug("video provider setup schema unavailable for %s: %s", name, exc)
+    env_vars = []
+    for item in schema.get("env_vars") or []:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or "").strip()
+        if key and key not in env_vars:
+            env_vars.append(key)
+    return {
+        "provider": name,
+        "env_vars": env_vars,
+        "post_setup": str(schema.get("post_setup") or "").strip(),
+    }
 
 
 def _retry_generation_payload(

@@ -734,6 +734,23 @@ def test_visual_live_quality_burn_routes_missing_video_fallback_to_provider_acti
         "no_video_fallback_available_count": 1,
         "provider_quarantine_count": 1,
         "provider_quarantine_classes": ["quota_exceeded"],
+        "video_fallback_diagnostics": [
+            {
+                "failed_provider": "xai",
+                "failed_provider_family": "xai",
+                "registered_provider_names": ["fal", "xai"],
+                "available_provider_names": [],
+                "unavailable_provider_names": ["fal"],
+                "fallback_provider_names": [],
+                "setup_actions": [
+                    {
+                        "provider": "fal",
+                        "env_vars": ["FAL_KEY"],
+                        "post_setup": "",
+                    }
+                ],
+            }
+        ],
     }
 
     monkeypatch.setattr(
@@ -758,6 +775,23 @@ def test_visual_live_quality_burn_routes_missing_video_fallback_to_provider_acti
         "source": "live_quality_burn",
         "provider_failure_classes": {"quota_exceeded": 2},
         "provider_error_codes": {"personal-team-blocked:spending-limit": 2},
+        "video_fallback_diagnostics": [
+            {
+                "failed_provider": "xai",
+                "failed_provider_family": "xai",
+                "registered_provider_names": ["fal", "xai"],
+                "available_provider_names": [],
+                "unavailable_provider_names": ["fal"],
+                "fallback_provider_names": [],
+                "setup_actions": [
+                    {
+                        "provider": "fal",
+                        "env_vars": ["FAL_KEY"],
+                        "post_setup": "",
+                    }
+                ],
+            }
+        ],
     } in report["next_actions"]
 
 

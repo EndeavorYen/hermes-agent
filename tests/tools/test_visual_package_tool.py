@@ -3721,6 +3721,26 @@ async def test_visual_package_skips_xai_video_when_quota_known_and_no_video_fall
         lambda: ("xai", "grok-imagine-video-1.5"),
         raising=False,
     )
+    monkeypatch.setattr(
+        visual_package_tool,
+        "_video_provider_fallback_diagnostic",
+        lambda failed_provider=None: {
+            "failed_provider": "xai",
+            "failed_provider_family": "xai",
+            "registered_provider_names": ["fal", "xai"],
+            "available_provider_names": [],
+            "unavailable_provider_names": ["fal"],
+            "fallback_provider_names": [],
+            "setup_actions": [
+                {
+                    "provider": "fal",
+                    "env_vars": ["FAL_KEY"],
+                    "post_setup": "",
+                }
+            ],
+        },
+        raising=False,
+    )
 
     payload = json.loads(
         await visual_package_tool._handle_visual_package_generate(
@@ -3740,8 +3760,81 @@ async def test_visual_package_skips_xai_video_when_quota_known_and_no_video_fall
     assert video_payload["success"] is False
     assert video_payload["error_type"] == "provider_quarantined"
     assert video_payload["provider_quarantine"]["no_video_fallback_available"] is True
+    assert video_payload["provider_quarantine"]["video_fallback_diagnostic"] == {
+        "failed_provider": "xai",
+        "failed_provider_family": "xai",
+        "registered_provider_names": ["fal", "xai"],
+        "available_provider_names": [],
+        "unavailable_provider_names": ["fal"],
+        "fallback_provider_names": [],
+        "setup_actions": [
+            {
+                "provider": "fal",
+                "env_vars": ["FAL_KEY"],
+                "post_setup": "",
+            }
+        ],
+    }
     assert video_payload["failure"]["failure_class"] == "quota_exceeded"
     assert payload["videos"] == []
+
+
+def test_visual_package_video_fallback_diagnostic_lists_unavailable_setup_actions(monkeypatch):
+    from tools import visual_package_tool
+
+    class FakeVideoProvider:
+        def __init__(self, name, available, setup_schema):
+            self.name = name
+            self._available = available
+            self._setup_schema = setup_schema
+
+        def is_available(self):
+            return self._available
+
+        def get_setup_schema(self):
+            return self._setup_schema
+
+    monkeypatch.setattr(
+        visual_package_tool,
+        "_video_provider_registry_snapshot",
+        lambda: [
+            FakeVideoProvider(
+                "fal",
+                False,
+                {
+                    "env_vars": [{"key": "FAL_KEY"}],
+                    "post_setup": "",
+                },
+            ),
+            FakeVideoProvider(
+                "xai",
+                True,
+                {
+                    "env_vars": [],
+                    "post_setup": "xai_grok",
+                },
+            ),
+        ],
+        raising=False,
+    )
+
+    diagnostic = visual_package_tool._video_provider_fallback_diagnostic(failed_provider="xai")
+
+    assert diagnostic == {
+        "failed_provider": "xai",
+        "failed_provider_family": "xai",
+        "registered_provider_names": ["fal", "xai"],
+        "available_provider_names": [],
+        "unavailable_provider_names": ["fal"],
+        "fallback_provider_names": [],
+        "setup_actions": [
+            {
+                "provider": "fal",
+                "env_vars": ["FAL_KEY"],
+                "post_setup": "",
+            }
+        ],
+    }
 
 
 @pytest.mark.asyncio

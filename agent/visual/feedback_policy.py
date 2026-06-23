@@ -36,6 +36,7 @@ def resolve_visual_feedback_policy(
         "provider_failure_classes": {},
         "provider_error_codes": {},
     }
+    video_fallback_diagnostics: list[dict[str, Any]] = []
     strategy_preference: dict[str, Any] | None = None
     applied_action_types: list[str] = []
     applied_action_sources: list[str] = []
@@ -126,6 +127,7 @@ def resolve_visual_feedback_policy(
             provider_recovery_mode = "video_fallback_unavailable"
             provider_retry_budget = 0
             provider_failure_context = _provider_failure_context(action)
+            video_fallback_diagnostics = _dict_list(action.get("video_fallback_diagnostics"))
             _append_once(applied_action_types, action_type)
             _append_once(applied_action_sources, action_source)
         elif action_type == "prefer_strategy":
@@ -155,6 +157,7 @@ def resolve_visual_feedback_policy(
         "provider_recovery_mode": provider_recovery_mode,
         "provider_retry_budget": provider_retry_budget,
         "provider_failure_context": provider_failure_context,
+        "video_fallback_diagnostics": video_fallback_diagnostics,
         "strategy_preference": strategy_preference,
         "repair_dimensions": repair_dimensions,
         "quality_focus_operators": quality_focus_operators,
@@ -274,6 +277,12 @@ def _provider_failure_context(action: dict[str, Any]) -> dict[str, dict[str, int
         "provider_failure_classes": _int_mapping(action.get("provider_failure_classes")),
         "provider_error_codes": _int_mapping(action.get("provider_error_codes")),
     }
+
+
+def _dict_list(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
 
 
 def _action_source(action: dict[str, Any]) -> str:

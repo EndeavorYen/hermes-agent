@@ -1341,6 +1341,21 @@ def test_visual_live_provider_e2e_reports_no_video_fallback_available():
                         "modality": "video",
                         "failure_class": "quota_exceeded",
                         "no_video_fallback_available": True,
+                        "video_fallback_diagnostic": {
+                            "failed_provider": "xai",
+                            "failed_provider_family": "xai",
+                            "registered_provider_names": ["fal", "xai"],
+                            "available_provider_names": [],
+                            "unavailable_provider_names": ["fal"],
+                            "fallback_provider_names": [],
+                            "setup_actions": [
+                                {
+                                    "provider": "fal",
+                                    "env_vars": ["FAL_KEY"],
+                                    "post_setup": "",
+                                }
+                            ],
+                        },
                     },
                 }
             },
@@ -1353,6 +1368,23 @@ def test_visual_live_provider_e2e_reports_no_video_fallback_available():
     assert summary["no_video_fallback_available_count"] == 1
     assert summary["provider_quarantine_count"] == 1
     assert summary["provider_quarantine_classes"] == ["quota_exceeded"]
+    assert summary["video_fallback_diagnostics"] == [
+        {
+            "failed_provider": "xai",
+            "failed_provider_family": "xai",
+            "registered_provider_names": ["fal", "xai"],
+            "available_provider_names": [],
+            "unavailable_provider_names": ["fal"],
+            "fallback_provider_names": [],
+            "setup_actions": [
+                {
+                    "provider": "fal",
+                    "env_vars": ["FAL_KEY"],
+                    "post_setup": "",
+                }
+            ],
+        }
+    ]
 
 
 def test_visual_live_provider_e2e_inspects_selected_artifact_quality_gate(monkeypatch, tmp_path):

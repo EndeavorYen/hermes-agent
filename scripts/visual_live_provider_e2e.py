@@ -968,6 +968,7 @@ def _provider_quarantine_summary(payload: dict[str, Any]) -> dict[str, Any]:
     quarantine_count = 0
     no_video_fallback_count = 0
     classes: set[str] = set()
+    diagnostics: list[dict[str, Any]] = []
     for item in _generation_payload_items(payload):
         if not isinstance(item, dict):
             continue
@@ -980,11 +981,17 @@ def _provider_quarantine_summary(payload: dict[str, Any]) -> dict[str, Any]:
         failure_class = str(quarantine.get("failure_class") or "").strip()
         if failure_class:
             classes.add(failure_class)
-    return {
+        diagnostic = quarantine.get("video_fallback_diagnostic")
+        if isinstance(diagnostic, dict) and diagnostic not in diagnostics:
+            diagnostics.append(diagnostic)
+    summary = {
         "provider_quarantine_count": quarantine_count,
         "no_video_fallback_available_count": no_video_fallback_count,
         "provider_quarantine_classes": sorted(classes),
     }
+    if diagnostics:
+        summary["video_fallback_diagnostics"] = diagnostics
+    return summary
 
 
 def _generation_payload_items(payload: dict[str, Any]) -> list[Any]:

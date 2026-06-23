@@ -884,6 +884,23 @@ def test_visual_slack_conversation_e2e_live_records_no_video_fallback_summary(mo
             "no_video_fallback_available_count": 1,
             "provider_quarantine_count": 1,
             "provider_quarantine_classes": ["quota_exceeded"],
+            "video_fallback_diagnostics": [
+                {
+                    "failed_provider": "xai",
+                    "failed_provider_family": "xai",
+                    "registered_provider_names": ["fal", "xai"],
+                    "available_provider_names": [],
+                    "unavailable_provider_names": ["fal"],
+                    "fallback_provider_names": [],
+                    "setup_actions": [
+                        {
+                            "provider": "fal",
+                            "env_vars": ["FAL_KEY"],
+                            "post_setup": "",
+                        }
+                    ],
+                }
+            ],
         }
         return report
 
@@ -908,6 +925,23 @@ def test_visual_slack_conversation_e2e_live_records_no_video_fallback_summary(mo
     assert quality_run["summary"]["no_video_fallback_available_count"] == 1
     assert quality_run["summary"]["provider_quarantine_count"] == 1
     assert quality_run["summary"]["provider_quarantine_classes"] == ["quota_exceeded"]
+    assert quality_run["summary"]["video_fallback_diagnostics"] == [
+        {
+            "failed_provider": "xai",
+            "failed_provider_family": "xai",
+            "registered_provider_names": ["fal", "xai"],
+            "available_provider_names": [],
+            "unavailable_provider_names": ["fal"],
+            "fallback_provider_names": [],
+            "setup_actions": [
+                {
+                    "provider": "fal",
+                    "env_vars": ["FAL_KEY"],
+                    "post_setup": "",
+                }
+            ],
+        }
+    ]
     assert {
         "type": "configure_video_fallback_provider",
         "track": "provider",
@@ -919,6 +953,23 @@ def test_visual_slack_conversation_e2e_live_records_no_video_fallback_summary(mo
         "source": "slack_conversation_e2e",
         "provider_failure_classes": {"quota_exceeded": 2},
         "provider_error_codes": {"personal-team-blocked:spending-limit": 2},
+        "video_fallback_diagnostics": [
+            {
+                "failed_provider": "xai",
+                "failed_provider_family": "xai",
+                "registered_provider_names": ["fal", "xai"],
+                "available_provider_names": [],
+                "unavailable_provider_names": ["fal"],
+                "fallback_provider_names": [],
+                "setup_actions": [
+                    {
+                        "provider": "fal",
+                        "env_vars": ["FAL_KEY"],
+                        "post_setup": "",
+                    }
+                ],
+            }
+        ],
     } in report["next_actions"]
     assert quality_run["next_actions"] == report["next_actions"]
 
