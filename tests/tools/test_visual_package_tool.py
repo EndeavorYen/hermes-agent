@@ -5160,6 +5160,91 @@ async def test_visual_package_video_uses_one_ranked_source_image_not_candidate_g
 
 
 @pytest.mark.asyncio
+async def test_visual_package_skips_ranked_candidate_grid_when_clean_video_source_exists(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    grid_image = tmp_path / "candidate-grid.png"
+    clean_image = tmp_path / "candidate-clean.png"
+    repair_image = tmp_path / "repair-should-not-run.png"
+    video = tmp_path / "selected-video.mp4"
+    for image in (grid_image, clean_image, repair_image):
+        image.write_bytes(_ONE_PIXEL_PNG + image.name.encode())
+    video.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+    image_sequence = [grid_image, clean_image, repair_image]
+    image_calls = []
+    video_calls = []
+
+    def fake_generate_image(**kwargs):
+        image = image_sequence[len(image_calls)]
+        image_calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(image),
+            "provider": "fixture",
+            "model": "image",
+        }
+
+    def fake_inline_vision(candidate):
+        artifact_path = str(candidate["artifact_path"])
+        if artifact_path == str(grid_image):
+            return {
+                "analysis": {
+                    "visual_appeal": 0.98,
+                    "composition": 0.98,
+                    "confidence": 0.95,
+                    "artifact_defects": ["candidate_grid_layout"],
+                }
+            }
+        return {
+            "analysis": {
+                "visual_appeal": 0.7,
+                "composition": 0.7,
+                "confidence": 0.8,
+            }
+        }
+
+    def fake_generate_video(**kwargs):
+        video_calls.append(kwargs)
+        return {
+            "success": True,
+            "video": str(video),
+            "provider": "fixture",
+            "model": "video",
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+    monkeypatch.setattr(visual_package_tool, "analyze_candidate_with_vision_tool", fake_inline_vision)
+    monkeypatch.setattr(visual_package_tool, "generate_video", fake_generate_video)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "請產生一段影片：時尚寫真，動態鏡頭。",
+                "include_image": False,
+                "include_video": True,
+                "candidate_budget": 2,
+                "video_budget": 1,
+                "inline_vision_judge": True,
+            }
+        )
+    )
+
+    assert len(image_calls) == 2
+    assert len(video_calls) == 1
+    assert video_calls[0]["image_url"] == str(clean_image)
+    assert video_calls[0]["source_media"]["reference_count"] == 1
+    assert video_calls[0]["source_media"]["references"] == [str(clean_image)]
+    assert payload["success"] is True
+    assert payload["videos"] == [str(video)]
+    assert payload["generation_strategy"]["video_source_image"] == str(clean_image)
+    assert payload["generation_strategy"]["video_source_image_count"] == 1
+    assert payload["generation_strategy"]["video_source_policy"] == "single_ranked_selected_image"
+    assert payload["delivery_gate"]["image"]["allowed"] is True
+    assert payload["delivery_gate"]["image"]["reason"] == "delivery_allowed"
+
+
+@pytest.mark.asyncio
 async def test_visual_package_retries_empty_image_response_before_ranking(monkeypatch, tmp_path):
     from agent.visual.attempt_ledger import VisualAttemptLedger
     from agent.visual.tracking import default_visual_ledger_path

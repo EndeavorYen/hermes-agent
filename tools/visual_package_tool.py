@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import tempfile
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -510,6 +511,13 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             candidates=image_candidates,
             post_threshold=0.0,
             ask_threshold=0.0,
+        )
+        image_decision = _enforce_non_grid_video_source_decision(
+            image_decision,
+            candidates=image_candidates,
+            prompt=prompt,
+            wants_video=wants_video,
+            image_first_for_video=image_first_for_video,
         )
         rankings["image"] = image_decision.__dict__
         image_learning = _record_learning_trace(
@@ -2648,6 +2656,50 @@ def _selected_candidate(
         (candidate for candidate in candidates if candidate.get("artifact_id") == selected_artifact_id),
         None,
     )
+
+
+def _enforce_non_grid_video_source_decision(
+    rank_decision: Any,
+    *,
+    candidates: list[dict[str, Any]],
+    prompt: str,
+    wants_video: bool,
+    image_first_for_video: bool,
+) -> Any:
+    if not wants_video or not image_first_for_video:
+        return rank_decision
+    selected = _selected_candidate(candidates, rank_decision.selected_artifact_id)
+    if selected is None or not _candidate_has_source_frame_grid_issue(selected, prompt=prompt):
+        return rank_decision
+    for artifact_id in rank_decision.ranked_artifact_ids:
+        candidate = _selected_candidate(candidates, str(artifact_id))
+        if candidate is None or candidate is selected:
+            continue
+        if _candidate_has_blocking_video_source_issue(candidate, prompt=prompt):
+            continue
+        return replace(
+            rank_decision,
+            selected_artifact_id=candidate.get("artifact_id"),
+            selected_attempt_id=candidate.get("attempt_id"),
+            reason="selected_non_grid_video_source",
+        )
+    return rank_decision
+
+
+def _candidate_has_source_frame_grid_issue(candidate: dict[str, Any], *, prompt: str) -> bool:
+    quality_issues, _ignored = _blocking_quality_issues(
+        _string_list(candidate.get("quality_issues")),
+        prompt=prompt,
+    )
+    return "source_frame_grid" in quality_issues
+
+
+def _candidate_has_blocking_video_source_issue(candidate: dict[str, Any], *, prompt: str) -> bool:
+    quality_issues, _ignored = _blocking_quality_issues(
+        _string_list(candidate.get("quality_issues")),
+        prompt=prompt,
+    )
+    return bool(quality_issues)
 
 
 def _delivery_gate_decision(
