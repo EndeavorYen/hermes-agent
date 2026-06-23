@@ -493,6 +493,8 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                     if retry_candidate:
                         image_candidates.append(retry_candidate)
                         break
+                if _provider_quota_should_stop_candidate_batch(image_payload):
+                    break
         generation_payloads["image"] = image_payloads[0] if len(image_payloads) == 1 else image_payloads
         _score_candidates(
             ledger,
@@ -2008,6 +2010,10 @@ def _payload_failure_class(payload: dict[str, Any]) -> str:
         failure = classify_visual_provider_failure(payload)
         payload["failure"] = failure
     return str(failure.get("failure_class") or "").strip()
+
+
+def _provider_quota_should_stop_candidate_batch(payload: dict[str, Any]) -> bool:
+    return _payload_failure_class(payload) == "quota_exceeded"
 
 
 def _runtime_policy_video_quarantine_payload(

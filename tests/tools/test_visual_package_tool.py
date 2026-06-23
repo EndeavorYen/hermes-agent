@@ -3871,6 +3871,55 @@ async def test_visual_package_falls_back_to_available_video_provider_after_quota
 
 
 @pytest.mark.asyncio
+async def test_visual_package_stops_image_candidates_after_quota_without_fallback(
+    monkeypatch,
+    tmp_path,
+):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        return {
+            "success": False,
+            "error_type": "api_error",
+            "error": (
+                'xAI image gen failed (403): {"code":"personal-team-blocked:spending-limit",'
+                '"error":"You have run out of credits or need a Grok subscription."}'
+            ),
+            "provider": "xai",
+            "model": "grok-imagine-image-quality",
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+    monkeypatch.setattr(
+        visual_package_tool,
+        "_available_image_provider_fallbacks",
+        lambda failed_provider=None: [],
+    )
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "請產出四張圖片：產品攝影。",
+                "include_image": True,
+                "include_video": False,
+                "candidate_budget": 4,
+            }
+        )
+    )
+
+    assert len(image_calls) == 1
+    assert payload["success"] is False
+    assert payload["images"] == []
+    image_payload = payload["generation_payloads"]["image"]
+    assert image_payload["failure"]["failure_class"] == "quota_exceeded"
+    assert image_payload["recovery"]["reason"] == "provider_quota_or_subscription_required"
+
+
+@pytest.mark.asyncio
 async def test_visual_package_skips_xai_video_when_quota_known_and_no_video_fallback(
     monkeypatch,
     tmp_path,
