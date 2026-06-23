@@ -1524,6 +1524,140 @@ def test_scheduled_self_validation_carries_forward_recent_live_burn_actions(monk
     } in report["automation"]["self_improvement"]["next_actions"]
 
 
+def test_scheduled_self_validation_auto_skips_live_when_operator_setup_env_is_unresolved(
+    monkeypatch,
+    tmp_path,
+):
+    from scripts import visual_scheduled_self_validation
+
+    output_dir = tmp_path / "self_validation"
+    output_dir.mkdir(parents=True)
+    output_dir.joinpath("state.json").write_text(
+        json.dumps(
+            {
+                "last_live_run_at": "2026-06-22T00:00:00+00:00",
+                "last_live_quality_burn": {
+                    "success": False,
+                    "status": None,
+                    "summary": {"provider_failure_count": 2},
+                    "next_actions": [
+                        {
+                            "type": "configure_video_fallback_provider",
+                            "requires_human_feedback": False,
+                            "requires_operator_setup": True,
+                            "source": "live_quality_burn",
+                            "operator_setup_actions": [
+                                {
+                                    "provider": "fal",
+                                    "missing_env_vars": ["FAL_KEY"],
+                                    "post_setup": "",
+                                }
+                            ],
+                        }
+                    ],
+                    "generated_at": "2026-06-22T00:00:00+00:00",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake_automation(*, work_dir, include_live, include_live_slack_upload=False):
+        calls.append({"include_live": include_live, "include_live_slack_upload": include_live_slack_upload})
+        return _automation_report(
+            include_live=include_live,
+            include_live_slack_upload=include_live_slack_upload,
+        )
+
+    monkeypatch.setattr(
+        visual_scheduled_self_validation,
+        "build_visual_e2e_automation_report",
+        fake_automation,
+    )
+
+    report = visual_scheduled_self_validation.build_visual_scheduled_self_validation_report(
+        output_dir=output_dir,
+        live_mode="auto",
+        live_enabled=True,
+        min_live_interval_hours=6,
+        now=datetime(2026, 6, 22, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert calls == [{"include_live": False, "include_live_slack_upload": False}]
+    assert report["live_policy"]["decision"] == "skip_operator_setup"
+    assert report["live_policy"]["reason"] == "operator_setup_env_unresolved"
+    assert report["live_policy"]["missing_env_vars"] == ["FAL_KEY"]
+    assert report["automation"]["live_quality_burn"]["status"] == "carried_forward"
+    assert "configure_video_fallback_provider" in report["summary"]["feedback_action_types"]
+    assert report["runtime_policy"]["decision"] == "apply_next_run"
+    assert "configure_video_fallback_provider" in [
+        action["type"] for action in report["runtime_policy"]["next_actions"]
+    ]
+
+
+def test_scheduled_self_validation_auto_runs_after_operator_setup_env_is_resolved(
+    monkeypatch,
+    tmp_path,
+):
+    from scripts import visual_scheduled_self_validation
+
+    monkeypatch.setenv("FAL_KEY", "configured")
+    output_dir = tmp_path / "self_validation"
+    output_dir.mkdir(parents=True)
+    output_dir.joinpath("state.json").write_text(
+        json.dumps(
+            {
+                "last_live_run_at": "2026-06-22T00:00:00+00:00",
+                "last_live_quality_burn": {
+                    "success": False,
+                    "next_actions": [
+                        {
+                            "type": "configure_video_fallback_provider",
+                            "requires_human_feedback": False,
+                            "requires_operator_setup": True,
+                            "source": "live_quality_burn",
+                            "operator_setup_actions": [
+                                {
+                                    "provider": "fal",
+                                    "missing_env_vars": ["FAL_KEY"],
+                                    "post_setup": "",
+                                }
+                            ],
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake_automation(*, work_dir, include_live, include_live_slack_upload=False):
+        calls.append({"include_live": include_live, "include_live_slack_upload": include_live_slack_upload})
+        return _automation_report(
+            include_live=include_live,
+            include_live_slack_upload=include_live_slack_upload,
+        )
+
+    monkeypatch.setattr(
+        visual_scheduled_self_validation,
+        "build_visual_e2e_automation_report",
+        fake_automation,
+    )
+
+    report = visual_scheduled_self_validation.build_visual_scheduled_self_validation_report(
+        output_dir=output_dir,
+        live_mode="auto",
+        live_enabled=True,
+        min_live_interval_hours=6,
+        now=datetime(2026, 6, 22, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert calls == [{"include_live": True, "include_live_slack_upload": False}]
+    assert report["live_policy"]["decision"] == "run"
+
+
 def test_scheduled_self_validation_dedupe_preserves_distinct_quality_actions():
     from scripts.visual_scheduled_self_validation import _dedupe_actions
 

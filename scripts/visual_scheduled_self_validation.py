@@ -164,6 +164,15 @@ def _live_policy(
         return {"mode": mode, "decision": "run", "live_enabled": True}
     if not live_enabled:
         return {"mode": mode, "decision": "skip_not_enabled", "live_enabled": False}
+    unresolved_setup = _unresolved_operator_setup_env(state)
+    if unresolved_setup:
+        return {
+            "mode": mode,
+            "decision": "skip_operator_setup",
+            "live_enabled": True,
+            "reason": "operator_setup_env_unresolved",
+            **unresolved_setup,
+        }
 
     last_live_run_at = _parse_datetime(state.get("last_live_run_at"))
     if last_live_run_at is None:
@@ -681,7 +690,7 @@ def _with_carried_live_quality_burn(
     live_policy: dict[str, Any],
     state: dict[str, Any],
 ) -> dict[str, Any]:
-    if live_policy.get("decision") != "skip_interval":
+    if live_policy.get("decision") not in {"skip_interval", "skip_operator_setup"}:
         return automation
     carried = _carried_live_quality_burn(state)
     if not carried:
@@ -770,6 +779,46 @@ def _carried_live_quality_burn(state: dict[str, Any]) -> dict[str, Any]:
     carried["status"] = "carried_forward"
     carried["next_actions"] = actions
     return carried
+
+
+def _unresolved_operator_setup_env(state: dict[str, Any]) -> dict[str, Any]:
+    live_quality_burn = state.get("last_live_quality_burn")
+    if not isinstance(live_quality_burn, dict):
+        return {}
+    missing_env_vars: list[str] = []
+    operator_setup_actions: list[dict[str, Any]] = []
+    action_types: list[str] = []
+    for action in _action_list(live_quality_burn.get("next_actions")):
+        if action.get("requires_operator_setup") is not True:
+            continue
+        action_type = str(action.get("type") or "").strip()
+        if action_type and action_type not in action_types:
+            action_types.append(action_type)
+        for setup in _dict_list(action.get("operator_setup_actions")):
+            unresolved_vars = [
+                env_var
+                for env_var in _string_list(setup.get("missing_env_vars"))
+                if not os.environ.get(env_var)
+            ]
+            if not unresolved_vars:
+                continue
+            for env_var in unresolved_vars:
+                if env_var not in missing_env_vars:
+                    missing_env_vars.append(env_var)
+            operator_setup_actions.append(
+                {
+                    "provider": str(setup.get("provider") or "").strip(),
+                    "missing_env_vars": unresolved_vars,
+                    "post_setup": str(setup.get("post_setup") or "").strip(),
+                }
+            )
+    if not missing_env_vars:
+        return {}
+    return {
+        "missing_env_vars": missing_env_vars,
+        "operator_setup_actions": operator_setup_actions,
+        "action_types": action_types,
+    }
 
 
 def _action_list(value: Any) -> list[dict[str, Any]]:
@@ -1021,6 +1070,12 @@ def _dict_list(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
     return [dict(item) for item in value if isinstance(item, dict)]
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if isinstance(item, str) and item.strip()]
 
 
 def _image_first_video_source_covered(summary: dict[str, Any]) -> bool | None:

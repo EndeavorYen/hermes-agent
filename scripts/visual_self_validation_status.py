@@ -271,12 +271,32 @@ def _sanitise_live_policy(value: Any) -> dict[str, Any]:
         "elapsed_hours",
         "reason",
         "degradations",
+        "missing_env_vars",
+        "operator_setup_actions",
+        "action_types",
     }
     sanitized = {key: source[key] for key in allowed if key in source}
     if source.get("reason") == "live_quality_trend_degraded":
         sanitized["reason"] = "live_quality_trend_degraded"
+    elif source.get("reason") == "operator_setup_env_unresolved":
+        sanitized["reason"] = "operator_setup_env_unresolved"
     else:
         sanitized.pop("reason", None)
+    missing_env_vars = _strings(source.get("missing_env_vars"))
+    if missing_env_vars:
+        sanitized["missing_env_vars"] = missing_env_vars
+    else:
+        sanitized.pop("missing_env_vars", None)
+    operator_setup_actions = _operator_setup_actions(source.get("operator_setup_actions"))
+    if operator_setup_actions:
+        sanitized["operator_setup_actions"] = operator_setup_actions
+    else:
+        sanitized.pop("operator_setup_actions", None)
+    action_types = _sanitise_runtime_policy_action_types(source.get("action_types"))
+    if action_types:
+        sanitized["action_types"] = action_types
+    else:
+        sanitized.pop("action_types", None)
     degradations = source.get("degradations")
     if isinstance(degradations, list):
         allowed_degradations = {
@@ -295,6 +315,19 @@ def _sanitise_live_policy(value: Any) -> dict[str, Any]:
     else:
         sanitized.pop("degradations", None)
     return sanitized
+
+
+def _operator_setup_actions(value: Any) -> list[dict[str, Any]]:
+    actions: list[dict[str, Any]] = []
+    for action in _dicts(value):
+        actions.append(
+            {
+                "provider": str(action.get("provider") or "").strip(),
+                "missing_env_vars": _strings(action.get("missing_env_vars")),
+                "post_setup": str(action.get("post_setup") or "").strip(),
+            }
+        )
+    return actions
 
 
 def _sanitise_slack_upload_policy(value: Any) -> dict[str, Any]:
@@ -434,9 +467,13 @@ def _next_steps(
         runtime_policy,
     ):
         steps.append("configure_visual_judge_provider")
+    if live_decision == "skip_operator_setup":
+        steps.append("configure_operator_setup_prerequisites")
     if summary.get("closed_loop_regression_success") is False or "closed_loop_regression_failed" in failures:
         steps.append("inspect_closed_loop_policy_application")
     if (
+        live_decision != "skip_operator_setup"
+        and
         (live_decision != "run" or not live_e2e_ran)
         and not carried_live_evidence_current
         and not live_conversation_evidence_current
