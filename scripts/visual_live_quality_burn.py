@@ -32,6 +32,7 @@ def build_visual_live_quality_burn_report(
     max_cases: int = DEFAULT_MAX_CASES,
     case_timeout_seconds: float | int | None = None,
     include_video_repair_probe: bool = False,
+    include_storyboard_probe: bool = False,
     suite_report: dict[str, Any] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -50,6 +51,7 @@ def build_visual_live_quality_burn_report(
         cases=selected_cases,
         case_timeout_seconds=timeout_seconds,
         include_video_repair_probe=include_video_repair_probe,
+        include_storyboard_probe=include_storyboard_probe,
     )
     summary = _summary(suite)
     next_actions = _next_actions(suite, summary)
@@ -61,6 +63,8 @@ def build_visual_live_quality_burn_report(
     }
     if include_video_repair_probe:
         burn_budget["include_video_repair_probe"] = True
+    if include_storyboard_probe:
+        burn_budget["include_storyboard_probe"] = True
     report = {
         "success": suite.get("success") is True,
         "run_id": _run_id(now),

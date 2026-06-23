@@ -225,6 +225,92 @@ def test_visual_live_provider_e2e_fixture_storyboard_execution_composes_video(tm
     assert report["evidence"]["storyboard_execution"]["bad_source_media_shot_ids"] == []
 
 
+def test_visual_live_provider_suite_can_include_storyboard_probe(monkeypatch, tmp_path):
+    from scripts import visual_live_provider_e2e
+
+    calls = []
+
+    def fake_report(**kwargs):
+        calls.append(kwargs)
+        is_fashion = "fashion" in kwargs["prompt"].lower()
+        return {
+            "success": True,
+            "failures": [],
+            "payload": {"success": True},
+            "evidence": {
+                "quality_gate": {
+                    "success": True,
+                    "min_score": 0.82,
+                    "quality_issues": [],
+                    "preference_dimension_failures": [],
+                    "preference_dimension_evidence": (
+                        {
+                            "subject_beauty": [{"artifact_id": "var_image", "score": 0.9}],
+                            "face_naturalness": [{"artifact_id": "var_image", "score": 0.88}],
+                            "glamour_impact": [{"artifact_id": "var_image", "score": 0.87}],
+                            "fashion_material_quality": [{"artifact_id": "var_image", "score": 0.91}],
+                            "pose_composition": [{"artifact_id": "var_image", "score": 0.86}],
+                        }
+                        if is_fashion
+                        else {}
+                    ),
+                },
+                "image_count": 1,
+                "video_count": 1,
+                "video_source": {"uses_ranked_selected_image": True},
+                "recovery_summary": {
+                    "provider_failure_count": 0,
+                    "provider_failure_classes": {},
+                    "provider_error_codes": {},
+                    "retry_attempt_count": 0,
+                    "negotiation_attempted": False,
+                    "negotiation_success": False,
+                    "content_moderation_recovered": False,
+                    "recovered_failure_classes": [],
+                },
+                "storyboard_execution": (
+                    {
+                        "status": "composed",
+                        "clip_count": 2,
+                        "composition_status": "composed",
+                        "delivers_composed_video": True,
+                        "delivers_source_clips": False,
+                        "shots_use_single_ranked_images": True,
+                        "shots_use_single_source_media": True,
+                        "bad_source_shot_ids": [],
+                        "bad_source_media_shot_ids": [],
+                    }
+                    if kwargs.get("storyboard")
+                    else {}
+                ),
+            },
+        }
+
+    monkeypatch.setattr(
+        visual_live_provider_e2e,
+        "build_visual_live_provider_e2e_report",
+        fake_report,
+    )
+
+    suite = visual_live_provider_e2e.build_visual_live_provider_e2e_suite_report(
+        mode="fixture",
+        work_dir=tmp_path,
+        include_storyboard_probe=True,
+        include_video_repair_probe=False,
+    )
+
+    assert suite["success"] is True
+    assert [case["case_id"] for case in suite["cases"]] == [
+        "product_photo_video",
+        "fashion_portrait_video",
+        "storyboard_product_video",
+    ]
+    storyboard_call = calls[-1]
+    assert storyboard_call["storyboard"]["shot_count"] == 2
+    assert storyboard_call["candidate_budget"] == 2
+    assert storyboard_call["video_budget"] == 1
+
+
 def test_visual_live_provider_e2e_flags_storyboard_shot_without_single_ranked_source():
     from scripts.visual_live_provider_e2e import _storyboard_execution_failures
 

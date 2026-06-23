@@ -86,6 +86,23 @@ FIXTURE_VIDEO_REPAIR_CASE = {
     "video_budget": 1,
     "force_video_quality_repair": True,
 }
+DEFAULT_STORYBOARD_CONTRACT = {
+    "enabled": True,
+    "shot_count": 2,
+    "candidate_budget_per_shot": 2,
+    "source_image_policy": "one_ranked_image_per_shot",
+    "composition_target": "single_coherent_video",
+    "delivery_policy": "deliver_composed_video_when_available_else_selected_clips",
+}
+DEFAULT_STORYBOARD_PROBE_CASE = {
+    "case_id": "storyboard_product_video",
+    "prompt": "請做一支 2 段分鏡的連貫產品影片：霧黑鋼筆放在白紙上，柔和窗光。",
+    "require_video": True,
+    "duration": 4,
+    "candidate_budget": 2,
+    "video_budget": 1,
+    "storyboard": dict(DEFAULT_STORYBOARD_CONTRACT),
+}
 DEFAULT_MIN_QUALITY_SCORE = 0.55
 DEFAULT_CASE_TIMEOUT_SECONDS = 240.0
 _ONE_PIXEL_PNG = (
@@ -175,14 +192,7 @@ def build_visual_storyboard_execution_report(
     mode: str = "fixture",
     work_dir: str | Path | None = None,
 ) -> dict[str, Any]:
-    storyboard = {
-        "enabled": True,
-        "shot_count": 2,
-        "candidate_budget_per_shot": 2,
-        "source_image_policy": "one_ranked_image_per_shot",
-        "composition_target": "single_coherent_video",
-        "delivery_policy": "deliver_composed_video_when_available_else_selected_clips",
-    }
+    storyboard = dict(DEFAULT_STORYBOARD_CONTRACT)
     report = build_visual_live_provider_e2e_report(
         mode=mode,
         work_dir=work_dir,
@@ -211,11 +221,13 @@ def build_visual_live_provider_e2e_suite_report(
     cases: list[dict[str, Any]] | None = None,
     case_timeout_seconds: float | int | None = None,
     include_video_repair_probe: bool | None = None,
+    include_storyboard_probe: bool = False,
 ) -> dict[str, Any]:
     case_specs = _suite_case_specs(
         mode,
         cases=cases,
         include_video_repair_probe=include_video_repair_probe,
+        include_storyboard_probe=include_storyboard_probe,
     )
     case_reports = []
     failures: list[str] = []
@@ -301,6 +313,7 @@ def _default_e2e_cases(
     mode: str,
     *,
     include_video_repair_probe: bool | None = None,
+    include_storyboard_probe: bool = False,
 ) -> list[dict[str, Any]]:
     cases = [dict(case) for case in DEFAULT_E2E_CASES]
     mode_text = str(mode or "").strip().lower()
@@ -308,6 +321,8 @@ def _default_e2e_cases(
         include_video_repair_probe = mode_text == "fixture"
     if include_video_repair_probe:
         cases.append(dict(FIXTURE_VIDEO_REPAIR_CASE))
+    if include_storyboard_probe:
+        cases.append(_storyboard_probe_case())
     return cases
 
 
@@ -316,15 +331,19 @@ def _suite_case_specs(
     *,
     cases: list[dict[str, Any]] | None,
     include_video_repair_probe: bool | None,
+    include_storyboard_probe: bool,
 ) -> list[dict[str, Any]]:
     if cases is None:
         return _default_e2e_cases(
             mode,
             include_video_repair_probe=include_video_repair_probe,
+            include_storyboard_probe=include_storyboard_probe,
         )
     selected = [dict(case) for case in cases]
     if include_video_repair_probe is True and not _has_video_repair_probe(selected):
         selected.append(dict(FIXTURE_VIDEO_REPAIR_CASE))
+    if include_storyboard_probe and not _has_storyboard_probe(selected):
+        selected.append(_storyboard_probe_case())
     return selected
 
 
@@ -334,6 +353,20 @@ def _has_video_repair_probe(cases: list[dict[str, Any]]) -> bool:
         or case.get("force_video_quality_repair") is True
         for case in cases
     )
+
+
+def _has_storyboard_probe(cases: list[dict[str, Any]]) -> bool:
+    return any(
+        str(case.get("case_id") or "") == "storyboard_product_video"
+        or isinstance(case.get("storyboard"), dict)
+        for case in cases
+    )
+
+
+def _storyboard_probe_case() -> dict[str, Any]:
+    case = dict(DEFAULT_STORYBOARD_PROBE_CASE)
+    case["storyboard"] = dict(DEFAULT_STORYBOARD_CONTRACT)
+    return case
 
 
 def _case_quality_contract(case: dict[str, Any]) -> dict[str, Any]:

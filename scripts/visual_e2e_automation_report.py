@@ -58,6 +58,7 @@ def build_visual_e2e_automation_report(
         "mode": "fixture",
         "work_dir": work_dir,
         "include_video_repair_probe": True,
+        "include_storyboard_probe": True,
     }
     if case_timeout_seconds is not None:
         fixture_quality_suite_kwargs["case_timeout_seconds"] = case_timeout_seconds
@@ -86,6 +87,7 @@ def build_visual_e2e_automation_report(
             "mode": "live",
             "work_dir": None,
             "include_video_repair_probe": True,
+            "include_storyboard_probe": True,
         }
         if case_timeout_seconds is not None:
             live_quality_suite_kwargs["case_timeout_seconds"] = case_timeout_seconds
@@ -94,6 +96,7 @@ def build_visual_e2e_automation_report(
             mode="live",
             work_dir=None,
             case_timeout_seconds=case_timeout_seconds,
+            include_storyboard_probe=True,
             suite_report=live_quality_suite,
         )
     else:

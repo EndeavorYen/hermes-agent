@@ -188,11 +188,14 @@ def test_visual_e2e_automation_includes_quality_suite(monkeypatch, tmp_path):
     assert calls[0]["mode"] == "fixture"
     assert calls[0]["work_dir"] == tmp_path
     assert calls[0]["include_video_repair_probe"] is True
+    assert calls[0]["include_storyboard_probe"] is True
     assert calls[1]["mode"] == "live"
     assert calls[1]["work_dir"] is None
     assert calls[1]["include_video_repair_probe"] is True
+    assert calls[1]["include_storyboard_probe"] is True
     assert burn_calls[0]["mode"] == "live"
     assert burn_calls[0]["work_dir"] is None
+    assert burn_calls[0]["include_storyboard_probe"] is True
 
 
 def test_visual_e2e_automation_fails_when_closed_loop_regression_fails(monkeypatch, tmp_path):
@@ -445,19 +448,21 @@ def test_visual_e2e_automation_passes_case_timeout_to_quality_suites(monkeypatch
 
     assert report["success"] is True
     assert suite_calls == [
-        {
-            "mode": "fixture",
-            "work_dir": tmp_path,
-            "include_video_repair_probe": True,
-            "case_timeout_seconds": 123,
-        },
-        {
-            "mode": "live",
-            "work_dir": None,
-            "include_video_repair_probe": True,
-            "case_timeout_seconds": 123,
-        },
-    ]
+            {
+                "mode": "fixture",
+                "work_dir": tmp_path,
+                "include_video_repair_probe": True,
+                "include_storyboard_probe": True,
+                "case_timeout_seconds": 123,
+            },
+            {
+                "mode": "live",
+                "work_dir": None,
+                "include_video_repair_probe": True,
+                "include_storyboard_probe": True,
+                "case_timeout_seconds": 123,
+            },
+        ]
 
 
 def test_visual_e2e_automation_fails_when_quality_suite_fails(monkeypatch, tmp_path):

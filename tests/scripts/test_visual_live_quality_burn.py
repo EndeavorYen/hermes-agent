@@ -257,6 +257,35 @@ def test_visual_live_quality_burn_can_request_repair_probe(monkeypatch, tmp_path
     assert report["burn_budget"]["include_video_repair_probe"] is True
 
 
+def test_visual_live_quality_burn_can_request_storyboard_probe(monkeypatch, tmp_path):
+    from scripts import visual_live_quality_burn
+
+    calls = []
+
+    def fake_suite(**kwargs):
+        calls.append(kwargs)
+        return _suite_with_quality_failure()
+
+    monkeypatch.setattr(
+        visual_live_quality_burn,
+        "build_visual_live_provider_e2e_suite_report",
+        fake_suite,
+    )
+
+    report = visual_live_quality_burn.build_visual_live_quality_burn_report(
+        mode="live",
+        output_dir=tmp_path / "burn",
+        work_dir=tmp_path / "work",
+        max_cases=1,
+        include_storyboard_probe=True,
+        now=datetime(2026, 6, 22, 10, 0, tzinfo=timezone.utc),
+    )
+
+    assert calls[0]["include_storyboard_probe"] is True
+    assert len(calls[0]["cases"]) == 1
+    assert report["burn_budget"]["include_storyboard_probe"] is True
+
+
 def test_visual_live_quality_burn_excludes_repair_probe_from_promotion_min_score(monkeypatch, tmp_path):
     from scripts import visual_live_quality_burn
 
