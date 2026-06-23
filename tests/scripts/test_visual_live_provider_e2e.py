@@ -138,6 +138,10 @@ def test_visual_live_provider_e2e_reports_runtime_policy_effect(monkeypatch, tmp
         "candidate_budget_source": "live_quality_trends",
         "image_first_for_video": True,
         "rerank_before_delivery": True,
+        "quality_gate_success": True,
+        "quality_gate_min_score": report["evidence"]["quality_gate"]["min_score"],
+        "quality_issue_count": 0,
+        "video_source_uses_ranked_selected_image": True,
     }
 
 

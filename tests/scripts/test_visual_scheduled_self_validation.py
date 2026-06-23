@@ -1009,6 +1009,17 @@ def test_scheduled_self_validation_exports_safe_runtime_policy_even_when_report_
 def test_scheduled_self_validation_summarizes_runtime_policy_effect(monkeypatch, tmp_path):
     from scripts import visual_scheduled_self_validation
 
+    def fake_trends(_output_dir):
+        return {
+            "run_count": 4,
+            "summary": {
+                "recent_run_ids": ["baseline"],
+                "recent_avg_min_quality_score": 0.82,
+            },
+            "degradations": [],
+            "next_actions": [],
+        }
+
     def fake_automation(*, work_dir, include_live, include_live_slack_upload=False):
         report = _automation_report(
             include_live=include_live,
@@ -1026,12 +1037,32 @@ def test_scheduled_self_validation_summarizes_runtime_policy_effect(monkeypatch,
                 }
             },
         }
+        report["live_e2e"] = {
+            "success": True,
+            "evidence": {
+                "runtime_policy_effect": {
+                    "policy_active": True,
+                    "applied": True,
+                    "expected_action_types": ["increase_candidate_budget"],
+                    "applied_action_types": ["increase_candidate_budget"],
+                    "missing_action_types": [],
+                    "quality_gate_success": True,
+                    "quality_gate_min_score": 0.72,
+                },
+                "quality_gate": {"success": True, "min_score": 0.72},
+            },
+        }
         return report
 
     monkeypatch.setattr(
         visual_scheduled_self_validation,
         "build_visual_e2e_automation_report",
         fake_automation,
+    )
+    monkeypatch.setattr(
+        visual_scheduled_self_validation,
+        "build_live_quality_trend_report_from_dir",
+        fake_trends,
     )
 
     report = visual_scheduled_self_validation.build_visual_scheduled_self_validation_report(
@@ -1048,6 +1079,9 @@ def test_scheduled_self_validation_summarizes_runtime_policy_effect(monkeypatch,
     assert report["summary"]["fixture_runtime_policy_missing_action_types"] == [
         "increase_candidate_budget"
     ]
+    assert report["summary"]["live_runtime_policy_quality_gate_min_score"] == 0.72
+    assert report["summary"]["live_runtime_policy_quality_delta_vs_recent_trend"] == -0.1
+    assert report["summary"]["live_runtime_policy_quality_regressed"] is True
 
 
 def test_scheduled_self_validation_carries_forward_recent_live_burn_actions(monkeypatch, tmp_path):

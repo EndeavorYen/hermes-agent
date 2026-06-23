@@ -523,12 +523,17 @@ def inspect_visual_e2e_evidence(
         return {}
     request_id = str(payload.get("visual_request_id") or "")
     if not request_id:
+        video_source = _video_source_evidence(payload, require_video=require_video)
         return {
             "request_id": "",
             "image_count": len(payload.get("images") or []),
             "video_count": len(payload.get("videos") or []),
-            "video_source": _video_source_evidence(payload, require_video=require_video),
-            "runtime_policy_effect": _runtime_policy_effect_evidence(payload),
+            "video_source": video_source,
+            "runtime_policy_effect": _runtime_policy_effect_evidence(
+                payload,
+                quality_gate={},
+                video_source=video_source,
+            ),
         }
     ledger = VisualAttemptLedger(default_visual_ledger_path())
     attempts = _rows_for_request(ledger, "visual_attempts", request_id)
@@ -576,6 +581,7 @@ def inspect_visual_e2e_evidence(
         judgments=judgments,
         threshold=_min_quality_score_threshold(),
     )
+    video_source = _video_source_evidence(payload, require_video=require_video)
     return {
         "request_id": request_id,
         "image_count": len(payload.get("images") or []),
@@ -598,9 +604,13 @@ def inspect_visual_e2e_evidence(
         "providers": providers,
         "require_video": require_video,
         "quality_gate": quality_gate,
-        "video_source": _video_source_evidence(payload, require_video=require_video),
+        "video_source": video_source,
         "storyboard_execution": _storyboard_execution_evidence(payload),
-        "runtime_policy_effect": _runtime_policy_effect_evidence(payload),
+        "runtime_policy_effect": _runtime_policy_effect_evidence(
+            payload,
+            quality_gate=quality_gate,
+            video_source=video_source,
+        ),
     }
 
 
@@ -897,7 +907,12 @@ def _video_source_evidence(payload: dict[str, Any], *, require_video: bool) -> d
     }
 
 
-def _runtime_policy_effect_evidence(payload: dict[str, Any]) -> dict[str, Any]:
+def _runtime_policy_effect_evidence(
+    payload: dict[str, Any],
+    *,
+    quality_gate: dict[str, Any],
+    video_source: dict[str, Any],
+) -> dict[str, Any]:
     policy = _active_runtime_policy()
     expected_action_types = _runtime_policy_action_types(policy)
     generation_strategy = (
@@ -928,6 +943,10 @@ def _runtime_policy_effect_evidence(payload: dict[str, Any]) -> dict[str, Any]:
         "candidate_budget_source": str(generation_strategy.get("candidate_budget_source") or ""),
         "image_first_for_video": generation_strategy.get("image_first_for_video") is True,
         "rerank_before_delivery": feedback_policy.get("rerank_before_delivery") is True,
+        "quality_gate_success": quality_gate.get("success"),
+        "quality_gate_min_score": quality_gate.get("min_score"),
+        "quality_issue_count": len(_string_list(quality_gate.get("quality_issues"))),
+        "video_source_uses_ranked_selected_image": video_source.get("uses_ranked_selected_image"),
     }
 
 

@@ -225,6 +225,10 @@ def _summary(automation: dict[str, Any], live_quality_trends: dict[str, Any] | N
     live_e2e = automation.get("live_e2e") if isinstance(automation.get("live_e2e"), dict) else {}
     fixture_runtime_policy_effect = _runtime_policy_effect(fixture_e2e)
     live_runtime_policy_effect = _runtime_policy_effect(live_e2e)
+    live_runtime_policy_quality_delta = _runtime_policy_quality_delta(
+        live_runtime_policy_effect,
+        baseline_score=live_quality_trend_summary.get("recent_avg_min_quality_score"),
+    )
     live_evidence = live_e2e.get("evidence") if isinstance(live_e2e.get("evidence"), dict) else {}
     quality_gate = live_evidence.get("quality_gate") if isinstance(live_evidence.get("quality_gate"), dict) else {}
     slack_delivery = automation.get("slack_delivery") if isinstance(automation.get("slack_delivery"), dict) else {}
@@ -382,6 +386,18 @@ def _summary(automation: dict[str, Any], live_quality_trends: dict[str, Any] | N
         "fixture_runtime_policy_missing_action_types": _list(
             fixture_runtime_policy_effect.get("missing_action_types")
         ),
+        "fixture_runtime_policy_quality_gate_success": fixture_runtime_policy_effect.get(
+            "quality_gate_success"
+        ),
+        "fixture_runtime_policy_quality_gate_min_score": fixture_runtime_policy_effect.get(
+            "quality_gate_min_score"
+        ),
+        "fixture_runtime_policy_quality_issue_count": _int(
+            fixture_runtime_policy_effect.get("quality_issue_count")
+        ),
+        "fixture_runtime_policy_video_source_uses_ranked_selected_image": fixture_runtime_policy_effect.get(
+            "video_source_uses_ranked_selected_image"
+        ),
         "live_runtime_policy_active": live_runtime_policy_effect.get("policy_active"),
         "live_runtime_policy_applied": live_runtime_policy_effect.get("applied"),
         "live_runtime_policy_expected_action_types": _list(
@@ -389,6 +405,24 @@ def _summary(automation: dict[str, Any], live_quality_trends: dict[str, Any] | N
         ),
         "live_runtime_policy_missing_action_types": _list(
             live_runtime_policy_effect.get("missing_action_types")
+        ),
+        "live_runtime_policy_quality_gate_success": live_runtime_policy_effect.get(
+            "quality_gate_success"
+        ),
+        "live_runtime_policy_quality_gate_min_score": live_runtime_policy_effect.get(
+            "quality_gate_min_score"
+        ),
+        "live_runtime_policy_quality_issue_count": _int(
+            live_runtime_policy_effect.get("quality_issue_count")
+        ),
+        "live_runtime_policy_video_source_uses_ranked_selected_image": live_runtime_policy_effect.get(
+            "video_source_uses_ranked_selected_image"
+        ),
+        "live_runtime_policy_quality_delta_vs_recent_trend": live_runtime_policy_quality_delta,
+        "live_runtime_policy_quality_regressed": (
+            live_runtime_policy_quality_delta < 0
+            if live_runtime_policy_quality_delta is not None
+            else None
         ),
         "live_quality_gate_success": quality_gate.get("success"),
         "live_quality_gate_min_score": quality_gate.get("min_score"),
@@ -601,6 +635,18 @@ def _runtime_policy_effect(report: dict[str, Any]) -> dict[str, Any]:
         else {}
     )
     return effect
+
+
+def _runtime_policy_quality_delta(
+    effect: dict[str, Any],
+    *,
+    baseline_score: Any,
+) -> float | None:
+    current_score = _float_or_none(effect.get("quality_gate_min_score"))
+    baseline = _float_or_none(baseline_score)
+    if current_score is None or baseline is None:
+        return None
+    return round(current_score - baseline, 4)
 
 
 def _action_types(*action_lists: Any) -> list[str]:
@@ -896,6 +942,13 @@ def _int(value: Any) -> int:
         return max(0, int(value))
     except (TypeError, ValueError):
         return 0
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _list(value: Any) -> list[Any]:

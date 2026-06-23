@@ -258,12 +258,18 @@ def test_visual_self_validation_status_reports_runtime_policy_without_leaking_de
             "applied": None,
             "expected_action_types": [],
             "missing_action_types": [],
+            "quality_gate_min_score": None,
+            "quality_delta_vs_recent_trend": None,
+            "quality_regressed": None,
         },
         "live_effect": {
             "active": None,
             "applied": None,
             "expected_action_types": [],
             "missing_action_types": [],
+            "quality_gate_min_score": None,
+            "quality_delta_vs_recent_trend": None,
+            "quality_regressed": None,
         },
     }
     assert "prefer_image_first_video" in status["self_improvement"]["action_types"]
@@ -285,6 +291,9 @@ def test_visual_self_validation_status_reports_runtime_policy_effect(tmp_path):
     payload["summary"]["live_runtime_policy_missing_action_types"] = [
         "increase_candidate_budget"
     ]
+    payload["summary"]["live_runtime_policy_quality_gate_min_score"] = 0.72
+    payload["summary"]["live_runtime_policy_quality_delta_vs_recent_trend"] = -0.1
+    payload["summary"]["live_runtime_policy_quality_regressed"] = True
     latest_path = _write_latest(tmp_path, payload)
 
     status = build_visual_self_validation_status(latest_path=latest_path)
@@ -297,8 +306,12 @@ def test_visual_self_validation_status_reports_runtime_policy_effect(tmp_path):
             "prefer_image_first_video",
         ],
         "missing_action_types": ["increase_candidate_budget"],
+        "quality_gate_min_score": 0.72,
+        "quality_delta_vs_recent_trend": -0.1,
+        "quality_regressed": True,
     }
     assert "verify_runtime_policy_application" in status["next_steps"]
+    assert "inspect_runtime_policy_quality_regression" in status["next_steps"]
 
 
 def test_visual_self_validation_status_flags_internal_source_image_delivery(tmp_path):
