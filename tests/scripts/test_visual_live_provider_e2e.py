@@ -2093,6 +2093,7 @@ def test_visual_live_provider_e2e_quality_gate_reports_selected_quality_issues(m
         require_video=False,
     )
 
+    assert evidence["quality_gate"]["success"] is False
     assert evidence["quality_gate"]["quality_issue_artifacts"] == [artifact_id]
     assert evidence["quality_gate"]["quality_issues_by_artifact"] == {
         artifact_id: ["subject_not_attractive", "stockings_bad"],

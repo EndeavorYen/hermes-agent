@@ -1976,7 +1976,7 @@ def _quality_gate(
         for failure in failures
     ]
     return {
-        "success": bool(latest_scores) and not low_quality_artifacts,
+        "success": bool(latest_scores) and not low_quality_artifacts and not quality_issue_artifacts,
         "threshold": threshold,
         "score_count": len(latest_scores),
         "min_score": round(min_score, 4) if min_score is not None else None,
@@ -2345,6 +2345,7 @@ def _fixture_provider_context(
 
     def fixture_probe_media_reference(ref):
         is_video = str(ref).lower().endswith((".mp4", ".mov", ".webm"))
+        duration_seconds = 8.0 if Path(str(ref)) == composed_video_path else 4.0
         return SimpleNamespace(
             sha256=f"fixture:{ref}",
             is_stable=True,
@@ -2354,7 +2355,7 @@ def _fixture_provider_context(
             bytes=10,
             width=768,
             height=768,
-            duration_seconds=4.0 if is_video else None,
+            duration_seconds=duration_seconds if is_video else None,
         )
 
     visual_package_tool.generate_image = fixture_image
