@@ -21,6 +21,7 @@ from scripts.visual_e2e_automation_report import build_visual_e2e_automation_rep
 
 
 DEFAULT_MIN_LIVE_INTERVAL_HOURS = 6
+DEFAULT_OPERATOR_SETUP_RECHECK_HOURS = 24
 DEFAULT_RUNTIME_POLICY_TTL_HOURS = 24
 _RUNTIME_POLICY_ACTION_TYPES = {
     "increase_candidate_budget",
@@ -82,6 +83,7 @@ def build_visual_scheduled_self_validation_report(
     live_mode: str = "off",
     live_enabled: bool | None = None,
     min_live_interval_hours: int = DEFAULT_MIN_LIVE_INTERVAL_HOURS,
+    operator_setup_recheck_hours: float | int = DEFAULT_OPERATOR_SETUP_RECHECK_HOURS,
     case_timeout_seconds: float | int | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -94,6 +96,7 @@ def build_visual_scheduled_self_validation_report(
         live_mode=live_mode,
         live_enabled=_live_enabled() if live_enabled is None else live_enabled,
         min_live_interval_hours=min_live_interval_hours,
+        operator_setup_recheck_hours=operator_setup_recheck_hours,
         state=state,
         now=now,
         live_quality_trends=pre_live_quality_trends,
@@ -151,6 +154,7 @@ def _live_policy(
     live_mode: str,
     live_enabled: bool,
     min_live_interval_hours: int,
+    operator_setup_recheck_hours: float | int,
     state: dict[str, Any],
     now: datetime,
     live_quality_trends: dict[str, Any] | None = None,
@@ -164,15 +168,27 @@ def _live_policy(
         return {"mode": mode, "decision": "run", "live_enabled": True}
     if not live_enabled:
         return {"mode": mode, "decision": "skip_not_enabled", "live_enabled": False}
-    unresolved_setup = _unresolved_operator_setup(state)
-    if unresolved_setup:
-        reason = str(unresolved_setup.pop("reason", "operator_setup_unresolved"))
+    operator_setup_gate = _operator_setup_live_gate(
+        state,
+        now=now,
+        operator_setup_recheck_hours=operator_setup_recheck_hours,
+    )
+    if operator_setup_gate:
+        reason = str(operator_setup_gate.pop("reason", "operator_setup_unresolved"))
+        if reason == "operator_setup_recheck_elapsed":
+            return {
+                "mode": mode,
+                "decision": "run",
+                "live_enabled": True,
+                "reason": reason,
+                **operator_setup_gate,
+            }
         return {
             "mode": mode,
             "decision": "skip_operator_setup",
             "live_enabled": True,
             "reason": reason,
-            **unresolved_setup,
+            **operator_setup_gate,
         }
 
     last_live_run_at = _parse_datetime(state.get("last_live_run_at"))
@@ -788,7 +804,12 @@ def _carried_live_quality_burn(state: dict[str, Any]) -> dict[str, Any]:
     return carried
 
 
-def _unresolved_operator_setup(state: dict[str, Any]) -> dict[str, Any]:
+def _operator_setup_live_gate(
+    state: dict[str, Any],
+    *,
+    now: datetime,
+    operator_setup_recheck_hours: float | int,
+) -> dict[str, Any]:
     live_quality_burn = state.get("last_live_quality_burn")
     if not isinstance(live_quality_burn, dict):
         return {}
@@ -823,13 +844,42 @@ def _unresolved_operator_setup(state: dict[str, Any]) -> dict[str, Any]:
             )
     if not operator_setup_actions:
         return {}
+    recheck_hours = max(0.0, float(operator_setup_recheck_hours))
+    if not missing_env_vars:
+        generated_at = _parse_datetime(live_quality_burn.get("generated_at"))
+        if generated_at is None:
+            return {
+                "reason": "operator_setup_recheck_elapsed",
+                "operator_setup_actions": operator_setup_actions,
+                "action_types": action_types,
+                "operator_setup_recheck_hours": recheck_hours,
+                "operator_setup_recheck_basis_missing": True,
+            }
+        elapsed_hours = (now - generated_at).total_seconds() / 3600
+        recheck_at = generated_at + timedelta(hours=recheck_hours)
+        if elapsed_hours >= recheck_hours:
+            return {
+                "reason": "operator_setup_recheck_elapsed",
+                "operator_setup_actions": operator_setup_actions,
+                "action_types": action_types,
+                "operator_setup_recheck_hours": recheck_hours,
+                "operator_setup_recheck_at": recheck_at.isoformat(),
+                "operator_setup_elapsed_hours": round(elapsed_hours, 4),
+            }
+        return {
+            "reason": "operator_setup_unresolved",
+            "operator_setup_actions": operator_setup_actions,
+            "action_types": action_types,
+            "operator_setup_recheck_hours": recheck_hours,
+            "operator_setup_recheck_at": recheck_at.isoformat(),
+            "operator_setup_recheck_remaining_hours": round(recheck_hours - elapsed_hours, 4),
+        }
     result: dict[str, Any] = {
-        "reason": "operator_setup_env_unresolved" if missing_env_vars else "operator_setup_unresolved",
+        "reason": "operator_setup_env_unresolved",
         "operator_setup_actions": operator_setup_actions,
         "action_types": action_types,
     }
-    if missing_env_vars:
-        result["missing_env_vars"] = missing_env_vars
+    result["missing_env_vars"] = missing_env_vars
     return result
 
 
@@ -1117,6 +1167,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--work-dir", type=Path, default=None)
     parser.add_argument("--live-mode", choices=["off", "auto", "on"], default="off")
     parser.add_argument("--min-live-interval-hours", type=int, default=DEFAULT_MIN_LIVE_INTERVAL_HOURS)
+    parser.add_argument(
+        "--operator-setup-recheck-hours",
+        type=float,
+        default=DEFAULT_OPERATOR_SETUP_RECHECK_HOURS,
+    )
     parser.add_argument("--case-timeout-seconds", type=float, default=None)
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--allow-failures", action="store_true")
@@ -1127,6 +1182,7 @@ def main(argv: list[str] | None = None) -> int:
         work_dir=args.work_dir,
         live_mode=args.live_mode,
         min_live_interval_hours=args.min_live_interval_hours,
+        operator_setup_recheck_hours=args.operator_setup_recheck_hours,
         case_timeout_seconds=args.case_timeout_seconds,
     )
     if args.json:

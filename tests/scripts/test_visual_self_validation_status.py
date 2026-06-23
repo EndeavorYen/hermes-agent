@@ -295,6 +295,9 @@ def test_visual_self_validation_status_reports_unresolved_provider_quota_setup(t
         "reason": "operator_setup_unresolved",
         "operator_setup_actions": operator_setup_actions,
         "action_types": ["resolve_provider_quota_or_switch_provider"],
+        "operator_setup_recheck_hours": 24,
+        "operator_setup_recheck_at": "2026-06-23T00:00:00+00:00",
+        "operator_setup_recheck_remaining_hours": 12.0,
     }
     payload["summary"]["feedback_action_types"] = ["resolve_provider_quota_or_switch_provider"]
     payload["runtime_policy"] = {
@@ -316,6 +319,9 @@ def test_visual_self_validation_status_reports_unresolved_provider_quota_setup(t
     assert "missing_env_vars" not in status["live_policy"]
     assert status["live_policy"]["operator_setup_actions"] == operator_setup_actions
     assert status["live_policy"]["action_types"] == ["resolve_provider_quota_or_switch_provider"]
+    assert status["live_policy"]["operator_setup_recheck_hours"] == 24
+    assert status["live_policy"]["operator_setup_recheck_at"] == "2026-06-23T00:00:00+00:00"
+    assert status["live_policy"]["operator_setup_recheck_remaining_hours"] == 12.0
     assert "configure_operator_setup_prerequisites" in status["next_steps"]
     assert "enable_or_force_live_self_validation" not in status["next_steps"]
 

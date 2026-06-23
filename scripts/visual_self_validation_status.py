@@ -276,6 +276,11 @@ def _sanitise_live_policy(value: Any) -> dict[str, Any]:
         "missing_env_vars",
         "operator_setup_actions",
         "action_types",
+        "operator_setup_recheck_hours",
+        "operator_setup_recheck_at",
+        "operator_setup_recheck_remaining_hours",
+        "operator_setup_elapsed_hours",
+        "operator_setup_recheck_basis_missing",
     }
     sanitized = {key: source[key] for key in allowed if key in source}
     if source.get("reason") == "live_quality_trend_degraded":
@@ -284,6 +289,8 @@ def _sanitise_live_policy(value: Any) -> dict[str, Any]:
         sanitized["reason"] = "operator_setup_env_unresolved"
     elif source.get("reason") == "operator_setup_unresolved":
         sanitized["reason"] = "operator_setup_unresolved"
+    elif source.get("reason") == "operator_setup_recheck_elapsed":
+        sanitized["reason"] = "operator_setup_recheck_elapsed"
     elif source.get("reason") == "no_previous_live_run":
         sanitized["reason"] = "no_previous_live_run"
     elif source.get("reason") == "min_live_interval_elapsed":
