@@ -218,8 +218,18 @@ def build_visual_live_provider_e2e_suite_report(
     )
     case_reports = []
     failures: list[str] = []
+    terminal_provider_block: dict[str, Any] | None = None
     for case in case_specs:
         case_id = str(case.get("case_id") or f"case_{len(case_reports) + 1}")
+        if terminal_provider_block is not None:
+            case_report = _skipped_provider_account_blocked_case_report(
+                case,
+                case_id=case_id,
+                terminal_provider_block=terminal_provider_block,
+            )
+            case_reports.append(case_report)
+            failures.extend(f"{case_id}:{failure}" for failure in case_report["failures"])
+            continue
         timeout_seconds = _case_timeout_seconds(
             case.get("case_timeout_seconds", case_timeout_seconds)
         )
@@ -251,6 +261,11 @@ def build_visual_live_provider_e2e_suite_report(
         case_report["quality_repair_summary"] = evidence.get("quality_repair_summary", {})
         case_reports.append(case_report)
         failures.extend(f"{case_id}:{failure}" for failure in case_report["failures"])
+        if mode == "live" and _provider_account_blocked_case(case_report):
+            terminal_provider_block = {
+                "case_id": case_id,
+                "recovery_summary": case_report["recovery_summary"],
+            }
     quality_focus_summary = _suite_quality_focus_summary(case_reports)
     failures.extend(_suite_quality_focus_failures(quality_focus_summary))
     return {
@@ -309,6 +324,52 @@ def _case_quality_contract(case: dict[str, Any]) -> dict[str, Any]:
     if contract.get("requires_image_first_video") is True:
         result["requires_image_first_video"] = True
     return result
+
+
+def _provider_account_blocked_case(case_report: dict[str, Any]) -> bool:
+    summary = (
+        case_report.get("recovery_summary")
+        if isinstance(case_report.get("recovery_summary"), dict)
+        else {}
+    )
+    classes = summary.get("provider_failure_classes")
+    if not isinstance(classes, dict):
+        return False
+    try:
+        return int(classes.get("quota_exceeded") or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _skipped_provider_account_blocked_case_report(
+    case: dict[str, Any],
+    *,
+    case_id: str,
+    terminal_provider_block: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "case_id": case_id,
+        "success": False,
+        "skipped": True,
+        "failures": ["skipped_provider_account_blocked"],
+        "payload": None,
+        "evidence": {
+            "skip_reason": "provider_account_blocked",
+            "blocked_by_case_id": terminal_provider_block.get("case_id"),
+        },
+        "quality_contract": _case_quality_contract(case),
+        "recovery_summary": {
+            "provider_failure_count": 0,
+            "provider_failure_classes": {},
+            "provider_error_codes": {},
+            "retry_attempt_count": 0,
+            "negotiation_attempted": False,
+            "negotiation_success": False,
+            "content_moderation_recovered": False,
+            "recovered_failure_classes": [],
+        },
+        "quality_repair_summary": {},
+    }
 
 
 def _string_list(value: Any) -> list[str]:
@@ -395,6 +456,8 @@ def _suite_quality_focus_failures(summary: dict[str, Any]) -> list[str]:
 
 
 def _case_quality_focus_outcomes(case: dict[str, Any]) -> list[dict[str, Any]]:
+    if case.get("skipped") is True:
+        return []
     contract = case.get("quality_contract") if isinstance(case.get("quality_contract"), dict) else {}
     focuses = _string_list(contract.get("quality_focus"))
     if not focuses:

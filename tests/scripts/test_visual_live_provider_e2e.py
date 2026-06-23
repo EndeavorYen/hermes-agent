@@ -788,6 +788,65 @@ def test_visual_live_provider_e2e_suite_aggregates_recovery_summary(monkeypatch,
     }
 
 
+def test_visual_live_provider_e2e_live_suite_stops_after_provider_account_block(monkeypatch, tmp_path):
+    from scripts import visual_live_provider_e2e
+
+    calls = []
+
+    def fake_report(**kwargs):
+        calls.append(str(kwargs.get("prompt") or ""))
+        return {
+            "success": False,
+            "failures": ["provider_generation_failed"],
+            "payload": {"success": False, "error_type": "api_error"},
+            "evidence": {
+                "recovery_summary": {
+                    "provider_failure_count": 1,
+                    "provider_failure_classes": {"quota_exceeded": 1},
+                    "provider_error_codes": {
+                        "personal-team-blocked:spending-limit": 1,
+                    },
+                    "retry_attempt_count": 0,
+                    "negotiation_attempted": False,
+                    "negotiation_success": False,
+                    "content_moderation_recovered": False,
+                    "recovered_failure_classes": [],
+                }
+            },
+        }
+
+    monkeypatch.setattr(
+        visual_live_provider_e2e,
+        "build_visual_live_provider_e2e_report",
+        fake_report,
+    )
+
+    suite = visual_live_provider_e2e.build_visual_live_provider_e2e_suite_report(
+        mode="live",
+        work_dir=tmp_path,
+        cases=[
+            {"case_id": "blocked_case", "prompt": "first live prompt"},
+            {"case_id": "expensive_followup", "prompt": "should not run"},
+        ],
+    )
+
+    assert calls == ["first live prompt"]
+    assert suite["success"] is False
+    assert suite["case_count"] == 2
+    assert suite["failures"] == [
+        "blocked_case:provider_generation_failed",
+        "expensive_followup:skipped_provider_account_blocked",
+    ]
+    assert suite["cases"][1]["success"] is False
+    assert suite["cases"][1]["skipped"] is True
+    assert suite["cases"][1]["failures"] == ["skipped_provider_account_blocked"]
+    assert suite["cases"][1]["evidence"]["skip_reason"] == "provider_account_blocked"
+    assert suite["recovery_summary"]["provider_failure_classes"] == {"quota_exceeded": 1}
+    assert suite["recovery_summary"]["provider_error_codes"] == {
+        "personal-team-blocked:spending-limit": 1,
+    }
+
+
 def test_visual_live_provider_e2e_fixture_suite_exercises_video_quality_repair(tmp_path):
     from scripts.visual_live_provider_e2e import build_visual_live_provider_e2e_suite_report
 
