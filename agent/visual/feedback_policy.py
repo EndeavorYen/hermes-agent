@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from agent.visual.operator_setup import operator_setup_actions_from_action
+
 
 MAX_CANDIDATE_BUDGET = 4
 
@@ -37,6 +39,7 @@ def resolve_visual_feedback_policy(
         "provider_error_codes": {},
     }
     video_fallback_diagnostics: list[dict[str, Any]] = []
+    operator_setup_actions: list[dict[str, Any]] = []
     strategy_preference: dict[str, Any] | None = None
     applied_action_types: list[str] = []
     applied_action_sources: list[str] = []
@@ -128,6 +131,7 @@ def resolve_visual_feedback_policy(
             provider_retry_budget = 0
             provider_failure_context = _provider_failure_context(action)
             video_fallback_diagnostics = _dict_list(action.get("video_fallback_diagnostics"))
+            operator_setup_actions = operator_setup_actions_from_action(action)
             _append_once(applied_action_types, action_type)
             _append_once(applied_action_sources, action_source)
         elif action_type == "prefer_strategy":
@@ -158,6 +162,8 @@ def resolve_visual_feedback_policy(
         "provider_retry_budget": provider_retry_budget,
         "provider_failure_context": provider_failure_context,
         "video_fallback_diagnostics": video_fallback_diagnostics,
+        "requires_operator_setup": bool(operator_setup_actions),
+        "operator_setup_actions": operator_setup_actions,
         "strategy_preference": strategy_preference,
         "repair_dimensions": repair_dimensions,
         "quality_focus_operators": quality_focus_operators,

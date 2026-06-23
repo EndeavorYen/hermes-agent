@@ -262,6 +262,17 @@ def _summary(automation: dict[str, Any], live_quality_trends: dict[str, Any] | N
         )
         if "requires_human_feedback" in slack_conversation_self_review
         else None,
+        "slack_conversation_requires_operator_setup": slack_conversation_self_review.get(
+            "requires_operator_setup"
+        )
+        if "requires_operator_setup" in slack_conversation_self_review
+        else None,
+        "slack_conversation_operator_setup_actions": _dict_list(
+            slack_conversation_self_review.get("operator_setup_actions")
+        ),
+        "slack_conversation_operator_setup_action_count": _int(
+            slack_conversation_self_review.get("operator_setup_action_count")
+        ),
         "slack_conversation_reduces_human_intervention": slack_conversation_self_review.get(
             "reduces_human_intervention"
         )
@@ -712,6 +723,12 @@ def _int(value: Any) -> int:
 
 def _list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
+
+
+def _dict_list(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
 
 
 def _image_first_video_source_covered(summary: dict[str, Any]) -> bool | None:

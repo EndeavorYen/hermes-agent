@@ -316,6 +316,38 @@ def test_visual_self_validation_status_warns_on_slack_conversation_self_review_r
     assert "rerank_before_slack" in status["self_improvement"]["action_types"]
 
 
+def test_visual_self_validation_status_warns_on_slack_conversation_operator_setup(tmp_path):
+    from scripts.visual_self_validation_status import build_visual_self_validation_status
+
+    report = _scheduled_report()
+    operator_setup_actions = [
+        {
+            "provider": "fal",
+            "missing_env_vars": ["FAL_KEY"],
+            "post_setup": "",
+        }
+    ]
+    report["summary"]["slack_conversation_self_review_decision"] = "needs_setup"
+    report["summary"]["slack_conversation_self_review_success"] = False
+    report["summary"]["slack_conversation_requires_human_feedback"] = False
+    report["summary"]["slack_conversation_requires_operator_setup"] = True
+    report["summary"]["slack_conversation_operator_setup_actions"] = operator_setup_actions
+    report["summary"]["slack_conversation_operator_setup_action_count"] = 1
+    report["summary"]["slack_conversation_blocking_reasons"] = ["operator_setup_required"]
+    latest_path = _write_latest(tmp_path, report)
+
+    status = build_visual_self_validation_status(latest_path=latest_path)
+
+    assert status["success"] is False
+    assert status["health_status"] == "warn"
+    assert status["conversation"]["self_review_decision"] == "needs_setup"
+    assert status["conversation"]["requires_human_feedback"] is False
+    assert status["conversation"]["requires_operator_setup"] is True
+    assert status["conversation"]["operator_setup_actions"] == operator_setup_actions
+    assert "configure_operator_setup_prerequisites" in status["next_steps"]
+    assert "apply_slack_conversation_self_review_actions" not in status["next_steps"]
+
+
 def test_visual_self_validation_status_warns_on_live_quality_trend_degradation(tmp_path):
     from scripts.visual_self_validation_status import build_visual_self_validation_status
 

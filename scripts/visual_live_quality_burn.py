@@ -14,6 +14,8 @@ if str(_REPO_ROOT) not in sys.path:
 
 from hermes_constants import get_hermes_home
 from agent.visual.action_dedupe import dedupe_actions as _dedupe_actions
+from agent.visual.operator_setup import operator_setup_actions_from_actions as _operator_setup_actions_from_actions
+from agent.visual.operator_setup import operator_setup_actions_from_video_fallback_diagnostics as _operator_setup_actions_from_video_fallback_diagnostics
 from scripts.visual_live_provider_e2e import DEFAULT_E2E_CASES
 from scripts.visual_live_provider_e2e import build_visual_live_provider_e2e_suite_report
 
@@ -49,6 +51,7 @@ def build_visual_live_quality_burn_report(
     )
     summary = _summary(suite)
     next_actions = _next_actions(suite, summary)
+    operator_setup_actions = _operator_setup_actions_from_actions(next_actions)
     report = {
         "success": suite.get("success") is True,
         "run_id": _run_id(now),
@@ -64,8 +67,10 @@ def build_visual_live_quality_burn_report(
         "suite": suite,
         "failures": list(suite.get("failures") or []),
         "self_review": {
-            "reduces_human_intervention": bool(next_actions),
+            "reduces_human_intervention": bool(next_actions) and not operator_setup_actions,
             "human_feedback_required": not bool(next_actions),
+            "requires_operator_setup": bool(operator_setup_actions),
+            "operator_setup_actions": operator_setup_actions,
             "privacy_safe": True,
             "provider_and_aesthetic_tracks_separated": True,
         },
@@ -581,6 +586,9 @@ def _provider_failure_actions(recovery: dict[str, Any]) -> list[dict[str, Any]]:
     no_video_fallback_count = _int(recovery.get("no_video_fallback_available_count"))
     if no_video_fallback_count > 0:
         video_fallback_diagnostics = _dict_list(recovery.get("video_fallback_diagnostics"))
+        operator_setup_actions = _operator_setup_actions_from_video_fallback_diagnostics(
+            video_fallback_diagnostics
+        )
         actions.append(
             _action(
                 "configure_video_fallback_provider",
@@ -593,6 +601,14 @@ def _provider_failure_actions(recovery: dict[str, Any]) -> list[dict[str, Any]]:
                 **(
                     {"video_fallback_diagnostics": video_fallback_diagnostics}
                     if video_fallback_diagnostics
+                    else {}
+                ),
+                **(
+                    {
+                        "requires_operator_setup": True,
+                        "operator_setup_actions": operator_setup_actions,
+                    }
+                    if operator_setup_actions
                     else {}
                 ),
             )

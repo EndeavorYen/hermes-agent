@@ -186,6 +186,13 @@ def build_visual_self_validation_status(
             "self_review_decision": summary.get("slack_conversation_self_review_decision"),
             "self_review_success": summary.get("slack_conversation_self_review_success"),
             "requires_human_feedback": summary.get("slack_conversation_requires_human_feedback"),
+            "requires_operator_setup": summary.get("slack_conversation_requires_operator_setup"),
+            "operator_setup_actions": _dicts(
+                summary.get("slack_conversation_operator_setup_actions")
+            ),
+            "operator_setup_action_count": _optional_int(
+                summary.get("slack_conversation_operator_setup_action_count")
+            ),
             "reduces_human_intervention": summary.get(
                 "slack_conversation_reduces_human_intervention"
             ),
@@ -337,6 +344,8 @@ def _next_steps(
     if summary.get("slack_conversation_self_review_success") is False:
         if summary.get("slack_conversation_requires_human_feedback") is True:
             steps.append("review_slack_conversation_self_review_blocker")
+        elif summary.get("slack_conversation_requires_operator_setup") is True:
+            steps.append("configure_operator_setup_prerequisites")
         else:
             steps.append("apply_slack_conversation_self_review_actions")
     if (

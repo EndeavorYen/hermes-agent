@@ -19,6 +19,8 @@ if str(_REPO_ROOT) not in sys.path:
 from hermes_constants import get_hermes_home
 from agent.visual.action_dedupe import dedupe_actions as _dedupe_actions
 from agent.visual.agent_mode.planner import plan_visual_agent_request
+from agent.visual.operator_setup import operator_setup_actions_from_actions as _operator_setup_actions_from_actions
+from agent.visual.operator_setup import operator_setup_actions_from_video_fallback_diagnostics as _operator_setup_actions_from_video_fallback_diagnostics
 from gateway.config import PlatformConfig
 from gateway.platforms.slack import SlackAdapter
 from scripts.visual_conversation_route_report import build_visual_conversation_route_report
@@ -352,10 +354,14 @@ def _build_slack_conversation_self_review(
         and not unexpected_delivery
         and (deliverable_count == 0 or sent_count >= deliverable_count)
     )
+    operator_setup_actions = _operator_setup_actions_from_actions(next_actions)
+    requires_operator_setup = bool(operator_setup_actions)
     auto_next_actions = [
         action
         for action in next_actions
-        if isinstance(action, dict) and action.get("requires_human_feedback") is not True
+        if isinstance(action, dict)
+        and action.get("requires_human_feedback") is not True
+        and action.get("requires_operator_setup") is not True
     ]
     blocking_reasons = sorted(
         set(
@@ -372,6 +378,8 @@ def _build_slack_conversation_self_review(
         blocking_reasons.append("delivery_not_clean")
     if image_first_video_source_covered is False:
         blocking_reasons.append("image_first_video_source_not_ranked_selected_image")
+    if requires_operator_setup:
+        blocking_reasons.append("operator_setup_required")
 
     final_success = slack_delivery.get("success") is True and not blocking_reasons
     initial_failed = bool(initial_slack_delivery) and initial_slack_delivery.get("success") is False
@@ -379,6 +387,8 @@ def _build_slack_conversation_self_review(
         decision = "accept_after_repair"
     elif final_success:
         decision = "accept"
+    elif requires_operator_setup:
+        decision = "needs_setup"
     elif auto_next_actions:
         decision = "needs_repair"
     else:
@@ -393,7 +403,10 @@ def _build_slack_conversation_self_review(
         "success": decision in {"accept", "accept_after_repair"},
         "decision": decision,
         "requires_human_feedback": requires_human_feedback,
-        "reduces_human_intervention": not requires_human_feedback,
+        "requires_operator_setup": requires_operator_setup,
+        "operator_setup_actions": operator_setup_actions,
+        "operator_setup_action_count": len(operator_setup_actions),
+        "reduces_human_intervention": not requires_human_feedback and not requires_operator_setup,
         "auto_next_action_count": len(auto_next_actions),
         "action_types": _action_types(auto_next_actions),
         "quality_gate_success": quality_gate_success,
@@ -747,6 +760,9 @@ def _next_actions_from_slack_delivery(slack_delivery: dict[str, Any]) -> list[di
         no_video_fallback_count = _int(recovery.get("no_video_fallback_available_count"))
         if no_video_fallback_count > 0:
             video_fallback_diagnostics = _dict_list(recovery.get("video_fallback_diagnostics"))
+            operator_setup_actions = _operator_setup_actions_from_video_fallback_diagnostics(
+                video_fallback_diagnostics
+            )
             actions.append(
                 _action(
                     "configure_video_fallback_provider",
@@ -759,6 +775,14 @@ def _next_actions_from_slack_delivery(slack_delivery: dict[str, Any]) -> list[di
                     **(
                         {"video_fallback_diagnostics": video_fallback_diagnostics}
                         if video_fallback_diagnostics
+                        else {}
+                    ),
+                    **(
+                        {
+                            "requires_operator_setup": True,
+                            "operator_setup_actions": operator_setup_actions,
+                        }
+                        if operator_setup_actions
                         else {}
                     ),
                 )

@@ -946,38 +946,62 @@ def test_visual_slack_conversation_e2e_live_records_no_video_fallback_summary(mo
             ],
         }
     ]
+    fallback_action = next(
+        action
+        for action in report["next_actions"]
+        if action["type"] == "configure_video_fallback_provider"
+    )
+    assert fallback_action["track"] == "provider"
+    assert fallback_action["reason"] == "slack_conversation_no_video_fallback_available"
+    assert fallback_action["confidence"] == 0.9
+    assert fallback_action["evidence_count"] == 1
+    assert fallback_action["requires_human_feedback"] is False
+    assert fallback_action["activation_status"] == "next_run"
+    assert fallback_action["source"] == "slack_conversation_e2e"
+    assert fallback_action["provider_failure_classes"] == {"quota_exceeded": 2}
+    assert fallback_action["provider_error_codes"] == {
+        "personal-team-blocked:spending-limit": 2
+    }
+    assert fallback_action["video_fallback_diagnostics"] == [
+        {
+            "failed_provider": "xai",
+            "failed_provider_family": "xai",
+            "registered_provider_names": ["fal", "xai"],
+            "available_provider_names": [],
+            "unavailable_provider_names": ["fal"],
+            "fallback_provider_names": [],
+            "setup_actions": [
+                {
+                    "provider": "fal",
+                    "env_vars": ["FAL_KEY"],
+                    "configured_env_vars": [],
+                    "missing_env_vars": ["FAL_KEY"],
+                    "post_setup": "",
+                }
+            ],
+        }
+    ]
     assert {
-        "type": "configure_video_fallback_provider",
-        "track": "provider",
-        "reason": "slack_conversation_no_video_fallback_available",
-        "confidence": 0.9,
-        "evidence_count": 1,
-        "requires_human_feedback": False,
-        "activation_status": "next_run",
-        "source": "slack_conversation_e2e",
-        "provider_failure_classes": {"quota_exceeded": 2},
-        "provider_error_codes": {"personal-team-blocked:spending-limit": 2},
-        "video_fallback_diagnostics": [
-            {
-                "failed_provider": "xai",
-                "failed_provider_family": "xai",
-                "registered_provider_names": ["fal", "xai"],
-                "available_provider_names": [],
-                "unavailable_provider_names": ["fal"],
-                "fallback_provider_names": [],
-                "setup_actions": [
-                    {
-                        "provider": "fal",
-                        "env_vars": ["FAL_KEY"],
-                        "configured_env_vars": [],
-                        "missing_env_vars": ["FAL_KEY"],
-                        "post_setup": "",
-                    }
-                ],
-            }
-        ],
-    } in report["next_actions"]
+        "provider": "fal",
+        "missing_env_vars": ["FAL_KEY"],
+        "post_setup": "",
+    } in fallback_action["operator_setup_actions"]
+    assert fallback_action["requires_operator_setup"] is True
+    assert report["self_review"]["decision"] == "needs_setup"
+    assert report["self_review"]["requires_human_feedback"] is False
+    assert report["self_review"]["requires_operator_setup"] is True
+    assert report["self_review"]["reduces_human_intervention"] is False
+    assert report["self_review"]["operator_setup_actions"] == [
+        {
+            "provider": "fal",
+            "missing_env_vars": ["FAL_KEY"],
+            "post_setup": "",
+        }
+    ]
+    assert "operator_setup_required" in report["self_review"]["blocking_reasons"]
     assert quality_run["next_actions"] == report["next_actions"]
+    assert quality_run["self_review"]["decision"] == "needs_setup"
+    assert quality_run["self_review"]["requires_operator_setup"] is True
 
 
 def test_visual_slack_conversation_e2e_live_records_inline_vision_failure_summary(monkeypatch, tmp_path):

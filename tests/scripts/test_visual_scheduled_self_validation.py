@@ -373,6 +373,55 @@ def test_scheduled_self_validation_tracks_slack_conversation_self_review_actions
     assert "rerank_before_slack" in report["summary"]["feedback_action_types"]
 
 
+def test_scheduled_self_validation_tracks_slack_conversation_operator_setup(monkeypatch, tmp_path):
+    from scripts import visual_scheduled_self_validation
+
+    operator_setup_actions = [
+        {
+            "provider": "fal",
+            "missing_env_vars": ["FAL_KEY"],
+            "post_setup": "",
+        }
+    ]
+
+    def fake_automation(*, work_dir, include_live, include_live_slack_upload=False):
+        report = _automation_report(
+            include_live=include_live,
+            include_live_slack_upload=include_live_slack_upload,
+        )
+        report["slack_conversation"]["self_review"] = {
+            "success": False,
+            "decision": "needs_setup",
+            "requires_human_feedback": False,
+            "requires_operator_setup": True,
+            "operator_setup_actions": operator_setup_actions,
+            "operator_setup_action_count": 1,
+            "reduces_human_intervention": False,
+            "auto_next_action_count": 0,
+            "action_types": [],
+            "blocking_reasons": ["operator_setup_required"],
+        }
+        return report
+
+    monkeypatch.setattr(
+        visual_scheduled_self_validation,
+        "build_visual_e2e_automation_report",
+        fake_automation,
+    )
+
+    report = visual_scheduled_self_validation.build_visual_scheduled_self_validation_report(
+        output_dir=tmp_path,
+        now=datetime(2026, 6, 22, 4, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["summary"]["slack_conversation_self_review_decision"] == "needs_setup"
+    assert report["summary"]["slack_conversation_requires_human_feedback"] is False
+    assert report["summary"]["slack_conversation_requires_operator_setup"] is True
+    assert report["summary"]["slack_conversation_operator_setup_actions"] == operator_setup_actions
+    assert report["summary"]["slack_conversation_operator_setup_action_count"] == 1
+    assert report["summary"]["slack_conversation_reduces_human_intervention"] is False
+
+
 def test_scheduled_self_validation_runs_live_when_due(monkeypatch, tmp_path):
     from scripts import visual_scheduled_self_validation
 

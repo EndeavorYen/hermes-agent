@@ -91,6 +91,11 @@ then prove the real runtime behavior.
   enough evidence to classify provider failures, quality failures, delivery
   failures, and learning-policy failures. The next run should be able to act on
   that evidence without requiring the user to manually trigger every test.
+- **Separate operator setup from user feedback.** Missing credentials, disabled
+  managed tools, exhausted provider accounts, and unavailable fallback providers
+  are setup-required states. Surface the concrete missing prerequisite instead
+  of hiding it inside aesthetic feedback, retryable repair, or generic
+  self-improvement loops.
 - **Hide orchestration complexity from the user.** Natural requests like
   "make an image and video" should route to the right visual agent mode without
   requiring advanced flags. Budgets and autonomy levels are operator controls,

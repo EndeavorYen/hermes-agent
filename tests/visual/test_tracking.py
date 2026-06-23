@@ -181,7 +181,11 @@ def test_video_tool_dispatch_records_visual_attempt(tmp_path, monkeypatch):
     video = tmp_path / "generated.mp4"
     video.write_bytes(b"fake mp4 bytes")
     monkeypatch.setattr(video_tool, "_read_configured_video_provider", lambda: "xai")
-    monkeypatch.setattr(video_tool, "_resolve_active_provider", lambda: FakeVideoProvider())
+    monkeypatch.setattr(
+        video_tool,
+        "_resolve_active_provider",
+        lambda **_kwargs: FakeVideoProvider(),
+    )
 
     raw = video_tool._handle_video_generate({"prompt": "redacted prompt"})
     payload = json.loads(raw)

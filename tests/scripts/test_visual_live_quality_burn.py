@@ -766,37 +766,53 @@ def test_visual_live_quality_burn_routes_missing_video_fallback_to_provider_acti
         output_dir=tmp_path,
     )
 
-    assert {
-        "type": "configure_video_fallback_provider",
-        "track": "provider",
-        "reason": "live_quality_burn_no_video_fallback_available",
-        "confidence": 0.9,
-        "evidence_count": 1,
-        "requires_human_feedback": False,
-        "activation_status": "next_run",
-        "source": "live_quality_burn",
-        "provider_failure_classes": {"quota_exceeded": 2},
-        "provider_error_codes": {"personal-team-blocked:spending-limit": 2},
-        "video_fallback_diagnostics": [
-            {
-                "failed_provider": "xai",
-                "failed_provider_family": "xai",
-                "registered_provider_names": ["fal", "xai"],
-                "available_provider_names": [],
-                "unavailable_provider_names": ["fal"],
-                "fallback_provider_names": [],
-                "setup_actions": [
-                    {
-                        "provider": "fal",
-                        "env_vars": ["FAL_KEY"],
-                        "configured_env_vars": [],
-                        "missing_env_vars": ["FAL_KEY"],
-                        "post_setup": "",
-                    }
-                ],
-            }
-        ],
-    } in report["next_actions"]
+    action = next(
+        action
+        for action in report["next_actions"]
+        if action["type"] == "configure_video_fallback_provider"
+    )
+    assert action["track"] == "provider"
+    assert action["reason"] == "live_quality_burn_no_video_fallback_available"
+    assert action["confidence"] == 0.9
+    assert action["evidence_count"] == 1
+    assert action["requires_human_feedback"] is False
+    assert action["activation_status"] == "next_run"
+    assert action["source"] == "live_quality_burn"
+    assert action["provider_failure_classes"] == {"quota_exceeded": 2}
+    assert action["provider_error_codes"] == {
+        "personal-team-blocked:spending-limit": 2
+    }
+    assert action["video_fallback_diagnostics"] == [
+        {
+            "failed_provider": "xai",
+            "failed_provider_family": "xai",
+            "registered_provider_names": ["fal", "xai"],
+            "available_provider_names": [],
+            "unavailable_provider_names": ["fal"],
+            "fallback_provider_names": [],
+            "setup_actions": [
+                {
+                    "provider": "fal",
+                    "env_vars": ["FAL_KEY"],
+                    "configured_env_vars": [],
+                    "missing_env_vars": ["FAL_KEY"],
+                    "post_setup": "",
+                }
+            ],
+        }
+    ]
+    assert action["requires_operator_setup"] is True
+    assert action["operator_setup_actions"] == [
+        {
+            "provider": "fal",
+            "missing_env_vars": ["FAL_KEY"],
+            "post_setup": "",
+        }
+    ]
+    assert report["self_review"]["requires_operator_setup"] is True
+    assert report["self_review"]["operator_setup_actions"] == action["operator_setup_actions"]
+    assert report["self_review"]["human_feedback_required"] is False
+    assert report["self_review"]["reduces_human_intervention"] is False
 
 
 def test_visual_live_quality_burn_prefers_image_first_when_video_missing_after_image(monkeypatch, tmp_path):

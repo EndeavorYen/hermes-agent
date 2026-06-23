@@ -551,4 +551,12 @@ def test_feedback_policy_applies_missing_video_fallback_action_without_retry_bud
             ],
         }
     ]
+    assert policy["requires_operator_setup"] is True
+    assert policy["operator_setup_actions"] == [
+        {
+            "provider": "fal",
+            "missing_env_vars": ["FAL_KEY"],
+            "post_setup": "",
+        }
+    ]
     assert policy["applied_action_types"] == ["configure_video_fallback_provider"]
