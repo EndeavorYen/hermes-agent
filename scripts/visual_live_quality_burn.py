@@ -31,6 +31,7 @@ def build_visual_live_quality_burn_report(
     work_dir: str | Path | None = None,
     max_cases: int = DEFAULT_MAX_CASES,
     case_timeout_seconds: float | int | None = None,
+    include_video_repair_probe: bool = False,
     suite_report: dict[str, Any] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -48,20 +49,24 @@ def build_visual_live_quality_burn_report(
         work_dir=work_dir,
         cases=selected_cases,
         case_timeout_seconds=timeout_seconds,
+        include_video_repair_probe=include_video_repair_probe,
     )
     summary = _summary(suite)
     next_actions = _next_actions(suite, summary)
     operator_setup_actions = _operator_setup_actions_from_actions(next_actions)
+    burn_budget = {
+        "max_cases": _clamp_max_cases(max_cases),
+        "case_timeout_seconds": timeout_seconds,
+        "case_count": len(selected_cases),
+    }
+    if include_video_repair_probe:
+        burn_budget["include_video_repair_probe"] = True
     report = {
         "success": suite.get("success") is True,
         "run_id": _run_id(now),
         "generated_at": now.isoformat(),
         "mode": mode,
-        "burn_budget": {
-            "max_cases": _clamp_max_cases(max_cases),
-            "case_timeout_seconds": timeout_seconds,
-            "case_count": len(selected_cases),
-        },
+        "burn_budget": burn_budget,
         "summary": summary,
         "next_actions": next_actions,
         "suite": suite,
@@ -125,6 +130,7 @@ def _summary(suite: dict[str, Any]) -> dict[str, Any]:
     ]
     recovery = suite.get("recovery_summary") if isinstance(suite.get("recovery_summary"), dict) else {}
     repair = suite.get("quality_repair_summary") if isinstance(suite.get("quality_repair_summary"), dict) else {}
+    repair_effectiveness = _repair_effectiveness_summary(cases)
     quality_contract = (
         suite.get("quality_contract_summary")
         if isinstance(suite.get("quality_contract_summary"), dict)
@@ -173,6 +179,14 @@ def _summary(suite: dict[str, Any]) -> dict[str, Any]:
         "quality_repair_attempt_count": _int(repair.get("attempt_count")),
         "quality_repair_success_count": _int(repair.get("success_count")),
         "quality_repair_selected_count": _int(repair.get("selected_repair_count")),
+        "quality_repair_effectiveness_attempt_count": repair_effectiveness["attempt_count"],
+        "quality_repair_effectiveness_improved_count": repair_effectiveness["improved_count"],
+        "quality_repair_effectiveness_regressed_count": repair_effectiveness["regressed_count"],
+        "quality_repair_effectiveness_avg_score_delta": repair_effectiveness["avg_score_delta"],
+        "quality_repair_effectiveness_resolved_issues": repair_effectiveness["resolved_quality_issues"],
+        "quality_repair_effectiveness_remaining_issues": repair_effectiveness["remaining_quality_issues"],
+        "quality_repair_effectiveness_by_modality": repair_effectiveness["by_modality"],
+        "quality_repair_effectiveness_outcomes": repair_effectiveness["outcomes"],
         "core_quality_contract_case_count": _int(quality_contract.get("contract_case_count")),
         "core_quality_contract_case_ids": _list(quality_contract.get("contract_case_ids")),
         "core_quality_dimensions": _list(quality_contract.get("core_quality_dimensions")),
@@ -326,6 +340,93 @@ def _quality_focus_failed_case_ids(summary: dict[str, Any]) -> list[str]:
     return case_ids
 
 
+def _repair_effectiveness_summary(cases: list[Any]) -> dict[str, Any]:
+    outcomes: list[dict[str, Any]] = []
+    for case in cases:
+        if not isinstance(case, dict):
+            continue
+        evidence = case.get("evidence") if isinstance(case.get("evidence"), dict) else {}
+        effectiveness = (
+            evidence.get("quality_repair_effectiveness")
+            if isinstance(evidence.get("quality_repair_effectiveness"), dict)
+            else {}
+        )
+        raw_outcomes = effectiveness.get("outcomes")
+        if isinstance(raw_outcomes, list):
+            outcomes.extend([dict(outcome) for outcome in raw_outcomes if isinstance(outcome, dict)])
+            continue
+        if _int(effectiveness.get("attempt_count")) <= 0:
+            continue
+        outcomes.append(
+            {
+                "modality": "unknown",
+                "score_delta": _float_or_none(effectiveness.get("avg_score_delta")) or 0.0,
+                "resolved_quality_issues": _list(effectiveness.get("resolved_quality_issues")),
+                "remaining_quality_issues": _list(effectiveness.get("remaining_quality_issues")),
+                "improved": _int(effectiveness.get("improved_count")) > 0,
+                "regressed": _int(effectiveness.get("regressed_count")) > 0,
+            }
+        )
+    return _repair_effectiveness_from_outcomes(outcomes)
+
+
+def _repair_effectiveness_from_outcomes(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
+    if not outcomes:
+        return {
+            "attempt_count": 0,
+            "improved_count": 0,
+            "regressed_count": 0,
+            "avg_score_delta": 0.0,
+            "resolved_quality_issues": [],
+            "remaining_quality_issues": [],
+            "by_modality": {},
+            "outcomes": [],
+        }
+    by_modality: dict[str, list[dict[str, Any]]] = {}
+    for outcome in outcomes:
+        modality = str(outcome.get("modality") or "unknown").strip() or "unknown"
+        by_modality.setdefault(modality, []).append(outcome)
+    return {
+        "attempt_count": len(outcomes),
+        "improved_count": sum(1 for outcome in outcomes if outcome.get("improved") is True),
+        "regressed_count": sum(1 for outcome in outcomes if outcome.get("regressed") is True),
+        "avg_score_delta": _average_score_delta(outcomes),
+        "resolved_quality_issues": _unique_outcome_issues(outcomes, "resolved_quality_issues"),
+        "remaining_quality_issues": _unique_outcome_issues(outcomes, "remaining_quality_issues"),
+        "by_modality": {
+            modality: {
+                "attempt_count": len(items),
+                "improved_count": sum(1 for item in items if item.get("improved") is True),
+                "regressed_count": sum(1 for item in items if item.get("regressed") is True),
+                "avg_score_delta": _average_score_delta(items),
+                "resolved_quality_issues": _unique_outcome_issues(items, "resolved_quality_issues"),
+                "remaining_quality_issues": _unique_outcome_issues(items, "remaining_quality_issues"),
+            }
+            for modality, items in by_modality.items()
+        },
+        "outcomes": outcomes,
+    }
+
+
+def _average_score_delta(outcomes: list[dict[str, Any]]) -> float:
+    if not outcomes:
+        return 0.0
+    return round(
+        sum(_float_or_none(outcome.get("score_delta")) or 0.0 for outcome in outcomes)
+        / len(outcomes),
+        4,
+    )
+
+
+def _unique_outcome_issues(outcomes: list[dict[str, Any]], key: str) -> list[str]:
+    issues: list[str] = []
+    for outcome in outcomes:
+        for issue in _list(outcome.get(key)):
+            if issue not in issues:
+                issues.append(issue)
+    return issues
+
+
 def _next_actions(suite: dict[str, Any], summary: dict[str, Any]) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     failures = {str(failure) for failure in suite.get("failures") or []}
@@ -341,11 +442,19 @@ def _next_actions(suite: dict[str, Any], summary: dict[str, Any]) -> list[dict[s
         summary.get("promotion_quality_issue_count"),
         default=_int(summary.get("quality_issue_count")),
     )
-    if not provider_account_blocked_without_quality_evidence and (
+    has_promotion_quality_evidence = _has_promotion_quality_evidence(
+        summary,
+        promotion_quality_issue_count=promotion_quality_issue_count,
+    )
+    if (
+        has_promotion_quality_evidence
+        and not provider_account_blocked_without_quality_evidence
+        and (
         promotion_quality_issue_count > 0
         or any(
             "quality_gate_failed" in failure or "selected_quality_issue_detected" in failure
             for failure in promotion_failures
+        )
         )
     ):
         evidence_count = max(1, promotion_quality_issue_count)
@@ -451,7 +560,7 @@ def _next_actions(suite: dict[str, Any], summary: dict[str, Any]) -> list[dict[s
         )
     actions.extend(_provider_failure_actions(recovery))
     repair = suite.get("quality_repair_summary") if isinstance(suite.get("quality_repair_summary"), dict) else {}
-    actions.extend(_quality_repair_actions(repair))
+    actions.extend(_quality_repair_actions(repair, summary=summary))
     if _high_quality_pass(suite, summary) and _strategy_promotion_actions_allowed(actions, suite):
         actions.append(
             {
@@ -476,6 +585,23 @@ def _next_actions(suite: dict[str, Any], summary: dict[str, Any]) -> list[dict[s
             }
         )
     return _dedupe_actions(actions)
+
+
+def _has_promotion_quality_evidence(
+    summary: dict[str, Any],
+    *,
+    promotion_quality_issue_count: int,
+) -> bool:
+    if promotion_quality_issue_count > 0:
+        return True
+    preference_failures = (
+        summary.get("promotion_preference_dimension_failures")
+        if isinstance(summary.get("promotion_preference_dimension_failures"), list)
+        else summary.get("preference_dimension_failures")
+    )
+    if isinstance(preference_failures, list) and preference_failures:
+        return True
+    return _float_or_none(summary.get("promotion_min_quality_score")) is not None
 
 
 def _video_aspect_mismatch_count(suite: dict[str, Any]) -> int:
@@ -742,8 +868,13 @@ def _provider_account_blocked_without_quality_evidence(
     return quality_score is None
 
 
-def _quality_repair_actions(repair: dict[str, Any]) -> list[dict[str, Any]]:
+def _quality_repair_actions(repair: dict[str, Any], *, summary: dict[str, Any]) -> list[dict[str, Any]]:
     by_modality = repair.get("by_modality") if isinstance(repair.get("by_modality"), dict) else {}
+    effectiveness_by_modality = (
+        summary.get("quality_repair_effectiveness_by_modality")
+        if isinstance(summary.get("quality_repair_effectiveness_by_modality"), dict)
+        else {}
+    )
     actions: list[dict[str, Any]] = []
     for modality, modality_summary in by_modality.items():
         if not isinstance(modality, str) or not isinstance(modality_summary, dict):
@@ -755,19 +886,55 @@ def _quality_repair_actions(repair: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         success_rate = _rate(success_count, attempt_count)
         selected_repair_rate = _rate(selected_count, attempt_count)
+        effectiveness = (
+            effectiveness_by_modality.get(modality)
+            if isinstance(effectiveness_by_modality.get(modality), dict)
+            else {}
+        )
+        improved_count = _int(effectiveness.get("improved_count"))
+        regressed_count = _int(effectiveness.get("regressed_count"))
+        avg_score_delta = _float_or_none(effectiveness.get("avg_score_delta"))
+        reason = f"live_quality_burn_{modality}_repair_succeeded"
+        extra: dict[str, Any] = {}
+        if _int(effectiveness.get("attempt_count")) > 0 and improved_count > 0:
+            reason = f"live_quality_burn_{modality}_repair_improved_quality"
+            extra = {
+                "improved_count": improved_count,
+                "regressed_count": regressed_count,
+                "avg_score_delta": round(avg_score_delta or 0.0, 4),
+                "resolved_quality_issues": _list(effectiveness.get("resolved_quality_issues")),
+                "remaining_quality_issues": _list(effectiveness.get("remaining_quality_issues")),
+            }
         actions.append(
             _action(
                 "prefer_quality_repair_retry",
                 "repair",
-                f"live_quality_burn_{modality}_repair_succeeded",
+                reason,
                 confidence=min(0.9, 0.55 + success_rate * 0.35),
                 evidence_count=attempt_count,
                 source="live_quality_burn",
                 modality=modality,
                 success_rate=success_rate,
                 selected_repair_rate=selected_repair_rate,
+                **extra,
             )
         )
+        if _int(effectiveness.get("attempt_count")) > 0 and improved_count <= 0:
+            actions.append(
+                _action(
+                    "escalate_quality_repair_strategy",
+                    "repair",
+                    f"live_quality_burn_{modality}_repair_not_improving",
+                    confidence=0.78,
+                    evidence_count=_int(effectiveness.get("attempt_count")),
+                    source="live_quality_burn",
+                    modality=modality,
+                    improved_count=improved_count,
+                    regressed_count=regressed_count,
+                    avg_score_delta=round(avg_score_delta or 0.0, 4),
+                    remaining_quality_issues=_list(effectiveness.get("remaining_quality_issues")),
+                )
+            )
     return actions
 
 
@@ -916,6 +1083,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--work-dir", type=Path, default=None)
     parser.add_argument("--max-cases", type=int, default=DEFAULT_MAX_CASES)
     parser.add_argument("--case-timeout-seconds", type=float, default=None)
+    parser.add_argument("--include-video-repair-probe", action="store_true")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--allow-failures", action="store_true")
     args = parser.parse_args(argv)
@@ -926,6 +1094,7 @@ def main(argv: list[str] | None = None) -> int:
         work_dir=args.work_dir,
         max_cases=args.max_cases,
         case_timeout_seconds=args.case_timeout_seconds,
+        include_video_repair_probe=args.include_video_repair_probe,
     )
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True))

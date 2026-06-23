@@ -931,6 +931,64 @@ def test_visual_live_provider_e2e_live_suite_can_include_video_quality_repair_pr
     assert suite["quality_repair_summary"]["by_modality"]["video"]["success_count"] == 1
 
 
+def test_visual_live_provider_e2e_suite_appends_repair_probe_to_explicit_cases(monkeypatch, tmp_path):
+    from scripts import visual_live_provider_e2e
+
+    calls = []
+
+    def fake_report(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success": True,
+            "provider_mode": kwargs["mode"],
+            "failures": [],
+            "payload": {"success": True, "image_count": 1, "video_count": 1},
+            "evidence": {
+                "quality_repair_summary": {
+                    "attempt_count": 1 if kwargs.get("force_video_quality_repair") else 0,
+                    "success_count": 1 if kwargs.get("force_video_quality_repair") else 0,
+                    "selected_repair_count": 1 if kwargs.get("force_video_quality_repair") else 0,
+                    "by_modality": (
+                        {
+                            "video": {
+                                "attempt_count": 1,
+                                "success_count": 1,
+                                "selected_repair_count": 1,
+                            }
+                        }
+                        if kwargs.get("force_video_quality_repair")
+                        else {}
+                    ),
+                }
+            },
+        }
+
+    monkeypatch.setattr(
+        visual_live_provider_e2e,
+        "build_visual_live_provider_e2e_report",
+        fake_report,
+    )
+
+    suite = visual_live_provider_e2e.build_visual_live_provider_e2e_suite_report(
+        mode="fixture",
+        work_dir=tmp_path,
+        cases=[
+            {
+                "case_id": "product_photo_video",
+                "prompt": "Create one image and one short video: clean product photography.",
+            }
+        ],
+        include_video_repair_probe=True,
+    )
+
+    assert [case["case_id"] for case in suite["cases"]] == [
+        "product_photo_video",
+        "video_quality_repair",
+    ]
+    assert [call["force_video_quality_repair"] for call in calls] == [False, True]
+    assert suite["quality_repair_summary"]["by_modality"]["video"]["success_count"] == 1
+
+
 def test_quality_repair_summary_detects_repair_attempt_from_requested_parameters():
     from scripts.visual_live_provider_e2e import _quality_repair_summary
 
@@ -975,6 +1033,83 @@ def test_quality_repair_summary_detects_repair_attempt_from_requested_parameters
         "success_count": 1,
         "selected_repair_count": 1,
     }
+
+
+def test_quality_repair_effectiveness_compares_repair_against_baseline_candidate():
+    from scripts.visual_live_provider_e2e import _quality_repair_effectiveness
+
+    effectiveness = _quality_repair_effectiveness(
+        attempts=[
+            {
+                "attempt_id": "initial_attempt",
+                "parameters_requested": {"duration_seconds": 4},
+            },
+            {
+                "attempt_id": "repair_attempt",
+                "parameters_requested": {
+                    "duration_seconds": 4,
+                    "quality_repair": True,
+                },
+            },
+        ],
+        artifacts=[
+            {
+                "attempt_id": "initial_attempt",
+                "artifact_id": "initial_video",
+                "kind": "video",
+            },
+            {
+                "attempt_id": "repair_attempt",
+                "artifact_id": "repair_video",
+                "kind": "video",
+            },
+        ],
+        judgments=[
+            {
+                "judge_name": "visual_quality_judge",
+                "artifact_id": "initial_video",
+                "score": 0.42,
+                "details": {"quality_issues": ["motion_bad"]},
+            },
+            {
+                "judge_name": "visual_quality_judge",
+                "artifact_id": "repair_video",
+                "score": 0.81,
+                "details": {"quality_issues": []},
+            },
+        ],
+    )
+
+    assert effectiveness["attempt_count"] == 1
+    assert effectiveness["improved_count"] == 1
+    assert effectiveness["regressed_count"] == 0
+    assert effectiveness["avg_score_delta"] == 0.39
+    assert effectiveness["resolved_quality_issues"] == ["motion_bad"]
+    assert effectiveness["remaining_quality_issues"] == []
+    assert effectiveness["by_modality"]["video"] == {
+        "attempt_count": 1,
+        "improved_count": 1,
+        "regressed_count": 0,
+        "avg_score_delta": 0.39,
+        "resolved_quality_issues": ["motion_bad"],
+        "remaining_quality_issues": [],
+    }
+    assert effectiveness["outcomes"] == [
+        {
+            "modality": "video",
+            "baseline_artifact_id": "initial_video",
+            "repair_artifact_id": "repair_video",
+            "score_before": 0.42,
+            "score_after": 0.81,
+            "score_delta": 0.39,
+            "quality_issues_before": ["motion_bad"],
+            "quality_issues_after": [],
+            "resolved_quality_issues": ["motion_bad"],
+            "remaining_quality_issues": [],
+            "improved": True,
+            "regressed": False,
+        }
+    ]
 
 
 def test_visual_live_provider_e2e_suite_times_out_one_case_and_continues(monkeypatch, tmp_path):

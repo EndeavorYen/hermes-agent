@@ -212,8 +212,9 @@ def build_visual_live_provider_e2e_suite_report(
     case_timeout_seconds: float | int | None = None,
     include_video_repair_probe: bool | None = None,
 ) -> dict[str, Any]:
-    case_specs = cases or _default_e2e_cases(
+    case_specs = _suite_case_specs(
         mode,
+        cases=cases,
         include_video_repair_probe=include_video_repair_probe,
     )
     case_reports = []
@@ -308,6 +309,31 @@ def _default_e2e_cases(
     if include_video_repair_probe:
         cases.append(dict(FIXTURE_VIDEO_REPAIR_CASE))
     return cases
+
+
+def _suite_case_specs(
+    mode: str,
+    *,
+    cases: list[dict[str, Any]] | None,
+    include_video_repair_probe: bool | None,
+) -> list[dict[str, Any]]:
+    if cases is None:
+        return _default_e2e_cases(
+            mode,
+            include_video_repair_probe=include_video_repair_probe,
+        )
+    selected = [dict(case) for case in cases]
+    if include_video_repair_probe is True and not _has_video_repair_probe(selected):
+        selected.append(dict(FIXTURE_VIDEO_REPAIR_CASE))
+    return selected
+
+
+def _has_video_repair_probe(cases: list[dict[str, Any]]) -> bool:
+    return any(
+        str(case.get("case_id") or "") == "video_quality_repair"
+        or case.get("force_video_quality_repair") is True
+        for case in cases
+    )
 
 
 def _case_quality_contract(case: dict[str, Any]) -> dict[str, Any]:
@@ -641,6 +667,11 @@ def inspect_visual_e2e_evidence(
         attempts=attempts,
         artifacts=artifacts,
     )
+    quality_repair_effectiveness = _quality_repair_effectiveness(
+        attempts=attempts,
+        artifacts=artifacts,
+        judgments=judgments,
+    )
     quality_gate = _quality_gate(
         payload=payload,
         artifacts=artifacts,
@@ -668,6 +699,7 @@ def inspect_visual_e2e_evidence(
         "retry_attempt_count": retry_attempt_count,
         "recovery_summary": recovery_summary,
         "quality_repair_summary": quality_repair_summary,
+        "quality_repair_effectiveness": quality_repair_effectiveness,
         "providers": providers,
         "require_video": require_video,
         "quality_gate": quality_gate,
@@ -1420,6 +1452,180 @@ def _quality_repair_summary(
         "selected_repair_rate": _rate(selected_repair_count, attempt_count),
         "by_modality": by_modality,
     }
+
+
+def _quality_repair_effectiveness(
+    *,
+    attempts: list[dict[str, Any]],
+    artifacts: list[dict[str, Any]],
+    judgments: list[dict[str, Any]],
+) -> dict[str, Any]:
+    repair_attempts = {
+        _row_id(attempt, "attempt_id", "id")
+        for attempt in attempts
+        if _quality_repair_metadata(attempt)
+    }
+    repair_attempts.discard("")
+    if not repair_attempts:
+        return _empty_quality_repair_effectiveness()
+
+    artifact_rows = [
+        artifact
+        for artifact in artifacts
+        if _row_id(artifact, "artifact_id", "id")
+    ]
+    scores = _judgment_scores_by_artifact(judgments)
+    outcomes: list[dict[str, Any]] = []
+    for repair_artifact in artifact_rows:
+        repair_attempt_id = str(repair_artifact.get("attempt_id") or "")
+        if repair_attempt_id not in repair_attempts:
+            continue
+        repair_artifact_id = _row_id(repair_artifact, "artifact_id", "id")
+        repair_score = scores.get(repair_artifact_id)
+        if repair_score is None:
+            continue
+        modality = str(repair_artifact.get("kind") or "unknown").strip() or "unknown"
+        baseline = _baseline_artifact_for_repair(
+            artifact_rows,
+            scores=scores,
+            modality=modality,
+            repair_attempts=repair_attempts,
+        )
+        if baseline is None:
+            continue
+        baseline_id = _row_id(baseline, "artifact_id", "id")
+        baseline_score = scores[baseline_id]
+        quality_issues_before = _judgment_issues_for_artifact(judgments, baseline_id)
+        quality_issues_after = _judgment_issues_for_artifact(judgments, repair_artifact_id)
+        resolved_issues = [
+            issue for issue in quality_issues_before if issue not in quality_issues_after
+        ]
+        remaining_issues = list(quality_issues_after)
+        score_delta = round(repair_score - baseline_score, 4)
+        new_issues = [issue for issue in quality_issues_after if issue not in quality_issues_before]
+        outcomes.append(
+            {
+                "modality": modality,
+                "baseline_artifact_id": baseline_id,
+                "repair_artifact_id": repair_artifact_id,
+                "score_before": round(baseline_score, 4),
+                "score_after": round(repair_score, 4),
+                "score_delta": score_delta,
+                "quality_issues_before": quality_issues_before,
+                "quality_issues_after": quality_issues_after,
+                "resolved_quality_issues": resolved_issues,
+                "remaining_quality_issues": remaining_issues,
+                "improved": score_delta > 0 or bool(resolved_issues),
+                "regressed": score_delta < 0 or bool(new_issues),
+            }
+        )
+    return _quality_repair_effectiveness_from_outcomes(outcomes)
+
+
+def _empty_quality_repair_effectiveness() -> dict[str, Any]:
+    return {
+        "attempt_count": 0,
+        "improved_count": 0,
+        "regressed_count": 0,
+        "avg_score_delta": 0.0,
+        "resolved_quality_issues": [],
+        "remaining_quality_issues": [],
+        "by_modality": {},
+        "outcomes": [],
+    }
+
+
+def _quality_repair_effectiveness_from_outcomes(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
+    if not outcomes:
+        return _empty_quality_repair_effectiveness()
+    by_modality: dict[str, list[dict[str, Any]]] = {}
+    for outcome in outcomes:
+        by_modality.setdefault(str(outcome.get("modality") or "unknown"), []).append(outcome)
+    return {
+        "attempt_count": len(outcomes),
+        "improved_count": sum(1 for outcome in outcomes if outcome.get("improved") is True),
+        "regressed_count": sum(1 for outcome in outcomes if outcome.get("regressed") is True),
+        "avg_score_delta": _average_score_delta(outcomes),
+        "resolved_quality_issues": _unique_outcome_issues(outcomes, "resolved_quality_issues"),
+        "remaining_quality_issues": _unique_outcome_issues(outcomes, "remaining_quality_issues"),
+        "by_modality": {
+            modality: {
+                "attempt_count": len(items),
+                "improved_count": sum(1 for item in items if item.get("improved") is True),
+                "regressed_count": sum(1 for item in items if item.get("regressed") is True),
+                "avg_score_delta": _average_score_delta(items),
+                "resolved_quality_issues": _unique_outcome_issues(items, "resolved_quality_issues"),
+                "remaining_quality_issues": _unique_outcome_issues(items, "remaining_quality_issues"),
+            }
+            for modality, items in by_modality.items()
+        },
+        "outcomes": outcomes,
+    }
+
+
+def _baseline_artifact_for_repair(
+    artifacts: list[dict[str, Any]],
+    *,
+    scores: dict[str, float],
+    modality: str,
+    repair_attempts: set[str],
+) -> dict[str, Any] | None:
+    candidates = [
+        artifact
+        for artifact in artifacts
+        if str(artifact.get("kind") or "unknown").strip() == modality
+        and str(artifact.get("attempt_id") or "") not in repair_attempts
+        and _row_id(artifact, "artifact_id", "id") in scores
+    ]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda artifact: scores[_row_id(artifact, "artifact_id", "id")])
+
+
+def _judgment_scores_by_artifact(judgments: list[dict[str, Any]]) -> dict[str, float]:
+    scores: dict[str, float] = {}
+    for judgment in judgments:
+        if judgment.get("judge_name") != "visual_quality_judge":
+            continue
+        artifact_id = str(judgment.get("artifact_id") or "").strip()
+        score = _judgment_quality_score(judgment)
+        if artifact_id and score is not None:
+            scores[artifact_id] = score
+    return scores
+
+
+def _judgment_issues_for_artifact(judgments: list[dict[str, Any]], artifact_id: str) -> list[str]:
+    issues: list[str] = []
+    for judgment in judgments:
+        if judgment.get("judge_name") != "visual_quality_judge":
+            continue
+        if str(judgment.get("artifact_id") or "") != artifact_id:
+            continue
+        for issue in _judgment_quality_issues(judgment):
+            if issue not in issues:
+                issues.append(issue)
+    return issues
+
+
+def _average_score_delta(outcomes: list[dict[str, Any]]) -> float:
+    if not outcomes:
+        return 0.0
+    return round(
+        sum(float(outcome.get("score_delta") or 0.0) for outcome in outcomes) / len(outcomes),
+        4,
+    )
+
+
+def _unique_outcome_issues(outcomes: list[dict[str, Any]], key: str) -> list[str]:
+    issues: list[str] = []
+    for outcome in outcomes:
+        raw_issues = outcome.get(key)
+        if not isinstance(raw_issues, list):
+            continue
+        for issue in raw_issues:
+            if isinstance(issue, str) and issue and issue not in issues:
+                issues.append(issue)
+    return issues
 
 
 def _suite_quality_repair_summary(case_reports: list[dict[str, Any]]) -> dict[str, Any]:

@@ -66,6 +66,67 @@ def _suite_with_quality_failure() -> dict:
     }
 
 
+def _suite_with_provider_outage_and_no_quality_evidence() -> dict:
+    return {
+        "success": False,
+        "provider_mode": "live",
+        "case_count": 1,
+        "failures": [
+            "product_photo_video:quality_gate_failed",
+            "product_photo_video:provider_generation_failed",
+            "product_photo_video:provider_unavailable_after_retry",
+        ],
+        "recovery_summary": {
+            "provider_failure_count": 1,
+            "provider_failure_classes": {"provider_unavailable": 1},
+            "provider_error_codes": {"connection_error": 1},
+            "retry_attempt_count": 1,
+            "negotiation_attempted_case_count": 1,
+            "negotiation_success_case_count": 0,
+            "content_moderation_recovered_case_count": 0,
+            "recovered_failure_classes": [],
+        },
+        "quality_repair_summary": {
+            "attempt_count": 0,
+            "success_count": 0,
+            "selected_repair_count": 0,
+            "by_modality": {},
+        },
+        "cases": [
+            {
+                "case_id": "product_photo_video",
+                "success": False,
+                "failures": [
+                    "quality_gate_failed",
+                    "provider_generation_failed",
+                    "provider_unavailable_after_retry",
+                ],
+                "payload": {
+                    "success": False,
+                    "package_status": "failed",
+                    "image_count": 0,
+                    "video_count": 0,
+                },
+                "evidence": {
+                    "artifact_count": 0,
+                    "image_count": 0,
+                    "video_count": 0,
+                    "judgment_count": 0,
+                    "judgments_with_learning_metadata": 0,
+                    "quality_gate": {
+                        "success": False,
+                        "min_score": None,
+                        "quality_issues": [],
+                        "preference_dimension_failures": [],
+                    },
+                    "provider_error_codes": {"connection_error": 1},
+                    "provider_failure_classes": {"provider_unavailable": 1},
+                },
+            }
+        ],
+    }
+
+
 def test_visual_live_quality_burn_writes_report_and_actions(monkeypatch, tmp_path):
     from scripts import visual_live_quality_burn
 
@@ -113,6 +174,69 @@ def test_visual_live_quality_burn_writes_report_and_actions(monkeypatch, tmp_pat
     latest = json.loads((tmp_path / "burn" / "latest.json").read_text())
     assert latest["run_id"] == report["run_id"]
     assert (tmp_path / "burn" / "runs" / "20260622T100000Z.json").exists()
+
+
+def test_visual_live_quality_burn_does_not_emit_aesthetic_actions_without_quality_evidence(
+    monkeypatch,
+    tmp_path,
+):
+    from scripts import visual_live_quality_burn
+
+    monkeypatch.setattr(
+        visual_live_quality_burn,
+        "build_visual_live_provider_e2e_suite_report",
+        lambda **_kwargs: _suite_with_provider_outage_and_no_quality_evidence(),
+    )
+
+    report = visual_live_quality_burn.build_visual_live_quality_burn_report(
+        mode="live",
+        output_dir=tmp_path / "burn",
+        work_dir=tmp_path / "work",
+        now=datetime(2026, 6, 22, 10, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["summary"]["min_quality_score"] is None
+    assert report["summary"]["quality_issue_count"] == 0
+    assert report["summary"]["provider_failure_count"] == 1
+    assert "increase_candidate_budget" not in [
+        action["type"] for action in report["next_actions"]
+    ]
+    assert "rerank_before_slack" not in [
+        action["type"] for action in report["next_actions"]
+    ]
+    assert all(action["track"] != "aesthetic" for action in report["next_actions"])
+    assert [action["type"] for action in report["next_actions"]] == [
+        "safe_reframe_provider_retry",
+    ]
+
+
+def test_visual_live_quality_burn_can_request_repair_probe(monkeypatch, tmp_path):
+    from scripts import visual_live_quality_burn
+
+    calls = []
+
+    def fake_suite(**kwargs):
+        calls.append(kwargs)
+        return _suite_with_quality_failure()
+
+    monkeypatch.setattr(
+        visual_live_quality_burn,
+        "build_visual_live_provider_e2e_suite_report",
+        fake_suite,
+    )
+
+    report = visual_live_quality_burn.build_visual_live_quality_burn_report(
+        mode="live",
+        output_dir=tmp_path / "burn",
+        work_dir=tmp_path / "work",
+        max_cases=1,
+        include_video_repair_probe=True,
+        now=datetime(2026, 6, 22, 10, 0, tzinfo=timezone.utc),
+    )
+
+    assert calls[0]["include_video_repair_probe"] is True
+    assert len(calls[0]["cases"]) == 1
+    assert report["burn_budget"]["include_video_repair_probe"] is True
 
 
 def test_visual_live_quality_burn_excludes_repair_probe_from_promotion_min_score(monkeypatch, tmp_path):
@@ -602,6 +726,103 @@ def test_visual_live_quality_burn_exports_repair_action(monkeypatch, tmp_path):
             "selected_repair_rate": 1.0,
         }
     ]
+
+
+def test_visual_live_quality_burn_summarizes_repair_effectiveness(monkeypatch, tmp_path):
+    from scripts import visual_live_quality_burn
+
+    suite = _suite_with_quality_failure()
+    suite["success"] = True
+    suite["failures"] = []
+    suite["quality_repair_summary"] = {
+        "attempt_count": 1,
+        "success_count": 1,
+        "selected_repair_count": 1,
+        "by_modality": {
+            "video": {
+                "attempt_count": 1,
+                "success_count": 1,
+                "selected_repair_count": 1,
+            }
+        },
+    }
+    suite["cases"][1]["success"] = True
+    suite["cases"][1]["failures"] = []
+    suite["cases"][1]["evidence"]["quality_gate"] = {
+        "success": True,
+        "min_score": 0.81,
+        "quality_issues": [],
+    }
+    suite["cases"][1]["evidence"]["quality_repair_effectiveness"] = {
+        "attempt_count": 1,
+        "improved_count": 1,
+        "regressed_count": 0,
+        "avg_score_delta": 0.39,
+        "resolved_quality_issues": ["motion_bad"],
+        "remaining_quality_issues": [],
+        "by_modality": {
+            "video": {
+                "attempt_count": 1,
+                "improved_count": 1,
+                "regressed_count": 0,
+                "avg_score_delta": 0.39,
+                "resolved_quality_issues": ["motion_bad"],
+                "remaining_quality_issues": [],
+            }
+        },
+        "outcomes": [
+            {
+                "modality": "video",
+                "baseline_artifact_id": "initial_video",
+                "repair_artifact_id": "repair_video",
+                "score_before": 0.42,
+                "score_after": 0.81,
+                "score_delta": 0.39,
+                "quality_issues_before": ["motion_bad"],
+                "quality_issues_after": [],
+                "resolved_quality_issues": ["motion_bad"],
+                "remaining_quality_issues": [],
+                "improved": True,
+                "regressed": False,
+            }
+        ],
+    }
+
+    monkeypatch.setattr(
+        visual_live_quality_burn,
+        "build_visual_live_provider_e2e_suite_report",
+        lambda **_kwargs: suite,
+    )
+
+    report = visual_live_quality_burn.build_visual_live_quality_burn_report(
+        mode="live",
+        output_dir=tmp_path,
+    )
+
+    assert report["summary"]["quality_repair_effectiveness_attempt_count"] == 1
+    assert report["summary"]["quality_repair_effectiveness_improved_count"] == 1
+    assert report["summary"]["quality_repair_effectiveness_regressed_count"] == 0
+    assert report["summary"]["quality_repair_effectiveness_avg_score_delta"] == 0.39
+    assert report["summary"]["quality_repair_effectiveness_resolved_issues"] == ["motion_bad"]
+    assert report["summary"]["quality_repair_effectiveness_remaining_issues"] == []
+    assert {
+        "type": "prefer_quality_repair_retry",
+        "track": "repair",
+        "reason": "live_quality_burn_video_repair_improved_quality",
+        "confidence": 0.9,
+        "evidence_count": 1,
+        "requires_human_feedback": False,
+        "activation_status": "next_run",
+        "source": "live_quality_burn",
+        "modality": "video",
+        "success_rate": 1.0,
+        "selected_repair_rate": 1.0,
+        "improved_count": 1,
+        "regressed_count": 0,
+        "avg_score_delta": 0.39,
+        "resolved_quality_issues": ["motion_bad"],
+        "remaining_quality_issues": [],
+    } in report["next_actions"]
 
 
 def test_visual_live_quality_burn_exports_provider_failure_context(monkeypatch, tmp_path):
