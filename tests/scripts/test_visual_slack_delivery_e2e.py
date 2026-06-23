@@ -233,6 +233,181 @@ def test_visual_slack_delivery_video_only_blocks_internal_source_image_delivery(
     assert report["delivery"]["internal_source_image_artifact_ids"] == [source_artifact_id]
 
 
+def test_visual_slack_delivery_allows_image_when_requested_video_has_no_fallback(
+    monkeypatch,
+    tmp_path,
+):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+    from agent.visual.tracking import visual_delivery_metadata
+    from scripts import visual_slack_delivery_e2e
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image_path = tmp_path / "selected-image.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    ledger = VisualAttemptLedger(default_visual_ledger_path())
+    ledger.initialize()
+    request_id = ledger.record_request(
+        user_prompt="image and video with unavailable video fallback",
+        normalized_intent={"kind": "visual_package", "wants_image": True, "wants_video": True},
+        modality="package",
+        operation="visual_package_generate",
+        status="completed",
+    )
+    image_artifact_id = ledger.record_artifact(
+        request_id=request_id,
+        kind="image",
+        local_path=str(image_path),
+        uri=str(image_path),
+        content_hash="sha256:partial-image",
+        mime_type="image/png",
+        is_stable=True,
+        freshness_status="fresh",
+    )
+    fallback_diagnostic = {
+        "failed_provider": "xai",
+        "failed_provider_family": "xai",
+        "registered_provider_names": ["fal", "xai"],
+        "available_provider_names": [],
+        "unavailable_provider_names": ["fal"],
+        "fallback_provider_names": [],
+        "setup_actions": [
+            {
+                "provider": "fal",
+                "env_vars": ["FAL_KEY"],
+                "configured_env_vars": [],
+                "missing_env_vars": ["FAL_KEY"],
+                "post_setup": "",
+            }
+        ],
+    }
+    payload = {
+        "success": False,
+        "package_status": "partial",
+        "error_type": None,
+        "visual_request_id": request_id,
+        "images": [str(image_path)],
+        "videos": [],
+        "generation_strategy": {
+            "requested_image": True,
+            "generated_image": True,
+            "image_first_for_video": True,
+            "video_source_artifact_id": image_artifact_id,
+        },
+        "generation_payloads": {
+            "video": {
+                "success": False,
+                "video": None,
+                "error_type": "provider_quarantined",
+                "provider_quarantine": {
+                    "no_video_fallback_available": True,
+                    "video_fallback_diagnostic": fallback_diagnostic,
+                },
+                "failure": {
+                    "failure_class": "quota_exceeded",
+                    "provider_message_code": "provider_quarantined",
+                },
+            }
+        },
+        "delivery_metadata": visual_delivery_metadata(
+            request_id=request_id,
+            attempt_id=None,
+            artifact_ids=[image_artifact_id],
+            artifact_paths=[str(image_path)],
+            selected_artifact_ids=[image_artifact_id],
+        ),
+    }
+    monkeypatch.setattr(visual_slack_delivery_e2e, "run_visual_package", lambda _args: payload)
+    monkeypatch.setattr(
+        visual_slack_delivery_e2e,
+        "inspect_visual_e2e_evidence",
+        lambda _payload, *, require_video: {
+            "request_id": request_id,
+            "image_count": 1,
+            "video_count": 0,
+            "artifact_count": 1,
+            "judgment_count": 1,
+            "ranking_count": 1,
+            "video_source": {
+                "image_first_for_video": True,
+                "uses_ranked_selected_image": True,
+                "single_video_source_image": True,
+            },
+            "provider_failure_classes": {"quota_exceeded": 1},
+            "provider_error_codes": {"provider_quarantined": 1},
+            "retry_attempt_count": 0,
+            "recovery_summary": {
+                "no_video_fallback_available_count": 1,
+                "video_fallback_diagnostics": [fallback_diagnostic],
+            },
+            "quality_repair_summary": {},
+            "quality_gate": {"success": True, "quality_issues": []},
+            "storyboard_execution": {},
+        },
+    )
+
+    report = visual_slack_delivery_e2e.build_visual_slack_delivery_e2e_report(
+        mode="fixture",
+        work_dir=tmp_path,
+        target="D_TEST",
+        prompt="請產生一張圖片和一段影片",
+        require_video=True,
+    )
+
+    assert report["success"] is True
+    assert report["failures"] == []
+    assert report["delivery"]["deliverable_count"] == 1
+    assert report["delivery"]["sent_count"] == 1
+    assert report["delivery"]["partial_video_unavailable_delivery"] is True
+    assert report["delivery"]["partial_video_unavailable_reason"] == "no_video_fallback_available"
+    assert report["delivery"]["partial_video_operator_setup_actions"] == [
+        {"provider": "fal", "missing_env_vars": ["FAL_KEY"], "post_setup": ""}
+    ]
+
+
+def test_visual_slack_delivery_allows_partial_video_flag_without_diagnostic(
+    monkeypatch,
+    tmp_path,
+):
+    from scripts.visual_slack_delivery_e2e import inspect_slack_delivery_evidence
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    evidence = inspect_slack_delivery_evidence(
+        payload={
+            "package_status": "partial",
+            "visual_request_id": "vrq_missing_diagnostic",
+            "images": [str(tmp_path / "selected-image.png")],
+            "videos": [],
+            "generation_strategy": {
+                "requested_image": True,
+            },
+            "generation_payloads": {
+                "video": {
+                    "provider_quarantine": {
+                        "no_video_fallback_available": True,
+                    }
+                }
+            },
+        },
+        deliverables=[
+            {
+                "artifact_id": "var_selected_image",
+                "kind": "image",
+                "ref": str(tmp_path / "selected-image.png"),
+            }
+        ],
+        destination_id="D_TEST",
+        thread_id=None,
+        record_summary={"recorded_count": 0},
+    )
+
+    assert evidence["partial_video_unavailable_delivery"] is True
+    assert evidence["partial_video_unavailable_reason"] == "no_video_fallback_available"
+    assert evidence["partial_video_operator_setup_actions"] == []
+
+
 def test_visual_slack_delivery_fixture_records_composed_storyboard_video(tmp_path):
     from scripts.visual_slack_delivery_e2e import build_visual_slack_delivery_e2e_report
 

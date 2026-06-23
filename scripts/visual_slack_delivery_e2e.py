@@ -20,6 +20,7 @@ from hermes_constants import get_hermes_home
 from agent.visual.attempt_ledger import VisualAttemptLedger
 from agent.visual.delivery_manifest import build_visual_delivery_manifest
 from agent.visual.delivery_manifest import select_deliverable_artifacts
+from agent.visual.operator_setup import operator_setup_actions_from_video_fallback_diagnostics as _operator_setup_actions_from_video_fallback_diagnostics
 from agent.visual.tracking import default_visual_ledger_path
 from agent.visual.tracking import record_visual_delivery_status
 from agent.visual.tracking import visual_delivery_context
@@ -203,6 +204,10 @@ def inspect_slack_delivery_evidence(
         payload=payload,
         deliverables=deliverables,
     )
+    partial_video_gate = _partial_video_unavailable_delivery_evidence(
+        payload=payload,
+        deliverables=deliverables,
+    )
     return {
         "request_id": request_id,
         "deliverable_count": len(deliverables),
@@ -224,6 +229,7 @@ def inspect_slack_delivery_evidence(
         ),
         **upload_gate,
         **internal_source_gate,
+        **partial_video_gate,
     }
 
 
@@ -473,7 +479,8 @@ def _delivery_failures(
     failures.extend(manifest_failures or [])
     if not isinstance(payload, dict):
         return ["missing_payload"]
-    if payload.get("success") is not True:
+    partial_video_delivery = delivery_evidence.get("partial_video_unavailable_delivery") is True
+    if payload.get("success") is not True and not partial_video_delivery:
         failures.append(str(payload.get("error_type") or "visual_generation_failed"))
     quality_gate = visual_evidence.get("quality_gate") if isinstance(visual_evidence, dict) else None
     quality_gate_failed = isinstance(quality_gate, dict) and quality_gate.get("success") is False
@@ -589,6 +596,80 @@ def _internal_source_image_delivery_evidence(
         "internal_source_image_delivered": bool(delivered_source_ids),
         "internal_source_image_artifact_ids": delivered_source_ids,
     }
+
+
+def _partial_video_unavailable_delivery_evidence(
+    *,
+    payload: dict[str, Any] | None,
+    deliverables: list[dict[str, Any]],
+) -> dict[str, Any]:
+    default = {
+        "partial_video_unavailable_delivery": False,
+        "partial_video_unavailable_reason": "",
+        "partial_video_operator_setup_actions": [],
+    }
+    if not isinstance(payload, dict):
+        return default
+    if str(payload.get("package_status") or "").strip().lower() != "partial":
+        return default
+    strategy = payload.get("generation_strategy")
+    if not isinstance(strategy, dict) or strategy.get("requested_image") is not True:
+        return default
+    if not _nonempty_list(payload.get("images")) or _nonempty_list(payload.get("videos")):
+        return default
+    if not any(str(item.get("kind") or "").lower() == "image" for item in deliverables):
+        return default
+    diagnostics = _video_fallback_diagnostics(payload)
+    if not diagnostics and not _video_payload_reports_no_fallback(payload):
+        return default
+    return {
+        "partial_video_unavailable_delivery": True,
+        "partial_video_unavailable_reason": "no_video_fallback_available",
+        "partial_video_operator_setup_actions": (
+            _operator_setup_actions_from_video_fallback_diagnostics(diagnostics)
+        ),
+    }
+
+
+def _video_payload_reports_no_fallback(payload: dict[str, Any]) -> bool:
+    for item in _video_payload_items(payload):
+        quarantine = item.get("provider_quarantine")
+        if isinstance(quarantine, dict) and quarantine.get("no_video_fallback_available") is True:
+            return True
+    return False
+
+
+def _video_fallback_diagnostics(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    diagnostics: list[dict[str, Any]] = []
+    for item in _video_payload_items(payload):
+        quarantine = item.get("provider_quarantine")
+        if not isinstance(quarantine, dict):
+            continue
+        if quarantine.get("no_video_fallback_available") is not True:
+            continue
+        diagnostic = quarantine.get("video_fallback_diagnostic")
+        if isinstance(diagnostic, dict):
+            diagnostics.append(dict(diagnostic))
+    return diagnostics
+
+
+def _video_payload_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    generation_payloads = payload.get("generation_payloads")
+    if not isinstance(generation_payloads, dict):
+        return []
+    return _dict_items(generation_payloads.get("video"))
+
+
+def _dict_items(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        return [value]
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def _nonempty_list(value: Any) -> bool:
+    return isinstance(value, list) and bool(value)
 
 
 def _artifact_ids(uploaded: list[dict[str, str]]) -> list[str]:
