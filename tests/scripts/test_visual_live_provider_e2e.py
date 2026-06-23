@@ -724,16 +724,16 @@ def test_visual_live_provider_e2e_suite_aggregates_recovery_summary(monkeypatch,
             "payload": {"success": True},
             "evidence": {
                 "recovery_summary": {
-                    "provider_failure_count": 1,
-                    "provider_failure_classes": {"content_moderation": 1},
-                    "provider_error_codes": {"api_error": 1},
-                    "retry_attempt_count": 1,
+                    "provider_failure_count": 3,
+                    "provider_failure_classes": {"content_moderation": 3},
+                    "provider_error_codes": {"api_error": 3},
+                    "retry_attempt_count": 2,
                     "negotiation_attempted": True,
                     "negotiation_success": True,
                     "content_moderation_recovered": True,
                     "recovered_failure_classes": ["content_moderation"],
-                    "provider_fallback_attempt_count": 1,
-                    "provider_fallback_success_count": 1,
+                    "provider_fallback_attempt_count": 2,
+                    "provider_fallback_success_count": 2,
                     "provider_fallback_recovered_classes": ["quota_exceeded"],
                 }
             },
@@ -774,16 +774,16 @@ def test_visual_live_provider_e2e_suite_aggregates_recovery_summary(monkeypatch,
 
     assert suite["success"] is True
     assert suite["recovery_summary"] == {
-        "provider_failure_count": 1,
-        "provider_failure_classes": {"content_moderation": 1},
-        "provider_error_codes": {"api_error": 1},
-        "retry_attempt_count": 1,
+        "provider_failure_count": 3,
+        "provider_failure_classes": {"content_moderation": 3},
+        "provider_error_codes": {"api_error": 3},
+        "retry_attempt_count": 2,
         "negotiation_attempted_case_count": 1,
         "negotiation_success_case_count": 1,
         "content_moderation_recovered_case_count": 1,
         "recovered_failure_classes": ["content_moderation"],
-        "provider_fallback_attempt_count": 1,
-        "provider_fallback_success_count": 1,
+        "provider_fallback_attempt_count": 2,
+        "provider_fallback_success_count": 2,
         "provider_fallback_recovered_classes": ["quota_exceeded"],
     }
 
@@ -1338,22 +1338,25 @@ def test_visual_live_provider_e2e_classifies_attempt_failure_root_causes(monkeyp
         operation="visual_package_generate",
         status="started",
     )
+    attempt_ids = []
     for candidate_index in (0, 1):
-        ledger.record_attempt(
-            request_id=request_id,
-            candidate_index=candidate_index,
-            provider="xai-oauth",
-            model="grok-imagine-image-quality",
-            prompt_original="test",
-            prompt_mediated="test",
-            parameters_requested={"aspect_ratio": "1:1"},
-            parameters_effective={"aspect_ratio": "1:1"},
-            status="failed",
-            error_type="api_error",
-            error_message=(
-                "xAI image generation failed (503): upstream connect error; "
-                "Connection refused"
-            ),
+        attempt_ids.append(
+            ledger.record_attempt(
+                request_id=request_id,
+                candidate_index=candidate_index,
+                provider="xai-oauth",
+                model="grok-imagine-image-quality",
+                prompt_original="test",
+                prompt_mediated="test",
+                parameters_requested={"aspect_ratio": "1:1"},
+                parameters_effective={"aspect_ratio": "1:1"},
+                status="failed",
+                error_type="api_error",
+                error_message=(
+                    "xAI image generation failed (503): upstream connect error; "
+                    "Connection refused"
+                ),
+            )
         )
 
     evidence = inspect_visual_e2e_evidence(
@@ -1374,6 +1377,36 @@ def test_visual_live_provider_e2e_classifies_attempt_failure_root_causes(monkeyp
 
     assert evidence["provider_failure_classes"]["provider_unavailable"] == 2
     assert evidence["provider_error_codes"]["api_error"] == 2
+    assert evidence["provider_failure_diagnostics"] == [
+        {
+            "attempt_id": attempt_ids[0],
+            "candidate_index": 0,
+            "provider": "xai-oauth",
+            "model": "grok-imagine-image-quality",
+            "status": "failed",
+            "failure_class": "provider_unavailable",
+            "provider_message_code": "api_error",
+            "error_type": "api_error",
+            "error_message_excerpt": (
+                "xAI image generation failed (503): upstream connect error; "
+                "Connection refused"
+            ),
+        },
+        {
+            "attempt_id": attempt_ids[1],
+            "candidate_index": 1,
+            "provider": "xai-oauth",
+            "model": "grok-imagine-image-quality",
+            "status": "failed",
+            "failure_class": "provider_unavailable",
+            "provider_message_code": "api_error",
+            "error_type": "api_error",
+            "error_message_excerpt": (
+                "xAI image generation failed (503): upstream connect error; "
+                "Connection refused"
+            ),
+        },
+    ]
     assert evidence["retry_attempt_count"] == 1
 
 
@@ -1416,6 +1449,47 @@ def test_visual_live_provider_e2e_ignores_internal_missing_video_source_error():
 
     assert classes == {"provider_unavailable": 1}
     assert codes == {"connection_error": 1}
+
+
+def test_visual_live_provider_e2e_exports_provider_failure_diagnostics():
+    from scripts.visual_live_provider_e2e import _provider_failure_diagnostics
+
+    diagnostics = _provider_failure_diagnostics(
+        [
+            {
+                "attempt_id": "att_1",
+                "candidate_index": 0,
+                "provider": "xai-oauth",
+                "model": "grok-imagine-image-quality",
+                "status": "failed",
+                "error_type": "api_error",
+                "error_message": "xAI image generation failed (503): upstream connect error",
+            },
+            {
+                "attempt_id": "att_2",
+                "candidate_index": 1,
+                "provider": "",
+                "model": "",
+                "status": "failed",
+                "error_type": "missing_video_source_image",
+                "error_message": "Image-first video generation requires a selected source image.",
+            },
+        ]
+    )
+
+    assert diagnostics == [
+        {
+            "attempt_id": "att_1",
+            "candidate_index": 0,
+            "provider": "xai-oauth",
+            "model": "grok-imagine-image-quality",
+            "status": "failed",
+            "failure_class": "provider_unavailable",
+            "provider_message_code": "api_error",
+            "error_type": "api_error",
+            "error_message_excerpt": "xAI image generation failed (503): upstream connect error",
+        }
+    ]
 
 
 def test_visual_live_provider_quality_gate_exports_preference_dimension_failures():

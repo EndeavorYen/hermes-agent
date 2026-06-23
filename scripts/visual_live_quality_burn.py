@@ -304,7 +304,7 @@ def _image_first_video_source_summary(cases: list[Any]) -> dict[str, Any]:
             continue
         evidence = case.get("evidence") if isinstance(case.get("evidence"), dict) else {}
         video_source = evidence.get("video_source") if isinstance(evidence.get("video_source"), dict) else {}
-        if not video_source:
+        if not video_source or not _has_materialized_video_source(video_source):
             continue
         case_count += 1
         case_id = str(case.get("case_id") or "").strip()
@@ -324,6 +324,15 @@ def _image_first_video_source_summary(cases: list[Any]) -> dict[str, Any]:
         "not_single_count": len(not_single_case_ids),
         "not_single_case_ids": not_single_case_ids,
     }
+
+
+def _has_materialized_video_source(video_source: dict[str, Any]) -> bool:
+    if _int(video_source.get("video_source_image_count")) > 0:
+        return True
+    return bool(
+        str(video_source.get("source_image_artifact_id") or "").strip()
+        or str(video_source.get("ranked_selected_image_artifact_id") or "").strip()
+    )
 
 
 def _quality_focus_failed_case_ids(summary: dict[str, Any]) -> list[str]:
@@ -780,6 +789,7 @@ def _provider_failure_actions(recovery: dict[str, Any]) -> list[dict[str, Any]]:
     provider_error_codes = _int_mapping(recovery.get("provider_error_codes"))
     actions: list[dict[str, Any]] = []
     quota_count = provider_failure_classes.get("quota_exceeded", 0)
+    unavailable_count = provider_failure_classes.get("provider_unavailable", 0)
     if quota_count > 0:
         actions.append(
             _action(
@@ -789,6 +799,18 @@ def _provider_failure_actions(recovery: dict[str, Any]) -> list[dict[str, Any]]:
                 confidence=0.95,
                 evidence_count=quota_count,
                 provider_failure_classes={"quota_exceeded": quota_count},
+                provider_error_codes=provider_error_codes,
+            )
+        )
+    if unavailable_count > 0:
+        actions.append(
+            _action(
+                "check_provider_connectivity_or_retry",
+                "provider",
+                "live_quality_burn_provider_unavailable",
+                confidence=0.88,
+                evidence_count=unavailable_count,
+                provider_failure_classes={"provider_unavailable": unavailable_count},
                 provider_error_codes=provider_error_codes,
             )
         )
@@ -823,12 +845,12 @@ def _provider_failure_actions(recovery: dict[str, Any]) -> list[dict[str, Any]]:
             )
         )
 
-    retryable_count = max(0, provider_failure_count - quota_count)
+    retryable_count = max(0, provider_failure_count - quota_count - unavailable_count)
     if retryable_count > 0:
         retryable_classes = {
             key: count
             for key, count in provider_failure_classes.items()
-            if key != "quota_exceeded"
+            if key not in {"quota_exceeded", "provider_unavailable"}
         }
         actions.append(
             _action(

@@ -646,6 +646,7 @@ def inspect_visual_e2e_evidence(
         }
     )
     provider_failure_classes, provider_error_codes = _provider_failure_counters(attempts)
+    provider_failure_diagnostics = _provider_failure_diagnostics(attempts)
     learning_trace_count = sum(1 for row in rankings if _ranking_has_learning_trace(row))
     judgments_with_learning_metadata = sum(
         1 for row in judgments if _judgment_has_learning_metadata(row)
@@ -696,6 +697,7 @@ def inspect_visual_e2e_evidence(
         "inline_vision_failure_classes": dict(inline_vision_failure_classes),
         "provider_failure_classes": dict(provider_failure_classes),
         "provider_error_codes": dict(provider_error_codes),
+        "provider_failure_diagnostics": provider_failure_diagnostics,
         "retry_attempt_count": retry_attempt_count,
         "recovery_summary": recovery_summary,
         "quality_repair_summary": quality_repair_summary,
@@ -1241,6 +1243,58 @@ def _provider_failure_counters(attempts: list[dict[str, Any]]) -> tuple[Counter[
     return classes, codes
 
 
+def _provider_failure_diagnostics(attempts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    diagnostics: list[dict[str, Any]] = []
+    for row in attempts:
+        provider = str(row.get("provider") or row.get("provider_name") or "").strip()
+        error_type = row.get("error_type") or row.get("provider_error_type")
+        error_message = row.get("error_message") or row.get("provider_error_message")
+        if not (error_type or error_message):
+            continue
+        if not provider and _is_internal_pipeline_error(error_type):
+            continue
+        failure = classify_visual_provider_failure(
+            {
+                "success": False,
+                "error_type": error_type,
+                "error": error_message,
+            }
+        )
+        diagnostic: dict[str, Any] = {
+            "failure_class": str(failure.get("failure_class") or ""),
+            "provider_message_code": str(failure.get("provider_message_code") or error_type or ""),
+            "error_type": str(error_type or ""),
+        }
+        attempt_id = _row_id(row, "attempt_id", "id")
+        if attempt_id:
+            diagnostic["attempt_id"] = attempt_id
+        candidate_index = _int_or_none(row.get("candidate_index"))
+        if candidate_index is not None:
+            diagnostic["candidate_index"] = candidate_index
+        if provider:
+            diagnostic["provider"] = provider
+        model = str(row.get("model") or row.get("model_name") or "").strip()
+        if model:
+            diagnostic["model"] = model
+        status = str(row.get("status") or "").strip()
+        if status:
+            diagnostic["status"] = status
+        excerpt = _error_message_excerpt(error_message)
+        if excerpt:
+            diagnostic["error_message_excerpt"] = excerpt
+        diagnostics.append(diagnostic)
+    return diagnostics
+
+
+def _error_message_excerpt(value: Any, *, limit: int = 240) -> str:
+    text = " ".join(str(value or "").split())
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    return f"{text[: limit - 3]}..."
+
+
 def _is_internal_pipeline_error(error_type: Any) -> bool:
     return str(error_type or "").strip() in {
         "missing_video_source_image",
@@ -1357,13 +1411,13 @@ def _suite_recovery_summary(case_reports: list[dict[str, Any]]) -> dict[str, Any
     provider_fallback_recovered_classes: set[str] = set()
     for case in case_reports:
         summary = case.get("recovery_summary") if isinstance(case.get("recovery_summary"), dict) else {}
-        provider_failure_count += int(_coerce_score(summary.get("provider_failure_count")) or 0)
-        retry_attempt_count += int(_coerce_score(summary.get("retry_attempt_count")) or 0)
-        provider_fallback_attempt_count += int(
-            _coerce_score(summary.get("provider_fallback_attempt_count")) or 0
+        provider_failure_count += _count_value(summary.get("provider_failure_count"))
+        retry_attempt_count += _count_value(summary.get("retry_attempt_count"))
+        provider_fallback_attempt_count += _count_value(
+            summary.get("provider_fallback_attempt_count")
         )
-        provider_fallback_success_count += int(
-            _coerce_score(summary.get("provider_fallback_success_count")) or 0
+        provider_fallback_success_count += _count_value(
+            summary.get("provider_fallback_success_count")
         )
         provider_failure_classes.update(_counter_from_mapping(summary.get("provider_failure_classes")))
         provider_error_codes.update(_counter_from_mapping(summary.get("provider_error_codes")))
@@ -1694,8 +1748,15 @@ def _counter_from_mapping(value: Any) -> Counter[str]:
     for key, count in value.items():
         if not isinstance(key, str) or not key:
             continue
-        counter[key] += int(_coerce_score(count) or 0)
+        counter[key] += _count_value(count)
     return counter
+
+
+def _count_value(value: Any) -> int:
+    parsed = _int_or_none(value)
+    if parsed is None:
+        return 0
+    return max(0, parsed)
 
 
 def _retry_attempt_count(*, payload: dict[str, Any], attempts: list[dict[str, Any]]) -> int:
