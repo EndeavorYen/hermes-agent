@@ -3169,6 +3169,8 @@ def _latest_self_validation_next_actions() -> list[dict[str, Any]]:
         return []
     if not isinstance(payload, dict):
         return []
+    if "runtime_policy" in payload:
+        return _runtime_policy_next_actions(payload.get("runtime_policy"))
     if payload.get("success") is not True:
         return []
     automation = payload.get("automation") if isinstance(payload.get("automation"), dict) else {}
@@ -3180,6 +3182,33 @@ def _latest_self_validation_next_actions() -> list[dict[str, Any]]:
     if not isinstance(self_improvement, dict):
         return []
     return _action_list(self_improvement.get("next_actions"))
+
+
+def _runtime_policy_next_actions(value: Any) -> list[dict[str, Any]]:
+    policy = value if isinstance(value, dict) else {}
+    if policy.get("success") is not True:
+        return []
+    if policy.get("decision") != "apply_next_run":
+        return []
+    expires_at = _parse_policy_datetime(policy.get("expires_at"))
+    if expires_at is None:
+        return []
+    now = datetime.datetime.now(datetime.timezone.utc)
+    if expires_at <= now:
+        return []
+    return _action_list(policy.get("next_actions"))
+
+
+def _parse_policy_datetime(value: Any) -> datetime.datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed.astimezone(datetime.timezone.utc)
 
 
 def _action_list(value: Any) -> list[dict[str, Any]]:

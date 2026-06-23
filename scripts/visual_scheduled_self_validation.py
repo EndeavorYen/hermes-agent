@@ -5,6 +5,7 @@ import json
 import os
 import sys
 from datetime import datetime
+from datetime import timedelta
 from datetime import timezone
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,47 @@ from scripts.visual_e2e_automation_report import build_visual_e2e_automation_rep
 
 
 DEFAULT_MIN_LIVE_INTERVAL_HOURS = 6
+DEFAULT_RUNTIME_POLICY_TTL_HOURS = 24
+_RUNTIME_POLICY_ACTION_TYPES = {
+    "increase_candidate_budget",
+    "prefer_image_first_video",
+    "rerank_before_slack",
+    "prefer_quality_repair_retry",
+    "escalate_quality_repair_strategy",
+    "repair_low_preference_dimension",
+    "apply_quality_focus_operator",
+    "require_preference_dimension_evidence",
+    "safe_reframe_provider_retry",
+    "resolve_provider_quota_or_switch_provider",
+    "configure_video_fallback_provider",
+    "prefer_strategy",
+}
+_RUNTIME_POLICY_ACTION_KEYS = {
+    "type",
+    "track",
+    "reason",
+    "confidence",
+    "evidence_count",
+    "requires_human_feedback",
+    "activation_status",
+    "source",
+    "max_candidate_budget",
+    "candidate_budget",
+    "modality",
+    "success_rate",
+    "selected_repair_rate",
+    "dimension",
+    "quality_issue",
+    "repair_hint",
+    "focus",
+    "strategy_operator",
+    "provider_failure_classes",
+    "provider_error_codes",
+    "strategy_signature",
+    "bucket",
+    "prompt_mutation_allowed",
+    "video_fallback_diagnostics",
+}
 
 
 def build_visual_scheduled_self_validation_report(
@@ -66,6 +108,7 @@ def build_visual_scheduled_self_validation_report(
         automation=automation,
         live_quality_trends=live_quality_trends,
     )
+    runtime_policy = _runtime_policy(automation, now=now)
     report = {
         "success": automation.get("success") is True,
         "run_id": _run_id(now),
@@ -75,6 +118,7 @@ def build_visual_scheduled_self_validation_report(
         "live_policy": live_policy,
         "slack_live_upload_policy": slack_live_upload_policy,
         "live_quality_trends": live_quality_trends,
+        "runtime_policy": runtime_policy,
         "summary": _summary(automation, live_quality_trends=live_quality_trends),
         "automation": automation,
         "self_review": {
@@ -645,6 +689,80 @@ def _action_list(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, dict)]
+
+
+def _runtime_policy(automation: dict[str, Any], *, now: datetime) -> dict[str, Any]:
+    self_improvement = (
+        automation.get("self_improvement")
+        if isinstance(automation.get("self_improvement"), dict)
+        else {}
+    )
+    actions = _runtime_policy_actions(_action_list(self_improvement.get("next_actions")))
+    if not actions:
+        return {
+            "success": False,
+            "decision": "no_actions",
+            "generated_at": now.isoformat(),
+            "expires_at": (now + timedelta(hours=DEFAULT_RUNTIME_POLICY_TTL_HOURS)).isoformat(),
+            "next_actions": [],
+            "privacy_safe": True,
+        }
+    return {
+        "success": True,
+        "decision": "apply_next_run",
+        "generated_at": now.isoformat(),
+        "expires_at": (now + timedelta(hours=DEFAULT_RUNTIME_POLICY_TTL_HOURS)).isoformat(),
+        "next_actions": actions,
+        "privacy_safe": True,
+        "source": "scheduled_self_validation",
+    }
+
+
+def _runtime_policy_actions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    sanitized: list[dict[str, Any]] = []
+    for action in actions:
+        sanitized_action = _runtime_policy_action(action)
+        if sanitized_action:
+            sanitized.append(sanitized_action)
+    return _dedupe_actions(sanitized)
+
+
+def _runtime_policy_action(action: dict[str, Any]) -> dict[str, Any]:
+    action_type = str(action.get("type") or "").strip()
+    if action_type not in _RUNTIME_POLICY_ACTION_TYPES:
+        return {}
+    if action.get("requires_human_feedback") is True:
+        return {}
+    if action.get("prompt_mutation_allowed") is True:
+        return {}
+    sanitized: dict[str, Any] = {}
+    for key in _RUNTIME_POLICY_ACTION_KEYS:
+        if key not in action:
+            continue
+        value = _runtime_policy_value(action[key])
+        if value is not None:
+            sanitized[key] = value
+    sanitized["type"] = action_type
+    sanitized["requires_human_feedback"] = False
+    return sanitized
+
+
+def _runtime_policy_value(value: Any) -> Any:
+    if isinstance(value, bool | int | float | str):
+        return value
+    if isinstance(value, list):
+        values = [_runtime_policy_value(item) for item in value]
+        return [item for item in values if item is not None]
+    if isinstance(value, dict):
+        sanitized: dict[str, Any] = {}
+        for key, item in value.items():
+            if not isinstance(key, str) or not key.strip():
+                continue
+            safe_item = _runtime_policy_value(item)
+            if safe_item is not None:
+                sanitized[key.strip()] = safe_item
+        return sanitized
+    return None
 
 
 def _write_report(output_dir: Path, report: dict[str, Any]) -> None:

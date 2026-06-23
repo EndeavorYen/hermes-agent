@@ -217,6 +217,49 @@ def test_visual_self_validation_status_sanitizes_auto_live_policy_degradations(t
     assert "private visual prompt" not in encoded
 
 
+def test_visual_self_validation_status_reports_runtime_policy_without_leaking_details(tmp_path):
+    from scripts.visual_self_validation_status import build_visual_self_validation_status
+
+    payload = _scheduled_report(success=False)
+    payload["runtime_policy"] = {
+        "success": True,
+        "decision": "apply_next_run",
+        "generated_at": "2026-06-22T10:19:00+00:00",
+        "expires_at": "2026-06-23T10:19:00+00:00",
+        "next_actions": [
+            {
+                "type": "prefer_image_first_video",
+                "requires_human_feedback": False,
+                "private_prompt": "do not leak this prompt",
+            },
+            {
+                "type": "increase_candidate_budget",
+                "requires_human_feedback": False,
+                "max_candidate_budget": 4,
+            },
+        ],
+    }
+    latest_path = _write_latest(tmp_path, payload)
+
+    status = build_visual_self_validation_status(
+        latest_path=latest_path,
+        now=datetime(2026, 6, 22, 11, 0, tzinfo=timezone.utc),
+    )
+
+    assert status["runtime_policy"] == {
+        "success": True,
+        "decision": "apply_next_run",
+        "generated_at": "2026-06-22T10:19:00+00:00",
+        "expires_at": "2026-06-23T10:19:00+00:00",
+        "expired": False,
+        "action_types": ["prefer_image_first_video", "increase_candidate_budget"],
+    }
+    assert "prefer_image_first_video" in status["self_improvement"]["action_types"]
+    encoded = json.dumps(status, ensure_ascii=False)
+    assert "do not leak" not in encoded
+    assert "private_prompt" not in encoded
+
+
 def test_visual_self_validation_status_flags_internal_source_image_delivery(tmp_path):
     from scripts.visual_self_validation_status import build_visual_self_validation_status
 

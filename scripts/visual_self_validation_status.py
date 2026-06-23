@@ -64,6 +64,7 @@ def build_visual_self_validation_status(
         not is_stale and live_conversation_quality_evidence_ready(summary)
     )
     failures = _strings(payload.get("failures"))
+    runtime_policy = _runtime_policy_status(payload.get("runtime_policy"), now=now)
     actions = _collect_actions(payload)
     action_types = _action_types(summary, actions)
     trend_degradations = _strings(summary.get("live_quality_trend_degradations"))
@@ -108,6 +109,7 @@ def build_visual_self_validation_status(
         "failures": failures,
         "live_policy": live_policy,
         "slack_upload_policy": slack_upload_policy,
+        "runtime_policy": runtime_policy,
         "live_e2e_ran": live_e2e_ran,
         "live": {
             "quality_gate_success": summary.get("live_quality_gate_success"),
@@ -301,6 +303,7 @@ def _action_types(summary: dict[str, Any], actions: list[dict[str, Any]]) -> lis
 def _collect_actions(payload: dict[str, Any]) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     for container in (
+        payload.get("runtime_policy"),
         payload.get("self_improvement"),
         _dict_get(payload, "automation", "self_improvement"),
         _dict_get(payload, "automation", "live_quality_burn"),
@@ -309,6 +312,23 @@ def _collect_actions(payload: dict[str, Any]) -> list[dict[str, Any]]:
         if isinstance(container, dict):
             actions.extend(_dicts(container.get("next_actions")))
     return actions
+
+
+def _runtime_policy_status(value: Any, *, now: datetime) -> dict[str, Any]:
+    policy = value if isinstance(value, dict) else {}
+    generated_at = policy.get("generated_at") if isinstance(policy.get("generated_at"), str) else None
+    expires_at_value = policy.get("expires_at") if isinstance(policy.get("expires_at"), str) else None
+    expires_at = _parse_datetime(expires_at_value)
+    expired = expires_at is not None and expires_at <= now
+    actions = _dicts(policy.get("next_actions"))
+    return {
+        "success": policy.get("success") is True,
+        "decision": policy.get("decision"),
+        "generated_at": generated_at,
+        "expires_at": expires_at_value,
+        "expired": expired,
+        "action_types": _action_types({}, actions),
+    }
 
 
 def _dict_get(payload: dict[str, Any], *keys: str) -> Any:

@@ -3903,6 +3903,176 @@ async def test_visual_package_ignores_failed_self_validation_next_actions(monkey
 
 
 @pytest.mark.asyncio
+async def test_visual_package_applies_runtime_policy_from_failed_self_validation(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
+    latest_report.parent.mkdir(parents=True)
+    latest_report.write_text(
+        json.dumps(
+            {
+                "success": False,
+                "runtime_policy": {
+                    "success": True,
+                    "decision": "apply_next_run",
+                    "generated_at": "2026-06-22T08:00:00+00:00",
+                    "expires_at": "2999-06-23T08:00:00+00:00",
+                    "next_actions": [
+                        {
+                            "type": "increase_candidate_budget",
+                            "requires_human_feedback": False,
+                            "activation_status": "next_run",
+                            "source": "live_quality_trends",
+                            "max_candidate_budget": 4,
+                        },
+                        {
+                            "type": "prefer_image_first_video",
+                            "requires_human_feedback": False,
+                            "activation_status": "next_run",
+                            "source": "live_quality_trends",
+                        },
+                    ],
+                },
+                "automation": {
+                    "self_improvement": {
+                        "next_actions": [
+                            {
+                                "type": "prefer_quality_repair_retry",
+                                "requires_human_feedback": False,
+                                "activation_status": "next_run",
+                                "source": "unsafe_failed_report_fallback",
+                            }
+                        ]
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    image = tmp_path / "image.png"
+    video = tmp_path / "video.mp4"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    video.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+    image_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(image),
+            "provider": "fixture",
+            "model": "image",
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+    monkeypatch.setattr(
+        visual_package_tool,
+        "generate_video",
+        lambda **kwargs: {
+            "success": True,
+            "video": str(video),
+            "provider": "fixture",
+            "model": "video",
+        },
+    )
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {"prompt": "請產出一段短影片：霧黑鋼筆。", "include_video": True}
+        )
+    )
+
+    assert payload["success"] is True
+    assert len(image_calls) == 4
+    assert payload["generation_strategy"]["candidate_budget"] == 4
+    assert payload["generation_strategy"]["candidate_budget_source"] == "live_quality_trends"
+    assert payload["generation_strategy"]["image_first_for_video"] is True
+    assert payload["generation_strategy"]["feedback_policy"]["applied_action_types"] == [
+        "increase_candidate_budget",
+        "prefer_image_first_video",
+    ]
+    assert payload["generation_strategy"]["feedback_policy"]["quality_repair_mode"] == "default"
+
+
+@pytest.mark.asyncio
+async def test_visual_package_ignores_expired_runtime_policy(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
+    latest_report.parent.mkdir(parents=True)
+    latest_report.write_text(
+        json.dumps(
+            {
+                "success": True,
+                "runtime_policy": {
+                    "success": True,
+                    "decision": "apply_next_run",
+                    "generated_at": "2000-01-01T00:00:00+00:00",
+                    "expires_at": "2000-01-02T00:00:00+00:00",
+                    "next_actions": [
+                        {
+                            "type": "increase_candidate_budget",
+                            "requires_human_feedback": False,
+                            "activation_status": "next_run",
+                            "source": "live_quality_trends",
+                            "max_candidate_budget": 4,
+                        }
+                    ],
+                },
+                "automation": {
+                    "self_improvement": {
+                        "next_actions": [
+                            {
+                                "type": "increase_candidate_budget",
+                                "requires_human_feedback": False,
+                                "activation_status": "next_run",
+                                "source": "stale_fallback_should_not_apply",
+                                "max_candidate_budget": 4,
+                            }
+                        ]
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    image = tmp_path / "image.png"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    calls = []
+
+    def fake_generate_image(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(image),
+            "provider": "fixture",
+            "model": "image",
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "請產出一張圖片：霧黑鋼筆。",
+                "include_video": False,
+                "candidate_budget": 1,
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert len(calls) == 1
+    assert payload["generation_strategy"]["candidate_budget"] == 1
+    assert payload["generation_strategy"]["feedback_policy"]["policy_sources"] == ["feedback_loop"]
+    assert payload["generation_strategy"]["feedback_policy"]["applied_action_types"] == []
+
+
+@pytest.mark.asyncio
 async def test_visual_package_carries_provider_vision_observation_into_judgment(monkeypatch, tmp_path):
     from agent.visual.attempt_ledger import VisualAttemptLedger
     from agent.visual.tracking import default_visual_ledger_path

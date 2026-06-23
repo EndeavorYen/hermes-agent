@@ -934,6 +934,78 @@ def test_scheduled_self_validation_auto_runs_live_when_quality_trend_degrades(mo
     assert "increase_candidate_budget" in report["summary"]["live_quality_trend_action_types"]
 
 
+def test_scheduled_self_validation_exports_safe_runtime_policy_even_when_report_fails(
+    monkeypatch,
+    tmp_path,
+):
+    from scripts import visual_scheduled_self_validation
+
+    output_dir = tmp_path / "self_validation"
+
+    def fake_automation(*, work_dir, include_live, include_live_slack_upload=False):
+        assert include_live is True
+        return {
+            **_automation_report(
+                include_live=include_live,
+                include_live_slack_upload=include_live_slack_upload,
+            ),
+            "success": False,
+            "failures": ["live_quality_suite_failed"],
+            "self_improvement": {
+                "next_actions": [
+                    {
+                        "type": "prefer_image_first_video",
+                        "requires_human_feedback": False,
+                        "activation_status": "next_run",
+                        "source": "live_quality_burn",
+                        "private_prompt": "do not leak this prompt",
+                    },
+                    {
+                        "type": "prefer_quality_repair_retry",
+                        "requires_human_feedback": True,
+                        "activation_status": "next_run",
+                        "source": "human_review",
+                    },
+                    {
+                        "type": "unknown_prompt_mutation",
+                        "requires_human_feedback": False,
+                        "activation_status": "next_run",
+                        "source": "unsafe",
+                    },
+                ]
+            },
+        }
+
+    monkeypatch.setattr(
+        visual_scheduled_self_validation,
+        "build_visual_e2e_automation_report",
+        fake_automation,
+    )
+
+    report = visual_scheduled_self_validation.build_visual_scheduled_self_validation_report(
+        output_dir=output_dir,
+        live_mode="on",
+        now=datetime(2026, 6, 22, 8, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["success"] is False
+    assert report["runtime_policy"]["success"] is True
+    assert report["runtime_policy"]["decision"] == "apply_next_run"
+    assert report["runtime_policy"]["generated_at"] == "2026-06-22T08:00:00+00:00"
+    assert report["runtime_policy"]["expires_at"] == "2026-06-23T08:00:00+00:00"
+    assert report["runtime_policy"]["next_actions"] == [
+        {
+            "type": "prefer_image_first_video",
+            "requires_human_feedback": False,
+            "activation_status": "next_run",
+            "source": "live_quality_burn",
+        }
+    ]
+    encoded = json.dumps(report["runtime_policy"], ensure_ascii=False)
+    assert "do not leak" not in encoded
+    assert "unknown_prompt_mutation" not in encoded
+
+
 def test_scheduled_self_validation_carries_forward_recent_live_burn_actions(monkeypatch, tmp_path):
     from scripts import visual_scheduled_self_validation
 
