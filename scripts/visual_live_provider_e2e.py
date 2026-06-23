@@ -1407,8 +1407,12 @@ def _suite_recovery_summary(case_reports: list[dict[str, Any]]) -> dict[str, Any
     content_moderation_recovered_case_count = 0
     provider_fallback_attempt_count = 0
     provider_fallback_success_count = 0
+    no_video_fallback_available_count = 0
+    provider_quarantine_count = 0
     recovered_failure_classes: set[str] = set()
     provider_fallback_recovered_classes: set[str] = set()
+    provider_quarantine_classes: set[str] = set()
+    video_fallback_diagnostics: list[dict[str, Any]] = []
     for case in case_reports:
         summary = case.get("recovery_summary") if isinstance(case.get("recovery_summary"), dict) else {}
         provider_failure_count += _count_value(summary.get("provider_failure_count"))
@@ -1419,6 +1423,10 @@ def _suite_recovery_summary(case_reports: list[dict[str, Any]]) -> dict[str, Any
         provider_fallback_success_count += _count_value(
             summary.get("provider_fallback_success_count")
         )
+        no_video_fallback_available_count += _count_value(
+            summary.get("no_video_fallback_available_count")
+        )
+        provider_quarantine_count += _count_value(summary.get("provider_quarantine_count"))
         provider_failure_classes.update(_counter_from_mapping(summary.get("provider_failure_classes")))
         provider_error_codes.update(_counter_from_mapping(summary.get("provider_error_codes")))
         if summary.get("negotiation_attempted") is True:
@@ -1433,6 +1441,12 @@ def _suite_recovery_summary(case_reports: list[dict[str, Any]]) -> dict[str, Any
         for failure_class in summary.get("provider_fallback_recovered_classes") or []:
             if isinstance(failure_class, str) and failure_class:
                 provider_fallback_recovered_classes.add(failure_class)
+        for failure_class in summary.get("provider_quarantine_classes") or []:
+            if isinstance(failure_class, str) and failure_class:
+                provider_quarantine_classes.add(failure_class)
+        for diagnostic in summary.get("video_fallback_diagnostics") or []:
+            if isinstance(diagnostic, dict) and diagnostic not in video_fallback_diagnostics:
+                video_fallback_diagnostics.append(dict(diagnostic))
     suite_summary = {
         "provider_failure_count": provider_failure_count,
         "provider_failure_classes": dict(provider_failure_classes),
@@ -1451,6 +1465,17 @@ def _suite_recovery_summary(case_reports: list[dict[str, Any]]) -> dict[str, Any
                 "provider_fallback_recovered_classes": sorted(provider_fallback_recovered_classes),
             }
         )
+    if provider_quarantine_count > 0:
+        suite_summary.update(
+            {
+                "provider_quarantine_count": provider_quarantine_count,
+                "provider_quarantine_classes": sorted(provider_quarantine_classes),
+            }
+        )
+    if no_video_fallback_available_count > 0:
+        suite_summary["no_video_fallback_available_count"] = no_video_fallback_available_count
+    if video_fallback_diagnostics:
+        suite_summary["video_fallback_diagnostics"] = video_fallback_diagnostics
     return suite_summary
 
 

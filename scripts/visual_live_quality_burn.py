@@ -511,7 +511,10 @@ def _next_actions(suite: dict[str, Any], summary: dict[str, Any]) -> list[dict[s
         )
     quality_focus = suite.get("quality_focus_summary") if isinstance(suite.get("quality_focus_summary"), dict) else {}
     actions.extend(_quality_focus_actions(quality_focus))
-    if _int(summary.get("video_missing_after_image_count")) > 0:
+    if (
+        _int(summary.get("video_missing_after_image_count")) > 0
+        and not _provider_failure_explains_missing_video(recovery)
+    ):
         actions.append(
             _action(
                 "prefer_image_first_video",
@@ -594,6 +597,10 @@ def _next_actions(suite: dict[str, Any], summary: dict[str, Any]) -> list[dict[s
             }
         )
     return _dedupe_actions(actions)
+
+
+def _provider_failure_explains_missing_video(recovery: dict[str, Any]) -> bool:
+    return _int(recovery.get("provider_failure_count")) > 0
 
 
 def _has_promotion_quality_evidence(

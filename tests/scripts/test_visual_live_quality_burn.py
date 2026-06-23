@@ -1140,6 +1140,84 @@ def test_visual_live_quality_burn_prefers_image_first_when_video_missing_after_i
     } in report["next_actions"]
 
 
+def test_visual_live_quality_burn_does_not_prefer_image_first_when_provider_fallback_explains_missing_video(
+    monkeypatch,
+    tmp_path,
+):
+    from scripts import visual_live_quality_burn
+
+    suite = _suite_with_quality_failure()
+    suite["failures"] = ["product_photo_video:missing_video_output"]
+    suite["cases"][0]["success"] = False
+    suite["cases"][0]["failures"] = ["missing_video_output"]
+    suite["cases"][0]["evidence"]["image_count"] = 1
+    suite["cases"][0]["evidence"]["video_count"] = 0
+    suite["cases"][0]["evidence"]["require_video"] = True
+    suite["cases"][0]["evidence"]["video_source"] = {
+        "image_first_for_video": True,
+        "ranked_selected_image_artifact_id": "var_selected",
+        "require_video": True,
+        "single_video_source_image": True,
+        "source_image_artifact_id": "var_selected",
+        "uses_ranked_selected_image": True,
+        "video_source_image_count": 1,
+        "video_source_policy": "single_ranked_selected_image",
+    }
+    suite["cases"][0]["evidence"]["quality_gate"] = {
+        "success": True,
+        "min_score": 0.79,
+        "quality_issues": [],
+    }
+    suite["recovery_summary"] = {
+        "provider_failure_count": 3,
+        "provider_failure_classes": {"quota_exceeded": 3},
+        "provider_error_codes": {"personal-team-blocked:spending-limit": 2, "provider_quarantined": 1},
+        "no_video_fallback_available_count": 1,
+        "provider_quarantine_count": 1,
+        "provider_quarantine_classes": ["quota_exceeded"],
+        "video_fallback_diagnostics": [
+            {
+                "failed_provider": "xai",
+                "failed_provider_family": "xai",
+                "registered_provider_names": ["fal", "xai"],
+                "available_provider_names": [],
+                "unavailable_provider_names": ["fal"],
+                "fallback_provider_names": [],
+                "setup_actions": [
+                    {
+                        "provider": "fal",
+                        "env_vars": ["FAL_KEY"],
+                        "configured_env_vars": [],
+                        "missing_env_vars": ["FAL_KEY"],
+                        "post_setup": "",
+                    }
+                ],
+            }
+        ],
+    }
+
+    monkeypatch.setattr(
+        visual_live_quality_burn,
+        "build_visual_live_provider_e2e_suite_report",
+        lambda **_kwargs: suite,
+    )
+
+    report = visual_live_quality_burn.build_visual_live_quality_burn_report(
+        mode="live",
+        output_dir=tmp_path,
+    )
+
+    assert report["summary"]["video_missing_after_image_count"] == 1
+    assert report["summary"]["image_first_video_source_failure_count"] == 0
+    assert "prefer_image_first_video" not in [
+        action["type"] for action in report["next_actions"]
+    ]
+    action_types = [action["type"] for action in report["next_actions"]]
+    assert "resolve_provider_quota_or_switch_provider" in action_types
+    assert "configure_video_fallback_provider" in action_types
+    assert report["self_review"]["requires_operator_setup"] is True
+
+
 def test_visual_live_quality_burn_flags_video_source_not_ranked_image(monkeypatch, tmp_path):
     from scripts import visual_live_quality_burn
 

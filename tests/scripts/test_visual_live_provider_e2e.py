@@ -735,6 +735,28 @@ def test_visual_live_provider_e2e_suite_aggregates_recovery_summary(monkeypatch,
                     "provider_fallback_attempt_count": 2,
                     "provider_fallback_success_count": 2,
                     "provider_fallback_recovered_classes": ["quota_exceeded"],
+                    "no_video_fallback_available_count": 1,
+                    "provider_quarantine_count": 1,
+                    "provider_quarantine_classes": ["quota_exceeded"],
+                    "video_fallback_diagnostics": [
+                        {
+                            "failed_provider": "xai",
+                            "failed_provider_family": "xai",
+                            "registered_provider_names": ["fal", "xai"],
+                            "available_provider_names": [],
+                            "unavailable_provider_names": ["fal"],
+                            "fallback_provider_names": [],
+                            "setup_actions": [
+                                {
+                                    "provider": "fal",
+                                    "env_vars": ["FAL_KEY"],
+                                    "configured_env_vars": [],
+                                    "missing_env_vars": ["FAL_KEY"],
+                                    "post_setup": "",
+                                }
+                            ],
+                        }
+                    ],
                 }
             },
         },
@@ -785,6 +807,28 @@ def test_visual_live_provider_e2e_suite_aggregates_recovery_summary(monkeypatch,
         "provider_fallback_attempt_count": 2,
         "provider_fallback_success_count": 2,
         "provider_fallback_recovered_classes": ["quota_exceeded"],
+        "no_video_fallback_available_count": 1,
+        "provider_quarantine_count": 1,
+        "provider_quarantine_classes": ["quota_exceeded"],
+        "video_fallback_diagnostics": [
+            {
+                "failed_provider": "xai",
+                "failed_provider_family": "xai",
+                "registered_provider_names": ["fal", "xai"],
+                "available_provider_names": [],
+                "unavailable_provider_names": ["fal"],
+                "fallback_provider_names": [],
+                "setup_actions": [
+                    {
+                        "provider": "fal",
+                        "env_vars": ["FAL_KEY"],
+                        "configured_env_vars": [],
+                        "missing_env_vars": ["FAL_KEY"],
+                        "post_setup": "",
+                    }
+                ],
+            }
+        ],
     }
 
 
