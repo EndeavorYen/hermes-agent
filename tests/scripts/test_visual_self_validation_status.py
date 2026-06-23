@@ -42,6 +42,7 @@ def _scheduled_report(*, success=True, live_decision="run"):
             "live_quality_burn_min_score": 0.74,
             "live_quality_burn_image_first_video_source_covered": True,
             "live_quality_burn_image_first_video_source_failure_count": 0,
+            "live_quality_burn_image_first_video_source_not_single_count": 0,
             "live_quality_burn_action_types": [
                 "repair_low_preference_dimension",
                 "safe_reframe_provider_retry",
@@ -129,6 +130,7 @@ def test_visual_self_validation_status_summarizes_latest_live_report(tmp_path):
     assert status["live"]["burn_success"] is True
     assert status["live"]["image_first_video_source_covered"] is True
     assert status["live"]["image_first_video_source_failure_count"] == 0
+    assert status["live"]["image_first_video_source_not_single_count"] == 0
     assert status["live"]["content_moderation_recovered_count"] == 1
     assert status["live"]["provider_failure_classes"] == {"content_moderation": 1}
     assert status["live"]["provider_error_codes"] == {"api_error": 1}
@@ -413,6 +415,35 @@ def test_visual_self_validation_status_reports_strategy_promotion_readiness(tmp_
     assert readiness["self_review"]["privacy_safe"] is True
     encoded = json.dumps(status, ensure_ascii=False)
     assert "do not leak" not in encoded
+
+
+def test_visual_self_validation_status_blocks_strategy_promotion_on_non_single_video_source(
+    tmp_path,
+):
+    from scripts.visual_self_validation_status import build_visual_self_validation_status
+
+    report = _scheduled_report()
+    report["summary"]["live_quality_burn_min_score"] = 0.86
+    report["summary"]["live_quality_burn_image_first_video_source_not_single_count"] = 1
+    report["automation"]["self_improvement"]["next_actions"].append(
+        {
+            "type": "prefer_strategy",
+            "source": "live_quality_burn",
+            "track": "aesthetic",
+            "strategy_signature": "image_first_rank_then_video",
+            "bucket": "image-video:product-editorial",
+            "activation_status": "shadow",
+            "confidence": 0.88,
+            "evidence_count": 4,
+        }
+    )
+    latest_path = _write_latest(tmp_path, report)
+
+    status = build_visual_self_validation_status(latest_path=latest_path)
+
+    assert status["live"]["image_first_video_source_not_single_count"] == 1
+    assert status["promotion_readiness"]["ready"] is False
+    assert "video_source_not_single_image" in status["promotion_readiness"]["blocking_reasons"]
 
 
 def test_visual_self_validation_status_uses_promotion_min_score_for_strategy_readiness(tmp_path):

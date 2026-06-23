@@ -344,8 +344,13 @@ def _build_slack_conversation_self_review(
     expects_video = plan_args.get("include_video") is True
     expects_video_only = expects_video and plan_args.get("include_image") is False
     image_first_video_source_covered = None
+    single_video_source_image = None
     if expects_video_only:
         image_first_video_source_covered = video_source.get("uses_ranked_selected_image") is True
+        if "single_video_source_image" in video_source:
+            single_video_source_image = video_source.get("single_video_source_image") is True
+        elif "video_source_image_count" in video_source:
+            single_video_source_image = _int(video_source.get("video_source_image_count")) == 1
 
     delivery_clean = (
         duplicate_delivery_count == 0
@@ -378,6 +383,8 @@ def _build_slack_conversation_self_review(
         blocking_reasons.append("delivery_not_clean")
     if image_first_video_source_covered is False:
         blocking_reasons.append("image_first_video_source_not_ranked_selected_image")
+    if single_video_source_image is False:
+        blocking_reasons.append("video_source_not_single_image")
     if requires_operator_setup:
         blocking_reasons.append("operator_setup_required")
 
@@ -419,6 +426,7 @@ def _build_slack_conversation_self_review(
         "duplicate_delivery_count": duplicate_delivery_count,
         "internal_source_image_delivered": internal_source_image_delivered,
         "image_first_video_source_covered": image_first_video_source_covered,
+        "single_video_source_image": single_video_source_image,
         "native_video_upload_covered": _int(delivery.get("uploaded_video_file_count")) > 0
         and _int(delivery.get("uploaded_remote_video_url_count")) == 0,
         "blocking_reasons": sorted(set(blocking_reasons)),

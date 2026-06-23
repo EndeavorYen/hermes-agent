@@ -366,6 +366,12 @@ def _summary(automation: dict[str, Any], live_quality_trends: dict[str, Any] | N
         "live_quality_burn_image_first_video_source_failure_case_ids": _list(
             live_quality_burn_summary.get("image_first_video_source_failure_case_ids")
         ),
+        "live_quality_burn_image_first_video_source_not_single_count": _int(
+            live_quality_burn_summary.get("image_first_video_source_not_single_count")
+        ),
+        "live_quality_burn_image_first_video_source_not_single_case_ids": _list(
+            live_quality_burn_summary.get("image_first_video_source_not_single_case_ids")
+        ),
         "live_quality_burn_image_first_video_source_covered": _image_first_video_source_covered(
             live_quality_burn_summary
         ),

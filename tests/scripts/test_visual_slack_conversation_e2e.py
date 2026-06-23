@@ -22,6 +22,8 @@ def _fake_delivery_report(**kwargs):
             "video_source": {
                 "uses_ranked_selected_image": kwargs.get("require_video") is True
                 and kwargs.get("include_image") is False,
+                "single_video_source_image": True,
+                "video_source_image_count": 1,
             },
             "recovery_summary": {
                 "provider_failure_count": 0,
@@ -152,11 +154,49 @@ def test_visual_slack_conversation_e2e_uses_visual_agent_plan_for_text_video(
     assert report["self_review"]["requires_human_feedback"] is False
     assert report["self_review"]["reduces_human_intervention"] is True
     assert report["self_review"]["image_first_video_source_covered"] is True
+    assert report["self_review"]["single_video_source_image"] is True
     assert report["self_review"]["internal_source_image_delivered"] is False
     assert report["self_review"]["duplicate_delivery_count"] == 0
     assert report["self_review"]["quality_gate_success"] is True
     assert report["self_review"]["provider_failure_count"] == 0
     assert report["self_review"]["auto_next_action_count"] == 0
+
+
+def test_visual_slack_conversation_e2e_blocks_video_only_candidate_grid_source(
+    monkeypatch,
+    tmp_path,
+):
+    from scripts import visual_slack_conversation_e2e
+
+    def grid_source_delivery(**kwargs):
+        report = _fake_delivery_report(**kwargs)
+        report["success"] = False
+        report["failures"] = ["video_source_not_single_image"]
+        report["visual"]["video_source"] = {
+            "uses_ranked_selected_image": True,
+            "single_video_source_image": False,
+            "video_source_image_count": 4,
+        }
+        return report
+
+    monkeypatch.setattr(
+        visual_slack_conversation_e2e,
+        "build_visual_slack_delivery_e2e_report",
+        grid_source_delivery,
+    )
+
+    report = visual_slack_conversation_e2e.build_visual_slack_conversation_e2e_report(
+        mode="fixture",
+        work_dir=tmp_path,
+        prompt="幫我做一段 4 秒乾淨產品短片，主體是一支霧黑鋼筆",
+        target="D_TEST",
+    )
+
+    assert report["self_review"]["decision"] == "blocked"
+    assert report["self_review"]["success"] is False
+    assert report["self_review"]["image_first_video_source_covered"] is True
+    assert report["self_review"]["single_video_source_image"] is False
+    assert "video_source_not_single_image" in report["self_review"]["blocking_reasons"]
 
 
 def test_visual_slack_conversation_e2e_self_review_flags_quality_repair_path(

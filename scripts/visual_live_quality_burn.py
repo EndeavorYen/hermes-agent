@@ -164,6 +164,8 @@ def _summary(suite: dict[str, Any]) -> dict[str, Any]:
         "image_first_video_source_covered_count": video_source_summary["covered_count"],
         "image_first_video_source_failure_count": video_source_summary["failure_count"],
         "image_first_video_source_failure_case_ids": video_source_summary["failure_case_ids"],
+        "image_first_video_source_not_single_count": video_source_summary["not_single_count"],
+        "image_first_video_source_not_single_case_ids": video_source_summary["not_single_case_ids"],
         "video_missing_after_image_count": len(video_missing_after_image_case_ids),
         "video_missing_after_image_case_ids": video_missing_after_image_case_ids,
         "provider_failure_count": _int(recovery.get("provider_failure_count")),
@@ -282,6 +284,7 @@ def _image_first_video_source_summary(cases: list[Any]) -> dict[str, Any]:
     case_count = 0
     covered_count = 0
     failure_case_ids: list[str] = []
+    not_single_case_ids: list[str] = []
     for case in cases:
         if not isinstance(case, dict):
             continue
@@ -290,17 +293,22 @@ def _image_first_video_source_summary(cases: list[Any]) -> dict[str, Any]:
         if not video_source:
             continue
         case_count += 1
-        if video_source.get("uses_ranked_selected_image") is True:
+        case_id = str(case.get("case_id") or "").strip()
+        source_is_single = video_source.get("single_video_source_image") is not False
+        if video_source.get("uses_ranked_selected_image") is True and source_is_single:
             covered_count += 1
             continue
-        case_id = str(case.get("case_id") or "").strip()
         if case_id:
             failure_case_ids.append(case_id)
+            if source_is_single is False:
+                not_single_case_ids.append(case_id)
     return {
         "case_count": case_count,
         "covered_count": covered_count,
         "failure_count": len(failure_case_ids),
         "failure_case_ids": failure_case_ids,
+        "not_single_count": len(not_single_case_ids),
+        "not_single_case_ids": not_single_case_ids,
     }
 
 
@@ -403,6 +411,16 @@ def _next_actions(suite: dict[str, Any], summary: dict[str, Any]) -> list[dict[s
                 "live_quality_burn_video_source_not_ranked_image",
                 confidence=0.82,
                 evidence_count=_int(summary.get("image_first_video_source_failure_count")),
+            )
+        )
+    if _int(summary.get("image_first_video_source_not_single_count")) > 0:
+        actions.append(
+            _action(
+                "prefer_image_first_video",
+                "provider",
+                "live_quality_burn_video_source_not_single_image",
+                confidence=0.84,
+                evidence_count=_int(summary.get("image_first_video_source_not_single_count")),
             )
         )
     actions.extend(_provider_failure_actions(recovery))

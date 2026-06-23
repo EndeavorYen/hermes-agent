@@ -109,6 +109,8 @@ def _blocking_reasons(
         reasons.extend(_live_quality_burn_blocking_reasons(summary))
     if _int(summary.get("live_quality_burn_quality_focus_failure_count")) > 0:
         reasons.append("quality_focus_failures")
+    if _int(summary.get("live_quality_burn_image_first_video_source_not_single_count")) > 0:
+        reasons.append("video_source_not_single_image")
     if _int(summary.get("slack_duplicate_delivery_count")) > 0:
         reasons.append("duplicate_delivery_detected")
     if candidate is None:
@@ -148,6 +150,8 @@ def _live_quality_burn_blocking_reasons(summary: dict[str, Any]) -> list[str]:
         reasons.append("image_first_video_source_not_covered")
     if _int(summary.get("live_quality_burn_image_first_video_source_failure_count")) > 0:
         reasons.append("image_first_video_source_failures")
+    if _int(summary.get("live_quality_burn_image_first_video_source_not_single_count")) > 0:
+        reasons.append("video_source_not_single_image")
     if summary.get("live_slack_upload_native_delivery_covered") is not True:
         reasons.append("slack_native_upload_not_covered")
     return reasons

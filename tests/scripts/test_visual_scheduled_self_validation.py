@@ -161,6 +161,8 @@ def _automation_report(*, include_live: bool, include_live_slack_upload: bool = 
                     "image_first_video_source_covered_count": 2,
                     "image_first_video_source_failure_count": 0,
                     "image_first_video_source_failure_case_ids": [],
+                    "image_first_video_source_not_single_count": 0,
+                    "image_first_video_source_not_single_case_ids": [],
                     "preference_dimension_failure_count": 2,
                     "preference_dimension_failures": [
                         {"dimension": "face_naturalness", "issue": "face_unnatural", "score": 0.28},
@@ -487,6 +489,8 @@ def test_scheduled_self_validation_runs_live_when_due(monkeypatch, tmp_path):
     ]
     assert report["summary"]["live_quality_burn_image_first_video_source_covered"] is True
     assert report["summary"]["live_quality_burn_image_first_video_source_failure_count"] == 0
+    assert report["summary"]["live_quality_burn_image_first_video_source_not_single_count"] == 0
+    assert report["summary"]["live_quality_burn_image_first_video_source_not_single_case_ids"] == []
     assert report["summary"]["live_quality_suite_negotiation_success_case_count"] == 1
     assert report["summary"]["live_quality_suite_content_moderation_recovered_case_count"] == 1
     state = json.loads((tmp_path / "state.json").read_text())

@@ -125,6 +125,9 @@ def build_visual_self_validation_status(
             "image_first_video_source_failure_count": _optional_int(
                 summary.get("live_quality_burn_image_first_video_source_failure_count")
             ),
+            "image_first_video_source_not_single_count": _optional_int(
+                summary.get("live_quality_burn_image_first_video_source_not_single_count")
+            ),
             "content_moderation_recovered_count": _optional_int(
                 summary.get("live_quality_suite_content_moderation_recovered_case_count")
             ),
@@ -399,6 +402,8 @@ def _carried_live_evidence_current(
     if summary.get("live_quality_burn_image_first_video_source_covered") is False:
         return False
     if _int(summary.get("live_quality_burn_image_first_video_source_failure_count")) > 0:
+        return False
+    if _int(summary.get("live_quality_burn_image_first_video_source_not_single_count")) > 0:
         return False
     if _int(summary.get("live_quality_burn_quality_focus_failure_count")) > 0:
         return False

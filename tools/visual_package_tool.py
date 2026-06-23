@@ -737,13 +737,14 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             )
         else:
             video_generation_base_prompt = _apply_first_pass_quality_guidance(prompt, quality_guidance["video"])
+            video_source_media = _video_source_media(video_image_url)
             hardened_video = build_hardened_video_request(
                 prompt=video_generation_base_prompt,
                 requested_aspect_ratio=_video_tool_aspect_ratio(
                     requested_aspect_ratio=_judge_aspect_ratio(aspect_ratio),
                     source_ref=video_image_url,
                 ),
-                source_media=_source_media_from_attachments([video_image_url]),
+                source_media=video_source_media,
             )
             video_prompt = hardened_video["prompt"]
             video_aspect_ratio = hardened_video["aspect_ratio"]
@@ -754,11 +755,12 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                     "image_url": video_image_url,
                     "duration": duration,
                     "aspect_ratio": video_aspect_ratio,
+                    "source_media": video_source_media,
                 }
                 video_request = {
                     "prompt": video_generation_base_prompt,
                     "arguments": video_kwargs,
-                    "source_media": _source_media_from_attachments([video_image_url]),
+                    "source_media": video_source_media,
                     "video_hardening": hardened_video.get("metadata", {}),
                 }
                 video_payload = _video_provider_quarantine_payload(
@@ -903,6 +905,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 "image_url": video_image_url,
                 "duration": duration,
                 "aspect_ratio": video_aspect_ratio,
+                "source_media": video_source_media,
             }
             repair_payload = generate_video(**repair_kwargs)
             repair_payload["quality_repair"] = {
@@ -919,7 +922,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                     request={
                         "prompt": prompt,
                         "arguments": repair_kwargs,
-                        "source_media": _source_media_from_attachments([video_image_url]),
+                        "source_media": video_source_media,
                         "video_hardening": hardened_video.get("metadata", {}),
                     },
                     retry_budget_remaining=0,
@@ -1056,6 +1059,13 @@ def _finalize_visual_package_payload(
         "image_first_for_video": image_first_for_video,
         "video_source_image": video_source_image,
         "video_source_artifact_id": video_source_artifact_id,
+        "video_source_image_count": _video_source_image_count(video_source_image),
+        "video_source_policy": _video_source_policy(
+            wants_video=wants_video,
+            image_first_for_video=image_first_for_video,
+            video_source_artifact_id=video_source_artifact_id,
+            video_source_image=video_source_image,
+        ),
         "candidate_budget": candidate_budget,
         "candidate_budget_source": candidate_budget_source,
         "video_budget": video_budget,
@@ -1100,6 +1110,7 @@ def _finalize_visual_package_payload(
         selected_artifact_ids=selected_artifact_ids,
         delivery_gate=delivery_gate,
         validation=autonomous_validation,
+        video_source_image_count=_video_source_image_count(video_source_image),
     )
     payload["autonomous_orchestration"] = build_post_generation_orchestration(
         payload,
@@ -1123,6 +1134,7 @@ def _visual_quality_run_metadata(
     selected_artifact_ids: list[str],
     delivery_gate: dict[str, dict[str, Any]],
     validation: dict[str, Any],
+    video_source_image_count: int,
 ) -> dict[str, Any]:
     success = payload.get("success") is True and validation.get("success") is True
     quality_issues = _delivery_gate_quality_issues(delivery_gate)
@@ -1166,6 +1178,7 @@ def _visual_quality_run_metadata(
         ]
         if image_first_case_count and not image_first_covered
         else [],
+        "video_source_image_count": video_source_image_count,
         "preference_dimension_failure_count": len(preference_failures),
         "preference_dimension_failures": preference_failures,
     }
@@ -1176,6 +1189,7 @@ def _visual_quality_run_metadata(
         "next_actions": [],
         "self_review": {
             "image_first_video_source_covered": image_first_covered if wants_video else False,
+            "single_video_source_image": (video_source_image_count == 1) if wants_video else False,
             "privacy_safe": True,
             "raw_prompt_omitted": True,
         },
@@ -2318,6 +2332,32 @@ def _source_media_from_attachments(attachments: list[str]) -> dict[str, Any]:
         if meta.width and meta.height:
             return {"width": meta.width, "height": meta.height}
     return {}
+
+
+def _video_source_media(source_image: str) -> dict[str, Any]:
+    media = _source_media_from_attachments([source_image])
+    media["reference_count"] = 1
+    media["references"] = [source_image]
+    media["single_source_image"] = True
+    return media
+
+
+def _video_source_image_count(source_image: str | None) -> int:
+    return 1 if isinstance(source_image, str) and source_image.strip() else 0
+
+
+def _video_source_policy(
+    *,
+    wants_video: bool,
+    image_first_for_video: bool,
+    video_source_artifact_id: str | None,
+    video_source_image: str | None,
+) -> str:
+    if not wants_video or not video_source_image:
+        return "none"
+    if image_first_for_video and video_source_artifact_id:
+        return "single_ranked_selected_image"
+    return "single_source_image"
 
 
 def _score_candidates(

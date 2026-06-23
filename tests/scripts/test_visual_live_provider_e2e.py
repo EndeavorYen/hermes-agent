@@ -1662,6 +1662,8 @@ def test_visual_live_provider_e2e_allows_video_only_without_delivered_image_when
                 "source_image_artifact_id": "var_selected_image",
                 "ranked_selected_image_artifact_id": "var_selected_image",
                 "uses_ranked_selected_image": True,
+                "video_source_image_count": 1,
+                "single_video_source_image": True,
             },
             "providers": ["xai"],
         },
@@ -1671,6 +1673,41 @@ def test_visual_live_provider_e2e_allows_video_only_without_delivered_image_when
 
     assert "missing_image_output" not in failures
     assert failures == []
+
+
+def test_visual_live_provider_e2e_fails_when_video_source_is_not_single_image():
+    from scripts.visual_live_provider_e2e import _payload_failures
+
+    failures = _payload_failures(
+        {"success": True, "images": [], "videos": ["/tmp/video.mp4"]},
+        {
+            "image_count": 0,
+            "video_count": 1,
+            "judgment_count": 2,
+            "ranking_count": 2,
+            "learning_trace_count": 2,
+            "judgments_with_learning_metadata": 2,
+            "inline_vision_judgment_count": 2,
+            "quality_gate": {
+                "success": True,
+                "min_score": 0.82,
+                "threshold": 0.55,
+                "quality_issues": [],
+            },
+            "video_source": {
+                "source_image_artifact_id": "var_selected_image",
+                "ranked_selected_image_artifact_id": "var_selected_image",
+                "uses_ranked_selected_image": True,
+                "video_source_image_count": 4,
+                "single_video_source_image": False,
+            },
+            "providers": ["xai"],
+        },
+        mode="live",
+        require_video=True,
+    )
+
+    assert "video_source_not_single_image" in failures
 
 
 def test_visual_live_provider_e2e_allows_storyboard_video_without_single_ranked_source():
@@ -1723,6 +1760,8 @@ def test_visual_live_provider_e2e_extracts_video_source_evidence_from_payload():
             "generation_strategy": {
                 "image_first_for_video": True,
                 "video_source_artifact_id": "var_selected_image",
+                "video_source_image_count": 1,
+                "video_source_policy": "single_ranked_selected_image",
             },
             "rankings": {
                 "image": {"selected_artifact_id": "var_selected_image"},
@@ -1738,7 +1777,31 @@ def test_visual_live_provider_e2e_extracts_video_source_evidence_from_payload():
         "source_image_artifact_id": "var_selected_image",
         "ranked_selected_image_artifact_id": "var_selected_image",
         "uses_ranked_selected_image": True,
+        "video_source_image_count": 1,
+        "video_source_policy": "single_ranked_selected_image",
+        "single_video_source_image": True,
     }
+
+
+def test_visual_live_provider_e2e_preserves_unknown_single_source_for_legacy_payload():
+    from scripts.visual_live_provider_e2e import _video_source_evidence
+
+    evidence = _video_source_evidence(
+        {
+            "generation_strategy": {
+                "image_first_for_video": True,
+                "video_source_artifact_id": "var_selected_image",
+            },
+            "rankings": {
+                "image": {"selected_artifact_id": "var_selected_image"},
+            },
+        },
+        require_video=True,
+    )
+
+    assert evidence["uses_ranked_selected_image"] is True
+    assert evidence["video_source_image_count"] is None
+    assert evidence["single_video_source_image"] is None
 
 
 def test_visual_live_provider_e2e_cli_fixture_json(capsys, tmp_path):

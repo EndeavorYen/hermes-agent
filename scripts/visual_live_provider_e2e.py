@@ -758,6 +758,14 @@ def _payload_failures(
         and not has_storyboard_video_source
     ):
         failures.append("video_not_using_ranked_image_source")
+    if (
+        mode == "live"
+        and require_video
+        and evidence.get("video_count", 0) >= 1
+        and video_source.get("single_video_source_image") is False
+        and not has_storyboard_video_source
+    ):
+        failures.append("video_source_not_single_image")
     if mode == "live" and _contains_fixture_provider(payload, evidence):
         failures.append("non_live_provider_detected")
     return sorted(set(failures))
@@ -859,6 +867,7 @@ def _video_source_evidence(payload: dict[str, Any], *, require_video: bool) -> d
     image_ranking = rankings.get("image") if isinstance(rankings.get("image"), dict) else {}
     source_image_artifact_id = _string_or_none(generation_strategy.get("video_source_artifact_id"))
     ranked_selected_image_artifact_id = _string_or_none(image_ranking.get("selected_artifact_id"))
+    video_source_image_count = _int_or_none(generation_strategy.get("video_source_image_count"))
     return {
         "require_video": bool(require_video),
         "image_first_for_video": generation_strategy.get("image_first_for_video") is True,
@@ -869,6 +878,11 @@ def _video_source_evidence(payload: dict[str, Any], *, require_video: bool) -> d
             and ranked_selected_image_artifact_id
             and source_image_artifact_id == ranked_selected_image_artifact_id
         ),
+        "video_source_image_count": video_source_image_count,
+        "video_source_policy": str(generation_strategy.get("video_source_policy") or ""),
+        "single_video_source_image": None
+        if video_source_image_count is None
+        else video_source_image_count == 1,
     }
 
 
@@ -876,6 +890,14 @@ def _string_or_none(value: Any) -> str | None:
     if isinstance(value, str) and value.strip():
         return value
     return None
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed
 
 
 def _provider_failure_counters(attempts: list[dict[str, Any]]) -> tuple[Counter[str], Counter[str]]:
