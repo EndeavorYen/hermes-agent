@@ -1100,6 +1100,89 @@ def test_scheduled_self_validation_exports_runtime_dependency_operator_action(mo
     assert "private_prompt" not in encoded
 
 
+def test_scheduled_self_validation_exports_quality_focus_evidence_to_latest_policy(
+    monkeypatch,
+    tmp_path,
+):
+    from scripts import visual_scheduled_self_validation
+
+    output_dir = tmp_path / "self_validation"
+    action = {
+        "type": "apply_quality_focus_operator",
+        "track": "aesthetic",
+        "reason": "fixture_quality_suite_quality_focus_failed",
+        "confidence": 0.76,
+        "evidence_count": 1,
+        "requires_human_feedback": False,
+        "activation_status": "next_run",
+        "source": "fixture_quality_suite",
+        "focus": "legwear_material",
+        "dimension": "fashion_material_quality",
+        "strategy_operator": "refine_legwear_material",
+        "repair_hint": "improve_fashion_material_quality",
+        "case_ids": ["fashion_portrait_video"],
+        "quality_issues": ["stockings_bad"],
+        "private_prompt": "do not leak this prompt",
+    }
+
+    def fake_automation(*, work_dir, include_live, include_live_slack_upload=False):
+        return {
+            **_automation_report(
+                include_live=include_live,
+                include_live_slack_upload=include_live_slack_upload,
+            ),
+            "success": False,
+            "failures": ["fixture_quality_suite_failed"],
+            "fixture_quality_suite": {
+                "success": False,
+                "case_count": 1,
+                "failures": ["fashion_portrait_video:quality_focus_failed:legwear_material"],
+            },
+            "self_improvement": {
+                "next_actions": [action],
+                "action_count": 1,
+                "reduces_human_intervention": True,
+                "privacy_safe": True,
+            },
+        }
+
+    monkeypatch.setattr(
+        visual_scheduled_self_validation,
+        "build_visual_e2e_automation_report",
+        fake_automation,
+    )
+
+    report = visual_scheduled_self_validation.build_visual_scheduled_self_validation_report(
+        output_dir=output_dir,
+        live_mode="off",
+        now=datetime(2026, 6, 22, 9, 0, tzinfo=timezone.utc),
+    )
+
+    expected_action = {
+        "type": "apply_quality_focus_operator",
+        "track": "aesthetic",
+        "reason": "fixture_quality_suite_quality_focus_failed",
+        "confidence": 0.76,
+        "evidence_count": 1,
+        "requires_human_feedback": False,
+        "activation_status": "next_run",
+        "source": "fixture_quality_suite",
+        "focus": "legwear_material",
+        "dimension": "fashion_material_quality",
+        "strategy_operator": "refine_legwear_material",
+        "repair_hint": "improve_fashion_material_quality",
+        "case_ids": ["fashion_portrait_video"],
+        "quality_issues": ["stockings_bad"],
+    }
+    assert report["success"] is False
+    assert report["runtime_policy"]["decision"] == "apply_next_run"
+    assert report["runtime_policy"]["next_actions"] == [expected_action]
+    latest = json.loads((output_dir / "latest.json").read_text(encoding="utf-8"))
+    assert latest["runtime_policy"]["next_actions"] == [expected_action]
+    encoded = json.dumps(latest["runtime_policy"], ensure_ascii=False)
+    assert "do not leak" not in encoded
+
+
 def test_scheduled_self_validation_summarizes_runtime_policy_effect(monkeypatch, tmp_path):
     from scripts import visual_scheduled_self_validation
 
