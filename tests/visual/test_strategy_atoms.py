@@ -22,4 +22,17 @@ def test_builtin_strategy_atoms_are_versioned_and_unique():
 
     assert "composition.full_subject_visible@v1" in signatures
     assert "motion.camera_push_in@v1" in signatures
+    assert "motion.natural_continuous_action@v1" in signatures
     assert len(signatures) == len(set(signatures))
+
+
+def test_natural_motion_atom_avoids_slow_push_in_bias():
+    from agent.visual.strategy_atoms import builtin_strategy_atom_map
+
+    atoms = builtin_strategy_atom_map()
+    atom = atoms["motion.natural_continuous_action@v1"]
+
+    assert "natural real-time motion" in atom.prompt_delta
+    assert "clear continuous motion" in atom.prompt_delta
+    assert "slow motion" in atom.negative_delta
+    assert "camera push-in" not in atom.prompt_delta

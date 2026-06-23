@@ -132,7 +132,7 @@ def _select_atoms(
         selected.append(atoms["composition.leg_emphasis_editorial@v1"])
     else:
         selected.append(atoms["composition.full_subject_visible@v1"])
-    selected.append(atoms["motion.camera_push_in@v1"])
+    selected.append(atoms["motion.natural_continuous_action@v1"])
     return selected
 
 

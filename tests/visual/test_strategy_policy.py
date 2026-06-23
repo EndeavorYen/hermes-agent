@@ -11,6 +11,8 @@ def test_strategy_policy_prefers_reliable_high_confidence_atoms():
     assert plan.mode == "exploit"
     assert plan.confidence >= 0.7
     assert plan.strategy_signature
+    assert "motion.natural_continuous_action@v1" in plan.atom_signatures
+    assert "motion.camera_push_in@v1" not in plan.atom_signatures
 
 
 def test_strategy_policy_stays_shadow_and_private_safe():

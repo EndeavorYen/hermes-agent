@@ -56,6 +56,17 @@ def builtin_strategy_atoms() -> list[StrategyAtom]:
             negative_delta="frozen frame, slow motion only, stretched video",
         ),
         StrategyAtom(
+            atom_id="motion.natural_continuous_action",
+            version="v1",
+            kind="motion",
+            public_summary="natural real-time continuous motion for short video packages",
+            prompt_delta=(
+                "natural real-time motion, normal playback speed, clear continuous motion, "
+                "visible subject, camera, or environmental movement"
+            ),
+            negative_delta="slow motion, frozen frame, slow cinematic-only push-in, stretched video",
+        ),
+        StrategyAtom(
             atom_id="motion.subject_turn_subtle",
             version="v1",
             kind="motion",
