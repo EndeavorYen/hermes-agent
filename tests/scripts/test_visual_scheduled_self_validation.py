@@ -1006,6 +1006,50 @@ def test_scheduled_self_validation_exports_safe_runtime_policy_even_when_report_
     assert "unknown_prompt_mutation" not in encoded
 
 
+def test_scheduled_self_validation_summarizes_runtime_policy_effect(monkeypatch, tmp_path):
+    from scripts import visual_scheduled_self_validation
+
+    def fake_automation(*, work_dir, include_live, include_live_slack_upload=False):
+        report = _automation_report(
+            include_live=include_live,
+            include_live_slack_upload=include_live_slack_upload,
+        )
+        report["fixture_e2e"] = {
+            "success": False,
+            "evidence": {
+                "runtime_policy_effect": {
+                    "policy_active": True,
+                    "applied": False,
+                    "expected_action_types": ["increase_candidate_budget"],
+                    "applied_action_types": [],
+                    "missing_action_types": ["increase_candidate_budget"],
+                }
+            },
+        }
+        return report
+
+    monkeypatch.setattr(
+        visual_scheduled_self_validation,
+        "build_visual_e2e_automation_report",
+        fake_automation,
+    )
+
+    report = visual_scheduled_self_validation.build_visual_scheduled_self_validation_report(
+        output_dir=tmp_path / "self_validation",
+        live_mode="off",
+        now=datetime(2026, 6, 22, 8, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["summary"]["fixture_runtime_policy_active"] is True
+    assert report["summary"]["fixture_runtime_policy_applied"] is False
+    assert report["summary"]["fixture_runtime_policy_expected_action_types"] == [
+        "increase_candidate_budget"
+    ]
+    assert report["summary"]["fixture_runtime_policy_missing_action_types"] == [
+        "increase_candidate_budget"
+    ]
+
+
 def test_scheduled_self_validation_carries_forward_recent_live_burn_actions(monkeypatch, tmp_path):
     from scripts import visual_scheduled_self_validation
 

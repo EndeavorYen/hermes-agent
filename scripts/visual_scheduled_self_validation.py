@@ -221,7 +221,10 @@ def _summary(automation: dict[str, Any], live_quality_trends: dict[str, Any] | N
         if isinstance(automation.get("self_improvement"), dict)
         else {}
     )
+    fixture_e2e = automation.get("fixture_e2e") if isinstance(automation.get("fixture_e2e"), dict) else {}
     live_e2e = automation.get("live_e2e") if isinstance(automation.get("live_e2e"), dict) else {}
+    fixture_runtime_policy_effect = _runtime_policy_effect(fixture_e2e)
+    live_runtime_policy_effect = _runtime_policy_effect(live_e2e)
     live_evidence = live_e2e.get("evidence") if isinstance(live_e2e.get("evidence"), dict) else {}
     quality_gate = live_evidence.get("quality_gate") if isinstance(live_evidence.get("quality_gate"), dict) else {}
     slack_delivery = automation.get("slack_delivery") if isinstance(automation.get("slack_delivery"), dict) else {}
@@ -370,6 +373,22 @@ def _summary(automation: dict[str, Any], live_quality_trends: dict[str, Any] | N
         else None,
         "slack_conversation_blocking_reasons": _list(
             slack_conversation_self_review.get("blocking_reasons")
+        ),
+        "fixture_runtime_policy_active": fixture_runtime_policy_effect.get("policy_active"),
+        "fixture_runtime_policy_applied": fixture_runtime_policy_effect.get("applied"),
+        "fixture_runtime_policy_expected_action_types": _list(
+            fixture_runtime_policy_effect.get("expected_action_types")
+        ),
+        "fixture_runtime_policy_missing_action_types": _list(
+            fixture_runtime_policy_effect.get("missing_action_types")
+        ),
+        "live_runtime_policy_active": live_runtime_policy_effect.get("policy_active"),
+        "live_runtime_policy_applied": live_runtime_policy_effect.get("applied"),
+        "live_runtime_policy_expected_action_types": _list(
+            live_runtime_policy_effect.get("expected_action_types")
+        ),
+        "live_runtime_policy_missing_action_types": _list(
+            live_runtime_policy_effect.get("missing_action_types")
         ),
         "live_quality_gate_success": quality_gate.get("success"),
         "live_quality_gate_min_score": quality_gate.get("min_score"),
@@ -572,6 +591,16 @@ def _modality_summary(summary: dict[str, Any], modality: str) -> dict[str, Any]:
         return {}
     value = by_modality.get(modality)
     return value if isinstance(value, dict) else {}
+
+
+def _runtime_policy_effect(report: dict[str, Any]) -> dict[str, Any]:
+    evidence = report.get("evidence") if isinstance(report.get("evidence"), dict) else {}
+    effect = (
+        evidence.get("runtime_policy_effect")
+        if isinstance(evidence.get("runtime_policy_effect"), dict)
+        else {}
+    )
+    return effect
 
 
 def _action_types(*action_lists: Any) -> list[str]:

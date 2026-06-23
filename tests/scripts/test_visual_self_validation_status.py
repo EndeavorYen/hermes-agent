@@ -253,11 +253,52 @@ def test_visual_self_validation_status_reports_runtime_policy_without_leaking_de
         "expires_at": "2026-06-23T10:19:00+00:00",
         "expired": False,
         "action_types": ["prefer_image_first_video", "increase_candidate_budget"],
+        "fixture_effect": {
+            "active": None,
+            "applied": None,
+            "expected_action_types": [],
+            "missing_action_types": [],
+        },
+        "live_effect": {
+            "active": None,
+            "applied": None,
+            "expected_action_types": [],
+            "missing_action_types": [],
+        },
     }
     assert "prefer_image_first_video" in status["self_improvement"]["action_types"]
     encoded = json.dumps(status, ensure_ascii=False)
     assert "do not leak" not in encoded
     assert "private_prompt" not in encoded
+
+
+def test_visual_self_validation_status_reports_runtime_policy_effect(tmp_path):
+    from scripts.visual_self_validation_status import build_visual_self_validation_status
+
+    payload = _scheduled_report()
+    payload["summary"]["live_runtime_policy_active"] = True
+    payload["summary"]["live_runtime_policy_applied"] = False
+    payload["summary"]["live_runtime_policy_expected_action_types"] = [
+        "increase_candidate_budget",
+        "prefer_image_first_video",
+    ]
+    payload["summary"]["live_runtime_policy_missing_action_types"] = [
+        "increase_candidate_budget"
+    ]
+    latest_path = _write_latest(tmp_path, payload)
+
+    status = build_visual_self_validation_status(latest_path=latest_path)
+
+    assert status["runtime_policy"]["live_effect"] == {
+        "active": True,
+        "applied": False,
+        "expected_action_types": [
+            "increase_candidate_budget",
+            "prefer_image_first_video",
+        ],
+        "missing_action_types": ["increase_candidate_budget"],
+    }
+    assert "verify_runtime_policy_application" in status["next_steps"]
 
 
 def test_visual_self_validation_status_flags_internal_source_image_delivery(tmp_path):

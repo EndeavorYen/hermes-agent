@@ -10,6 +10,8 @@ import sys
 import tempfile
 import threading
 from collections import Counter
+from datetime import datetime
+from datetime import timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -526,6 +528,7 @@ def inspect_visual_e2e_evidence(
             "image_count": len(payload.get("images") or []),
             "video_count": len(payload.get("videos") or []),
             "video_source": _video_source_evidence(payload, require_video=require_video),
+            "runtime_policy_effect": _runtime_policy_effect_evidence(payload),
         }
     ledger = VisualAttemptLedger(default_visual_ledger_path())
     attempts = _rows_for_request(ledger, "visual_attempts", request_id)
@@ -597,6 +600,7 @@ def inspect_visual_e2e_evidence(
         "quality_gate": quality_gate,
         "video_source": _video_source_evidence(payload, require_video=require_video),
         "storyboard_execution": _storyboard_execution_evidence(payload),
+        "runtime_policy_effect": _runtime_policy_effect_evidence(payload),
     }
 
 
@@ -768,6 +772,13 @@ def _payload_failures(
         failures.append("video_source_not_single_image")
     if mode == "live" and _contains_fixture_provider(payload, evidence):
         failures.append("non_live_provider_detected")
+    runtime_policy_effect = (
+        evidence.get("runtime_policy_effect")
+        if isinstance(evidence.get("runtime_policy_effect"), dict)
+        else {}
+    )
+    if runtime_policy_effect.get("policy_active") is True and runtime_policy_effect.get("applied") is not True:
+        failures.append("runtime_policy_not_applied")
     return sorted(set(failures))
 
 
@@ -884,6 +895,85 @@ def _video_source_evidence(payload: dict[str, Any], *, require_video: bool) -> d
         if video_source_image_count is None
         else video_source_image_count == 1,
     }
+
+
+def _runtime_policy_effect_evidence(payload: dict[str, Any]) -> dict[str, Any]:
+    policy = _active_runtime_policy()
+    expected_action_types = _runtime_policy_action_types(policy)
+    generation_strategy = (
+        payload.get("generation_strategy")
+        if isinstance(payload.get("generation_strategy"), dict)
+        else {}
+    )
+    feedback_policy = (
+        generation_strategy.get("feedback_policy")
+        if isinstance(generation_strategy.get("feedback_policy"), dict)
+        else {}
+    )
+    applied_action_types = _string_list(feedback_policy.get("applied_action_types"))
+    missing_action_types = [
+        action_type for action_type in expected_action_types if action_type not in applied_action_types
+    ]
+    unexpected_action_types = [
+        action_type for action_type in applied_action_types if action_type not in expected_action_types
+    ] if expected_action_types else []
+    return {
+        "policy_active": bool(expected_action_types),
+        "expected_action_types": expected_action_types,
+        "applied_action_types": applied_action_types,
+        "missing_action_types": missing_action_types,
+        "unexpected_action_types": unexpected_action_types,
+        "applied": bool(expected_action_types) and not missing_action_types,
+        "candidate_budget": _int_or_none(generation_strategy.get("candidate_budget")),
+        "candidate_budget_source": str(generation_strategy.get("candidate_budget_source") or ""),
+        "image_first_for_video": generation_strategy.get("image_first_for_video") is True,
+        "rerank_before_delivery": feedback_policy.get("rerank_before_delivery") is True,
+    }
+
+
+def _active_runtime_policy() -> dict[str, Any]:
+    latest_path = default_visual_ledger_path().parent / "self_validation" / "latest.json"
+    try:
+        payload = json.loads(latest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    policy = payload.get("runtime_policy")
+    if not isinstance(policy, dict):
+        return {}
+    if policy.get("success") is not True or policy.get("decision") != "apply_next_run":
+        return {}
+    expires_at = _parse_policy_datetime(policy.get("expires_at"))
+    if expires_at is None or expires_at <= datetime.now(timezone.utc):
+        return {}
+    return policy
+
+
+def _runtime_policy_action_types(policy: dict[str, Any]) -> list[str]:
+    actions = policy.get("next_actions")
+    if not isinstance(actions, list):
+        return []
+    values: list[str] = []
+    for action in actions:
+        if not isinstance(action, dict) or action.get("requires_human_feedback") is True:
+            continue
+        action_type = str(action.get("type") or "").strip()
+        if action_type and action_type not in values:
+            values.append(action_type)
+    return values
+
+
+def _parse_policy_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _string_or_none(value: Any) -> str | None:

@@ -84,6 +84,121 @@ def test_visual_live_provider_e2e_fixture_records_learning_evidence(tmp_path):
     assert report["evidence"]["judgments_with_learning_metadata"] >= 2
 
 
+def test_visual_live_provider_e2e_reports_runtime_policy_effect(monkeypatch, tmp_path):
+    from scripts import visual_live_provider_e2e
+
+    latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
+    latest_report.parent.mkdir(parents=True)
+    latest_report.write_text(
+        json.dumps(
+            {
+                "runtime_policy": {
+                    "success": True,
+                    "decision": "apply_next_run",
+                    "expires_at": "2999-06-23T08:00:00+00:00",
+                    "next_actions": [
+                        {
+                            "type": "increase_candidate_budget",
+                            "requires_human_feedback": False,
+                            "source": "live_quality_trends",
+                            "max_candidate_budget": 4,
+                        },
+                        {
+                            "type": "prefer_image_first_video",
+                            "requires_human_feedback": False,
+                            "source": "live_quality_trends",
+                        },
+                    ],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = visual_live_provider_e2e.build_visual_live_provider_e2e_report(
+        mode="fixture",
+        work_dir=tmp_path,
+    )
+
+    assert report["success"] is True
+    assert report["evidence"]["runtime_policy_effect"] == {
+        "policy_active": True,
+        "expected_action_types": [
+            "increase_candidate_budget",
+            "prefer_image_first_video",
+        ],
+        "applied_action_types": [
+            "increase_candidate_budget",
+            "prefer_image_first_video",
+        ],
+        "missing_action_types": [],
+        "unexpected_action_types": [],
+        "applied": True,
+        "candidate_budget": 4,
+        "candidate_budget_source": "live_quality_trends",
+        "image_first_for_video": True,
+        "rerank_before_delivery": True,
+    }
+
+
+def test_visual_live_provider_e2e_fails_when_active_runtime_policy_not_applied(monkeypatch, tmp_path):
+    from scripts import visual_live_provider_e2e
+
+    latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
+    latest_report.parent.mkdir(parents=True)
+    latest_report.write_text(
+        json.dumps(
+            {
+                "runtime_policy": {
+                    "success": True,
+                    "decision": "apply_next_run",
+                    "expires_at": "2999-06-23T08:00:00+00:00",
+                    "next_actions": [
+                        {
+                            "type": "increase_candidate_budget",
+                            "requires_human_feedback": False,
+                            "source": "live_quality_trends",
+                            "max_candidate_budget": 4,
+                        }
+                    ],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        visual_live_provider_e2e,
+        "run_visual_package",
+        lambda _args: {
+            "success": True,
+            "visual_request_id": "",
+            "images": [str(tmp_path / "image.png")],
+            "videos": [str(tmp_path / "video.mp4")],
+            "generation_strategy": {
+                "candidate_budget": 1,
+                "candidate_budget_source": "default",
+                "image_first_for_video": True,
+                "feedback_policy": {
+                    "applied_action_types": [],
+                    "applied_action_sources": [],
+                },
+            },
+        },
+    )
+
+    report = visual_live_provider_e2e.build_visual_live_provider_e2e_report(
+        mode="fixture",
+        work_dir=tmp_path,
+    )
+
+    assert report["success"] is False
+    assert "runtime_policy_not_applied" in report["failures"]
+    assert report["evidence"]["runtime_policy_effect"]["missing_action_types"] == [
+        "increase_candidate_budget"
+    ]
+
+
 def test_visual_live_provider_e2e_fixture_storyboard_execution_composes_video(tmp_path):
     from scripts.visual_live_provider_e2e import build_visual_storyboard_execution_report
 

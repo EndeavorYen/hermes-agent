@@ -64,7 +64,7 @@ def build_visual_self_validation_status(
         not is_stale and live_conversation_quality_evidence_ready(summary)
     )
     failures = _strings(payload.get("failures"))
-    runtime_policy = _runtime_policy_status(payload.get("runtime_policy"), now=now)
+    runtime_policy = _runtime_policy_status(payload.get("runtime_policy"), now=now, summary=summary)
     actions = _collect_actions(payload)
     action_types = _action_types(summary, actions)
     trend_degradations = _strings(summary.get("live_quality_trend_degradations"))
@@ -314,7 +314,7 @@ def _collect_actions(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return actions
 
 
-def _runtime_policy_status(value: Any, *, now: datetime) -> dict[str, Any]:
+def _runtime_policy_status(value: Any, *, now: datetime, summary: dict[str, Any]) -> dict[str, Any]:
     policy = value if isinstance(value, dict) else {}
     generated_at = policy.get("generated_at") if isinstance(policy.get("generated_at"), str) else None
     expires_at_value = policy.get("expires_at") if isinstance(policy.get("expires_at"), str) else None
@@ -328,6 +328,17 @@ def _runtime_policy_status(value: Any, *, now: datetime) -> dict[str, Any]:
         "expires_at": expires_at_value,
         "expired": expired,
         "action_types": _action_types({}, actions),
+        "fixture_effect": _runtime_policy_effect_status(summary, prefix="fixture"),
+        "live_effect": _runtime_policy_effect_status(summary, prefix="live"),
+    }
+
+
+def _runtime_policy_effect_status(summary: dict[str, Any], *, prefix: str) -> dict[str, Any]:
+    return {
+        "active": summary.get(f"{prefix}_runtime_policy_active"),
+        "applied": summary.get(f"{prefix}_runtime_policy_applied"),
+        "expected_action_types": _strings(summary.get(f"{prefix}_runtime_policy_expected_action_types")),
+        "missing_action_types": _strings(summary.get(f"{prefix}_runtime_policy_missing_action_types")),
     }
 
 
@@ -382,6 +393,8 @@ def _next_steps(
         steps.append("refresh_stale_self_validation")
     if trend_degradations:
         steps.append("stabilize_live_quality_trends")
+    if _runtime_policy_not_applied(summary):
+        steps.append("verify_runtime_policy_application")
     if summary.get("slack_duplicate_delivery_count") not in (None, 0):
         steps.append("fix_duplicate_delivery")
     if _int(summary.get("slack_internal_source_image_delivery_count")) > 0:
@@ -407,6 +420,16 @@ def _next_steps(
     if not steps:
         steps.append("continue_visual_agent_mode_rollout")
     return steps
+
+
+def _runtime_policy_not_applied(summary: dict[str, Any]) -> bool:
+    for prefix in ("fixture", "live"):
+        if (
+            summary.get(f"{prefix}_runtime_policy_active") is True
+            and summary.get(f"{prefix}_runtime_policy_applied") is False
+        ):
+            return True
+    return False
 
 
 def _health_status(
