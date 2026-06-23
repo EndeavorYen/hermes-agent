@@ -654,3 +654,46 @@ def test_feedback_policy_applies_missing_video_fallback_action_without_retry_bud
         }
     ]
     assert policy["applied_action_types"] == ["configure_video_fallback_provider"]
+
+
+def test_feedback_policy_applies_visual_judge_provider_setup_action():
+    from agent.visual.feedback_policy import resolve_visual_feedback_policy
+
+    policy = resolve_visual_feedback_policy(
+        {
+            "next_actions": [
+                {
+                    "type": "configure_visual_judge_provider",
+                    "track": "evaluation",
+                    "reason": "live_quality_burn_inline_vision_quota_exceeded",
+                    "confidence": 0.9,
+                    "requires_human_feedback": False,
+                    "requires_operator_setup": True,
+                    "evaluation_operator": "inline_vision_preference_dimensions",
+                    "provider_failure_classes": {"quota_exceeded": 4},
+                    "operator_setup_actions": [
+                        {
+                            "provider": "vision_judge",
+                            "missing_env_vars": [],
+                            "post_setup": "Configure a non-quota-blocked visual judge provider or restore quota for the active visual judge provider.",
+                        }
+                    ],
+                }
+            ]
+        },
+        wants_image=True,
+        wants_video=True,
+        explicit_candidate_budget=None,
+        default_candidate_budget=2,
+    )
+
+    assert policy["requires_operator_setup"] is True
+    assert policy["operator_setup_actions"] == [
+        {
+            "provider": "vision_judge",
+            "missing_env_vars": [],
+            "post_setup": "Configure a non-quota-blocked visual judge provider or restore quota for the active visual judge provider.",
+        }
+    ]
+    assert policy["applied_action_types"] == ["configure_visual_judge_provider"]
+    assert policy["applied_action_sources"] == ["feedback_loop"]

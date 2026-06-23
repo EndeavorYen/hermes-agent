@@ -568,6 +568,50 @@ def test_visual_self_validation_status_warns_on_visual_runtime_dependency_setup(
     assert "private_prompt" not in encoded
 
 
+def test_visual_self_validation_status_warns_on_visual_judge_provider_setup(tmp_path):
+    from scripts.visual_self_validation_status import build_visual_self_validation_status
+
+    report = _scheduled_report(success=False)
+    action = {
+        "type": "configure_visual_judge_provider",
+        "track": "evaluation",
+        "reason": "live_quality_burn_inline_vision_quota_exceeded",
+        "requires_human_feedback": False,
+        "requires_operator_setup": True,
+        "activation_status": "operator_setup",
+        "source": "live_quality_burn",
+        "evaluation_operator": "inline_vision_preference_dimensions",
+        "provider_failure_classes": {"quota_exceeded": 4},
+        "operator_setup_actions": [
+            {
+                "provider": "vision_judge",
+                "missing_env_vars": [],
+                "post_setup": "Configure a non-quota-blocked visual judge provider or restore quota for the active visual judge provider.",
+            }
+        ],
+    }
+    report["failures"] = ["live_e2e_failed", "live_quality_suite_failed"]
+    report["summary"]["feedback_action_types"] = ["configure_visual_judge_provider"]
+    report["automation"]["self_improvement"]["next_actions"] = [action]
+    report["runtime_policy"] = {
+        "success": True,
+        "decision": "apply_next_run",
+        "generated_at": "2026-06-22T10:19:00+00:00",
+        "expires_at": "2026-06-23T10:19:00+00:00",
+        "next_actions": [action],
+    }
+    latest_path = _write_latest(tmp_path, report)
+
+    status = build_visual_self_validation_status(latest_path=latest_path)
+
+    assert status["success"] is False
+    assert status["health_status"] == "warn"
+    assert "configure_visual_judge_provider" in status["self_improvement"]["action_types"]
+    assert "configure_visual_judge_provider" in status["runtime_policy"]["action_types"]
+    assert "configure_visual_judge_provider" in status["next_steps"]
+    assert status["live"]["provider_failure_classes"] == {"quota_exceeded": 4}
+
+
 def test_visual_self_validation_status_warns_on_live_quality_trend_degradation(tmp_path):
     from scripts.visual_self_validation_status import build_visual_self_validation_status
 

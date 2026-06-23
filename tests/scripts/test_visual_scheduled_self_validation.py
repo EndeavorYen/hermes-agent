@@ -1232,6 +1232,67 @@ def test_scheduled_self_validation_exports_provider_connectivity_action(monkeypa
     assert report["runtime_policy"]["next_actions"] == [action]
 
 
+def test_scheduled_self_validation_exports_visual_judge_setup_action(monkeypatch, tmp_path):
+    from scripts import visual_scheduled_self_validation
+
+    output_dir = tmp_path / "self_validation"
+    action = {
+        "type": "configure_visual_judge_provider",
+        "track": "evaluation",
+        "reason": "live_quality_burn_inline_vision_quota_exceeded",
+        "confidence": 0.9,
+        "evidence_count": 4,
+        "requires_human_feedback": False,
+        "requires_operator_setup": True,
+        "activation_status": "operator_setup",
+        "source": "live_quality_burn",
+        "evaluation_operator": "inline_vision_preference_dimensions",
+        "provider_failure_classes": {"quota_exceeded": 4},
+        "operator_setup_actions": [
+            {
+                "provider": "vision_judge",
+                "missing_env_vars": [],
+                "post_setup": "Configure a non-quota-blocked visual judge provider or restore quota for the active visual judge provider.",
+            }
+        ],
+        "private_prompt": "do not leak",
+    }
+
+    def fake_automation(*, work_dir, include_live, include_live_slack_upload=False):
+        return {
+            **_automation_report(
+                include_live=include_live,
+                include_live_slack_upload=include_live_slack_upload,
+            ),
+            "success": False,
+            "failures": ["live_e2e_failed"],
+            "self_improvement": {
+                "next_actions": [action],
+                "action_count": 1,
+                "reduces_human_intervention": False,
+                "privacy_safe": True,
+            },
+        }
+
+    monkeypatch.setattr(
+        visual_scheduled_self_validation,
+        "build_visual_e2e_automation_report",
+        fake_automation,
+    )
+
+    report = visual_scheduled_self_validation.build_visual_scheduled_self_validation_report(
+        output_dir=output_dir,
+        live_mode="on",
+        now=datetime(2026, 6, 22, 9, 45, tzinfo=timezone.utc),
+    )
+
+    expected_action = {key: value for key, value in action.items() if key != "private_prompt"}
+    assert report["runtime_policy"]["decision"] == "apply_next_run"
+    assert report["runtime_policy"]["next_actions"] == [expected_action]
+    encoded = json.dumps(report["runtime_policy"], ensure_ascii=False)
+    assert "do not leak" not in encoded
+
+
 def test_scheduled_self_validation_summarizes_runtime_policy_effect(monkeypatch, tmp_path):
     from scripts import visual_scheduled_self_validation
 

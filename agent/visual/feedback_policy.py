@@ -164,6 +164,10 @@ def resolve_visual_feedback_policy(
             operator_setup_actions = operator_setup_actions_from_action(action)
             _append_once(applied_action_types, action_type)
             _append_once(applied_action_sources, action_source)
+        elif action_type == "configure_visual_judge_provider":
+            operator_setup_actions = operator_setup_actions_from_action(action)
+            _append_once(applied_action_types, action_type)
+            _append_once(applied_action_sources, action_source)
         elif action_type == "prefer_strategy":
             preference = _strategy_preference(action)
             if preference:

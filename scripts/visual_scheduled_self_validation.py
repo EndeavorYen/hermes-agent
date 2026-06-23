@@ -37,6 +37,7 @@ _RUNTIME_POLICY_ACTION_TYPES = {
     "check_provider_connectivity_or_retry",
     "resolve_provider_quota_or_switch_provider",
     "configure_video_fallback_provider",
+    "configure_visual_judge_provider",
     "configure_visual_runtime_dependencies",
     "prefer_strategy",
 }
@@ -52,6 +53,7 @@ _RUNTIME_POLICY_ACTION_KEYS = {
     "source",
     "missing_modules",
     "operator_setup_actions",
+    "evaluation_operator",
     "max_candidate_budget",
     "candidate_budget",
     "modality",

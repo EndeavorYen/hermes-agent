@@ -141,6 +141,7 @@ def _summary(suite: dict[str, Any]) -> dict[str, Any]:
         if isinstance(suite.get("quality_focus_summary"), dict)
         else {}
     )
+    inline_vision_failure_classes = _inline_vision_failure_classes(cases)
     return {
         "case_count": _int(suite.get("case_count"), default=len(cases)),
         "promotion_case_count": len([case for case in promotion_cases if isinstance(case, dict)]),
@@ -175,6 +176,8 @@ def _summary(suite: dict[str, Any]) -> dict[str, Any]:
         "video_missing_after_image_count": len(video_missing_after_image_case_ids),
         "video_missing_after_image_case_ids": video_missing_after_image_case_ids,
         "provider_failure_count": _int(recovery.get("provider_failure_count")),
+        "inline_vision_failure_count": sum(inline_vision_failure_classes.values()),
+        "inline_vision_failure_classes": inline_vision_failure_classes,
         "negotiation_success_case_count": _int(recovery.get("negotiation_success_case_count")),
         "quality_repair_attempt_count": _int(repair.get("attempt_count")),
         "quality_repair_success_count": _int(repair.get("success_count")),
@@ -570,6 +573,7 @@ def _next_actions(suite: dict[str, Any], summary: dict[str, Any]) -> list[dict[s
                 repair_hint="preserve_source_aspect_ratio",
             )
         )
+    actions.extend(_inline_vision_failure_actions(summary))
     actions.extend(_provider_failure_actions(recovery))
     repair = suite.get("quality_repair_summary") if isinstance(suite.get("quality_repair_summary"), dict) else {}
     actions.extend(_quality_repair_actions(repair, summary=summary))
@@ -603,6 +607,45 @@ def _provider_failure_explains_missing_video(recovery: dict[str, Any]) -> bool:
     return _int(recovery.get("provider_failure_count")) > 0
 
 
+def _inline_vision_failure_actions(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    classes = _int_mapping(summary.get("inline_vision_failure_classes"))
+    failure_count = _int(summary.get("inline_vision_failure_count"))
+    if failure_count <= 0 or not classes:
+        return []
+    if classes.get("quota_exceeded", 0) > 0:
+        reason = "live_quality_burn_inline_vision_quota_exceeded"
+        confidence = 0.9
+    elif classes.get("provider_unavailable", 0) > 0:
+        reason = "live_quality_burn_inline_vision_provider_unavailable"
+        confidence = 0.84
+    else:
+        reason = "live_quality_burn_inline_vision_provider_failed"
+        confidence = 0.78
+    return [
+        _action(
+            "configure_visual_judge_provider",
+            "evaluation",
+            reason,
+            confidence=confidence,
+            evidence_count=failure_count,
+            requires_operator_setup=True,
+            activation_status="operator_setup",
+            evaluation_operator="inline_vision_preference_dimensions",
+            provider_failure_classes=classes,
+            operator_setup_actions=[
+                {
+                    "provider": "vision_judge",
+                    "missing_env_vars": [],
+                    "post_setup": (
+                        "Configure a non-quota-blocked visual judge provider or restore "
+                        "quota for the active visual judge provider."
+                    ),
+                }
+            ],
+        )
+    ]
+
+
 def _has_promotion_quality_evidence(
     summary: dict[str, Any],
     *,
@@ -618,6 +661,17 @@ def _has_promotion_quality_evidence(
     if isinstance(preference_failures, list) and preference_failures:
         return True
     return _float_or_none(summary.get("promotion_min_quality_score")) is not None
+
+
+def _inline_vision_failure_classes(cases: list[Any]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for case in cases:
+        if not isinstance(case, dict):
+            continue
+        evidence = case.get("evidence") if isinstance(case.get("evidence"), dict) else {}
+        for key, count in _int_mapping(evidence.get("inline_vision_failure_classes")).items():
+            counts[key] = counts.get(key, 0) + count
+    return counts
 
 
 def _video_aspect_mismatch_count(suite: dict[str, Any]) -> int:

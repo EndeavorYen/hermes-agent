@@ -988,6 +988,82 @@ def test_visual_live_quality_burn_routes_quota_to_provider_account_action(monkey
     } in report["next_actions"]
 
 
+def test_visual_live_quality_burn_routes_inline_vision_quota_to_judge_setup_action(
+    monkeypatch,
+    tmp_path,
+):
+    from scripts import visual_live_quality_burn
+
+    suite = _suite_with_quality_failure()
+    suite["case_count"] = 1
+    suite["failures"] = [
+        "product_photo_video:inline_vision_provider_failure",
+        "product_photo_video:quality_gate_failed",
+    ]
+    suite["cases"] = [
+        {
+            "case_id": "product_photo_video",
+            "success": False,
+            "failures": ["inline_vision_provider_failure", "quality_gate_failed"],
+            "evidence": {
+                "image_count": 1,
+                "video_count": 1,
+                "inline_vision_failure_count": 4,
+                "inline_vision_failure_classes": {"quota_exceeded": 4},
+                "quality_gate": {
+                    "success": False,
+                    "min_score": None,
+                    "quality_issues": [],
+                },
+            },
+        }
+    ]
+    suite["recovery_summary"] = {
+        "provider_failure_count": 0,
+        "provider_failure_classes": {},
+        "provider_error_codes": {},
+        "retry_attempt_count": 0,
+        "negotiation_attempted_case_count": 0,
+        "negotiation_success_case_count": 0,
+    }
+
+    monkeypatch.setattr(
+        visual_live_quality_burn,
+        "build_visual_live_provider_e2e_suite_report",
+        lambda **_kwargs: suite,
+    )
+
+    report = visual_live_quality_burn.build_visual_live_quality_burn_report(
+        mode="live",
+        output_dir=tmp_path,
+    )
+
+    assert report["summary"]["inline_vision_failure_count"] == 4
+    assert report["summary"]["inline_vision_failure_classes"] == {"quota_exceeded": 4}
+    assert {
+        "type": "configure_visual_judge_provider",
+        "track": "evaluation",
+        "reason": "live_quality_burn_inline_vision_quota_exceeded",
+        "confidence": 0.9,
+        "evidence_count": 4,
+        "requires_human_feedback": False,
+        "requires_operator_setup": True,
+        "activation_status": "operator_setup",
+        "source": "live_quality_burn",
+        "evaluation_operator": "inline_vision_preference_dimensions",
+        "provider_failure_classes": {"quota_exceeded": 4},
+        "operator_setup_actions": [
+            {
+                "provider": "vision_judge",
+                "missing_env_vars": [],
+                "post_setup": "Configure a non-quota-blocked visual judge provider or restore quota for the active visual judge provider.",
+            }
+        ],
+    } in report["next_actions"]
+    assert report["self_review"]["requires_operator_setup"] is True
+    assert report["self_review"]["reduces_human_intervention"] is False
+
+
 def test_visual_live_quality_burn_routes_missing_video_fallback_to_provider_action(monkeypatch, tmp_path):
     from scripts import visual_live_quality_burn
 

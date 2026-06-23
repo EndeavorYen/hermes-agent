@@ -35,6 +35,7 @@ _RUNTIME_POLICY_ACTION_TYPES = {
     "check_provider_connectivity_or_retry",
     "resolve_provider_quota_or_switch_provider",
     "configure_video_fallback_provider",
+    "configure_visual_judge_provider",
     "configure_visual_runtime_dependencies",
     "prefer_strategy",
 }
@@ -427,6 +428,12 @@ def _next_steps(
         runtime_policy,
     ):
         steps.append("configure_visual_runtime_dependencies")
+    if _has_action_type(
+        "configure_visual_judge_provider",
+        summary,
+        runtime_policy,
+    ):
+        steps.append("configure_visual_judge_provider")
     if summary.get("closed_loop_regression_success") is False or "closed_loop_regression_failed" in failures:
         steps.append("inspect_closed_loop_policy_application")
     if (
@@ -525,11 +532,16 @@ def _health_status(
 
 
 def _runtime_dependency_setup_pending(failures: list[str], next_steps: list[str]) -> bool:
-    if "configure_visual_runtime_dependencies" not in next_steps:
-        return False
     if not failures:
         return False
-    return all(failure == "runtime_environment_missing_dependencies" for failure in failures)
+    if "configure_visual_runtime_dependencies" in next_steps:
+        return all(failure == "runtime_environment_missing_dependencies" for failure in failures)
+    if "configure_visual_judge_provider" in next_steps:
+        return all(
+            failure in {"live_e2e_failed", "live_quality_suite_failed"}
+            for failure in failures
+        )
+    return False
 
 
 def _carried_live_evidence_current(
