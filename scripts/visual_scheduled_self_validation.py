@@ -180,11 +180,14 @@ def _live_policy(
             "mode": mode,
             "decision": "run",
             "live_enabled": True,
+            "reason": "no_previous_live_run",
             "min_live_interval_hours": min_live_interval_hours,
             "last_live_run_at": None,
         }
     elapsed_hours = (now - last_live_run_at).total_seconds() / 3600
     if elapsed_hours < max(0, min_live_interval_hours):
+        remaining_hours = max(0.0, min_live_interval_hours - elapsed_hours)
+        next_live_run_at = last_live_run_at + timedelta(hours=max(0, min_live_interval_hours))
         trend_degradations = _live_quality_trend_degradations(live_quality_trends)
         if trend_degradations:
             return {
@@ -204,11 +207,14 @@ def _live_policy(
             "min_live_interval_hours": min_live_interval_hours,
             "last_live_run_at": last_live_run_at.isoformat(),
             "elapsed_hours": round(elapsed_hours, 4),
+            "remaining_hours": round(remaining_hours, 4),
+            "next_live_run_at": next_live_run_at.isoformat(),
         }
     return {
         "mode": mode,
         "decision": "run",
         "live_enabled": True,
+        "reason": "min_live_interval_elapsed",
         "min_live_interval_hours": min_live_interval_hours,
         "last_live_run_at": last_live_run_at.isoformat(),
         "elapsed_hours": round(elapsed_hours, 4),

@@ -269,6 +269,8 @@ def _sanitise_live_policy(value: Any) -> dict[str, Any]:
         "min_live_interval_hours",
         "last_live_run_at",
         "elapsed_hours",
+        "remaining_hours",
+        "next_live_run_at",
         "reason",
         "degradations",
         "missing_env_vars",
@@ -280,6 +282,10 @@ def _sanitise_live_policy(value: Any) -> dict[str, Any]:
         sanitized["reason"] = "live_quality_trend_degraded"
     elif source.get("reason") == "operator_setup_env_unresolved":
         sanitized["reason"] = "operator_setup_env_unresolved"
+    elif source.get("reason") == "no_previous_live_run":
+        sanitized["reason"] = "no_previous_live_run"
+    elif source.get("reason") == "min_live_interval_elapsed":
+        sanitized["reason"] = "min_live_interval_elapsed"
     else:
         sanitized.pop("reason", None)
     missing_env_vars = _strings(source.get("missing_env_vars"))

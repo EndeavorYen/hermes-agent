@@ -485,6 +485,8 @@ def test_visual_self_validation_status_accepts_recent_carried_live_burn_on_inter
         "min_live_interval_hours": 6,
         "last_live_run_at": "2026-06-22T11:35:17+00:00",
         "elapsed_hours": 5.2,
+        "remaining_hours": 0.8,
+        "next_live_run_at": "2026-06-22T17:35:17+00:00",
     }
     report["slack_live_upload_policy"] = {
         "decision": "not_requested",
@@ -509,6 +511,8 @@ def test_visual_self_validation_status_accepts_recent_carried_live_burn_on_inter
     assert status["health_status"] == "pass"
     assert status["live_e2e_ran"] is False
     assert status["live"]["burn_success"] is True
+    assert status["live_policy"]["remaining_hours"] == 0.8
+    assert status["live_policy"]["next_live_run_at"] == "2026-06-22T17:35:17+00:00"
     assert status["live"]["image_first_video_source_covered"] is True
     assert status["next_steps"] == ["continue_visual_agent_mode_rollout"]
     assert status["self_review"]["reduces_human_intervention"] is True

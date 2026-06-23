@@ -864,7 +864,75 @@ def test_scheduled_self_validation_skips_live_until_interval_elapsed(monkeypatch
     )
 
     assert report["live_policy"]["decision"] == "skip_interval"
+    assert report["live_policy"]["remaining_hours"] == 4.5
+    assert report["live_policy"]["next_live_run_at"] == "2026-06-22T12:30:00+00:00"
     assert calls == [{"include_live": False, "include_live_slack_upload": False}]
+
+
+def test_scheduled_self_validation_auto_reports_first_live_run_reason(monkeypatch, tmp_path):
+    from scripts import visual_scheduled_self_validation
+
+    calls = []
+    monkeypatch.setattr(
+        visual_scheduled_self_validation,
+        "build_visual_e2e_automation_report",
+        lambda *, work_dir, include_live, include_live_slack_upload=False: (
+            calls.append({"include_live": include_live, "include_live_slack_upload": include_live_slack_upload})
+            or _automation_report(
+                include_live=include_live,
+                include_live_slack_upload=include_live_slack_upload,
+            )
+        ),
+    )
+
+    report = visual_scheduled_self_validation.build_visual_scheduled_self_validation_report(
+        output_dir=tmp_path,
+        live_mode="auto",
+        live_enabled=True,
+        min_live_interval_hours=6,
+        now=datetime(2026, 6, 22, 8, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["live_policy"]["decision"] == "run"
+    assert report["live_policy"]["reason"] == "no_previous_live_run"
+    assert report["live_policy"]["min_live_interval_hours"] == 6
+    assert report["live_policy"]["last_live_run_at"] is None
+    assert calls == [{"include_live": True, "include_live_slack_upload": False}]
+
+
+def test_scheduled_self_validation_auto_reports_elapsed_interval_run_reason(monkeypatch, tmp_path):
+    from scripts import visual_scheduled_self_validation
+
+    (tmp_path / "state.json").write_text(
+        json.dumps({"last_live_run_at": "2026-06-22T00:00:00+00:00"}),
+        encoding="utf-8",
+    )
+    calls = []
+    monkeypatch.setattr(
+        visual_scheduled_self_validation,
+        "build_visual_e2e_automation_report",
+        lambda *, work_dir, include_live, include_live_slack_upload=False: (
+            calls.append({"include_live": include_live, "include_live_slack_upload": include_live_slack_upload})
+            or _automation_report(
+                include_live=include_live,
+                include_live_slack_upload=include_live_slack_upload,
+            )
+        ),
+    )
+
+    report = visual_scheduled_self_validation.build_visual_scheduled_self_validation_report(
+        output_dir=tmp_path,
+        live_mode="auto",
+        live_enabled=True,
+        min_live_interval_hours=6,
+        now=datetime(2026, 6, 22, 8, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["live_policy"]["decision"] == "run"
+    assert report["live_policy"]["reason"] == "min_live_interval_elapsed"
+    assert report["live_policy"]["min_live_interval_hours"] == 6
+    assert report["live_policy"]["elapsed_hours"] == 8.0
+    assert calls == [{"include_live": True, "include_live_slack_upload": False}]
 
 
 def test_scheduled_self_validation_auto_runs_live_when_quality_trend_degrades(monkeypatch, tmp_path):
