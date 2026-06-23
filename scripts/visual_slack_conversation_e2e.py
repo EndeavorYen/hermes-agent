@@ -29,6 +29,19 @@ from scripts.visual_slack_delivery_e2e import build_visual_slack_delivery_e2e_re
 from scripts.visual_slack_delivery_e2e import _resolve_target
 
 
+_QUALITY_ISSUE_TO_DIMENSION = {
+    "subject_not_attractive": ("subject_beauty", "subject_not_attractive"),
+    "not_beautiful": ("subject_beauty", "subject_not_attractive"),
+    "face_unnatural": ("face_naturalness", "face_unnatural"),
+    "stockings_bad": ("fashion_material_quality", "stockings_bad"),
+    "composition_bad": ("pose_composition", "composition_bad"),
+    "motion_bad": ("motion_quality", "motion_bad"),
+    "static_video": ("motion_quality", "motion_bad"),
+    "slow_motion": ("motion_quality", "motion_bad"),
+    "too_slow": ("motion_quality", "motion_bad"),
+}
+
+
 def build_visual_slack_conversation_e2e_report(
     *,
     mode: str = "fixture",
@@ -928,7 +941,43 @@ def _next_actions_from_quality_gate(quality_gate: dict[str, Any]) -> list[dict[s
                 repair_hint=_repair_hint_for_dimension(failure["dimension"]),
             )
         )
+    known_failure_dimensions = {failure["dimension"] for failure in preference_failures}
+    for failure in _dimension_failures_from_quality_issues(
+        quality_issues,
+        exclude_dimensions=known_failure_dimensions,
+    ):
+        actions.append(
+            _action(
+                "repair_low_preference_dimension",
+                "aesthetic",
+                "slack_conversation_quality_issue_dimension_low",
+                confidence=0.68,
+                evidence_count=1,
+                dimension=failure["dimension"],
+                quality_issue=failure["issue"],
+                repair_hint=_repair_hint_for_dimension(failure["dimension"]),
+            )
+        )
     return actions
+
+
+def _dimension_failures_from_quality_issues(
+    quality_issues: list[str],
+    *,
+    exclude_dimensions: set[str],
+) -> list[dict[str, str]]:
+    failures: list[dict[str, str]] = []
+    seen = set(exclude_dimensions)
+    for issue in quality_issues:
+        mapped = _QUALITY_ISSUE_TO_DIMENSION.get(issue)
+        if mapped is None:
+            continue
+        dimension, repair_issue = mapped
+        if dimension in seen:
+            continue
+        seen.add(dimension)
+        failures.append({"dimension": dimension, "issue": repair_issue})
+    return failures
 
 
 def _preference_dimension_failures(value: Any) -> list[dict[str, str]]:

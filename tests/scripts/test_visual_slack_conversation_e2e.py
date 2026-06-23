@@ -334,6 +334,126 @@ def test_visual_slack_conversation_e2e_self_review_repairs_successful_low_qualit
     assert "rerank_before_slack" in [action["type"] for action in report["next_actions"]]
 
 
+def test_visual_slack_conversation_e2e_maps_quality_issues_to_dimension_repairs(
+    monkeypatch,
+    tmp_path,
+):
+    from scripts import visual_slack_conversation_e2e
+
+    def low_quality_without_dimension_delivery(**kwargs):
+        return {
+            "success": False,
+            "mode": kwargs["mode"],
+            "failures": ["quality_gate_failed", "selected_quality_issue_detected"],
+            "target": {
+                "platform": "slack",
+                "destination_id": kwargs["target"],
+                "thread_id": kwargs["thread_id"],
+            },
+            "visual": {
+                "request_id": "vrq_quality_issue_only",
+                "image_count": 1,
+                "video_count": 1,
+                "video_source": {"uses_ranked_selected_image": True},
+                "recovery_summary": {
+                    "provider_failure_count": 0,
+                    "provider_failure_classes": {},
+                    "provider_error_codes": {},
+                },
+                "quality_gate": {
+                    "success": False,
+                    "quality_issues": [
+                        "subject_not_attractive",
+                        "stockings_bad",
+                        "composition_bad",
+                        "static_video",
+                    ],
+                    "preference_dimension_failures": [],
+                },
+            },
+            "delivery": {
+                "deliverable_count": 0,
+                "sent_count": 0,
+                "duplicate_delivery_count": 0,
+                "internal_source_image_delivered": False,
+                "missing_delivery_artifact_ids": [],
+                "unexpected_delivery_artifact_ids": [],
+            },
+        }
+
+    monkeypatch.setattr(
+        visual_slack_conversation_e2e,
+        "build_visual_slack_delivery_e2e_report",
+        low_quality_without_dimension_delivery,
+    )
+
+    report = visual_slack_conversation_e2e.build_visual_slack_conversation_e2e_report(
+        mode="fixture",
+        work_dir=tmp_path,
+        target="D_TEST",
+        repair_budget=0,
+    )
+
+    repair_actions = [
+        action
+        for action in report["next_actions"]
+        if action["type"] == "repair_low_preference_dimension"
+    ]
+
+    assert {
+        "type": "repair_low_preference_dimension",
+        "track": "aesthetic",
+        "reason": "slack_conversation_quality_issue_dimension_low",
+        "confidence": 0.68,
+        "evidence_count": 1,
+        "requires_human_feedback": False,
+        "activation_status": "next_run",
+        "source": "slack_conversation_e2e",
+        "dimension": "subject_beauty",
+        "quality_issue": "subject_not_attractive",
+        "repair_hint": "improve_subject_beauty",
+    } in repair_actions
+    assert {
+        "type": "repair_low_preference_dimension",
+        "track": "aesthetic",
+        "reason": "slack_conversation_quality_issue_dimension_low",
+        "confidence": 0.68,
+        "evidence_count": 1,
+        "requires_human_feedback": False,
+        "activation_status": "next_run",
+        "source": "slack_conversation_e2e",
+        "dimension": "fashion_material_quality",
+        "quality_issue": "stockings_bad",
+        "repair_hint": "improve_fashion_material_quality",
+    } in repair_actions
+    assert {
+        "type": "repair_low_preference_dimension",
+        "track": "aesthetic",
+        "reason": "slack_conversation_quality_issue_dimension_low",
+        "confidence": 0.68,
+        "evidence_count": 1,
+        "requires_human_feedback": False,
+        "activation_status": "next_run",
+        "source": "slack_conversation_e2e",
+        "dimension": "pose_composition",
+        "quality_issue": "composition_bad",
+        "repair_hint": "improve_pose_composition",
+    } in repair_actions
+    assert {
+        "type": "repair_low_preference_dimension",
+        "track": "aesthetic",
+        "reason": "slack_conversation_quality_issue_dimension_low",
+        "confidence": 0.68,
+        "evidence_count": 1,
+        "requires_human_feedback": False,
+        "activation_status": "next_run",
+        "source": "slack_conversation_e2e",
+        "dimension": "motion_quality",
+        "quality_issue": "motion_bad",
+        "repair_hint": "improve_motion_quality",
+    } in repair_actions
+
+
 def test_visual_slack_conversation_e2e_fails_when_slack_ingress_drops_message(
     monkeypatch,
     tmp_path,
