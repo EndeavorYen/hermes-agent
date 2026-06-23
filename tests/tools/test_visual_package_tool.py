@@ -3506,6 +3506,135 @@ async def test_visual_package_surfaces_missing_video_fallback_policy(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_visual_package_skips_video_when_runtime_policy_reports_missing_video_fallback(
+    monkeypatch,
+    tmp_path,
+):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
+    latest_report.parent.mkdir(parents=True)
+    latest_report.write_text(
+        json.dumps(
+            {
+                "success": True,
+                "automation": {
+                    "self_improvement": {
+                        "next_actions": [
+                            {
+                                "type": "configure_video_fallback_provider",
+                                "requires_human_feedback": False,
+                                "activation_status": "next_run",
+                                "confidence": 0.9,
+                                "source": "live_quality_burn",
+                                "provider_failure_classes": {"quota_exceeded": 3},
+                                "provider_error_codes": {
+                                    "personal-team-blocked:spending-limit": 2,
+                                    "provider_quarantined": 1,
+                                },
+                                "video_fallback_diagnostics": [
+                                    {
+                                        "failed_provider": "xai",
+                                        "failed_provider_family": "xai",
+                                        "registered_provider_names": ["fal", "xai"],
+                                        "available_provider_names": [],
+                                        "unavailable_provider_names": ["fal"],
+                                        "fallback_provider_names": [],
+                                        "setup_actions": [
+                                            {
+                                                "provider": "fal",
+                                                "env_vars": ["FAL_KEY"],
+                                                "configured_env_vars": [],
+                                                "missing_env_vars": ["FAL_KEY"],
+                                                "post_setup": "",
+                                            }
+                                        ],
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    image = tmp_path / "image.png"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    video_calls = []
+
+    monkeypatch.setattr(
+        visual_package_tool,
+        "generate_image",
+        lambda **_kwargs: {
+            "success": True,
+            "image": str(image),
+            "provider": "codex",
+            "model": "gpt-image-fallback",
+            "vision_observation": {
+                "face_quality": 0.9,
+                "fashion_material_quality": 0.9,
+                "visual_appeal": 0.9,
+                "composition": 0.9,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        visual_package_tool,
+        "generate_video",
+        lambda **kwargs: video_calls.append(kwargs)
+        or {
+            "success": True,
+            "video": str(tmp_path / "should-not-exist.mp4"),
+            "provider": "xai",
+            "model": "grok-imagine-video",
+        },
+    )
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "請產出一張圖片和一段影片：產品攝影。",
+                "include_image": True,
+                "include_video": True,
+                "candidate_budget": 1,
+                "video_budget": 1,
+            }
+        )
+    )
+
+    assert video_calls == []
+    assert payload["images"] == [str(image)]
+    assert payload["videos"] == []
+    video_payload = payload["generation_payloads"]["video"]
+    assert video_payload["error_type"] == "provider_quarantined"
+    assert video_payload["provider_quarantine"]["no_video_fallback_available"] is True
+    assert video_payload["provider_quarantine"]["video_fallback_diagnostic"] == {
+        "failed_provider": "xai",
+        "failed_provider_family": "xai",
+        "registered_provider_names": ["fal", "xai"],
+        "available_provider_names": [],
+        "unavailable_provider_names": ["fal"],
+        "fallback_provider_names": [],
+        "setup_actions": [
+            {
+                "provider": "fal",
+                "env_vars": ["FAL_KEY"],
+                "configured_env_vars": [],
+                "missing_env_vars": ["FAL_KEY"],
+                "post_setup": "",
+            }
+        ],
+    }
+    assert video_payload["failure"]["failure_class"] == "quota_exceeded"
+    assert payload["generation_strategy"]["feedback_policy"]["provider_recovery_mode"] == (
+        "video_fallback_unavailable"
+    )
+
+
+@pytest.mark.asyncio
 async def test_visual_package_falls_back_to_available_image_provider_after_quota_block(
     monkeypatch,
     tmp_path,

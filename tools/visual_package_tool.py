@@ -763,10 +763,15 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                     "source_media": video_source_media,
                     "video_hardening": hardened_video.get("metadata", {}),
                 }
-                video_payload = _video_provider_quarantine_payload(
-                    image_payloads=image_payloads,
+                video_payload = _runtime_policy_video_quarantine_payload(
+                    feedback_policy,
                     prompt=video_prompt,
                 )
+                if video_payload is None:
+                    video_payload = _video_provider_quarantine_payload(
+                        image_payloads=image_payloads,
+                        prompt=video_prompt,
+                    )
                 if video_payload is None:
                     video_payload = generate_video(**video_kwargs)
                 if not video_payload.get("success"):
@@ -1995,6 +2000,101 @@ def _payload_failure_class(payload: dict[str, Any]) -> str:
         failure = classify_visual_provider_failure(payload)
         payload["failure"] = failure
     return str(failure.get("failure_class") or "").strip()
+
+
+def _runtime_policy_video_quarantine_payload(
+    feedback_policy: dict[str, Any],
+    *,
+    prompt: str,
+) -> dict[str, Any] | None:
+    if feedback_policy.get("provider_recovery_mode") != "video_fallback_unavailable":
+        return None
+
+    diagnostic = _runtime_policy_video_fallback_diagnostic(feedback_policy)
+    provider, model = _active_video_provider_identity()
+    provider_label = (
+        provider
+        or str(diagnostic.get("failed_provider") or "").strip()
+        or str(diagnostic.get("failed_provider_family") or "").strip()
+        or "video_provider"
+    )
+    provider_family = _provider_family(provider_label) or str(
+        diagnostic.get("failed_provider_family") or ""
+    ).strip()
+    failure = _runtime_policy_provider_failure(feedback_policy)
+    return {
+        "success": False,
+        "video": None,
+        "error_type": "provider_quarantined",
+        "error": (
+            "Skipped video generation because runtime policy reports no available "
+            "video fallback provider. Configure a video fallback provider before retrying."
+        ),
+        "prompt": prompt,
+        "provider": provider_label,
+        "model": model or "",
+        "failure": failure,
+        "provider_quarantine": {
+            "modality": "video",
+            "provider": provider_label,
+            "provider_family": provider_family,
+            "failure_class": failure.get("failure_class") or "quota_exceeded",
+            "provider_message_code": failure.get("provider_message_code") or "unknown",
+            "no_video_fallback_available": True,
+            "video_fallback_diagnostic": diagnostic,
+        },
+    }
+
+
+def _runtime_policy_provider_failure(feedback_policy: dict[str, Any]) -> dict[str, Any]:
+    context = feedback_policy.get("provider_failure_context")
+    context = context if isinstance(context, dict) else {}
+    failure_classes = context.get("provider_failure_classes")
+    error_codes = context.get("provider_error_codes")
+    failure_class = _preferred_failure_key(
+        failure_classes,
+        preferred=("quota_exceeded", "provider_unavailable", "rate_limited", "content_moderation"),
+    )
+    provider_message_code = _preferred_failure_key(error_codes)
+    return {
+        "failure_class": failure_class or "quota_exceeded",
+        "retryable": False,
+        "safe_reframe_allowed": False,
+        "provider_message_code": provider_message_code or "unknown",
+        "operator_summary": "no available video fallback provider is configured",
+    }
+
+
+def _preferred_failure_key(value: Any, *, preferred: tuple[str, ...] = ()) -> str:
+    if not isinstance(value, dict) or not value:
+        return ""
+    for key in preferred:
+        if key in value:
+            return key
+    best_key = ""
+    best_count = -1
+    for raw_key, raw_count in value.items():
+        key = str(raw_key or "").strip()
+        if not key:
+            continue
+        count = _coerce_int(raw_count) or 0
+        if best_key and count <= best_count:
+            continue
+        best_key = key
+        best_count = count
+    return best_key
+
+
+def _runtime_policy_video_fallback_diagnostic(feedback_policy: dict[str, Any]) -> dict[str, Any]:
+    diagnostics = feedback_policy.get("video_fallback_diagnostics")
+    if isinstance(diagnostics, list):
+        for diagnostic in diagnostics:
+            if isinstance(diagnostic, dict):
+                return dict(diagnostic)
+
+    provider, _model = _active_video_provider_identity()
+    provider_label = provider or "video_provider"
+    return _video_provider_fallback_diagnostic(failed_provider=provider_label)
 
 
 def _video_provider_quarantine_payload(
