@@ -1347,6 +1347,10 @@ async def test_visual_package_storyboard_generates_ranked_clip_per_shot(monkeypa
     assert compose_calls[0]["video_paths"] == [str(video_paths[0]), str(video_paths[1])]
     assert video_calls[0]["image_url"] in first_shot_sources
     assert video_calls[1]["image_url"] in second_shot_sources
+    assert video_calls[0]["source_media"]["reference_count"] == 1
+    assert video_calls[0]["source_media"]["references"] == [video_calls[0]["image_url"]]
+    assert video_calls[1]["source_media"]["reference_count"] == 1
+    assert video_calls[1]["source_media"]["references"] == [video_calls[1]["image_url"]]
     assert "reference_image_urls" not in video_calls[0]
     assert "image_urls" not in video_calls[0]
     assert "images" not in video_calls[0]

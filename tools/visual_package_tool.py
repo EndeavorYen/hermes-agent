@@ -1409,6 +1409,7 @@ def _run_storyboard_execution(
             )
             video_prompt = hardened_video["prompt"]
             video_aspect_ratio = hardened_video["aspect_ratio"]
+            video_source_media = _video_source_media(selected_image["artifact_path"])
             video_payloads: list[dict[str, Any]] = []
             video_candidates: list[dict[str, Any]] = []
             for video_index in range(video_budget_per_shot):
@@ -1417,6 +1418,7 @@ def _run_storyboard_execution(
                     "image_url": selected_image["artifact_path"],
                     "duration": duration,
                     "aspect_ratio": video_aspect_ratio,
+                    "source_media": video_source_media,
                 }
                 video_payload = generate_video(**video_kwargs)
                 video_payloads.append(video_payload)
