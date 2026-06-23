@@ -517,6 +517,37 @@ def test_feedback_policy_applies_safe_reframe_provider_retry():
     assert policy["applied_action_types"] == ["safe_reframe_provider_retry"]
 
 
+def test_feedback_policy_applies_provider_connectivity_retry_without_safe_reframe():
+    from agent.visual.feedback_policy import resolve_visual_feedback_policy
+
+    policy = resolve_visual_feedback_policy(
+        {
+            "next_actions": [
+                {
+                    "type": "check_provider_connectivity_or_retry",
+                    "track": "provider",
+                    "confidence": 0.88,
+                    "requires_human_feedback": False,
+                    "provider_failure_classes": {"provider_unavailable": 16},
+                    "provider_error_codes": {"connection_error": 16},
+                }
+            ]
+        },
+        wants_image=True,
+        wants_video=True,
+        explicit_candidate_budget=None,
+        default_candidate_budget=1,
+    )
+
+    assert policy["provider_recovery_mode"] == "provider_connectivity_retry"
+    assert policy["provider_retry_budget"] == 1
+    assert policy["provider_failure_context"] == {
+        "provider_failure_classes": {"provider_unavailable": 16},
+        "provider_error_codes": {"connection_error": 16},
+    }
+    assert policy["applied_action_types"] == ["check_provider_connectivity_or_retry"]
+
+
 def test_feedback_policy_applies_provider_quota_action_without_retry_budget():
     from agent.visual.feedback_policy import resolve_visual_feedback_policy
 

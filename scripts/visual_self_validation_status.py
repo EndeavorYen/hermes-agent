@@ -13,6 +13,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from hermes_constants import get_hermes_home
+from agent.visual.action_dedupe import dedupe_actions
 from agent.visual.promotion_readiness import build_visual_promotion_readiness
 from agent.visual.promotion_readiness import live_conversation_quality_evidence_ready
 from agent.visual.promotion_readiness import missing_visual_promotion_readiness
@@ -31,6 +32,7 @@ _RUNTIME_POLICY_ACTION_TYPES = {
     "enforce_single_video_source_image",
     "enforce_video_source_aspect_ratio",
     "safe_reframe_provider_retry",
+    "check_provider_connectivity_or_retry",
     "resolve_provider_quota_or_switch_provider",
     "configure_video_fallback_provider",
     "configure_visual_runtime_dependencies",
@@ -329,7 +331,7 @@ def _collect_actions(payload: dict[str, Any]) -> list[dict[str, Any]]:
     ):
         if isinstance(container, dict):
             actions.extend(_dicts(container.get("next_actions")))
-    return actions
+    return dedupe_actions(actions)
 
 
 def _runtime_policy_status(value: Any, *, now: datetime, summary: dict[str, Any]) -> dict[str, Any]:

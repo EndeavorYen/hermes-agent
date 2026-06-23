@@ -595,6 +595,46 @@ def test_visual_self_validation_status_warns_on_live_quality_trend_degradation(t
     assert "safe_reframe_provider_retry" in status["self_improvement"]["action_types"]
 
 
+def test_visual_self_validation_status_reports_provider_connectivity_action(tmp_path):
+    from scripts.visual_self_validation_status import build_visual_self_validation_status
+
+    action = {
+        "type": "check_provider_connectivity_or_retry",
+        "track": "provider",
+        "reason": "live_quality_burn_provider_unavailable",
+        "confidence": 0.88,
+        "evidence_count": 16,
+        "requires_human_feedback": False,
+        "activation_status": "next_run",
+        "source": "live_quality_burn",
+        "provider_failure_classes": {"provider_unavailable": 16},
+        "provider_error_codes": {"connection_error": 16},
+    }
+    report = _scheduled_report(success=False)
+    report["summary"]["feedback_action_types"] = ["check_provider_connectivity_or_retry"]
+    report["summary"]["live_quality_burn_action_types"] = ["check_provider_connectivity_or_retry"]
+    report["automation"]["self_improvement"]["next_actions"] = [action]
+    report["runtime_policy"] = {
+        "success": True,
+        "decision": "apply_next_run",
+        "generated_at": "2026-06-22T10:19:00+00:00",
+        "expires_at": "2026-06-23T10:19:00+00:00",
+        "next_actions": [action],
+        "suspended_action_types": ["check_provider_connectivity_or_retry"],
+    }
+    latest_path = _write_latest(tmp_path, report)
+
+    status = build_visual_self_validation_status(latest_path=latest_path)
+
+    assert "check_provider_connectivity_or_retry" in status["self_improvement"]["action_types"]
+    assert "check_provider_connectivity_or_retry" in status["runtime_policy"]["action_types"]
+    assert status["runtime_policy"]["suspended_action_types"] == [
+        "check_provider_connectivity_or_retry"
+    ]
+    assert status["live"]["provider_failure_classes"] == {"provider_unavailable": 16}
+    assert status["live"]["provider_error_codes"] == {"connection_error": 16}
+
+
 def test_visual_self_validation_status_reports_strategy_promotion_readiness(tmp_path):
     from scripts.visual_self_validation_status import build_visual_self_validation_status
 

@@ -3342,6 +3342,87 @@ async def test_visual_package_applies_safe_reframe_retry_budget_from_self_valida
 
 
 @pytest.mark.asyncio
+async def test_visual_package_applies_provider_connectivity_retry_without_safe_reframe(
+    monkeypatch,
+    tmp_path,
+):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
+    latest_report.parent.mkdir(parents=True)
+    latest_report.write_text(
+        json.dumps(
+            {
+                "runtime_policy": {
+                    "success": True,
+                    "decision": "apply_next_run",
+                    "expires_at": "2099-01-01T00:00:00+00:00",
+                    "next_actions": [
+                        {
+                            "type": "check_provider_connectivity_or_retry",
+                            "requires_human_feedback": False,
+                            "activation_status": "next_run",
+                            "confidence": 0.88,
+                            "source": "live_quality_burn",
+                            "provider_failure_classes": {"provider_unavailable": 16},
+                            "provider_error_codes": {"connection_error": 16},
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    image = tmp_path / "image.png"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    calls = []
+
+    def fake_generate_image(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return {
+                "success": False,
+                "error_type": "connection_error",
+                "error": "xAI connection error: failed to resolve api.x.ai",
+                "provider": "xai-oauth",
+                "model": "grok-imagine-image-quality",
+            }
+        return {
+            "success": True,
+            "image": str(image),
+            "provider": "xai-oauth",
+            "model": "grok-imagine-image-quality",
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "請產出一張圖片：乾淨產品攝影。",
+                "include_video": False,
+                "candidate_budget": 1,
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert len(calls) == 2
+    policy = payload["generation_strategy"]["feedback_policy"]
+    assert policy["provider_recovery_mode"] == "provider_connectivity_retry"
+    assert policy["provider_retry_budget"] == 1
+    assert policy["provider_failure_context"] == {
+        "provider_failure_classes": {"provider_unavailable": 16},
+        "provider_error_codes": {"connection_error": 16},
+    }
+    assert policy["applied_action_types"] == ["check_provider_connectivity_or_retry"]
+    assert calls[1]["prompt"] == calls[0]["prompt"]
+    assert "policy-compliant editorial visual variant" not in calls[1]["prompt"]
+
+
+@pytest.mark.asyncio
 async def test_visual_package_honors_provider_account_blocked_zero_retry_budget(monkeypatch, tmp_path):
     from tools import visual_package_tool
 

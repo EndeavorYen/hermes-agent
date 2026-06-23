@@ -34,6 +34,7 @@ _RUNTIME_POLICY_ACTION_TYPES = {
     "enforce_single_video_source_image",
     "enforce_video_source_aspect_ratio",
     "safe_reframe_provider_retry",
+    "check_provider_connectivity_or_retry",
     "resolve_provider_quota_or_switch_provider",
     "configure_video_fallback_provider",
     "configure_visual_runtime_dependencies",
