@@ -248,13 +248,20 @@ def _self_improvement_summary(
 
 
 def _quality_suite_next_actions(suite: dict[str, Any], *, source: str) -> list[dict[str, Any]]:
-    if not isinstance(suite, dict) or suite.get("success") is not True:
+    if not isinstance(suite, dict):
         return []
+    actions = _quality_suite_focus_actions(
+        suite.get("quality_focus_summary")
+        if isinstance(suite.get("quality_focus_summary"), dict)
+        else {},
+        source=source,
+    )
+    if suite.get("success") is not True:
+        return actions
     repair = suite.get("quality_repair_summary")
     repair = repair if isinstance(repair, dict) else {}
     by_modality = repair.get("by_modality")
     by_modality = by_modality if isinstance(by_modality, dict) else {}
-    actions: list[dict[str, Any]] = []
     for modality, summary in by_modality.items():
         if not isinstance(modality, str) or not isinstance(summary, dict):
             continue
@@ -283,10 +290,167 @@ def _quality_suite_next_actions(suite: dict[str, Any], *, source: str) -> list[d
     return actions
 
 
+def _quality_suite_focus_actions(summary: dict[str, Any], *, source: str) -> list[dict[str, Any]]:
+    outcomes = summary.get("outcomes") if isinstance(summary.get("outcomes"), list) else []
+    failed_by_focus: dict[str, dict[str, Any]] = {}
+    for outcome in outcomes:
+        if not isinstance(outcome, dict) or outcome.get("success") is True:
+            continue
+        focus = str(outcome.get("focus") or "").strip()
+        if not focus:
+            continue
+        entry = failed_by_focus.setdefault(
+            focus,
+            {
+                "case_ids": [],
+                "dimension": str(outcome.get("dimension") or "").strip(),
+                "quality_issues": [],
+            },
+        )
+        case_id = str(outcome.get("case_id") or "").strip()
+        if case_id and case_id not in entry["case_ids"]:
+            entry["case_ids"].append(case_id)
+        for issue in _string_list(outcome.get("quality_issues")):
+            if issue not in entry["quality_issues"]:
+                entry["quality_issues"].append(issue)
+        if not entry["dimension"]:
+            entry["dimension"] = _dimension_for_focus(focus)
+    if not failed_by_focus:
+        for focus in _string_list(summary.get("failed_focuses")):
+            failed_by_focus[focus] = {
+                "case_ids": [],
+                "dimension": _dimension_for_focus(focus),
+                "quality_issues": [],
+            }
+
+    actions: list[dict[str, Any]] = []
+    for focus, details in failed_by_focus.items():
+        case_ids = _string_list(details.get("case_ids"))
+        evidence_count = max(1, len(case_ids))
+        if focus == "image_first_video":
+            actions.append(
+                _action(
+                    "prefer_image_first_video",
+                    "provider",
+                    f"{source}_quality_focus_image_first_video_failed",
+                    source=source,
+                    confidence=0.82,
+                    evidence_count=evidence_count,
+                    focus=focus,
+                    strategy_operator="image_first_rank_then_video",
+                    case_ids=case_ids,
+                )
+            )
+            continue
+        dimension = str(details.get("dimension") or _dimension_for_focus(focus)).strip()
+        quality_issues = _string_list(details.get("quality_issues"))
+        if _only_missing_preference_dimension_evidence(quality_issues):
+            actions.append(
+                _action(
+                    "require_preference_dimension_evidence",
+                    "evaluation",
+                    f"{source}_missing_preference_dimension_evidence",
+                    source=source,
+                    confidence=0.84,
+                    evidence_count=evidence_count,
+                    focus=focus,
+                    dimension=dimension,
+                    evaluation_operator="inline_vision_preference_dimensions",
+                    case_ids=case_ids,
+                    quality_issues=quality_issues,
+                )
+            )
+            continue
+        actions.append(
+            _action(
+                "apply_quality_focus_operator",
+                "aesthetic",
+                f"{source}_quality_focus_failed",
+                source=source,
+                confidence=0.76,
+                evidence_count=evidence_count,
+                focus=focus,
+                dimension=dimension,
+                strategy_operator=_strategy_operator_for_focus(focus),
+                repair_hint=_repair_hint_for_dimension(dimension),
+                case_ids=case_ids,
+                quality_issues=quality_issues,
+            )
+        )
+    return actions
+
+
+def _action(
+    action_type: str,
+    track: str,
+    reason: str,
+    *,
+    source: str,
+    confidence: float,
+    evidence_count: int,
+    **extra: Any,
+) -> dict[str, Any]:
+    return {
+        "type": action_type,
+        "track": track,
+        "reason": reason,
+        "confidence": round(confidence, 4),
+        "evidence_count": max(0, int(evidence_count)),
+        "requires_human_feedback": False,
+        "activation_status": "next_run",
+        "source": source,
+        **extra,
+    }
+
+
+def _dimension_for_focus(focus: str) -> str:
+    return {
+        "adult_fashion_portrait": "subject_beauty",
+        "natural_face": "face_naturalness",
+        "legwear_material": "fashion_material_quality",
+        "long_leg_composition": "pose_composition",
+        "tasteful_glamour": "glamour_impact",
+    }.get(focus, "")
+
+
+def _strategy_operator_for_focus(focus: str) -> str:
+    return {
+        "adult_fashion_portrait": "refine_adult_fashion_portrait",
+        "natural_face": "refine_face_naturalness",
+        "legwear_material": "refine_legwear_material",
+        "long_leg_composition": "refine_long_leg_composition",
+        "tasteful_glamour": "refine_tasteful_glamour",
+    }.get(focus, f"refine_{focus}")
+
+
+def _repair_hint_for_dimension(dimension: str) -> str:
+    return {
+        "subject_beauty": "improve_subject_beauty",
+        "face_naturalness": "improve_face_naturalness",
+        "glamour_impact": "increase_glamour_impact",
+        "fashion_material_quality": "improve_fashion_material_quality",
+        "pose_composition": "improve_pose_composition",
+        "motion_quality": "improve_motion_quality",
+    }.get(dimension, f"improve_{dimension}")
+
+
+def _only_missing_preference_dimension_evidence(quality_issues: list[str]) -> bool:
+    return bool(quality_issues) and all(
+        issue.startswith("missing_preference_dimension_evidence:")
+        for issue in quality_issues
+    )
+
+
 def _action_list(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, dict)]
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if isinstance(item, str) and item.strip()]
 
 
 def _int(value: Any) -> int:

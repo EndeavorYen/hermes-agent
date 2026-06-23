@@ -274,6 +274,121 @@ def test_visual_e2e_automation_exports_quality_suite_next_actions(monkeypatch, t
     assert report["self_improvement"]["reduces_human_intervention"] is True
 
 
+def test_visual_e2e_automation_exports_quality_focus_actions_from_failed_fixture_suite(
+    monkeypatch,
+    tmp_path,
+):
+    from scripts import visual_e2e_automation_report
+
+    def fake_quality_suite(**kwargs):
+        return {
+            "success": False,
+            "provider_mode": kwargs["mode"],
+            "case_count": 1,
+            "failures": [
+                "fashion_portrait_video:quality_focus_failed:adult_fashion_portrait",
+                "fashion_portrait_video:quality_focus_failed:legwear_material",
+            ],
+            "quality_repair_summary": {},
+            "quality_focus_summary": {
+                "outcome_count": 2,
+                "success_count": 0,
+                "failure_count": 2,
+                "successful_focuses": [],
+                "failed_focuses": ["adult_fashion_portrait", "legwear_material"],
+                "outcomes": [
+                    {
+                        "case_id": "fashion_portrait_video",
+                        "focus": "adult_fashion_portrait",
+                        "success": False,
+                        "dimension": "subject_beauty",
+                        "quality_issues": ["subject_not_attractive"],
+                        "preference_dimension_failures": [
+                            {
+                                "artifact_id": "var_subject",
+                                "dimension": "subject_beauty",
+                                "score": 0.31,
+                                "issue": "subject_not_attractive",
+                            }
+                        ],
+                    },
+                    {
+                        "case_id": "fashion_portrait_video",
+                        "focus": "legwear_material",
+                        "success": False,
+                        "dimension": "fashion_material_quality",
+                        "quality_issues": ["stockings_bad"],
+                        "preference_dimension_failures": [
+                            {
+                                "artifact_id": "var_legwear",
+                                "dimension": "fashion_material_quality",
+                                "score": 0.28,
+                                "issue": "stockings_bad",
+                            }
+                        ],
+                    },
+                ],
+            },
+            "cases": [],
+        }
+
+    monkeypatch.setattr(
+        visual_e2e_automation_report,
+        "build_visual_live_provider_e2e_suite_report",
+        fake_quality_suite,
+    )
+    monkeypatch.setattr(
+        visual_e2e_automation_report,
+        "build_visual_feedback_loop_report",
+        lambda _path: {"success": True, "failures": [], "next_actions": []},
+    )
+
+    report = visual_e2e_automation_report.build_visual_e2e_automation_report(work_dir=tmp_path)
+
+    assert report["success"] is False
+    assert "fixture_quality_suite_failed" in report["failures"]
+    quality_actions = [
+        action
+        for action in report["self_improvement"]["next_actions"]
+        if action["source"] == "fixture_quality_suite"
+    ]
+    assert quality_actions == [
+        {
+            "type": "apply_quality_focus_operator",
+            "track": "aesthetic",
+            "reason": "fixture_quality_suite_quality_focus_failed",
+            "confidence": 0.76,
+            "evidence_count": 1,
+            "requires_human_feedback": False,
+            "activation_status": "next_run",
+            "source": "fixture_quality_suite",
+            "focus": "adult_fashion_portrait",
+            "dimension": "subject_beauty",
+            "strategy_operator": "refine_adult_fashion_portrait",
+            "repair_hint": "improve_subject_beauty",
+            "case_ids": ["fashion_portrait_video"],
+            "quality_issues": ["subject_not_attractive"],
+        },
+        {
+            "type": "apply_quality_focus_operator",
+            "track": "aesthetic",
+            "reason": "fixture_quality_suite_quality_focus_failed",
+            "confidence": 0.76,
+            "evidence_count": 1,
+            "requires_human_feedback": False,
+            "activation_status": "next_run",
+            "source": "fixture_quality_suite",
+            "focus": "legwear_material",
+            "dimension": "fashion_material_quality",
+            "strategy_operator": "refine_legwear_material",
+            "repair_hint": "improve_fashion_material_quality",
+            "case_ids": ["fashion_portrait_video"],
+            "quality_issues": ["stockings_bad"],
+        },
+    ]
+    assert report["self_improvement"]["reduces_human_intervention"] is True
+
+
 def test_visual_e2e_automation_passes_case_timeout_to_quality_suites(monkeypatch, tmp_path):
     from scripts import visual_e2e_automation_report
 
