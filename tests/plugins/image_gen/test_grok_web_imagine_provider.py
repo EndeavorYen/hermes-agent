@@ -344,3 +344,25 @@ def test_probe_cli_outputs_login_required(monkeypatch, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "login_required"
     assert payload["safe_to_submit"] is False
+
+
+def test_probe_cli_outputs_cdp_unreachable_instead_of_traceback(monkeypatch, capsys):
+    import urllib.error
+
+    from plugins.image_gen.grok_web_imagine import main
+
+    class FakeClient:
+        def __init__(self, port: int = 9223, url_contains: str = "x.ai"):
+            pass
+
+        def snapshot(self) -> dict:
+            raise urllib.error.URLError(PermissionError("Operation not permitted"))
+
+    monkeypatch.setattr("plugins.image_gen.grok_web_imagine.CDPClient", FakeClient)
+    rc = main(["probe", "--port", "9223", "--url-contains", "grok.com"])
+
+    assert rc == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "cdp_unreachable"
+    assert payload["safe_to_submit"] is False
+    assert "Chrome DevTools" in payload["message"]

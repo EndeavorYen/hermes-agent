@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import time
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -221,6 +222,14 @@ def classify_visible_state(snapshot: Dict[str, Any]) -> VisibleState:
     )
 
 
+def _cdp_unreachable_state(exc: Exception) -> VisibleState:
+    return VisibleState(
+        status="cdp_unreachable",
+        safe_to_submit=False,
+        message=f"Could not reach Chrome DevTools for Grok web Imagine: {exc}",
+    )
+
+
 SNAPSHOT_JS = r"""
 (() => ({
   title: document.title,
@@ -349,8 +358,11 @@ class CDPClient:
         self._id = 0
 
     def _page_ws_url(self) -> str:
-        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/json/list", timeout=5) as response:
-            targets = json.loads(response.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/json/list", timeout=5) as response:
+                targets = json.loads(response.read().decode("utf-8"))
+        except (OSError, TimeoutError, urllib.error.URLError) as exc:
+            raise GrokWebImagineError("cdp_unreachable", _cdp_unreachable_state(exc).message) from exc
         for target in targets:
             if target.get("type") == "page" and target_url_matches(str(target.get("url", "")), self.url_contains):
                 return str(target["webSocketDebuggerUrl"])
@@ -729,7 +741,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "probe":
         client = CDPClient(port=args.port, url_contains=args.url_contains)
-        state = classify_visible_state(client.snapshot())
+        try:
+            state = classify_visible_state(client.snapshot())
+        except GrokWebImagineError as exc:
+            state = VisibleState(status=exc.code, safe_to_submit=False, message=exc.message)
+        except (OSError, TimeoutError, urllib.error.URLError) as exc:
+            state = _cdp_unreachable_state(exc)
         print(json.dumps(_state_payload(state), ensure_ascii=False, indent=2))
         return 0 if state.safe_to_submit else 2
     return 1
