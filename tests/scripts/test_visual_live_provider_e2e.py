@@ -821,6 +821,8 @@ def test_visual_live_provider_e2e_suite_aggregates_recovery_summary(monkeypatch,
                     "provider_fallback_attempt_count": 2,
                     "provider_fallback_success_count": 2,
                     "provider_fallback_recovered_classes": ["quota_exceeded"],
+                    "provider_quota_source_counts": {"xai_api": 1, "consumer_web": 2},
+                    "provider_quota_failure_source_counts": {"xai_api": 1},
                     "no_video_fallback_available_count": 1,
                     "provider_quarantine_count": 1,
                     "provider_quarantine_classes": ["quota_exceeded"],
@@ -893,6 +895,8 @@ def test_visual_live_provider_e2e_suite_aggregates_recovery_summary(monkeypatch,
         "provider_fallback_attempt_count": 2,
         "provider_fallback_success_count": 2,
         "provider_fallback_recovered_classes": ["quota_exceeded"],
+        "provider_quota_source_counts": {"consumer_web": 2, "xai_api": 1},
+        "provider_quota_failure_source_counts": {"xai_api": 1},
         "no_video_fallback_available_count": 1,
         "provider_quarantine_count": 1,
         "provider_quarantine_classes": ["quota_exceeded"],
@@ -1538,6 +1542,69 @@ def test_visual_live_provider_e2e_classifies_attempt_failure_root_causes(monkeyp
         },
     ]
     assert evidence["retry_attempt_count"] == 1
+
+
+def test_visual_live_provider_e2e_separates_xai_api_and_web_quota_sources(monkeypatch, tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+    from scripts.visual_live_provider_e2e import inspect_visual_e2e_evidence
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ledger = VisualAttemptLedger(default_visual_ledger_path())
+    ledger.initialize()
+    request_id = ledger.record_request(
+        user_prompt="test",
+        normalized_intent={"kind": "visual_package"},
+        modality="package",
+        operation="visual_package_generate",
+        status="completed",
+    )
+    ledger.record_attempt(
+        request_id=request_id,
+        candidate_index=0,
+        provider="xai",
+        model="grok-imagine-image-quality",
+        prompt_original="test",
+        prompt_mediated="test",
+        parameters_requested={},
+        parameters_effective={},
+        status="failed",
+        error_type="api_error",
+        error_message='xAI image gen failed (403): {"code":"personal-team-blocked:spending-limit"}',
+    )
+    ledger.record_attempt(
+        request_id=request_id,
+        candidate_index=1,
+        provider="grok-web-imagine",
+        model="grok-web-imagine",
+        prompt_original="test",
+        prompt_mediated="test",
+        parameters_requested={},
+        parameters_effective={},
+        status="completed",
+        metadata={"provider_family": "grok_web", "quota_source": "consumer_web"},
+    )
+
+    evidence = inspect_visual_e2e_evidence(
+        {
+            "success": True,
+            "visual_request_id": request_id,
+            "images": [],
+            "videos": [],
+        },
+        require_video=False,
+    )
+
+    assert evidence["provider_quota_source_counts"] == {
+        "consumer_web": 1,
+        "xai_api": 1,
+    }
+    assert evidence["provider_quota_failure_source_counts"] == {"xai_api": 1}
+    assert evidence["recovery_summary"]["provider_quota_source_counts"] == {
+        "consumer_web": 1,
+        "xai_api": 1,
+    }
+    assert evidence["recovery_summary"]["provider_quota_failure_source_counts"] == {"xai_api": 1}
 
 
 def test_visual_live_provider_e2e_counts_provider_error_schema_columns():

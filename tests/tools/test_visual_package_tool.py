@@ -5403,6 +5403,29 @@ async def test_visual_package_retries_empty_image_response_before_ranking(monkey
     assert attempts[1]["metadata"]["retry_of"] == 0
 
 
+def test_visual_package_attempt_metadata_preserves_quota_surface():
+    from tools.visual_package_tool import _attempt_metadata
+
+    metadata = _attempt_metadata(
+        {
+            "provider": "grok-web-imagine",
+            "provider_family": "grok_web",
+            "quota_source": "consumer_web",
+            "fallback_attempted": True,
+            "fallback_from_provider": "xai",
+            "fallback_reason": "xai_api_quota_exceeded",
+            "primary_failure_class": "quota_exceeded",
+        }
+    )
+
+    assert metadata["provider_family"] == "grok_web"
+    assert metadata["quota_source"] == "consumer_web"
+    assert metadata["fallback_attempted"] is True
+    assert metadata["fallback_from_provider"] == "xai"
+    assert metadata["fallback_reason"] == "xai_api_quota_exceeded"
+    assert metadata["primary_failure_class"] == "quota_exceeded"
+
+
 @pytest.mark.asyncio
 async def test_visual_package_retries_transient_image_failure_before_image_first_video(monkeypatch, tmp_path):
     from tools import visual_package_tool

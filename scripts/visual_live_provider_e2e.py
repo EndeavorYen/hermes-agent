@@ -679,6 +679,9 @@ def inspect_visual_e2e_evidence(
         }
     )
     provider_failure_classes, provider_error_codes = _provider_failure_counters(attempts)
+    provider_quota_source_counts, provider_quota_failure_source_counts = (
+        _provider_quota_source_counters(attempts)
+    )
     provider_failure_diagnostics = _provider_failure_diagnostics(attempts)
     learning_trace_count = sum(1 for row in rankings if _ranking_has_learning_trace(row))
     judgments_with_learning_metadata = sum(
@@ -694,6 +697,8 @@ def inspect_visual_e2e_evidence(
         payload=payload,
         provider_failure_classes=provider_failure_classes,
         provider_error_codes=provider_error_codes,
+        provider_quota_source_counts=provider_quota_source_counts,
+        provider_quota_failure_source_counts=provider_quota_failure_source_counts,
         retry_attempt_count=retry_attempt_count,
     )
     quality_repair_summary = _quality_repair_summary(
@@ -730,6 +735,8 @@ def inspect_visual_e2e_evidence(
         "inline_vision_failure_classes": dict(inline_vision_failure_classes),
         "provider_failure_classes": dict(provider_failure_classes),
         "provider_error_codes": dict(provider_error_codes),
+        "provider_quota_source_counts": dict(provider_quota_source_counts),
+        "provider_quota_failure_source_counts": dict(provider_quota_failure_source_counts),
         "provider_failure_diagnostics": provider_failure_diagnostics,
         "retry_attempt_count": retry_attempt_count,
         "recovery_summary": recovery_summary,
@@ -1274,6 +1281,59 @@ def _provider_failure_counters(attempts: list[dict[str, Any]]) -> tuple[Counter[
     return classes, codes
 
 
+def _provider_quota_source_counters(attempts: list[dict[str, Any]]) -> tuple[Counter[str], Counter[str]]:
+    sources: Counter[str] = Counter()
+    failure_sources: Counter[str] = Counter()
+    for row in attempts:
+        source = _attempt_quota_source(row)
+        if not source:
+            continue
+        sources[source] += 1
+        error_type = row.get("error_type") or row.get("provider_error_type")
+        error_message = row.get("error_message") or row.get("provider_error_message")
+        if not (error_type or error_message):
+            continue
+        failure = classify_visual_provider_failure(
+            {
+                "success": False,
+                "error_type": error_type,
+                "error": error_message,
+            }
+        )
+        if failure.get("failure_class") == "quota_exceeded":
+            failure_sources[source] += 1
+    return sources, failure_sources
+
+
+def _attempt_quota_source(row: dict[str, Any]) -> str:
+    metadata = _attempt_metadata(row)
+    quota_source = str(metadata.get("quota_source") or row.get("quota_source") or "").strip()
+    if quota_source:
+        return quota_source
+    provider_family = str(metadata.get("provider_family") or row.get("provider_family") or "").strip().lower()
+    provider = str(row.get("provider") or row.get("provider_name") or "").strip().lower()
+    if provider_family == "grok_web" or provider == "grok-web-imagine":
+        return "consumer_web"
+    if provider_family == "xai" or provider in {"xai", "xai-oauth", "xai_grok", "xai-grok"}:
+        return "xai_api"
+    return ""
+
+
+def _attempt_metadata(row: dict[str, Any]) -> dict[str, Any]:
+    for key in ("metadata", "metadata_json"):
+        value = row.get(key)
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str) and value.strip():
+            try:
+                decoded = json.loads(value)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(decoded, dict):
+                return decoded
+    return {}
+
+
 def _provider_failure_diagnostics(attempts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     diagnostics: list[dict[str, Any]] = []
     for row in attempts:
@@ -1337,6 +1397,8 @@ def _recovery_summary(
     payload: dict[str, Any],
     provider_failure_classes: Counter[str],
     provider_error_codes: Counter[str],
+    provider_quota_source_counts: Counter[str] | None = None,
+    provider_quota_failure_source_counts: Counter[str] | None = None,
     retry_attempt_count: int,
 ) -> dict[str, Any]:
     provider_failure_count = sum(provider_failure_classes.values())
@@ -1353,6 +1415,14 @@ def _recovery_summary(
         "content_moderation_recovered": "content_moderation" in recovered_failure_classes,
         "recovered_failure_classes": recovered_failure_classes,
     }
+    should_report_quota_sources = bool(provider_quota_failure_source_counts) or (
+        provider_quota_source_counts is not None
+        and provider_quota_source_counts.get("consumer_web", 0) > 0
+    )
+    if should_report_quota_sources and provider_quota_source_counts:
+        summary["provider_quota_source_counts"] = dict(provider_quota_source_counts)
+    if should_report_quota_sources and provider_quota_failure_source_counts:
+        summary["provider_quota_failure_source_counts"] = dict(provider_quota_failure_source_counts)
     fallback_summary = _provider_fallback_summary(payload)
     if fallback_summary["provider_fallback_attempt_count"] > 0:
         summary.update(fallback_summary)
@@ -1431,6 +1501,8 @@ def _generation_payload_items(payload: dict[str, Any]) -> list[Any]:
 def _suite_recovery_summary(case_reports: list[dict[str, Any]]) -> dict[str, Any]:
     provider_failure_classes: Counter[str] = Counter()
     provider_error_codes: Counter[str] = Counter()
+    provider_quota_source_counts: Counter[str] = Counter()
+    provider_quota_failure_source_counts: Counter[str] = Counter()
     provider_failure_count = 0
     retry_attempt_count = 0
     negotiation_attempted_case_count = 0
@@ -1460,6 +1532,12 @@ def _suite_recovery_summary(case_reports: list[dict[str, Any]]) -> dict[str, Any
         provider_quarantine_count += _count_value(summary.get("provider_quarantine_count"))
         provider_failure_classes.update(_counter_from_mapping(summary.get("provider_failure_classes")))
         provider_error_codes.update(_counter_from_mapping(summary.get("provider_error_codes")))
+        provider_quota_source_counts.update(
+            _counter_from_mapping(summary.get("provider_quota_source_counts"))
+        )
+        provider_quota_failure_source_counts.update(
+            _counter_from_mapping(summary.get("provider_quota_failure_source_counts"))
+        )
         if summary.get("negotiation_attempted") is True:
             negotiation_attempted_case_count += 1
         if summary.get("negotiation_success") is True:
@@ -1496,6 +1574,10 @@ def _suite_recovery_summary(case_reports: list[dict[str, Any]]) -> dict[str, Any
                 "provider_fallback_recovered_classes": sorted(provider_fallback_recovered_classes),
             }
         )
+    if provider_quota_source_counts:
+        suite_summary["provider_quota_source_counts"] = dict(provider_quota_source_counts)
+    if provider_quota_failure_source_counts:
+        suite_summary["provider_quota_failure_source_counts"] = dict(provider_quota_failure_source_counts)
     if provider_quarantine_count > 0:
         suite_summary.update(
             {

@@ -2425,7 +2425,17 @@ def _attempt_metadata(payload: dict[str, Any]) -> dict[str, Any]:
         "retry_of",
         "quality_repair",
         "candidate_escalation",
+        "provider_family",
+        "quota_source",
+        "provider_fallback",
+        "fallback_attempted",
+        "fallback_from_provider",
+        "fallback_reason",
+        "primary_failure_class",
+        "primary_provider_message_code",
+        "primary_error_type",
         "provider_quarantine",
+        "artifact_source",
     ):
         if key in payload:
             metadata[key] = payload[key]
