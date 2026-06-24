@@ -14,6 +14,8 @@ def classify_visual_provider_failure(payload: dict[str, Any] | Exception) -> dic
         return _result("timeout", retryable=True, safe_reframe_allowed=False, provider_message_code=code)
     if _is_quota_exceeded_text(text):
         return _result("quota_exceeded", retryable=False, safe_reframe_allowed=False, provider_message_code=code)
+    if _contains(text, "artifact_too_small"):
+        return _result("empty_response", retryable=True, safe_reframe_allowed=False, provider_message_code=code)
     if _contains(text, "content_moderation", "moderation", "safety", "policy rejected", "blocked", "policy_violation"):
         return _result("content_moderation", retryable=True, safe_reframe_allowed=True, provider_message_code=code)
     if _contains(text, "empty_response", "empty response", "no output", "blank response"):
@@ -120,6 +122,10 @@ def _is_quota_exceeded_text(text: str) -> bool:
         "billing limit",
         "insufficient credits",
         "subscription limit",
+        "subscription_required",
+        "upgrade prompt",
+        "supergrok-enabled",
+        "supergrok upgrade",
     )
 
 
@@ -146,6 +152,9 @@ def _is_provider_unavailable_text(text: str) -> bool:
         "connect error",
         "connection failure",
         "failed to resolve",
+        "cdp_unreachable",
+        "chrome devtools",
+        "browser_page_not_found",
         "nameresolutionerror",
         "name resolution",
         "nodename nor servname",

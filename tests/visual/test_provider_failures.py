@@ -77,6 +77,63 @@ def test_classify_visual_provider_failure_extracts_python_repr_provider_code():
     assert result["provider_message_code"] == "personal-team-blocked:spending-limit"
 
 
+def test_classify_visual_provider_failure_detects_grok_web_subscription_gate_before_blocked_text():
+    from agent.visual.provider_failures import classify_visual_provider_failure
+
+    result = classify_visual_provider_failure(
+        {
+            "success": False,
+            "provider": "grok-web-imagine",
+            "error_type": "subscription_required",
+            "error": (
+                "Grok Imagine is showing a SuperGrok upgrade prompt; "
+                "use a SuperGrok-enabled web session."
+            ),
+        }
+    )
+
+    assert result["failure_class"] == "quota_exceeded"
+    assert result["retryable"] is False
+    assert result["safe_reframe_allowed"] is False
+    assert result["provider_message_code"] == "subscription_required"
+
+
+def test_classify_visual_provider_failure_detects_grok_web_cdp_setup_failure():
+    from agent.visual.provider_failures import classify_visual_provider_failure
+
+    result = classify_visual_provider_failure(
+        {
+            "success": False,
+            "provider": "grok-web-imagine",
+            "error_type": "cdp_unreachable",
+            "error": "Could not reach Chrome DevTools for Grok web Imagine.",
+        }
+    )
+
+    assert result["failure_class"] == "provider_unavailable"
+    assert result["retryable"] is True
+    assert result["safe_reframe_allowed"] is False
+    assert result["provider_message_code"] == "cdp_unreachable"
+
+
+def test_classify_visual_provider_failure_detects_grok_web_unusable_artifact():
+    from agent.visual.provider_failures import classify_visual_provider_failure
+
+    result = classify_visual_provider_failure(
+        {
+            "success": False,
+            "provider": "grok-web-imagine",
+            "error_type": "artifact_too_small",
+            "error": "Grok web produced candidates, but none met the artifact gate.",
+        }
+    )
+
+    assert result["failure_class"] == "empty_response"
+    assert result["retryable"] is True
+    assert result["safe_reframe_allowed"] is False
+    assert result["provider_message_code"] == "artifact_too_small"
+
+
 def test_classify_visual_provider_failure_detects_timeout_and_empty_response():
     from agent.visual.provider_failures import classify_visual_provider_failure
 
