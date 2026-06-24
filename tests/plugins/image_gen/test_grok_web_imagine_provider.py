@@ -95,6 +95,51 @@ def test_classify_imagine_ready_when_logged_in_prompt_input_visible():
     assert state.safe_to_submit is True
 
 
+def test_classify_imagine_upgrade_prompt_requires_supergrok_session():
+    from plugins.image_gen.grok_web_imagine import classify_visible_state
+
+    state = classify_visible_state(
+        _snapshot(
+            url="https://grok.com/imagine",
+            title="Imagine - Grok",
+            text="Imagine\n圖片\n影片\n語速\n品質\n升級至 SuperGrok",
+            inputs=[
+                {
+                    "tag": "DIV",
+                    "aria": "Ask Grok anything",
+                    "placeholder": None,
+                    "text": "",
+                }
+            ],
+        )
+    )
+
+    assert state.status == "subscription_required"
+    assert state.safe_to_submit is False
+    assert "SuperGrok" in state.message
+
+
+def test_provider_reports_subscription_required_without_submitting(monkeypatch):
+    from plugins.image_gen.grok_web_imagine import GrokWebImagineProvider
+
+    monkeypatch.setenv("HERMES_GROK_WEB_IMAGINE", "1")
+    cdp = MagicMock()
+    cdp.snapshot.return_value = _snapshot(
+        url="https://grok.com/imagine",
+        title="Imagine - Grok",
+        text="Imagine\n圖片\n影片\n升級至 SuperGrok",
+        inputs=[{"tag": "DIV", "aria": "Ask Grok anything", "placeholder": None, "text": ""}],
+    )
+    provider = GrokWebImagineProvider(cdp_client=cdp)
+
+    result = provider.generate("clean product photo")
+
+    assert result["success"] is False
+    assert result["error_type"] == "subscription_required"
+    assert "SuperGrok" in result["error"]
+    assert not cdp.generate_image.called
+
+
 def test_classify_grok_build_page_is_not_safe_for_image_generation():
     from plugins.image_gen.grok_web_imagine import classify_visible_state
 

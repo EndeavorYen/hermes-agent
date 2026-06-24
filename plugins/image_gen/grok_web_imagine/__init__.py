@@ -181,6 +181,15 @@ def classify_visible_state(snapshot: Dict[str, Any]) -> VisibleState:
             title=title,
         )
 
+    if _has_any(combined, ("upgrade to supergrok", "升級至 supergrok", "升級到 supergrok")):
+        return VisibleState(
+            status="subscription_required",
+            safe_to_submit=False,
+            message="Grok Imagine is showing a SuperGrok upgrade prompt; use a SuperGrok-enabled web session.",
+            url=url,
+            title=title,
+        )
+
     if (
         "/imagine" in url_lower
         and _has_any(combined, ("imagine", "create images", "create videos", "generate image"))
