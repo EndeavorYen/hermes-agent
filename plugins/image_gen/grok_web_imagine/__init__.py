@@ -41,6 +41,7 @@ PROVIDER_NAME = "grok-web-imagine"
 MODEL_ID = "grok-web-imagine"
 DEFAULT_CDP_PORT = 9223
 DEFAULT_URL_CONTAINS = "grok.com,accounts.x.ai"
+MIN_USABLE_IMAGE_SIDE = 256
 
 
 @dataclass(frozen=True)
@@ -87,6 +88,22 @@ def target_url_matches(url: str, patterns: str) -> bool:
     haystack = str(url or "")
     parts = [part.strip() for part in str(patterns or "").split(",") if part.strip()]
     return any(part in haystack for part in parts)
+
+
+def media_item_is_usable_image(item: Dict[str, Any]) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if item.get("tag") != "IMG" or not item.get("visible"):
+        return False
+    src = item.get("src")
+    if not isinstance(src, str) or not src.strip():
+        return False
+    try:
+        natural_width = int(item.get("naturalWidth") or 0)
+        natural_height = int(item.get("naturalHeight") or 0)
+    except (TypeError, ValueError):
+        return False
+    return natural_width >= MIN_USABLE_IMAGE_SIDE and natural_height >= MIN_USABLE_IMAGE_SIDE
 
 
 def _has_login_button(snapshot: Dict[str, Any]) -> bool:
@@ -277,6 +294,24 @@ def _click_imagine_js() -> str:
     )
 
 
+SUBMIT_PROMPT_JS = r"""
+(() => {
+  const visible = (e) => {
+    const r = e.getBoundingClientRect();
+    return r.width > 20 && r.height > 20;
+  };
+  const label = (e) => (e.innerText || e.getAttribute("aria-label") || e.textContent || "").trim();
+  const buttons = [...document.querySelectorAll("button[type=submit],button,[role=button]")]
+    .filter((e) => visible(e) && !e.disabled && e.getAttribute("aria-disabled") !== "true");
+  const submit = buttons.find((e) => e.matches("button[type=submit]"))
+    || buttons.find((e) => /^(send|submit|generate|create|送出|產生|生成)$/i.test(label(e)));
+  if (!submit) return {submitted:false, reason:"no_submit_button"};
+  submit.click();
+  return {submitted:true, method:"submit_button", label:label(submit), type:submit.getAttribute("type")};
+})()
+"""
+
+
 def _src_to_data_url_js(src: str) -> str:
     return r"""
 (async () => {
@@ -368,6 +403,15 @@ class CDPClient:
             if "error" in response:
                 raise GrokWebImagineError("cdp_error", str(response["error"]))
 
+    def submit_prompt(self) -> None:
+        value = self.evaluate(SUBMIT_PROMPT_JS)
+        if not isinstance(value, dict) or not value.get("submitted"):
+            reason = value.get("reason") if isinstance(value, dict) else "unknown"
+            raise GrokWebImagineError(
+                "submit_button_not_found",
+                f"Could not find a visible Grok Imagine submit button ({reason}).",
+            )
+
     def snapshot(self) -> Dict[str, Any]:
         value = self.evaluate(SNAPSHOT_JS)
         return value if isinstance(value, dict) else {}
@@ -397,10 +441,11 @@ class CDPClient:
         if not isinstance(filled, dict) or not filled.get("filled"):
             raise GrokWebImagineError("prompt_input_not_found", "Could not find a visible Grok prompt input.")
 
-        self.press_enter()
+        self.submit_prompt()
 
         deadline = time.time() + timeout_seconds
         last_media: List[Dict[str, Any]] = []
+        small_candidate_count = 0
         while time.time() < deadline:
             time.sleep(4)
             current = self.media()
@@ -411,8 +456,19 @@ class CDPClient:
                     continue
                 if item.get("tag") != "IMG":
                     continue
+                if not media_item_is_usable_image(item):
+                    small_candidate_count += 1
+                    continue
                 return self._save_image_src(src)
 
+        if small_candidate_count:
+            raise GrokWebImagineError(
+                "artifact_too_small",
+                (
+                    f"Grok web produced {small_candidate_count} new image candidate(s), "
+                    f"but none met the minimum {MIN_USABLE_IMAGE_SIDE}px-per-side artifact gate."
+                ),
+            )
         raise GrokWebImagineError(
             "timeout",
             f"No new Grok web image appeared within {timeout_seconds}s; observed {len(last_media)} media nodes.",

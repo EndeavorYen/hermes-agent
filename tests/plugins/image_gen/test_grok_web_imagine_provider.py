@@ -151,6 +151,34 @@ def test_default_target_patterns_include_grok_and_accounts_pages():
     assert not target_url_matches("https://example.com", DEFAULT_URL_CONTAINS)
 
 
+def test_media_item_usability_rejects_low_resolution_placeholder():
+    from plugins.image_gen.grok_web_imagine import media_item_is_usable_image
+
+    assert media_item_is_usable_image(
+        {
+            "tag": "IMG",
+            "src": "data:image/png;base64,abc",
+            "visible": True,
+            "naturalWidth": 171,
+            "naturalHeight": 256,
+        }
+    ) is False
+
+
+def test_media_item_usability_accepts_generated_image_thumbnail():
+    from plugins.image_gen.grok_web_imagine import media_item_is_usable_image
+
+    assert media_item_is_usable_image(
+        {
+            "tag": "IMG",
+            "src": "https://imagine-public.x.ai/example_thumbnail.jpg",
+            "visible": True,
+            "naturalWidth": 464,
+            "naturalHeight": 688,
+        }
+    ) is True
+
+
 def test_provider_disabled_by_default_even_if_registered(monkeypatch):
     from plugins.image_gen.grok_web_imagine import GrokWebImagineProvider
 
@@ -216,6 +244,37 @@ def test_provider_returns_saved_artifact_from_browser_runner(monkeypatch, tmp_pa
         aspect_ratio="square",
         timeout_seconds=240,
     )
+
+
+def test_submit_prompt_uses_visible_submit_button(monkeypatch):
+    from plugins.image_gen.grok_web_imagine import CDPClient
+
+    client = CDPClient()
+    calls = []
+
+    def fake_evaluate(expression: str):
+        calls.append(expression)
+        return {"submitted": True, "method": "submit_button", "label": "送出"}
+
+    monkeypatch.setattr(client, "evaluate", fake_evaluate)
+
+    client.submit_prompt()
+
+    assert calls
+    assert "button[type=submit]" in calls[0]
+
+
+def test_submit_prompt_raises_when_submit_button_missing(monkeypatch):
+    import pytest
+    from plugins.image_gen.grok_web_imagine import CDPClient, GrokWebImagineError
+
+    client = CDPClient()
+    monkeypatch.setattr(client, "evaluate", lambda expression: {"submitted": False, "reason": "no_submit_button"})
+
+    with pytest.raises(GrokWebImagineError) as exc:
+        client.submit_prompt()
+
+    assert exc.value.code == "submit_button_not_found"
 
 
 def test_probe_cli_outputs_login_required(monkeypatch, capsys):
