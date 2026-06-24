@@ -1443,6 +1443,103 @@ def _dispatch_to_plugin_provider(
     return json.dumps(result)
 
 
+GROK_WEB_IMAGINE_PROVIDER = "grok-web-imagine"
+
+
+def _truthy_env(value: Optional[str]) -> bool:
+    return bool(isinstance(value, str) and value.strip().lower() in {"1", "true", "yes", "on"})
+
+
+def _grok_web_imagine_fallback_enabled() -> bool:
+    if _truthy_env(os.getenv("HERMES_GROK_WEB_IMAGINE_FALLBACK")):
+        return True
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        image_gen = cfg.get("image_gen") if isinstance(cfg, dict) else None
+        web_cfg = image_gen.get("grok_web_imagine") if isinstance(image_gen, dict) else None
+        return bool(isinstance(web_cfg, dict) and web_cfg.get("fallback_on_xai_quota") is True)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not read grok web fallback config: %s", exc)
+        return False
+
+
+def _json_object(raw: Any) -> Optional[Dict[str, Any]]:
+    try:
+        value = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _is_xai_image_provider(value: Any) -> bool:
+    provider = str(value or "").strip().lower()
+    return provider in {"xai", "xai-oauth", "xai_grok", "xai-grok"}
+
+
+def _has_reference_conditioning(image_url: Optional[str], reference_image_urls: Optional[list]) -> bool:
+    if isinstance(image_url, str) and image_url.strip():
+        return True
+    if isinstance(reference_image_urls, (list, tuple)):
+        return any(isinstance(item, str) and item.strip() for item in reference_image_urls)
+    return False
+
+
+def _maybe_fallback_to_grok_web_imagine_on_xai_quota(
+    raw: Any,
+    *,
+    prompt: str,
+    aspect_ratio: str,
+    image_url: Optional[str],
+    reference_image_urls: Optional[list],
+    primary_provider_hint: Optional[str],
+) -> Any:
+    payload = _json_object(raw)
+    if not payload or payload.get("success"):
+        return raw
+    if not _grok_web_imagine_fallback_enabled():
+        return raw
+
+    primary_provider = payload.get("provider") or primary_provider_hint or _read_configured_image_provider()
+    if not _is_xai_image_provider(primary_provider):
+        return raw
+    if _has_reference_conditioning(image_url, reference_image_urls):
+        return raw
+
+    try:
+        from agent.visual.provider_failures import classify_visual_provider_failure
+
+        failure = classify_visual_provider_failure(payload)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not classify image provider failure for grok web fallback: %s", exc)
+        return raw
+    if failure.get("failure_class") != "quota_exceeded":
+        return raw
+
+    fallback_raw = _dispatch_to_plugin_provider(
+        prompt,
+        aspect_ratio,
+        image_url=None,
+        reference_image_urls=None,
+        provider_override=GROK_WEB_IMAGINE_PROVIDER,
+        model_override=GROK_WEB_IMAGINE_PROVIDER,
+    )
+    fallback_payload = _json_object(fallback_raw)
+    if not fallback_payload:
+        return fallback_raw if fallback_raw is not None else raw
+
+    fallback_payload.setdefault("fallback_attempted", True)
+    fallback_payload.setdefault("fallback_from_provider", str(primary_provider or "xai"))
+    fallback_payload.setdefault("fallback_reason", "xai_api_quota_exceeded")
+    fallback_payload.setdefault("primary_failure_class", failure.get("failure_class"))
+    fallback_payload.setdefault("primary_provider_message_code", failure.get("provider_message_code"))
+    fallback_payload.setdefault("primary_error_type", payload.get("error_type"))
+    fallback_payload.setdefault("provider_family", "grok_web")
+    fallback_payload.setdefault("quota_source", "consumer_web")
+    return json.dumps(fallback_payload, ensure_ascii=False)
+
+
 def _legacy_reference_image_urls(args: Dict[str, Any]) -> Optional[list]:
     """Return reference image aliases used by older runtime plugins.
 
@@ -1480,6 +1577,14 @@ def _handle_image_generate(args, **kw):
         model_override=model_override,
     )
     if dispatched is not None:
+        dispatched = _maybe_fallback_to_grok_web_imagine_on_xai_quota(
+            dispatched,
+            prompt=prompt,
+            aspect_ratio=aspect_ratio,
+            image_url=image_url,
+            reference_image_urls=reference_image_urls,
+            primary_provider_hint=provider_override or _read_configured_image_provider(),
+        )
         postprocessed = _postprocess_image_generate_result(dispatched, task_id=task_id)
         return _track_image_generate_result(
             postprocessed,

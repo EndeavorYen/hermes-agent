@@ -95,6 +95,54 @@ def test_classify_imagine_ready_when_logged_in_prompt_input_visible():
     assert state.safe_to_submit is True
 
 
+def test_classify_grok_build_page_is_not_safe_for_image_generation():
+    from plugins.image_gen.grok_web_imagine import classify_visible_state
+
+    state = classify_visible_state(
+        _snapshot(
+            url="https://grok.com/build",
+            title="Grok",
+            text=(
+                "Grok Build\n測試版\n從您的終端機執行的新型編碼代理。\n"
+                "Imagine\n為您的網站和應用程式產生或編輯影像和影片。\n"
+                "計劃模式\n子代理"
+            ),
+            buttons=[{"text": "Imagine", "aria": None}],
+            inputs=[
+                {
+                    "tag": "TEXTAREA",
+                    "aria": "Ask Grok anything",
+                    "placeholder": "What do you want to build?",
+                }
+            ],
+        )
+    )
+
+    assert state.status == "grok_build_open"
+    assert state.safe_to_submit is False
+    assert "Imagine" in state.message
+
+
+def test_provider_reports_grok_build_mode_without_submitting(monkeypatch):
+    from plugins.image_gen.grok_web_imagine import GrokWebImagineProvider
+
+    monkeypatch.setenv("HERMES_GROK_WEB_IMAGINE", "1")
+    cdp = MagicMock()
+    cdp.snapshot.return_value = _snapshot(
+        url="https://grok.com/build",
+        title="Grok",
+        text="Grok Build\nImagine\n計劃模式\n子代理",
+        inputs=[{"tag": "TEXTAREA", "aria": "Ask Grok anything", "placeholder": "What do you want to build?"}],
+    )
+    provider = GrokWebImagineProvider(cdp_client=cdp)
+
+    result = provider.generate("clean product photo")
+
+    assert result["success"] is False
+    assert result["error_type"] == "grok_build_open"
+    assert not cdp.generate_image.called
+
+
 def test_default_target_patterns_include_grok_and_accounts_pages():
     from plugins.image_gen.grok_web_imagine import DEFAULT_URL_CONTAINS, target_url_matches
 

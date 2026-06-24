@@ -135,6 +135,7 @@ def classify_visible_state(snapshot: Dict[str, Any]) -> VisibleState:
     title = str(snapshot.get("title") or "")
     text = str(snapshot.get("text") or "")
     combined = "\n".join([url, title, text, "\n".join(_text_values(snapshot.get("buttons") or []))])
+    url_lower = url.lower()
 
     if _has_any(combined, ("cloudflare", "verify you are human", "驗證您是否為真人")):
         return VisibleState(
@@ -154,7 +155,20 @@ def classify_visible_state(snapshot: Dict[str, Any]) -> VisibleState:
             title=title,
         )
 
-    if _has_any(combined, ("imagine", "create images", "create videos", "generate image")) and _has_prompt_input(snapshot):
+    if "/build" in url_lower:
+        return VisibleState(
+            status="grok_build_open",
+            safe_to_submit=False,
+            message="Grok Build is open; switch to Grok Imagine before running image generation.",
+            url=url,
+            title=title,
+        )
+
+    if (
+        "/imagine" in url_lower
+        and _has_any(combined, ("imagine", "create images", "create videos", "generate image"))
+        and _has_prompt_input(snapshot)
+    ):
         return VisibleState(
             status="imagine_ready",
             safe_to_submit=True,

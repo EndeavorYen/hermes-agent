@@ -54,6 +54,55 @@ class _RecordingProvider(ImageGenProvider):
         }
 
 
+class _FailingProvider(ImageGenProvider):
+    def __init__(self, name: str, error: str, error_type: str = "api_error"):
+        self._name = name
+        self.error = error
+        self.error_type = error_type
+        self.calls = 0
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def generate(self, prompt, aspect_ratio="landscape", **kwargs):
+        self.calls += 1
+        return {
+            "success": False,
+            "image": None,
+            "error": self.error,
+            "error_type": self.error_type,
+            "model": f"{self._name}-model",
+            "prompt": prompt,
+            "aspect_ratio": aspect_ratio,
+            "provider": self._name,
+        }
+
+
+class _GrokWebFallbackProvider(ImageGenProvider):
+    def __init__(self):
+        self.calls = 0
+        self.last_kwargs = {}
+
+    @property
+    def name(self) -> str:
+        return "grok-web-imagine"
+
+    def generate(self, prompt, aspect_ratio="landscape", **kwargs):
+        self.calls += 1
+        self.last_kwargs = {"prompt": prompt, "aspect_ratio": aspect_ratio, **kwargs}
+        return {
+            "success": True,
+            "image": "/tmp/grok-web.png",
+            "model": "grok-web-imagine",
+            "prompt": prompt,
+            "aspect_ratio": aspect_ratio,
+            "provider": "grok-web-imagine",
+            "provider_family": "grok_web",
+            "quota_source": "consumer_web",
+        }
+
+
 class TestPluginDispatch:
     def test_dispatch_routes_to_codex_provider(self, monkeypatch, tmp_path):
         from tools import image_generation_tool
@@ -186,3 +235,145 @@ class TestPluginDispatch:
         assert provider.last_kwargs["reference_image_urls"] == [
             "https://example.com/ref.png"
         ]
+
+    def test_xai_quota_failure_falls_back_to_grok_web_when_opted_in(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from agent import image_gen_registry as registry_module
+        from hermes_cli import plugins as plugins_module
+
+        xai = _FailingProvider(
+            "xai",
+            "xAI image generation failed (403): "
+            '{"code":"personal-team-blocked:spending-limit","error":"run out of credits"}',
+        )
+        grok_web = _GrokWebFallbackProvider()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_GROK_WEB_IMAGINE_FALLBACK", "1")
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "xai")
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_model", lambda: None)
+        monkeypatch.setattr(image_generation_tool, "_postprocess_image_generate_result", lambda raw, task_id=None: raw)
+        monkeypatch.setattr(
+            image_generation_tool,
+            "_track_image_generate_result",
+            lambda raw, **kwargs: raw,
+        )
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda *a, **k: None)
+        monkeypatch.setattr(
+            registry_module,
+            "get_provider",
+            lambda name: {"xai": xai, "grok-web-imagine": grok_web}.get(name),
+        )
+
+        payload = json.loads(
+            image_generation_tool._handle_image_generate(
+                {
+                    "prompt": "draw a clean product photo",
+                    "aspect_ratio": "square",
+                }
+            )
+        )
+
+        assert xai.calls == 1
+        assert grok_web.calls == 1
+        assert payload["success"] is True
+        assert payload["provider"] == "grok-web-imagine"
+        assert payload["provider_family"] == "grok_web"
+        assert payload["quota_source"] == "consumer_web"
+        assert payload["fallback_from_provider"] == "xai"
+        assert payload["fallback_reason"] == "xai_api_quota_exceeded"
+        assert payload["primary_failure_class"] == "quota_exceeded"
+        assert grok_web.last_kwargs["prompt"] == "draw a clean product photo"
+
+    def test_xai_quota_failure_does_not_fallback_without_explicit_opt_in(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from agent import image_gen_registry as registry_module
+        from hermes_cli import plugins as plugins_module
+
+        xai = _FailingProvider(
+            "xai",
+            "xAI image generation failed (403): personal-team-blocked:spending-limit",
+        )
+        grok_web = _GrokWebFallbackProvider()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_GROK_WEB_IMAGINE_FALLBACK", raising=False)
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "xai")
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_model", lambda: None)
+        monkeypatch.setattr(image_generation_tool, "_postprocess_image_generate_result", lambda raw, task_id=None: raw)
+        monkeypatch.setattr(image_generation_tool, "_track_image_generate_result", lambda raw, **kwargs: raw)
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda *a, **k: None)
+        monkeypatch.setattr(
+            registry_module,
+            "get_provider",
+            lambda name: {"xai": xai, "grok-web-imagine": grok_web}.get(name),
+        )
+
+        payload = json.loads(image_generation_tool._handle_image_generate({"prompt": "draw cat"}))
+
+        assert xai.calls == 1
+        assert grok_web.calls == 0
+        assert payload["success"] is False
+        assert payload["provider"] == "xai"
+
+    def test_xai_content_moderation_does_not_fallback_to_web_quota(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from agent import image_gen_registry as registry_module
+        from hermes_cli import plugins as plugins_module
+
+        xai = _FailingProvider("xai", "Generated image rejected by content moderation.")
+        grok_web = _GrokWebFallbackProvider()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_GROK_WEB_IMAGINE_FALLBACK", "1")
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "xai")
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_model", lambda: None)
+        monkeypatch.setattr(image_generation_tool, "_postprocess_image_generate_result", lambda raw, task_id=None: raw)
+        monkeypatch.setattr(image_generation_tool, "_track_image_generate_result", lambda raw, **kwargs: raw)
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda *a, **k: None)
+        monkeypatch.setattr(
+            registry_module,
+            "get_provider",
+            lambda name: {"xai": xai, "grok-web-imagine": grok_web}.get(name),
+        )
+
+        payload = json.loads(image_generation_tool._handle_image_generate({"prompt": "draw cat"}))
+
+        assert xai.calls == 1
+        assert grok_web.calls == 0
+        assert payload["success"] is False
+        assert payload["provider"] == "xai"
+
+    def test_xai_quota_fallback_skips_reference_conditioning(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from agent import image_gen_registry as registry_module
+        from hermes_cli import plugins as plugins_module
+
+        xai = _FailingProvider(
+            "xai",
+            "xAI image generation failed (403): personal-team-blocked:spending-limit",
+        )
+        grok_web = _GrokWebFallbackProvider()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_GROK_WEB_IMAGINE_FALLBACK", "1")
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "xai")
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_model", lambda: None)
+        monkeypatch.setattr(image_generation_tool, "_postprocess_image_generate_result", lambda raw, task_id=None: raw)
+        monkeypatch.setattr(image_generation_tool, "_track_image_generate_result", lambda raw, **kwargs: raw)
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda *a, **k: None)
+        monkeypatch.setattr(
+            registry_module,
+            "get_provider",
+            lambda name: {"xai": xai, "grok-web-imagine": grok_web}.get(name),
+        )
+
+        payload = json.loads(
+            image_generation_tool._handle_image_generate(
+                {
+                    "prompt": "edit this",
+                    "reference_image_urls": ["https://example.com/ref.png"],
+                }
+            )
+        )
+
+        assert xai.calls == 1
+        assert grok_web.calls == 0
+        assert payload["success"] is False
+        assert payload["provider"] == "xai"
