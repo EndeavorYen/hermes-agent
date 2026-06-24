@@ -1,0 +1,6 @@
+name: grok-web-imagine
+version: 0.1.0
+description: "Experimental logged-in Grok web Imagine browser bridge. Disabled by default."
+author: local
+kind: backend
+requires_env: []
