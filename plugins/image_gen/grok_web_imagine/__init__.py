@@ -24,7 +24,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-import websocket
+try:
+    import websocket
+except ModuleNotFoundError:  # pragma: no cover - exercised through CDP send path
+    websocket = None
 
 from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
@@ -182,15 +185,6 @@ def classify_visible_state(snapshot: Dict[str, Any]) -> VisibleState:
             title=title,
         )
 
-    if _has_any(combined, ("upgrade to supergrok", "升級至 supergrok", "升級到 supergrok")):
-        return VisibleState(
-            status="subscription_required",
-            safe_to_submit=False,
-            message="Grok Imagine is showing a SuperGrok upgrade prompt; use a SuperGrok-enabled web session.",
-            url=url,
-            title=title,
-        )
-
     if (
         "/imagine" in url_lower
         and _has_any(combined, ("imagine", "create images", "create videos", "generate image"))
@@ -200,6 +194,15 @@ def classify_visible_state(snapshot: Dict[str, Any]) -> VisibleState:
             status="imagine_ready",
             safe_to_submit=True,
             message="Grok web Imagine appears ready for a user-authorized generation attempt.",
+            url=url,
+            title=title,
+        )
+
+    if _has_any(combined, ("upgrade to supergrok", "升級至 supergrok", "升級到 supergrok")):
+        return VisibleState(
+            status="subscription_required",
+            safe_to_submit=False,
+            message="Grok Imagine is showing a SuperGrok upgrade prompt; use a SuperGrok-enabled web session.",
             url=url,
             title=title,
         )
@@ -283,8 +286,10 @@ def _fill_prompt_js(prompt: str) -> str:
         + json.dumps(prompt)
         + ";"
         "const visible = (e) => { const r = e.getBoundingClientRect(); return r.width > 20 && r.height > 20; };"
+        "const label = (e) => `${e.getAttribute('aria-label') || ''} ${e.getAttribute('placeholder') || ''}`.trim().toLowerCase();"
+        "const promptLike = (e) => /ask grok|what do you want|prompt|message|make|create|問 grok|你想知道什麼/.test(label(e));"
         "const els = [...document.querySelectorAll('textarea,input,[contenteditable=true]')].filter(visible);"
-        "const el = els.find(e => e.tagName === 'TEXTAREA') || els[0];"
+        "const el = els.find(promptLike) || els.find(e => e.tagName === 'TEXTAREA') || els.find(e => e.isContentEditable) || els[0];"
         "if (!el) return {filled:false, reason:'no_prompt_input'};"
         "el.focus();"
         "if (el.isContentEditable) { el.textContent = prompt; }"
@@ -372,6 +377,11 @@ class CDPClient:
         )
 
     def _send(self, method: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        if websocket is None:
+            raise GrokWebImagineError(
+                "websocket_client_unavailable",
+                "The websocket-client package is required for Grok web CDP automation.",
+            )
         self._id += 1
         ws = websocket.create_connection(
             self._page_ws_url(),

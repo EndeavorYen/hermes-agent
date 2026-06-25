@@ -14,10 +14,11 @@ def _write_latest(tmp_path, payload):
 
 
 def _scheduled_report(*, success=True, live_decision="run"):
+    generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     return {
         "success": success,
         "run_id": "20260622T101900Z",
-        "generated_at": "2026-06-22T10:19:00+00:00",
+        "generated_at": generated_at,
         "mode": "fixture+live" if live_decision == "run" else "fixture",
         "failures": [] if success else ["live_quality_suite_failed"],
         "live_policy": {

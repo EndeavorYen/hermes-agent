@@ -102,7 +102,28 @@ def test_classify_imagine_upgrade_prompt_requires_supergrok_session():
         _snapshot(
             url="https://grok.com/imagine",
             title="Imagine - Grok",
-            text="Imagine\n圖片\n影片\n語速\n品質\n升級至 SuperGrok",
+            text="Imagine\n升級至 SuperGrok\nUpgrade to continue creating images",
+            inputs=[],
+        )
+    )
+
+    assert state.status == "subscription_required"
+    assert state.safe_to_submit is False
+    assert "SuperGrok" in state.message
+
+
+def test_classify_imagine_ready_when_upgrade_cta_is_visible_but_prompt_controls_work():
+    from plugins.image_gen.grok_web_imagine import classify_visible_state
+
+    state = classify_visible_state(
+        _snapshot(
+            url="https://grok.com/imagine",
+            title="Imagine - Grok",
+            text=(
+                "精選範本\nProduct Showcase\nGlossy Product Shot\n"
+                "圖片\n影片\n代理\n語速\n品質\n2:3\n升級至 SuperGrok"
+            ),
+            buttons=[{"text": "Imagine", "aria": None}, {"text": "Glossy Product Shot", "aria": None}],
             inputs=[
                 {
                     "tag": "DIV",
@@ -114,9 +135,8 @@ def test_classify_imagine_upgrade_prompt_requires_supergrok_session():
         )
     )
 
-    assert state.status == "subscription_required"
-    assert state.safe_to_submit is False
-    assert "SuperGrok" in state.message
+    assert state.status == "imagine_ready"
+    assert state.safe_to_submit is True
 
 
 def test_provider_reports_subscription_required_without_submitting(monkeypatch):
@@ -127,8 +147,8 @@ def test_provider_reports_subscription_required_without_submitting(monkeypatch):
     cdp.snapshot.return_value = _snapshot(
         url="https://grok.com/imagine",
         title="Imagine - Grok",
-        text="Imagine\n圖片\n影片\n升級至 SuperGrok",
-        inputs=[{"tag": "DIV", "aria": "Ask Grok anything", "placeholder": None, "text": ""}],
+        text="Imagine\n升級至 SuperGrok\nUpgrade to continue creating images",
+        inputs=[],
     )
     provider = GrokWebImagineProvider(cdp_client=cdp)
 
@@ -307,6 +327,16 @@ def test_submit_prompt_uses_visible_submit_button(monkeypatch):
 
     assert calls
     assert "button[type=submit]" in calls[0]
+
+
+def test_fill_prompt_prefers_prompt_editor_before_generic_visible_input():
+    from plugins.image_gen.grok_web_imagine import _fill_prompt_js
+
+    expression = _fill_prompt_js("clean product photo")
+
+    assert "promptLike" in expression
+    assert "ask grok" in expression
+    assert "els.find(promptLike)" in expression
 
 
 def test_submit_prompt_raises_when_submit_button_missing(monkeypatch):
