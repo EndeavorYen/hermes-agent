@@ -718,6 +718,13 @@ def _with_carried_live_quality_burn(
     carried = _carried_live_quality_burn(state)
     if not carried:
         return automation
+    carried_actions = _filter_unselected_optional_fallback_actions(
+        _action_list(carried.get("next_actions")),
+        selected_visual_providers=_selected_visual_provider_names(),
+    )
+    if not carried_actions:
+        return automation
+    carried["next_actions"] = carried_actions
 
     merged = dict(automation)
     merged["live_quality_burn"] = carried
@@ -816,25 +823,34 @@ def _operator_setup_live_gate(
     missing_env_vars: list[str] = []
     operator_setup_actions: list[dict[str, Any]] = []
     action_types: list[str] = []
+    selected_visual_providers = _selected_visual_provider_names()
     for action in _action_list(live_quality_burn.get("next_actions")):
         if action.get("requires_operator_setup") is not True:
             continue
         action_type = str(action.get("type") or "").strip()
-        if action_type and action_type not in action_types:
-            action_types.append(action_type)
         for setup in _dict_list(action.get("operator_setup_actions")):
             configured_missing_env_vars = _string_list(setup.get("missing_env_vars"))
+            post_setup = str(setup.get("post_setup") or "").strip()
+            if _is_unselected_optional_fallback_setup(
+                action_type=action_type,
+                setup=setup,
+                configured_missing_env_vars=configured_missing_env_vars,
+                post_setup=post_setup,
+                selected_visual_providers=selected_visual_providers,
+            ):
+                continue
             unresolved_vars = [
                 env_var
                 for env_var in configured_missing_env_vars
                 if not os.environ.get(env_var)
             ]
-            post_setup = str(setup.get("post_setup") or "").strip()
             if not unresolved_vars and (configured_missing_env_vars or not post_setup):
                 continue
             for env_var in unresolved_vars:
                 if env_var not in missing_env_vars:
                     missing_env_vars.append(env_var)
+            if action_type and action_type not in action_types:
+                action_types.append(action_type)
             operator_setup_actions.append(
                 {
                     "provider": str(setup.get("provider") or "").strip(),
@@ -868,6 +884,44 @@ def _operator_setup_live_gate(
 
 def _operator_setup_allows_probe_with_missing_env_vars(action_types: list[str]) -> bool:
     return bool(action_types) and all(action_type == "configure_video_fallback_provider" for action_type in action_types)
+
+
+def _selected_visual_provider_names() -> set[str]:
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config()
+    except Exception:
+        return set()
+    if not isinstance(config, dict):
+        return set()
+    providers: set[str] = set()
+    for section_name in ("image_gen", "video_gen"):
+        section = config.get(section_name)
+        if not isinstance(section, dict):
+            continue
+        provider = str(section.get("provider") or "").strip()
+        if provider:
+            providers.add(provider)
+    return providers
+
+
+def _is_unselected_optional_fallback_setup(
+    *,
+    action_type: str,
+    setup: dict[str, Any],
+    configured_missing_env_vars: list[str],
+    post_setup: str,
+    selected_visual_providers: set[str],
+) -> bool:
+    if action_type != "configure_video_fallback_provider":
+        return False
+    provider = str(setup.get("provider") or "").strip()
+    if not provider or not selected_visual_providers:
+        return False
+    if provider in selected_visual_providers:
+        return False
+    return bool(configured_missing_env_vars) and not post_setup
 
 
 def _operator_setup_recheck_gate(
@@ -917,7 +971,12 @@ def _runtime_policy(
         if isinstance(automation.get("self_improvement"), dict)
         else {}
     )
-    actions = _runtime_policy_actions(_action_list(self_improvement.get("next_actions")))
+    actions = _runtime_policy_actions(
+        _filter_unselected_optional_fallback_actions(
+            _action_list(self_improvement.get("next_actions")),
+            selected_visual_providers=_selected_visual_provider_names(),
+        )
+    )
     if _runtime_policy_quality_regressed(summary):
         suspended_action_types = _runtime_policy_suspended_action_types(actions, summary)
         return {
@@ -1028,6 +1087,42 @@ def _runtime_policy_value(value: Any) -> Any:
                 sanitized[key.strip()] = safe_item
         return sanitized
     return None
+
+
+def _filter_unselected_optional_fallback_actions(
+    actions: list[dict[str, Any]],
+    *,
+    selected_visual_providers: set[str],
+) -> list[dict[str, Any]]:
+    return [
+        action
+        for action in actions
+        if not _is_unselected_optional_fallback_action(
+            action,
+            selected_visual_providers=selected_visual_providers,
+        )
+    ]
+
+
+def _is_unselected_optional_fallback_action(
+    action: dict[str, Any],
+    *,
+    selected_visual_providers: set[str],
+) -> bool:
+    setups = _dict_list(action.get("operator_setup_actions"))
+    if not setups:
+        return False
+    action_type = str(action.get("type") or "").strip()
+    return all(
+        _is_unselected_optional_fallback_setup(
+            action_type=action_type,
+            setup=setup,
+            configured_missing_env_vars=_string_list(setup.get("missing_env_vars")),
+            post_setup=str(setup.get("post_setup") or "").strip(),
+            selected_visual_providers=selected_visual_providers,
+        )
+        for setup in setups
+    )
 
 
 def _write_report(output_dir: Path, report: dict[str, Any]) -> None:

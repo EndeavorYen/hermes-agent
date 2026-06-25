@@ -1598,6 +1598,11 @@ def test_scheduled_self_validation_auto_skips_live_when_operator_setup_env_is_un
 ):
     from scripts import visual_scheduled_self_validation
 
+    monkeypatch.setattr(
+        visual_scheduled_self_validation,
+        "_selected_visual_provider_names",
+        lambda: {"fal"},
+    )
     output_dir = tmp_path / "self_validation"
     output_dir.mkdir(parents=True)
     output_dir.joinpath("state.json").write_text(
@@ -1670,6 +1675,11 @@ def test_scheduled_self_validation_auto_rechecks_fallback_env_setup_after_cooldo
 ):
     from scripts import visual_scheduled_self_validation
 
+    monkeypatch.setattr(
+        visual_scheduled_self_validation,
+        "_selected_visual_provider_names",
+        lambda: {"fal"},
+    )
     output_dir = tmp_path / "self_validation"
     output_dir.mkdir(parents=True)
     output_dir.joinpath("state.json").write_text(
@@ -1813,6 +1823,111 @@ def test_scheduled_self_validation_auto_skips_live_when_provider_quota_setup_is_
     ]
     assert report["live_policy"]["action_types"] == ["resolve_provider_quota_or_switch_provider"]
     assert report["automation"]["live_quality_burn"]["status"] == "carried_forward"
+
+
+def test_scheduled_self_validation_ignores_unselected_fallback_env_setup(
+    monkeypatch,
+    tmp_path,
+):
+    from scripts import visual_scheduled_self_validation
+
+    monkeypatch.delenv("FAL_KEY", raising=False)
+    monkeypatch.setattr(
+        visual_scheduled_self_validation,
+        "_selected_visual_provider_names",
+        lambda: {"openai-codex", "xai"},
+        raising=False,
+    )
+    output_dir = tmp_path / "self_validation"
+    output_dir.mkdir(parents=True)
+    output_dir.joinpath("state.json").write_text(
+        json.dumps(
+            {
+                "last_live_run_at": "2026-06-22T00:00:00+00:00",
+                "last_live_quality_burn": {
+                    "success": False,
+                    "status": None,
+                    "summary": {"provider_failure_count": 4},
+                    "next_actions": [
+                        {
+                            "type": "resolve_provider_quota_or_switch_provider",
+                            "requires_human_feedback": False,
+                            "requires_operator_setup": True,
+                            "source": "live_quality_burn",
+                            "operator_setup_actions": [
+                                {
+                                    "provider": "visual_generation",
+                                    "missing_env_vars": [],
+                                    "post_setup": (
+                                        "Restore quota or credits for the active visual generation provider, "
+                                        "or switch Hermes visual generation to a provider with available quota."
+                                    ),
+                                }
+                            ],
+                        },
+                        {
+                            "type": "configure_video_fallback_provider",
+                            "requires_human_feedback": False,
+                            "requires_operator_setup": True,
+                            "source": "live_quality_burn",
+                            "operator_setup_actions": [
+                                {
+                                    "provider": "fal",
+                                    "missing_env_vars": ["FAL_KEY"],
+                                    "post_setup": "",
+                                }
+                            ],
+                        },
+                    ],
+                    "generated_at": "2026-06-22T00:00:00+00:00",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake_automation(*, work_dir, include_live, include_live_slack_upload=False):
+        calls.append({"include_live": include_live, "include_live_slack_upload": include_live_slack_upload})
+        return _automation_report(
+            include_live=include_live,
+            include_live_slack_upload=include_live_slack_upload,
+        )
+
+    monkeypatch.setattr(
+        visual_scheduled_self_validation,
+        "build_visual_e2e_automation_report",
+        fake_automation,
+    )
+
+    report = visual_scheduled_self_validation.build_visual_scheduled_self_validation_report(
+        output_dir=output_dir,
+        live_mode="auto",
+        live_enabled=True,
+        min_live_interval_hours=6,
+        now=datetime(2026, 6, 22, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert calls == [{"include_live": False, "include_live_slack_upload": False}]
+    assert report["live_policy"]["decision"] == "skip_operator_setup"
+    assert report["live_policy"]["reason"] == "operator_setup_unresolved"
+    assert "missing_env_vars" not in report["live_policy"]
+    assert report["live_policy"]["operator_setup_actions"] == [
+        {
+            "provider": "visual_generation",
+            "missing_env_vars": [],
+            "post_setup": (
+                "Restore quota or credits for the active visual generation provider, "
+                "or switch Hermes visual generation to a provider with available quota."
+            ),
+        }
+    ]
+    assert report["live_policy"]["action_types"] == ["resolve_provider_quota_or_switch_provider"]
+    assert "configure_video_fallback_provider" not in report["summary"]["feedback_action_types"]
+    assert "configure_video_fallback_provider" not in report["summary"]["live_quality_burn_action_types"]
+    assert "configure_video_fallback_provider" not in [
+        action["type"] for action in report["runtime_policy"]["next_actions"]
+    ]
 
 
 def test_scheduled_self_validation_auto_rechecks_provider_quota_setup_after_cooldown(
