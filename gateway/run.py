@@ -1248,6 +1248,45 @@ def _collect_auto_append_media_tags(
     return delivery.media_tags, delivery.has_voice_directive
 
 
+def _build_visual_reference_context_for_turn(
+    history: List[Dict[str, Any]],
+    *,
+    current_message: Any,
+    native_image_paths: Optional[List[str]] = None,
+    limit: int = 3,
+) -> List[str]:
+    """Build reusable visual references for follow-up image/video edits.
+
+    This is intentionally separate from MEDIA auto-append: these paths are
+    context for tools, not artifacts to deliver again.
+    """
+    try:
+        from agent.visual.session_references import (
+            collect_recent_visual_reference_paths,
+            normalise_visual_reference_paths,
+        )
+    except Exception:
+        return []
+
+    refs: List[str] = []
+    for ref in normalise_visual_reference_paths(native_image_paths or []):
+        if ref not in refs:
+            refs.append(ref)
+    current_refs = collect_recent_visual_reference_paths(
+        [{"role": "user", "content": current_message}],
+        limit=limit,
+    )
+    for ref in current_refs:
+        if ref not in refs:
+            refs.append(ref)
+    for ref in collect_recent_visual_reference_paths(history or [], limit=limit):
+        if ref not in refs:
+            refs.append(ref)
+        if len(refs) >= limit:
+            break
+    return refs[: max(0, limit)]
+
+
 def _append_auto_append_media_tags_to_response(
     final_response: str,
     media_tags: List[str],
@@ -15990,6 +16029,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # content list. Consume-and-clear so subsequent turns on the same
                 # runner instance don't re-attach stale images.
                 _native_imgs = self._consume_pending_native_image_paths(session_key)
+                _visual_reference_token = None
                 if _native_imgs:
                     try:
                         from agent.image_routing import build_native_content_parts
@@ -16030,7 +16070,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _conversation_kwargs["persist_user_message"] = message
                 if _persist_user_timestamp_override is not None:
                     _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
-                result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
+                try:
+                    from gateway.session_context import (
+                        reset_visual_reference_context,
+                        set_visual_reference_context,
+                    )
+
+                    _visual_refs = _build_visual_reference_context_for_turn(
+                        agent_history,
+                        current_message=message,
+                        native_image_paths=_native_imgs,
+                    )
+                    _visual_reference_token = set_visual_reference_context(_visual_refs)
+                    if _visual_refs:
+                        logger.info(
+                            "Visual reference context: bound %d recent image reference(s) for session %s",
+                            len(_visual_refs),
+                            session_key or "",
+                        )
+                    result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
+                finally:
+                    if _visual_reference_token is not None:
+                        reset_visual_reference_context(_visual_reference_token)
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 # Cancel any pending clarify entries so blocked agent

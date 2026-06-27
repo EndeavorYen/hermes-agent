@@ -80,6 +80,15 @@ class TestXAIImageGenProvider:
         assert schema["env_vars"] == []
         assert schema["post_setup"] == "xai_grok"
 
+    def test_capabilities_advertise_three_reference_images(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        provider = XAIImageGenProvider()
+        capabilities = provider.capabilities()
+
+        assert capabilities["modalities"] == ["text", "image"]
+        assert capabilities["max_reference_images"] == 3
+
 
 # ---------------------------------------------------------------------------
 # Config tests
@@ -140,6 +149,90 @@ class TestGenerate:
         assert result["image"] == "/tmp/test.png"
         assert result["provider"] == "xai"
         assert result["model"] == "grok-imagine-image"
+
+    def test_multi_reference_edit_posts_all_sources(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {
+            "data": [{"b64_json": "dGVzdC1pbWFnZS1kYXRh"}],
+        }
+
+        references = [
+            "https://example.com/reference-a.png",
+            "https://example.com/reference-b.png",
+            "data:image/png;base64,cmVmLWM=",
+        ]
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp) as mock_post:
+            with patch("plugins.image_gen.xai.save_b64_image", return_value="/tmp/test.png"):
+                provider = XAIImageGenProvider()
+                result = provider.generate(
+                    prompt="Keep this character consistent in a new pose",
+                    reference_image_urls=references,
+                )
+
+        assert result["success"] is True
+        assert result["modality"] == "image"
+        assert result["model"] == "grok-imagine-image-quality"
+        assert result["reference_image_count"] == 3
+        assert result["reference_conditioning"] == "xai_image_edit"
+
+        endpoint = mock_post.call_args.args[0]
+        payload = mock_post.call_args.kwargs["json"]
+        assert endpoint.endswith("/images/edits")
+        assert payload["model"] == "grok-imagine-image-quality"
+        assert payload["prompt"] == "Keep this character consistent in a new pose"
+        assert "image" not in payload
+        assert payload["images"] == [
+            {"url": "https://example.com/reference-a.png", "type": "image_url"},
+            {"url": "https://example.com/reference-b.png", "type": "image_url"},
+            {"url": "data:image/png;base64,cmVmLWM=", "type": "image_url"},
+        ]
+
+    def test_file_uri_reference_edit_is_encoded(self, tmp_path):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        source = tmp_path / "reference.png"
+        source.write_bytes(b"reference-bytes")
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {
+            "data": [{"b64_json": "dGVzdC1pbWFnZS1kYXRh"}],
+        }
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp) as mock_post:
+            with patch("plugins.image_gen.xai.save_b64_image", return_value="/tmp/test.png"):
+                provider = XAIImageGenProvider()
+                result = provider.generate(
+                    prompt="Keep this character consistent in a new pose",
+                    reference_image_urls=[source.as_uri()],
+                )
+
+        assert result["success"] is True
+        payload = mock_post.call_args.kwargs["json"]
+        assert payload["image"]["type"] == "image_url"
+        assert payload["image"]["url"].startswith("data:image/png;base64,")
+
+    def test_too_many_reference_images_is_rejected(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        provider = XAIImageGenProvider()
+        result = provider.generate(
+            prompt="Use these references",
+            reference_image_urls=[
+                "https://example.com/a.png",
+                "https://example.com/b.png",
+                "https://example.com/c.png",
+                "https://example.com/d.png",
+            ],
+        )
+
+        assert result["success"] is False
+        assert result["error_type"] == "too_many_references"
+        assert "up to 3 reference images" in result["error"]
 
     def test_successful_url_response(self):
         """xAI URL response is cached locally — #26942 contract.

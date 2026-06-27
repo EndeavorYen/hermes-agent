@@ -54,6 +54,31 @@ class _RecordingProvider(ImageGenProvider):
         }
 
 
+class _NamedRecordingProvider(ImageGenProvider):
+    def __init__(self, name: str):
+        self._name = name
+        self.last_kwargs = {}
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def generate(self, prompt, aspect_ratio="landscape", **kwargs):
+        self.last_kwargs = {
+            "prompt": prompt,
+            "aspect_ratio": aspect_ratio,
+            **kwargs,
+        }
+        return {
+            "success": True,
+            "image": f"/tmp/{self._name}.png",
+            "model": kwargs.get("model") or f"{self._name}-model",
+            "prompt": prompt,
+            "aspect_ratio": aspect_ratio,
+            "provider": self._name,
+        }
+
+
 class _FailingProvider(ImageGenProvider):
     def __init__(self, name: str, error: str, error_type: str = "api_error"):
         self._name = name
@@ -104,6 +129,260 @@ class _GrokWebFallbackProvider(ImageGenProvider):
 
 
 class TestPluginDispatch:
+    def test_handle_agent_mode_image_routes_to_visual_package(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from tools import visual_package_tool
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        captured: Dict[str, Any] = {}
+
+        async def fake_visual_package(args, **_kwargs):
+            captured.update(args)
+            return json.dumps(
+                {
+                    "success": True,
+                    "package_status": "success",
+                    "images": ["/tmp/selected-agent-image.png"],
+                    "visual_request_id": "vrq_agent_image",
+                    "generation_payloads": {
+                        "image": [
+                            {
+                                "success": True,
+                                "image": "/tmp/selected-agent-image.png",
+                                "provider": "xai",
+                                "model": "grok-imagine-image-quality",
+                            }
+                        ],
+                    },
+                    "generation_strategy": {"candidate_budget": 2},
+                }
+            )
+
+        monkeypatch.setattr(
+            visual_package_tool,
+            "_handle_visual_package_generate",
+            fake_visual_package,
+        )
+
+        payload = json.loads(
+            image_generation_tool._handle_image_generate(
+                {
+                    "prompt": "請用 Agent mode 固定這位角色，產出精緻圖片",
+                    "aspect_ratio": "9:16",
+                    "reference_image_urls": ["/tmp/ref.png"],
+                    "agent_mode": True,
+                    "_provider": "xai",
+                }
+            )
+        )
+
+        assert payload["success"] is True
+        assert payload["image"] == "/tmp/selected-agent-image.png"
+        assert payload["provider"] == "xai"
+        assert payload["model"] == "grok-imagine-image-quality"
+        assert payload["route"] == "image_visual_package"
+        assert payload["source_tool"] == "image_generate"
+        assert payload["recommended_tool"] == "visual_package_generate"
+        assert payload["visual_package_request_id"] == "vrq_agent_image"
+        assert captured["prompt"] == "請用 Agent mode 固定這位角色，產出精緻圖片"
+        assert captured["include_image"] is True
+        assert captured["include_video"] is False
+        assert captured["candidate_budget"] == 2
+        assert captured["candidate_budget_source"] == "agent_mode"
+        assert captured["attachments"] == ["/tmp/ref.png"]
+        assert captured["image_provider"] == "xai"
+
+    def test_handle_agent_mode_grok_prompt_routes_visual_package_to_xai(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from tools import visual_package_tool
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "openai-codex")
+        captured: Dict[str, Any] = {}
+
+        async def fake_visual_package(args, **_kwargs):
+            captured.update(args)
+            return json.dumps(
+                {
+                    "success": True,
+                    "package_status": "success",
+                    "images": ["/tmp/grok-agent-image.png"],
+                    "generation_payloads": {
+                        "image": [
+                            {
+                                "success": True,
+                                "image": "/tmp/grok-agent-image.png",
+                                "provider": "xai",
+                                "model": "grok-imagine-image-quality",
+                            }
+                        ],
+                    },
+                }
+            )
+
+        monkeypatch.setattr(
+            visual_package_tool,
+            "_handle_visual_package_generate",
+            fake_visual_package,
+        )
+
+        payload = json.loads(
+            image_generation_tool._handle_image_generate(
+                {
+                    "prompt": "請用 Grok Imagine 生成純 2D 動漫角色",
+                    "agent_mode": True,
+                    "candidate_budget": 2,
+                }
+            )
+        )
+
+        assert payload["success"] is True
+        assert payload["provider"] == "xai"
+        assert payload["route"] == "image_visual_package"
+        assert captured["image_provider"] == "xai"
+        assert captured["candidate_budget"] == 2
+
+    def test_handle_grok_prompt_overrides_configured_openai_provider(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from agent import image_gen_registry as registry_module
+        from hermes_cli import plugins as plugins_module
+
+        xai = _NamedRecordingProvider("xai")
+        openai = _NamedRecordingProvider("openai-codex")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "openai-codex")
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_model", lambda: "gpt-image-2-high")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda *a, **k: None)
+        monkeypatch.setattr(
+            registry_module,
+            "get_provider",
+            lambda name: {"xai": xai, "openai-codex": openai}.get(name),
+        )
+
+        payload = json.loads(
+            image_generation_tool._handle_image_generate(
+                {
+                    "prompt": "請用 Grok Imagine 生成純 2D 動漫角色",
+                    "aspect_ratio": "portrait",
+                }
+            )
+        )
+
+        assert payload["success"] is True
+        assert payload["provider"] == "xai"
+        assert xai.last_kwargs["prompt"] == "請用 Grok Imagine 生成純 2D 動漫角色"
+        assert openai.last_kwargs == {}
+
+    def test_handle_provider_arg_preserves_grok_intent_after_prompt_rewrite(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from agent import image_gen_registry as registry_module
+        from hermes_cli import plugins as plugins_module
+
+        xai = _NamedRecordingProvider("xai")
+        openai = _NamedRecordingProvider("openai-codex")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "openai-codex")
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_model", lambda: "gpt-image-2-high")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda *a, **k: None)
+        monkeypatch.setattr(
+            registry_module,
+            "get_provider",
+            lambda name: {"xai": xai, "openai-codex": openai}.get(name),
+        )
+
+        payload = json.loads(
+            image_generation_tool._handle_image_generate(
+                {
+                    "prompt": "Use the attached reference images to create the best selected 2D anime portrait.",
+                    "aspect_ratio": "portrait",
+                    "provider": "Grok Imagine",
+                }
+            )
+        )
+
+        assert payload["success"] is True
+        assert payload["provider"] == "xai"
+        assert xai.last_kwargs["prompt"].startswith("Use the attached reference images")
+        assert openai.last_kwargs == {}
+
+    def test_handle_followup_image_reuses_session_visual_references(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from agent import image_gen_registry as registry_module
+        from gateway.session_context import (
+            clear_session_vars,
+            reset_visual_reference_context,
+            set_session_vars,
+            set_visual_reference_context,
+        )
+        from hermes_cli import plugins as plugins_module
+
+        provider = _NamedRecordingProvider("xai")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "xai")
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_model", lambda: "grok-imagine-image-quality")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda *a, **k: None)
+        monkeypatch.setattr(registry_module, "get_provider", lambda name: provider if name == "xai" else None)
+
+        tokens = set_session_vars(session_key="slack:D123")
+        ref_token = set_visual_reference_context(["/tmp/previous-selected.png", "/tmp/original-ref.png"])
+        try:
+            payload = json.loads(
+                image_generation_tool._handle_image_generate(
+                    {
+                        "prompt": "把上一張改成夜景，角色外貌保持一致",
+                        "aspect_ratio": "portrait",
+                    }
+                )
+            )
+        finally:
+            clear_session_vars(tokens)
+            reset_visual_reference_context(ref_token)
+
+        assert payload["success"] is True
+        assert provider.last_kwargs["reference_image_urls"] == [
+            "/tmp/previous-selected.png",
+            "/tmp/original-ref.png",
+        ]
+
+    def test_handle_prompt_agent_mode_image_routes_to_visual_package(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from tools import visual_package_tool
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        captured: Dict[str, Any] = {}
+
+        async def fake_visual_package(args, **_kwargs):
+            captured.update(args)
+            return json.dumps(
+                {
+                    "success": True,
+                    "package_status": "success",
+                    "images": ["/tmp/prompt-agent-image.png"],
+                    "visual_request_id": "vrq_prompt_agent_image",
+                }
+            )
+
+        monkeypatch.setattr(
+            visual_package_tool,
+            "_handle_visual_package_generate",
+            fake_visual_package,
+        )
+
+        payload = json.loads(
+            image_generation_tool._handle_image_generate(
+                {
+                    "prompt": "請用 visual agent mode 產出一張乾淨產品攝影圖",
+                    "aspect_ratio": "square",
+                }
+            )
+        )
+
+        assert payload["success"] is True
+        assert payload["image"] == "/tmp/prompt-agent-image.png"
+        assert payload["route"] == "image_visual_package"
+        assert captured["include_image"] is True
+        assert captured["include_video"] is False
+
     def test_dispatch_routes_to_codex_provider(self, monkeypatch, tmp_path):
         from tools import image_generation_tool
         from agent import image_gen_registry as registry_module

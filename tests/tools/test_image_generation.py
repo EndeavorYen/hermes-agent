@@ -366,12 +366,18 @@ class TestRegistryIntegration:
     def test_schema_exposes_expected_agent_params(self, image_tool):
         """The agent-facing schema exposes the unified text+image surface:
         prompt (required), aspect_ratio, and the image-to-image inputs
-        image_url + reference_image_urls. Model selection stays a user-level
-        config choice, never an agent-level arg."""
+        image_url + reference_image_urls. agent_mode can opt into the higher
+        autonomy visual package route. A public provider override lets the
+        agent preserve explicit user intent such as Grok Imagine after it
+        rewrites the generation prompt."""
         props = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]
         assert set(props.keys()) == {
-            "prompt", "aspect_ratio", "image_url", "reference_image_urls",
+            "prompt", "aspect_ratio", "image_url", "reference_image_urls", "agent_mode", "provider",
         }
+        for forbidden in ("model", "_provider", "_model"):
+            assert forbidden not in props
+        assert "xai" in props["provider"]["description"]
+        assert "explicit provider intent" in image_tool.IMAGE_GENERATE_SCHEMA["description"]
         assert image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["required"] == ["prompt"]
 
     def test_aspect_ratio_enum_is_three_values(self, image_tool):

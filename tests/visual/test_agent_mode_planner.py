@@ -11,7 +11,7 @@ def test_agent_mode_planner_routes_image_plus_video_request_without_advanced_kno
     assert plan["confidence"] >= 0.75
     assert plan["arguments"]["include_image"] is True
     assert plan["arguments"]["include_video"] is True
-    assert plan["arguments"]["candidate_budget"] == 1
+    assert plan["arguments"]["candidate_budget"] == 2
     assert plan["arguments"]["video_budget"] == 1
     assert plan["arguments"]["attachments"] == ["/tmp/ref.png"]
     assert "autonomy_level" not in plan["arguments"]
@@ -40,6 +40,8 @@ def test_agent_mode_planner_routes_image_only_request():
     assert plan["should_use_visual_package"] is True
     assert plan["arguments"]["include_image"] is True
     assert plan["arguments"]["include_video"] is False
+    assert plan["arguments"]["candidate_budget"] == 2
+    assert plan["arguments"]["candidate_budget_source"] == "planner_default"
 
 
 def test_agent_mode_planner_routes_friendly_draw_character_request():
@@ -52,7 +54,7 @@ def test_agent_mode_planner_routes_friendly_draw_character_request():
     assert plan["reason"] == "image_request"
     assert plan["arguments"]["include_image"] is True
     assert plan["arguments"]["include_video"] is False
-    assert plan["arguments"]["candidate_budget"] == 1
+    assert plan["arguments"]["candidate_budget"] == 2
     assert plan["arguments"]["candidate_budget_source"] == "planner_default"
     assert "autonomy_level" not in plan["arguments"]
 

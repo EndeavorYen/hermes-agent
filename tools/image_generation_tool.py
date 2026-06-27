@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import datetime
+import re
 import threading
 import uuid
 from typing import Any, Dict, Optional
@@ -1211,8 +1212,12 @@ IMAGE_GENERATE_SCHEMA = {
         "edit / transform an existing image (image-to-image) when the active "
         "model supports it. Pass `image_url` to edit that image; add "
         "`reference_image_urls` for style/composition references; omit both "
-        "for text-to-image. The underlying backend (FAL, OpenAI, xAI, etc.) "
-        "and model are user-configured and not selectable by the agent. "
+        "for text-to-image. The default backend/model comes from user config; "
+        "explicit provider intent in the prompt, such as Grok Imagine/xAI or "
+        "OpenAI Image2, may override that default. When the user explicitly "
+        "requests a provider and you rewrite the generation prompt, preserve "
+        "that intent by setting `provider` (for example `xai` for Grok "
+        "Imagine, `openai-codex` for OpenAI Image2). "
         "Returns either a URL or an absolute file path in the `image` field; "
         "display it with markdown ![description](url-or-path) and the gateway "
         "will deliver it. When the active terminal backend has a different "
@@ -1256,6 +1261,25 @@ IMAGE_GENERATE_SCHEMA = {
                     "(style, character, or composition references) to guide an "
                     "image-to-image edit. Supported only by some models and "
                     "capped per-model; the description above indicates the max."
+                ),
+            },
+            "agent_mode": {
+                "type": "boolean",
+                "description": (
+                    "When true, route natural image generation through Hermes "
+                    "visual agent mode: generate candidates, rank/select the "
+                    "best current artifact, apply quality gates, and return "
+                    "only the selected image."
+                ),
+            },
+            "provider": {
+                "type": "string",
+                "description": (
+                    "Optional image backend override that preserves explicit "
+                    "user intent after prompt rewriting. Use `xai` for Grok "
+                    "Imagine, `openai-codex` for OpenAI Image2 / gpt-image-2, "
+                    "`fal` for FAL, or another registered image provider id. "
+                    "Omit this to use configured defaults."
                 ),
             },
         },
@@ -1556,6 +1580,230 @@ def _legacy_reference_image_urls(args: Dict[str, Any]) -> Optional[list]:
     return None
 
 
+def _truthy_arg(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on", "agent", "agent_mode"}
+    return False
+
+
+def _requested_image_provider(value: str) -> str | None:
+    lowered = str(value or "").lower()
+    compact = re.sub(r"[\s_\-.]+", "", lowered)
+    if "grok" in lowered or "x.ai" in lowered or re.search(r"\bxai\b", lowered):
+        return "xai"
+    if (
+        "openai" in lowered
+        or "codex" in lowered
+        or "gpt-image" in lowered
+        or "image2" in compact
+    ):
+        return "openai-codex"
+    return None
+
+
+def _normalise_public_image_provider(value: Any) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    return _requested_image_provider(raw) or raw
+
+
+def _image_provider_override_arg(args: Dict[str, Any], prompt: str) -> str | None:
+    internal_provider = args.get("_provider")
+    if isinstance(internal_provider, str) and internal_provider.strip():
+        return internal_provider.strip()
+    for key in ("provider", "image_provider"):
+        provider = _normalise_public_image_provider(args.get(key))
+        if provider:
+            return provider
+    return _requested_image_provider(prompt)
+
+
+def _agent_mode_requested(args: Dict[str, Any], prompt: str) -> bool:
+    if _truthy_arg(args.get("_disable_visual_agent_route")):
+        return False
+    if _truthy_arg(args.get("agent_mode")) or _truthy_arg(args.get("visual_agent_mode")):
+        return True
+    return _prompt_requests_image_agent_mode(prompt)
+
+
+def _prompt_requests_image_agent_mode(prompt: str) -> bool:
+    text = str(prompt or "").lower()
+    compact = "".join(ch for ch in text if not ch.isspace())
+    return any(
+        token in text
+        for token in (
+            "visual agent mode",
+            "agent mode",
+            "agent-mode",
+            "image agent mode",
+        )
+    ) or any(
+        token in compact
+        for token in (
+            "visualagentmode",
+            "imageagentmode",
+            "agent模式",
+            "代理模式",
+            "智能體模式",
+        )
+    )
+
+
+def _coerce_candidate_budget(value: Any, *, default: int = 2) -> int:
+    try:
+        budget = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(8, budget))
+
+
+def _image_agent_attachments(
+    image_url: Any,
+    reference_image_urls: Optional[list],
+) -> list[str]:
+    attachments: list[str] = []
+    if isinstance(image_url, str) and image_url.strip():
+        attachments.append(image_url.strip())
+    if reference_image_urls is not None:
+        from agent.image_gen_provider import normalize_reference_images
+
+        refs = normalize_reference_images(reference_image_urls) or []
+        attachments.extend(ref for ref in refs if ref not in attachments)
+    return attachments
+
+
+def _session_reference_image_urls_for_followup(
+    prompt: str,
+    *,
+    image_url: Any,
+    reference_image_urls: Optional[list],
+) -> list[str]:
+    if _has_reference_conditioning(
+        image_url if isinstance(image_url, str) else None,
+        reference_image_urls,
+    ):
+        return []
+    try:
+        from agent.visual.session_references import session_visual_reference_paths_for_prompt
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Session visual reference lookup unavailable: %s", exc)
+        return []
+    return session_visual_reference_paths_for_prompt(prompt)
+
+
+def _selected_visual_package_image_payload(
+    package_payload: dict[str, Any],
+    image_ref: str | None,
+) -> dict[str, Any]:
+    generation_payloads = package_payload.get("generation_payloads")
+    image_payloads = generation_payloads.get("image") if isinstance(generation_payloads, dict) else None
+    if isinstance(image_payloads, dict):
+        image_payloads = [image_payloads]
+    if not isinstance(image_payloads, list):
+        return {}
+    for payload in image_payloads:
+        if isinstance(payload, dict) and image_ref and payload.get("image") == image_ref:
+            return payload
+    for payload in image_payloads:
+        if isinstance(payload, dict):
+            return payload
+    return {}
+
+
+def _route_visual_image_to_package(
+    *,
+    prompt: str,
+    aspect_ratio: str,
+    image_url: Any,
+    reference_image_urls: Optional[list],
+    provider_override: Any,
+    candidate_budget: Any,
+) -> Dict[str, Any]:
+    package_args: Dict[str, Any] = {
+        "prompt": prompt,
+        "include_image": True,
+        "include_video": False,
+        "candidate_budget": _coerce_candidate_budget(candidate_budget),
+        "candidate_budget_source": "agent_mode",
+        "aspect_ratio": aspect_ratio,
+    }
+    attachments = _image_agent_attachments(image_url, reference_image_urls)
+    if attachments:
+        package_args["attachments"] = attachments
+    if isinstance(provider_override, str) and provider_override.strip():
+        package_args["image_provider"] = provider_override.strip()
+
+    try:
+        from model_tools import _run_async
+        from tools.visual_package_tool import _handle_visual_package_generate
+
+        package_raw = _run_async(_handle_visual_package_generate(package_args))
+        package_payload = json.loads(package_raw) if isinstance(package_raw, str) else package_raw
+    except Exception as exc:  # noqa: BLE001 - return a tool-shaped failure
+        return {
+            "success": False,
+            "image": None,
+            "error": f"visual_package_generate agent-mode route failed: {exc}",
+            "error_type": "visual_package_route_failed",
+            "prompt": prompt,
+            "aspect_ratio": aspect_ratio,
+            "route": "image_visual_package",
+            "source_tool": "image_generate",
+            "recommended_tool": "visual_package_generate",
+            "recommended_arguments": package_args,
+        }
+    if not isinstance(package_payload, dict):
+        return {
+            "success": False,
+            "image": None,
+            "error": "visual_package_generate returned a non-dict payload",
+            "error_type": "visual_package_contract",
+            "prompt": prompt,
+            "aspect_ratio": aspect_ratio,
+            "route": "image_visual_package",
+            "source_tool": "image_generate",
+            "recommended_tool": "visual_package_generate",
+            "recommended_arguments": package_args,
+        }
+
+    images = [
+        item
+        for item in package_payload.get("images", [])
+        if isinstance(item, str) and item.strip()
+    ]
+    image_ref = images[0] if images else None
+    success = bool(package_payload.get("success")) and bool(image_ref)
+    image_payload = _selected_visual_package_image_payload(package_payload, image_ref)
+    payload: Dict[str, Any] = {
+        "success": success,
+        "image": image_ref,
+        "images": images,
+        "error": None if success else package_payload.get("error") or "visual_package_generate did not return a selected image",
+        "error_type": None if success else package_payload.get("error_type") or "visual_package_no_image",
+        "provider": str(image_payload.get("provider") or provider_override or package_payload.get("provider") or ""),
+        "model": str(image_payload.get("model") or package_payload.get("model") or ""),
+        "prompt": prompt,
+        "aspect_ratio": aspect_ratio,
+        "route": "image_visual_package",
+        "source_tool": "image_generate",
+        "recommended_tool": "visual_package_generate",
+        "recommended_arguments": package_args,
+        "visual_package_request_id": package_payload.get("visual_request_id"),
+        "visual_request_id": package_payload.get("visual_request_id"),
+        "package_status": package_payload.get("package_status"),
+        "delivery_metadata": package_payload.get("delivery_metadata"),
+        "generation_strategy": package_payload.get("generation_strategy"),
+        "rankings": package_payload.get("rankings"),
+        "autonomous_validation": package_payload.get("autonomous_validation"),
+    }
+    return payload
+
+
 def _handle_image_generate(args, **kw):
     prompt = args.get("prompt", "")
     if not prompt:
@@ -1563,9 +1811,37 @@ def _handle_image_generate(args, **kw):
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
     image_url = args.get("image_url") or args.get("input_image")
     reference_image_urls = _legacy_reference_image_urls(args)
-    provider_override = args.get("_provider")
+    provider_override = _image_provider_override_arg(args, prompt)
     model_override = args.get("_model")
     task_id = kw.get("task_id")
+    session_reference_image_urls = _session_reference_image_urls_for_followup(
+        prompt,
+        image_url=image_url,
+        reference_image_urls=reference_image_urls,
+    )
+    if session_reference_image_urls:
+        reference_image_urls = session_reference_image_urls
+
+    if _agent_mode_requested(args, prompt):
+        routed = json.dumps(
+            _route_visual_image_to_package(
+                prompt=prompt,
+                aspect_ratio=aspect_ratio,
+                image_url=image_url,
+                reference_image_urls=reference_image_urls,
+                provider_override=provider_override,
+                candidate_budget=args.get("candidate_budget"),
+            ),
+            ensure_ascii=False,
+        )
+        postprocessed = _postprocess_image_generate_result(routed, task_id=task_id)
+        return _track_image_generate_result(
+            postprocessed,
+            prompt=prompt,
+            aspect_ratio=aspect_ratio,
+            image_url=image_url,
+            reference_image_urls=reference_image_urls,
+        )
 
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path).

@@ -60,6 +60,7 @@ _SESSION_ID: ContextVar = ContextVar("HERMES_SESSION_ID", default=_UNSET)
 # so background-process notifications stay inside the originating Telegram
 # private-chat topic (those lanes route only with thread id + reply anchor).
 _SESSION_MESSAGE_ID: ContextVar = ContextVar("HERMES_SESSION_MESSAGE_ID", default=_UNSET)
+_SESSION_VISUAL_REFERENCES: ContextVar = ContextVar("HERMES_SESSION_VISUAL_REFERENCES", default=())
 
 # Cron auto-delivery vars — set per-job in run_job() so concurrent jobs
 # don't clobber each other's delivery targets.
@@ -96,6 +97,29 @@ def set_current_session_id(session_id: str) -> None:
 
     os.environ["HERMES_SESSION_ID"] = session_id
     _SESSION_ID.set(session_id)
+
+
+def set_visual_reference_context(references: list[str] | tuple[str, ...]) -> Any:
+    """Bind recent visual reference paths for image/video tools in this turn."""
+    clean = tuple(
+        str(ref).strip()
+        for ref in references
+        if isinstance(ref, str) and str(ref).strip()
+    )
+    return _SESSION_VISUAL_REFERENCES.set(clean)
+
+
+def reset_visual_reference_context(token: Any) -> None:
+    """Restore the previous visual reference context."""
+    _SESSION_VISUAL_REFERENCES.reset(token)
+
+
+def get_visual_reference_context() -> list[str]:
+    """Return recent selected/reference image paths for the current turn."""
+    value = _SESSION_VISUAL_REFERENCES.get()
+    if not value:
+        return []
+    return [str(ref) for ref in value if isinstance(ref, str) and ref.strip()]
 
 
 def set_session_vars(
@@ -163,6 +187,7 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_MESSAGE_ID,
     ):
         var.set("")
+    _SESSION_VISUAL_REFERENCES.set(())
     try:
         from agent.runtime_cwd import clear_session_cwd
 

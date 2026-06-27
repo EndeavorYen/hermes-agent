@@ -232,6 +232,154 @@ def test_visual_package_schema_exposes_agent_mode_controls():
     assert "include_image" in properties
     assert "include_video" in properties
     assert "storyboard" in properties
+    assert "image_provider" in properties
+
+
+def test_visual_package_internal_image_generation_disables_image_agent_route(monkeypatch):
+    from tools import image_generation_tool
+    from tools import visual_package_tool
+
+    captured = {}
+
+    def fake_handle_image_generate(args, **_kwargs):
+        captured.update(args)
+        return json.dumps(
+            {
+                "success": True,
+                "image": "/tmp/internal.png",
+                "provider": "fixture",
+                "model": "fixture-image",
+            }
+        )
+
+    monkeypatch.setattr(image_generation_tool, "_handle_image_generate", fake_handle_image_generate)
+
+    payload = visual_package_tool.generate_image(prompt="請用 visual agent mode 產出一張圖片")
+
+    assert payload["success"] is True
+    assert captured["_disable_visual_agent_route"] is True
+
+
+@pytest.mark.asyncio
+async def test_visual_package_forwards_explicit_image_provider_override(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    reference = tmp_path / "reference.png"
+    image = tmp_path / "image.png"
+    reference.write_bytes(_ONE_PIXEL_PNG)
+    image.write_bytes(_ONE_PIXEL_PNG)
+    image_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(image),
+            "provider": "xai",
+            "model": "grok-imagine-image-quality",
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "請用 Grok 依照 reference 產出一張圖片",
+                "attachments": [str(reference)],
+                "image_provider": "xai",
+                "include_video": False,
+                "candidate_budget": 1,
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert image_calls[0]["_provider"] == "xai"
+    assert image_calls[0]["reference_image_urls"] == [str(reference)]
+
+
+@pytest.mark.asyncio
+async def test_visual_package_infers_grok_provider_from_prompt(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image = tmp_path / "image.png"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    image_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(image),
+            "provider": "xai",
+            "model": "grok-imagine-image-quality",
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "請改用 Grok Imagine 產圖看看",
+                "include_image": True,
+                "include_video": False,
+                "candidate_budget": 1,
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert image_calls[0]["_provider"] == "xai"
+    assert payload["generation_strategy"]["image_provider"] == "xai"
+
+
+@pytest.mark.asyncio
+async def test_visual_package_followup_reuses_session_visual_references(monkeypatch, tmp_path):
+    from gateway.session_context import (
+        reset_visual_reference_context,
+        set_visual_reference_context,
+    )
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image = tmp_path / "image.png"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    image_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(image),
+            "provider": "xai",
+            "model": "grok-imagine-image-quality",
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    ref_token = set_visual_reference_context(["/tmp/previous-selected.png", "/tmp/original-ref.png"])
+    try:
+        payload = json.loads(
+            await visual_package_tool._handle_visual_package_generate(
+                {
+                    "prompt": "把上一張改成夜景，角色外貌保持一致",
+                    "include_image": True,
+                    "include_video": False,
+                    "candidate_budget": 1,
+                }
+            )
+        )
+    finally:
+        reset_visual_reference_context(ref_token)
+
+    assert payload["success"] is True
+    assert image_calls[0]["reference_image_urls"] == [
+        "/tmp/previous-selected.png",
+        "/tmp/original-ref.png",
+    ]
+    assert payload["generation_strategy"]["image_reference_source"] == "session_visual_context"
 
 
 @pytest.mark.asyncio

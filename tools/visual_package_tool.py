@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -134,6 +135,13 @@ VISUAL_PACKAGE_SCHEMA: dict[str, Any] = {
                 "type": "integer",
                 "description": "Optional video candidate budget. Defaults to 1.",
             },
+            "image_provider": {
+                "type": "string",
+                "description": (
+                    "Optional image backend override inferred from user intent, "
+                    "for example xai/grok-imagine or openai-codex/image2."
+                ),
+            },
             "storyboard": {
                 "type": "object",
                 "description": (
@@ -164,6 +172,7 @@ def check_visual_package_requirements() -> bool:
 def generate_image(**kwargs: Any) -> dict[str, Any]:
     from tools.image_generation_tool import _handle_image_generate
 
+    kwargs = {**kwargs, "_disable_visual_agent_route": True}
     return json.loads(_handle_image_generate(kwargs))
 
 
@@ -171,6 +180,59 @@ def generate_video(**kwargs: Any) -> dict[str, Any]:
     from tools.video_generation_tool import _handle_video_generate
 
     return json.loads(_handle_video_generate(kwargs))
+
+
+def _image_provider_override(args: dict[str, Any], *, prompt: str | None = None) -> str | None:
+    if not isinstance(args, dict):
+        return None
+    for key in ("_provider", "image_provider", "provider"):
+        provider = _normalise_image_provider(args.get(key))
+        if provider:
+            return provider
+    provider = _normalise_image_provider(prompt, allow_unknown=False)
+    if provider:
+        return provider
+    return None
+
+
+def _normalise_image_provider(value: Any, *, allow_unknown: bool = True) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    lowered = raw.lower()
+    compact = re.sub(r"[\s_\-.]+", "", lowered)
+    if "grok" in lowered or "x.ai" in lowered or re.search(r"\bxai\b", lowered):
+        return "xai"
+    if (
+        "openai" in lowered
+        or "codex" in lowered
+        or "gpt-image" in lowered
+        or "image2" in compact
+    ):
+        return "openai-codex"
+    return raw if allow_unknown else None
+
+
+def _apply_image_provider_override(kwargs: dict[str, Any], provider: str | None) -> None:
+    if provider:
+        kwargs["_provider"] = provider
+
+
+def _session_visual_reference_attachments(
+    prompt: str,
+    attachments: list[str],
+) -> tuple[list[str], str | None]:
+    if attachments:
+        return attachments, None
+    try:
+        from agent.visual.session_references import session_visual_reference_paths_for_prompt
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Session visual reference lookup unavailable: %s", exc)
+        return attachments, None
+    refs = session_visual_reference_paths_for_prompt(prompt)
+    if not refs:
+        return attachments, None
+    return refs, "session_visual_context"
 
 
 def analyze_candidate_with_vision_tool(candidate: dict[str, Any]) -> dict[str, Any]:
@@ -211,6 +273,8 @@ async def _handle_visual_package_generate(args: dict[str, Any], **_kw: Any) -> s
 
 def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, Any]:
     attachments = _normalise_attachments(args.get("attachments"))
+    attachments, image_reference_source = _session_visual_reference_attachments(prompt, attachments)
+    image_provider_override = _image_provider_override(args, prompt=prompt)
     aspect_ratio = str(args.get("aspect_ratio") or "16:9").strip() or "16:9"
     image_aspect_ratio = _image_tool_aspect_ratio(aspect_ratio)
     duration = _coerce_int(args.get("duration")) or 6
@@ -267,6 +331,8 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         "storyboard": storyboard_enabled,
         "storyboard_shot_count": storyboard_contract.get("shot_count") if storyboard_enabled else None,
     }
+    if image_provider_override:
+        normalized_intent["image_provider"] = image_provider_override
     intent_signature = build_intent_signature(
         {
             **normalized_intent,
@@ -394,7 +460,11 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             quality_guidance=quality_guidance,
             learning=learning,
             extra_generation_strategy={
-                "storyboard": storyboard_contract,
+                **(_extra_generation_strategy(
+                    image_provider_override=image_provider_override,
+                    image_reference_source=image_reference_source,
+                    storyboard_contract=storyboard_contract,
+                ) or {}),
                 "storyboard_execution": storyboard_result["execution"],
             },
         )
@@ -409,6 +479,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 "aspect_ratio": image_aspect_ratio,
                 "reference_image_urls": attachments or None,
             }
+            _apply_image_provider_override(image_kwargs, image_provider_override)
             image_request = {
                 "prompt": image_generation_prompt,
                 "arguments": image_kwargs,
@@ -544,6 +615,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 "aspect_ratio": image_aspect_ratio,
                 "reference_image_urls": attachments or None,
             }
+            _apply_image_provider_override(escalation_kwargs, image_provider_override)
             escalation_payload = generate_image(**escalation_kwargs)
             escalation_payload["candidate_escalation"] = {
                 "reason": image_gate.get("reason"),
@@ -630,6 +702,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 "aspect_ratio": image_aspect_ratio,
                 "reference_image_urls": attachments or None,
             }
+            _apply_image_provider_override(repair_kwargs, image_provider_override)
             repair_payload = generate_image(**repair_kwargs)
             repair_payload["retry_of"] = selected_image.get("attempt_id")
             repair_payload["quality_repair"] = {
@@ -1028,7 +1101,11 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         feedback_policy=feedback_policy,
         quality_guidance=quality_guidance,
         learning=learning,
-        extra_generation_strategy={"storyboard": storyboard_contract} if storyboard_contract else None,
+        extra_generation_strategy=_extra_generation_strategy(
+            image_provider_override=image_provider_override,
+            image_reference_source=image_reference_source,
+            storyboard_contract=storyboard_contract,
+        ),
     )
 
 
@@ -1135,6 +1212,22 @@ def _finalize_visual_package_payload(
         validation=autonomous_validation,
     )
     return payload
+
+
+def _extra_generation_strategy(
+    *,
+    image_provider_override: str | None,
+    image_reference_source: str | None,
+    storyboard_contract: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    extra: dict[str, Any] = {}
+    if image_provider_override:
+        extra["image_provider"] = image_provider_override
+    if image_reference_source:
+        extra["image_reference_source"] = image_reference_source
+    if storyboard_contract:
+        extra["storyboard"] = storyboard_contract
+    return extra or None
 
 
 def _visual_quality_run_metadata(
@@ -1315,6 +1408,7 @@ def _run_storyboard_execution(
     inline_vision_judge: bool | str,
     learning: dict[str, Any],
 ) -> dict[str, Any]:
+    image_provider_override = _image_provider_override(args, prompt=prompt)
     selected_artifact_ids: list[str] = []
     selected_videos: list[str] = []
     rankings: dict[str, Any] = {"storyboard": {"shots": []}}
@@ -1342,6 +1436,7 @@ def _run_storyboard_execution(
                 "aspect_ratio": image_aspect_ratio,
                 "reference_image_urls": attachments or None,
             }
+            _apply_image_provider_override(image_kwargs, image_provider_override)
             image_payload = generate_image(**image_kwargs)
             image_payloads.append(image_payload)
             image_candidate = _record_payload_candidate(
@@ -2456,7 +2551,15 @@ def _generator_kwargs(value: Any) -> dict[str, Any]:
     return {
         key: item
         for key, item in value.items()
-        if key in {"prompt", "aspect_ratio", "duration", "candidate_budget", "reference_image_urls", "image_url"}
+        if key in {
+            "prompt",
+            "aspect_ratio",
+            "duration",
+            "candidate_budget",
+            "reference_image_urls",
+            "image_url",
+            "_provider",
+        }
     }
 
 

@@ -647,7 +647,11 @@ class GrokWebImagineProvider(ImageGenProvider):
             )
         if image_url or reference_image_urls:
             return error_response(
-                error="Grok web Imagine provider currently supports text-to-image only.",
+                error=(
+                    "The Grok web Imagine browser bridge currently supports "
+                    "text-to-image only. Use the xAI image provider for Grok "
+                    "Imagine API reference-image generation."
+                ),
                 error_type="unsupported_reference_images",
                 provider=PROVIDER_NAME,
                 model=MODEL_ID,

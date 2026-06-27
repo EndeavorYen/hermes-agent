@@ -259,6 +259,23 @@ def test_provider_disabled_by_default_even_if_registered(monkeypatch):
     assert result["provider"] == "grok-web-imagine"
 
 
+def test_provider_scopes_reference_error_to_browser_bridge(monkeypatch):
+    from plugins.image_gen.grok_web_imagine import GrokWebImagineProvider
+
+    monkeypatch.setenv("HERMES_GROK_WEB_IMAGINE", "1")
+    provider = GrokWebImagineProvider(cdp_client=MagicMock())
+
+    result = provider.generate(
+        "keep this character",
+        reference_image_urls=["https://example.com/ref.png"],
+    )
+
+    assert result["success"] is False
+    assert result["error_type"] == "unsupported_reference_images"
+    assert "browser bridge" in result["error"]
+    assert "xAI image provider" in result["error"]
+
+
 def test_provider_reports_login_required_without_submitting(monkeypatch):
     from plugins.image_gen.grok_web_imagine import GrokWebImagineProvider
 

@@ -238,7 +238,7 @@ def test_classify_visual_provider_failure_allows_reference_fallback_negotiation(
     from agent.visual.provider_failures import classify_visual_provider_failure
 
     result = classify_visual_provider_failure(
-        {"success": False, "error": "xAI Grok Imagine does not support reference_images conditioning"}
+        {"success": False, "error": "legacy provider does not support reference_images conditioning"}
     )
 
     assert result["failure_class"] == "unsupported_reference"

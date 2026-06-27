@@ -66,6 +66,13 @@ class TestMetadata:
         schema = provider.get_setup_schema()
         assert schema["env_vars"] == []
         assert schema["badge"] == "free"
+        assert "text-to-image only" not in schema["tag"]
+
+    def test_capabilities_include_reference_images(self, provider):
+        assert provider.capabilities() == {
+            "modalities": ["text", "image"],
+            "max_reference_images": 16,
+        }
 
 
 # ── Availability ────────────────────────────────────────────────────────────
@@ -129,11 +136,12 @@ class TestGenerate:
 
         captured = {}
 
-        def _collect(token, *, prompt, size, quality):
+        def _collect(token, *, prompt, size, quality, reference_images=None):
             captured.update(codex_plugin._build_responses_payload(
                 prompt=prompt,
                 size=size,
                 quality=quality,
+                reference_images=reference_images,
             ))
             return _b64_png()
 
@@ -159,6 +167,74 @@ class TestGenerate:
         assert tool["output_format"] == "png"
         assert tool["background"] == "opaque"
         assert tool["partial_images"] == 1
+
+    def test_reference_inputs_are_attached_to_responses_payload(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        captured = {}
+
+        def _collect(token, *, prompt, size, quality, reference_images=None):
+            captured["reference_images"] = reference_images
+            captured["payload"] = codex_plugin._build_responses_payload(
+                prompt=prompt,
+                size=size,
+                quality=quality,
+                reference_images=reference_images,
+            )
+            return _b64_png()
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
+
+        result = provider.generate(
+            "keep identity, change pose",
+            image_url="https://example.com/primary.png",
+            reference_image_urls=["https://example.com/ref.png"],
+        )
+
+        assert result["success"] is True
+        assert result["modality"] == "image"
+        assert result["reference_image_count"] == 2
+        assert result["reference_conditioning"] == "responses_input_image"
+        assert captured["reference_images"] == [
+            "https://example.com/primary.png",
+            "https://example.com/ref.png",
+        ]
+        content = captured["payload"]["input"][0]["content"]
+        assert content[1:] == [
+            {
+                "type": "input_image",
+                "image_url": "https://example.com/primary.png",
+                "detail": "high",
+            },
+            {
+                "type": "input_image",
+                "image_url": "https://example.com/ref.png",
+                "detail": "high",
+            },
+        ]
+
+    def test_file_uri_reference_is_encoded_for_responses_payload(
+        self,
+        provider,
+        monkeypatch,
+        tmp_path,
+    ):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        source = tmp_path / "reference.png"
+        source.write_bytes(bytes.fromhex(_PNG_HEX))
+        captured = {}
+
+        def _collect(token, *, prompt, size, quality, reference_images=None):
+            captured["reference_images"] = reference_images
+            return _b64_png()
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
+
+        result = provider.generate("keep identity", image_url=source.as_uri())
+
+        assert result["success"] is True
+        assert result["reference_image_count"] == 1
+        assert captured["reference_images"][0].startswith("data:image/png;base64,")
 
     def test_partial_image_event_used_when_done_missing(self):
         """If output_item.done is missing, partial_image_b64 is accepted."""

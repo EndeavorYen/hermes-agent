@@ -5,6 +5,7 @@ Exposes xAI's ``grok-imagine-image`` model as an
 
 Features:
 - Text-to-image generation
+- Image editing with up to 3 reference images
 - Multiple aspect ratios (1:1, 16:9, 9:16, etc.)
 - Multiple resolutions (1K, 2K)
 - Base64 output saved to cache
@@ -55,6 +56,7 @@ _MODELS: Dict[str, Dict[str, Any]] = {
 }
 
 DEFAULT_MODEL = "grok-imagine-image"
+MAX_REFERENCE_IMAGES = 3
 
 # xAI aspect ratios (more options than FAL/OpenAI)
 _XAI_ASPECT_RATIOS = {
@@ -130,10 +132,18 @@ def _xai_image_field(source: str) -> Dict[str, str]:
     # Local file path → base64 data URI.
     import base64
     import os as _os
+    from urllib.parse import unquote, urlparse
 
-    with open(source, "rb") as fh:
+    local_source = source
+    if lower.startswith("file://"):
+        parsed = urlparse(source)
+        local_source = unquote(parsed.path)
+        if parsed.netloc and parsed.netloc not in {"localhost", "127.0.0.1"}:
+            local_source = f"//{parsed.netloc}{local_source}"
+
+    with open(local_source, "rb") as fh:
         raw = fh.read()
-    ext = (_os.path.splitext(source)[1].lstrip(".") or "png").lower()
+    ext = (_os.path.splitext(local_source)[1].lstrip(".") or "png").lower()
     if ext == "jpg":
         ext = "jpeg"
     b64 = base64.b64encode(raw).decode("utf-8")
@@ -185,10 +195,9 @@ class XAIImageGenProvider(ImageGenProvider):
         }
 
     def capabilities(self) -> Dict[str, Any]:
-        # xAI's /v1/images/edits supports image editing via grok-imagine-image
-        # -quality. Single primary source image (multi-image editing exists as
-        # a separate capability but we keep the primary edit surface here).
-        return {"modalities": ["text", "image"], "max_reference_images": 1}
+        # xAI's Imagine API documents image editing with up to 3 reference
+        # images per request via grok-imagine-image-quality.
+        return {"modalities": ["text", "image"], "max_reference_images": MAX_REFERENCE_IMAGES}
 
     def generate(
         self,
@@ -201,11 +210,11 @@ class XAIImageGenProvider(ImageGenProvider):
     ) -> Dict[str, Any]:
         """Generate an image (text-to-image) or edit a source image (image-to-image).
 
-        Routing: when ``image_url`` is provided, POST to ``/v1/images/edits``
-        with the source image; otherwise POST to ``/v1/images/generations``.
-        Per xAI docs, editing uses the ``grok-imagine-image-quality`` model and
-        a JSON body (the OpenAI SDK's multipart ``images.edit()`` is NOT
-        supported by xAI).
+        Routing: when ``image_url`` or ``reference_image_urls`` are provided,
+        POST to ``/v1/images/edits`` with the source images; otherwise POST to
+        ``/v1/images/generations``. Per xAI docs, editing uses the
+        ``grok-imagine-image-quality`` model and a JSON body (the OpenAI SDK's
+        multipart ``images.edit()`` is NOT supported by xAI).
         """
         creds = resolve_xai_http_credentials()
         api_key = str(creds.get("api_key") or "").strip()
@@ -224,16 +233,26 @@ class XAIImageGenProvider(ImageGenProvider):
         resolution = _resolve_resolution()
         xai_res = resolution if resolution in _XAI_RESOLUTIONS else DEFAULT_RESOLUTION
 
-        # Pick the primary source image: explicit image_url wins, else the
-        # first reference image.
-        source_image = None
+        source_images: List[str] = []
         if isinstance(image_url, str) and image_url.strip():
-            source_image = image_url.strip()
-        else:
-            refs = normalize_reference_images(reference_image_urls)
-            if refs:
-                source_image = refs[0]
-        is_edit = bool(source_image)
+            source_images.append(image_url.strip())
+        refs = normalize_reference_images(reference_image_urls)
+        if refs:
+            source_images.extend(refs)
+        if len(source_images) > MAX_REFERENCE_IMAGES:
+            return error_response(
+                error=(
+                    "xAI Grok Imagine image editing supports up to "
+                    f"{MAX_REFERENCE_IMAGES} reference images per request; "
+                    f"got {len(source_images)}."
+                ),
+                error_type="too_many_references",
+                provider=provider_name,
+                model="grok-imagine-image-quality",
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+        is_edit = bool(source_images)
         modality = "image" if is_edit else "text"
 
         headers = {
@@ -245,12 +264,14 @@ class XAIImageGenProvider(ImageGenProvider):
         base_url = str(creds.get("base_url") or "https://api.x.ai/v1").strip().rstrip("/")
 
         if is_edit:
-            # Editing requires the quality model per xAI docs. The source
-            # image may be a public URL or a base64 data URI; local file paths
-            # are converted to a data URI here.
+            # Editing requires the quality model per xAI docs. Source images
+            # may be public URLs or base64 data URIs; local file paths are
+            # converted to data URIs here.
             edit_model = "grok-imagine-image-quality"
+            image_fields: List[Dict[str, str]] = []
             try:
-                image_field = _xai_image_field(source_image)
+                for source_image in source_images:
+                    image_fields.append(_xai_image_field(source_image))
             except Exception as exc:
                 return error_response(
                     error=f"Could not load source image for editing: {exc}",
@@ -263,8 +284,11 @@ class XAIImageGenProvider(ImageGenProvider):
             payload: Dict[str, Any] = {
                 "model": edit_model,
                 "prompt": prompt,
-                "image": image_field,
             }
+            if len(image_fields) == 1:
+                payload["image"] = image_fields[0]
+            else:
+                payload["images"] = image_fields
             endpoint_url = f"{base_url}/images/edits"
             model_id = edit_model
         else:
@@ -390,7 +414,10 @@ class XAIImageGenProvider(ImageGenProvider):
             )
 
         extra: Dict[str, Any] = {}
-        if not is_edit:
+        if is_edit:
+            extra["reference_image_count"] = len(source_images)
+            extra["reference_conditioning"] = "xai_image_edit"
+        else:
             extra["resolution"] = xai_res
 
         return success_response(

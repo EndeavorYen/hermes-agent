@@ -499,6 +499,42 @@ caption
         broken_tags, broken_voice = extract_media_tags_broken(all_messages)
         assert len(broken_tags) == 1, "Broken extraction finds tags in history"
         assert "audio1.ogg" in broken_tags[0]
+
+    def test_gateway_builds_visual_reference_context_without_delivery_tags(self):
+        """Recent visual artifacts are reusable as references without being redelivered."""
+        from gateway.run import _build_visual_reference_context_for_turn
+
+        history = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_img",
+                        "function": {
+                            "name": "image_generate",
+                            "arguments": '{"prompt": "固定角色", "reference_image_urls": ["/tmp/original-ref.png"]}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_img",
+                "content": '{"success": true, "image": "/tmp/previous-selected.png"}',
+            },
+        ]
+
+        refs = _build_visual_reference_context_for_turn(
+            history,
+            current_message="把上一張改成夜景",
+            native_image_paths=["/tmp/current-attachment.png"],
+        )
+
+        assert refs == [
+            "/tmp/current-attachment.png",
+            "/tmp/previous-selected.png",
+            "/tmp/original-ref.png",
+        ]
     
     def test_media_tags_extracted_from_current_turn(self):
         """MEDIA tags from the current turn SHOULD be extracted."""

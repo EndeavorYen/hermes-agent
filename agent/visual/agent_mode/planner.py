@@ -120,7 +120,7 @@ def plan_visual_agent_request(
     if attachments:
         arguments["attachments"] = attachments
     if wants_image or image_first_for_video:
-        arguments["candidate_budget"] = 2 if image_first_for_video else 1
+        arguments["candidate_budget"] = 2
         arguments["candidate_budget_source"] = "planner_default"
     if wants_video:
         arguments["video_budget"] = 1
@@ -132,6 +132,9 @@ def plan_visual_agent_request(
     duration = _duration_seconds(prompt)
     if duration is not None:
         arguments["duration"] = duration
+    image_provider = _requested_image_provider(prompt)
+    if image_provider is not None:
+        arguments["image_provider"] = image_provider
     return {
         "tool_name": "visual_package_generate",
         "should_use_visual_package": should_use_visual_package,
@@ -155,6 +158,21 @@ def plan_visual_agent_request(
 def _contains_any(value: str, tokens: tuple[str, ...]) -> bool:
     lowered = value.lower()
     return any(token in lowered for token in tokens)
+
+
+def _requested_image_provider(value: str) -> str | None:
+    lowered = str(value or "").lower()
+    compact = re.sub(r"[\s_\-.]+", "", lowered)
+    if "grok" in lowered or "x.ai" in lowered or re.search(r"\bxai\b", lowered):
+        return "xai"
+    if (
+        "openai" in lowered
+        or "codex" in lowered
+        or "gpt-image" in lowered
+        or "image2" in compact
+    ):
+        return "openai-codex"
+    return None
 
 
 def _looks_like_draw_image_request(value: str) -> bool:

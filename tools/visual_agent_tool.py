@@ -20,8 +20,11 @@ VISUAL_AGENT_SCHEMA: dict[str, Any] = {
         "animate/make-it-move requests, storyboard/multi-shot video requests, or short motion clips without "
         "advanced parameters. The tool plans the request, then dispatches to "
         "visual_package_generate so Hermes can generate candidates, rank/select "
-        "current artifacts, animate the best image when video is requested, and "
-        "return only selected media for delivery."
+        "current artifacts, apply image quality gates for image-only requests, "
+        "animate the best image when video is requested, and "
+        "return only selected media for delivery. Grok Imagine/xAI image "
+        "requests with reference images or fixed-character follow-ups should use "
+        "this tool path; xAI reference image generation is not text-to-image only."
     ),
     "parameters": {
         "type": "object",

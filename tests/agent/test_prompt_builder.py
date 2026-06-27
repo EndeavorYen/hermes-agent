@@ -1562,10 +1562,22 @@ class TestVisualPackageToolGuidance:
         assert "visual_agent_generate" in prompt
         assert "natural visual requests" in prompt
         assert "draw/anime/character" in prompt
+        assert "image-only" in prompt
         assert "storyboard" in prompt
         assert "multi-shot" in prompt
+        assert "quality gates" in prompt
         assert "visual_package_generate" in prompt
         assert "Do not call `image_generate` or `video_generate` directly" in prompt
+
+    def test_visual_agent_guidance_preserves_grok_reference_requests(self):
+        prompt = build_visual_package_tool_guidance(
+            {"visual_agent_generate", "visual_package_generate", "image_generate"}
+        )
+
+        assert "Grok Imagine/xAI" in prompt
+        assert "reference image" in prompt
+        assert "text-to-image only" in prompt
+        assert "Do not tell the user Grok Imagine/xAI is text-to-image only" in prompt
 
     def test_includes_visual_self_validation_status_when_available(self):
         prompt = build_visual_package_tool_guidance(

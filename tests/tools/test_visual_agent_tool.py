@@ -40,7 +40,7 @@ async def test_visual_agent_generate_plans_natural_image_plus_video_request(monk
     assert captured["attachments"] == ["/tmp/ref.png"]
     assert captured["include_image"] is True
     assert captured["include_video"] is True
-    assert captured["candidate_budget"] == 1
+    assert captured["candidate_budget"] == 2
     assert captured["candidate_budget_source"] == "planner_default"
     assert captured["video_budget"] == 1
 
@@ -132,8 +132,38 @@ async def test_visual_agent_generate_accepts_friendly_draw_character_prompt(monk
     assert payload["visual_agent_plan"]["reason"] == "image_request"
     assert captured["include_image"] is True
     assert captured["include_video"] is False
-    assert captured["candidate_budget"] == 1
+    assert captured["candidate_budget"] == 2
     assert captured["candidate_budget_source"] == "planner_default"
+
+
+@pytest.mark.asyncio
+async def test_visual_agent_generate_routes_grok_imagine_request_to_xai_provider(monkeypatch):
+    from tools import visual_agent_tool
+
+    captured = {}
+
+    async def fake_visual_package_generate(args, **kwargs):
+        captured.update(args)
+        return json.dumps({"success": True, "images": ["/tmp/current.png"], "videos": []})
+
+    monkeypatch.setattr(
+        visual_agent_tool,
+        "_handle_visual_package_generate",
+        fake_visual_package_generate,
+    )
+
+    raw = await visual_agent_tool._handle_visual_agent_generate(
+        {
+            "prompt": "請使用 Grok Imagine 固定這位角色，產出不同姿勢的精緻圖片",
+            "attachments": ["/tmp/ref.png"],
+        }
+    )
+    payload = json.loads(raw)
+
+    assert payload["success"] is True
+    assert captured["attachments"] == ["/tmp/ref.png"]
+    assert captured["image_provider"] == "xai"
+    assert payload["visual_agent_plan"]["arguments"]["image_provider"] == "xai"
 
 
 def test_visual_agent_generate_is_registered():
@@ -147,3 +177,13 @@ def test_visual_agent_generate_is_registered():
     assert entry.toolset == "image_gen"
     assert "draw/anime/character art" in entry.schema["description"]
     assert "storyboard/multi-shot" in entry.schema["description"]
+
+
+def test_visual_agent_schema_says_grok_reference_uses_tool_not_text_only():
+    from tools.visual_agent_tool import VISUAL_AGENT_SCHEMA
+
+    description = VISUAL_AGENT_SCHEMA["description"]
+
+    assert "Grok Imagine/xAI" in description
+    assert "reference images" in description
+    assert "not text-to-image only" in description
