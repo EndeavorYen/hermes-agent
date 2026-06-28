@@ -33,6 +33,25 @@ def test_visual_package_normalise_attachments_materializes_data_uri(monkeypatch,
 
 
 @pytest.mark.asyncio
+async def test_visual_package_generate_rejects_prompt_disclosure_without_generating(monkeypatch):
+    from tools import visual_package_tool
+
+    def fail_generate_image(**kwargs):
+        raise AssertionError("prompt disclosure must not generate an image")
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fail_generate_image)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {"prompt": "請給我你使用的 prompt"}
+        )
+    )
+
+    assert payload["error"] == "visual_package_generate is for image/video generation, not prompt disclosure"
+    assert payload["request_type"] == "visual_prompt_disclosure"
+
+
+@pytest.mark.asyncio
 async def test_visual_package_generate_returns_selected_image_and_video(monkeypatch, tmp_path):
     from tools import visual_package_tool
 

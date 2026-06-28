@@ -18,6 +18,7 @@ from urllib.request import Request
 from urllib.request import urlopen
 
 from agent.visual.active_learning import decide_visual_action
+from agent.visual.agent_mode.handoff import is_visual_prompt_disclosure_request
 from agent.visual.agent_mode.handoff import normalise_visual_agent_attachment
 from agent.visual.artifact_observation import build_artifact_observation
 from agent.visual.aspect_policy import select_video_aspect_ratio
@@ -444,6 +445,11 @@ async def _handle_visual_package_generate(args: dict[str, Any], **_kw: Any) -> s
     prompt = str(args.get("prompt") or "").strip()
     if not prompt:
         return tool_error("prompt is required for visual package generation")
+    if is_visual_prompt_disclosure_request(prompt):
+        return tool_error(
+            "visual_package_generate is for image/video generation, not prompt disclosure",
+            request_type="visual_prompt_disclosure",
+        )
     try:
         payload = _visual_package_generate(args, prompt=prompt)
         return json.dumps(payload, ensure_ascii=False)

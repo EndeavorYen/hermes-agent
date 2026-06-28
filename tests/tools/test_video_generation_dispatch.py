@@ -76,6 +76,16 @@ class TestUnifiedDispatch:
             plugins_module._ensure_plugins_discovered = saved_discover  # type: ignore
         return json.loads(raw)
 
+    def test_handle_video_generate_rejects_prompt_disclosure_without_provider_call(self):
+        provider = _RecordingProvider("fake")
+        video_gen_registry.register_provider(provider)
+
+        result = self._run({"prompt": "請給我你使用的 prompt"}, configured="fake")
+
+        assert result["error"] == "video_generate is for video generation, not prompt disclosure"
+        assert result["request_type"] == "visual_prompt_disclosure"
+        assert provider.last_kwargs == {}
+
     def test_no_provider_returns_clear_error(self):
         result = self._run({"prompt": "a dog"})
         assert result["success"] is False

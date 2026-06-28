@@ -363,6 +363,14 @@ async def test_visual_agent_generate_rejects_prompt_disclosure_without_regenerat
     assert payload["error"] == "visual_agent_generate is for image/video generation, not prompt disclosure"
     assert payload["request_type"] == "visual_prompt_disclosure"
 
+    raw = await visual_agent_tool._handle_visual_agent_generate(
+        {"prompt": "請給我你使用的 prompt"}
+    )
+    payload = json.loads(raw)
+
+    assert payload["error"] == "visual_agent_generate is for image/video generation, not prompt disclosure"
+    assert payload["request_type"] == "visual_prompt_disclosure"
+
 
 @pytest.mark.asyncio
 async def test_visual_agent_generate_uses_grok_planner_for_direct_handoff(monkeypatch):

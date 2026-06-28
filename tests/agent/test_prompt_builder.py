@@ -1586,6 +1586,7 @@ class TestVisualPackageToolGuidance:
 
         assert "prompt disclosure" in prompt
         assert "do not call `visual_agent_generate`" in prompt
+        assert "or any image/video generation tool" in prompt
         assert "answer from the latest visual tool result" in prompt
 
     def test_includes_visual_self_validation_status_when_available(self):

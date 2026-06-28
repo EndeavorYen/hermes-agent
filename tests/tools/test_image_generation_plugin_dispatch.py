@@ -129,6 +129,28 @@ class _GrokWebFallbackProvider(ImageGenProvider):
 
 
 class TestPluginDispatch:
+    def test_handle_image_generate_rejects_prompt_disclosure_without_provider_call(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from agent import image_gen_registry as registry_module
+        from hermes_cli import plugins as plugins_module
+
+        provider = _NamedRecordingProvider("xai")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "xai")
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_model", lambda: "grok-imagine-image-quality")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda *a, **k: None)
+        monkeypatch.setattr(registry_module, "get_provider", lambda name: provider if name == "xai" else None)
+
+        payload = json.loads(
+            image_generation_tool._handle_image_generate(
+                {"prompt": "請給我你使用的 prompt"}
+            )
+        )
+
+        assert payload["error"] == "image_generate is for image generation, not prompt disclosure"
+        assert payload["request_type"] == "visual_prompt_disclosure"
+        assert provider.last_kwargs == {}
+
     def test_handle_agent_mode_image_routes_to_visual_package(self, monkeypatch, tmp_path):
         from tools import image_generation_tool
         from tools import visual_package_tool

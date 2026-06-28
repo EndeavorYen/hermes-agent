@@ -54,6 +54,7 @@ from agent.video_gen_provider import (
     DEFAULT_RESOLUTION,
     error_response,
 )
+from agent.visual.agent_mode.handoff import is_visual_prompt_disclosure_request
 from tools.registry import registry, tool_error
 
 logger = logging.getLogger(__name__)
@@ -429,6 +430,11 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
     # endpoint but our surface always needs a prompt.
     if not prompt:
         return tool_error("prompt is required for video generation")
+    if is_visual_prompt_disclosure_request(prompt):
+        return tool_error(
+            "video_generate is for video generation, not prompt disclosure",
+            request_type="visual_prompt_disclosure",
+        )
 
     # Resolve the active provider.
     configured = provider_override or _read_configured_video_provider()

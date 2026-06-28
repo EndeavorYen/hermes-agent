@@ -165,6 +165,7 @@ def is_visual_prompt_disclosure_request(prompt: str) -> bool:
         "產圖用的prompt給我",
         "产图用的prompt给我",
         "你用的prompt",
+        "你使用的prompt",
         "使用的prompt",
         "用的prompt",
         "用了什麼prompt",
