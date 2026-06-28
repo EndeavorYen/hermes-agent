@@ -4,6 +4,13 @@ import re
 from typing import Any
 
 
+BASE_LLM_PROVIDER = "openai-codex"
+BASE_LLM_MODEL = "gpt-5.5"
+VISUAL_AGENT_LLM_PROVIDER = "xai-oauth"
+VISUAL_AGENT_LLM_MODEL = "grok-4.3"
+VISUAL_MEDIA_PROVIDER_DEFAULT = "xai"
+VISUAL_MEDIA_MODEL_DEFAULT = "grok-imagine-image-quality"
+
 _IMAGE_TOKENS = (
     "image",
     "photo",
@@ -102,6 +109,8 @@ def plan_visual_agent_request(
 ) -> dict[str, Any]:
     prompt = str(prompt or "").strip()
     attachments = [item for item in (attachments or []) if isinstance(item, str) and item.strip()]
+    reference_binding = _reference_binding_for_prompt(prompt, attachments)
+    effective_prompt = _prompt_with_reference_binding(prompt, reference_binding)
     wants_image = _contains_any(prompt, _IMAGE_TOKENS) or _looks_like_draw_image_request(prompt)
     wants_video = _contains_any(prompt, _VIDEO_TOKENS)
     if wants_video and attachments and _looks_like_image_to_video(prompt) and not _requests_new_image_output(prompt):
@@ -113,12 +122,14 @@ def plan_visual_agent_request(
     include_image = wants_image
     should_use_visual_package = wants_image or wants_video
     arguments: dict[str, Any] = {
-        "prompt": prompt,
+        "prompt": effective_prompt,
         "include_image": include_image,
         "include_video": wants_video,
     }
     if attachments:
         arguments["attachments"] = attachments
+    if reference_binding:
+        arguments["reference_binding"] = reference_binding
     if wants_image or image_first_for_video:
         arguments["candidate_budget"] = 2
         arguments["candidate_budget_source"] = "planner_default"
@@ -133,13 +144,16 @@ def plan_visual_agent_request(
     if duration is not None:
         arguments["duration"] = duration
     image_provider = _requested_image_provider(prompt)
-    if image_provider is not None:
-        arguments["image_provider"] = image_provider
+    image_provider_source = "prompt_override" if image_provider is not None else "visual_agent_default"
+    if should_use_visual_package:
+        arguments["image_provider"] = image_provider or VISUAL_MEDIA_PROVIDER_DEFAULT
+        arguments["image_provider_source"] = image_provider_source
     return {
         "tool_name": "visual_package_generate",
         "should_use_visual_package": should_use_visual_package,
         "confidence": _confidence(wants_image=wants_image, wants_video=wants_video, attachments=attachments),
         "arguments": arguments,
+        "provider_contract": _provider_contract(image_provider),
         "recovery_policy": {
             "retry_budget": 1,
             "safe_reframe_allowed": True,
@@ -160,9 +174,287 @@ def _contains_any(value: str, tokens: tuple[str, ...]) -> bool:
     return any(token in lowered for token in tokens)
 
 
+def _reference_binding_for_prompt(prompt: str, attachments: list[str]) -> dict[str, Any] | None:
+    if not attachments:
+        return None
+    lowered = str(prompt or "").lower()
+    compact = re.sub(r"\s+", "", lowered)
+    referenced_indices = [
+        index
+        for index in range(1, len(attachments) + 1)
+        if _mentions_reference_index(compact, index)
+    ]
+    if not referenced_indices:
+        return None
+    reference_order = []
+    for index in referenced_indices:
+        role_hint = _role_hint_for_reference(compact, index) or "visual_reference"
+        reference_order.append(
+            {
+                "index": index,
+                "role_hint": role_hint,
+                "attachment": attachments[index - 1],
+            }
+        )
+    return {
+        "mode": "ordered_references",
+        "reference_order_source": "user_visible_upload_order",
+        "role_policy": "derive_from_user_prompt",
+        "reference_order": reference_order,
+    }
+
+
+def _mentions_reference_index(compact_prompt: str, index: int) -> bool:
+    return bool(_reference_mention_spans(compact_prompt, index))
+
+
+def _reference_mention_spans(compact_prompt: str, index: int) -> list[tuple[int, int]]:
+    chinese_index = _chinese_reference_index(index)
+    tokens = (
+        f"ref{index}",
+        f"reference{index}",
+        f"參考{index}",
+        f"參考圖{index}",
+        f"第{index}張",
+        f"第{chinese_index}張",
+    )
+    spans: list[tuple[int, int]] = []
+    for token in tokens:
+        start = compact_prompt.find(token)
+        while start != -1:
+            spans.append((start, start + len(token)))
+            start = compact_prompt.find(token, start + len(token))
+    return sorted(spans)
+
+
+def _chinese_reference_index(index: int) -> str:
+    numerals = {
+        1: "一",
+        2: "二",
+        3: "三",
+        4: "四",
+        5: "五",
+        6: "六",
+        7: "七",
+        8: "八",
+        9: "九",
+        10: "十",
+    }
+    return numerals.get(index, str(index))
+
+
+_REFERENCE_ROLE_TOKENS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "character_identity",
+        (
+            "角色",
+            "人物",
+            "主角",
+            "身份",
+            "人設",
+            "臉",
+            "髮型",
+            "character",
+            "identity",
+            "person",
+            "people",
+            "subject",
+            "face",
+            "hair",
+        ),
+    ),
+    (
+        "pose_composition",
+        (
+            "姿勢",
+            "動作",
+            "構圖",
+            "角度",
+            "鏡頭",
+            "pose",
+            "bodyposition",
+            "framing",
+            "composition",
+            "cameraangle",
+        ),
+    ),
+    (
+        "wardrobe",
+        (
+            "服裝",
+            "衣服",
+            "穿搭",
+            "造型",
+            "服飾",
+            "wardrobe",
+            "outfit",
+            "clothing",
+            "clothes",
+            "costume",
+        ),
+    ),
+    (
+        "style",
+        (
+            "風格",
+            "畫風",
+            "筆觸",
+            "style",
+            "artstyle",
+            "renderingstyle",
+        ),
+    ),
+    (
+        "background",
+        (
+            "背景",
+            "場景",
+            "環境",
+            "background",
+            "scene",
+            "environment",
+        ),
+    ),
+)
+
+
+def _role_hint_for_reference(compact_prompt: str, index: int) -> str | None:
+    spans = _reference_mention_spans(compact_prompt, index)
+    if not spans:
+        return None
+    all_spans = sorted(
+        span
+        for ref_index in _candidate_reference_indices(compact_prompt)
+        for span in _reference_mention_spans(compact_prompt, ref_index)
+    )
+    for start, end in spans:
+        direct_end = _next_reference_start(all_spans, start) or _clause_end(compact_prompt, end)
+        role_hint = _role_hint_from_text(compact_prompt[start:direct_end])
+        if role_hint:
+            return role_hint
+        clause_start = _clause_start(compact_prompt, start)
+        clause_end = _clause_end(compact_prompt, end)
+        role_hint = _role_hint_from_text(compact_prompt[clause_start:clause_end])
+        if role_hint:
+            return role_hint
+    return None
+
+
+def _candidate_reference_indices(compact_prompt: str) -> list[int]:
+    indices = {int(match.group(1)) for match in re.finditer(r"(?:ref|reference|參考圖?|第)(\d+)", compact_prompt)}
+    for value, numeral in {
+        1: "一",
+        2: "二",
+        3: "三",
+        4: "四",
+        5: "五",
+        6: "六",
+        7: "七",
+        8: "八",
+        9: "九",
+        10: "十",
+    }.items():
+        if f"第{numeral}張" in compact_prompt:
+            indices.add(value)
+    return sorted(indices)
+
+
+def _next_reference_start(spans: list[tuple[int, int]], current_start: int) -> int | None:
+    for start, _end in spans:
+        if start > current_start:
+            return start
+    return None
+
+
+def _clause_start(value: str, position: int) -> int:
+    separators = "，,。.;；\n"
+    starts = [value.rfind(separator, 0, position) for separator in separators]
+    start = max(starts)
+    return 0 if start == -1 else start + 1
+
+
+def _clause_end(value: str, position: int) -> int:
+    separators = "，,。.;；\n"
+    ends = [found for separator in separators if (found := value.find(separator, position)) != -1]
+    return min(ends) if ends else len(value)
+
+
+def _role_hint_from_text(value: str) -> str | None:
+    best_role: str | None = None
+    best_position: int | None = None
+    for role, tokens in _REFERENCE_ROLE_TOKENS:
+        positions = [position for token in tokens if (position := value.find(token)) != -1]
+        if not positions:
+            continue
+        role_position = min(positions)
+        if best_position is None or role_position < best_position:
+            best_position = role_position
+            best_role = role
+    return best_role
+
+
+def _prompt_with_reference_binding(prompt: str, binding: dict[str, Any] | None) -> str:
+    if not binding:
+        return prompt
+    return f"{prompt}\n\n{_reference_binding_prompt_block(binding)}"
+
+
+def _reference_binding_prompt_block(binding: dict[str, Any]) -> str:
+    parts = [
+        "Reference binding: reference N/ref N means the Nth uploaded image in the user's "
+        "visible attachment order; reference 1 means the first uploaded image in the user's "
+        "visible attachment order. Do not assume fixed roles for any reference index. Derive "
+        "each reference role from the user's wording, such as character identity/person, "
+        "pose/composition, clothing, wardrobe, style, or background. If a role is not explicit, "
+        "treat that reference as a neutral visual reference instead of assigning character or "
+        "pose by default."
+    ]
+    role_block = _reference_role_contract_block(binding)
+    if role_block:
+        parts.append(role_block)
+    return "\n\n".join(parts)
+
+
+def _coerce_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _reference_role_contract_block(binding: dict[str, Any]) -> str:
+    role_lines = []
+    for item in binding.get("reference_order") or []:
+        if not isinstance(item, dict):
+            continue
+        index = _coerce_int(item.get("index"))
+        role_hint = str(item.get("role_hint") or "").strip()
+        if index is None or not role_hint:
+            continue
+        role_lines.append(f"- ref {index} role: {role_hint}")
+    if not role_lines:
+        return ""
+    return "\n".join(
+        [
+            "Reference roles for this request:",
+            *role_lines,
+            "Use each reference only for its listed role. Do not transfer character identity "
+            "from a pose/composition reference, and do not transfer pose/composition from a "
+            "character identity reference unless the user explicitly asks for that blend.",
+            "For character_identity references, preserve the subject identity, face, hair, eye color, "
+            "signature outfit, silhouette, accessories, and palette from that reference.",
+            "For pose_composition references, use only pose, camera angle, framing, body orientation, "
+            "limb placement, and scene layout; do not copy that reference's character, face, hair, "
+            "wardrobe, color palette, or identity traits unless explicitly requested.",
+        ]
+    )
+
+
 def _requested_image_provider(value: str) -> str | None:
     lowered = str(value or "").lower()
     compact = re.sub(r"[\s_\-.]+", "", lowered)
+    if compact in {"grokwebimagine", "grokweb"} or "grok web imagine" in lowered:
+        return "grok-web-imagine"
     if "grok" in lowered or "x.ai" in lowered or re.search(r"\bxai\b", lowered):
         return "xai"
     if (
@@ -173,6 +465,18 @@ def _requested_image_provider(value: str) -> str | None:
     ):
         return "openai-codex"
     return None
+
+
+def _provider_contract(image_provider_override: str | None) -> dict[str, Any]:
+    return {
+        "base_llm_provider": BASE_LLM_PROVIDER,
+        "base_llm_model": BASE_LLM_MODEL,
+        "visual_agent_llm_provider": VISUAL_AGENT_LLM_PROVIDER,
+        "visual_agent_llm_model": VISUAL_AGENT_LLM_MODEL,
+        "visual_media_provider_default": VISUAL_MEDIA_PROVIDER_DEFAULT,
+        "visual_media_model_default": VISUAL_MEDIA_MODEL_DEFAULT,
+        "visual_media_provider_override": image_provider_override,
+    }
 
 
 def _looks_like_draw_image_request(value: str) -> bool:

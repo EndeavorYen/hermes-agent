@@ -14,7 +14,7 @@ def classify_visual_provider_failure(payload: dict[str, Any] | Exception) -> dic
         return _result("timeout", retryable=True, safe_reframe_allowed=False, provider_message_code=code)
     if _is_quota_exceeded_text(text):
         return _result("quota_exceeded", retryable=False, safe_reframe_allowed=False, provider_message_code=code)
-    if _contains(text, "artifact_too_small"):
+    if _contains(text, "artifact_too_small", "no_usable_generated_artifact"):
         return _result("empty_response", retryable=True, safe_reframe_allowed=False, provider_message_code=code)
     if _contains(text, "content_moderation", "moderation", "safety", "policy rejected", "blocked", "policy_violation"):
         return _result("content_moderation", retryable=True, safe_reframe_allowed=True, provider_message_code=code)

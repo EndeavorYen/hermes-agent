@@ -7,6 +7,7 @@ only renders as a voice bubble when explicitly flagged) and via
 ``GatewayRunner._deliver_media_from_response``.
 """
 
+import json
 from types import SimpleNamespace
 from urllib.parse import quote
 from unittest.mock import AsyncMock
@@ -272,6 +273,81 @@ async def test_streaming_delivery_passes_visual_metadata_to_video_sender(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_base_adapter_filters_embedded_visual_package_log_to_selected_media(
+    tmp_path,
+    monkeypatch,
+):
+    adapter = _MediaRoutingAdapter()
+    event = _event()
+    selected_image = _allowed_media_path(tmp_path, monkeypatch, "selected.jpg")
+    rejected_image = _allowed_media_path(tmp_path, monkeypatch, "rejected.jpg")
+    reference_image = _allowed_media_path(tmp_path, monkeypatch, "reference.jpg")
+    visual_metadata = {
+        "visual_request_id": "vrq_current",
+        "selected_visual_artifact_ids": ["var_selected"],
+        "visual_artifacts": {
+            str(selected_image): {
+                "request_id": "vrq_current",
+                "artifact_id": "var_selected",
+                "kind": "image",
+            },
+            str(rejected_image): {
+                "request_id": "vrq_current",
+                "artifact_id": "var_rejected",
+                "kind": "image",
+            },
+            str(reference_image): {
+                "request_id": "vrq_current",
+                "artifact_id": "ref_input",
+                "kind": "reference_image",
+            },
+        },
+    }
+    payload = {
+        "success": True,
+        "package_status": "success",
+        "images": [str(selected_image)],
+        "delivery_metadata": visual_metadata,
+        "generation_payloads": {
+            "image": [
+                {
+                    "image": str(rejected_image),
+                    "reference_image_urls": [str(reference_image)],
+                },
+                {
+                    "image": str(selected_image),
+                    "reference_image_urls": [str(reference_image)],
+                },
+            ],
+        },
+    }
+    noisy_response = (
+        "visual_agent_generate raw result follows; do not show this to users\n"
+        "```json\n"
+        f"{json.dumps(payload)}\n"
+        "```\n"
+        f"debug refs and candidates: {reference_image} {rejected_image} {selected_image}\n"
+        "internal routing log: provider=xai package_status=success"
+    )
+    adapter._message_handler = AsyncMock(return_value=noisy_response)
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="text"))
+    adapter.send_multiple_images = AsyncMock(return_value=None)
+    adapter.send_video = AsyncMock(return_value=SendResult(success=True, message_id="video"))
+    adapter.send_voice = AsyncMock(return_value=SendResult(success=True, message_id="voice"))
+    adapter.send_document = AsyncMock(return_value=SendResult(success=True, message_id="doc"))
+
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    adapter.send.assert_not_awaited()
+    adapter.send_multiple_images.assert_awaited_once()
+    kwargs = adapter.send_multiple_images.await_args.kwargs
+    assert kwargs["images"] == [(f"file://{quote(str(selected_image))}", "")]
+    adapter.send_video.assert_not_awaited()
+    adapter.send_document.assert_not_awaited()
+    adapter.send_voice.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_streaming_delivery_visual_package_filters_stale_image_video_media(
     tmp_path,
     monkeypatch,
@@ -427,6 +503,94 @@ async def test_streaming_delivery_generated_image_only_filters_prior_file_markdo
         chat_id="chat-1",
         images=[(f"file://{quote(str(path))}", "") for path in new_images],
         metadata={"thread_id": "topic-1"},
+    )
+    adapter.send_document.assert_not_awaited()
+    adapter.send_voice.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_base_adapter_filters_visual_package_json_to_selected_media(
+    tmp_path,
+    monkeypatch,
+):
+    adapter = _MediaRoutingAdapter()
+    event = _event()
+    selected_image = _allowed_media_path(tmp_path, monkeypatch, "selected.jpg")
+    rejected_image = _allowed_media_path(tmp_path, monkeypatch, "rejected.jpg")
+    selected_video = _allowed_media_path(tmp_path, monkeypatch, "selected.mp4")
+    rejected_video = _allowed_media_path(tmp_path, monkeypatch, "rejected.mp4")
+    reference_image = _allowed_media_path(tmp_path, monkeypatch, "reference.jpg")
+    visual_metadata = {
+        "visual_request_id": "vrq_current",
+        "visual_attempt_id": None,
+        "selected_visual_artifact_ids": ["var_selected", "var_selected_video"],
+        "visual_artifacts": {
+            str(selected_image): {
+                "request_id": "vrq_current",
+                "attempt_id": "vat_selected",
+                "artifact_id": "var_selected",
+                "kind": "image",
+                "content_hash": "sha256:selected",
+            },
+            str(rejected_image): {
+                "request_id": "vrq_current",
+                "attempt_id": "vat_rejected",
+                "artifact_id": "var_rejected",
+                "kind": "image",
+                "content_hash": "sha256:rejected",
+            },
+            str(selected_video): {
+                "request_id": "vrq_current",
+                "attempt_id": "vat_selected_video",
+                "artifact_id": "var_selected_video",
+                "kind": "video",
+                "content_hash": "sha256:selected-video",
+            },
+            str(rejected_video): {
+                "request_id": "vrq_current",
+                "attempt_id": "vat_rejected_video",
+                "artifact_id": "var_rejected_video",
+                "kind": "video",
+                "content_hash": "sha256:rejected-video",
+            },
+        },
+    }
+    payload = {
+        "success": True,
+        "package_status": "success",
+        "images": [str(selected_image)],
+        "videos": [str(selected_video)],
+        "delivery_metadata": visual_metadata,
+        "generation_payloads": {
+            "image": [
+                {"image": str(rejected_image), "reference_image_urls": [str(reference_image)]},
+                {"image": str(selected_image), "reference_image_urls": [str(reference_image)]},
+            ],
+            "video": [
+                {"video": str(rejected_video), "source_image": str(rejected_image)},
+                {"video": str(selected_video), "source_image": str(selected_image)},
+            ],
+        },
+        "notes": f"debug refs: {reference_image} {rejected_image} {selected_image} {rejected_video} {selected_video}",
+    }
+    adapter._message_handler = AsyncMock(return_value=json.dumps(payload))
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="text"))
+    adapter.send_multiple_images = AsyncMock(return_value=None)
+    adapter.send_video = AsyncMock(return_value=SendResult(success=True, message_id="video"))
+    adapter.send_voice = AsyncMock(return_value=SendResult(success=True, message_id="voice"))
+    adapter.send_document = AsyncMock(return_value=SendResult(success=True, message_id="doc"))
+
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    adapter.send_multiple_images.assert_awaited_once()
+    kwargs = adapter.send_multiple_images.await_args.kwargs
+    assert kwargs["chat_id"] == "chat-1"
+    assert kwargs["images"] == [(f"file://{quote(str(selected_image))}", "")]
+    assert kwargs["metadata"] == {"notify": True}
+    adapter.send_video.assert_awaited_once_with(
+        chat_id="chat-1",
+        video_path=str(selected_video),
+        metadata={"notify": True},
     )
     adapter.send_document.assert_not_awaited()
     adapter.send_voice.assert_not_awaited()

@@ -62,6 +62,38 @@ def test_candidate_vision_observation_merges_preference_dimensions_from_inline_j
     assert observation["evidence"]["source"] == "inline_vision_judge"
 
 
+def test_candidate_vision_observation_preserves_reference_role_dimensions_from_inline_judge():
+    observation = build_candidate_vision_observation(
+        {
+            "kind": "image",
+            "artifact_path": "/tmp/current.png",
+        },
+        fallback_observation={
+            "composition": 0.5,
+            "visual_appeal": 0.5,
+            "confidence": 0.2,
+            "artifact_defects": [],
+        },
+        inline_enabled=True,
+        analyzer=lambda _candidate: {
+            "analysis": {
+                "reference_adherence": 0.4,
+                "character_identity_adherence": 0.18,
+                "pose_composition_adherence": 0.91,
+                "wardrobe_adherence": 0.22,
+                "visual_appeal": 0.6,
+                "composition": 0.75,
+                "artifact_defects": ["reference_identity_drift"],
+            }
+        },
+    )
+
+    assert observation["character_identity_adherence"] == 0.18
+    assert observation["pose_composition_adherence"] == 0.91
+    assert observation["wardrobe_adherence"] == 0.22
+    assert "reference_identity_drift" in observation["artifact_defects"]
+
+
 def test_candidate_vision_observation_records_inline_provider_failure():
     observation = build_candidate_vision_observation(
         {

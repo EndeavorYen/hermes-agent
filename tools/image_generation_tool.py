@@ -26,7 +26,9 @@ import os
 import datetime
 import re
 import threading
+import urllib.parse
 import uuid
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 # fal_client is imported lazily — see _load_fal_client(). Pulling it
@@ -1263,6 +1265,16 @@ IMAGE_GENERATE_SCHEMA = {
                     "capped per-model; the description above indicates the max."
                 ),
             },
+            "operation": {
+                "type": "string",
+                "enum": ["generate", "edit_current"],
+                "description": (
+                    "Optional operation hint for browser-backed providers. "
+                    "`generate` starts a new image request. `edit_current` "
+                    "keeps the currently open generated result in the provider "
+                    "web UI and applies the prompt as an additive/modify edit."
+                ),
+            },
             "agent_mode": {
                 "type": "boolean",
                 "description": (
@@ -1332,6 +1344,7 @@ def _dispatch_to_plugin_provider(
     aspect_ratio: str,
     image_url: Optional[str] = None,
     reference_image_urls: Optional[list] = None,
+    operation: Optional[str] = None,
     provider_override: Optional[str] = None,
     model_override: Optional[str] = None,
 ):
@@ -1412,13 +1425,15 @@ def _dispatch_to_plugin_provider(
             norm_refs = normalize_reference_images(reference_image_urls)
         if norm_refs:
             kwargs["reference_image_urls"] = norm_refs
+        if isinstance(operation, str) and operation.strip():
+            kwargs["operation"] = operation.strip()
         result = provider.generate(**kwargs)
     except TypeError as exc:
         # A provider whose generate() signature predates image_url support
         # (third-party plugin not yet updated) — retry without the new kwargs
         # so text-to-image keeps working, but surface a clear note when the
         # user actually asked for an edit.
-        if "image_url" in kwargs or "reference_image_urls" in kwargs:
+        if "image_url" in kwargs or "reference_image_urls" in kwargs or "operation" in kwargs:
             logger.warning(
                 "image_gen provider '%s' rejected image-to-image kwargs "
                 "(signature too narrow): %s",
@@ -1510,6 +1525,32 @@ def _has_reference_conditioning(image_url: Optional[str], reference_image_urls: 
     return False
 
 
+def _grok_web_fallback_can_preserve_reference_conditioning(
+    image_url: Optional[str],
+    reference_image_urls: Optional[list],
+) -> bool:
+    values: list[str] = []
+    if isinstance(image_url, str) and image_url.strip():
+        values.append(image_url.strip())
+    if isinstance(reference_image_urls, (list, tuple)):
+        values.extend(item.strip() for item in reference_image_urls if isinstance(item, str) and item.strip())
+    if not values:
+        return True
+
+    for raw in values:
+        if raw.startswith(("http://", "https://")):
+            return False
+        if raw.startswith("data:image/"):
+            continue
+        path_value = raw
+        if raw.startswith("file://"):
+            parsed = urllib.parse.urlparse(raw)
+            path_value = urllib.parse.unquote(parsed.path)
+        if not Path(path_value).expanduser().is_file():
+            return False
+    return True
+
+
 def _maybe_fallback_to_grok_web_imagine_on_xai_quota(
     raw: Any,
     *,
@@ -1517,7 +1558,8 @@ def _maybe_fallback_to_grok_web_imagine_on_xai_quota(
     aspect_ratio: str,
     image_url: Optional[str],
     reference_image_urls: Optional[list],
-    primary_provider_hint: Optional[str],
+    operation: Optional[str] = None,
+    primary_provider_hint: Optional[str] = None,
 ) -> Any:
     payload = _json_object(raw)
     if not payload or payload.get("success"):
@@ -1528,7 +1570,10 @@ def _maybe_fallback_to_grok_web_imagine_on_xai_quota(
     primary_provider = payload.get("provider") or primary_provider_hint or _read_configured_image_provider()
     if not _is_xai_image_provider(primary_provider):
         return raw
-    if _has_reference_conditioning(image_url, reference_image_urls):
+    if _has_reference_conditioning(
+        image_url,
+        reference_image_urls,
+    ) and not _grok_web_fallback_can_preserve_reference_conditioning(image_url, reference_image_urls):
         return raw
 
     try:
@@ -1544,8 +1589,9 @@ def _maybe_fallback_to_grok_web_imagine_on_xai_quota(
     fallback_raw = _dispatch_to_plugin_provider(
         prompt,
         aspect_ratio,
-        image_url=None,
-        reference_image_urls=None,
+        image_url=image_url,
+        reference_image_urls=reference_image_urls,
+        operation=operation,
         provider_override=GROK_WEB_IMAGINE_PROVIDER,
         model_override=GROK_WEB_IMAGINE_PROVIDER,
     )
@@ -1593,6 +1639,8 @@ def _truthy_arg(value: Any) -> bool:
 def _requested_image_provider(value: str) -> str | None:
     lowered = str(value or "").lower()
     compact = re.sub(r"[\s_\-.]+", "", lowered)
+    if compact in {"grokwebimagine", "grokweb"} or "grok web imagine" in lowered:
+        return GROK_WEB_IMAGINE_PROVIDER
     if "grok" in lowered or "x.ai" in lowered or re.search(r"\bxai\b", lowered):
         return "xai"
     if (
@@ -1811,6 +1859,7 @@ def _handle_image_generate(args, **kw):
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
     image_url = args.get("image_url") or args.get("input_image")
     reference_image_urls = _legacy_reference_image_urls(args)
+    operation = args.get("operation")
     provider_override = _image_provider_override_arg(args, prompt)
     model_override = args.get("_model")
     task_id = kw.get("task_id")
@@ -1822,6 +1871,7 @@ def _handle_image_generate(args, **kw):
     if session_reference_image_urls:
         reference_image_urls = session_reference_image_urls
 
+    disable_visual_tracking = bool(args.get("_disable_visual_tracking"))
     if _agent_mode_requested(args, prompt):
         routed = json.dumps(
             _route_visual_image_to_package(
@@ -1835,13 +1885,9 @@ def _handle_image_generate(args, **kw):
             ensure_ascii=False,
         )
         postprocessed = _postprocess_image_generate_result(routed, task_id=task_id)
-        return _track_image_generate_result(
-            postprocessed,
-            prompt=prompt,
-            aspect_ratio=aspect_ratio,
-            image_url=image_url,
-            reference_image_urls=reference_image_urls,
-        )
+        # The visual package route records the canonical visual_request itself;
+        # avoid creating a second image_generate request for the same artifact.
+        return postprocessed
 
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path).
@@ -1849,6 +1895,7 @@ def _handle_image_generate(args, **kw):
         prompt, aspect_ratio,
         image_url=image_url,
         reference_image_urls=reference_image_urls,
+        operation=operation,
         provider_override=provider_override,
         model_override=model_override,
     )
@@ -1859,9 +1906,12 @@ def _handle_image_generate(args, **kw):
             aspect_ratio=aspect_ratio,
             image_url=image_url,
             reference_image_urls=reference_image_urls,
+            operation=operation,
             primary_provider_hint=provider_override or _read_configured_image_provider(),
         )
         postprocessed = _postprocess_image_generate_result(dispatched, task_id=task_id)
+        if disable_visual_tracking:
+            return postprocessed
         return _track_image_generate_result(
             postprocessed,
             prompt=prompt,
@@ -1877,6 +1927,8 @@ def _handle_image_generate(args, **kw):
         reference_image_urls=reference_image_urls,
     )
     postprocessed = _postprocess_image_generate_result(raw, task_id=task_id)
+    if disable_visual_tracking:
+        return postprocessed
     return _track_image_generate_result(
         postprocessed,
         prompt=prompt,

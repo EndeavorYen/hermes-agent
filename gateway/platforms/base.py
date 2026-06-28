@@ -8,6 +8,7 @@ and implement the required methods.
 import asyncio
 import inspect
 import ipaddress
+import json
 import logging
 import os
 import random
@@ -36,6 +37,8 @@ _TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
 _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS = 30.0
 _GENERATED_IMAGE_ONLY_DIRECTIVE = "[[generated_image_only]]"
 _IMAGE_DELIVERY_EXTS = frozenset({'.jpg', '.jpeg', '.png', '.webp', '.gif'})
+_VIDEO_DELIVERY_EXTS = frozenset({'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'})
+_VISUAL_DELIVERY_EXTS = _IMAGE_DELIVERY_EXTS | _VIDEO_DELIVERY_EXTS
 
 
 def _platform_name(platform) -> str:
@@ -2958,6 +2961,169 @@ class BasePlatformAdapter(ABC):
         return paths
 
     @staticmethod
+    def visual_package_selected_delivery_paths(content: str) -> set[str]:
+        """Return selected local media paths from a visual package JSON reply.
+
+        Visual package tools return rich JSON containing selected artifacts,
+        rejected candidates, and reference inputs. The normal bare-path scanner
+        must only deliver the current selected artifacts from that envelope.
+        """
+        selected_by_payload: list[set[str]] = []
+        for payload in BasePlatformAdapter._visual_package_payloads(content):
+            selected_paths = BasePlatformAdapter._visual_package_selected_paths_from_payload(payload)
+            if selected_paths:
+                selected_by_payload.append(selected_paths)
+        return selected_by_payload[-1] if selected_by_payload else set()
+
+    @staticmethod
+    def visual_package_payload_detected(content: str) -> bool:
+        return bool(BasePlatformAdapter._visual_package_payloads(content))
+
+    @staticmethod
+    def visual_package_user_visible_text(
+        content: str,
+        selected_media_paths: set[str],
+        *,
+        has_delivery: bool,
+    ) -> str:
+        payloads = BasePlatformAdapter._visual_package_payloads(content)
+        if not payloads:
+            return str(content or "")
+        payload = payloads[-1]
+        package_status = str(payload.get("package_status") or "").strip().lower()
+        if payload.get("success") is False or package_status in {"failed", "failure", "error"}:
+            error = payload.get("error") or payload.get("message") or payload.get("error_type")
+            detail = BasePlatformAdapter._short_visual_package_error(error)
+            return f"Visual generation did not complete: {detail}" if detail else "Visual generation did not complete."
+        if has_delivery and selected_media_paths:
+            return ""
+        return "Visual generation completed, but no deliverable media was found."
+
+    @staticmethod
+    def _visual_package_payloads(content: str) -> list[dict]:
+        text = str(content or "")
+        if "{" not in text:
+            return []
+        payloads: list[dict] = []
+        decoder = json.JSONDecoder()
+        index = 0
+        while index < len(text):
+            start = text.find("{", index)
+            if start < 0:
+                break
+            try:
+                value, end = decoder.raw_decode(text, start)
+            except json.JSONDecodeError:
+                index = start + 1
+                continue
+            if (
+                isinstance(value, dict)
+                and BasePlatformAdapter._looks_like_visual_package_payload(value)
+            ):
+                payloads.append(value)
+            index = max(end, start + 1)
+        return payloads
+
+    @staticmethod
+    def _looks_like_visual_package_payload(payload: dict) -> bool:
+        if isinstance(payload.get("delivery_metadata"), dict):
+            return True
+        if payload.get("visual_agent_tool") == "visual_agent_generate":
+            return True
+        if "package_status" in payload and any(
+            key in payload for key in ("images", "videos", "generation_payloads")
+        ):
+            return True
+        return False
+
+    @staticmethod
+    def _visual_package_selected_paths_from_payload(payload: dict) -> set[str]:
+        delivery_metadata = payload.get("delivery_metadata")
+        if not isinstance(delivery_metadata, dict):
+            return BasePlatformAdapter._visual_package_top_level_media_paths(payload)
+        selected_ids = {
+            str(item)
+            for item in delivery_metadata.get("selected_visual_artifact_ids") or []
+            if item is not None
+        }
+        if not selected_ids:
+            return BasePlatformAdapter._visual_package_top_level_media_paths(payload)
+
+        selected_paths: set[str] = set()
+        visual_artifacts = delivery_metadata.get("visual_artifacts")
+        if isinstance(visual_artifacts, dict):
+            for ref, metadata in visual_artifacts.items():
+                if not isinstance(metadata, dict):
+                    continue
+                artifact_id = str(metadata.get("artifact_id") or "")
+                if artifact_id not in selected_ids:
+                    continue
+                path = BasePlatformAdapter._local_path_from_delivery_ref(ref)
+                if path:
+                    selected_paths.add(path)
+
+        if not selected_paths:
+            selected_paths = BasePlatformAdapter._visual_package_top_level_media_paths(payload)
+        return selected_paths
+
+    @staticmethod
+    def _visual_package_top_level_media_paths(payload: dict) -> set[str]:
+        paths: set[str] = set()
+        for key in ("images", "videos"):
+            refs = payload.get(key)
+            if not isinstance(refs, list):
+                continue
+            for ref in refs:
+                path = BasePlatformAdapter._local_path_from_delivery_ref(ref)
+                if path:
+                    paths.add(path)
+        return paths
+
+    @staticmethod
+    def _short_visual_package_error(value) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        if text == "visual candidate blocked by active-learning delivery gate":
+            return "candidate did not pass visual quality validation"
+        if text == "reference role transfer did not pass visual quality validation after repair":
+            return "reference role transfer did not pass visual quality validation after repair"
+        text = re.sub(r"data:image/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=\s]+", "[image data]", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        if len(text) > 240:
+            text = text[:237].rstrip() + "..."
+        return text
+
+    @staticmethod
+    def _local_path_from_delivery_ref(ref) -> str | None:
+        if not isinstance(ref, str):
+            return None
+        value = ref.strip()
+        if not value:
+            return None
+        parsed = urlsplit(value)
+        if parsed.scheme == "file":
+            path = unquote(parsed.path or "")
+        elif parsed.scheme:
+            return None
+        else:
+            path = value
+        path = os.path.expanduser(path.strip())
+        return path or None
+
+    @staticmethod
+    def _delivery_path_variants(path: str) -> set[str]:
+        expanded = os.path.expanduser(str(path or "").strip())
+        if not expanded:
+            return set()
+        variants = {expanded}
+        try:
+            variants.add(str(Path(expanded).resolve()))
+        except (OSError, RuntimeError):
+            pass
+        return variants
+
+    @staticmethod
     def filter_generated_image_delivery(
         media_files: List[Tuple[str, bool]],
         local_files: List[str],
@@ -2992,6 +3158,50 @@ class BasePlatformAdapter(ABC):
                 continue
             path = unquote(urlsplit(str(url)).path or "")
             if path and image_path_allowed(path):
+                filtered_images.append((url, alt))
+        return filtered_media, filtered_local, filtered_images
+
+    @staticmethod
+    def filter_visual_package_delivery(
+        media_files: List[Tuple[str, bool]],
+        local_files: List[str],
+        images: List[Tuple[str, str]],
+        selected_media_paths: set[str],
+    ) -> Tuple[List[Tuple[str, bool]], List[str], List[Tuple[str, str]]]:
+        allowed: set[str] = set()
+        for path in selected_media_paths:
+            allowed.update(BasePlatformAdapter._delivery_path_variants(path))
+        seen_images: set[str] = set()
+
+        def media_ref_allowed(path: str) -> bool:
+            normalized = os.path.expanduser(path)
+            if Path(normalized).suffix.lower() not in _VISUAL_DELIVERY_EXTS:
+                return True
+            variants = BasePlatformAdapter._delivery_path_variants(normalized)
+            if not variants.intersection(allowed):
+                return False
+            if Path(normalized).suffix.lower() in _IMAGE_DELIVERY_EXTS:
+                if normalized in seen_images:
+                    return False
+                seen_images.add(normalized)
+            return True
+
+        filtered_media = [
+            (path, is_voice)
+            for path, is_voice in media_files
+            if media_ref_allowed(path)
+        ]
+        filtered_local = [
+            path
+            for path in local_files
+            if media_ref_allowed(path)
+        ]
+        filtered_images: List[Tuple[str, str]] = []
+        for url, alt in images:
+            if not str(url).startswith("file://"):
+                continue
+            path = unquote(urlsplit(str(url)).path or "")
+            if path and media_ref_allowed(path):
                 filtered_images.append((url, alt))
         return filtered_media, filtered_local, filtered_images
 
@@ -4354,6 +4564,8 @@ class BasePlatformAdapter(ABC):
 
                 # Pre-extract snapshot for the #29346 recovery/invariant below.
                 _response_pre_extract = response
+                _visual_package_detected = self.visual_package_payload_detected(response)
+                _visual_package_selected_paths = self.visual_package_selected_delivery_paths(response)
                 _generated_image_only_paths = self.generated_image_only_paths(response)
 
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
@@ -4381,7 +4593,19 @@ class BasePlatformAdapter(ABC):
                     if local_files:
                         logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
 
-                if _generated_image_only_paths:
+                if _visual_package_detected:
+                    media_files, local_files, images = self.filter_visual_package_delivery(
+                        media_files,
+                        local_files,
+                        images,
+                        _visual_package_selected_paths,
+                    )
+                    text_content = self.visual_package_user_visible_text(
+                        response,
+                        _visual_package_selected_paths,
+                        has_delivery=bool(media_files or local_files or images),
+                    ).strip()
+                elif _generated_image_only_paths:
                     media_files, local_files, images = self.filter_generated_image_delivery(
                         media_files,
                         local_files,

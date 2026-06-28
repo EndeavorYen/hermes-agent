@@ -1579,6 +1579,15 @@ class TestVisualPackageToolGuidance:
         assert "text-to-image only" in prompt
         assert "Do not tell the user Grok Imagine/xAI is text-to-image only" in prompt
 
+    def test_visual_agent_guidance_keeps_prompt_disclosure_text_only(self):
+        prompt = build_visual_package_tool_guidance(
+            {"visual_agent_generate", "visual_package_generate", "image_generate"}
+        )
+
+        assert "prompt disclosure" in prompt
+        assert "do not call `visual_agent_generate`" in prompt
+        assert "answer from the latest visual tool result" in prompt
+
     def test_includes_visual_self_validation_status_when_available(self):
         prompt = build_visual_package_tool_guidance(
             {

@@ -3438,6 +3438,74 @@ class TestRunConversation:
         assert "Ollama runtime context too small for Hermes tool use" in caplog.text
         assert "runtime_context=4096" in caplog.text
 
+    def test_direct_visual_agent_handoff_bypasses_main_openai_provider(self):
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("visual_agent_generate", "visual_package_generate", "image_generate"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://chatgpt.com/backend-api/codex",
+                provider="openai-codex",
+                model="gpt-5.5",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+        self._setup_agent(agent)
+        agent.client = MagicMock()
+        agent.client.chat.completions.create.side_effect = AssertionError("main LLM should be bypassed")
+
+        tool_payload = {
+            "success": True,
+            "images": ["/tmp/selected.png"],
+            "videos": [],
+            "visual_agent_provider_contract": {
+                "base_llm_provider": "openai-codex",
+                "base_llm_model": "gpt-5.5",
+                "visual_agent_llm_provider": "xai-oauth",
+                "visual_agent_llm_model": "grok-4.3",
+            },
+        }
+        with (
+            patch.object(agent, "_invoke_tool", return_value=json.dumps(tool_payload, ensure_ascii=False)) as invoke_tool,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("請產出一張圖片和一段影片")
+
+        assert result["api_calls"] == 0
+        assert result["completed"] is True
+        assert result["turn_exit_reason"] == "direct_visual_agent_handoff"
+        assert not agent.client.chat.completions.create.called
+        invoke_tool.assert_called_once()
+        assert invoke_tool.call_args.args[0] == "visual_agent_generate"
+        assert invoke_tool.call_args.args[1]["prompt"] == "請產出一張圖片和一段影片"
+        assert invoke_tool.call_args.args[1]["image_provider"] == "xai"
+        assert invoke_tool.call_args.args[1]["image_provider_source"] == "visual_agent_default"
+        assert invoke_tool.call_args.args[1]["visual_agent_llm_provider"] == "xai-oauth"
+        assert invoke_tool.call_args.args[1]["visual_agent_llm_model"] == "grok-4.3"
+        assert invoke_tool.call_args.args[1]["visual_agent_handoff_mode"] == "pre_llm_direct"
+        assert result["final_response"] == "已產出圖片。"
+        assert "package_status" not in result["final_response"]
+        assert "/tmp/selected.png" not in result["final_response"]
+        assert [message["role"] for message in result["messages"][-3:]] == ["assistant", "tool", "assistant"]
+        tool_payload_with_metadata = json.loads(result["messages"][-2]["content"])
+        assert tool_payload_with_metadata["direct_visual_agent_handoff"]["mode"] == "pre_llm_direct"
+        assert (
+            tool_payload_with_metadata["direct_visual_agent_handoff"]["base_llm_provider_bypassed"]
+            == "openai-codex"
+        )
+        assert (
+            tool_payload_with_metadata["direct_visual_agent_handoff"]["visual_agent_llm_provider"]
+            == "xai-oauth"
+        )
+
     def test_tool_calls_then_stop(self, agent):
         self._setup_agent(agent)
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")

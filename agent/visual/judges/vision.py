@@ -18,12 +18,17 @@ def build_vision_judge_observation(raw: dict[str, Any]) -> dict[str, Any]:
         "fashion_material_quality",
         _dimension(source, "stocking_quality", _dimension(source, "tights_quality", 0.5)),
     )
+    role_dimensions = _role_dimensions(source)
     aspect_integrity = _optional_dimension(source, "aspect_integrity")
     motion_quality = _optional_dimension(source, "motion_quality")
 
     defects: list[str] = []
     if reference_adherence < 0.5:
         defects.append("reference_identity_drift")
+    if role_dimensions.get("character_identity_adherence", 1.0) < 0.5:
+        defects.append("reference_identity_drift")
+    if role_dimensions.get("pose_composition_adherence", 1.0) < 0.5:
+        defects.append("pose_composition_weak")
     if face_quality < 0.5:
         defects.append("face_quality_low")
     if subject_quality < 0.5:
@@ -72,11 +77,35 @@ def build_vision_judge_observation(raw: dict[str, Any]) -> dict[str, Any]:
             "summary": "privacy-safe visual observation",
         },
     }
+    observation.update(role_dimensions)
     if aspect_integrity is not None:
         observation["aspect_integrity"] = round(aspect_integrity, 4)
     if motion_quality is not None:
         observation["motion_quality"] = round(motion_quality, 4)
     return observation
+
+
+def _role_dimensions(source: dict[str, Any]) -> dict[str, float]:
+    dimensions: dict[str, float] = {}
+    for key in (
+        "character_identity_adherence",
+        "identity_adherence",
+        "character_adherence",
+        "face_identity_adherence",
+        "pose_composition_adherence",
+        "pose_adherence",
+        "composition_adherence",
+        "wardrobe_adherence",
+        "clothing_adherence",
+        "outfit_adherence",
+        "style_adherence",
+        "art_style_adherence",
+        "background_adherence",
+        "scene_adherence",
+    ):
+        if key in source:
+            dimensions[key] = round(_clamp(source.get(key)), 4)
+    return dimensions
 
 
 def _dimension(source: dict[str, Any], key: str, default: float) -> float:

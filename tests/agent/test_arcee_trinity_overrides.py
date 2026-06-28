@@ -19,6 +19,7 @@ from agent.auxiliary_client import (
     _is_arcee_trinity_thinking,
     _is_codex_gpt55,
 )
+from run_agent import AIAgent
 
 
 @pytest.mark.parametrize(
@@ -157,3 +158,22 @@ def test_compression_threshold_opt_out_does_not_disable_trinity() -> None:
         )
         == 0.75
     )
+
+
+def test_codex_gpt55_autoraise_does_not_create_gateway_replay_warning(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    agent = AIAgent(
+        provider="openai-codex",
+        model="gpt-5.5",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="dummy",
+        quiet_mode=True,
+        skip_memory=True,
+        enabled_toolsets=[],
+        disabled_toolsets=[],
+    )
+
+    assert agent._compression_threshold_autoraised == {"from": 0.5, "to": 0.85}
+    assert agent.context_compressor.threshold_percent == pytest.approx(0.85)
+    assert agent._compression_warning is None

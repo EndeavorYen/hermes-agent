@@ -229,6 +229,13 @@ class TestToolsetConsistency:
         # silently let a platform diverge so far that nothing is shared).
         assert len(core) > 20, f"Suspiciously small shared core: {len(core)} tools"
 
+    def test_hermes_cli_exposes_visual_agent_mode_tools(self):
+        tools = set(resolve_toolset("hermes-cli"))
+
+        assert "visual_agent_generate" in tools
+        assert "visual_package_generate" in tools
+        assert "image_generate" in tools
+
 
 class TestPluginToolsets:
     def test_get_all_toolsets_includes_plugin_toolset(self, monkeypatch):

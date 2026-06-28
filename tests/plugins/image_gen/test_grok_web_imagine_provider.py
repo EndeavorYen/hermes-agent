@@ -139,6 +139,29 @@ def test_classify_imagine_ready_when_upgrade_cta_is_visible_but_prompt_controls_
     assert state.safe_to_submit is True
 
 
+def test_classify_imagine_post_page_as_result_page_not_create_composer():
+    from plugins.image_gen.grok_web_imagine import classify_visible_state
+
+    state = classify_visible_state(
+        _snapshot(
+            url="https://grok.com/imagine/post/7cdbd493-8d4d-4d84-b862-b92e4720f14c",
+            title="Imagine - Grok",
+            text="Imagine - Grok\nCreate a simple clean vertical test image\n編輯",
+            inputs=[
+                {
+                    "tag": "DIV",
+                    "aria": "Ask Grok anything",
+                    "placeholder": None,
+                    "text": "",
+                }
+            ],
+        )
+    )
+
+    assert state.status == "imagine_post_open"
+    assert state.safe_to_submit is False
+
+
 def test_provider_reports_subscription_required_without_submitting(monkeypatch):
     from plugins.image_gen.grok_web_imagine import GrokWebImagineProvider
 
@@ -259,7 +282,17 @@ def test_provider_disabled_by_default_even_if_registered(monkeypatch):
     assert result["provider"] == "grok-web-imagine"
 
 
-def test_provider_scopes_reference_error_to_browser_bridge(monkeypatch):
+def test_provider_capabilities_advertise_browser_reference_upload():
+    from plugins.image_gen.grok_web_imagine import GrokWebImagineProvider
+
+    caps = GrokWebImagineProvider(cdp_client=MagicMock()).capabilities()
+
+    assert caps["modalities"] == ["text", "image", "image_edit"]
+    assert caps["operations"] == ["generate", "edit_current"]
+    assert caps["max_reference_images"] >= 1
+
+
+def test_provider_rejects_remote_reference_images_until_download_pipeline_exists(monkeypatch):
     from plugins.image_gen.grok_web_imagine import GrokWebImagineProvider
 
     monkeypatch.setenv("HERMES_GROK_WEB_IMAGINE", "1")
@@ -271,9 +304,48 @@ def test_provider_scopes_reference_error_to_browser_bridge(monkeypatch):
     )
 
     assert result["success"] is False
-    assert result["error_type"] == "unsupported_reference_images"
+    assert result["error_type"] == "unsupported_reference_source"
     assert "browser bridge" in result["error"]
-    assert "xAI image provider" in result["error"]
+    assert "local file" in result["error"]
+
+
+def test_provider_passes_local_reference_images_to_browser_runner(monkeypatch, tmp_path):
+    from plugins.image_gen.grok_web_imagine import BrowserArtifact, GrokWebImagineProvider
+
+    monkeypatch.setenv("HERMES_GROK_WEB_IMAGINE", "1")
+    source_path = tmp_path / "source.png"
+    ref_path = tmp_path / "pose.png"
+    output_path = tmp_path / "grok-web-ref.png"
+    source_path.write_bytes(b"source image")
+    ref_path.write_bytes(b"pose image")
+    output_path.write_bytes(b"fake image")
+    cdp = MagicMock()
+    cdp.snapshot.return_value = _snapshot(
+        url="https://grok.com/imagine",
+        title="Grok",
+        text="Imagine\nCreate images and videos",
+        inputs=[{"tag": "TEXTAREA", "aria": "Ask Grok anything", "placeholder": "What do you want to make?"}],
+    )
+    cdp.generate_image.return_value = BrowserArtifact(path=output_path, source="browser")
+    provider = GrokWebImagineProvider(cdp_client=cdp)
+
+    result = provider.generate(
+        "use source character and pose reference",
+        aspect_ratio="portrait",
+        image_url=str(source_path),
+        reference_image_urls=[str(ref_path)],
+    )
+
+    assert result["success"] is True
+    assert result["image"] == str(output_path)
+    assert result["modality"] == "image"
+    assert result["reference_image_count"] == 2
+    cdp.generate_image.assert_called_once_with(
+        prompt="use source character and pose reference",
+        aspect_ratio="portrait",
+        timeout_seconds=240,
+        image_paths=[str(source_path.resolve()), str(ref_path.resolve())],
+    )
 
 
 def test_provider_reports_login_required_without_submitting(monkeypatch):
@@ -328,6 +400,108 @@ def test_provider_returns_saved_artifact_from_browser_runner(monkeypatch, tmp_pa
     )
 
 
+def test_provider_navigates_from_imagine_post_page_before_generation(monkeypatch, tmp_path):
+    from plugins.image_gen.grok_web_imagine import BrowserArtifact, GrokWebImagineProvider
+
+    monkeypatch.setenv("HERMES_GROK_WEB_IMAGINE", "1")
+    image_path = tmp_path / "grok-web.png"
+    image_path.write_bytes(b"fake image")
+    cdp = MagicMock()
+    cdp.snapshot.side_effect = [
+        _snapshot(
+            url="https://grok.com/imagine/post/7cdbd493-8d4d-4d84-b862-b92e4720f14c",
+            title="Imagine - Grok",
+            text="Imagine - Grok\n編輯",
+            inputs=[{"tag": "DIV", "aria": "Ask Grok anything", "placeholder": None}],
+        ),
+        _snapshot(
+            url="https://grok.com/imagine",
+            title="Grok",
+            text="Imagine\nCreate images and videos",
+            inputs=[{"tag": "DIV", "aria": "Ask Grok anything", "placeholder": None}],
+        ),
+    ]
+    cdp.generate_image.return_value = BrowserArtifact(path=image_path, source="browser")
+    provider = GrokWebImagineProvider(cdp_client=cdp)
+
+    result = provider.generate("clean product photo", aspect_ratio="square")
+
+    assert result["success"] is True
+    cdp.navigate.assert_called_once_with("https://grok.com/imagine")
+    cdp.generate_image.assert_called_once()
+
+
+def test_provider_edits_current_post_without_navigating_to_new_composer(monkeypatch, tmp_path):
+    from plugins.image_gen.grok_web_imagine import BrowserArtifact, GrokWebImagineProvider
+
+    monkeypatch.setenv("HERMES_GROK_WEB_IMAGINE", "1")
+    image_path = tmp_path / "grok-web-edit.png"
+    image_path.write_bytes(b"fake image")
+    cdp = MagicMock()
+    cdp.snapshot.return_value = _snapshot(
+        url="https://grok.com/imagine/post/7cdbd493-8d4d-4d84-b862-b92e4720f14c",
+        title="Imagine - Grok",
+        text="Imagine - Grok\n編輯\n重新產生",
+        inputs=[{"tag": "DIV", "aria": "Ask Grok anything", "placeholder": None}],
+    )
+    cdp.edit_current_image.return_value = BrowserArtifact(path=image_path, source="browser_screenshot")
+    provider = GrokWebImagineProvider(cdp_client=cdp)
+
+    result = provider.generate(
+        "make the lighting warmer and keep the same pen",
+        aspect_ratio="square",
+        operation="edit_current",
+    )
+
+    assert result["success"] is True
+    assert result["image"] == str(image_path)
+    assert result["operation"] == "edit_current"
+    assert result["modality"] == "image_edit"
+    assert result["reference_image_count"] == 0
+    cdp.navigate.assert_not_called()
+    cdp.generate_image.assert_not_called()
+    cdp.edit_current_image.assert_called_once_with(
+        prompt="make the lighting warmer and keep the same pen",
+        aspect_ratio="square",
+        timeout_seconds=240,
+    )
+
+
+def test_provider_edit_current_can_upload_additional_references(monkeypatch, tmp_path):
+    from plugins.image_gen.grok_web_imagine import BrowserArtifact, GrokWebImagineProvider
+
+    monkeypatch.setenv("HERMES_GROK_WEB_IMAGINE", "1")
+    ref_path = tmp_path / "style-ref.png"
+    image_path = tmp_path / "grok-web-edit-ref.png"
+    ref_path.write_bytes(b"reference image")
+    image_path.write_bytes(b"fake image")
+    cdp = MagicMock()
+    cdp.snapshot.return_value = _snapshot(
+        url="https://grok.com/imagine/post/7cdbd493-8d4d-4d84-b862-b92e4720f14c",
+        title="Imagine - Grok",
+        text="Imagine - Grok\n編輯\n重新產生",
+        inputs=[{"tag": "DIV", "aria": "Ask Grok anything", "placeholder": None}],
+    )
+    cdp.edit_current_image.return_value = BrowserArtifact(path=image_path, source="browser_screenshot")
+    provider = GrokWebImagineProvider(cdp_client=cdp)
+
+    result = provider.generate(
+        "apply the uploaded material reference",
+        aspect_ratio="square",
+        reference_image_urls=[str(ref_path)],
+        operation="edit_current",
+    )
+
+    assert result["success"] is True
+    assert result["reference_image_count"] == 1
+    cdp.edit_current_image.assert_called_once_with(
+        prompt="apply the uploaded material reference",
+        aspect_ratio="square",
+        timeout_seconds=240,
+        image_paths=[str(ref_path.resolve())],
+    )
+
+
 def test_submit_prompt_uses_visible_submit_button(monkeypatch):
     from plugins.image_gen.grok_web_imagine import CDPClient
 
@@ -344,6 +518,457 @@ def test_submit_prompt_uses_visible_submit_button(monkeypatch):
 
     assert calls
     assert "button[type=submit]" in calls[0]
+    assert "編輯" in calls[0]
+
+
+def test_attach_images_sets_browser_file_input_files(monkeypatch, tmp_path):
+    from plugins.image_gen.grok_web_imagine import CDPClient
+
+    image_path = tmp_path / "reference.png"
+    image_path.write_bytes(b"fake image")
+    client = CDPClient()
+    calls = []
+    fake_ws = MagicMock()
+
+    def fake_send_on_ws(ws, method: str, params: dict | None = None):
+        assert ws is fake_ws
+        calls.append((method, params or {}))
+        if method == "Runtime.evaluate":
+            return {"result": {"result": {"value": {"clicked": True}}}}
+        if method == "DOM.getDocument":
+            return {"result": {"root": {"nodeId": 1}}}
+        if method == "DOM.querySelectorAll":
+            return {"result": {"nodeIds": [42]}}
+        if method == "DOM.setFileInputFiles":
+            return {"result": {}}
+        raise AssertionError(f"unexpected CDP method: {method}")
+
+    monkeypatch.setattr(client, "_connect", lambda: fake_ws)
+    monkeypatch.setattr(client, "_send_on_ws", fake_send_on_ws)
+
+    uploaded = client.attach_images([str(image_path)])
+
+    assert uploaded == [str(image_path.resolve())]
+    assert (
+        "DOM.setFileInputFiles",
+        {"nodeId": 42, "files": [str(image_path.resolve())]},
+    ) in calls
+
+
+def test_attach_images_keeps_dom_upload_calls_on_one_cdp_session(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from plugins.image_gen.grok_web_imagine import CDPClient
+
+    image_path = tmp_path / "reference.png"
+    image_path.write_bytes(b"fake image")
+    client = CDPClient()
+    connections = []
+
+    class FakeWebSocket:
+        def __init__(self):
+            self.session_id = len(connections) + 1
+            self.methods = []
+            self.response = {}
+
+        def send(self, raw: str):
+            request = json.loads(raw)
+            method = request["method"]
+            params = request.get("params") or {}
+            self.methods.append(method)
+            request_id = request["id"]
+            root_id = self.session_id * 100 + 1
+            input_id = self.session_id * 100 + 42
+            if method == "Runtime.evaluate":
+                self.response = {"id": request_id, "result": {"result": {"value": {"ok": True}}}}
+            elif method == "DOM.getDocument":
+                self.response = {"id": request_id, "result": {"root": {"nodeId": root_id}}}
+            elif method == "DOM.querySelectorAll":
+                if params.get("nodeId") != root_id:
+                    self.response = {"id": request_id, "error": {"message": "Could not find node with given id"}}
+                else:
+                    self.response = {"id": request_id, "result": {"nodeIds": [input_id]}}
+            elif method == "DOM.setFileInputFiles":
+                if params.get("nodeId") != input_id:
+                    self.response = {"id": request_id, "error": {"message": "Could not find node with given id"}}
+                else:
+                    self.response = {"id": request_id, "result": {}}
+            else:
+                self.response = {"id": request_id, "error": {"message": f"unexpected method {method}"}}
+
+        def recv(self) -> str:
+            return json.dumps(self.response)
+
+        def close(self):
+            pass
+
+    def fake_create_connection(*args, **kwargs):
+        ws = FakeWebSocket()
+        connections.append(ws)
+        return ws
+
+    monkeypatch.setattr(client, "_page_ws_url", lambda: "ws://test")
+    monkeypatch.setattr(
+        "plugins.image_gen.grok_web_imagine.websocket",
+        SimpleNamespace(create_connection=fake_create_connection),
+    )
+
+    uploaded = client.attach_images([str(image_path)])
+
+    assert uploaded == [str(image_path.resolve())]
+    dom_sessions = [
+        ws.session_id
+        for ws in connections
+        if any(method.startswith("DOM.") for method in ws.methods)
+    ]
+    assert len(set(dom_sessions)) == 1
+
+
+def test_cdp_connection_timeout_covers_screenshot_fallback_settle(monkeypatch):
+    from types import SimpleNamespace
+
+    from plugins.image_gen.grok_web_imagine import CDPClient, SCREENSHOT_FALLBACK_SETTLE_MS
+
+    client = CDPClient()
+    captured = []
+
+    class FakeWebSocket:
+        def close(self):
+            pass
+
+    def fake_create_connection(*args, **kwargs):
+        captured.append(kwargs)
+        return FakeWebSocket()
+
+    monkeypatch.setattr(client, "_page_ws_url", lambda: "ws://test")
+    monkeypatch.setattr(
+        "plugins.image_gen.grok_web_imagine.websocket",
+        SimpleNamespace(create_connection=fake_create_connection),
+    )
+
+    client._connect().close()
+
+    assert captured
+    assert captured[0]["timeout"] > (SCREENSHOT_FALLBACK_SETTLE_MS / 1000)
+
+
+def test_edit_current_image_clicks_post_edit_action_and_waits_for_new_artifact(monkeypatch, tmp_path):
+    from plugins.image_gen.grok_web_imagine import BrowserArtifact, CDPClient
+
+    client = CDPClient()
+    current_image = {
+        "tag": "IMG",
+        "src": "https://assets.grok.com/generated/current/image.jpg?cache=1",
+        "visible": True,
+        "naturalWidth": 1024,
+        "naturalHeight": 1024,
+    }
+    edited_image = {
+        "tag": "IMG",
+        "src": "https://assets.grok.com/generated/edited/image.jpg?cache=1",
+        "visible": True,
+        "naturalWidth": 1024,
+        "naturalHeight": 1024,
+    }
+    media_snapshots = iter([
+        [current_image],
+        [current_image, edited_image],
+    ])
+    times = iter([0, 0.1, 0.2, 0.3])
+    evaluate_calls = []
+    saved_sources = []
+    output_path = tmp_path / "edited.png"
+
+    monkeypatch.setattr(client, "media", lambda: next(media_snapshots))
+    monkeypatch.setattr(
+        client,
+        "snapshot",
+        lambda: _snapshot(
+            url="https://grok.com/imagine/post/7cdbd493-8d4d-4d84-b862-b92e4720f14c",
+            title="Imagine - Grok",
+            text="Imagine - Grok\n編輯\n重新產生",
+            inputs=[{"tag": "DIV", "aria": "Ask Grok anything", "placeholder": None}],
+        ),
+    )
+
+    def fake_evaluate(expression: str):
+        evaluate_calls.append(expression)
+        if "clickGrokCurrentPostEditAction" in expression:
+            return {"clicked": True, "label": "編輯"}
+        return {"ok": True}
+
+    def fake_save(src: str) -> BrowserArtifact:
+        saved_sources.append(src)
+        return BrowserArtifact(path=output_path, source="browser_screenshot")
+
+    monkeypatch.setattr(client, "evaluate", fake_evaluate)
+    monkeypatch.setattr(client, "fill_prompt", lambda prompt: {"filled": True})
+    monkeypatch.setattr(client, "submit_prompt", lambda: None)
+    monkeypatch.setattr(client, "_save_image_src", fake_save)
+    monkeypatch.setattr("plugins.image_gen.grok_web_imagine.time.sleep", lambda seconds: None)
+    monkeypatch.setattr("plugins.image_gen.grok_web_imagine.time.time", lambda: next(times))
+
+    artifact = client.edit_current_image(prompt="make lighting warmer", timeout_seconds=1)
+
+    assert artifact.path == output_path
+    assert saved_sources == ["https://assets.grok.com/generated/edited/image.jpg?cache=1"]
+    assert any("clickGrokCurrentPostEditAction" in expression for expression in evaluate_calls)
+
+
+def test_current_post_edit_action_js_targets_non_aria_clickable_edit_labels():
+    from plugins.image_gen.grok_web_imagine import CLICK_CURRENT_POST_EDIT_ACTION_JS
+
+    assert "button,a,[role=button],div,span" in CLICK_CURRENT_POST_EDIT_ACTION_JS
+    assert 'closest(".query-bar")' in CLICK_CURRENT_POST_EDIT_ACTION_JS
+    assert "area" in CLICK_CURRENT_POST_EDIT_ACTION_JS
+    assert "a.area - b.area" in CLICK_CURRENT_POST_EDIT_ACTION_JS
+
+
+def test_generate_image_excludes_uploaded_reference_preview_from_artifact_candidates(monkeypatch, tmp_path):
+    from plugins.image_gen.grok_web_imagine import BrowserArtifact, CDPClient
+
+    client = CDPClient()
+    reference_preview = {
+        "tag": "IMG",
+        "src": "blob:https://grok.com/reference-preview",
+        "visible": True,
+        "naturalWidth": 1024,
+        "naturalHeight": 1024,
+    }
+    generated_image = {
+        "tag": "IMG",
+        "src": "https://imagine-public.x.ai/generated-result.jpg",
+        "visible": True,
+        "naturalWidth": 832,
+        "naturalHeight": 1248,
+    }
+    media_snapshots = iter([
+        [],
+        [reference_preview],
+        [reference_preview, generated_image],
+    ])
+    saved_sources = []
+    output_path = tmp_path / "generated-result.jpg"
+
+    monkeypatch.setattr(client, "media", lambda: next(media_snapshots))
+    monkeypatch.setattr(
+        client,
+        "snapshot",
+        lambda: _snapshot(
+            url="https://grok.com/imagine",
+            title="Grok",
+            text="Imagine\nCreate images and videos",
+            inputs=[{"tag": "DIV", "aria": "Ask Grok anything", "placeholder": None}],
+        ),
+    )
+    monkeypatch.setattr(client, "attach_images", lambda image_paths: image_paths)
+    monkeypatch.setattr(client, "evaluate", lambda expression: {"filled": True})
+    monkeypatch.setattr(client, "submit_prompt", lambda: None)
+
+    def fake_save(src: str) -> BrowserArtifact:
+        saved_sources.append(src)
+        return BrowserArtifact(path=output_path, source="browser_url")
+
+    monkeypatch.setattr(client, "_save_image_src", fake_save)
+    monkeypatch.setattr("plugins.image_gen.grok_web_imagine.time.sleep", lambda seconds: None)
+
+    artifact = client.generate_image(
+        prompt="use the reference but create a new image",
+        aspect_ratio="portrait",
+        timeout_seconds=1,
+        image_paths=["/tmp/reference.png"],
+    )
+
+    assert artifact.path == output_path
+    assert saved_sources == ["https://imagine-public.x.ai/generated-result.jpg"]
+
+
+def test_generate_image_reports_distinct_unusable_candidates_without_polling_inflation(monkeypatch):
+    import pytest
+
+    from plugins.image_gen.grok_web_imagine import CDPClient, GrokWebImagineError
+
+    client = CDPClient()
+    small_a = {
+        "tag": "IMG",
+        "src": "data:image/png;base64,small-a",
+        "visible": True,
+        "width": 299,
+        "height": 211,
+        "naturalWidth": 171,
+        "naturalHeight": 256,
+    }
+    small_b = {
+        "tag": "IMG",
+        "src": "data:image/png;base64,small-b",
+        "visible": True,
+        "width": 299,
+        "height": 211,
+        "naturalWidth": 171,
+        "naturalHeight": 256,
+    }
+    media_snapshots = iter([
+        [],
+        [small_a, small_b],
+        [small_a, small_b],
+    ])
+    times = iter([0, 0.1, 0.2, 2.0])
+
+    monkeypatch.setattr(client, "media", lambda: next(media_snapshots))
+    monkeypatch.setattr(
+        client,
+        "snapshot",
+        lambda: _snapshot(
+            url="https://grok.com/imagine",
+            title="Grok",
+            text="Imagine\nCreate images and videos",
+            inputs=[{"tag": "DIV", "aria": "Ask Grok anything", "placeholder": None}],
+        ),
+    )
+    monkeypatch.setattr(client, "evaluate", lambda expression: {"filled": True})
+    monkeypatch.setattr(client, "submit_prompt", lambda: None)
+    monkeypatch.setattr("plugins.image_gen.grok_web_imagine.time.sleep", lambda seconds: None)
+    monkeypatch.setattr("plugins.image_gen.grok_web_imagine.time.time", lambda: next(times))
+
+    with pytest.raises(GrokWebImagineError) as exc:
+        client.generate_image(prompt="clean product photo", timeout_seconds=1)
+
+    assert exc.value.code == "no_usable_generated_artifact"
+    assert "2 distinct" in exc.value.message
+    assert "minimum 256px-per-side artifact gate" in exc.value.message
+
+
+def test_generate_image_recovers_when_candidate_disappears_during_screenshot_fallback(monkeypatch, tmp_path):
+    from plugins.image_gen.grok_web_imagine import BrowserArtifact, CDPClient, GrokWebImagineError
+
+    client = CDPClient()
+    first_image = {
+        "tag": "IMG",
+        "src": "https://assets.grok.com/generated/transition/image.jpg?cache=1",
+        "visible": True,
+        "naturalWidth": 832,
+        "naturalHeight": 1248,
+    }
+    current_post_image = {
+        "tag": "IMG",
+        "src": "https://assets.grok.com/generated/current-post/image.jpg?cache=1",
+        "visible": True,
+        "naturalWidth": 832,
+        "naturalHeight": 1248,
+    }
+    media_snapshots = iter([
+        [],
+        [first_image],
+        [current_post_image],
+    ])
+    times = iter([0, 0.1, 0.2, 0.3])
+    saved_sources = []
+    output_path = tmp_path / "current-post.png"
+
+    monkeypatch.setattr(client, "media", lambda: next(media_snapshots))
+    monkeypatch.setattr(
+        client,
+        "snapshot",
+        lambda: _snapshot(
+            url="https://grok.com/imagine",
+            title="Grok",
+            text="Imagine\nCreate images and videos",
+            inputs=[{"tag": "DIV", "aria": "Ask Grok anything", "placeholder": None}],
+        ),
+    )
+    monkeypatch.setattr(client, "fill_prompt", lambda prompt: {"filled": True})
+    monkeypatch.setattr(client, "submit_prompt", lambda: None)
+    monkeypatch.setattr("plugins.image_gen.grok_web_imagine.time.sleep", lambda seconds: None)
+    monkeypatch.setattr("plugins.image_gen.grok_web_imagine.time.time", lambda: next(times))
+
+    def fake_save(src: str) -> BrowserArtifact:
+        saved_sources.append(src)
+        if "transition" in src:
+            raise GrokWebImagineError("artifact_extract_failed", "{'ok': False, 'error': 'image_element_not_found'}")
+        return BrowserArtifact(path=output_path, source="browser_screenshot")
+
+    monkeypatch.setattr(client, "_save_image_src", fake_save)
+
+    artifact = client.generate_image(prompt="clean product photo", timeout_seconds=1)
+
+    assert artifact.path == output_path
+    assert saved_sources == [
+        "https://assets.grok.com/generated/transition/image.jpg?cache=1",
+        "https://assets.grok.com/generated/current-post/image.jpg?cache=1",
+    ]
+
+
+def test_save_http_image_src_falls_back_to_cdp_visible_image_screenshot(monkeypatch, tmp_path):
+    import base64
+
+    from plugins.image_gen.grok_web_imagine import CDPClient
+
+    client = CDPClient()
+    image_src = "https://assets.grok.com/users/example/generated/result/image.jpg?cache=1"
+    output_path = tmp_path / "grok-visible.png"
+    calls = []
+
+    def fail_download(*args, **kwargs):
+        raise RuntimeError("403 Client Error: Forbidden")
+
+    def fake_evaluate(expression: str, **kwargs):
+        calls.append(("evaluate", expression))
+        if "prepareGrokImageForScreenshot" in expression:
+            return {"ok": True, "naturalWidth": 720, "naturalHeight": 1280, "filter": "none"}
+        if "findGrokImageForScreenshot" in expression:
+            return {
+                "ok": True,
+                "clip": {"x": 100, "y": 50, "width": 320, "height": 568, "scale": 1},
+                "naturalWidth": 720,
+                "naturalHeight": 1280,
+            }
+        return {"ok": False, "error": "fetch_403"}
+
+    def fake_send(method: str, params: dict | None = None):
+        calls.append((method, params or {}))
+        if method == "Page.captureScreenshot":
+            return {"result": {"data": base64.b64encode(b"png screenshot").decode("ascii")}}
+        raise AssertionError(f"unexpected CDP method: {method}")
+
+    def fake_save_b64(data: str, **kwargs):
+        assert base64.b64decode(data) == b"png screenshot"
+        assert kwargs["prefix"] == "grok_web_imagine"
+        assert kwargs["extension"] == "png"
+        output_path.write_bytes(b"png screenshot")
+        return output_path
+
+    monkeypatch.setattr("plugins.image_gen.grok_web_imagine.save_url_image", fail_download)
+    monkeypatch.setattr("plugins.image_gen.grok_web_imagine.save_b64_image", fake_save_b64)
+    monkeypatch.setattr(client, "evaluate", fake_evaluate)
+    monkeypatch.setattr(client, "_send", fake_send)
+
+    artifact = client._save_image_src(image_src)
+
+    assert artifact.path == output_path
+    assert artifact.source == "browser_screenshot"
+    assert (
+        "Page.captureScreenshot",
+        {
+            "format": "png",
+            "fromSurface": True,
+            "captureBeyondViewport": False,
+            "clip": {"x": 100, "y": 50, "width": 320, "height": 568, "scale": 2.0},
+        },
+    ) in calls
+    evaluated = "\n".join(expression for kind, expression in calls if kind == "evaluate")
+    assert "prepareGrokImageForScreenshot" in evaluated
+    assert "data-hermes-grok-screenshot-hidden" in evaluated
+    assert "restoreGrokScreenshotOverlays" in evaluated
+
+
+def test_visible_image_clip_js_selects_before_scrolling_matching_images():
+    from plugins.image_gen.grok_web_imagine import _visible_image_clip_js
+
+    expression = _visible_image_clip_js("https://assets.grok.com/generated/image.jpg")
+    selection_block = expression.split("const item = findGrokImageForScreenshot()", 1)[0]
+
+    assert "scrollIntoView" not in selection_block
+    assert "item.img.scrollIntoView" in expression
 
 
 def test_fill_prompt_prefers_prompt_editor_before_generic_visible_input():
@@ -354,6 +979,30 @@ def test_fill_prompt_prefers_prompt_editor_before_generic_visible_input():
     assert "promptLike" in expression
     assert "ask grok" in expression
     assert "els.find(promptLike)" in expression
+    assert "execCommand('insertText'" in expression
+    assert "filledText" in expression
+
+
+def test_fill_prompt_uses_cdp_input_insert_text_for_prompt_editor(monkeypatch):
+    from plugins.image_gen.grok_web_imagine import CDPClient
+
+    client = CDPClient()
+    calls = []
+
+    def fake_evaluate(expression: str):
+        if "focusGrokPromptInput" in expression:
+            return {"focused": True, "contentEditable": True}
+        if "grokPromptInputState" in expression:
+            return {"filled": True, "filledText": "clean product photo"}
+        raise AssertionError(f"unexpected evaluate: {expression[:120]}")
+
+    monkeypatch.setattr(client, "evaluate", fake_evaluate)
+    monkeypatch.setattr(client, "_send", lambda method, params=None: calls.append((method, params or {})) or {"result": {}})
+
+    result = client.fill_prompt("clean product photo")
+
+    assert result["filled"] is True
+    assert calls == [("Input.insertText", {"text": "clean product photo"})]
 
 
 def test_submit_prompt_raises_when_submit_button_missing(monkeypatch):

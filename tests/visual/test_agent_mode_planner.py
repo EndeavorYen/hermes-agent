@@ -32,6 +32,60 @@ def test_agent_mode_planner_treats_reference_variation_as_image_plus_video():
     assert plan["arguments"]["duration"] == 6
 
 
+def test_agent_mode_planner_binds_ref_indices_to_upload_order_and_prompt_roles():
+    from agent.visual.agent_mode.planner import plan_visual_agent_request
+
+    plan = plan_visual_agent_request(
+        "把 ref 1 的角色，套用 ref2 的姿勢，產出圖片即可",
+        attachments=["/tmp/character.png", "/tmp/pose.png"],
+    )
+
+    assert plan["reason"] == "image_request"
+    assert plan["arguments"]["include_image"] is True
+    assert plan["arguments"]["include_video"] is False
+    assert plan["arguments"]["attachments"] == ["/tmp/character.png", "/tmp/pose.png"]
+    binding = plan["arguments"]["reference_binding"]
+    assert binding == {
+        "mode": "ordered_references",
+        "reference_order_source": "user_visible_upload_order",
+        "role_policy": "derive_from_user_prompt",
+        "reference_order": [
+            {"index": 1, "role_hint": "character_identity", "attachment": "/tmp/character.png"},
+            {"index": 2, "role_hint": "pose_composition", "attachment": "/tmp/pose.png"},
+        ],
+    }
+    prompt = plan["arguments"]["prompt"]
+    assert "Reference binding" in prompt
+    assert "first uploaded image in the user's visible attachment order" in prompt
+    assert "Do not assume fixed roles" in prompt
+    assert "reference 1 only for character identity" not in prompt
+    assert "/tmp/character.png" not in prompt
+    assert "/tmp/pose.png" not in prompt
+
+
+def test_agent_mode_planner_supports_multiple_reference_roles_without_fixed_defaults():
+    from agent.visual.agent_mode.planner import plan_visual_agent_request
+
+    plan = plan_visual_agent_request(
+        "ref1 和 ref2 都是人物，ref3 是服裝，請融合成一張圖片",
+        attachments=["/tmp/person-a.png", "/tmp/person-b.png", "/tmp/clothes.png"],
+    )
+
+    binding = plan["arguments"]["reference_binding"]
+    assert binding["mode"] == "ordered_references"
+    assert binding["role_policy"] == "derive_from_user_prompt"
+    assert "character_reference_index" not in binding
+    assert "pose_reference_index" not in binding
+    assert binding["reference_order"] == [
+        {"index": 1, "role_hint": "character_identity", "attachment": "/tmp/person-a.png"},
+        {"index": 2, "role_hint": "character_identity", "attachment": "/tmp/person-b.png"},
+        {"index": 3, "role_hint": "wardrobe", "attachment": "/tmp/clothes.png"},
+    ]
+    prompt = plan["arguments"]["prompt"]
+    assert "Do not assume fixed roles" in prompt
+    assert "clothing, wardrobe" in prompt
+
+
 def test_agent_mode_planner_routes_image_only_request():
     from agent.visual.agent_mode.planner import plan_visual_agent_request
 
@@ -170,3 +224,41 @@ def test_agent_mode_planner_returns_provider_neutral_recovery_policy():
         "safe_reframe_allowed": True,
         "ask_user_on_low_confidence": True,
     }
+
+
+def test_agent_mode_planner_records_three_layer_provider_contract():
+    from agent.visual.agent_mode.planner import plan_visual_agent_request
+
+    plan = plan_visual_agent_request("請產出一張圖片和一段影片")
+
+    assert plan["provider_contract"] == {
+        "base_llm_provider": "openai-codex",
+        "base_llm_model": "gpt-5.5",
+        "visual_agent_llm_provider": "xai-oauth",
+        "visual_agent_llm_model": "grok-4.3",
+        "visual_media_provider_default": "xai",
+        "visual_media_model_default": "grok-imagine-image-quality",
+        "visual_media_provider_override": None,
+    }
+    assert plan["arguments"]["image_provider"] == "xai"
+    assert plan["arguments"]["image_provider_source"] == "visual_agent_default"
+
+
+def test_agent_mode_planner_allows_openai_image2_media_override():
+    from agent.visual.agent_mode.planner import plan_visual_agent_request
+
+    plan = plan_visual_agent_request("請用 OpenAI image2 產出一張乾淨產品圖")
+
+    assert plan["provider_contract"]["visual_media_provider_override"] == "openai-codex"
+    assert plan["arguments"]["image_provider"] == "openai-codex"
+    assert plan["arguments"]["image_provider_source"] == "prompt_override"
+
+
+def test_agent_mode_planner_allows_grok_web_imagine_media_override():
+    from agent.visual.agent_mode.planner import plan_visual_agent_request
+
+    plan = plan_visual_agent_request("請用 Grok Web Imagine 產出一張高品質動漫圖")
+
+    assert plan["provider_contract"]["visual_media_provider_override"] == "grok-web-imagine"
+    assert plan["arguments"]["image_provider"] == "grok-web-imagine"
+    assert plan["arguments"]["image_provider_source"] == "prompt_override"

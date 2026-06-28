@@ -69,6 +69,7 @@ _COLUMN_ALIASES = {
         "id": "attempt_id",
         "parameters_requested": "parameters_requested_json",
         "parameters_effective": "parameters_effective_json",
+        "input_artifacts": "input_artifacts_json",
         "error_type": "provider_error_type",
         "error_message": "provider_error_message",
     },
@@ -303,10 +304,28 @@ class VisualAttemptLedger:
                 """
             )
             self._ensure_column(conn, "visual_deliveries", "destination", "TEXT")
+            self._ensure_column(conn, "visual_attempts", "input_artifacts_json", "TEXT")
             self._ensure_created_at_columns(conn)
 
     def record_request(self, **kwargs: Any) -> str:
         return self._insert("visual_requests", "id", kwargs, new_request_id)
+
+    def update_request_status(self, request_id: str, status: str) -> None:
+        with self._connect() as conn:
+            columns_available = self._table_columns(conn, "visual_requests")
+            actual_id_column = self._actual_id_column(
+                "visual_requests",
+                columns_available,
+                preferred="id",
+            )
+            if "status" not in columns_available:
+                return
+            cursor = conn.execute(
+                f"UPDATE visual_requests SET status = ? WHERE {actual_id_column} = ?",
+                (status, request_id),
+            )
+            if cursor.rowcount == 0:
+                raise KeyError(request_id)
 
     def record_attempt(self, **kwargs: Any) -> str:
         return self._insert("visual_attempts", "id", kwargs, new_attempt_id)

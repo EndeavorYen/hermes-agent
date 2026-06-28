@@ -123,7 +123,7 @@ def test_classify_visual_provider_failure_detects_grok_web_unusable_artifact():
         {
             "success": False,
             "provider": "grok-web-imagine",
-            "error_type": "artifact_too_small",
+            "error_type": "no_usable_generated_artifact",
             "error": "Grok web produced candidates, but none met the artifact gate.",
         }
     )
@@ -131,7 +131,7 @@ def test_classify_visual_provider_failure_detects_grok_web_unusable_artifact():
     assert result["failure_class"] == "empty_response"
     assert result["retryable"] is True
     assert result["safe_reframe_allowed"] is False
-    assert result["provider_message_code"] == "artifact_too_small"
+    assert result["provider_message_code"] == "no_usable_generated_artifact"
 
 
 def test_classify_visual_provider_failure_detects_timeout_and_empty_response():

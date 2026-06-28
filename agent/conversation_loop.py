@@ -547,6 +547,76 @@ def run_conversation(
     compression_attempts = 0
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
 
+    try:
+        from agent.visual.agent_mode.handoff import (
+            attach_direct_visual_agent_handoff_metadata,
+            build_direct_visual_agent_handoff,
+            format_direct_visual_agent_handoff_response,
+        )
+
+        _visual_handoff = build_direct_visual_agent_handoff(
+            agent,
+            user_message,
+            original_user_message,
+        )
+    except Exception as _visual_handoff_err:
+        logger.debug("direct visual-agent handoff check skipped: %s", _visual_handoff_err)
+        _visual_handoff = None
+
+    if _visual_handoff:
+        from agent.tool_dispatch_helpers import make_tool_result_message
+        from agent.turn_finalizer import finalize_turn
+
+        _tool_name = str(_visual_handoff.get("tool_name") or "visual_agent_generate")
+        _tool_args = dict(_visual_handoff.get("arguments") or {})
+        _tool_call_id = f"call_direct_visual_{uuid.uuid4().hex[:8]}"
+        messages.append(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": _tool_call_id,
+                        "type": "function",
+                        "function": {
+                            "name": _tool_name,
+                            "arguments": json.dumps(_tool_args, ensure_ascii=False),
+                        },
+                    }
+                ],
+            }
+        )
+        _tool_result = agent._invoke_tool(
+            _tool_name,
+            _tool_args,
+            effective_task_id,
+            tool_call_id=_tool_call_id,
+            messages=messages,
+        )
+        _tool_result = attach_direct_visual_agent_handoff_metadata(
+            _tool_result,
+            _visual_handoff,
+        )
+        messages.append(make_tool_result_message(_tool_name, _tool_result, _tool_call_id))
+        final_response = format_direct_visual_agent_handoff_response(_tool_result)
+        messages.append({"role": "assistant", "content": final_response})
+        _turn_exit_reason = "direct_visual_agent_handoff"
+        return finalize_turn(
+            agent,
+            final_response=final_response,
+            api_call_count=api_call_count,
+            interrupted=interrupted,
+            failed=failed,
+            messages=messages,
+            conversation_history=conversation_history,
+            effective_task_id=effective_task_id,
+            turn_id=turn_id,
+            user_message=user_message,
+            original_user_message=original_user_message,
+            _should_review_memory=_should_review_memory,
+            _turn_exit_reason=_turn_exit_reason,
+        )
+
     # Optional opt-in runtime: if api_mode == codex_app_server, hand the
     # turn to the codex app-server subprocess (terminal/file ops/patching
     # all run inside Codex). Default Hermes path is bypassed entirely.

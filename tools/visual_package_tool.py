@@ -18,6 +18,7 @@ from urllib.request import Request
 from urllib.request import urlopen
 
 from agent.visual.active_learning import decide_visual_action
+from agent.visual.agent_mode.handoff import normalise_visual_agent_attachment
 from agent.visual.artifact_observation import build_artifact_observation
 from agent.visual.aspect_policy import select_video_aspect_ratio
 from agent.visual.attempt_ledger import VisualAttemptLedger
@@ -48,9 +49,11 @@ from tools.registry import tool_error
 logger = logging.getLogger(__name__)
 
 MAX_REMOTE_MEDIA_BYTES = 150 * 1024 * 1024
+VISUAL_PROVIDER_REFERENCE_SLOT_BUDGET = 3
 ALWAYS_BLOCKING_QUALITY_ISSUES = {
     "composition_bad",
     "reference_identity_drift",
+    "reference_role_evidence_missing",
     "source_frame_grid",
 }
 VIDEO_BLOCKING_QUALITY_ISSUES = {
@@ -68,6 +71,9 @@ Evaluate this generated visual artifact for automated quality ranking.
 Return only a JSON object with numeric values from 0.0 to 1.0:
 {
   "reference_adherence": 0.5,
+  "character_identity_adherence": 0.5,
+  "pose_composition_adherence": 0.5,
+  "wardrobe_adherence": 0.5,
   "subject_quality": 0.5,
   "face_quality": 0.5,
   "visual_appeal": 0.5,
@@ -76,8 +82,51 @@ Return only a JSON object with numeric values from 0.0 to 1.0:
   "pose_composition": 0.5,
   "pose_novelty": 0.5,
   "fashion_material_quality": 0.5,
-  "stocking_quality": 0.5
+  "stocking_quality": 0.5,
+  "artifact_defects": []
 }
+Use character_identity_adherence for whether the output preserves the intended character/person identity from the identity reference.
+Use pose_composition_adherence for whether the output follows the intended pose, camera angle, and composition reference.
+If the output copies identity, face, hair, wardrobe, or character traits from a pose/composition-only reference, include "reference_identity_drift" in artifact_defects.
+If pose/composition is weak, include "pose_composition_weak" in artifact_defects.
+If the output visibly inherits contour-map, line-art, silhouette-guide, or edge-guide artifacts, include "guide_artifact_contamination".
+If outlines, limbs, fabric, or background look melted, wavy, rubbery, or warped by a guide image, include "melted_or_wavy_contours".
+If anatomy, hands, feet, legs, or body proportions are distorted, include "distorted_anatomy".
+Do not include names, private prompt text, file paths, or prose.
+"""
+REFERENCE_AWARE_INLINE_VISION_PROMPT = """\
+You are seeing a single contact sheet with labeled panels. The left panels are user-supplied references;
+the final panel is the generated candidate output. Evaluate only whether the candidate output satisfies
+the requested role transfer.
+
+Return only a JSON object with numeric values from 0.0 to 1.0:
+{
+  "reference_adherence": 0.5,
+  "character_identity_adherence": 0.5,
+  "pose_composition_adherence": 0.5,
+  "wardrobe_adherence": 0.5,
+  "subject_quality": 0.5,
+  "face_quality": 0.5,
+  "visual_appeal": 0.5,
+  "glamour_impact": 0.5,
+  "composition": 0.5,
+  "pose_composition": 0.5,
+  "pose_novelty": 0.5,
+  "fashion_material_quality": 0.5,
+  "stocking_quality": 0.5,
+  "artifact_defects": []
+}
+For a character_identity reference, compare the candidate's character identity, hair, eye color, face,
+signature outfit, silhouette, and distinctive accessories against that reference.
+For a pose_composition reference, compare pose, camera angle, framing, body orientation, and scene layout.
+Use each reference only for its labeled role. If the candidate copies identity, face, hair, wardrobe,
+or character traits from a pose/composition-only reference, include "reference_identity_drift" in
+artifact_defects and lower character_identity_adherence / wardrobe_adherence. If the candidate misses
+the pose/composition reference, include "pose_composition_weak".
+If the candidate visually inherits contour-map, line-art, silhouette-guide, or edge-guide artifacts,
+include "guide_artifact_contamination". If outlines, limbs, fabric, or background look melted, wavy,
+rubbery, or warped by a guide image, include "melted_or_wavy_contours". If anatomy, hands, feet, legs,
+or body proportions are distorted, include "distorted_anatomy".
 Do not include names, private prompt text, file paths, or prose.
 """
 
@@ -172,7 +221,11 @@ def check_visual_package_requirements() -> bool:
 def generate_image(**kwargs: Any) -> dict[str, Any]:
     from tools.image_generation_tool import _handle_image_generate
 
-    kwargs = {**kwargs, "_disable_visual_agent_route": True}
+    kwargs = {
+        **kwargs,
+        "_disable_visual_agent_route": True,
+        "_disable_visual_tracking": True,
+    }
     return json.loads(_handle_image_generate(kwargs))
 
 
@@ -201,6 +254,8 @@ def _normalise_image_provider(value: Any, *, allow_unknown: bool = True) -> str 
         return None
     lowered = raw.lower()
     compact = re.sub(r"[\s_\-.]+", "", lowered)
+    if compact in {"grokwebimagine", "grokweb"} or "grok web imagine" in lowered:
+        return "grok-web-imagine"
     if "grok" in lowered or "x.ai" in lowered or re.search(r"\bxai\b", lowered):
         return "xai"
     if (
@@ -218,37 +273,171 @@ def _apply_image_provider_override(kwargs: dict[str, Any], provider: str | None)
         kwargs["_provider"] = provider
 
 
+def _image_provider_source(args: dict[str, Any]) -> str | None:
+    raw = str(args.get("image_provider_source") or "").strip()
+    if raw in {"visual_agent_default", "prompt_override", "explicit_override"}:
+        return raw
+    return None
+
+
+def _grok_web_imagine_policy(
+    args: dict[str, Any],
+    *,
+    image_provider_override: str | None,
+    image_provider_source: str | None,
+) -> dict[str, Any] | None:
+    if image_provider_override != "grok-web-imagine":
+        return None
+    source = image_provider_source or "explicit_override"
+    return {
+        "enabled": True,
+        "mode": "controlled_visual_agent_provider",
+        "source": source,
+        "handoff_mode": str(args.get("visual_agent_handoff_mode") or "").strip() or None,
+    }
+
+
+def _polish_provider_override(args: dict[str, Any]) -> str | None:
+    for key in ("polish_provider", "quality_polish_provider"):
+        provider = _normalise_image_provider(args.get(key))
+        if provider:
+            return provider
+    if _coerce_bool(args.get("grok_web_polish")):
+        return "grok-web-imagine"
+    return None
+
+
+def _should_run_image_polish_pass(
+    *,
+    polish_provider: str | None,
+    selected_image: dict[str, Any] | None,
+) -> bool:
+    return bool(
+        polish_provider
+        and selected_image
+        and isinstance(selected_image.get("artifact_path"), str)
+        and selected_image.get("artifact_path", "").strip()
+    )
+
+
 def _session_visual_reference_attachments(
     prompt: str,
     attachments: list[str],
-) -> tuple[list[str], str | None]:
+) -> tuple[list[str], str | None, list[dict[str, Any]]]:
     if attachments:
-        return attachments, None
+        return attachments, None, []
     try:
-        from agent.visual.session_references import session_visual_reference_paths_for_prompt
+        from agent.visual.session_references import session_visual_reference_entries_for_prompt
     except Exception as exc:  # noqa: BLE001
         logger.debug("Session visual reference lookup unavailable: %s", exc)
-        return attachments, None
-    refs = session_visual_reference_paths_for_prompt(prompt)
+        return attachments, None, []
+    entries = session_visual_reference_entries_for_prompt(prompt)
+    refs = [
+        str(entry.get("uri") or "").strip()
+        for entry in entries
+        if isinstance(entry, dict) and str(entry.get("uri") or "").strip()
+    ]
     if not refs:
-        return attachments, None
-    return refs, "session_visual_context"
+        return attachments, None, []
+    return refs, "session_visual_context", entries
 
 
 def analyze_candidate_with_vision_tool(candidate: dict[str, Any]) -> dict[str, Any]:
     source = _candidate_visual_source(candidate)
     if not source:
         raise ValueError("candidate has no analyzable image source")
+    prompt = INLINE_VISION_JUDGE_PROMPT
+    reference_source = _build_reference_aware_contact_sheet(candidate, source)
+    if reference_source:
+        source = reference_source
+        prompt = _reference_aware_inline_vision_prompt(candidate)
     from model_tools import _run_async
     from tools.vision_tools import vision_analyze_tool
 
-    raw = _run_async(vision_analyze_tool(source, INLINE_VISION_JUDGE_PROMPT))
+    raw = _run_async(vision_analyze_tool(source, prompt))
     if isinstance(raw, str):
         try:
             return json.loads(raw)
         except json.JSONDecodeError:
             return {"analysis": raw}
     return raw if isinstance(raw, dict) else {"analysis": str(raw)}
+
+
+def _reference_aware_inline_vision_prompt(candidate: dict[str, Any]) -> str:
+    lines = [REFERENCE_AWARE_INLINE_VISION_PROMPT.rstrip(), "", "Reference roles in the contact sheet:"]
+    for artifact in _candidate_input_artifacts(candidate):
+        index = _coerce_int(artifact.get("index"))
+        role_hint = str(artifact.get("role_hint") or "visual_reference").strip() or "visual_reference"
+        if index is not None:
+            lines.append(f"- ref {index} role: {role_hint}")
+    lines.append("- candidate output: generated image to evaluate")
+    return "\n".join(lines)
+
+
+def _build_reference_aware_contact_sheet(candidate: dict[str, Any], candidate_source: str) -> str | None:
+    artifacts = _candidate_input_artifacts(candidate)
+    if not artifacts:
+        return None
+    panels: list[tuple[str, str]] = []
+    for artifact in artifacts:
+        uri = str(artifact.get("uri") or artifact.get("path") or artifact.get("attachment") or "").strip()
+        if not uri or not Path(uri).is_file():
+            continue
+        index = _coerce_int(artifact.get("index"))
+        role_hint = str(artifact.get("role_hint") or "visual_reference").strip() or "visual_reference"
+        label = f"ref {index or len(panels) + 1}: {role_hint}"
+        panels.append((label, uri))
+    if not panels or not Path(candidate_source).is_file():
+        return None
+    panels.append(("candidate output", candidate_source))
+    try:
+        return str(_write_reference_contact_sheet(panels))
+    except Exception as exc:  # noqa: BLE001 - fallback to single-image judge
+        logger.debug("reference-aware contact sheet unavailable: %s", exc)
+        return None
+
+
+def _candidate_input_artifacts(candidate: dict[str, Any]) -> list[dict[str, Any]]:
+    value = candidate.get("input_artifacts")
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def _write_reference_contact_sheet(panels: list[tuple[str, str]]) -> Path:
+    from PIL import Image
+    from PIL import ImageDraw
+    from PIL import ImageOps
+
+    cell_width = 448
+    cell_height = 640
+    label_height = 34
+    padding = 12
+    sheet_width = len(panels) * cell_width + (len(panels) + 1) * padding
+    sheet_height = cell_height + label_height + padding * 3
+    sheet = Image.new("RGB", (sheet_width, sheet_height), (245, 245, 245))
+    draw = ImageDraw.Draw(sheet)
+    x = padding
+    for label, path in panels:
+        with Image.open(path) as image:
+            image = ImageOps.contain(image.convert("RGB"), (cell_width, cell_height))
+            y = padding + label_height + max(0, (cell_height - image.height) // 2)
+            draw.rectangle(
+                [x, padding, x + cell_width, padding + label_height + cell_height],
+                outline=(180, 180, 180),
+                width=2,
+            )
+            draw.text((x + 8, padding + 9), label[:56], fill=(20, 20, 20))
+            sheet.paste(image, (x + max(0, (cell_width - image.width) // 2), y))
+        x += cell_width + padding
+    digest = hashlib.sha256(
+        "|".join(f"{label}:{path}" for label, path in panels).encode("utf-8")
+    ).hexdigest()[:16]
+    out_dir = default_visual_ledger_path().parent / "reference_contact_sheets"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"reference_contact_sheet_{digest}.jpg"
+    sheet.save(out_path, format="JPEG", quality=90)
+    return out_path
 
 
 async def _handle_visual_package_generate(args: dict[str, Any], **_kw: Any) -> str:
@@ -273,9 +462,26 @@ async def _handle_visual_package_generate(args: dict[str, Any], **_kw: Any) -> s
 
 def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, Any]:
     attachments = _normalise_attachments(args.get("attachments"))
-    attachments, image_reference_source = _session_visual_reference_attachments(prompt, attachments)
+    attachments, image_reference_source, session_reference_entries = _session_visual_reference_attachments(
+        prompt,
+        attachments,
+    )
+    reference_binding = _normalise_reference_binding(args.get("reference_binding"), attachments)
+    reference_binding = _reference_binding_from_session_entries(
+        reference_binding,
+        session_reference_entries,
+        attachments,
+    )
+    prompt = _apply_reference_binding_prompt(prompt, reference_binding)
     image_provider_override = _image_provider_override(args, prompt=prompt)
-    aspect_ratio = str(args.get("aspect_ratio") or "16:9").strip() or "16:9"
+    image_provider_source = _image_provider_source(args)
+    polish_provider_override = _polish_provider_override(args)
+    grok_web_imagine_policy = _grok_web_imagine_policy(
+        args,
+        image_provider_override=image_provider_override,
+        image_provider_source=image_provider_source,
+    )
+    aspect_ratio = _visual_package_aspect_ratio(args, attachments, reference_binding)
     image_aspect_ratio = _image_tool_aspect_ratio(aspect_ratio)
     duration = _coerce_int(args.get("duration")) or 6
     requested_image = _wants_image(prompt, args)
@@ -361,6 +567,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
     generation_payloads: dict[str, Any] = {}
     image_payloads: list[dict[str, Any]] = []
     delivery_gate: dict[str, dict[str, Any]] = {}
+    polish_pass_metadata: dict[str, Any] | None = None
     preference_profile = build_preference_profile(ledger, bucket=intent_signature)
     strategy_plan = select_strategy_plan(
         intent_signature,
@@ -462,8 +669,14 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             extra_generation_strategy={
                 **(_extra_generation_strategy(
                     image_provider_override=image_provider_override,
+                    image_provider_source=image_provider_source,
+                    grok_web_imagine_policy=grok_web_imagine_policy,
+                    polish_pass=polish_pass_metadata,
                     image_reference_source=image_reference_source,
                     storyboard_contract=storyboard_contract,
+                    reference_binding=reference_binding,
+                    aspect_ratio=aspect_ratio,
+                    reference_conditioning=None,
                 ) or {}),
                 "storyboard_execution": storyboard_result["execution"],
             },
@@ -472,12 +685,50 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
     if should_generate_image:
         image_candidates = []
         image_prompt_base = _image_first_source_frame_prompt(prompt) if image_first_for_video else prompt
-        image_generation_prompt = _apply_first_pass_quality_guidance(image_prompt_base, quality_guidance["image"])
+        image_generation_prompt_base = _apply_first_pass_quality_guidance(image_prompt_base, quality_guidance["image"])
+        image_input_artifacts = _reference_input_artifacts(attachments, reference_binding)
+        reference_conditioning_variants = _reference_conditioning_variants(
+            attachments,
+            reference_binding,
+            policy_override=args.get("reference_conditioning_policy"),
+        )
+        primary_reference_policy = _reference_conditioning_policy_for_candidate(
+            reference_conditioning_variants,
+            candidate_index=0,
+        )
+        _, primary_reference_conditioning = _provider_reference_image_urls(
+            attachments,
+            reference_binding,
+            conditioning_policy=primary_reference_policy,
+        )
         for candidate_index in range(candidate_budget):
+            reference_policy = _reference_conditioning_policy_for_candidate(
+                reference_conditioning_variants,
+                candidate_index=candidate_index,
+            )
+            provider_reference_images, reference_conditioning = _provider_reference_image_urls(
+                attachments,
+                reference_binding,
+                conditioning_policy=reference_policy,
+            )
+            reference_attempt_extra = _provider_reference_attempt_extra(
+                provider_reference_images,
+                reference_conditioning,
+            )
+            image_generation_prompt = _apply_provider_reference_conditioning_prompt(
+                image_generation_prompt_base,
+                reference_conditioning,
+            )
+            image_attempt_parameters = _image_attempt_parameters(
+                aspect_ratio,
+                attachments=attachments,
+                reference_binding=reference_binding,
+                extra=reference_attempt_extra,
+            )
             image_kwargs = {
                 "prompt": image_generation_prompt,
                 "aspect_ratio": image_aspect_ratio,
-                "reference_image_urls": attachments or None,
+                "reference_image_urls": provider_reference_images or None,
             }
             _apply_image_provider_override(image_kwargs, image_provider_override)
             image_request = {
@@ -503,8 +754,9 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 prompt=image_generation_prompt,
                 provider=str(image_payload.get("provider") or ""),
                 model=str(image_payload.get("model") or ""),
-                requested_parameters={"aspect_ratio": _judge_aspect_ratio(aspect_ratio)},
+                requested_parameters=image_attempt_parameters,
                 candidate_index=candidate_index,
+                input_artifacts=image_input_artifacts,
             )
             if image_candidate:
                 image_candidates.append(image_candidate)
@@ -528,11 +780,17 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                         prompt=str(fallback_payload.get("prompt") or prompt),
                         provider=str(fallback_payload.get("provider") or ""),
                         model=str(fallback_payload.get("model") or ""),
-                        requested_parameters={
-                            "aspect_ratio": _judge_aspect_ratio(aspect_ratio),
-                            "provider_fallback_of": candidate_index,
-                        },
+                        requested_parameters=_image_attempt_parameters(
+                            aspect_ratio,
+                            attachments=attachments,
+                            reference_binding=reference_binding,
+                            extra={
+                                **reference_attempt_extra,
+                                "provider_fallback_of": candidate_index,
+                            },
+                        ),
                         candidate_index=candidate_index + (candidate_budget * (fallback_offset + 1)),
+                        input_artifacts=image_input_artifacts,
                     )
                     if fallback_candidate:
                         image_candidates.append(fallback_candidate)
@@ -558,8 +816,9 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                         prompt=str(retry_payload.get("prompt") or prompt),
                         provider=str(retry_payload.get("provider") or ""),
                         model=str(retry_payload.get("model") or ""),
-                        requested_parameters={"aspect_ratio": _judge_aspect_ratio(aspect_ratio)},
+                        requested_parameters=image_attempt_parameters,
                         candidate_index=candidate_index + (candidate_budget * (retry_offset + 1)),
+                        input_artifacts=image_input_artifacts,
                     )
                     if retry_candidate:
                         image_candidates.append(retry_candidate)
@@ -578,6 +837,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             candidates=image_candidates,
             inline_vision_judge=inline_vision_judge,
             vision_analyzer=analyze_candidate_with_vision_tool,
+            reference_binding=reference_binding,
         )
         image_decision = rank_visual_candidates(
             request_id=request_id,
@@ -608,12 +868,133 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         selected_image = _selected_candidate(image_candidates, image_decision.selected_artifact_id)
         image_gate = _delivery_gate_decision(image_learning, selected_image, prompt=prompt)
         delivery_gate["image"] = image_gate
+        if _should_run_image_polish_pass(
+            polish_provider=polish_provider_override,
+            selected_image=selected_image,
+        ):
+            source_image = str(selected_image.get("artifact_path") or "").strip()
+            polish_prompt = _image_polish_prompt(image_prompt_base)
+            polish_kwargs = {
+                "prompt": polish_prompt,
+                "aspect_ratio": image_aspect_ratio,
+                "image_url": source_image,
+                "reference_image_urls": None,
+            }
+            _apply_image_provider_override(polish_kwargs, polish_provider_override)
+            polish_payload = generate_image(**polish_kwargs)
+            polish_pass_metadata = {
+                "enabled": True,
+                "provider": polish_provider_override,
+                "selected_source_image": source_image,
+                "status": "completed" if polish_payload.get("success") else "failed",
+            }
+            polish_payload["polish_pass"] = {
+                "provider": polish_provider_override,
+                "source_image": source_image,
+                "source_artifact_id": selected_image.get("artifact_id"),
+            }
+            image_payloads.append(polish_payload)
+            if not polish_payload.get("success"):
+                _annotate_generation_failure(
+                    polish_payload,
+                    base_kwargs=polish_kwargs,
+                    request={
+                        "prompt": polish_prompt,
+                        "arguments": polish_kwargs,
+                        "source_media": _source_media_from_attachments([source_image]),
+                        "polish_pass": polish_payload["polish_pass"],
+                    },
+                    retry_budget_remaining=0,
+                )
+            polish_candidate = _record_payload_candidate(
+                ledger,
+                request_id=request_id,
+                payload=polish_payload,
+                artifact_key="image",
+                expected_kind="image",
+                prompt=polish_prompt,
+                provider=str(polish_payload.get("provider") or ""),
+                model=str(polish_payload.get("model") or ""),
+                requested_parameters=_image_attempt_parameters(
+                    aspect_ratio,
+                    attachments=attachments,
+                    reference_binding=reference_binding,
+                    extra={
+                        "polish_pass_of": selected_image.get("artifact_id"),
+                        "polish_provider": polish_provider_override,
+                    },
+                ),
+                candidate_index=len(image_candidates),
+                input_artifacts=[
+                    {
+                        "index": 1,
+                        "role_hint": "edit_anchor",
+                        "uri": source_image,
+                        "source": "selected_candidate_polish",
+                    }
+                ],
+            )
+            if polish_candidate:
+                image_candidates.append(polish_candidate)
+                _score_candidates(
+                    ledger,
+                    request_id=request_id,
+                    intent_signature=intent_signature,
+                    strategy_signature=strategy_plan.strategy_signature,
+                    modality="image",
+                    has_reference_image=True,
+                    request_category=request_category,
+                    candidates=[polish_candidate],
+                    inline_vision_judge=inline_vision_judge,
+                    vision_analyzer=analyze_candidate_with_vision_tool,
+                    reference_binding=reference_binding,
+                )
+                polish_decision = rank_visual_candidates(
+                    request_id=request_id,
+                    candidates=image_candidates,
+                    post_threshold=0.0,
+                    ask_threshold=0.0,
+                )
+                rankings["image"] = polish_decision.__dict__
+                polish_learning = _record_learning_trace(
+                    ledger,
+                    request_id=request_id,
+                    intent_signature=intent_signature,
+                    strategy_signature=strategy_plan.strategy_signature,
+                    strategy_plan=strategy_plan.to_record(),
+                    modality="image",
+                    rank_decision=polish_decision.__dict__,
+                    candidates=image_candidates,
+                    has_reference_image=bool(attachments),
+                )
+                learning["active_learning"]["image"] = polish_learning
+                selected_image = _selected_candidate(image_candidates, polish_decision.selected_artifact_id)
+                image_gate = _delivery_gate_decision(polish_learning, selected_image, prompt=prompt)
+                image_gate["polish_pass_attempted"] = True
+                delivery_gate["image"] = image_gate
         if selected_image and not image_gate["allowed"] and _should_escalate_candidate_budget(image_gate):
             escalation_prompt = _candidate_escalation_prompt(image_prompt_base, image_gate)
+            escalation_reference_policy = _reference_conditioning_policy_for_gate(
+                image_gate,
+                reference_conditioning_variants,
+            )
+            provider_reference_images, reference_conditioning = _provider_reference_image_urls(
+                attachments,
+                reference_binding,
+                conditioning_policy=escalation_reference_policy,
+            )
+            reference_attempt_extra = _provider_reference_attempt_extra(
+                provider_reference_images,
+                reference_conditioning,
+            )
+            escalation_prompt = _apply_provider_reference_conditioning_prompt(
+                escalation_prompt,
+                reference_conditioning,
+            )
             escalation_kwargs = {
                 "prompt": escalation_prompt,
                 "aspect_ratio": image_aspect_ratio,
-                "reference_image_urls": attachments or None,
+                "reference_image_urls": provider_reference_images or None,
             }
             _apply_image_provider_override(escalation_kwargs, image_provider_override)
             escalation_payload = generate_image(**escalation_kwargs)
@@ -645,11 +1026,17 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 prompt=escalation_prompt,
                 provider=str(escalation_payload.get("provider") or ""),
                 model=str(escalation_payload.get("model") or ""),
-                requested_parameters={
-                    "aspect_ratio": _judge_aspect_ratio(aspect_ratio),
-                    "candidate_escalation_of": selected_image.get("artifact_id"),
-                },
+                requested_parameters=_image_attempt_parameters(
+                    aspect_ratio,
+                    attachments=attachments,
+                    reference_binding=reference_binding,
+                    extra={
+                        **reference_attempt_extra,
+                        "candidate_escalation_of": selected_image.get("artifact_id"),
+                    },
+                ),
                 candidate_index=len(image_candidates),
+                input_artifacts=image_input_artifacts,
             )
             if escalation_candidate:
                 image_candidates.append(escalation_candidate)
@@ -664,6 +1051,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                     candidates=[escalation_candidate],
                     inline_vision_judge=inline_vision_judge,
                     vision_analyzer=analyze_candidate_with_vision_tool,
+                    reference_binding=reference_binding,
                 )
                 escalation_decision = rank_visual_candidates(
                     request_id=request_id,
@@ -696,11 +1084,29 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 image_prompt_base,
                 image_gate,
                 mode=image_repair_mode,
+                reference_binding=reference_binding,
+            )
+            repair_reference_policy = _reference_conditioning_policy_for_gate(
+                image_gate,
+                reference_conditioning_variants,
+            )
+            provider_reference_images, reference_conditioning = _provider_reference_image_urls(
+                attachments,
+                reference_binding,
+                conditioning_policy=repair_reference_policy,
+            )
+            reference_attempt_extra = _provider_reference_attempt_extra(
+                provider_reference_images,
+                reference_conditioning,
+            )
+            repair_prompt = _apply_provider_reference_conditioning_prompt(
+                repair_prompt,
+                reference_conditioning,
             )
             repair_kwargs = {
                 "prompt": repair_prompt,
                 "aspect_ratio": image_aspect_ratio,
-                "reference_image_urls": attachments or None,
+                "reference_image_urls": provider_reference_images or None,
             }
             _apply_image_provider_override(repair_kwargs, image_provider_override)
             repair_payload = generate_image(**repair_kwargs)
@@ -733,11 +1139,17 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 prompt=repair_prompt,
                 provider=str(repair_payload.get("provider") or ""),
                 model=str(repair_payload.get("model") or ""),
-                requested_parameters={
-                    "aspect_ratio": _judge_aspect_ratio(aspect_ratio),
-                    "quality_repair_of": selected_image.get("artifact_id"),
-                },
+                requested_parameters=_image_attempt_parameters(
+                    aspect_ratio,
+                    attachments=attachments,
+                    reference_binding=reference_binding,
+                    extra={
+                        **reference_attempt_extra,
+                        "quality_repair_of": selected_image.get("artifact_id"),
+                    },
+                ),
                 candidate_index=candidate_budget,
+                input_artifacts=image_input_artifacts,
             )
             if repair_candidate:
                 image_candidates.append(repair_candidate)
@@ -752,6 +1164,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                     candidates=[repair_candidate],
                     inline_vision_judge=inline_vision_judge,
                     vision_analyzer=analyze_candidate_with_vision_tool,
+                    reference_binding=reference_binding,
                 )
                 repair_decision = rank_visual_candidates(
                     request_id=request_id,
@@ -1103,8 +1516,15 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         learning=learning,
         extra_generation_strategy=_extra_generation_strategy(
             image_provider_override=image_provider_override,
+            image_provider_source=image_provider_source,
+            grok_web_imagine_policy=grok_web_imagine_policy,
+            polish_pass=polish_pass_metadata,
             image_reference_source=image_reference_source,
             storyboard_contract=storyboard_contract,
+            reference_binding=reference_binding,
+            aspect_ratio=aspect_ratio,
+            reference_conditioning=primary_reference_conditioning,
+            reference_conditioning_variants=reference_conditioning_variants,
         ),
     )
 
@@ -1137,6 +1557,14 @@ def _finalize_visual_package_payload(
     package_status = "success" if success else ("partial" if selected_images or selected_videos else "failed")
     package_error = _package_error(success=success, delivery_gate=delivery_gate)
     selected_artifact_paths = selected_images + selected_videos
+    delivery_recovery = _delivery_recovery_summary(
+        requested_image=requested_image,
+        wants_video=wants_video,
+        selected_images=selected_images,
+        selected_videos=selected_videos,
+        generation_payloads=generation_payloads,
+        delivery_gate=delivery_gate,
+    )
     delivery_metadata = visual_delivery_metadata(
         request_id=request_id,
         attempt_id=None,
@@ -1183,6 +1611,7 @@ def _finalize_visual_package_payload(
             selected_refs=selected_delivery_refs,
         ),
         "learning": learning,
+        "delivery_recovery": delivery_recovery,
         "delivery_gate": delivery_gate,
     }
     autonomous_validation = validate_visual_generation_payload(
@@ -1211,22 +1640,59 @@ def _finalize_visual_package_payload(
         autonomy_level=_coerce_int(args.get("autonomy_level")) or 2,
         validation=autonomous_validation,
     )
+    _mark_visual_package_request_status(request_id, success=success)
     return payload
+
+
+def _mark_visual_package_request_status(request_id: str, *, success: bool) -> None:
+    try:
+        ledger = VisualAttemptLedger(default_visual_ledger_path())
+        ledger.initialize()
+        ledger.update_request_status(request_id, "completed" if success else "failed")
+    except Exception as exc:  # noqa: BLE001 - status bookkeeping must not hide artifacts
+        logger.warning("Visual package request status update skipped: %s", exc)
 
 
 def _extra_generation_strategy(
     *,
     image_provider_override: str | None,
+    image_provider_source: str | None,
+    grok_web_imagine_policy: dict[str, Any] | None = None,
+    polish_pass: dict[str, Any] | None = None,
     image_reference_source: str | None,
     storyboard_contract: dict[str, Any] | None,
+    reference_binding: dict[str, Any] | None,
+    aspect_ratio: str | None,
+    reference_conditioning: dict[str, Any] | None,
+    reference_conditioning_variants: list[str] | None = None,
 ) -> dict[str, Any] | None:
     extra: dict[str, Any] = {}
+    if aspect_ratio:
+        extra["aspect_ratio"] = _judge_aspect_ratio(aspect_ratio)
     if image_provider_override:
         extra["image_provider"] = image_provider_override
+    if image_provider_source:
+        extra["image_provider_source"] = image_provider_source
+    if grok_web_imagine_policy:
+        extra["grok_web_imagine_policy"] = {
+            key: value
+            for key, value in grok_web_imagine_policy.items()
+            if value not in (None, "")
+        }
+    if polish_pass:
+        extra["polish_pass"] = polish_pass
     if image_reference_source:
         extra["image_reference_source"] = image_reference_source
     if storyboard_contract:
         extra["storyboard"] = storyboard_contract
+    if reference_binding:
+        sanitized_binding = _sanitized_reference_binding(reference_binding)
+        if sanitized_binding:
+            extra["reference_binding"] = sanitized_binding
+    if reference_conditioning:
+        extra["reference_conditioning"] = reference_conditioning
+    if reference_conditioning_variants:
+        extra["reference_conditioning_variants"] = reference_conditioning_variants
     return extra or None
 
 
@@ -1367,6 +1833,110 @@ def _delivery_gate_quality_issues(delivery_gate: dict[str, dict[str, Any]]) -> l
             if issue and issue not in issues:
                 issues.append(issue)
     return issues
+
+
+def _delivery_recovery_summary(
+    *,
+    requested_image: bool,
+    wants_video: bool,
+    selected_images: list[str],
+    selected_videos: list[str],
+    generation_payloads: dict[str, Any],
+    delivery_gate: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    actions: list[dict[str, Any]] = []
+    blocked_modalities: list[str] = []
+    for modality_key, gate in delivery_gate.items():
+        if not isinstance(gate, dict) or gate.get("allowed") is not False:
+            continue
+        modality = _delivery_gate_modality(modality_key)
+        if modality not in blocked_modalities:
+            blocked_modalities.append(modality)
+        quality_issues = _string_list(gate.get("quality_issues"))
+        actions.append(
+            {
+                "modality": modality,
+                "reason": str(gate.get("reason") or ""),
+                "quality_issues": quality_issues,
+                "repair_attempted": bool(gate.get("repair_attempted")),
+                "candidate_budget_escalated": bool(gate.get("candidate_budget_escalated")),
+                "polish_pass_attempted": bool(gate.get("polish_pass_attempted")),
+                "recommended_action": _delivery_recovery_recommended_action(
+                    modality=modality,
+                    reason=str(gate.get("reason") or ""),
+                    quality_issues=quality_issues,
+                ),
+            }
+        )
+    generated_candidate_available = _generated_candidate_available(
+        generation_payloads,
+        require_image=requested_image and not selected_images,
+        require_video=wants_video and not selected_videos,
+    )
+    status = "blocked" if actions else "delivered"
+    if actions and not generated_candidate_available:
+        status = "blocked_without_candidate"
+    return {
+        "status": status,
+        "blocked_modalities": blocked_modalities,
+        "generated_candidate_available": generated_candidate_available,
+        "actions": actions,
+        "deliver_rejected_artifact": False,
+        "self_review": {
+            "preserves_delivery_quality_gate": True,
+            "avoids_stale_or_rejected_slack_delivery": True,
+            "actionable_after_failure": bool(actions),
+        },
+    }
+
+
+def _delivery_gate_modality(modality_key: str) -> str:
+    value = str(modality_key or "")
+    if "video" in value:
+        return "video"
+    return "image"
+
+
+def _delivery_recovery_recommended_action(
+    *,
+    modality: str,
+    reason: str,
+    quality_issues: list[str],
+) -> str:
+    if modality == "video":
+        return "rerun_video_repair_with_selected_source"
+    if any(issue in {"reference_identity_drift", "reference_role_evidence_missing"} for issue in quality_issues):
+        return "rerun_reference_repair_or_grok_web_polish"
+    if reason in {"active_learning_fail_closed", "active_learning_review_required", "pre_slack_preference_dimension_low"}:
+        return "rerun_quality_repair_or_grok_web_polish"
+    return "inspect_delivery_gate_and_retry"
+
+
+def _generated_candidate_available(
+    value: Any,
+    *,
+    require_image: bool,
+    require_video: bool,
+) -> bool:
+    if not (require_image or require_video):
+        return False
+    if isinstance(value, list):
+        return any(
+            _generated_candidate_available(item, require_image=require_image, require_video=require_video)
+            for item in value
+        )
+    if not isinstance(value, dict):
+        return False
+    if value.get("success") is True:
+        if require_image and isinstance(value.get("image"), str) and value.get("image"):
+            return True
+        if require_video and isinstance(value.get("video"), str) and value.get("video"):
+            return True
+    return any(
+        _generated_candidate_available(item, require_image=require_image, require_video=require_video)
+        for item in value.values()
+        if isinstance(item, (dict, list))
+    )
 
 
 def _delivery_gate_preference_failures(delivery_gate: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1929,6 +2499,558 @@ def _default_storyboard_role(index: int) -> str:
     return roles[index] if 0 <= index < len(roles) else "continuity_shot"
 
 
+def _visual_package_aspect_ratio(
+    args: dict[str, Any],
+    attachments: list[str],
+    reference_binding: dict[str, Any] | None,
+) -> str:
+    explicit = str(args.get("aspect_ratio") or "").strip()
+    if explicit:
+        return explicit
+    pose_reference = _reference_role_attachment(
+        attachments,
+        reference_binding,
+        role_hint="pose_composition",
+    )
+    if pose_reference:
+        inferred = _image_aspect_ratio_from_reference(pose_reference)
+        if inferred:
+            return inferred
+    edit_anchor = _reference_role_attachment(
+        attachments,
+        reference_binding,
+        role_hint="edit_anchor",
+    )
+    return _image_aspect_ratio_from_reference(edit_anchor) or "16:9"
+
+
+def _reference_role_attachment(
+    attachments: list[str],
+    reference_binding: dict[str, Any] | None,
+    *,
+    role_hint: str,
+) -> str | None:
+    if not attachments or not isinstance(reference_binding, dict):
+        return None
+    for item in reference_binding.get("reference_order") or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("role_hint") or "").strip() != role_hint:
+            continue
+        index = _coerce_int(item.get("index"))
+        if index is not None and 1 <= index <= len(attachments):
+            return attachments[index - 1]
+    return None
+
+
+def _image_aspect_ratio_from_reference(reference: str | None) -> str | None:
+    if not reference:
+        return None
+    path = Path(reference)
+    if not path.is_file():
+        return None
+    try:
+        from PIL import Image
+        from PIL import ImageOps
+
+        with Image.open(path) as image:
+            width, height = ImageOps.exif_transpose(image).size
+    except Exception:
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    ratio = width / height
+    if ratio > 1.1:
+        return "16:9"
+    if ratio < 0.9:
+        return "9:16"
+    return "1:1"
+
+
+def _provider_reference_image_urls(
+    attachments: list[str],
+    reference_binding: dict[str, Any] | None,
+    *,
+    conditioning_policy: str | None = None,
+) -> tuple[list[str], dict[str, Any] | None]:
+    if not attachments:
+        return [], None
+    role_by_index = _reference_role_by_index(reference_binding)
+    if not role_by_index:
+        return list(attachments), None
+    binding_item_by_index = _reference_binding_item_by_index(reference_binding)
+    policy = _normalise_reference_conditioning_policy(conditioning_policy)
+    max_provider_refs = VISUAL_PROVIDER_REFERENCE_SLOT_BUDGET
+    provider_refs: list[str] = []
+    metadata: list[dict[str, Any]] = []
+    omitted: list[dict[str, Any]] = []
+    optional_guides: list[dict[str, Any]] = []
+
+    def with_reference_metadata(index: int, role_hint: str, conditioning: str, **extra: Any) -> dict[str, Any]:
+        item: dict[str, Any] = {
+            "index": index,
+            "role_hint": role_hint,
+            "conditioning": conditioning,
+        }
+        source_item = binding_item_by_index.get(index) or {}
+        if isinstance(source_item, dict) and source_item.get("user_ref_index") not in (None, ""):
+            item["user_ref_index"] = source_item.get("user_ref_index")
+        item.update(extra)
+        return item
+
+    def append_required(reference: str, item: dict[str, Any], *, original_index: int, role_hint: str) -> bool:
+        if len(provider_refs) >= max_provider_refs:
+            omitted.append(
+                {
+                    "index": original_index,
+                    "role_hint": role_hint,
+                    "reason": "provider_reference_slot_budget",
+                }
+            )
+            return False
+        provider_refs.append(reference)
+        item["provider_index"] = len(provider_refs)
+        metadata.append(item)
+        return True
+
+    for index, attachment in enumerate(attachments, start=1):
+        role_hint = role_by_index.get(index, "visual_reference")
+        if role_hint == "edit_anchor":
+            source_item = binding_item_by_index.get(index) or {}
+            user_ref_index = (
+                source_item.get("user_ref_index")
+                if isinstance(source_item, dict)
+                else None
+            ) or "previous_selected_output"
+            append_required(
+                attachment,
+                with_reference_metadata(
+                    index,
+                    role_hint,
+                    "selected_output_edit_anchor",
+                    user_ref_index=user_ref_index,
+                ),
+                original_index=index,
+                role_hint=role_hint,
+            )
+            continue
+        if role_hint == "pose_composition":
+            if policy in {"structure_guide", "structure_contour"}:
+                guide = _pose_composition_guide_image(attachment)
+                if guide:
+                    appended = append_required(
+                        guide,
+                        with_reference_metadata(
+                            index,
+                            role_hint,
+                            "pose_composition_guide",
+                            derived_from_index=index,
+                            original_policy="omitted_to_prevent_identity_drift",
+                        ),
+                        original_index=index,
+                        role_hint=role_hint,
+                    )
+                    if appended and policy == "structure_contour":
+                        edge_guide = _pose_composition_edge_guide_image(attachment)
+                        if edge_guide:
+                            optional_guides.append(
+                                {
+                                    "reference": edge_guide,
+                                    "metadata": with_reference_metadata(
+                                        index,
+                                        role_hint,
+                                        "pose_composition_edge_guide",
+                                        derived_from_index=index,
+                                        original_policy="omitted_to_prevent_identity_drift",
+                                    ),
+                                    "index": index,
+                                    "role_hint": role_hint,
+                                }
+                            )
+                    continue
+            append_required(
+                attachment,
+                with_reference_metadata(index, role_hint, "pose_composition_original_role_locked"),
+                original_index=index,
+                role_hint=role_hint,
+            )
+            continue
+        append_required(
+            attachment,
+            with_reference_metadata(index, role_hint, "original"),
+            original_index=index,
+            role_hint=role_hint,
+        )
+    for optional in optional_guides:
+        if len(provider_refs) >= max_provider_refs:
+            break
+        reference = str(optional.get("reference") or "").strip()
+        item = optional.get("metadata")
+        if not reference or not isinstance(item, dict):
+            continue
+        provider_refs.append(reference)
+        item = dict(item)
+        item["provider_index"] = len(provider_refs)
+        metadata.append(item)
+    conditioning: dict[str, Any] = {
+        "policy": policy,
+        "provider_reference_images": metadata,
+    }
+    if omitted:
+        conditioning["omitted_provider_references"] = omitted
+    return provider_refs, conditioning
+
+
+def _reference_conditioning_variants(
+    attachments: list[str],
+    reference_binding: dict[str, Any] | None,
+    *,
+    policy_override: Any = None,
+) -> list[str]:
+    role_by_index = _reference_role_by_index(reference_binding)
+    if not attachments or not role_by_index:
+        return []
+    override = _normalise_reference_conditioning_policy(policy_override, allow_empty=True)
+    if override:
+        return [override]
+    roles = {str(role or "").strip() for role in role_by_index.values()}
+    has_pose = "pose_composition" in roles
+    if not has_pose:
+        return ["role_locked_originals"]
+    has_identity_or_style_source = any(
+        role
+        and role not in {"pose_composition", "visual_reference"}
+        for role in roles
+    )
+    if has_identity_or_style_source:
+        return ["role_locked_originals", "structure_guide"]
+    return ["role_locked_originals"]
+
+
+def _reference_conditioning_policy_for_candidate(
+    variants: list[str],
+    *,
+    candidate_index: int,
+) -> str | None:
+    if not variants:
+        return None
+    return variants[candidate_index % len(variants)]
+
+
+def _reference_conditioning_policy_for_gate(
+    gate: dict[str, Any],
+    variants: list[str],
+) -> str | None:
+    if not variants:
+        return None
+    quality_issues = set(_string_list(gate.get("quality_issues")))
+    if "reference_identity_drift" in quality_issues and "structure_guide" in variants:
+        return "structure_guide"
+    if "composition_bad" in quality_issues and "role_locked_originals" in variants:
+        return "role_locked_originals"
+    return variants[0]
+
+
+def _normalise_reference_conditioning_policy(value: Any, *, allow_empty: bool = False) -> str:
+    raw = str(value or "").strip().lower().replace("-", "_")
+    aliases = {
+        "raw": "role_locked_originals",
+        "raw_originals": "role_locked_originals",
+        "role_locked": "role_locked_originals",
+        "originals": "role_locked_originals",
+        "guide": "structure_guide",
+        "pose_guide": "structure_guide",
+        "structure": "structure_guide",
+        "contour": "structure_contour",
+        "edge": "structure_contour",
+        "edge_guide": "structure_contour",
+    }
+    normalized = aliases.get(raw, raw)
+    allowed = {"role_locked_originals", "structure_guide", "structure_contour"}
+    if normalized in allowed:
+        return normalized
+    return "" if allow_empty else "role_locked_originals"
+
+
+def _apply_provider_reference_conditioning_prompt(
+    prompt: str,
+    reference_conditioning: dict[str, Any] | None,
+) -> str:
+    if not isinstance(reference_conditioning, dict):
+        return prompt
+    if "Provider reference image ordering for generation:" in prompt:
+        return prompt
+    references = reference_conditioning.get("provider_reference_images")
+    if not isinstance(references, list):
+        return prompt
+    lines: list[str] = []
+    for item in references:
+        if not isinstance(item, dict):
+            continue
+        provider_index = _coerce_int(item.get("provider_index"))
+        user_index = _coerce_int(item.get("index"))
+        role_hint = str(item.get("role_hint") or "visual_reference").strip()
+        conditioning = str(item.get("conditioning") or "original").strip()
+        if provider_index is None or user_index is None:
+            continue
+        user_label = _provider_reference_user_label(item, user_index)
+        if conditioning == "selected_output_edit_anchor":
+            lines.append(
+                f"- provider image {provider_index} is the previous selected output / edit anchor; "
+                "treat it as the current image to improve. Preserve its character identity, pose, "
+                "camera, composition, outfit, colors, and overall image unless the user explicitly "
+                "requested a change. Apply only the requested local edit and change only the requested details."
+            )
+        elif conditioning == "pose_composition_original_role_locked":
+            lines.append(
+                f"- provider image {provider_index} is {user_label} as a role-locked original pose/composition reference; "
+                "use only pose, camera angle, framing, body orientation, limb placement, and scene layout. "
+                "Do not copy identity, face, hair, wardrobe, color palette, or character traits from this provider image."
+            )
+        elif conditioning == "pose_composition_guide":
+            original_policy = str(item.get("original_policy") or "").strip()
+            policy_note = (
+                " The original pose reference is intentionally not sent as a provider image to reduce identity drift."
+                if original_policy == "omitted_to_prevent_identity_drift"
+                else ""
+            )
+            lines.append(
+                f"- provider image {provider_index} is a derived pose/composition guide from {user_label}; "
+                "use it only to reinforce pose, camera angle, framing, body orientation, limb placement, "
+                "and composition. It is not a separate user ref and must not change identity, face, hair, "
+                f"wardrobe, or color palette.{policy_note}"
+            )
+        elif conditioning == "pose_composition_edge_guide":
+            lines.append(
+                f"- provider image {provider_index} is a derived pose/contour guide from {user_label}; "
+                "use it to refine body outline, limb placement, foreshortening, camera angle, and framing only. "
+                "It is not a separate user ref and must not change identity, face, hair, wardrobe, or color palette."
+            )
+        else:
+            lines.append(
+                f"- provider image {provider_index} = {user_label} ({role_hint}, original)"
+            )
+    if not lines:
+        return prompt
+    block = "\n".join(
+        [
+            "Provider reference image ordering for generation:",
+            *lines,
+            "When provider image ordering and user ref labels differ, user ref labels keep their original visible upload order.",
+        ]
+    )
+    return f"{prompt}\n\n{block}"
+
+
+def _provider_reference_user_label(item: dict[str, Any], fallback_index: int) -> str:
+    user_ref_index = item.get("user_ref_index")
+    if str(user_ref_index or "").strip() == "previous_selected_output":
+        return "previous selected output"
+    coerced = _coerce_int(user_ref_index)
+    if coerced is not None:
+        return f"user ref {coerced}"
+    return f"user ref {fallback_index}"
+
+
+def _reference_role_by_index(reference_binding: dict[str, Any] | None) -> dict[int, str]:
+    if not isinstance(reference_binding, dict):
+        return {}
+    roles: dict[int, str] = {}
+    for item in reference_binding.get("reference_order") or []:
+        if not isinstance(item, dict):
+            continue
+        index = _coerce_int(item.get("index"))
+        role_hint = str(item.get("role_hint") or "").strip()
+        if index is not None and role_hint:
+            roles[index] = role_hint
+    return roles
+
+
+def _reference_binding_item_by_index(reference_binding: dict[str, Any] | None) -> dict[int, dict[str, Any]]:
+    if not isinstance(reference_binding, dict):
+        return {}
+    items: dict[int, dict[str, Any]] = {}
+    for item in reference_binding.get("reference_order") or []:
+        if not isinstance(item, dict):
+            continue
+        index = _coerce_int(item.get("index"))
+        if index is not None:
+            items[index] = item
+    return items
+
+
+def _pose_composition_guide_image(reference: str) -> str | None:
+    source = Path(reference)
+    if not source.is_file():
+        return None
+    try:
+        digest = hashlib.sha256(b"pose_composition_guide.v3\0" + source.read_bytes()).hexdigest()[:16]
+        out_dir = default_visual_ledger_path().parent / "reference_role_guides"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"pose_composition_guide_{digest}.jpg"
+        if out_path.is_file():
+            return str(out_path)
+
+        from PIL import Image
+        from PIL import ImageFilter
+        from PIL import ImageOps
+
+        with Image.open(source) as image:
+            image = ImageOps.exif_transpose(image).convert("RGB")
+            blur_radius = max(10, min(image.size) // 18)
+            gray = ImageOps.grayscale(image)
+            structure = gray.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+            structure = ImageOps.autocontrast(structure, cutoff=4)
+            # Keep this as a pale layout mask. Dark contour/depth guides are
+            # too easy for image models to copy as visible artifacts.
+            guide_l = structure.point(
+                lambda value: 192
+                if value < 92
+                else 218
+                if value < 164
+                else 242
+            )
+            guide_l = guide_l.filter(ImageFilter.GaussianBlur(radius=max(1, min(image.size) // 120)))
+            guide = guide_l.convert("RGB")
+            guide.save(out_path, format="JPEG", quality=95)
+        return str(out_path)
+    except Exception:
+        return None
+
+
+def _pose_composition_edge_guide_image(reference: str) -> str | None:
+    source = Path(reference)
+    if not source.is_file():
+        return None
+    try:
+        digest = hashlib.sha256(b"pose_composition_edge_guide.v2\0" + source.read_bytes()).hexdigest()[:16]
+        out_dir = default_visual_ledger_path().parent / "reference_role_guides"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"pose_composition_edge_guide_{digest}.jpg"
+        if out_path.is_file():
+            return str(out_path)
+
+        from PIL import Image
+        from PIL import ImageFilter
+        from PIL import ImageOps
+
+        with Image.open(source) as image:
+            image = ImageOps.exif_transpose(image).convert("RGB")
+            gray = ImageOps.grayscale(image)
+            blur_radius = max(5, min(image.size) // 45)
+            smoothed = gray.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+            structure = ImageOps.autocontrast(smoothed, cutoff=2)
+            structure = ImageOps.posterize(structure.convert("RGB"), 3).convert("L")
+            edges = structure.filter(ImageFilter.FIND_EDGES)
+            edges = ImageOps.autocontrast(edges, cutoff=1)
+            line_art = edges.point(lambda value: 0 if value > 20 else 255, mode="L")
+            line_art = line_art.filter(ImageFilter.MinFilter(size=3))
+            guide = line_art.convert("RGB")
+            guide.save(out_path, format="JPEG", quality=92)
+        return str(out_path)
+    except Exception:
+        return None
+
+
+def _image_attempt_parameters(
+    aspect_ratio: str,
+    *,
+    attachments: list[str],
+    reference_binding: dict[str, Any] | None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    parameters: dict[str, Any] = {"aspect_ratio": _judge_aspect_ratio(aspect_ratio)}
+    if attachments:
+        parameters["reference_image_count"] = len(attachments)
+    sanitized_binding = _sanitized_reference_binding(reference_binding)
+    if sanitized_binding:
+        parameters["reference_binding"] = sanitized_binding
+    if extra:
+        parameters.update(extra)
+    return parameters
+
+
+def _provider_reference_attempt_extra(
+    provider_reference_images: list[str],
+    reference_conditioning: dict[str, Any] | None,
+) -> dict[str, Any]:
+    extra: dict[str, Any] = {}
+    if provider_reference_images:
+        extra["provider_reference_image_count"] = len(provider_reference_images)
+    if reference_conditioning:
+        extra["reference_conditioning"] = reference_conditioning
+    return extra
+
+
+def _sanitized_reference_binding(binding: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(binding, dict):
+        return None
+    sanitized = {
+        key: value
+        for key, value in binding.items()
+        if key not in {"character_reference", "pose_reference"}
+    }
+    reference_order = []
+    for item in binding.get("reference_order") or []:
+        if not isinstance(item, dict):
+            continue
+        entry: dict[str, Any] = {}
+        index = _coerce_int(item.get("index"))
+        if index is not None:
+            entry["index"] = index
+        role_hint = str(item.get("role_hint") or "").strip()
+        if role_hint:
+            entry["role_hint"] = role_hint
+        user_ref_index = item.get("user_ref_index")
+        if user_ref_index not in (None, "") and isinstance(user_ref_index, (int, float, str)):
+            entry["user_ref_index"] = (
+                int(user_ref_index)
+                if isinstance(user_ref_index, float) and user_ref_index.is_integer()
+                else user_ref_index
+            )
+        if entry:
+            reference_order.append(entry)
+    if reference_order:
+        sanitized["reference_order"] = reference_order
+    elif "reference_order" in sanitized:
+        sanitized.pop("reference_order", None)
+    return sanitized or None
+
+
+def _reference_input_artifacts(
+    attachments: list[str],
+    reference_binding: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    if not attachments:
+        return []
+    role_by_index: dict[int, str] = {}
+    user_ref_by_index: dict[int, Any] = {}
+    source = "user_visible_upload_order"
+    if isinstance(reference_binding, dict):
+        source = str(reference_binding.get("reference_order_source") or source)
+        for item in reference_binding.get("reference_order") or []:
+            if not isinstance(item, dict):
+                continue
+            index = _coerce_int(item.get("index"))
+            role_hint = str(item.get("role_hint") or "").strip()
+            if index is not None and role_hint:
+                role_by_index[index] = role_hint
+            if index is not None and item.get("user_ref_index") not in (None, ""):
+                user_ref_by_index[index] = item.get("user_ref_index")
+    artifacts = []
+    for index, attachment in enumerate(attachments, start=1):
+        artifact = {
+            "index": index,
+            "role_hint": role_by_index.get(index, "visual_reference"),
+            "uri": attachment,
+            "source": source,
+        }
+        if user_ref_by_index.get(index) not in (None, ""):
+            artifact["user_ref_index"] = user_ref_by_index[index]
+        artifacts.append(artifact)
+    return artifacts
+
+
 def _record_payload_candidate(
     ledger: VisualAttemptLedger,
     *,
@@ -1941,6 +3063,7 @@ def _record_payload_candidate(
     model: str,
     requested_parameters: dict[str, Any],
     candidate_index: int = 0,
+    input_artifacts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     success = bool(payload.get("success"))
     attempt_id = ledger.record_attempt(
@@ -1952,6 +3075,7 @@ def _record_payload_candidate(
         prompt_mediated=prompt,
         parameters_requested=requested_parameters,
         parameters_effective=requested_parameters,
+        input_artifacts=input_artifacts or None,
         status="completed" if success else "failed",
         error_type=payload.get("error_type") if not success else None,
         error_message=payload.get("error") if not success else None,
@@ -1985,6 +3109,7 @@ def _record_payload_candidate(
         "height": artifact.get("height"),
         "duration_seconds": artifact.get("duration_seconds"),
         "requested_parameters": requested_parameters,
+        "input_artifacts": input_artifacts or [],
         "hard_gate": score["hard_gate"],
         "scores": score["scores"],
         "vision_observation": _payload_vision_observation(payload),
@@ -1998,10 +3123,20 @@ def _package_error(
 ) -> dict[str, str | None]:
     if success:
         return {"error_type": None, "error": None}
+    if _delivery_gate_has_reference_role_block(delivery_gate):
+        return {
+            "error_type": "delivery_gate_blocked",
+            "error": "reference role transfer did not pass visual quality validation after repair",
+        }
     if any(
         isinstance(gate, dict)
         and gate.get("allowed") is False
-        and gate.get("reason") in {"active_learning_fail_closed", "video_quality_issue_blocked"}
+        and gate.get("reason")
+        in {
+            "active_learning_fail_closed",
+            "active_learning_review_required",
+            "video_quality_issue_blocked",
+        }
         for gate in delivery_gate.values()
     ):
         return {
@@ -2009,6 +3144,19 @@ def _package_error(
             "error": "visual candidate blocked by active-learning delivery gate",
         }
     return {"error_type": None, "error": None}
+
+
+def _delivery_gate_has_reference_role_block(delivery_gate: dict[str, dict[str, Any]]) -> bool:
+    reference_issues = {
+        "reference_identity_drift",
+        "reference_role_evidence_missing",
+    }
+    return any(
+        isinstance(gate, dict)
+        and gate.get("allowed") is False
+        and any(issue in reference_issues for issue in _string_list(gate.get("quality_issues")))
+        for gate in delivery_gate.values()
+    )
 
 
 def _retry_generation_payloads(
@@ -2519,6 +3667,7 @@ def _attempt_metadata(payload: dict[str, Any]) -> dict[str, Any]:
         "recovery",
         "retry_of",
         "quality_repair",
+        "polish_pass",
         "candidate_escalation",
         "provider_family",
         "quota_source",
@@ -2609,6 +3758,7 @@ def _score_candidates(
     request_category: str = "portrait",
     inline_vision_judge: bool | str = "auto",
     vision_analyzer=None,
+    reference_binding: dict[str, Any] | None = None,
 ) -> None:
     if not candidates:
         return
@@ -2643,6 +3793,7 @@ def _score_candidates(
             request_context={
                 "has_reference_image": has_reference_image,
                 "category": request_category,
+                **({"reference_binding": _sanitized_reference_binding(reference_binding)} if reference_binding else {}),
             },
             recent_artifact_hashes=recent_hashes,
             vision_observation=vision_observation,
@@ -2871,6 +4022,14 @@ def _delivery_gate_decision(
             "quality_issues": quality_issues,
             "ignored_quality_issues": ignored_quality_issues,
         }
+    if any(issue in {"reference_role_evidence_missing", "reference_identity_drift"} for issue in quality_issues):
+        return {
+            "allowed": False,
+            "reason": "active_learning_review_required",
+            "active_learning_action": action,
+            "quality_issues": quality_issues,
+            "ignored_quality_issues": ignored_quality_issues,
+        }
     if action == "fail_closed" and quality_issues:
         return {
             "allowed": False,
@@ -2893,6 +4052,14 @@ def _delivery_gate_decision(
             "ignored_quality_issues": ignored_quality_issues,
             "preference_dimension_fit": preference_dimension_fit,
             "threshold": PREFERENCE_DIMENSION_DELIVERY_THRESHOLD,
+        }
+    if any(issue in ALWAYS_BLOCKING_QUALITY_ISSUES for issue in quality_issues):
+        return {
+            "allowed": False,
+            "reason": "active_learning_review_required",
+            "active_learning_action": action,
+            "quality_issues": quality_issues,
+            "ignored_quality_issues": ignored_quality_issues,
         }
     return {
         "allowed": True,
@@ -2954,9 +4121,28 @@ def _candidate_escalation_prompt(prompt: str, gate: dict[str, Any]) -> str:
     )
 
 
-def _quality_repair_prompt(prompt: str, gate: dict[str, Any], *, mode: str = "default") -> str:
+def _image_polish_prompt(prompt: str) -> str:
+    return (
+        f"{prompt}\n\n"
+        "Grok Web polish pass: improve the selected image's final visual quality, face/detail polish, "
+        "lighting, material texture, and overall appeal while preserving the current composition, "
+        "identity, pose, camera angle, outfit, color palette, and user-requested constraints. "
+        "Do not redesign the image; treat the supplied image as the edit anchor and make a refined version."
+    )
+
+
+def _quality_repair_prompt(
+    prompt: str,
+    gate: dict[str, Any],
+    *,
+    mode: str = "default",
+    reference_binding: dict[str, Any] | None = None,
+) -> str:
     issues = _string_list(gate.get("quality_issues"))
     instructions: list[str] = []
+    reference_repair = _reference_role_repair_instruction(reference_binding, issues)
+    if reference_repair:
+        instructions.append(reference_repair)
     if "subject_not_attractive" in issues or "not_beautiful" in issues:
         instructions.append("render a naturally beautiful subject with clean facial features")
     if "composition_bad" in issues:
@@ -2982,6 +4168,60 @@ def _quality_repair_prompt(prompt: str, gate: dict[str, Any], *, mode: str = "de
         f"{repair}. Avoid distorted anatomy, awkward face rendering, weak composition, "
         "and low-quality surface detail."
     )
+
+
+def _reference_role_repair_instruction(
+    binding: dict[str, Any] | None,
+    issues: list[str],
+) -> str:
+    if not isinstance(binding, dict):
+        return ""
+    if not any(
+        issue
+        in {
+            "reference_identity_drift",
+            "reference_role_evidence_missing",
+            "composition_bad",
+        }
+        for issue in issues
+    ):
+        return ""
+    role_instructions: list[str] = []
+    saw_pose_reference = False
+    for item in binding.get("reference_order") or []:
+        if not isinstance(item, dict):
+            continue
+        index = _coerce_int(item.get("index"))
+        role_hint = str(item.get("role_hint") or "").strip()
+        if index is None or not role_hint or role_hint == "visual_reference":
+            continue
+        role_instructions.append(f"Use ref {index} only for {role_hint}")
+        if role_hint == "character_identity":
+            role_instructions.append(
+                f"lock the final subject's identity, face, hair, eye color, silhouette, outfit, "
+                f"accessories, and palette to ref {index}"
+            )
+        elif role_hint == "pose_composition":
+            saw_pose_reference = True
+            role_instructions.append(
+                f"use ref {index} only for pose, camera angle, framing, body orientation, limb placement, "
+                "and scene composition"
+            )
+        elif role_hint == "wardrobe":
+            role_instructions.append(f"use ref {index} only for clothing, wardrobe, material, and palette")
+        elif role_hint == "style":
+            role_instructions.append(f"use ref {index} only for art direction, rendering style, and finish")
+        elif role_hint == "background":
+            role_instructions.append(f"use ref {index} only for background, environment, and scene context")
+    if not role_instructions:
+        return ""
+    if saw_pose_reference:
+        role_instructions.append(
+            "Do not copy identity, face, hair, wardrobe, color palette, or character traits "
+            "from pose/composition references"
+        )
+    role_instructions.append("if roles conflict, preserve the user's listed role binding over visual similarity")
+    return "Reference role repair pass: " + "; ".join(role_instructions)
 
 
 def _video_quality_repair_prompt(prompt: str, gate: dict[str, Any], *, mode: str = "default") -> str:
@@ -3273,7 +4513,201 @@ def _normalise_attachments(value: Any) -> list[str]:
         value = [value]
     if not isinstance(value, (list, tuple)):
         return []
-    return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+    attachments: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        attachment = normalise_visual_agent_attachment(item)
+        if attachment:
+            attachments.append(attachment)
+    return attachments
+
+
+def _normalise_reference_binding(value: Any, attachments: list[str]) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    binding = dict(value)
+    character_index = _coerce_int(binding.get("character_reference_index"))
+    pose_index = _coerce_int(binding.get("pose_reference_index"))
+    if character_index is not None and 1 <= character_index <= len(attachments):
+        binding["character_reference"] = attachments[character_index - 1]
+    if pose_index is not None and 1 <= pose_index <= len(attachments):
+        binding["pose_reference"] = attachments[pose_index - 1]
+    binding.setdefault("reference_order_source", "user_visible_upload_order")
+    binding.setdefault("role_policy", "derive_from_user_prompt")
+    explicit_order = _normalise_reference_order(binding.get("reference_order"), attachments)
+    if explicit_order:
+        binding["reference_order"] = explicit_order
+        return binding
+    if attachments:
+        binding["reference_order"] = [
+            {
+                "index": index,
+                "role_hint": _explicit_reference_role_hint(
+                    index,
+                    character_index=character_index,
+                    pose_index=pose_index,
+                ),
+                "attachment": attachment,
+            }
+            for index, attachment in enumerate(attachments, start=1)
+        ]
+    return binding
+
+
+def _reference_binding_from_session_entries(
+    existing: dict[str, Any] | None,
+    entries: list[dict[str, Any]],
+    attachments: list[str],
+) -> dict[str, Any] | None:
+    if not entries or not attachments:
+        return existing
+    attachment_index = {str(attachment): index for index, attachment in enumerate(attachments, start=1)}
+    reference_order: list[dict[str, Any]] = []
+    has_edit_anchor = False
+    has_role_metadata = False
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        uri = str(entry.get("uri") or entry.get("path") or entry.get("attachment") or "").strip()
+        index = attachment_index.get(uri)
+        if index is None:
+            continue
+        role_hint = str(entry.get("role_hint") or "visual_reference").strip() or "visual_reference"
+        if role_hint in {"selected_output", "previous_selected_output", "previous_output"}:
+            role_hint = "edit_anchor"
+        item: dict[str, Any] = {
+            "index": index,
+            "role_hint": role_hint,
+            "attachment": attachments[index - 1],
+        }
+        user_ref_index = entry.get("user_ref_index")
+        if role_hint == "edit_anchor":
+            has_edit_anchor = True
+            user_ref_index = user_ref_index or "previous_selected_output"
+        if user_ref_index not in (None, ""):
+            item["user_ref_index"] = user_ref_index
+            has_role_metadata = True
+        if role_hint != "visual_reference":
+            has_role_metadata = True
+        reference_order.append(item)
+    if not reference_order:
+        return existing
+    if existing and not has_edit_anchor:
+        return existing
+    if not has_edit_anchor and not has_role_metadata:
+        return existing
+    binding = dict(existing or {})
+    binding["mode"] = "session_edit_references" if has_edit_anchor else "session_references"
+    binding["reference_order_source"] = "session_visual_context"
+    binding["role_policy"] = (
+        "session_context_with_edit_anchor" if has_edit_anchor else "session_context_roles"
+    )
+    binding["reference_order"] = reference_order
+    return binding
+
+
+def _normalise_reference_order(value: Any, attachments: list[str]) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    reference_order: list[dict[str, Any]] = []
+    for ordinal, item in enumerate(value, start=1):
+        if not isinstance(item, dict):
+            continue
+        index = _coerce_int(item.get("index")) or ordinal
+        if index < 1:
+            continue
+        entry: dict[str, Any] = {"index": index}
+        role_hint = str(item.get("role_hint") or item.get("role") or "").strip()
+        if role_hint:
+            entry["role_hint"] = role_hint
+        attachment = attachments[index - 1] if 1 <= index <= len(attachments) else item.get("attachment")
+        if isinstance(attachment, str) and attachment.strip():
+            entry["attachment"] = attachment
+        reference_order.append(entry)
+    return reference_order
+
+
+def _explicit_reference_role_hint(
+    index: int,
+    *,
+    character_index: int | None,
+    pose_index: int | None,
+) -> str:
+    if index == character_index:
+        return "character_identity"
+    if index == pose_index:
+        return "pose_composition"
+    return "visual_reference"
+
+
+def _apply_reference_binding_prompt(prompt: str, binding: dict[str, Any] | None) -> str:
+    if not binding:
+        return prompt
+    if "Reference roles for this request:" in prompt:
+        return prompt
+    block = _reference_binding_prompt_block(binding)
+    if "Reference binding:" in prompt:
+        role_block = _reference_role_contract_block(binding)
+        return f"{prompt}\n\n{role_block}" if role_block else prompt
+    return f"{prompt}\n\n{block}"
+
+
+def _reference_binding_prompt_block(binding: dict[str, Any]) -> str:
+    parts = [
+        "Reference binding: reference N/ref N means the Nth uploaded image in the user's "
+        "visible attachment order; reference 1 means the first uploaded image in the user's "
+        "visible attachment order. Do not assume fixed roles for any reference index. Derive "
+        "each reference role from the user's wording, such as character identity/person, "
+        "pose/composition, clothing, wardrobe, style, or background. If a role is not explicit, "
+        "treat that reference as a neutral visual reference instead of assigning character or "
+        "pose by default."
+    ]
+    role_block = _reference_role_contract_block(binding)
+    if role_block:
+        parts.append(role_block)
+    return "\n\n".join(parts)
+
+
+def _reference_role_contract_block(binding: dict[str, Any]) -> str:
+    role_lines = []
+    for item in binding.get("reference_order") or []:
+        if not isinstance(item, dict):
+            continue
+        index = _coerce_int(item.get("index"))
+        role_hint = str(item.get("role_hint") or "").strip()
+        if index is None or not role_hint:
+            continue
+        user_ref_index = item.get("user_ref_index")
+        if role_hint == "edit_anchor":
+            role_lines.append(
+                f"- previous selected output / edit anchor: provider ref {index} role: {role_hint}"
+            )
+        elif user_ref_index not in (None, ""):
+            role_lines.append(
+                f"- user ref {user_ref_index} role: {role_hint} (provider ref {index})"
+            )
+        else:
+            role_lines.append(f"- ref {index} role: {role_hint}")
+    if not role_lines:
+        return ""
+    return "\n".join(
+        [
+            "Reference roles for this request:",
+            *role_lines,
+            "Use each reference only for its listed role. Do not transfer character identity "
+            "from a pose/composition reference, and do not transfer pose/composition from a "
+            "character identity reference unless the user explicitly asks for that blend.",
+            "For edit_anchor references, treat the previous selected output as the current image "
+            "to improve. Preserve its identity, pose, composition, camera, outfit, color palette, "
+            "and overall image unless the user explicitly asked to change them; change only the requested details.",
+            "For character_identity references, preserve the subject identity, face, hair, eye color, "
+            "signature outfit, silhouette, accessories, and palette from that reference.",
+            "For pose_composition references, use only pose, camera angle, framing, body orientation, "
+            "limb placement, and scene layout; do not copy that reference's character, face, hair, "
+            "wardrobe, color palette, or identity traits unless explicitly requested.",
+        ]
+    )
 
 
 def _wants_image(prompt: str, args: dict[str, Any]) -> bool:

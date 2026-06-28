@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from agent.visual.agent_mode.grok_planner import apply_visual_agent_llm_planner
+from agent.visual.agent_mode.handoff import is_visual_prompt_disclosure_request
+from agent.visual.agent_mode.handoff import normalise_visual_agent_attachment
 from agent.visual.agent_mode.planner import plan_visual_agent_request
 from tools.registry import registry
 from tools.registry import tool_error
@@ -60,6 +63,11 @@ async def _handle_visual_agent_generate(args: dict[str, Any], **_kw: Any) -> str
     prompt = str(args.get("prompt") or "").strip()
     if not prompt:
         return tool_error("prompt is required for visual agent generation")
+    if is_visual_prompt_disclosure_request(prompt):
+        return tool_error(
+            "visual_agent_generate is for image/video generation, not prompt disclosure",
+            request_type="visual_prompt_disclosure",
+        )
 
     attachments = _normalise_attachments(args.get("attachments"))
     plan = plan_visual_agent_request(prompt, attachments=attachments)
@@ -71,6 +79,10 @@ async def _handle_visual_agent_generate(args: dict[str, Any], **_kw: Any) -> str
         package_args["aspect_ratio"] = str(args["aspect_ratio"])
     if args.get("duration") is not None:
         package_args["duration"] = args["duration"]
+    for key in ("visual_agent_llm_provider", "visual_agent_llm_model", "visual_agent_handoff_mode"):
+        if args.get(key):
+            package_args[key] = args[key]
+    package_args, llm_plan = apply_visual_agent_llm_planner(package_args)
 
     raw = await _handle_visual_package_generate(package_args)
     try:
@@ -79,6 +91,9 @@ async def _handle_visual_agent_generate(args: dict[str, Any], **_kw: Any) -> str
         return raw
     if isinstance(payload, dict):
         payload["visual_agent_plan"] = plan
+        payload["visual_agent_provider_contract"] = plan.get("provider_contract")
+        if llm_plan is not None:
+            payload["visual_agent_llm_plan"] = llm_plan
         payload["visual_agent_tool"] = "visual_agent_generate"
         return json.dumps(payload, ensure_ascii=False)
     return raw
@@ -91,7 +106,14 @@ def _normalise_attachments(value: Any) -> list[str]:
         value = [value]
     if not isinstance(value, (list, tuple)):
         return []
-    return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+    attachments: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        attachment = normalise_visual_agent_attachment(item)
+        if attachment:
+            attachments.append(attachment)
+    return attachments
 
 
 registry.register(

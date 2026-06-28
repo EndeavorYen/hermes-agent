@@ -199,6 +199,45 @@ def test_reward_model_strongly_penalizes_low_glamour_preference_dimensions():
     assert "preference_dimension_soft_gate_penalty" in generic["uncertainty_reasons"]
 
 
+def test_reward_model_penalizes_reference_role_quality_issues_without_human_profile():
+    from agent.visual.reward_model import score_visual_candidate
+
+    provider_stats = {"xai:image": {"generation_success_rate": 1.0, "delivery_success_rate": 1.0}}
+    preference_profile = {"signals": {}, "issues": {}, "sample_count": 0}
+    base_candidate = {
+        "kind": "image",
+        "provider": "xai",
+        "model": "image",
+        "hard_gate": {"passed": True},
+        "scores": {"final_score": 0.9},
+        "judge_scores": {
+            "aesthetic_fit": 0.9,
+            "reference_adherence": 0.82,
+            "novelty": 1.0,
+            "motion_quality": 1.0,
+        },
+    }
+
+    clean = score_visual_candidate(
+        {**base_candidate, "artifact_id": "clean", "quality_issues": []},
+        provider_stats=provider_stats,
+        preference_profile=preference_profile,
+    )
+    drift = score_visual_candidate(
+        {
+            **base_candidate,
+            "artifact_id": "drift",
+            "quality_issues": ["reference_identity_drift"],
+        },
+        provider_stats=provider_stats,
+        preference_profile=preference_profile,
+    )
+
+    assert clean["final_score"] - drift["final_score"] >= 0.08
+    assert drift["dimensions"]["user_preference_fit"] <= 0.25
+    assert "candidate_quality_issue_reference_identity_drift" in drift["uncertainty_reasons"]
+
+
 def test_reward_model_uses_effective_preference_sample_count_for_confidence():
     from agent.visual.reward_model import score_visual_candidate
 

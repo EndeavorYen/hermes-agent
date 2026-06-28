@@ -65,6 +65,72 @@ def test_attempt_ledger_records_request_attempt_artifact_and_delivery(tmp_path):
     assert ledger.get_delivery(delivery_id)["delivery_status"] == "sent"
 
 
+def test_attempt_ledger_updates_request_status(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+
+    ledger = VisualAttemptLedger(tmp_path / "attempts.sqlite3")
+    ledger.initialize()
+
+    request_id = ledger.record_request(
+        normalized_intent={"kind": "visual_package"},
+        modality="package",
+        operation="visual_package_generate",
+        status="started",
+    )
+
+    ledger.update_request_status(request_id, "completed")
+
+    assert ledger.get_request(request_id)["status"] == "completed"
+
+
+def test_attempt_ledger_records_input_artifacts_for_reference_conditioning(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+
+    ledger = VisualAttemptLedger(tmp_path / "attempts.sqlite3")
+    ledger.initialize()
+
+    request_id = ledger.record_request(
+        normalized_intent={"modality": "image"},
+        modality="image",
+        operation="reference_image_edit",
+        status="started",
+    )
+    attempt_id = ledger.record_attempt(
+        request_id=request_id,
+        provider="xai",
+        model="grok-imagine-image-quality",
+        input_artifacts=[
+            {
+                "index": 1,
+                "role_hint": "character_identity",
+                "uri": "/tmp/first-upload.png",
+                "source": "user_visible_upload_order",
+            },
+            {
+                "index": 2,
+                "role_hint": "pose_composition",
+                "uri": "/tmp/second-upload.png",
+                "source": "user_visible_upload_order",
+            },
+        ],
+    )
+
+    assert ledger.get_attempt(attempt_id)["input_artifacts_json"] == [
+        {
+            "index": 1,
+            "role_hint": "character_identity",
+            "uri": "/tmp/first-upload.png",
+            "source": "user_visible_upload_order",
+        },
+        {
+            "index": 2,
+            "role_hint": "pose_composition",
+            "uri": "/tmp/second-upload.png",
+            "source": "user_visible_upload_order",
+        },
+    ]
+
+
 def test_attempt_ledger_records_judgment_ranking_and_feedback(tmp_path):
     from agent.visual.attempt_ledger import VisualAttemptLedger
 

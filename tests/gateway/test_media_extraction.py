@@ -11,6 +11,8 @@ make_image tool several turns earlier must not leak onto a later
 text-only reply, even when the path-based dedup set fails to capture it.
 """
 
+import json
+
 import pytest
 import re
 
@@ -534,6 +536,123 @@ caption
             "/tmp/current-attachment.png",
             "/tmp/previous-selected.png",
             "/tmp/original-ref.png",
+        ]
+
+    def test_gateway_explicit_ref_indices_use_current_uploads_without_generated_artifacts(self):
+        """ref1/ref2 should map to the current visible upload order, not previous outputs."""
+        from gateway.run import _build_visual_reference_context_for_turn
+
+        history = [
+            {
+                "role": "tool",
+                "content": '{"success": true, "image": "/tmp/previous-generated.png"}',
+            },
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_img",
+                        "function": {
+                            "name": "visual_package_generate",
+                            "arguments": '{"reference_image_urls": ["/tmp/old-ref.png"]}',
+                        },
+                    }
+                ],
+            },
+        ]
+
+        refs = _build_visual_reference_context_for_turn(
+            history,
+            current_message="把 ref 1 的角色，套用 ref2 的姿勢，產出圖片即可",
+            native_image_paths=["/tmp/current-character.png", "/tmp/current-pose.png"],
+        )
+
+        assert refs == ["/tmp/current-character.png", "/tmp/current-pose.png"]
+
+    def test_gateway_marks_previous_selected_output_as_edit_anchor_for_followup(self):
+        """Follow-up edits should know which prior delivered image is the edit target."""
+        from gateway.run import _build_visual_reference_context_entries_for_turn
+
+        history = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_pkg",
+                        "function": {
+                            "name": "visual_package_generate",
+                            "arguments": json.dumps(
+                                {
+                                    "prompt": "把 ref 1 的角色，套用 ref2 的姿勢，產出圖片即可",
+                                    "attachments": ["/tmp/character.png", "/tmp/pose.png"],
+                                    "reference_binding": {
+                                        "mode": "ordered_references",
+                                        "reference_order_source": "user_visible_upload_order",
+                                        "role_policy": "derive_from_user_prompt",
+                                        "reference_order": [
+                                            {
+                                                "index": 1,
+                                                "role_hint": "character_identity",
+                                                "attachment": "/tmp/character.png",
+                                            },
+                                            {
+                                                "index": 2,
+                                                "role_hint": "pose_composition",
+                                                "attachment": "/tmp/pose.png",
+                                            },
+                                        ],
+                                    },
+                                }
+                            ),
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_pkg",
+                "content": json.dumps(
+                    {
+                        "success": True,
+                        "image": "/tmp/previous-selected.png",
+                        "delivery_metadata": {
+                            "selected_visual_artifact_ids": ["var_selected"],
+                            "visual_artifacts": {
+                                "/tmp/previous-selected.png": {
+                                    "artifact_id": "var_selected",
+                                    "kind": "image",
+                                }
+                            },
+                        },
+                    }
+                ),
+            },
+        ]
+
+        refs = _build_visual_reference_context_entries_for_turn(
+            history,
+            current_message="很好，但足底應該也包含連身衣，而不是露出裸足，請改進",
+            native_image_paths=[],
+        )
+
+        assert refs == [
+            {
+                "uri": "/tmp/previous-selected.png",
+                "role_hint": "edit_anchor",
+                "source": "previous_selected_artifact",
+            },
+            {
+                "uri": "/tmp/character.png",
+                "role_hint": "character_identity",
+                "source": "previous_tool_reference",
+                "user_ref_index": 1,
+            },
+            {
+                "uri": "/tmp/pose.png",
+                "role_hint": "pose_composition",
+                "source": "previous_tool_reference",
+                "user_ref_index": 2,
+            },
         ]
     
     def test_media_tags_extracted_from_current_turn(self):

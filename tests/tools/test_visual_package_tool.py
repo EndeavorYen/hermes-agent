@@ -1,4 +1,7 @@
+import base64
+import asyncio
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +15,21 @@ _ONE_PIXEL_PNG = (
     b"\x90wS\xde"
     b"\x00\x00\x00\x00IEND\xaeB`\x82"
 )
+
+
+def test_visual_package_normalise_attachments_materializes_data_uri(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    data_uri = "data:image/png;base64," + base64.b64encode(_ONE_PIXEL_PNG).decode("ascii")
+
+    attachments = visual_package_tool._normalise_attachments([data_uri])
+
+    assert len(attachments) == 1
+    attachment = attachments[0]
+    assert not attachment.startswith("data:image")
+    assert attachment.startswith(str(tmp_path / "cache" / "visual-agent-attachments"))
+    assert Path(attachment).read_bytes() == _ONE_PIXEL_PNG
 
 
 @pytest.mark.asyncio
@@ -235,6 +253,584 @@ def test_visual_package_schema_exposes_agent_mode_controls():
     assert "image_provider" in properties
 
 
+def test_visual_package_reference_binding_does_not_default_ref_roles():
+    from tools.visual_package_tool import _normalise_reference_binding
+
+    binding = _normalise_reference_binding(
+        {
+            "mode": "ordered_references",
+            "role_policy": "derive_from_user_prompt",
+            "reference_order": [
+                {"index": 1, "role_hint": "character_identity"},
+                {"index": 2, "role_hint": "character_identity"},
+                {"index": 3, "role_hint": "wardrobe"},
+            ],
+        },
+        ["/tmp/person-a.png", "/tmp/person-b.png", "/tmp/clothes.png"],
+    )
+
+    assert binding is not None
+    assert binding["mode"] == "ordered_references"
+    assert binding["reference_order_source"] == "user_visible_upload_order"
+    assert binding["role_policy"] == "derive_from_user_prompt"
+    assert "character_reference" not in binding
+    assert "pose_reference" not in binding
+    assert "character_reference_index" not in binding
+    assert "pose_reference_index" not in binding
+    assert binding["reference_order"] == [
+        {"index": 1, "role_hint": "character_identity", "attachment": "/tmp/person-a.png"},
+        {"index": 2, "role_hint": "character_identity", "attachment": "/tmp/person-b.png"},
+        {"index": 3, "role_hint": "wardrobe", "attachment": "/tmp/clothes.png"},
+    ]
+
+
+def test_visual_package_reference_binding_prompt_is_role_neutral():
+    from tools.visual_package_tool import _apply_reference_binding_prompt
+
+    prompt = _apply_reference_binding_prompt(
+        "ref1 和 ref2 都是人物，ref3 是服裝，請融合成一張圖片",
+        {
+            "mode": "ordered_references",
+            "reference_order_source": "user_visible_upload_order",
+            "role_policy": "derive_from_user_prompt",
+        },
+    )
+
+    assert "Reference binding" in prompt
+    assert "Do not assume fixed roles" in prompt
+    assert "clothing, wardrobe" in prompt
+    assert "reference 1 only for character identity" not in prompt
+
+
+def test_visual_package_reference_binding_prompt_lists_explicit_roles_without_paths():
+    from tools.visual_package_tool import _apply_reference_binding_prompt
+
+    prompt = _apply_reference_binding_prompt(
+        "把 ref1 的角色套用 ref2 的姿勢",
+        {
+            "mode": "ordered_references",
+            "reference_order_source": "user_visible_upload_order",
+            "role_policy": "derive_from_user_prompt",
+            "reference_order": [
+                {
+                    "index": 1,
+                    "role_hint": "character_identity",
+                    "attachment": "/tmp/character.png",
+                },
+                {
+                    "index": 2,
+                    "role_hint": "pose_composition",
+                    "attachment": "/tmp/pose.png",
+                },
+            ],
+        },
+    )
+
+    assert "ref 1 role: character_identity" in prompt
+    assert "ref 2 role: pose_composition" in prompt
+    assert "Do not transfer character identity from a pose/composition reference" in prompt
+    assert "/tmp/character.png" not in prompt
+    assert "/tmp/pose.png" not in prompt
+
+
+def test_visual_package_pose_composition_guide_preserves_visible_structure(monkeypatch, tmp_path):
+    from PIL import Image
+    from PIL import ImageDraw
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    source = tmp_path / "pose.png"
+    image = Image.new("RGB", (180, 320), (40, 160, 220))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((55, 45, 125, 240), fill=(240, 120, 40))
+    draw.ellipse((65, 20, 115, 70), fill=(250, 220, 180))
+    draw.line((90, 240, 40, 315), fill=(40, 30, 30), width=18)
+    draw.line((95, 240, 150, 315), fill=(40, 30, 30), width=18)
+    image.save(source)
+
+    guide_path = visual_package_tool._pose_composition_guide_image(str(source))
+
+    assert guide_path is not None
+    guide = Image.open(guide_path).convert("RGB")
+    pixels = list(guide.getdata())
+    nonwhite_ratio = sum(1 for pixel in pixels if min(pixel) < 245) / len(pixels)
+    assert nonwhite_ratio > 0.2
+    assert min(min(pixel) for pixel in pixels) >= 170
+    assert all(abs(r - g) <= 2 and abs(g - b) <= 2 for r, g, b in pixels[:: max(1, len(pixels) // 100)])
+
+
+def test_visual_package_pose_composition_guide_avoids_contour_map_artifacts(monkeypatch, tmp_path):
+    from PIL import Image
+    from PIL import ImageDraw
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    source = tmp_path / "high-contrast-pose.png"
+    image = Image.new("RGB", (180, 320), (248, 248, 248))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 210, 180, 320), fill=(120, 80, 60))
+    draw.ellipse((62, 18, 118, 76), fill=(245, 215, 185))
+    draw.polygon([(70, 80), (126, 74), (135, 220), (54, 230)], fill=(30, 30, 36))
+    draw.line((78, 225, 35, 318), fill=(6, 6, 12), width=24)
+    draw.line((104, 225, 160, 318), fill=(6, 6, 12), width=24)
+    image.save(source)
+
+    guide_path = visual_package_tool._pose_composition_guide_image(str(source))
+
+    assert guide_path is not None
+    guide = Image.open(guide_path).convert("L")
+    pixels = list(guide.getdata())
+    dark_ratio = sum(1 for pixel in pixels if pixel < 120) / len(pixels)
+    deep_shadow_ratio = sum(1 for pixel in pixels if pixel < 170) / len(pixels)
+    assert dark_ratio == 0
+    assert deep_shadow_ratio == 0
+
+
+def test_visual_package_pose_edge_guide_preserves_contours_without_color(monkeypatch, tmp_path):
+    from PIL import Image
+    from PIL import ImageDraw
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    source = tmp_path / "pose.png"
+    image = Image.new("RGB", (180, 320), (255, 255, 255))
+    draw = ImageDraw.Draw(image)
+    draw.ellipse((65, 20, 115, 70), fill=(250, 220, 180), outline=(30, 30, 30), width=4)
+    draw.rectangle((55, 70, 125, 240), fill=(240, 120, 40), outline=(30, 30, 30), width=4)
+    draw.line((90, 240, 40, 315), fill=(40, 30, 30), width=18)
+    draw.line((95, 240, 150, 315), fill=(40, 30, 30), width=18)
+    image.save(source)
+
+    guide_path = visual_package_tool._pose_composition_edge_guide_image(str(source))
+
+    assert guide_path is not None
+    guide = Image.open(guide_path).convert("RGB")
+    pixels = list(guide.getdata())
+    dark_ratio = sum(1 for pixel in pixels if max(pixel) < 80) / len(pixels)
+    white_ratio = sum(1 for pixel in pixels if min(pixel) > 245) / len(pixels)
+    assert 0.01 < dark_ratio < 0.35
+    assert white_ratio > 0.45
+    assert all(abs(r - g) <= 2 and abs(g - b) <= 2 for r, g, b in pixels[:: max(1, len(pixels) // 100)])
+
+
+def test_visual_package_pose_edge_guide_suppresses_interior_texture(monkeypatch, tmp_path):
+    from PIL import Image
+    from PIL import ImageDraw
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    source = tmp_path / "textured-pose.png"
+    image = Image.new("RGB", (180, 320), (255, 255, 255))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((50, 60, 130, 245), fill=(180, 180, 180), outline=(20, 20, 20), width=5)
+    for y in range(70, 235, 4):
+        draw.line((55, y, 125, y), fill=(30, 30, 30), width=1)
+    draw.line((90, 245, 35, 315), fill=(20, 20, 20), width=16)
+    draw.line((95, 245, 155, 315), fill=(20, 20, 20), width=16)
+    image.save(source)
+
+    guide_path = visual_package_tool._pose_composition_edge_guide_image(str(source))
+
+    assert guide_path is not None
+    guide = Image.open(guide_path).convert("L")
+    inner = guide.crop((65, 90, 115, 215))
+    inner_pixels = list(inner.getdata())
+    inner_dark_ratio = sum(1 for pixel in inner_pixels if pixel < 80) / len(inner_pixels)
+    assert inner_dark_ratio < 0.18
+
+
+@pytest.mark.asyncio
+async def test_visual_package_uses_pose_guide_without_raw_pose_reference(monkeypatch, tmp_path):
+    from PIL import Image
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ref1 = tmp_path / "character.png"
+    ref2 = tmp_path / "pose.png"
+    image = tmp_path / "image.png"
+    Image.new("RGB", (160, 240), (240, 240, 255)).save(ref1)
+    Image.new("RGB", (180, 320), (60, 120, 180)).save(ref2)
+    image.write_bytes(_ONE_PIXEL_PNG)
+    image_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(image),
+            "provider": "xai",
+            "model": "grok-imagine-image-quality",
+            "vision_observation": {
+                "reference_adherence": 0.92,
+                "character_identity_adherence": 0.92,
+                "pose_composition_adherence": 0.9,
+                "wardrobe_adherence": 0.9,
+                "face_quality": 0.9,
+                "visual_appeal": 0.9,
+                "composition": 0.9,
+                "stocking_quality": 0.9,
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "把 ref 1 的角色，套用 ref2 的姿勢，產出圖片即可",
+                "include_video": False,
+                "candidate_budget": 1,
+                "reference_conditioning_policy": "structure_guide",
+                "attachments": [str(ref1), str(ref2)],
+                "reference_binding": {
+                    "reference_order": [
+                        {"index": 1, "role_hint": "character_identity"},
+                        {"index": 2, "role_hint": "pose_composition"},
+                    ]
+                },
+            }
+        )
+    )
+
+    provider_refs = image_calls[0]["reference_image_urls"]
+    assert provider_refs[0] == str(ref1)
+    assert provider_refs[1] != str(ref2)
+    assert len(provider_refs) == 2
+    assert str(ref2) not in provider_refs
+    assert "reference_role_guides" in provider_refs[1]
+    assert Path(provider_refs[1]).is_file()
+    assert "provider image 2 is a derived pose/composition guide from user ref 2" in image_calls[0]["prompt"]
+    assert "derived pose/contour guide" not in image_calls[0]["prompt"]
+    assert "original pose reference is intentionally not sent" in image_calls[0]["prompt"]
+    assert payload["success"] is True
+    assert payload["generation_strategy"]["reference_conditioning"]["provider_reference_images"] == [
+        {"provider_index": 1, "index": 1, "role_hint": "character_identity", "conditioning": "original"},
+        {
+            "provider_index": 2,
+            "index": 2,
+            "role_hint": "pose_composition",
+            "conditioning": "pose_composition_guide",
+            "derived_from_index": 2,
+            "original_policy": "omitted_to_prevent_identity_drift",
+        },
+    ]
+
+
+def test_visual_package_diversifies_reference_conditioning_for_identity_pose_conflict(monkeypatch, tmp_path):
+    from PIL import Image
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ref1 = tmp_path / "character.png"
+    ref2 = tmp_path / "pose.png"
+    Image.new("RGB", (160, 240), (240, 240, 255)).save(ref1)
+    Image.new("RGB", (180, 320), (60, 120, 180)).save(ref2)
+    image_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_path = tmp_path / f"image-{len(image_calls)}.png"
+        image_path.write_bytes(_ONE_PIXEL_PNG)
+        image_calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(image_path),
+            "provider": "xai",
+            "model": "grok-imagine-image-quality",
+            "vision_observation": {
+                "reference_adherence": 0.92,
+                "character_identity_adherence": 0.92,
+                "pose_composition_adherence": 0.9,
+                "wardrobe_adherence": 0.9,
+                "face_quality": 0.9,
+                "visual_appeal": 0.9,
+                "composition": 0.9,
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        asyncio.run(
+            visual_package_tool._handle_visual_package_generate(
+                {
+                    "prompt": "把 ref 1 的角色，套用 ref2 的姿勢，產出圖片即可",
+                    "include_video": False,
+                    "candidate_budget": 2,
+                    "attachments": [str(ref1), str(ref2)],
+                    "reference_binding": {
+                        "reference_order": [
+                            {"index": 1, "role_hint": "character_identity"},
+                            {"index": 2, "role_hint": "pose_composition"},
+                        ]
+                    },
+                }
+            )
+        )
+    )
+
+    assert payload["success"] is True
+    assert len(image_calls) == 2
+    assert image_calls[0]["reference_image_urls"] == [str(ref1), str(ref2)]
+    assert "role-locked original pose/composition reference" in image_calls[0]["prompt"]
+    assert image_calls[1]["reference_image_urls"][0] == str(ref1)
+    assert str(ref2) not in image_calls[1]["reference_image_urls"]
+    assert "derived pose/composition guide" in image_calls[1]["prompt"]
+    assert "pose/contour guide" not in image_calls[1]["prompt"]
+    assert payload["generation_strategy"]["reference_conditioning_variants"] == [
+        "role_locked_originals",
+        "structure_guide",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_visual_package_defaults_image_aspect_to_pose_reference(monkeypatch, tmp_path):
+    from PIL import Image
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ref1 = tmp_path / "character.png"
+    ref2 = tmp_path / "pose.png"
+    image = tmp_path / "image.png"
+    Image.new("RGB", (240, 240), (240, 240, 255)).save(ref1)
+    Image.new("RGB", (720, 1280), (60, 120, 180)).save(ref2)
+    image.write_bytes(_ONE_PIXEL_PNG)
+    image_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(image),
+            "provider": "xai",
+            "model": "grok-imagine-image-quality",
+            "vision_observation": {
+                "reference_adherence": 0.92,
+                "character_identity_adherence": 0.92,
+                "pose_composition_adherence": 0.9,
+                "wardrobe_adherence": 0.9,
+                "face_quality": 0.9,
+                "visual_appeal": 0.9,
+                "composition": 0.9,
+                "stocking_quality": 0.9,
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "把 ref 1 的角色，套用 ref2 的姿勢，產出圖片即可",
+                "include_video": False,
+                "candidate_budget": 1,
+                "attachments": [str(ref1), str(ref2)],
+                "reference_binding": {
+                    "reference_order": [
+                        {"index": 1, "role_hint": "character_identity"},
+                        {"index": 2, "role_hint": "pose_composition"},
+                    ]
+                },
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert image_calls[0]["aspect_ratio"] == "portrait"
+    assert payload["generation_strategy"]["aspect_ratio"] == "9:16"
+
+
+@pytest.mark.asyncio
+async def test_visual_package_replaces_raw_pose_reference_when_user_references_fill_provider_slots(monkeypatch, tmp_path):
+    from PIL import Image
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ref1 = tmp_path / "character.png"
+    ref2 = tmp_path / "pose.png"
+    ref3 = tmp_path / "wardrobe.png"
+    image = tmp_path / "image.png"
+    for ref in (ref1, ref2, ref3):
+        Image.new("RGB", (180, 320), (60, 120, 180)).save(ref)
+    image.write_bytes(_ONE_PIXEL_PNG)
+    image_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(image),
+            "provider": "xai",
+            "model": "grok-imagine-image-quality",
+            "vision_observation": {
+                "reference_adherence": 0.92,
+                "character_identity_adherence": 0.92,
+                "pose_composition_adherence": 0.9,
+                "wardrobe_adherence": 0.9,
+                "face_quality": 0.9,
+                "visual_appeal": 0.9,
+                "composition": 0.9,
+                "stocking_quality": 0.9,
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "ref1 是角色，ref2 是姿勢，ref3 是服裝",
+                "include_video": False,
+                "candidate_budget": 1,
+                "reference_conditioning_policy": "structure_guide",
+                "attachments": [str(ref1), str(ref2), str(ref3)],
+                "reference_binding": {
+                    "reference_order": [
+                        {"index": 1, "role_hint": "character_identity"},
+                        {"index": 2, "role_hint": "pose_composition"},
+                        {"index": 3, "role_hint": "wardrobe"},
+                    ]
+                },
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    provider_refs = image_calls[0]["reference_image_urls"]
+    assert provider_refs[0] == str(ref1)
+    assert provider_refs[1] != str(ref2)
+    assert provider_refs[2] == str(ref3)
+    assert str(ref2) not in provider_refs
+    assert "provider image 3 = user ref 3" in image_calls[0]["prompt"]
+    assert "provider image 2 is a derived pose/composition guide from user ref 2" in image_calls[0]["prompt"]
+    assert "pose/contour guide" not in image_calls[0]["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_visual_package_pose_guides_share_provider_slot_budget_across_multiple_pose_refs(monkeypatch, tmp_path):
+    from PIL import Image
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    pose1 = tmp_path / "pose-one.png"
+    pose2 = tmp_path / "pose-two.png"
+    image = tmp_path / "image.png"
+    Image.new("RGB", (180, 320), (60, 120, 180)).save(pose1)
+    Image.new("RGB", (200, 320), (90, 80, 150)).save(pose2)
+    image.write_bytes(_ONE_PIXEL_PNG)
+    image_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(image),
+            "provider": "xai",
+            "model": "grok-imagine-image-quality",
+            "vision_observation": {
+                "reference_adherence": 0.92,
+                "character_identity_adherence": 0.92,
+                "pose_composition_adherence": 0.9,
+                "face_quality": 0.9,
+                "visual_appeal": 0.9,
+                "composition": 0.9,
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "請融合 ref1 和 ref2 的姿勢構圖，產出一張新圖片",
+                "include_video": False,
+                "candidate_budget": 1,
+                "reference_conditioning_policy": "structure_contour",
+                "attachments": [str(pose1), str(pose2)],
+                "reference_binding": {
+                    "reference_order": [
+                        {"index": 1, "role_hint": "pose_composition"},
+                        {"index": 2, "role_hint": "pose_composition"},
+                    ]
+                },
+            }
+        )
+    )
+
+    provider_refs = image_calls[0]["reference_image_urls"]
+    assert payload["success"] is True
+    assert len(provider_refs) == 3
+    assert str(pose1) not in provider_refs
+    assert str(pose2) not in provider_refs
+    conditionings = [
+        item["conditioning"]
+        for item in payload["generation_strategy"]["reference_conditioning"]["provider_reference_images"]
+    ]
+    assert conditionings == [
+        "pose_composition_guide",
+        "pose_composition_guide",
+        "pose_composition_edge_guide",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_visual_package_records_references_omitted_by_provider_slot_budget(monkeypatch, tmp_path):
+    from PIL import Image
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    refs = [tmp_path / f"ref-{index}.png" for index in range(1, 5)]
+    image = tmp_path / "image.png"
+    for index, ref in enumerate(refs, start=1):
+        Image.new("RGB", (180, 320), (40 * index, 60, 180)).save(ref)
+    image.write_bytes(_ONE_PIXEL_PNG)
+    image_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(image),
+            "provider": "xai",
+            "model": "grok-imagine-image-quality",
+            "vision_observation": {
+                "reference_adherence": 0.92,
+                "character_identity_adherence": 0.92,
+                "pose_composition_adherence": 0.9,
+                "wardrobe_adherence": 0.9,
+                "face_quality": 0.9,
+                "visual_appeal": 0.9,
+                "composition": 0.9,
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "ref1 是角色，ref2 是姿勢，ref3 是服裝，ref4 是風格",
+                "include_video": False,
+                "candidate_budget": 1,
+                "attachments": [str(ref) for ref in refs],
+                "reference_binding": {
+                    "reference_order": [
+                        {"index": 1, "role_hint": "character_identity"},
+                        {"index": 2, "role_hint": "pose_composition"},
+                        {"index": 3, "role_hint": "wardrobe"},
+                        {"index": 4, "role_hint": "style_reference"},
+                    ]
+                },
+            }
+        )
+    )
+
+    assert len(image_calls[0]["reference_image_urls"]) == 3
+    conditioning = payload["generation_strategy"]["reference_conditioning"]
+    assert conditioning["omitted_provider_references"] == [
+        {"index": 4, "role_hint": "style_reference", "reason": "provider_reference_slot_budget"}
+    ]
+
+
 def test_visual_package_internal_image_generation_disables_image_agent_route(monkeypatch):
     from tools import image_generation_tool
     from tools import visual_package_tool
@@ -258,6 +854,7 @@ def test_visual_package_internal_image_generation_disables_image_agent_route(mon
 
     assert payload["success"] is True
     assert captured["_disable_visual_agent_route"] is True
+    assert captured["_disable_visual_tracking"] is True
 
 
 @pytest.mark.asyncio
@@ -297,6 +894,113 @@ async def test_visual_package_forwards_explicit_image_provider_override(monkeypa
     assert payload["success"] is True
     assert image_calls[0]["_provider"] == "xai"
     assert image_calls[0]["reference_image_urls"] == [str(reference)]
+
+
+@pytest.mark.asyncio
+async def test_visual_package_records_image_provider_source_in_generation_strategy(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image = tmp_path / "image.png"
+    image.write_bytes(_ONE_PIXEL_PNG)
+
+    def fake_generate_image(**kwargs):
+        return {
+            "success": True,
+            "image": str(image),
+            "provider": "xai",
+            "model": "grok-imagine-image-quality",
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "幫我產出一張圖片",
+                "image_provider": "xai",
+                "image_provider_source": "visual_agent_default",
+                "include_video": False,
+                "candidate_budget": 1,
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["generation_strategy"]["image_provider"] == "xai"
+    assert payload["generation_strategy"]["image_provider_source"] == "visual_agent_default"
+
+
+def test_visual_package_records_reference_inputs_in_attempt_ledger(monkeypatch, tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image = tmp_path / "image.png"
+    image.write_bytes(_ONE_PIXEL_PNG)
+
+    def fake_generate_image(**kwargs):
+        return {
+            "success": True,
+            "image": str(image),
+            "provider": "xai",
+            "model": "grok-imagine-image-quality",
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        asyncio.run(
+            visual_package_tool._handle_visual_package_generate(
+                {
+                    "prompt": "把 ref1 的角色套用 ref2 的姿勢，產出圖片",
+                    "attachments": ["/tmp/character.png", "/tmp/pose.png"],
+                    "reference_binding": {
+                        "mode": "ordered_references",
+                        "reference_order_source": "user_visible_upload_order",
+                        "role_policy": "derive_from_user_prompt",
+                        "reference_order": [
+                            {"index": 1, "role_hint": "character_identity"},
+                            {"index": 2, "role_hint": "pose_composition"},
+                        ],
+                    },
+                    "include_image": True,
+                    "include_video": False,
+                    "inline_vision_judge": False,
+                    "candidate_budget": 1,
+                },
+            )
+        )
+    )
+
+    assert payload["success"] is False
+    assert payload["error_type"] == "delivery_gate_blocked"
+    assert payload["delivery_gate"]["image"]["reason"] == "active_learning_review_required"
+    ledger = VisualAttemptLedger(default_visual_ledger_path())
+    attempts = ledger._list("visual_attempts")
+    assert len(attempts) >= 1
+    attempt = sorted(attempts, key=lambda item: item["candidate_index"])[0]
+    assert attempt["input_artifacts_json"] == [
+        {
+            "index": 1,
+            "role_hint": "character_identity",
+            "uri": "/tmp/character.png",
+            "source": "user_visible_upload_order",
+        },
+        {
+            "index": 2,
+            "role_hint": "pose_composition",
+            "uri": "/tmp/pose.png",
+            "source": "user_visible_upload_order",
+        },
+    ]
+    parameters = attempt.get("parameters_requested_json") or attempt.get("parameters_requested")
+    assert parameters["reference_image_count"] == 2
+    assert parameters["reference_binding"]["reference_order"][0]["role_hint"] == (
+        "character_identity"
+    )
+    assert ledger.get_request(payload["visual_request_id"])["status"] == "failed"
 
 
 @pytest.mark.asyncio
@@ -380,6 +1084,220 @@ async def test_visual_package_followup_reuses_session_visual_references(monkeypa
         "/tmp/original-ref.png",
     ]
     assert payload["generation_strategy"]["image_reference_source"] == "session_visual_context"
+
+
+def test_visual_package_routes_controlled_grok_web_provider_when_enabled(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_GROK_WEB_IMAGINE", "1")
+    image = tmp_path / "grok-web.png"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    image_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(image),
+            "provider": "grok-web-imagine",
+            "model": "grok-web-imagine",
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        asyncio.run(
+            visual_package_tool._handle_visual_package_generate(
+                {
+                    "prompt": "請用 Grok Web Imagine 產出更精緻的圖片",
+                    "include_image": True,
+                    "include_video": False,
+                    "candidate_budget": 1,
+                    "image_provider": "grok-web-imagine",
+                    "image_provider_source": "prompt_override",
+                    "visual_agent_handoff_mode": "pre_llm_direct",
+                }
+            )
+        )
+    )
+
+    assert payload["success"] is True
+    assert image_calls[0]["_provider"] == "grok-web-imagine"
+    assert payload["generation_strategy"]["image_provider"] == "grok-web-imagine"
+    assert payload["generation_strategy"]["grok_web_imagine_policy"] == {
+        "enabled": True,
+        "mode": "controlled_visual_agent_provider",
+        "source": "prompt_override",
+        "handoff_mode": "pre_llm_direct",
+    }
+
+
+def test_visual_package_grok_web_polish_pass_edits_selected_candidate(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    source = tmp_path / "source.png"
+    polished = tmp_path / "polished.png"
+    source.write_bytes(_ONE_PIXEL_PNG)
+    polished.write_bytes(_ONE_PIXEL_PNG + b"polished")
+    image_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        if len(image_calls) == 1:
+            return {
+                "success": True,
+                "image": str(source),
+                "provider": "xai",
+                "model": "grok-imagine-image-quality",
+                "vision_observation": {
+                    "reference_adherence": 0.72,
+                    "subject_quality": 0.72,
+                    "face_quality": 0.72,
+                    "visual_appeal": 0.72,
+                    "composition": 0.72,
+                },
+            }
+        return {
+            "success": True,
+            "image": str(polished),
+            "provider": "grok-web-imagine",
+            "model": "grok-web-imagine",
+            "vision_observation": {
+                "reference_adherence": 0.95,
+                "subject_quality": 0.95,
+                "face_quality": 0.95,
+                "visual_appeal": 0.95,
+                "composition": 0.95,
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        asyncio.run(
+            visual_package_tool._handle_visual_package_generate(
+                {
+                    "prompt": "請產出精緻角色圖片",
+                    "include_image": True,
+                    "include_video": False,
+                    "candidate_budget": 1,
+                    "image_provider": "xai",
+                    "polish_provider": "grok-web-imagine",
+                }
+            )
+        )
+    )
+
+    assert payload["success"] is True
+    assert len(image_calls) == 2
+    assert image_calls[0]["_provider"] == "xai"
+    assert image_calls[1]["_provider"] == "grok-web-imagine"
+    assert image_calls[1]["image_url"] == str(source)
+    assert image_calls[1]["reference_image_urls"] is None
+    assert "polish" in image_calls[1]["prompt"].lower()
+    assert payload["images"] == [str(polished)]
+    assert payload["generation_strategy"]["polish_pass"] == {
+        "enabled": True,
+        "provider": "grok-web-imagine",
+        "selected_source_image": str(source),
+        "status": "completed",
+    }
+
+
+def test_visual_package_followup_uses_previous_selected_image_as_edit_anchor(monkeypatch, tmp_path):
+    from gateway.session_context import (
+        reset_visual_reference_context,
+        set_visual_reference_context,
+    )
+    from PIL import Image
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    anchor = tmp_path / "previous-selected.png"
+    character = tmp_path / "character.png"
+    pose = tmp_path / "pose.png"
+    output = tmp_path / "edited.png"
+    Image.new("RGB", (768, 1344), (230, 230, 245)).save(anchor)
+    Image.new("RGB", (768, 1344), (245, 245, 255)).save(character)
+    Image.new("RGB", (768, 1344), (220, 210, 200)).save(pose)
+    output.write_bytes(_ONE_PIXEL_PNG)
+    image_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(output),
+            "provider": "xai",
+            "model": "grok-imagine-image-quality",
+            "vision_observation": {
+                "reference_adherence": 0.92,
+                "character_identity_adherence": 0.92,
+                "pose_composition_adherence": 0.9,
+                "wardrobe_adherence": 0.9,
+                "face_quality": 0.9,
+                "visual_appeal": 0.9,
+                "composition": 0.9,
+                "stocking_quality": 0.9,
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    ref_token = set_visual_reference_context(
+        [
+            {
+                "uri": str(anchor),
+                "role_hint": "edit_anchor",
+                "source": "previous_selected_artifact",
+            },
+            {
+                "uri": str(character),
+                "role_hint": "character_identity",
+                "source": "previous_tool_reference",
+                "user_ref_index": 1,
+            },
+            {
+                "uri": str(pose),
+                "role_hint": "pose_composition",
+                "source": "previous_tool_reference",
+                "user_ref_index": 2,
+            },
+        ]
+    )
+    try:
+        payload = json.loads(
+            asyncio.run(
+                visual_package_tool._handle_visual_package_generate(
+                    {
+                        "prompt": "很好，但足底應該也包含連身衣，而不是露出來的裸足，請改進",
+                        "include_image": True,
+                        "include_video": False,
+                        "candidate_budget": 1,
+                    }
+                )
+            )
+        )
+    finally:
+        reset_visual_reference_context(ref_token)
+
+    assert payload["success"] is True
+    assert image_calls[0]["reference_image_urls"] == [str(anchor), str(character), str(pose)]
+    assert image_calls[0]["aspect_ratio"] == "portrait"
+    prompt = image_calls[0]["prompt"]
+    assert "previous selected output" in prompt
+    assert "edit anchor" in prompt
+    assert "user ref 1 role: character_identity" in prompt
+    assert "user ref 2 role: pose_composition" in prompt
+    assert "change only the requested details" in prompt
+    assert payload["generation_strategy"]["image_reference_source"] == "session_visual_context"
+    assert payload["generation_strategy"]["reference_binding"]["reference_order"][0] == {
+        "index": 1,
+        "role_hint": "edit_anchor",
+        "user_ref_index": "previous_selected_output",
+    }
 
 
 @pytest.mark.asyncio
@@ -4745,6 +5663,100 @@ async def test_visual_package_repairs_blocked_image_before_delivery(monkeypatch,
 
 
 @pytest.mark.asyncio
+async def test_visual_package_uses_reference_role_repair_for_identity_drift(monkeypatch, tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ref1 = tmp_path / "ref1.png"
+    ref2 = tmp_path / "ref2.png"
+    bad_image = tmp_path / "bad-reference-transfer.png"
+    good_image = tmp_path / "good-reference-transfer.png"
+    for image in (ref1, ref2, bad_image, good_image):
+        image.write_bytes(_ONE_PIXEL_PNG)
+    calls = []
+
+    def fake_generate_image(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return {
+                "success": True,
+                "image": str(bad_image),
+                "provider": "fixture",
+                "model": "image",
+                "vision_observation": {
+                    "reference_adherence": 0.42,
+                    "character_identity_adherence": 0.2,
+                    "pose_composition_adherence": 0.88,
+                    "wardrobe_adherence": 0.25,
+                    "face_quality": 0.8,
+                    "visual_appeal": 0.82,
+                    "composition": 0.86,
+                    "stocking_quality": 0.8,
+                    "artifact_defects": ["reference_identity_drift"],
+                },
+            }
+        return {
+            "success": True,
+            "image": str(good_image),
+            "provider": "fixture",
+            "model": "image",
+            "vision_observation": {
+                "reference_adherence": 0.92,
+                "character_identity_adherence": 0.92,
+                "pose_composition_adherence": 0.9,
+                "wardrobe_adherence": 0.9,
+                "face_quality": 0.9,
+                "visual_appeal": 0.9,
+                "composition": 0.9,
+                "stocking_quality": 0.9,
+                "artifact_defects": [],
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "把 ref 1 的角色，套用 ref2 的姿勢，產出圖片即可",
+                "include_video": False,
+                "candidate_budget": 1,
+                "attachments": [str(ref1), str(ref2)],
+                "reference_binding": {
+                    "reference_order": [
+                        {"index": 1, "role_hint": "character_identity"},
+                        {"index": 2, "role_hint": "pose_composition"},
+                    ]
+                },
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["images"] == [str(good_image)]
+    assert len(calls) == 2
+    assert "Reference role repair pass" in calls[1]["prompt"]
+    assert "Use ref 1 only for character_identity" in calls[1]["prompt"]
+    assert "Use ref 2 only for pose_composition" in calls[1]["prompt"]
+    assert "Do not copy identity, face, hair, wardrobe, color palette, or character traits" in calls[1]["prompt"]
+    assert payload["delivery_gate"]["image"]["allowed"] is True
+    assert payload["delivery_gate"]["image"]["repair_attempted"] is True
+    assert payload["delivery_gate"]["image"]["repaired_from"]["reason"] == "active_learning_review_required"
+    assert payload["delivery_gate"]["image"]["repaired_from"]["quality_issues"] == ["reference_identity_drift"]
+    attempts = VisualAttemptLedger(default_visual_ledger_path())._list("visual_attempts")
+    repair_attempts = [
+        attempt
+        for attempt in attempts
+        if isinstance(attempt.get("metadata"), dict)
+        and isinstance(attempt["metadata"].get("quality_repair"), dict)
+    ]
+    assert len(repair_attempts) == 1
+    assert repair_attempts[0]["metadata"]["quality_repair"]["reason"] == "active_learning_review_required"
+
+
+@pytest.mark.asyncio
 async def test_visual_package_adds_candidate_for_low_preference_dimension_before_repair(monkeypatch, tmp_path):
     from tools import visual_package_tool
 
@@ -5226,6 +6238,169 @@ def test_inline_vision_prompt_requests_preference_dimension_metrics():
     assert "glamour_impact" in INLINE_VISION_JUDGE_PROMPT
     assert "fashion_material_quality" in INLINE_VISION_JUDGE_PROMPT
     assert "pose_composition" in INLINE_VISION_JUDGE_PROMPT
+    assert "character_identity_adherence" in INLINE_VISION_JUDGE_PROMPT
+    assert "pose_composition_adherence" in INLINE_VISION_JUDGE_PROMPT
+    assert "reference_identity_drift" in INLINE_VISION_JUDGE_PROMPT
+    assert "guide_artifact_contamination" in INLINE_VISION_JUDGE_PROMPT
+    assert "melted_or_wavy_contours" in INLINE_VISION_JUDGE_PROMPT
+    assert "distorted_anatomy" in INLINE_VISION_JUDGE_PROMPT
+
+
+def test_reference_aware_inline_vision_uses_contact_sheet(monkeypatch, tmp_path):
+    from tools import vision_tools
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ref1 = tmp_path / "ref1.png"
+    ref2 = tmp_path / "ref2.png"
+    candidate = tmp_path / "candidate.png"
+    from PIL import Image
+
+    for image, color in (
+        (ref1, (240, 240, 255)),
+        (ref2, (255, 240, 220)),
+        (candidate, (230, 255, 240)),
+    ):
+        Image.new("RGB", (32, 48), color).save(image)
+
+    seen = {}
+
+    async def fake_vision_analyze_tool(image_url, user_prompt, model=None):
+        seen["image_url"] = image_url
+        seen["user_prompt"] = user_prompt
+        seen["model"] = model
+        return json.dumps(
+            {
+                "success": True,
+                "analysis": {
+                    "reference_adherence": 0.4,
+                    "character_identity_adherence": 0.2,
+                    "pose_composition_adherence": 0.9,
+                    "wardrobe_adherence": 0.3,
+                    "artifact_defects": ["reference_identity_drift"],
+                },
+            }
+        )
+
+    monkeypatch.setattr(vision_tools, "vision_analyze_tool", fake_vision_analyze_tool)
+
+    result = visual_package_tool.analyze_candidate_with_vision_tool(
+        {
+            "artifact_path": str(candidate),
+            "input_artifacts": [
+                {"index": 1, "role_hint": "character_identity", "uri": str(ref1)},
+                {"index": 2, "role_hint": "pose_composition", "uri": str(ref2)},
+            ],
+        }
+    )
+
+    assert result["analysis"]["character_identity_adherence"] == 0.2
+    assert seen["image_url"] != str(candidate)
+    assert Path(seen["image_url"]).is_file()
+    assert "ref 1 role: character_identity" in seen["user_prompt"]
+    assert "ref 2 role: pose_composition" in seen["user_prompt"]
+    assert "candidate output" in seen["user_prompt"]
+
+
+def test_delivery_gate_blocks_missing_reference_role_evidence_for_reference_request():
+    from tools import visual_package_tool
+
+    gate = visual_package_tool._delivery_gate_decision(
+        {"action": "ask_user"},
+        {
+            "artifact_id": "var_demo",
+            "quality_issues": ["reference_role_evidence_missing"],
+            "reward": {"dimensions": {"preference_dimension_fit": 0.9}},
+        },
+        prompt="把 ref 1 的角色，套用 ref2 的姿勢，產出圖片即可",
+    )
+
+    assert gate["allowed"] is False
+    assert gate["reason"] == "active_learning_review_required"
+    assert gate["quality_issues"] == ["reference_role_evidence_missing"]
+
+
+def test_delivery_gate_blocks_detected_reference_identity_drift():
+    from tools import visual_package_tool
+
+    gate = visual_package_tool._delivery_gate_decision(
+        {"action": "ask_user"},
+        {
+            "artifact_id": "var_demo",
+            "quality_issues": ["reference_identity_drift"],
+            "reward": {"dimensions": {"preference_dimension_fit": 0.92}},
+        },
+        prompt="把 ref 1 的角色，套用 ref2 的姿勢，產出圖片即可",
+    )
+
+    assert gate["allowed"] is False
+    assert gate["reason"] == "active_learning_review_required"
+    assert gate["quality_issues"] == ["reference_identity_drift"]
+
+
+def test_package_error_describes_reference_role_gate_without_internal_label():
+    from tools import visual_package_tool
+
+    package_error = visual_package_tool._package_error(
+        success=False,
+        delivery_gate={
+            "image": {
+                "allowed": False,
+                "reason": "active_learning_review_required",
+                "quality_issues": ["reference_identity_drift"],
+                "repair_attempted": True,
+            }
+        },
+    )
+
+    assert package_error["error_type"] == "delivery_gate_blocked"
+    assert package_error["error"] == "reference role transfer did not pass visual quality validation after repair"
+
+
+def test_delivery_recovery_summary_tracks_blocked_candidate_without_delivery(tmp_path):
+    from tools import visual_package_tool
+
+    blocked_image = tmp_path / "blocked.png"
+    blocked_image.write_bytes(_ONE_PIXEL_PNG)
+
+    summary = visual_package_tool._delivery_recovery_summary(
+        requested_image=True,
+        wants_video=False,
+        selected_images=[],
+        selected_videos=[],
+        generation_payloads={
+            "image": {
+                "success": True,
+                "image": str(blocked_image),
+                "provider": "xai",
+                "model": "grok-imagine-image-quality",
+            }
+        },
+        delivery_gate={
+            "image": {
+                "allowed": False,
+                "reason": "active_learning_review_required",
+                "quality_issues": ["reference_identity_drift"],
+                "repair_attempted": True,
+            }
+        },
+    )
+
+    assert summary["status"] == "blocked"
+    assert summary["blocked_modalities"] == ["image"]
+    assert summary["generated_candidate_available"] is True
+    assert summary["actions"] == [
+        {
+            "modality": "image",
+            "reason": "active_learning_review_required",
+            "quality_issues": ["reference_identity_drift"],
+            "repair_attempted": True,
+            "candidate_budget_escalated": False,
+            "polish_pass_attempted": False,
+            "recommended_action": "rerun_reference_repair_or_grok_web_polish",
+        }
+    ]
+    assert summary["deliver_rejected_artifact"] is False
 
 
 @pytest.mark.asyncio

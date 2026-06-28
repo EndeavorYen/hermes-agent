@@ -883,6 +883,8 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
         err = data.get("error") or data.get("message")
         if err and (data.get("success") is False or "error" in data):
             return True, f" [{_trim_error(str(err))}]"
+        if data.get("success") is True:
+            return False, ""
 
     # Generic heuristic for non-terminal tools
     # Multimodal tool results (dicts with _multimodal=True) are not strings —
@@ -1070,5 +1072,4 @@ def get_cute_tool_message(
 # =========================================================================
 # Honcho session line (one-liner with clickable OSC 8 hyperlink)
 # =========================================================================
-
 

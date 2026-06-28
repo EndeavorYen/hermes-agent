@@ -67,6 +67,171 @@ def test_quality_judge_lowers_reference_adherence_when_reference_evidence_missin
     assert "reference_evidence_missing" in result["uncertainty_reasons"]
 
 
+def test_quality_judge_flags_missing_role_evidence_for_reference_binding():
+    from agent.visual.judges.quality import judge_visual_quality
+
+    result = judge_visual_quality(
+        {
+            "artifact_id": "var_demo",
+            "kind": "image",
+            "hard_gate": {"passed": True, "delivery_possible": True},
+            "scores": {"aspect_match": 0.9, "resolution": 0.7, "final_score": 0.8},
+        },
+        request_context={
+            "has_reference_image": True,
+            "reference_binding": {
+                "reference_order": [
+                    {"index": 1, "role_hint": "character_identity"},
+                    {"index": 2, "role_hint": "pose_composition"},
+                ]
+            },
+        },
+        vision_observation={
+            "reference_adherence": 0.9,
+            "visual_appeal": 0.8,
+            "composition": 0.8,
+            "confidence": 0.8,
+        },
+    )
+
+    assert "reference_role_evidence_missing" in result["quality_issues"]
+    assert "reference_role_evidence_missing" in result["uncertainty_reasons"]
+
+
+def test_quality_judge_uses_role_specific_reference_evidence():
+    from agent.visual.judges.quality import judge_visual_quality
+
+    result = judge_visual_quality(
+        {
+            "artifact_id": "var_demo",
+            "kind": "image",
+            "hard_gate": {"passed": True, "delivery_possible": True},
+            "scores": {"aspect_match": 0.9, "resolution": 0.8, "final_score": 0.8},
+        },
+        request_context={
+            "has_reference_image": True,
+            "reference_binding": {
+                "reference_order": [
+                    {"index": 1, "role_hint": "character_identity"},
+                    {"index": 2, "role_hint": "pose_composition"},
+                ]
+            },
+        },
+        vision_observation={
+            "reference_adherence": 0.8,
+            "character_identity_adherence": 0.92,
+            "pose_composition_adherence": 0.88,
+            "visual_appeal": 0.82,
+            "composition": 0.8,
+            "confidence": 0.8,
+        },
+    )
+
+    assert "reference_role_evidence_missing" not in result["quality_issues"]
+    assert result["scores"]["reference_adherence"] >= 0.85
+
+
+def test_quality_judge_accepts_edit_anchor_reference_adherence_evidence():
+    from agent.visual.judges.quality import judge_visual_quality
+
+    result = judge_visual_quality(
+        {
+            "artifact_id": "var_demo",
+            "kind": "image",
+            "hard_gate": {"passed": True, "delivery_possible": True},
+            "scores": {"aspect_match": 0.9, "resolution": 0.8, "final_score": 0.8},
+        },
+        request_context={
+            "has_reference_image": True,
+            "reference_binding": {
+                "reference_order": [
+                    {"index": 1, "role_hint": "edit_anchor"},
+                    {"index": 2, "role_hint": "character_identity"},
+                    {"index": 3, "role_hint": "pose_composition"},
+                ]
+            },
+        },
+        vision_observation={
+            "reference_adherence": 0.9,
+            "character_identity_adherence": 0.92,
+            "pose_composition_adherence": 0.88,
+            "visual_appeal": 0.82,
+            "composition": 0.8,
+            "confidence": 0.8,
+        },
+    )
+
+    assert "reference_role_evidence_missing" not in result["quality_issues"]
+
+
+def test_quality_judge_flags_low_character_identity_adherence():
+    from agent.visual.judges.quality import judge_visual_quality
+
+    result = judge_visual_quality(
+        {
+            "artifact_id": "var_demo",
+            "kind": "image",
+            "hard_gate": {"passed": True, "delivery_possible": True},
+            "scores": {"aspect_match": 0.9, "resolution": 0.8, "final_score": 0.8},
+        },
+        request_context={
+            "has_reference_image": True,
+            "category": "character",
+            "reference_binding": {
+                "reference_order": [
+                    {"index": 1, "role_hint": "character_identity"},
+                    {"index": 2, "role_hint": "pose_composition"},
+                ]
+            },
+        },
+        vision_observation={
+            "reference_adherence": 0.82,
+            "character_identity_adherence": 0.22,
+            "pose_composition_adherence": 0.86,
+            "visual_appeal": 0.8,
+            "composition": 0.8,
+            "confidence": 0.8,
+        },
+    )
+
+    assert "reference_identity_drift" in result["quality_issues"]
+    assert result["scores"]["reference_adherence"] < 0.6
+
+
+def test_quality_judge_prefers_explicit_role_evidence_over_generic_alias():
+    from agent.visual.judges.quality import judge_visual_quality
+
+    result = judge_visual_quality(
+        {
+            "artifact_id": "var_demo",
+            "kind": "image",
+            "hard_gate": {"passed": True, "delivery_possible": True},
+            "scores": {"aspect_match": 0.9, "resolution": 0.8, "final_score": 0.8},
+        },
+        request_context={
+            "has_reference_image": True,
+            "reference_binding": {
+                "reference_order": [
+                    {"index": 1, "role_hint": "character_identity"},
+                    {"index": 2, "role_hint": "pose_composition"},
+                ]
+            },
+        },
+        vision_observation={
+            "reference_adherence": 0.9,
+            "character_identity_adherence": 0.18,
+            "identity_adherence": 0.95,
+            "pose_composition_adherence": 0.9,
+            "visual_appeal": 0.8,
+            "composition": 0.8,
+            "confidence": 0.8,
+        },
+    )
+
+    assert "reference_identity_drift" in result["quality_issues"]
+    assert result["scores"]["reference_adherence"] < 0.6
+
+
 def test_quality_judge_scores_video_motion_from_duration_score():
     from agent.visual.judges.quality import judge_visual_quality
 
@@ -253,6 +418,32 @@ def test_quality_judge_maps_candidate_grid_defect_to_source_frame_issue():
     )
 
     assert result["quality_issues"] == ["source_frame_grid"]
+
+
+def test_quality_judge_maps_guide_contamination_to_composition_issue():
+    from agent.visual.judges.quality import judge_visual_quality
+
+    result = judge_visual_quality(
+        {
+            "artifact_id": "var_contaminated",
+            "kind": "image",
+            "hard_gate": {"passed": True, "delivery_possible": True},
+            "scores": {"resolution": 0.9, "aspect_match": 0.9, "final_score": 0.9},
+        },
+        request_context={"category": "fashion"},
+        vision_observation={
+            "visual_appeal": 0.86,
+            "composition": 0.78,
+            "confidence": 0.82,
+            "artifact_defects": [
+                "guide_artifact_contamination",
+                "melted_or_wavy_contours",
+                "distorted_anatomy",
+            ],
+        },
+    )
+
+    assert result["quality_issues"] == ["composition_bad"]
 
 
 def test_quality_judge_filters_portrait_reference_defects_for_product_context():

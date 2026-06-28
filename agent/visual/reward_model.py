@@ -16,6 +16,12 @@ _PREFERENCE_DIMENSION_SIGNALS = {
     "pose_composition": "composition_positive",
     "motion_quality": "motion_good",
 }
+DEFAULT_QUALITY_ISSUE_PENALTIES = {
+    "reference_identity_drift": 0.85,
+    "reference_role_evidence_missing": 0.65,
+    "composition_bad": 0.6,
+    "source_frame_grid": 1.0,
+}
 
 DEFAULT_WEIGHTS = {
     "artifact_validity": 0.20,
@@ -38,6 +44,8 @@ def score_visual_candidate(
 ) -> dict[str, Any]:
     hard_gate_passed = candidate.get("hard_gate", {}).get("passed") is True
     judge_scores = candidate.get("judge_scores") if isinstance(candidate.get("judge_scores"), dict) else {}
+    quality_issues = _string_list(candidate.get("quality_issues"))
+    issue_penalty = _candidate_issue_penalty(quality_issues, preference_profile)
     provider_reliability, delivery_health, provider_confidence = _provider_scores(
         candidate,
         provider_stats,
@@ -58,6 +66,7 @@ def score_visual_candidate(
         raw_score,
         dimensions["preference_dimension_fit"],
     )
+    final_score = _apply_quality_issue_soft_gate(final_score, issue_penalty)
     confidence = _confidence(
         hard_gate_passed=hard_gate_passed,
         judge_scores=judge_scores,
@@ -120,7 +129,9 @@ def _preference_fit(candidate: dict[str, Any], preference_profile: dict[str, Any
     quality_issues = _string_list(candidate.get("quality_issues"))
     sample_count = int(_coerce_float(preference_profile.get("sample_count", 0)))
     if sample_count <= 0:
-        return 0.45 if quality_issues else 0.5
+        if not quality_issues:
+            return 0.5
+        return _clamp(0.5 - _candidate_issue_penalty(quality_issues, preference_profile) * 0.35)
     signal_score = _candidate_signal_score(candidate, preference_profile)
     issue_penalty = _candidate_issue_penalty(quality_issues, preference_profile)
     return _clamp(0.5 + signal_score * 0.35 - issue_penalty * 0.35)
@@ -140,6 +151,13 @@ def _apply_preference_dimension_soft_gate(score: float, preference_dimension_fit
     if preference_dimension_fit >= 0.5:
         return round(_clamp(score), 4)
     multiplier = max(0.5, preference_dimension_fit + 0.45)
+    return round(_clamp(score) * multiplier, 4)
+
+
+def _apply_quality_issue_soft_gate(score: float, issue_penalty: float) -> float:
+    if issue_penalty <= 0.0:
+        return round(_clamp(score), 4)
+    multiplier = max(0.55, 1.0 - issue_penalty * 0.35)
     return round(_clamp(score) * multiplier, 4)
 
 
@@ -178,11 +196,11 @@ def _candidate_issue_penalty(quality_issues: list[str], preference_profile: dict
         return 0.0
     issues = preference_profile.get("issues")
     if not isinstance(issues, dict):
-        return 0.35
+        issues = {}
     values = [
         _coerce_float(issues.get(issue, {}).get("penalty"))
         if isinstance(issues.get(issue), dict)
-        else 0.35
+        else DEFAULT_QUALITY_ISSUE_PENALTIES.get(issue, 0.35)
         for issue in quality_issues
     ]
     return sum(values) / len(values)

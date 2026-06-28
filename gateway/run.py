@@ -1255,6 +1255,25 @@ def _build_visual_reference_context_for_turn(
     native_image_paths: Optional[List[str]] = None,
     limit: int = 3,
 ) -> List[str]:
+    return [
+        str(entry.get("uri") or "")
+        for entry in _build_visual_reference_context_entries_for_turn(
+            history,
+            current_message=current_message,
+            native_image_paths=native_image_paths,
+            limit=limit,
+        )
+        if str(entry.get("uri") or "").strip()
+    ]
+
+
+def _build_visual_reference_context_entries_for_turn(
+    history: List[Dict[str, Any]],
+    *,
+    current_message: Any,
+    native_image_paths: Optional[List[str]] = None,
+    limit: int = 3,
+) -> List[Dict[str, Any]]:
     """Build reusable visual references for follow-up image/video edits.
 
     This is intentionally separate from MEDIA auto-append: these paths are
@@ -1262,29 +1281,76 @@ def _build_visual_reference_context_for_turn(
     """
     try:
         from agent.visual.session_references import (
-            collect_recent_visual_reference_paths,
-            normalise_visual_reference_paths,
+            collect_recent_visual_reference_entries,
+            normalise_visual_reference_entries,
         )
     except Exception:
         return []
 
-    refs: List[str] = []
-    for ref in normalise_visual_reference_paths(native_image_paths or []):
-        if ref not in refs:
-            refs.append(ref)
-    current_refs = collect_recent_visual_reference_paths(
+    refs: List[Dict[str, Any]] = []
+
+    def append_entry(entry: Dict[str, Any]) -> None:
+        uri = str(entry.get("uri") or "").strip()
+        if not uri:
+            return
+        if any(str(existing.get("uri") or "").strip() == uri for existing in refs):
+            return
+        refs.append(entry)
+
+    for index, entry in enumerate(
+        normalise_visual_reference_entries(
+            native_image_paths or [],
+            default_role_hint="visual_reference",
+            default_source="current_user_upload",
+        ),
+        start=1,
+    ):
+        entry = dict(entry)
+        entry["source"] = "current_user_upload"
+        entry.setdefault("role_hint", "visual_reference")
+        entry.setdefault("user_ref_index", index)
+        append_entry(entry)
+    current_refs = collect_recent_visual_reference_entries(
         [{"role": "user", "content": current_message}],
         limit=limit,
     )
-    for ref in current_refs:
-        if ref not in refs:
-            refs.append(ref)
-    for ref in collect_recent_visual_reference_paths(history or [], limit=limit):
-        if ref not in refs:
-            refs.append(ref)
+    for entry in current_refs:
+        entry = dict(entry)
+        entry.setdefault("source", "current_message_reference")
+        if "user_ref_index" not in entry:
+            entry["user_ref_index"] = len(refs) + 1
+        append_entry(entry)
+    if refs and _prompt_mentions_numbered_visual_reference(current_message):
+        return refs[: max(0, limit)]
+    for entry in collect_recent_visual_reference_entries(history or [], limit=limit):
+        append_entry(dict(entry))
         if len(refs) >= limit:
             break
     return refs[: max(0, limit)]
+
+
+def _prompt_mentions_numbered_visual_reference(value: Any) -> bool:
+    text = _visual_reference_text(value).lower()
+    if not text:
+        return False
+    compact = re.sub(r"\s+", "", text)
+    return bool(
+        re.search(r"(?:ref|reference)\d+", compact)
+        or re.search(r"參考圖?\d+", compact)
+        or re.search(r"第(?:\d+|一|二|三|四|五|六|七|八|九|十)張", compact)
+    )
+
+
+def _visual_reference_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        if value.get("type") in {"text", "input_text"}:
+            return str(value.get("text") or "")
+        return _visual_reference_text(value.get("content"))
+    if isinstance(value, (list, tuple)):
+        return "\n".join(_visual_reference_text(item) for item in value)
+    return ""
 
 
 def _append_auto_append_media_tags_to_response(
@@ -16076,7 +16142,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         set_visual_reference_context,
                     )
 
-                    _visual_refs = _build_visual_reference_context_for_turn(
+                    _visual_refs = _build_visual_reference_context_entries_for_turn(
                         agent_history,
                         current_message=message,
                         native_image_paths=_native_imgs,

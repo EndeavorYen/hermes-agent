@@ -6,6 +6,7 @@ from agent.visual.judges.vision_observation import normalize_vision_observation
 
 
 VERSION = "visual_quality_judge.v0.1"
+ROLE_ADHERENCE_THRESHOLD = 0.5
 
 
 def judge_visual_quality(
@@ -69,6 +70,12 @@ def judge_visual_quality(
         composition = _composition(deterministic_scores)
         aspect_integrity = _clamp(deterministic_scores.get("aspect_match", 0.5))
         motion_quality = _motion_quality(candidate, deterministic_scores)
+    reference_adherence = _reference_adherence_with_role_scores(
+        reference_adherence,
+        vision,
+        request_context,
+        judge_sources,
+    )
     scores = {
         "reference_adherence": reference_adherence,
         "aesthetic_fit": aesthetic_fit,
@@ -214,6 +221,9 @@ def _surface_artifact_defects(
         if defect_text.startswith("weak_") or defect_text in {
             "aspect_mismatch",
             "duration_mismatch",
+            "distorted_anatomy",
+            "guide_artifact_contamination",
+            "melted_or_wavy_contours",
             "missing_video_dimensions",
             "missing_video_duration",
             "reference_identity_drift",
@@ -231,14 +241,21 @@ def _quality_issues_from_observation(
     preference_dimensions: dict[str, float] | None = None,
     uncertainty_reasons: list[str] | None = None,
 ) -> list[str]:
+    issues: list[str] = []
+    for issue in _reference_role_quality_issues(vision, request_context):
+        if issue not in issues:
+            issues.append(issue)
+    if _reference_role_evidence_missing(vision, request_context):
+        issues.append("reference_role_evidence_missing")
+        if uncertainty_reasons is not None:
+            uncertainty_reasons.append("reference_role_evidence_missing")
     defects = vision.get("artifact_defects")
     if not isinstance(defects, list):
-        return []
+        return issues
     portrait_like = _portrait_like_context(request_context)
     has_reference_image = request_context.get("has_reference_image") is True
     video_like = candidate_kind == "video"
     defect_set = {str(defect) for defect in defects}
-    issues: list[str] = []
     for defect in defects:
         defect_text = str(defect)
         issue = _issue_for_defect(defect_text)
@@ -277,6 +294,126 @@ def _quality_issues_from_observation(
         if issue not in issues:
             issues.append(issue)
     return issues
+
+
+def _reference_adherence_with_role_scores(
+    reference_adherence: float,
+    vision: dict[str, Any],
+    request_context: dict[str, Any],
+    judge_sources: dict[str, str],
+) -> float:
+    role_scores = _reference_role_scores(vision, request_context)
+    if not role_scores:
+        return reference_adherence
+    for role_hint in role_scores:
+        judge_sources[f"{role_hint}_adherence"] = "vision"
+    values = list(role_scores.values())
+    averaged = sum(values) / len(values)
+    adjusted = max(reference_adherence, averaged)
+    weakest = min(values)
+    if weakest < ROLE_ADHERENCE_THRESHOLD:
+        adjusted = min(adjusted, weakest)
+    return _clamp(adjusted)
+
+
+def _reference_role_quality_issues(vision: dict[str, Any], request_context: dict[str, Any]) -> list[str]:
+    issues: list[str] = []
+    role_scores = _reference_role_scores(vision, request_context)
+    if role_scores.get("character_identity", 1.0) < ROLE_ADHERENCE_THRESHOLD:
+        issues.append("reference_identity_drift")
+    if role_scores.get("pose_composition", 1.0) < ROLE_ADHERENCE_THRESHOLD:
+        issues.append("composition_bad")
+    return issues
+
+
+def _reference_role_scores(vision: dict[str, Any], request_context: dict[str, Any]) -> dict[str, float]:
+    binding = request_context.get("reference_binding")
+    if not isinstance(binding, dict):
+        return {}
+    scores: dict[str, float] = {}
+    for item in binding.get("reference_order") or []:
+        if not isinstance(item, dict):
+            continue
+        role_hint = str(item.get("role_hint") or "").strip()
+        if not role_hint or role_hint == "visual_reference" or role_hint in scores:
+            continue
+        value = _role_evidence_score(vision, role_hint)
+        if value is not None:
+            scores[role_hint] = value
+    return scores
+
+
+def _role_evidence_score(vision: dict[str, Any], role_hint: str) -> float | None:
+    evidence_keys = _role_evidence_keys(role_hint)
+    if not evidence_keys:
+        return None
+    primary_key = evidence_keys[0]
+    if _has_vision_dimension(vision, primary_key):
+        return _clamp(vision.get(primary_key))
+    values = [
+        _clamp(vision.get(key))
+        for key in evidence_keys[1:]
+        if _has_vision_dimension(vision, key)
+    ]
+    if not values:
+        return None
+    return max(values)
+
+
+def _reference_role_evidence_missing(vision: dict[str, Any], request_context: dict[str, Any]) -> bool:
+    binding = request_context.get("reference_binding")
+    if not isinstance(binding, dict):
+        return False
+    role_hints = {
+        str(item.get("role_hint") or "").strip()
+        for item in binding.get("reference_order") or []
+        if isinstance(item, dict)
+    }
+    role_hints.discard("")
+    role_hints.discard("visual_reference")
+    if not role_hints:
+        return False
+    return not all(_has_role_evidence(vision, role_hint) for role_hint in role_hints)
+
+
+def _has_role_evidence(vision: dict[str, Any], role_hint: str) -> bool:
+    return any(_has_vision_dimension(vision, key) for key in _role_evidence_keys(role_hint))
+
+
+def _role_evidence_keys(role_hint: str) -> tuple[str, ...]:
+    evidence_keys = {
+        "character_identity": (
+            "character_identity_adherence",
+            "identity_adherence",
+            "character_adherence",
+            "face_identity_adherence",
+        ),
+        "pose_composition": (
+            "pose_composition_adherence",
+            "pose_adherence",
+            "composition_adherence",
+        ),
+        "edit_anchor": (
+            "edit_anchor_adherence",
+            "previous_output_adherence",
+            "image_preservation",
+            "reference_adherence",
+        ),
+        "wardrobe": (
+            "wardrobe_adherence",
+            "clothing_adherence",
+            "outfit_adherence",
+        ),
+        "style": (
+            "style_adherence",
+            "art_style_adherence",
+        ),
+        "background": (
+            "background_adherence",
+            "scene_adherence",
+        ),
+    }
+    return evidence_keys.get(role_hint, ())
 
 
 def _preference_dimensions(vision: dict[str, Any], request_context: dict[str, Any]) -> dict[str, float]:
@@ -333,6 +470,9 @@ def _issue_for_defect(defect: str) -> str | None:
         "bad_stockings": "stockings_bad",
         "composition_weak": "composition_bad",
         "pose_composition_weak": "composition_bad",
+        "guide_artifact_contamination": "composition_bad",
+        "melted_or_wavy_contours": "composition_bad",
+        "distorted_anatomy": "composition_bad",
         "candidate_grid_layout": "source_frame_grid",
         "contact_sheet_layout": "source_frame_grid",
         "collage_layout": "source_frame_grid",
