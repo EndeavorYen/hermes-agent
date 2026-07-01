@@ -1,6 +1,8 @@
 from agent.raphael.models import (
     ActionProposal,
+    MissionArtifact,
     RaphaelEvent,
+    RaphaelMission,
     RaphaelState,
     RiskLevel,
     SkillTrace,
@@ -10,7 +12,9 @@ from agent.raphael.models import (
 
 __all__ = [
     "ActionProposal",
+    "MissionArtifact",
     "RaphaelEvent",
+    "RaphaelMission",
     "RaphaelState",
     "RiskLevel",
     "SkillTrace",

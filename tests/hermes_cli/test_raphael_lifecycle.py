@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from argparse import Namespace
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
@@ -103,6 +104,67 @@ def test_status_reports_lifecycle_without_creating_runtime_state(
     assert "Enabled: no" in out
     assert "Next action: hermes raphael install" in out
     assert not (hermes_home / "raphael").exists()
+
+
+def test_status_reports_mission_summary_without_leaking_evidence_refs(
+    monkeypatch, tmp_path, capsys
+):
+    from agent.raphael.models import MissionArtifact, RaphaelMission, RaphaelState
+    from agent.raphael.state import write_state
+    from hermes_cli.raphael_lifecycle import raphael_command
+
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    now = datetime(2026, 7, 1, 15, 30, tzinfo=timezone.utc)
+    artifact = MissionArtifact(
+        artifact_id="image-1",
+        kind="image",
+        label="Hero image",
+        uri="/private/tmp/raphael-secret-selected.png",
+        created_at=now,
+    )
+    mission = RaphaelMission(
+        mission_id="mission-1",
+        goal="Ship Raphael phase 2",
+        active_artifact_id="image-1",
+        artifacts=(artifact,),
+        success_conditions=("goal state visible",),
+        phase="planning",
+        blockers=(),
+        next_action="run CLI status smoke",
+        selected_strategy="issue-scoped TDD",
+        required_proofs=("unit tests", "status smoke"),
+        last_evidence=(
+            "/private/tmp/provider-raw.log",
+            "base64:rejected-candidate",
+            "candidate:old-image",
+        ),
+        updated_at=now,
+    )
+
+    write_state(
+        RaphaelState(
+            status_cards=(),
+            action_proposals=(),
+            active_mission=mission,
+            updated_at=now,
+        )
+    )
+
+    exit_code = raphael_command(Namespace(raphael_action="status"))
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "Current mission: mission-1" in out
+    assert "Goal: Ship Raphael phase 2" in out
+    assert "Phase: planning" in out
+    assert "Active artifact: Hero image (image-1)" in out
+    assert "Required proofs: 2" in out
+    assert "Last evidence: 3 recorded" in out
+    assert "Next mission action: run CLI status smoke" in out
+    assert "/private/tmp" not in out
+    assert "base64" not in out
+    assert "candidate:old-image" not in out
 
 
 def test_uninstall_removes_only_raphael_owned_state(monkeypatch, tmp_path):
