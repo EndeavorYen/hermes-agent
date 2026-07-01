@@ -5,6 +5,11 @@ from dataclasses import dataclass
 import re
 from typing import Any
 
+from agent.raphael.proof import (
+    evaluate_raphael_proof_gate,
+    render_proof_gate_context,
+    should_render_proof_gate_for_text,
+)
 from agent.raphael.router import render_route_context, route_raphael_message
 from agent.raphael.state import read_state
 
@@ -399,8 +404,18 @@ def build_raphael_observation_context(
         active_mission = read_state().active_mission
     except Exception:
         active_mission = None
-    route_context = render_route_context(
-        route_raphael_message(user_message, active_mission=active_mission)
+    route = route_raphael_message(user_message, active_mission=active_mission)
+    route_context = render_route_context(route)
+    proof_gate = (
+        render_proof_gate_context(
+            evaluate_raphael_proof_gate(
+                route=route,
+                mission=active_mission,
+                evidence=(),
+            )
+        )
+        if should_render_proof_gate_for_text(user_message)
+        else ""
     )
     turn_observation = observe_raphael_turn(user_message)
     observation = render_raphael_observation(turn_observation)
@@ -420,6 +435,8 @@ def build_raphael_observation_context(
         auto_portrait_decision
     )
     blocks = [observation, route_context]
+    if proof_gate:
+        blocks.append(proof_gate)
     if sketch:
         blocks.append(sketch)
     if visual_gate:

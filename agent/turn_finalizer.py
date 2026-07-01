@@ -261,6 +261,7 @@ def finalize_turn(
             logger.debug("turn-completion explainer failed: %s", _exp_err)
 
     _response_transformed = False
+    _raphael_proof_gate_result = None
 
     # Plugin hook: transform_llm_output
     # Fired once per turn after the tool-calling loop completes.
@@ -297,6 +298,36 @@ def finalize_turn(
             )
         except Exception as exc:
             logger.warning("Raphael response governor failed: %s", exc)
+
+    if final_response and not interrupted:
+        try:
+            from agent.raphael.governor import should_apply_raphael_response_governor
+            from agent.raphael.proof import (
+                claim_kind_from_text,
+                evaluate_raphael_proof_gate,
+                extract_raphael_proof_evidence,
+                render_proof_gate_user_message,
+                should_render_proof_gate_for_text,
+            )
+            from agent.raphael.router import route_raphael_message
+
+            if (
+                should_apply_raphael_response_governor()
+                and should_render_proof_gate_for_text(final_response)
+            ):
+                _raphael_proof_gate_result = evaluate_raphael_proof_gate(
+                    route=route_raphael_message(str(original_user_message or user_message)),
+                    evidence=extract_raphael_proof_evidence(messages),
+                    claim_kind=claim_kind_from_text(final_response),
+                )
+                if _raphael_proof_gate_result.status != "passed":
+                    final_response = (
+                        final_response.rstrip()
+                        + "\n\n"
+                        + render_proof_gate_user_message(_raphael_proof_gate_result)
+                    )
+        except Exception as exc:
+            logger.warning("Raphael proof gate failed: %s", exc)
 
     # Plugin hook: post_llm_call
     # Fired once per turn after the tool-calling loop completes.
@@ -368,6 +399,16 @@ def finalize_turn(
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
+    if _raphael_proof_gate_result is not None:
+        result["raphael_proof_gate"] = {
+            "status": _raphael_proof_gate_result.status,
+            "failure_layer": _raphael_proof_gate_result.failure_layer,
+            "required_proofs": list(_raphael_proof_gate_result.required_proofs),
+            "available_proofs": list(_raphael_proof_gate_result.available_proofs),
+            "missing_proofs": list(_raphael_proof_gate_result.missing_proofs),
+            "next_action": _raphael_proof_gate_result.next_action,
+            "next_proof_command": _raphael_proof_gate_result.next_proof_command,
+        }
     # If a /steer landed after the final assistant turn (no more tool
     # batches to drain into), hand it back to the caller so it can be
     # delivered as the next user turn instead of being silently lost.

@@ -246,9 +246,31 @@ Progress target when merged: 45%.
 
 ### Phase 4: Evidence Gate And Self-Review
 
+Tracking issue: `#12`.
+
 Create issue title:
 
 `Raphael proof gate blocks unsupported success claims`
+
+Internal proof gate contract:
+
+- Raphael evaluates a route, current mission, required proofs, and collected
+  evidence before a completion claim is allowed.
+- Tool success is only one evidence event. It never satisfies artifact, runtime,
+  install, LLM, delivery, or quality claims by itself.
+- Claim kinds map to distinct proof requirements:
+  `runtime` -> `runtime_smoke_when_live_wiring`,
+  `llm` -> `live_llm_smoke`,
+  `install` -> `package_install_smoke`,
+  `media` -> artifact quality, selected-current-artifact, and delivery
+  cleanliness evidence,
+  `artifact` -> artifact quality and stale-artifact guard evidence.
+- Failure layers stay separable: provider health, prompt moderation, handoff,
+  browser automation, artifact quality, and proof gate.
+- Self-review must name proven evidence, missing or failed proof, and the next
+  proof command or repair action.
+- The turn finalizer may block unsupported completion wording, but it must not
+  redefine the low-level conversation-loop `completed` flag as product success.
 
 Acceptance:
 

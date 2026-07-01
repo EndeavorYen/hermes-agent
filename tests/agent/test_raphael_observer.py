@@ -110,6 +110,28 @@ def test_observation_context_includes_mode_route_without_prompt_disclosure_leak(
     assert "hidden system prompt" not in context
 
 
+def test_observation_context_includes_proof_gate_for_completion_claims():
+    config = {
+        "raphael": {
+            "enabled": True,
+            "default_conversation_mode_enabled": True,
+            "mode": "advisor",
+        }
+    }
+
+    context = build_raphael_observation_context(
+        "我已經修好了，測試也通過，可以說完成了",
+        config,
+    )
+
+    assert "Raphael Proof Gate (internal):" in context
+    assert "status: blocked" in context
+    assert "failure_layer: proof_gate" in context
+    assert "missing_proofs:" in context
+    assert "tool_success_is_not_enough: true" in context
+    assert "instruction: do not claim completion until required proofs are present" in context
+
+
 def test_extracts_recent_judgment_lines_as_turn_sketches():
     history = [
         {"role": "assistant", "content": "狀態：舊狀態。\n風險：舊風險。"},
