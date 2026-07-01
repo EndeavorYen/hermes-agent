@@ -8,7 +8,9 @@ from typing import Any
 import yaml
 
 from agent.raphael.mission import render_mission_status_summary
-from agent.raphael.state import read_state
+from agent.raphael.state import read_state, resolve_action_proposal
+from agent.raphael.status import render_status as render_raphael_status
+from agent.raphael.evolution import sanitize_evolution_text
 from hermes_cli.config import DEFAULT_CONFIG, get_config_path
 from hermes_constants import get_hermes_home
 
@@ -158,7 +160,8 @@ def render_lifecycle_status() -> str:
     ]
 
     try:
-        mission_summary = render_mission_status_summary(read_state().active_mission)
+        state = read_state()
+        mission_summary = render_mission_status_summary(state.active_mission)
     except Exception:
         mission_summary = "\n".join(
             [
@@ -167,6 +170,10 @@ def render_lifecycle_status() -> str:
             ]
         )
     lines.extend(["", mission_summary])
+    try:
+        lines.extend(["", render_raphael_status(state)])
+    except Exception:
+        lines.extend(["", "Raphael Advisor", "Status unavailable."])
     return "\n".join(lines)
 
 
@@ -191,8 +198,64 @@ def raphael_command(args: Any) -> int:
     if action == "status":
         print(render_lifecycle_status())
         return 0
-    print("Usage: hermes raphael [install|enable|disable|status|uninstall]")
+    if action == "proposal":
+        return _proposal_command(args)
+    print(
+        "Usage: hermes raphael "
+        "[install|enable|disable|status|uninstall|proposal]"
+    )
     return 2
+
+
+def _proposal_command(args: Any) -> int:
+    proposal_action = getattr(args, "proposal_action", None)
+    proposal_id = getattr(args, "proposal_id", None)
+    if proposal_action not in {"approve", "reject"} or not proposal_id:
+        print("Usage: hermes raphael proposal [approve|reject] <proposal-id>")
+        return 2
+
+    status = "approved" if proposal_action == "approve" else "rejected"
+    try:
+        proposal = resolve_action_proposal(
+            str(proposal_id),
+            status=status,
+            resolved_by="operator",
+            note="Resolved from hermes raphael proposal CLI.",
+        )
+    except KeyError:
+        print(f"Raphael proposal not found: {proposal_id}")
+        return 1
+
+    if status == "approved":
+        print(
+            f"Raphael proposal {proposal.proposal_id} approved; "
+            "durable policy was not changed."
+        )
+        manual_steps = _proposal_manual_steps(proposal.metadata)
+        if manual_steps:
+            print("Next rollout steps:")
+            for step in manual_steps:
+                print(f"- {sanitize_evolution_text(step)}")
+        else:
+            print("No rollout steps were recorded; apply any change manually.")
+    else:
+        print(
+            f"Raphael proposal {proposal.proposal_id} rejected; "
+            "durable policy was not changed. No rollout steps will be applied."
+        )
+    return 0
+
+
+def _proposal_manual_steps(metadata: Any) -> list[str]:
+    if not isinstance(metadata, dict):
+        return []
+    rollout_plan = metadata.get("rollout_plan")
+    if not isinstance(rollout_plan, dict):
+        return []
+    manual_steps = rollout_plan.get("manual_steps")
+    if not isinstance(manual_steps, list):
+        return []
+    return [str(step) for step in manual_steps if str(step).strip()]
 
 
 def _read_user_config() -> dict[str, Any]:

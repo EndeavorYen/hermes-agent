@@ -162,6 +162,44 @@ def test_finalize_turn_blocks_completion_claim_without_required_tool_proof(monke
     ]
 
 
+def test_finalize_turn_records_repeated_proof_gate_failures_as_evolution_proposal(
+    monkeypatch,
+    tmp_path,
+):
+    import agent.raphael.governor as governor
+    from agent.raphael.models import RaphaelState
+    from agent.raphael.state import read_state, write_state
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(governor, "should_apply_raphael_response_governor", lambda: True)
+    monkeypatch.setattr(
+        governor,
+        "apply_raphael_response_governor",
+        lambda text, *, enabled: text,
+    )
+    write_state(RaphaelState.empty())
+
+    first = _run_finalize(
+        final_response="完成了，測試也通過。",
+        user_message="請修復 repo 裡的測試失敗",
+    )
+    after_first = read_state()
+    second = _run_finalize(
+        final_response="完成了，測試也通過。",
+        user_message="請修復 repo 裡的測試失敗",
+    )
+    after_second = read_state()
+
+    assert first["raphael_proof_gate"]["status"] == "blocked"
+    assert second["raphael_proof_gate"]["status"] == "blocked"
+    assert after_first.action_proposals == ()
+    assert len(after_second.action_proposals) == 1
+    proposal = after_second.action_proposals[0]
+    assert proposal.status == "pending"
+    assert proposal.metadata["affected_capability"] == "raphael.proof_gate"
+    assert proposal.metadata["recurring_signal_count"] == 2
+
+
 def test_finalize_turn_allows_completion_claim_with_required_tool_proof(monkeypatch):
     import agent.raphael.governor as governor
 

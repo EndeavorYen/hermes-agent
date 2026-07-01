@@ -100,18 +100,23 @@ class ActionProposal:
     evidence_refs: tuple[str, ...]
     created_at: datetime
     status: str = "pending"
+    metadata: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "risk", RiskLevel(self.risk))
         object.__setattr__(self, "created_at", _ensure_utc(self.created_at))
         object.__setattr__(self, "evidence_refs", tuple(self.evidence_refs))
+        if self.metadata is not None:
+            if not isinstance(self.metadata, MappingABC):
+                raise TypeError("ActionProposal metadata must be a mapping or None")
+            object.__setattr__(self, "metadata", dict(self.metadata))
 
     @property
     def requires_approval(self) -> bool:
         return self.risk in {RiskLevel.R2, RiskLevel.R3}
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "proposal_id": self.proposal_id,
             "action_type": self.action_type,
             "risk": self.risk.value,
@@ -121,9 +126,15 @@ class ActionProposal:
             "status": self.status,
             "requires_approval": self.requires_approval,
         }
+        if self.metadata:
+            payload["metadata"] = dict(self.metadata)
+        return payload
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> ActionProposal:
+        metadata = payload.get("metadata")
+        if metadata is not None and not isinstance(metadata, MappingABC):
+            raise ValueError("Raphael action proposal metadata must be a mapping")
         return cls(
             proposal_id=payload["proposal_id"],
             action_type=payload["action_type"],
@@ -132,6 +143,7 @@ class ActionProposal:
             evidence_refs=tuple(payload["evidence_refs"]),
             created_at=_datetime_from_iso(payload["created_at"]),
             status=payload.get("status", "pending"),
+            metadata=metadata,
         )
 
 

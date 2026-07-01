@@ -37,5 +37,20 @@ def build_raphael_parser(subparsers, *, cmd_raphael: Callable) -> None:
         "uninstall",
         help="Disable Raphael and remove Raphael-owned runtime state",
     )
+    proposal_parser = raphael_subparsers.add_parser(
+        "proposal",
+        help="Approve or reject auditable Raphael evolution proposals",
+    )
+    proposal_subparsers = proposal_parser.add_subparsers(dest="proposal_action")
+    approve_parser = proposal_subparsers.add_parser(
+        "approve",
+        help="Record approval for a Raphael proposal without mutating durable policy",
+    )
+    approve_parser.add_argument("proposal_id")
+    reject_parser = proposal_subparsers.add_parser(
+        "reject",
+        help="Reject a Raphael proposal and keep durable policy unchanged",
+    )
+    reject_parser.add_argument("proposal_id")
 
     raphael_parser.set_defaults(func=cmd_raphael)
