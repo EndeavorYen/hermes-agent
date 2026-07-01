@@ -207,9 +207,26 @@ Progress target when merged: 30%.
 
 ### Phase 3: Mode Router And Handoff
 
+Tracking issue: `#10`.
+
 Create issue title:
 
 `Raphael routes chat tools visual edits disclosure and clarification`
+
+Internal route contract:
+
+- Raphael classifies each turn before specialist handoff as one of:
+  `general_chat`, `tool_task`, `image_generation`, `video_generation`,
+  `visual_edit`, `prompt_disclosure`, `followup`, or `clarification`.
+- Prompt disclosure always wins over visual-generation wording and must not
+  produce a visual handoff or leak hidden prompts.
+- Visual handoff metadata preserves provider boundaries: base Hermes LLM,
+  visual-agent LLM, media provider, provider override source, and an explicit
+  no-live-media-ready claim for fixture-only tests.
+- Visual edit routes consult the active mission artifact from the Phase 2
+  goal-state manager before attaching references.
+- Ambiguous follow-up/edit targets must ask one precise clarification instead
+  of guessing.
 
 Acceptance:
 

@@ -5,6 +5,9 @@ from dataclasses import dataclass
 import re
 from typing import Any
 
+from agent.raphael.router import render_route_context, route_raphael_message
+from agent.raphael.state import read_state
+
 
 @dataclass(frozen=True)
 class RaphaelTurnObservation:
@@ -392,6 +395,13 @@ def build_raphael_observation_context(
 ) -> str:
     if not should_inject_raphael_observation(config):
         return ""
+    try:
+        active_mission = read_state().active_mission
+    except Exception:
+        active_mission = None
+    route_context = render_route_context(
+        route_raphael_message(user_message, active_mission=active_mission)
+    )
     turn_observation = observe_raphael_turn(user_message)
     observation = render_raphael_observation(turn_observation)
     sketches = extract_raphael_turn_sketches(conversation_history)
@@ -409,7 +419,7 @@ def build_raphael_observation_context(
     status_portrait_tool_call = _render_raphael_status_portrait_tool_call(
         auto_portrait_decision
     )
-    blocks = [observation]
+    blocks = [observation, route_context]
     if sketch:
         blocks.append(sketch)
     if visual_gate:
