@@ -129,9 +129,25 @@ Exit percent: 5%.
 
 ### Phase 1: Install, Enable, Disable, Uninstall
 
+Tracking issue: `#6`.
+
 Create issue title:
 
 `Raphael lifecycle install enable disable uninstall public smoke`
+
+Public command contract:
+
+- `hermes raphael status` prints installed/enabled/conversation-mode state and
+  the next setup action. It must not create runtime state.
+- `hermes raphael install` adds the bundled Raphael plugin to the enabled
+  plugin allow-list and seeds guarded Raphael defaults. It is idempotent and
+  does not turn on conversation injection.
+- `hermes raphael enable` installs if needed, then enables Raphael and the
+  default conversation control-layer surfaces.
+- `hermes raphael disable` turns off Raphael and default conversation injection
+  while keeping the lifecycle command available.
+- `hermes raphael uninstall` disables Raphael, removes Raphael from plugin
+  allow/deny lists, and removes only the Raphael-owned runtime state directory.
 
 Acceptance:
 
