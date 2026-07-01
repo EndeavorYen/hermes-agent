@@ -285,6 +285,43 @@ def test_raphael_parser_registers_public_readiness_action():
     assert args.func(args) is args
 
 
+def test_raphael_parser_registers_media_readiness_action():
+    from hermes_cli._parser import build_top_level_parser
+    from hermes_cli.subcommands.raphael import build_raphael_parser
+
+    parser, subparsers, _chat_parser = build_top_level_parser()
+
+    def _dispatch(args):
+        return args
+
+    build_raphael_parser(subparsers, cmd_raphael=_dispatch)
+
+    args = parser.parse_args(
+        [
+            "raphael",
+            "media-readiness",
+            "--openai-image-evidence-file",
+            "/tmp/openai-image-evidence.json",
+            "--openai-image-session-id",
+            "phase7-openai-image-session",
+            "--current-selected-artifact-id",
+            "openai-image-1",
+            "--max-evidence-age-seconds",
+            "3600",
+            "--gate-output",
+            "/tmp/raphael-media-readiness.json",
+        ]
+    )
+
+    assert args.raphael_action == "media-readiness"
+    assert args.openai_image_evidence_file == "/tmp/openai-image-evidence.json"
+    assert args.openai_image_session_id == "phase7-openai-image-session"
+    assert args.current_selected_artifact_id == "openai-image-1"
+    assert args.max_evidence_age_seconds == 3600
+    assert args.gate_output == "/tmp/raphael-media-readiness.json"
+    assert args.func(args) is args
+
+
 def test_raphael_readiness_command_reports_llm_only_boundary(tmp_path, capsys):
     from hermes_cli.raphael_lifecycle import raphael_command
 
@@ -337,6 +374,118 @@ def test_raphael_readiness_command_reports_llm_only_boundary(tmp_path, capsys):
     assert "live-smoke:phase6 session:phase6-smoke-session" in out
     assert payload["status"] == "llm_ready"
     assert payload["slices"]["media"]["ready"] is False
+
+
+def test_raphael_media_readiness_command_marks_only_openai_image_slice_ready(
+    tmp_path,
+    capsys,
+):
+    from hermes_cli.raphael_lifecycle import raphael_command
+
+    evidence_path = tmp_path / "openai-image-evidence.json"
+    gate_output = tmp_path / "media-readiness.json"
+    evidence_path.write_text(
+        json.dumps(
+                {
+                    "session_id": "phase7-openai-image-session",
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                    "provider": "openai",
+                    "capability": "image",
+                    "status": "success",
+                "artifact_id": "openai-image-1",
+                "selected_artifact_id": "openai-image-1",
+                "fresh": True,
+                "rejected": False,
+                "duplicated": False,
+                    "dimensions": {"width": 1536, "height": 1024},
+                    "quality": {"passed": True, "score": 0.89},
+                    "evidence_refs": {
+                        "generation": "generation:openai-image-1",
+                        "selection": "selection:openai-image-1",
+                        "freshness": "freshness:phase7-openai-image-session",
+                        "dedupe": "dedupe:openai-image-1",
+                        "geometry": "geometry:1536x1024",
+                        "quality_review": "quality-review:openai-image-1",
+                    },
+                    "artifact_path": "/private/tmp/secret-openai-image.png",
+                    "provider_response": "data:image/png;base64,abc123",
+                }
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = raphael_command(
+            Namespace(
+                raphael_action="media-readiness",
+                openai_image_evidence_file=str(evidence_path),
+                openai_image_session_id="phase7-openai-image-session",
+                current_selected_artifact_id="openai-image-1",
+                max_evidence_age_seconds=3600,
+                gate_output=str(gate_output),
+            )
+        )
+
+    out = capsys.readouterr().out
+    payload_text = gate_output.read_text(encoding="utf-8")
+    payload = json.loads(payload_text)
+
+    assert exit_code == 0
+    assert "Raphael Media Slice Readiness" in out
+    assert "Overall: openai_image_ready" in out
+    assert "OpenAI image slice: ready" in out
+    assert "Grok Web Imagine slice: not ready" in out
+    assert "Video slice: not ready" in out
+    assert "Slack delivery slice: not ready" in out
+    assert "Full media: blocked" in out
+    assert payload["status"] == "openai_image_ready"
+    assert payload["slices"]["openai_image"]["ready"] is True
+    assert payload["slices"]["grok_web_imagine"]["ready"] is False
+    assert payload["slices"]["video"]["ready"] is False
+    assert payload["slices"]["full_media"]["ready"] is False
+    assert "/private/tmp" not in out
+    assert "/private/tmp" not in payload_text
+    assert "base64" not in out
+    assert "base64" not in payload_text
+
+
+def test_raphael_media_readiness_command_exits_nonzero_for_setup_blocker(
+    tmp_path,
+    capsys,
+):
+    from hermes_cli.raphael_lifecycle import raphael_command
+
+    evidence_path = tmp_path / "openai-image-evidence.json"
+    evidence_path.write_text(
+        json.dumps(
+            {
+                "provider": "openai",
+                "capability": "image",
+                "status": "failed",
+                "error_type": "auth_required",
+                "message": "OPENAI_API_KEY missing",
+                "evidence_ref": "openai-image-live-smoke:phase7",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = raphael_command(
+            Namespace(
+                raphael_action="media-readiness",
+                openai_image_evidence_file=str(evidence_path),
+                openai_image_session_id="phase7-openai-image-session",
+                current_selected_artifact_id="openai-image-1",
+                max_evidence_age_seconds=3600,
+                gate_output="",
+            )
+    )
+
+    out = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "Overall: blocked" in out
+    assert "OpenAI image blockers: openai_image_setup_required" in out
+    assert "artifact_rejected" not in out
 
 
 def test_raphael_readiness_rejects_mismatched_smoke_session(tmp_path, capsys):
