@@ -2,11 +2,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import copy
+import json
+from pathlib import Path
 import shutil
 from typing import Any
 
 import yaml
 
+from agent.raphael.media_readiness import (
+    build_media_readiness,
+    classify_openai_image_evidence,
+    render_media_readiness,
+    write_media_readiness_gate,
+)
 from agent.raphael.mission import render_mission_status_summary
 from agent.raphael.public_readiness import (
     build_public_llm_slice_readiness,
@@ -211,11 +219,17 @@ def raphael_command(args: Any) -> int:
             write_public_readiness_gate(report, str(args.gate_output))
         print(render_public_readiness(report))
         return 0 if report.status == "llm_ready" else 1
+    if action == "media-readiness":
+        report = build_media_readiness_report(args)
+        if getattr(args, "gate_output", ""):
+            write_media_readiness_gate(report, str(args.gate_output))
+        print(render_media_readiness(report))
+        return 0 if report.status == "openai_image_ready" else 1
     if action == "proposal":
         return _proposal_command(args)
     print(
         "Usage: hermes raphael "
-        "[install|enable|disable|status|readiness|uninstall|proposal]"
+        "[install|enable|disable|status|readiness|media-readiness|uninstall|proposal]"
     )
     return 2
 
@@ -232,6 +246,24 @@ def build_readiness_report(args: Any):
     return build_public_llm_slice_readiness(
         simulation=run_public_llm_slice_simulation(),
         live_smoke=smoke,
+    )
+
+
+def build_media_readiness_report(args: Any):
+    evidence_payload = _load_json_mapping(
+        str(getattr(args, "openai_image_evidence_file", "") or "")
+    )
+    return build_media_readiness(
+        openai_image=classify_openai_image_evidence(
+            evidence_payload,
+            expected_session_id=str(getattr(args, "openai_image_session_id", "") or ""),
+            current_selected_artifact_id=str(
+                getattr(args, "current_selected_artifact_id", "") or ""
+            ),
+            max_age_seconds=int(
+                getattr(args, "max_evidence_age_seconds", 86400) or 0
+            ),
+        ),
     )
 
 
@@ -284,6 +316,16 @@ def _proposal_manual_steps(metadata: Any) -> list[str]:
     if not isinstance(manual_steps, list):
         return []
     return [str(step) for step in manual_steps if str(step).strip()]
+
+
+def _load_json_mapping(path: str) -> dict[str, Any] | None:
+    if not path:
+        return None
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def _read_user_config() -> dict[str, Any]:

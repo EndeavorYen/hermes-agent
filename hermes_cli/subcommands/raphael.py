@@ -52,6 +52,36 @@ def build_raphael_parser(subparsers, *, cmd_raphael: Callable) -> None:
         default="",
         help="Optional JSON output path for the public readiness gate report",
     )
+    media_readiness_parser = raphael_subparsers.add_parser(
+        "media-readiness",
+        help="Show OpenAI image media-slice readiness without claiming Grok or video readiness",
+    )
+    media_readiness_parser.add_argument(
+        "--openai-image-evidence-file",
+        default="",
+        help="JSON evidence file for the current selected OpenAI image artifact",
+    )
+    media_readiness_parser.add_argument(
+        "--openai-image-session-id",
+        default="",
+        help="Expected session id for the current OpenAI image evidence file",
+    )
+    media_readiness_parser.add_argument(
+        "--current-selected-artifact-id",
+        default="",
+        help="Artifact id currently selected for public delivery",
+    )
+    media_readiness_parser.add_argument(
+        "--max-evidence-age-seconds",
+        type=int,
+        default=86400,
+        help="Maximum allowed age for OpenAI image evidence before it is stale",
+    )
+    media_readiness_parser.add_argument(
+        "--gate-output",
+        default="",
+        help="Optional JSON output path for the media readiness gate report",
+    )
     raphael_subparsers.add_parser(
         "uninstall",
         help="Disable Raphael and remove Raphael-owned runtime state",
