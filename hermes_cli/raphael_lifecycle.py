@@ -8,6 +8,13 @@ from typing import Any
 import yaml
 
 from agent.raphael.mission import render_mission_status_summary
+from agent.raphael.public_readiness import (
+    build_public_llm_slice_readiness,
+    load_llm_smoke_evidence,
+    render_public_readiness,
+    run_public_llm_slice_simulation,
+    write_public_readiness_gate,
+)
 from agent.raphael.state import read_state, resolve_action_proposal
 from agent.raphael.status import render_status as render_raphael_status
 from agent.raphael.evolution import sanitize_evolution_text
@@ -198,13 +205,34 @@ def raphael_command(args: Any) -> int:
     if action == "status":
         print(render_lifecycle_status())
         return 0
+    if action == "readiness":
+        report = build_readiness_report(args)
+        if getattr(args, "gate_output", ""):
+            write_public_readiness_gate(report, str(args.gate_output))
+        print(render_public_readiness(report))
+        return 0 if report.status == "llm_ready" else 1
     if action == "proposal":
         return _proposal_command(args)
     print(
         "Usage: hermes raphael "
-        "[install|enable|disable|status|uninstall|proposal]"
+        "[install|enable|disable|status|readiness|uninstall|proposal]"
     )
     return 2
+
+
+def build_readiness_report(args: Any):
+    smoke = None
+    smoke_session_id = str(getattr(args, "llm_smoke_session_id", "") or "").strip()
+    if smoke_session_id:
+        evidence_file = str(getattr(args, "llm_smoke_evidence_file", "") or "")
+        smoke = load_llm_smoke_evidence(
+            evidence_file,
+            expected_session_id=smoke_session_id,
+        )
+    return build_public_llm_slice_readiness(
+        simulation=run_public_llm_slice_simulation(),
+        live_smoke=smoke,
+    )
 
 
 def _proposal_command(args: Any) -> int:

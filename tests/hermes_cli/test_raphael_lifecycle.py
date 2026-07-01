@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from argparse import Namespace
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 
+import pytest
 import yaml
 
 
@@ -250,6 +252,145 @@ def test_raphael_parser_registers_proposal_approval_actions():
     assert args.proposal_action == "approve"
     assert args.proposal_id == "proposal-1"
     assert args.func(args) is args
+
+
+def test_raphael_parser_registers_public_readiness_action():
+    from hermes_cli._parser import build_top_level_parser
+    from hermes_cli.subcommands.raphael import build_raphael_parser
+
+    parser, subparsers, _chat_parser = build_top_level_parser()
+
+    def _dispatch(args):
+        return args
+
+    build_raphael_parser(subparsers, cmd_raphael=_dispatch)
+
+    args = parser.parse_args(
+        [
+            "raphael",
+            "readiness",
+            "--llm-smoke-session-id",
+            "phase6-smoke-session",
+            "--llm-smoke-evidence-file",
+            "/tmp/raphael-llm-smoke.json",
+            "--gate-output",
+            "/tmp/raphael-readiness.json",
+        ]
+    )
+
+    assert args.raphael_action == "readiness"
+    assert args.llm_smoke_session_id == "phase6-smoke-session"
+    assert args.llm_smoke_evidence_file == "/tmp/raphael-llm-smoke.json"
+    assert args.gate_output == "/tmp/raphael-readiness.json"
+    assert args.func(args) is args
+
+
+def test_raphael_readiness_command_reports_llm_only_boundary(tmp_path, capsys):
+    from hermes_cli.raphael_lifecycle import raphael_command
+
+    smoke_path = tmp_path / "llm-smoke.json"
+    gate_output = tmp_path / "readiness.json"
+    smoke_path.write_text(
+        json.dumps(
+                {
+                    "session_id": "phase6-smoke-session",
+                    "source": "rtk hermes chat",
+                    "command": "rtk hermes chat -Q --max-turns 1 -q <phase6 smoke>",
+                    "exit_code": 0,
+                    "provider": "openai",
+                    "model": "gpt-5.5",
+                    "response_text": (
+                        "LLM-only smoke passed and media/visual/Grok are not ready."
+                    ),
+                    "evidence_ref": "live-smoke:phase6",
+                    "phase6_checks": {
+                        "summon_ux": True,
+                        "mission_followup": True,
+                        "proof_block": True,
+                        "evolution_proposal": True,
+                        "llm_only_boundary": True,
+                    },
+                }
+            ),
+            encoding="utf-8",
+    )
+
+    exit_code = raphael_command(
+        Namespace(
+            raphael_action="readiness",
+            llm_smoke_session_id="phase6-smoke-session",
+            llm_smoke_evidence_file=str(smoke_path),
+            gate_output=str(gate_output),
+        )
+    )
+
+    out = capsys.readouterr().out
+    payload = json.loads(gate_output.read_text(encoding="utf-8"))
+
+    assert exit_code == 0
+    assert "Raphael Public LLM Slice Readiness" in out
+    assert "Overall: llm_ready" in out
+    assert "LLM slice: ready" in out
+    assert "Media slice: not ready" in out
+    assert "Visual slice: not ready" in out
+    assert "Grok slice: not ready" in out
+    assert "live-smoke:phase6 session:phase6-smoke-session" in out
+    assert payload["status"] == "llm_ready"
+    assert payload["slices"]["media"]["ready"] is False
+
+
+def test_raphael_readiness_rejects_mismatched_smoke_session(tmp_path, capsys):
+    from hermes_cli.raphael_lifecycle import raphael_command
+
+    smoke_path = tmp_path / "llm-smoke.json"
+    smoke_path.write_text(
+        json.dumps(
+            {
+                "session_id": "fake-session",
+                "exit_code": 0,
+                "provider": "openai",
+                "model": "gpt-5.5",
+                "response_text": "fake smoke says ready",
+                "evidence_ref": "live-smoke:fake",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = raphael_command(
+        Namespace(
+            raphael_action="readiness",
+            llm_smoke_session_id="phase6-smoke-session",
+            llm_smoke_evidence_file=str(smoke_path),
+            gate_output="",
+        )
+    )
+
+    out = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "Overall: blocked" in out
+    assert "live_llm_smoke_failed" in out
+    assert "LLM slice: ready" not in out
+
+
+def test_main_cmd_raphael_exits_nonzero_for_blocked_readiness(capsys):
+    from hermes_cli.main import cmd_raphael
+
+    with pytest.raises(SystemExit) as exc:
+        cmd_raphael(
+            Namespace(
+                raphael_action="readiness",
+                llm_smoke_session_id="",
+                llm_smoke_evidence_file="",
+                gate_output="",
+            )
+        )
+
+    out = capsys.readouterr().out
+
+    assert exc.value.code == 1
+    assert "Overall: blocked" in out
 
 
 def test_raphael_proposal_approve_records_resolution_without_policy_mutation(
