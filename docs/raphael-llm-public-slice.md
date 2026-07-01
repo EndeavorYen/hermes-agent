@@ -15,22 +15,22 @@ following are true:
 - At least one LLM-only live smoke is recorded in a JSON evidence file and
   classified as passed after matching the expected session id.
 - `hermes raphael readiness` reports `Overall: llm_ready`.
-- The release gate writes a JSON report that records only the LLM slice as
-  ready.
-- Public wording says "Raphael LLM control-layer slice is ready" and does not
-  claim media, visual, video, Grok, or full release readiness.
+- The Phase 6 public-readiness report records only the LLM slice as ready.
+- Public wording says "Raphael LLM control-layer slice is ready".
+- Public wording keeps media, visual, video, Grok, and full release claims
+  outside that sentence.
 
 ## What Phase 6 Must Not Claim
 
 Until later phases provide separate live evidence, public copy must not claim:
 
-- OpenAI image generation readiness.
-- Grok Web Imagine readiness.
-- Video generation readiness.
-- Slack/native media delivery readiness.
+- OpenAI image generation readiness remains blocked in Phase 6.
+- Grok Web Imagine readiness remains blocked.
+- Video generation readiness remains blocked.
+- Slack/native media delivery readiness remains blocked.
 - Artifact beauty, face fidelity, pose, wardrobe, geometry, or selected-media
-  quality readiness.
-- Full "ultimate Raphael" release-candidate readiness.
+  quality readiness remains blocked.
+- Full "ultimate Raphael" release-candidate readiness remains blocked.
 
 ## Verification Commands
 

@@ -322,6 +322,43 @@ def test_raphael_parser_registers_media_readiness_action():
     assert args.func(args) is args
 
 
+def test_raphael_parser_registers_release_gate_action():
+    from hermes_cli._parser import build_top_level_parser
+    from hermes_cli.subcommands.raphael import build_raphael_parser
+
+    parser, subparsers, _chat_parser = build_top_level_parser()
+
+    def _dispatch(args):
+        return args
+
+    build_raphael_parser(subparsers, cmd_raphael=_dispatch)
+
+    args = parser.parse_args(
+        [
+            "raphael",
+            "release-gate",
+            "--lifecycle-evidence-file",
+            "/tmp/lifecycle.json",
+            "--llm-readiness-file",
+            "/tmp/llm.json",
+            "--media-readiness-file",
+            "/tmp/media.json",
+            "--docs-file",
+            "/tmp/docs.md",
+            "--gate-output",
+            "/tmp/release.json",
+        ]
+    )
+
+    assert args.raphael_action == "release-gate"
+    assert args.lifecycle_evidence_file == "/tmp/lifecycle.json"
+    assert args.llm_readiness_file == "/tmp/llm.json"
+    assert args.media_readiness_file == "/tmp/media.json"
+    assert args.docs_files == ["/tmp/docs.md"]
+    assert args.gate_output == "/tmp/release.json"
+    assert args.func(args) is args
+
+
 def test_raphael_readiness_command_reports_llm_only_boundary(tmp_path, capsys):
     from hermes_cli.raphael_lifecycle import raphael_command
 
@@ -374,6 +411,203 @@ def test_raphael_readiness_command_reports_llm_only_boundary(tmp_path, capsys):
     assert "live-smoke:phase6 session:phase6-smoke-session" in out
     assert payload["status"] == "llm_ready"
     assert payload["slices"]["media"]["ready"] is False
+
+
+def test_raphael_release_gate_command_reports_verified_public_boundary(
+    tmp_path,
+    capsys,
+):
+    from hermes_cli.raphael_lifecycle import raphael_command
+
+    lifecycle_path = tmp_path / "lifecycle.json"
+    llm_path = tmp_path / "llm.json"
+    media_path = tmp_path / "media.json"
+    docs_path = tmp_path / "docs.md"
+    gate_output = tmp_path / "release.json"
+    lifecycle_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "raphael.lifecycle_evidence.v1",
+                "install": True,
+                "enable": True,
+                "disable": True,
+                "uninstall": True,
+                "private_output_clean": True,
+                "checks": {
+                    "install": {"exit_code": 0, "evidence_ref": "lifecycle:install"},
+                    "enable": {"exit_code": 0, "evidence_ref": "lifecycle:enable"},
+                    "disable": {"exit_code": 0, "evidence_ref": "lifecycle:disable"},
+                    "uninstall": {"exit_code": 0, "evidence_ref": "lifecycle:uninstall"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    llm_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "raphael.public_readiness.v1",
+                "status": "llm_ready",
+                "slices": {
+                    "llm": {"ready": True, "evidence_refs": ["live-smoke:phase6"]},
+                    "media": {"ready": False},
+                    "visual": {"ready": False},
+                    "grok": {"ready": False},
+                },
+                "simulation": {
+                    "status": "passed",
+                    "cases": [
+                        {"case_id": "summon_tool_task", "passed": True},
+                        {"case_id": "mission_followup", "passed": True},
+                        {"case_id": "ambiguous_clarification", "passed": True},
+                        {"case_id": "proof_block", "passed": True},
+                        {"case_id": "finalizer_proof_block_output", "passed": True},
+                        {"case_id": "evolution_proposal", "passed": True},
+                        {"case_id": "proposal_lifecycle_status", "passed": True},
+                        {"case_id": "public_claim_boundary", "passed": True},
+                    ],
+                },
+                "live_smoke": {
+                    "status": "passed",
+                    "provider": "openai",
+                    "model": "gpt-5.5",
+                    "failure_layer": None,
+                    "evidence_refs": ["live-smoke:phase6"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    media_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "raphael.media_readiness.v1",
+                "status": "openai_image_ready",
+                "openai_image": {
+                    "status": "passed",
+                    "provider": "openai",
+                    "capability": "image",
+                    "selected_artifact_id": "openai-image-1",
+                    "dimensions": {"width": 1536, "height": 1024},
+                    "quality_score": 0.89,
+                    "verification_contract": "raphael.media.openai_image.phase7.current_selected.v1",
+                    "evidence_refs": [
+                        "generation:openai-image-1",
+                        "selection:openai-image-1",
+                        "freshness:phase7-session",
+                        "dedupe:openai-image-1",
+                        "geometry:1536x1024",
+                        "quality-review:openai-image-1",
+                    ],
+                },
+                "slices": {
+                    "openai_image": {
+                        "ready": True,
+                        "evidence_refs": [
+                            "generation:openai-image-1",
+                            "selection:openai-image-1",
+                            "freshness:phase7-session",
+                            "dedupe:openai-image-1",
+                            "geometry:1536x1024",
+                            "quality-review:openai-image-1",
+                        ],
+                    },
+                    "grok_web_imagine": {"ready": False},
+                    "video": {"ready": False},
+                    "slack_delivery": {"ready": False},
+                    "full_media": {"ready": False},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    docs_path.write_text(
+        "Raphael release candidate is ready for LLM and OpenAI image. "
+        "Grok Web Imagine, video, Slack delivery, and full media are not ready.",
+        encoding="utf-8",
+    )
+
+    exit_code = raphael_command(
+        Namespace(
+            raphael_action="release-gate",
+            lifecycle_evidence_file=str(lifecycle_path),
+            llm_readiness_file=str(llm_path),
+            media_readiness_file=str(media_path),
+            docs_files=[str(docs_path)],
+            gate_output=str(gate_output),
+        )
+    )
+
+    out = capsys.readouterr().out
+    payload = json.loads(gate_output.read_text(encoding="utf-8"))
+
+    assert exit_code == 0
+    assert "Raphael Release Candidate Gate" in out
+    assert "Overall: release_candidate_ready" in out
+    assert "Grok Web Imagine: blocked" in out
+    assert payload["status"] == "release_candidate_ready"
+    assert payload["slices"]["full_media"]["ready"] is False
+
+
+def test_raphael_release_gate_command_exits_nonzero_for_overclaiming_docs(
+    tmp_path,
+    capsys,
+):
+    from hermes_cli.raphael_lifecycle import raphael_command
+
+    lifecycle_path = tmp_path / "lifecycle.json"
+    llm_path = tmp_path / "llm.json"
+    media_path = tmp_path / "media.json"
+    docs_path = tmp_path / "docs.md"
+    lifecycle_path.write_text(
+        json.dumps(
+            {
+                "install": True,
+                "enable": True,
+                "disable": True,
+                "uninstall": True,
+                "private_output_clean": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    llm_path.write_text(
+        json.dumps({"status": "llm_ready", "slices": {"llm": {"ready": True}}}),
+        encoding="utf-8",
+    )
+    media_path.write_text(
+        json.dumps(
+            {
+                "status": "openai_image_ready",
+                "slices": {
+                    "openai_image": {"ready": True},
+                    "grok_web_imagine": {"ready": False},
+                    "video": {"ready": False},
+                    "slack_delivery": {"ready": False},
+                    "full_media": {"ready": False},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    docs_path.write_text("Grok Web Imagine and video are ready.", encoding="utf-8")
+
+    exit_code = raphael_command(
+        Namespace(
+            raphael_action="release-gate",
+            lifecycle_evidence_file=str(lifecycle_path),
+            llm_readiness_file=str(llm_path),
+            media_readiness_file=str(media_path),
+            docs_files=[str(docs_path)],
+            gate_output="",
+        )
+    )
+
+    out = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "Overall: blocked" in out
+    assert "public_claim_boundary_failed" in out
 
 
 def test_raphael_media_readiness_command_marks_only_openai_image_slice_ready(

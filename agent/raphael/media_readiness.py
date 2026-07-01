@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
+import math
 from pathlib import Path
 import re
 from typing import Any
@@ -459,7 +460,8 @@ def write_media_readiness_gate(
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
-        json.dumps(_report_to_dict(report), indent=2, sort_keys=True) + "\n",
+        json.dumps(_report_to_dict(report), allow_nan=False, indent=2, sort_keys=True)
+        + "\n",
         encoding="utf-8",
     )
 
@@ -738,6 +740,8 @@ def _safe_json_value(value: Any) -> Any:
         return {_safe_text(key): _safe_json_value(item) for key, item in value.items()}
     if isinstance(value, str):
         return _safe_text(value)
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
     if isinstance(value, tuple):
         return [_safe_json_value(item) for item in value]
     if isinstance(value, list):
@@ -828,9 +832,12 @@ def _contains(text: str, *needles: str) -> bool:
 
 def _float(value: Any) -> float:
     try:
-        return max(0.0, min(1.0, float(value)))
+        numeric = float(value)
     except (TypeError, ValueError):
         return 0.0
+    if not math.isfinite(numeric):
+        return 0.0
+    return max(0.0, min(1.0, numeric))
 
 
 def _dedupe(values: list[str]) -> list[str]:

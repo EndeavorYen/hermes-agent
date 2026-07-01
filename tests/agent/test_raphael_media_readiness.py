@@ -180,6 +180,18 @@ def test_openai_image_evidence_rejects_old_generated_at_even_when_fresh_flag_is_
     assert evidence.blocking_reason == "openai_image_evidence_stale"
 
 
+@pytest.mark.parametrize("quality_score", [float("nan"), float("inf"), float("-inf"), "nan"])
+def test_openai_image_evidence_rejects_non_finite_quality_scores(quality_score):
+    payload = _passing_openai_image_payload()
+    payload["quality"] = {"passed": True, "score": quality_score}
+
+    evidence = _classify(payload)
+
+    assert evidence.status == "failed"
+    assert evidence.failure_layer == "artifact_quality"
+    assert evidence.blocking_reason == "openai_image_quality_below_threshold"
+
+
 @pytest.mark.parametrize(
     ("field", "expected_layer", "expected_reason"),
     [

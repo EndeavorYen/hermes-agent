@@ -30,10 +30,10 @@ The command exits `0` only when the OpenAI image evidence proves:
 
 The same report always keeps these claims blocked in Phase 7:
 
-- Grok Web Imagine readiness
-- video readiness
-- Slack/native delivery readiness
-- full media readiness
+- Grok Web Imagine readiness remains blocked.
+- Video readiness remains blocked.
+- Slack/native delivery readiness remains blocked.
+- Full media readiness remains blocked.
 
 ## Failure Layers
 
@@ -90,5 +90,5 @@ The public claim allowed by this phase is:
 
 `OpenAI image slice is ready.`
 
-Any claim that Grok, video, Slack delivery, or full media is ready must remain
-blocked until a later issue records separate live evidence for that slice.
+Claims about Grok, video, Slack delivery, or full media stay outside public
+copy until a later issue records separate live evidence for that slice.
