@@ -298,10 +298,156 @@ class SkillTraceSummary:
 
 
 @dataclass(frozen=True)
+class MissionArtifact:
+    artifact_id: str
+    kind: str
+    label: str
+    uri: str
+    created_at: datetime
+    stale: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "artifact_id", str(self.artifact_id))
+        object.__setattr__(self, "kind", str(self.kind))
+        object.__setattr__(self, "label", str(self.label))
+        object.__setattr__(self, "uri", str(self.uri))
+        object.__setattr__(self, "created_at", _ensure_utc(self.created_at))
+        object.__setattr__(self, "stale", bool(self.stale))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "artifact_id": self.artifact_id,
+            "kind": self.kind,
+            "label": self.label,
+            "uri": self.uri,
+            "created_at": _datetime_to_iso(self.created_at),
+            "stale": self.stale,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> MissionArtifact:
+        return cls(
+            artifact_id=payload["artifact_id"],
+            kind=payload["kind"],
+            label=payload["label"],
+            uri=payload["uri"],
+            created_at=_datetime_from_iso(payload["created_at"]),
+            stale=payload.get("stale", False),
+        )
+
+
+@dataclass(frozen=True)
+class RaphaelMission:
+    mission_id: str
+    goal: str
+    active_artifact_id: str | None
+    artifacts: tuple[MissionArtifact, ...]
+    success_conditions: tuple[str, ...]
+    phase: str
+    blockers: tuple[str, ...]
+    next_action: str
+    selected_strategy: str
+    required_proofs: tuple[str, ...]
+    last_evidence: tuple[str, ...]
+    updated_at: datetime
+    last_user_request: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "mission_id", str(self.mission_id))
+        object.__setattr__(self, "goal", str(self.goal))
+        object.__setattr__(self, "artifacts", tuple(self.artifacts))
+        active_artifact_id = (
+            None if self.active_artifact_id is None else str(self.active_artifact_id)
+        )
+        current_artifact_ids = {
+            artifact.artifact_id for artifact in self.artifacts if not artifact.stale
+        }
+        if active_artifact_id not in current_artifact_ids:
+            active_artifact_id = None
+        object.__setattr__(self, "active_artifact_id", active_artifact_id)
+        object.__setattr__(
+            self,
+            "success_conditions",
+            tuple(str(condition) for condition in self.success_conditions),
+        )
+        object.__setattr__(self, "phase", str(self.phase))
+        object.__setattr__(
+            self, "blockers", tuple(str(blocker) for blocker in self.blockers)
+        )
+        object.__setattr__(self, "next_action", str(self.next_action))
+        object.__setattr__(self, "selected_strategy", str(self.selected_strategy))
+        object.__setattr__(
+            self, "required_proofs", tuple(str(proof) for proof in self.required_proofs)
+        )
+        object.__setattr__(
+            self, "last_evidence", tuple(str(evidence) for evidence in self.last_evidence)
+        )
+        object.__setattr__(self, "updated_at", _ensure_utc(self.updated_at))
+        if self.last_user_request is not None:
+            object.__setattr__(
+                self, "last_user_request", str(self.last_user_request)
+            )
+
+    @property
+    def active_artifact(self) -> MissionArtifact | None:
+        if self.active_artifact_id is None:
+            return None
+        for artifact in self.artifacts:
+            if artifact.artifact_id == self.active_artifact_id and not artifact.stale:
+                return artifact
+        return None
+
+    @property
+    def current_artifacts(self) -> tuple[MissionArtifact, ...]:
+        return tuple(artifact for artifact in self.artifacts if not artifact.stale)
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = {
+            "mission_id": self.mission_id,
+            "goal": self.goal,
+            "active_artifact_id": self.active_artifact_id,
+            "artifacts": [artifact.to_dict() for artifact in self.artifacts],
+            "success_conditions": list(self.success_conditions),
+            "phase": self.phase,
+            "blockers": list(self.blockers),
+            "next_action": self.next_action,
+            "selected_strategy": self.selected_strategy,
+            "required_proofs": list(self.required_proofs),
+            "last_evidence": list(self.last_evidence),
+            "updated_at": _datetime_to_iso(self.updated_at),
+        }
+        if self.last_user_request is not None:
+            payload["last_user_request"] = self.last_user_request
+        return payload
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> RaphaelMission:
+        return cls(
+            mission_id=payload["mission_id"],
+            goal=payload["goal"],
+            active_artifact_id=payload.get("active_artifact_id"),
+            artifacts=tuple(
+                MissionArtifact.from_dict(artifact)
+                for artifact in payload.get("artifacts", ())
+            ),
+            success_conditions=tuple(payload.get("success_conditions", ())),
+            phase=payload["phase"],
+            blockers=tuple(payload.get("blockers", ())),
+            next_action=payload["next_action"],
+            selected_strategy=payload["selected_strategy"],
+            required_proofs=tuple(payload.get("required_proofs", ())),
+            last_evidence=tuple(payload.get("last_evidence", ())),
+            updated_at=_datetime_from_iso(payload["updated_at"]),
+            last_user_request=payload.get("last_user_request"),
+        )
+
+
+@dataclass(frozen=True)
 class RaphaelState:
     status_cards: tuple[StatusCard, ...]
     action_proposals: tuple[ActionProposal, ...]
     updated_at: datetime
+    active_mission: RaphaelMission | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "status_cards", tuple(self.status_cards))
@@ -310,10 +456,15 @@ class RaphaelState:
 
     @classmethod
     def empty(cls) -> RaphaelState:
-        return cls(status_cards=(), action_proposals=(), updated_at=_utc_now())
+        return cls(
+            status_cards=(),
+            action_proposals=(),
+            updated_at=_utc_now(),
+            active_mission=None,
+        )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "schema_version": STATE_SCHEMA_VERSION,
             "status_cards": [card.to_dict() for card in self.status_cards],
             "action_proposals": [
@@ -321,10 +472,14 @@ class RaphaelState:
             ],
             "updated_at": _datetime_to_iso(self.updated_at),
         }
+        if self.active_mission is not None:
+            payload["active_mission"] = self.active_mission.to_dict()
+        return payload
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> RaphaelState:
         _require_schema(payload, STATE_SCHEMA_VERSION, "state")
+        active_mission = payload.get("active_mission")
         return cls(
             status_cards=tuple(
                 StatusCard.from_dict(card)
@@ -335,13 +490,20 @@ class RaphaelState:
                 for proposal in payload.get("action_proposals", ())
             ),
             updated_at=_datetime_from_iso(payload["updated_at"]),
+            active_mission=(
+                None
+                if active_mission is None
+                else RaphaelMission.from_dict(active_mission)
+            ),
         )
 
 
 __all__ = [
     "ActionProposal",
     "EVENT_SCHEMA_VERSION",
+    "MissionArtifact",
     "RaphaelEvent",
+    "RaphaelMission",
     "RaphaelState",
     "RiskLevel",
     "SKILL_TRACE_SCHEMA_VERSION",

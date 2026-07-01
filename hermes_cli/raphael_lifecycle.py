@@ -7,6 +7,8 @@ from typing import Any
 
 import yaml
 
+from agent.raphael.mission import render_mission_status_summary
+from agent.raphael.state import read_state
 from hermes_cli.config import DEFAULT_CONFIG, get_config_path
 from hermes_constants import get_hermes_home
 
@@ -146,16 +148,26 @@ def render_lifecycle_status() -> str:
     else:
         next_action = "summon Raphael or run hermes raphael disable"
 
-    return "\n".join(
-        [
-            "Raphael lifecycle status",
-            f"Installed: {_yes_no(installed)}",
-            f"Enabled: {_yes_no(enabled)}",
-            f"Conversation mode: {'on' if conversation_mode else 'off'}",
-            f"Runtime state: {'present' if state_dir.exists() else 'absent'}",
-            f"Next action: {next_action}",
-        ]
-    )
+    lines = [
+        "Raphael lifecycle status",
+        f"Installed: {_yes_no(installed)}",
+        f"Enabled: {_yes_no(enabled)}",
+        f"Conversation mode: {'on' if conversation_mode else 'off'}",
+        f"Runtime state: {'present' if state_dir.exists() else 'absent'}",
+        f"Next action: {next_action}",
+    ]
+
+    try:
+        mission_summary = render_mission_status_summary(read_state().active_mission)
+    except Exception:
+        mission_summary = "\n".join(
+            [
+                "Raphael mission state",
+                "Current mission: unavailable",
+            ]
+        )
+    lines.extend(["", mission_summary])
+    return "\n".join(lines)
 
 
 def raphael_command(args: Any) -> int:

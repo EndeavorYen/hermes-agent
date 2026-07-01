@@ -169,9 +169,25 @@ Progress target when merged: 15%.
 
 ### Phase 2: Goal-State Manager
 
+Tracking issue: `#8`.
+
 Create issue title:
 
 `Raphael mission state tracks active goal artifact proof and followups`
+
+Public state contract:
+
+- Raphael mission state records the active mission id, goal, active artifact,
+  success conditions, phase, blockers, next action, selected strategy, required
+  proofs, last evidence count, and last user follow-up request.
+- Follow-up handling keeps the current mission id and updates the current
+  mission/artifact when a safe, current artifact can be resolved.
+- Ambiguous artifact references must ask one precise clarification, or return a
+  bounded candidate plan when that strategy is explicitly allowed.
+- Stale artifacts are never selected as the active follow-up target.
+- `hermes raphael status` may expose a public mission summary, but it must not
+  print raw evidence references, provider logs, local artifact paths, rejected
+  candidates, or base64 payloads.
 
 Acceptance:
 
