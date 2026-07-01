@@ -262,6 +262,7 @@ def finalize_turn(
 
     _response_transformed = False
     _raphael_proof_gate_result = None
+    _raphael_evolution_proposal = None
 
     # Plugin hook: transform_llm_output
     # Fired once per turn after the tool-calling loop completes.
@@ -326,6 +327,23 @@ def finalize_turn(
                         + "\n\n"
                         + render_proof_gate_user_message(_raphael_proof_gate_result)
                     )
+                    try:
+                        from agent.raphael.evolution import (
+                            record_proof_gate_failure_signal,
+                        )
+
+                        _raphael_evolution_proposal = (
+                            record_proof_gate_failure_signal(
+                                _raphael_proof_gate_result,
+                                turn_id=turn_id,
+                                user_message=original_user_message or user_message,
+                            )
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Raphael evolution signal recording failed: %s",
+                            exc,
+                        )
         except Exception as exc:
             logger.warning("Raphael proof gate failed: %s", exc)
 
@@ -408,6 +426,13 @@ def finalize_turn(
             "missing_proofs": list(_raphael_proof_gate_result.missing_proofs),
             "next_action": _raphael_proof_gate_result.next_action,
             "next_proof_command": _raphael_proof_gate_result.next_proof_command,
+        }
+    if _raphael_evolution_proposal is not None:
+        result["raphael_evolution_proposal"] = {
+            "proposal_id": _raphael_evolution_proposal.proposal_id,
+            "action_type": _raphael_evolution_proposal.action_type,
+            "risk": _raphael_evolution_proposal.risk.value,
+            "status": _raphael_evolution_proposal.status,
         }
     # If a /steer landed after the final assistant turn (no more tool
     # batches to drain into), hand it back to the caller so it can be

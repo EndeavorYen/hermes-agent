@@ -70,6 +70,39 @@ def test_r2_action_proposal_requires_approval_and_round_trips_pending_status():
     assert ActionProposal.from_dict(payload) == proposal
 
 
+def test_action_proposal_round_trips_auditable_metadata():
+    created_at = datetime(2026, 6, 16, 9, 0, tzinfo=timezone.utc)
+    proposal = ActionProposal(
+        proposal_id="proposal-2",
+        action_type="skill_patch",
+        risk=RiskLevel.R2,
+        summary="Patch Raphael proof gate after recurring failures.",
+        evidence_refs=("evolution:raphael.proof_gate", "signal_count:2"),
+        created_at=created_at,
+        metadata={
+            "affected_capability": "raphael.proof_gate",
+            "confidence": 0.82,
+            "promotion_gate": "focused tests plus LLM smoke",
+            "rollback_condition": "user says 不對 again",
+            "rollout_plan": {
+                "manual_steps": ["Open a scoped PR."],
+                "verification_commands": [
+                    "python -m pytest tests/agent/test_raphael_evolution.py -q"
+                ],
+                "rollback_condition": "user says 不對 again",
+            },
+            "approval_required": True,
+        },
+    )
+
+    payload = proposal.to_dict()
+
+    assert payload["metadata"]["affected_capability"] == "raphael.proof_gate"
+    assert payload["metadata"]["confidence"] == 0.82
+    assert payload["metadata"]["rollback_condition"] == "user says 不對 again"
+    assert ActionProposal.from_dict(payload) == proposal
+
+
 def test_empty_state_round_trips_with_defaults():
     state = RaphaelState.empty()
 

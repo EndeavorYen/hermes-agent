@@ -9,6 +9,15 @@ from agent.raphael.models import (
     SkillTraceSummary,
     StatusCard,
 )
+from agent.raphael.evolution import (
+    RaphaelEvolutionSignal,
+    build_evolution_action_proposal,
+    build_evolution_signal,
+    record_proof_gate_failure_signal,
+    record_evolution_action_proposal,
+    sanitize_evolution_metadata,
+    sanitize_evolution_text,
+)
 from agent.raphael.proof import (
     RaphaelProofEvidence,
     RaphaelProofGateResult,
@@ -26,6 +35,7 @@ from agent.raphael.router import RaphaelRoute, render_route_context, route_rapha
 __all__ = [
     "ActionProposal",
     "MissionArtifact",
+    "RaphaelEvolutionSignal",
     "RaphaelEvent",
     "RaphaelMission",
     "RaphaelProofEvidence",
@@ -37,6 +47,8 @@ __all__ = [
     "SkillTrace",
     "SkillTraceSummary",
     "StatusCard",
+    "build_evolution_action_proposal",
+    "build_evolution_signal",
     "claim_kind_from_text",
     "evaluate_raphael_proof_gate",
     "extract_raphael_proof_evidence",
@@ -45,5 +57,9 @@ __all__ = [
     "render_route_context",
     "required_proofs_for_claim",
     "required_proofs_for_route",
+    "record_proof_gate_failure_signal",
+    "record_evolution_action_proposal",
     "route_raphael_message",
+    "sanitize_evolution_metadata",
+    "sanitize_evolution_text",
 ]

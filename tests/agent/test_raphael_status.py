@@ -32,6 +32,34 @@ def _proposal(proposal_id: str) -> ActionProposal:
     )
 
 
+def _evolution_proposal(proposal_id: str) -> ActionProposal:
+    return ActionProposal(
+        proposal_id=proposal_id,
+        action_type="skill_patch",
+        risk=RiskLevel.R2,
+        summary=(
+            "Patch proof gate using /private/tmp/raw.log and "
+            "data:image/png;base64,SECRET candidate:old-image"
+        ),
+        evidence_refs=("evolution:raphael.proof_gate",),
+        created_at=NOW,
+        metadata={
+            "affected_capability": "raphael.proof_gate",
+            "confidence": 0.82,
+            "promotion_gate": "focused tests plus LLM smoke",
+            "rollback_condition": "user says 不對 again",
+            "rollout_plan": {
+                "manual_steps": ["Open a scoped PR for raphael.proof_gate."],
+                "verification_commands": [
+                    "python -m pytest tests/agent/test_raphael_evolution.py -q"
+                ],
+                "rollback_condition": "user says 不對 again",
+            },
+            "approval_required": True,
+        },
+    )
+
+
 def _state(
     *,
     cards: tuple[StatusCard, ...] = (),
@@ -79,6 +107,26 @@ def test_render_includes_active_warning_card_and_pending_r2_proposal():
     assert "proposal-1" in output
     assert "R2" in output
     assert "requires approval" in output
+
+
+def test_render_status_redacts_evolution_proposal_and_shows_rollout_guidance():
+    proposal = _evolution_proposal("proposal-secret")
+
+    output = render_status(_state(proposals=(proposal,)), now=NOW)
+
+    assert "[redacted-path]" in output
+    assert "[redacted-base64]" in output
+    assert "[redacted-candidate]" in output
+    assert "/private/tmp" not in output
+    assert "SECRET" not in output
+    assert "candidate:old-image" not in output
+    assert "Affected capability: raphael.proof_gate" in output
+    assert "Confidence: 0.82" in output
+    assert "Promotion gate: focused tests plus LLM smoke" in output
+    assert "Rollback: user says 不對 again" in output
+    assert "Approve: hermes raphael proposal approve" in output
+    assert "Reject: hermes raphael proposal reject" in output
+    assert "Open a scoped PR for raphael.proof_gate." in output
 
 
 def test_render_status_respects_max_cards():

@@ -233,6 +233,201 @@ def test_raphael_parser_registers_lifecycle_actions():
     assert args.func(args) is args
 
 
+def test_raphael_parser_registers_proposal_approval_actions():
+    from hermes_cli._parser import build_top_level_parser
+    from hermes_cli.subcommands.raphael import build_raphael_parser
+
+    parser, subparsers, _chat_parser = build_top_level_parser()
+
+    def _dispatch(args):
+        return args
+
+    build_raphael_parser(subparsers, cmd_raphael=_dispatch)
+
+    args = parser.parse_args(["raphael", "proposal", "approve", "proposal-1"])
+
+    assert args.raphael_action == "proposal"
+    assert args.proposal_action == "approve"
+    assert args.proposal_id == "proposal-1"
+    assert args.func(args) is args
+
+
+def test_raphael_proposal_approve_records_resolution_without_policy_mutation(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    from agent.raphael.models import ActionProposal, RaphaelState, RiskLevel
+    from agent.raphael.state import read_state, write_state
+    from hermes_cli.raphael_lifecycle import raphael_command
+
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    now = datetime(2026, 7, 2, 12, 0, tzinfo=timezone.utc)
+    proposal = ActionProposal(
+        proposal_id="proposal-1",
+        action_type="skill_patch",
+        risk=RiskLevel.R2,
+        summary="Patch Raphael proof gate after approval.",
+        evidence_refs=("evolution:raphael.proof_gate",),
+        created_at=now,
+        metadata={
+            "affected_capability": "raphael.proof_gate",
+            "promotion_gate": "focused tests",
+            "rollback_condition": "user says 不對 again",
+        },
+    )
+    write_state(
+        RaphaelState(status_cards=(), action_proposals=(proposal,), updated_at=now)
+    )
+
+    exit_code = raphael_command(
+        Namespace(
+            raphael_action="proposal",
+            proposal_action="approve",
+            proposal_id="proposal-1",
+        )
+    )
+
+    state = read_state()
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "approved" in out
+    assert "durable policy was not changed" in out
+    assert state.action_proposals[0].status == "approved"
+    assert state.action_proposals[0].metadata["resolution"]["status"] == "approved"
+    assert (
+        state.action_proposals[0].metadata["resolution"]["durable_policy_mutated"]
+        is False
+    )
+
+
+def test_raphael_status_includes_sanitized_pending_proposal(monkeypatch, tmp_path):
+    from agent.raphael.models import ActionProposal, RaphaelState, RiskLevel
+    from agent.raphael.state import write_state
+    from hermes_cli.raphael_lifecycle import render_lifecycle_status
+
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    now = datetime(2026, 7, 2, 12, 0, tzinfo=timezone.utc)
+    proposal = ActionProposal(
+        proposal_id="proposal-secret",
+        action_type="skill_patch",
+        risk=RiskLevel.R2,
+        summary=(
+            "Patch from /private/tmp/raw.log with "
+            "data:image/png;base64,SECRET candidate:old-image"
+        ),
+        evidence_refs=("evolution:raphael.proof_gate",),
+        created_at=now,
+        metadata={
+            "affected_capability": "raphael.proof_gate",
+            "confidence": 0.82,
+            "promotion_gate": "focused tests plus LLM smoke",
+            "rollback_condition": "user says 不對 again",
+            "approval_required": True,
+            "rollout_plan": {
+                "manual_steps": ["Open a scoped PR for raphael.proof_gate."],
+            },
+        },
+    )
+    write_state(
+        RaphaelState(status_cards=(), action_proposals=(proposal,), updated_at=now)
+    )
+
+    out = render_lifecycle_status()
+
+    assert "Raphael Advisor" in out
+    assert "proposal-secret" in out
+    assert "[redacted-path]" in out
+    assert "[redacted-base64]" in out
+    assert "[redacted-candidate]" in out
+    assert "/private/tmp" not in out
+    assert "candidate:old-image" not in out
+    assert "Approve: hermes raphael proposal approve proposal-secret" in out
+
+
+def test_raphael_proposal_approve_prints_steps_and_reject_does_not(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    from agent.raphael.models import ActionProposal, RaphaelState, RiskLevel
+    from agent.raphael.state import read_state, write_state
+    from hermes_cli.raphael_lifecycle import raphael_command
+
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    now = datetime(2026, 7, 2, 12, 0, tzinfo=timezone.utc)
+    approve = ActionProposal(
+        proposal_id="proposal-approve",
+        action_type="skill_patch",
+        risk=RiskLevel.R2,
+        summary="Patch Raphael proof gate after approval.",
+        evidence_refs=("evolution:raphael.proof_gate",),
+        created_at=now,
+        metadata={
+            "rollout_plan": {
+                "manual_steps": [
+                    "Open a scoped issue or PR for raphael.proof_gate.",
+                    "Run the promotion gate before enabling the change.",
+                ],
+            },
+        },
+    )
+    reject = ActionProposal(
+        proposal_id="proposal-reject",
+        action_type="skill_patch",
+        risk=RiskLevel.R2,
+        summary="Patch Raphael proof gate after approval.",
+        evidence_refs=("evolution:raphael.proof_gate",),
+        created_at=now,
+        metadata={
+            "rollout_plan": {
+                "manual_steps": ["This step must not print on rejection."],
+            },
+        },
+    )
+    write_state(
+        RaphaelState(
+            status_cards=(),
+            action_proposals=(approve, reject),
+            updated_at=now,
+        )
+    )
+
+    approve_exit = raphael_command(
+        Namespace(
+            raphael_action="proposal",
+            proposal_action="approve",
+            proposal_id="proposal-approve",
+        )
+    )
+    approve_out = capsys.readouterr().out
+    reject_exit = raphael_command(
+        Namespace(
+            raphael_action="proposal",
+            proposal_action="reject",
+            proposal_id="proposal-reject",
+        )
+    )
+    reject_out = capsys.readouterr().out
+    state = read_state()
+
+    assert approve_exit == 0
+    assert reject_exit == 0
+    assert "Next rollout steps:" in approve_out
+    assert "Open a scoped issue or PR for raphael.proof_gate." in approve_out
+    assert "rejected" in reject_out
+    assert "No rollout steps will be applied." in reject_out
+    assert "This step must not print on rejection." not in reject_out
+    assert [proposal.status for proposal in state.action_proposals] == [
+        "approved",
+        "rejected",
+    ]
+
+
 def test_raphael_is_builtin_subcommand_for_fast_parser_path():
     from hermes_cli.main import _BUILTIN_SUBCOMMANDS
 
