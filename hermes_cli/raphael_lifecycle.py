@@ -23,6 +23,11 @@ from agent.raphael.public_readiness import (
     run_public_llm_slice_simulation,
     write_public_readiness_gate,
 )
+from agent.raphael.release_candidate import (
+    build_release_candidate_gate,
+    render_release_candidate_gate,
+    write_release_candidate_gate,
+)
 from agent.raphael.state import read_state, resolve_action_proposal
 from agent.raphael.status import render_status as render_raphael_status
 from agent.raphael.evolution import sanitize_evolution_text
@@ -225,11 +230,17 @@ def raphael_command(args: Any) -> int:
             write_media_readiness_gate(report, str(args.gate_output))
         print(render_media_readiness(report))
         return 0 if report.status == "openai_image_ready" else 1
+    if action == "release-gate":
+        report = build_release_gate_report(args)
+        if getattr(args, "gate_output", ""):
+            write_release_candidate_gate(report, str(args.gate_output))
+        print(render_release_candidate_gate(report))
+        return 0 if report.status == "release_candidate_ready" else 1
     if action == "proposal":
         return _proposal_command(args)
     print(
         "Usage: hermes raphael "
-        "[install|enable|disable|status|readiness|media-readiness|uninstall|proposal]"
+        "[install|enable|disable|status|readiness|media-readiness|release-gate|uninstall|proposal]"
     )
     return 2
 
@@ -264,6 +275,23 @@ def build_media_readiness_report(args: Any):
                 getattr(args, "max_evidence_age_seconds", 86400) or 0
             ),
         ),
+    )
+
+
+def build_release_gate_report(args: Any):
+    doc_texts, doc_failures = _load_text_files(getattr(args, "docs_files", ()) or ())
+    return build_release_candidate_gate(
+        lifecycle_gate=_load_json_mapping(
+            str(getattr(args, "lifecycle_evidence_file", "") or "")
+        ),
+        llm_gate=_load_json_mapping(
+            str(getattr(args, "llm_readiness_file", "") or "")
+        ),
+        media_gate=_load_json_mapping(
+            str(getattr(args, "media_readiness_file", "") or "")
+        ),
+        doc_texts=doc_texts,
+        doc_failures=doc_failures,
     )
 
 
@@ -326,6 +354,17 @@ def _load_json_mapping(path: str) -> dict[str, Any] | None:
     except Exception:
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _load_text_files(paths: Any) -> tuple[list[str], list[str]]:
+    texts: list[str] = []
+    failures: list[str] = []
+    for raw_path in paths if isinstance(paths, (list, tuple)) else []:
+        try:
+            texts.append(Path(str(raw_path)).read_text(encoding="utf-8"))
+        except Exception:
+            failures.append(str(raw_path))
+    return texts, failures
 
 
 def _read_user_config() -> dict[str, Any]:

@@ -82,6 +82,37 @@ def build_raphael_parser(subparsers, *, cmd_raphael: Callable) -> None:
         default="",
         help="Optional JSON output path for the media readiness gate report",
     )
+    release_gate_parser = raphael_subparsers.add_parser(
+        "release-gate",
+        help="Verify Raphael release-candidate readiness without overclaiming",
+    )
+    release_gate_parser.add_argument(
+        "--lifecycle-evidence-file",
+        default="",
+        help="JSON evidence file for install, enable, disable, and uninstall smoke",
+    )
+    release_gate_parser.add_argument(
+        "--llm-readiness-file",
+        default="",
+        help="JSON output produced by hermes raphael readiness",
+    )
+    release_gate_parser.add_argument(
+        "--media-readiness-file",
+        default="",
+        help="JSON output produced by hermes raphael media-readiness",
+    )
+    release_gate_parser.add_argument(
+        "--docs-file",
+        action="append",
+        dest="docs_files",
+        default=[],
+        help="Public docs or release notes file to scan for overclaiming",
+    )
+    release_gate_parser.add_argument(
+        "--gate-output",
+        default="",
+        help="Optional JSON output path for the release-candidate gate report",
+    )
     raphael_subparsers.add_parser(
         "uninstall",
         help="Disable Raphael and remove Raphael-owned runtime state",
