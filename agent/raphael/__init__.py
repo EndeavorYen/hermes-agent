@@ -9,6 +9,18 @@ from agent.raphael.models import (
     SkillTraceSummary,
     StatusCard,
 )
+from agent.raphael.proof import (
+    RaphaelProofEvidence,
+    RaphaelProofGateResult,
+    RaphaelSelfReview,
+    claim_kind_from_text,
+    evaluate_raphael_proof_gate,
+    extract_raphael_proof_evidence,
+    render_proof_gate_context,
+    render_proof_gate_user_message,
+    required_proofs_for_claim,
+    required_proofs_for_route,
+)
 from agent.raphael.router import RaphaelRoute, render_route_context, route_raphael_message
 
 __all__ = [
@@ -16,12 +28,22 @@ __all__ = [
     "MissionArtifact",
     "RaphaelEvent",
     "RaphaelMission",
+    "RaphaelProofEvidence",
+    "RaphaelProofGateResult",
     "RaphaelState",
     "RiskLevel",
     "RaphaelRoute",
+    "RaphaelSelfReview",
     "SkillTrace",
     "SkillTraceSummary",
     "StatusCard",
+    "claim_kind_from_text",
+    "evaluate_raphael_proof_gate",
+    "extract_raphael_proof_evidence",
+    "render_proof_gate_context",
+    "render_proof_gate_user_message",
     "render_route_context",
+    "required_proofs_for_claim",
+    "required_proofs_for_route",
     "route_raphael_message",
 ]
