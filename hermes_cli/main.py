@@ -11557,7 +11557,7 @@ def cmd_plugins(args):
 def cmd_raphael(args):
     from hermes_cli.raphael_lifecycle import raphael_command
 
-    return raphael_command(args)
+    raise SystemExit(raphael_command(args))
 
 
 def cmd_mcp(args):

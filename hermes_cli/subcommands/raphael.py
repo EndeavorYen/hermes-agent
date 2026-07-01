@@ -33,6 +33,25 @@ def build_raphael_parser(subparsers, *, cmd_raphael: Callable) -> None:
         "status",
         help="Show Raphael lifecycle status and the next setup action",
     )
+    readiness_parser = raphael_subparsers.add_parser(
+        "readiness",
+        help="Show public LLM-slice readiness without claiming media readiness",
+    )
+    readiness_parser.add_argument(
+        "--llm-smoke-session-id",
+        default="",
+        help="Session id for an operator-recorded passing LLM-only live smoke",
+    )
+    readiness_parser.add_argument(
+        "--llm-smoke-evidence-file",
+        default="",
+        help="JSON evidence file produced from the reviewed LLM-only live smoke",
+    )
+    readiness_parser.add_argument(
+        "--gate-output",
+        default="",
+        help="Optional JSON output path for the public readiness gate report",
+    )
     raphael_subparsers.add_parser(
         "uninstall",
         help="Disable Raphael and remove Raphael-owned runtime state",
