@@ -655,6 +655,52 @@ caption
             },
         ]
     
+    def test_gateway_prefers_original_references_over_generated_outputs_for_original_ref_followup(self):
+        """When the user says original ref, generated outputs must not replace uploaded refs."""
+        from gateway.run import _build_visual_reference_context_entries_for_turn
+
+        history = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "請使用 grok-web-imagine provider / reference 固定這位角色"},
+                    {"type": "image_url", "image_url": {"url": "/tmp/original-character.png"}},
+                    {"type": "image_url", "image_url": {"url": "/tmp/original-style.png"}},
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_pkg",
+                "content": json.dumps(
+                    {
+                        "success": True,
+                        "image": "/Users/simon/.hermes/cache/images/grok_web_imagine_20260630_003533_a51c4a55.png",
+                        "delivery_metadata": {
+                            "selected_visual_artifact_ids": ["var_selected"],
+                            "visual_artifacts": {
+                                "/Users/simon/.hermes/cache/images/grok_web_imagine_20260630_003533_a51c4a55.png": {
+                                    "artifact_id": "var_selected",
+                                    "kind": "image",
+                                }
+                            },
+                        },
+                    }
+                ),
+            },
+        ]
+
+        refs = _build_visual_reference_context_entries_for_turn(
+            history,
+            current_message="可不可以再嘗試不同的構圖，可以類似原 ref 的構圖進行調整和優化",
+            native_image_paths=[],
+        )
+
+        assert [entry["uri"] for entry in refs] == [
+            "/tmp/original-character.png",
+            "/tmp/original-style.png",
+        ]
+        assert all("grok_web_imagine_" not in entry["uri"] for entry in refs)
+
     def test_media_tags_extracted_from_current_turn(self):
         """MEDIA tags from the current turn SHOULD be extracted."""
         # History without TTS

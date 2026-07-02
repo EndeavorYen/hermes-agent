@@ -13,6 +13,35 @@ from tools.visual_package_tool import _handle_visual_package_generate
 from tools.visual_package_tool import check_visual_package_requirements
 
 
+_DIRECT_VISUAL_PACKAGE_OVERRIDE_KEYS = frozenset(
+    {
+        "aspect_ratio",
+        "autonomy_level",
+        "candidate_budget",
+        "candidate_budget_source",
+        "duration",
+        "grok_web_operation",
+        "image_model",
+        "image_operation",
+        "image_provider",
+        "image_provider_source",
+        "include_image",
+        "include_video",
+        "operation",
+        "polish_provider",
+        "polish_provider_source",
+        "reference_binding",
+        "reference_conditioning_policy",
+        "reference_strategy",
+        "storyboard",
+        "video_budget",
+        "video_model",
+        "video_provider",
+        "video_provider_source",
+    }
+)
+
+
 VISUAL_AGENT_SCHEMA: dict[str, Any] = {
     "name": "visual_agent_generate",
     "description": (
@@ -75,10 +104,7 @@ async def _handle_visual_agent_generate(args: dict[str, Any], **_kw: Any) -> str
         return tool_error("visual_agent_generate requires a visual image or video request")
 
     package_args = dict(plan.get("arguments") or {})
-    if args.get("aspect_ratio"):
-        package_args["aspect_ratio"] = str(args["aspect_ratio"])
-    if args.get("duration") is not None:
-        package_args["duration"] = args["duration"]
+    _merge_direct_visual_package_overrides(package_args, args)
     for key in ("visual_agent_llm_provider", "visual_agent_llm_model", "visual_agent_handoff_mode"):
         if args.get(key):
             package_args[key] = args[key]
@@ -97,6 +123,21 @@ async def _handle_visual_agent_generate(args: dict[str, Any], **_kw: Any) -> str
         payload["visual_agent_tool"] = "visual_agent_generate"
         return json.dumps(payload, ensure_ascii=False)
     return raw
+
+
+def _merge_direct_visual_package_overrides(
+    package_args: dict[str, Any],
+    args: dict[str, Any],
+) -> None:
+    for key in _DIRECT_VISUAL_PACKAGE_OVERRIDE_KEYS:
+        if key not in args:
+            continue
+        value = args[key]
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        package_args[key] = str(value) if key == "aspect_ratio" else value
 
 
 def _normalise_attachments(value: Any) -> list[str]:

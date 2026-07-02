@@ -31,6 +31,15 @@ def test_feedback_parser_extracts_subject_and_stocking_quality_issues():
     assert "stockings_bad" in feedback.parsed["issues"]
 
 
+def test_feedback_parser_treats_approved_latest_output_as_positive_signal():
+    from agent.visual.feedback import parse_visual_feedback
+
+    feedback = parse_visual_feedback("很棒! 最新的產出我覺得可以!")
+
+    assert feedback.polarity > 0
+    assert "general_positive" in feedback.parsed["signals"]
+
+
 def test_record_parsed_visual_feedback_maps_selection_to_artifact(tmp_path):
     from agent.visual.attempt_ledger import VisualAttemptLedger
     from agent.visual.feedback import record_parsed_visual_feedback

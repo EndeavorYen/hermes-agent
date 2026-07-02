@@ -98,6 +98,40 @@ def test_agent_mode_planner_routes_image_only_request():
     assert plan["arguments"]["candidate_budget_source"] == "planner_default"
 
 
+def test_agent_mode_planner_treats_positive_image_quality_comment_as_feedback_only():
+    from agent.visual.agent_mode.planner import plan_visual_agent_request
+
+    plan = plan_visual_agent_request("這次的產圖品質很棒!")
+
+    assert plan["should_use_visual_package"] is False
+    assert plan["reason"] == "visual_feedback_only"
+    assert plan["feedback"]["polarity"] > 0
+    assert "general_positive" in plan["feedback"]["signals"]
+
+
+def test_agent_mode_planner_treats_latest_output_approval_as_feedback_only():
+    from agent.visual.agent_mode.planner import plan_visual_agent_request
+
+    plan = plan_visual_agent_request("最新的產出我覺得可以")
+
+    assert plan["should_use_visual_package"] is False
+    assert plan["reason"] == "visual_feedback_only"
+
+
+def test_agent_mode_planner_ignores_public_raphael_text_task_with_negated_media():
+    from agent.visual.agent_mode.planner import plan_visual_agent_request
+
+    plan = plan_visual_agent_request(
+        "同一個 hostile UX 測試，現在模擬真實文字任務：我要公開 Raphael，"
+        "但又怕 overclaim；我要使用者 wow，但不能產圖、不能用工具、不能假綠燈。"
+        "請只用六行回答：目標、成功條件、證據門檻、阻塞、修正策略、可公開說法。"
+        "不要宣稱已完成。"
+    )
+
+    assert plan["should_use_visual_package"] is False
+    assert plan["reason"] == "text_only_visual_analysis"
+
+
 def test_agent_mode_planner_routes_friendly_draw_character_request():
     from agent.visual.agent_mode.planner import plan_visual_agent_request
 
@@ -262,3 +296,17 @@ def test_agent_mode_planner_allows_grok_web_imagine_media_override():
     assert plan["provider_contract"]["visual_media_provider_override"] == "grok-web-imagine"
     assert plan["arguments"]["image_provider"] == "grok-web-imagine"
     assert plan["arguments"]["image_provider_source"] == "prompt_override"
+
+
+def test_agent_mode_planner_routes_grok_web_polish_as_image_polish_not_video():
+    from agent.visual.agent_mode.planner import plan_visual_agent_request
+
+    plan = plan_visual_agent_request("用 grok web polish 試試看", attachments=["/tmp/current.png"])
+
+    assert plan["should_use_visual_package"] is True
+    assert plan["arguments"]["include_image"] is True
+    assert plan["arguments"]["include_video"] is False
+    assert plan["arguments"]["image_provider"] == "xai"
+    assert plan["arguments"]["image_provider_source"] == "visual_agent_default"
+    assert plan["arguments"]["polish_provider"] == "grok-web-imagine"
+    assert plan["arguments"]["polish_provider_source"] == "prompt_override"

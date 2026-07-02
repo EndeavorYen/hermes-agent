@@ -349,6 +349,9 @@ class OpenAIImageGenProvider(ImageGenProvider):
         b64 = getattr(first, "b64_json", None)
         url = getattr(first, "url", None)
         revised_prompt = getattr(first, "revised_prompt", None)
+        response_id = str(
+            getattr(response, "id", None) or getattr(first, "id", None) or ""
+        ).strip()
 
         if b64:
             try:
@@ -392,6 +395,8 @@ class OpenAIImageGenProvider(ImageGenProvider):
         extra: Dict[str, Any] = {"size": size, "quality": meta["quality"]}
         if revised_prompt:
             extra["revised_prompt"] = revised_prompt
+        if response_id:
+            extra["response_id"] = response_id
 
         return success_response(
             image=image_ref,

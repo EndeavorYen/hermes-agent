@@ -20,20 +20,26 @@ from urllib.request import urlopen
 from agent.visual.active_learning import decide_visual_action
 from agent.visual.agent_mode.handoff import is_visual_prompt_disclosure_request
 from agent.visual.agent_mode.handoff import normalise_visual_agent_attachment
+from agent.visual.arsenal_prompt import build_arsenal_prompt_variants
 from agent.visual.artifact_observation import build_artifact_observation
 from agent.visual.aspect_policy import select_video_aspect_ratio
 from agent.visual.attempt_ledger import VisualAttemptLedger
 from agent.visual.autonomous_orchestration import build_post_generation_orchestration
 from agent.visual.autonomous_validation import validate_visual_generation_payload
 from agent.visual.feedback_policy import resolve_visual_feedback_policy
+from agent.visual.feedback import is_visual_feedback_only_text
 from agent.visual.intent_signature import build_intent_signature
 from agent.visual.judges.deterministic import judge_artifact
 from agent.visual.judges.quality import judge_visual_quality
 from agent.visual.media_probe import probe_media_reference
 from agent.visual.preference_profile import build_preference_profile
+from agent.visual.prompt_arsenal import approved_prompt_arsenal_entries
+from agent.visual.prompt_text import build_provider_facing_visual_prompt
+from agent.visual.prompt_text import strip_visual_prompt_metadata
 from agent.visual.provider_failures import classify_visual_provider_failure
 from agent.visual.provider_stats import compute_provider_reliability
 from agent.visual.ranker import rank_visual_candidates
+from agent.visual.reference_similarity import augment_observation_with_reference_similarity
 from agent.visual.recovery import plan_visual_recovery
 from agent.visual.reward_model import score_visual_candidate
 from agent.visual.shadow_learning import record_shadow_update
@@ -54,6 +60,7 @@ VISUAL_PROVIDER_REFERENCE_SLOT_BUDGET = 3
 ALWAYS_BLOCKING_QUALITY_ISSUES = {
     "composition_bad",
     "reference_identity_drift",
+    "reference_overcopy",
     "reference_role_evidence_missing",
     "source_frame_grid",
 }
@@ -255,7 +262,11 @@ def _normalise_image_provider(value: Any, *, allow_unknown: bool = True) -> str 
         return None
     lowered = raw.lower()
     compact = re.sub(r"[\s_\-.]+", "", lowered)
-    if compact in {"grokwebimagine", "grokweb"} or "grok web imagine" in lowered:
+    if (
+        "grokwebimagine" in compact
+        or "grokweb" in compact
+        or "grok web imagine" in lowered
+    ):
         return "grok-web-imagine"
     if "grok" in lowered or "x.ai" in lowered or re.search(r"\bxai\b", lowered):
         return "xai"
@@ -298,14 +309,106 @@ def _grok_web_imagine_policy(
     }
 
 
-def _polish_provider_override(args: dict[str, Any]) -> str | None:
+def _polish_provider_override(args: dict[str, Any], *, prompt: str | None = None) -> str | None:
     for key in ("polish_provider", "quality_polish_provider"):
         provider = _normalise_image_provider(args.get(key))
         if provider:
             return provider
     if _coerce_bool(args.get("grok_web_polish")):
         return "grok-web-imagine"
+    provider = _normalise_polish_provider_from_prompt(prompt)
+    if provider:
+        return provider
     return None
+
+
+def _normalise_polish_provider_from_prompt(prompt: str | None) -> str | None:
+    text = _current_visual_instruction(prompt or "")
+    lowered = text.lower()
+    compact = re.sub(r"[\s_\-.]+", "", lowered)
+    if "prompt" in lowered or "提示詞" in lowered or "提示词" in lowered:
+        return None
+    has_polish = any(
+        token in lowered
+        for token in (
+            "polish",
+            "refine",
+            "enhance",
+            "quality pass",
+            "quality polish",
+            "web polish",
+        )
+    ) or any(
+        token in re.sub(r"\s+", "", lowered)
+        for token in ("精修", "修圖", "润饰", "潤飾", "美化", "畫質提升", "品质提升", "品質提升")
+    )
+    if not has_polish:
+        return None
+    if "grok web" in lowered or "web polish" in lowered or compact == "grokwebpolish":
+        return "grok-web-imagine"
+    return None
+
+
+def _current_visual_instruction(prompt: str) -> str:
+    text = strip_visual_prompt_metadata(prompt)
+    if "[End of thread context]" in text:
+        text = text.split("[End of thread context]", 1)[1]
+    for marker in (
+        "Session visual context:",
+        "Reference policy for unassigned uploaded images:",
+        "Provider-ready visual prompt:",
+    ):
+        if marker in text:
+            text = text.split(marker, 1)[0]
+    return text.strip()
+
+
+def _direct_polish_source_image(
+    *,
+    prompt: str,
+    args: dict[str, Any],
+    attachments: list[str],
+    reference_binding: dict[str, Any] | None,
+    polish_provider: str | None,
+    wants_video: bool,
+) -> str | None:
+    if not polish_provider or wants_video:
+        return None
+    if args.get("direct_polish") is False:
+        return None
+    instruction = _current_visual_instruction(prompt)
+    if not _normalise_polish_provider_from_prompt(instruction) and not _coerce_bool(
+        args.get("grok_web_polish")
+    ):
+        if not any(args.get(key) for key in ("polish_provider", "quality_polish_provider")):
+            return None
+    lowered = instruction.lower()
+    compact = re.sub(r"\s+", "", lowered)
+    new_generation_markers = (
+        "new pose",
+        "different pose",
+        "new composition",
+        "different composition",
+        "candidate",
+        "candidates",
+        "重新生成",
+        "重新產生",
+        "重新產出",
+        "不同姿勢",
+        "不同構圖",
+        "換個姿勢",
+        "換個構圖",
+        "候選",
+    )
+    if any(marker in lowered for marker in new_generation_markers) or any(
+        marker in compact for marker in ("不同姿勢", "不同構圖", "換個姿勢", "換個構圖", "候選")
+    ):
+        return None
+    return _reference_role_attachment(
+        attachments,
+        reference_binding,
+        role_hint="edit_anchor",
+    )
 
 
 def _should_run_image_polish_pass(
@@ -318,6 +421,84 @@ def _should_run_image_polish_pass(
         and selected_image
         and isinstance(selected_image.get("artifact_path"), str)
         and selected_image.get("artifact_path", "").strip()
+    )
+
+
+def _grok_web_current_result_operation(
+    *,
+    args: dict[str, Any],
+    prompt: str,
+    image_provider: str | None,
+    polish_provider: str | None,
+    direct_polish_mode: bool,
+    image_reference_source: str | None,
+) -> str | None:
+    explicit = str(
+        args.get("image_operation")
+        or args.get("grok_web_operation")
+        or args.get("operation")
+        or ""
+    ).strip()
+    if explicit:
+        return explicit
+    active_provider = polish_provider if direct_polish_mode else image_provider
+    if active_provider != "grok-web-imagine":
+        return None
+    if not direct_polish_mode and image_reference_source != "session_visual_context":
+        return None
+    instruction = _current_visual_instruction(prompt)
+    if _is_regenerate_only_instruction(instruction):
+        return "regenerate_current"
+    return "continue_current"
+
+
+def _is_regenerate_only_instruction(prompt: str) -> bool:
+    text = str(prompt or "").strip().lower()
+    if not text:
+        return False
+    compact = re.sub(r"\s+", "", text)
+    regen_markers = (
+        "regenerate",
+        "reroll",
+        "retry",
+        "redo",
+        "try again",
+        "重新產生",
+        "重新生成",
+        "再生成",
+        "重試",
+        "重试",
+        "重做",
+        "再抽",
+        "重抽",
+    )
+    if not any(marker in text for marker in regen_markers) and not any(
+        marker in compact for marker in regen_markers
+    ):
+        return False
+    change_markers = (
+        "different",
+        "change",
+        "modify",
+        "adjust",
+        "improve",
+        "add",
+        "remove",
+        "keep",
+        "不同",
+        "換",
+        "改",
+        "調整",
+        "優化",
+        "改善",
+        "增加",
+        "移除",
+        "保持",
+        "固定",
+        "類似",
+    )
+    return not any(marker in text for marker in change_markers) and not any(
+        marker in compact for marker in change_markers
     )
 
 
@@ -442,13 +623,18 @@ def _write_reference_contact_sheet(panels: list[tuple[str, str]]) -> Path:
 
 
 async def _handle_visual_package_generate(args: dict[str, Any], **_kw: Any) -> str:
-    prompt = str(args.get("prompt") or "").strip()
+    prompt = strip_visual_prompt_metadata(args.get("prompt"))
     if not prompt:
         return tool_error("prompt is required for visual package generation")
     if is_visual_prompt_disclosure_request(prompt):
         return tool_error(
             "visual_package_generate is for image/video generation, not prompt disclosure",
             request_type="visual_prompt_disclosure",
+        )
+    if is_visual_feedback_only_text(prompt) and not _normalise_polish_provider_from_prompt(prompt):
+        return tool_error(
+            "visual_package_generate is for image/video generation, not visual feedback",
+            request_type="visual_feedback",
         )
     try:
         payload = _visual_package_generate(args, prompt=prompt)
@@ -466,7 +652,16 @@ async def _handle_visual_package_generate(args: dict[str, Any], **_kw: Any) -> s
         )
 
 
+def _visual_agent_original_prompt(args: dict[str, Any], fallback_prompt: str) -> str:
+    for key in ("visual_agent_original_prompt", "user_prompt", "original_prompt"):
+        value = strip_visual_prompt_metadata(args.get(key))
+        if value:
+            return value
+    return strip_visual_prompt_metadata(fallback_prompt)
+
+
 def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, Any]:
+    visual_agent_original_prompt = _visual_agent_original_prompt(args, prompt)
     attachments = _normalise_attachments(args.get("attachments"))
     attachments, image_reference_source, session_reference_entries = _session_visual_reference_attachments(
         prompt,
@@ -481,7 +676,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
     prompt = _apply_reference_binding_prompt(prompt, reference_binding)
     image_provider_override = _image_provider_override(args, prompt=prompt)
     image_provider_source = _image_provider_source(args)
-    polish_provider_override = _polish_provider_override(args)
+    polish_provider_override = _polish_provider_override(args, prompt=prompt)
     grok_web_imagine_policy = _grok_web_imagine_policy(
         args,
         image_provider_override=image_provider_override,
@@ -556,12 +751,15 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
     ledger = VisualAttemptLedger(default_visual_ledger_path())
     ledger.initialize()
     request_id = ledger.record_request(
-        user_prompt=prompt,
+        user_prompt=visual_agent_original_prompt,
         normalized_intent=normalized_intent,
         modality="package",
         operation="visual_package_generate",
         status="started",
-        metadata={"intent_signature": intent_signature},
+        metadata={
+            "intent_signature": intent_signature,
+            "visual_agent_prompt_mediated": prompt,
+        },
     )
 
     selected_artifact_ids: list[str] = []
@@ -584,6 +782,10 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
     controlled_strategy_plan = find_controlled_strategy_plan(
         ledger,
         intent_signature=intent_signature,
+    )
+    controlled_strategy_plan = _applicable_controlled_strategy_plan(
+        controlled_strategy_plan,
+        wants_video=wants_video,
     )
     feedback_strategy_plan = None
     if controlled_strategy_plan is not None:
@@ -650,6 +852,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             quality_guidance=quality_guidance,
             inline_vision_judge=inline_vision_judge,
             learning=learning,
+            prompt_original=visual_agent_original_prompt,
         )
         return _finalize_visual_package_payload(
             args,
@@ -692,11 +895,68 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         image_candidates = []
         image_prompt_base = _image_first_source_frame_prompt(prompt) if image_first_for_video else prompt
         image_generation_prompt_base = _apply_first_pass_quality_guidance(image_prompt_base, quality_guidance["image"])
+        direct_polish_source = _direct_polish_source_image(
+            prompt=prompt,
+            args=args,
+            attachments=attachments,
+            reference_binding=reference_binding,
+            polish_provider=polish_provider_override,
+            wants_video=wants_video,
+        )
+        direct_polish_mode = bool(direct_polish_source)
+        grok_web_current_operation = _grok_web_current_result_operation(
+            args=args,
+            prompt=prompt,
+            image_provider=image_provider_override,
+            polish_provider=polish_provider_override,
+            direct_polish_mode=direct_polish_mode,
+            image_reference_source=image_reference_source,
+        )
+        if grok_web_current_operation in {"continue_current", "regenerate_current"}:
+            candidate_budget = 1
+            candidate_budget_source = "grok_web_current_result_operation"
+        effective_candidate_budget = 1 if direct_polish_mode or grok_web_current_operation else candidate_budget
+        if direct_polish_mode:
+            image_prompt_variants = []
+        elif _should_apply_arsenal_prompt_variants(
+            strategy_plan=strategy_plan,
+            feedback_policy=feedback_policy,
+            candidate_budget=candidate_budget,
+        ):
+            approved_prompt_entries = approved_prompt_arsenal_entries(
+                ledger,
+                request_category=request_category,
+                limit=max(1, min(2, candidate_budget - 1)),
+            )
+            image_prompt_variants = build_arsenal_prompt_variants(
+                base_prompt=image_generation_prompt_base,
+                strategy_plan=strategy_plan.to_record(),
+                feedback_policy=feedback_policy,
+                request_category=request_category,
+                candidate_budget=candidate_budget,
+                approved_prompt_entries=approved_prompt_entries,
+            )
+        else:
+            image_prompt_variants = []
         image_input_artifacts = _reference_input_artifacts(attachments, reference_binding)
+        if direct_polish_mode and direct_polish_source:
+            image_input_artifacts = [
+                {
+                    "index": 1,
+                    "role_hint": "edit_anchor",
+                    "uri": direct_polish_source,
+                    "source": "direct_edit_anchor_polish",
+                }
+            ]
+        reference_conditioning_policy_override = _reference_conditioning_policy_override(
+            args,
+            attachments=attachments,
+            reference_binding=reference_binding,
+        )
         reference_conditioning_variants = _reference_conditioning_variants(
             attachments,
             reference_binding,
-            policy_override=args.get("reference_conditioning_policy"),
+            policy_override=reference_conditioning_policy_override,
         )
         primary_reference_policy = _reference_conditioning_policy_for_candidate(
             reference_conditioning_variants,
@@ -707,42 +967,96 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             reference_binding,
             conditioning_policy=primary_reference_policy,
         )
-        for candidate_index in range(candidate_budget):
-            reference_policy = _reference_conditioning_policy_for_candidate(
-                reference_conditioning_variants,
-                candidate_index=candidate_index,
+        for candidate_index in range(effective_candidate_budget):
+            if direct_polish_mode and direct_polish_source:
+                provider_reference_images = []
+                reference_conditioning = None
+                reference_attempt_extra = {
+                    "direct_polish": True,
+                    "polish_pass_of": "edit_anchor",
+                    "polish_provider": polish_provider_override,
+                }
+                prompt_variant: dict[str, Any] = {"prompt": image_generation_prompt_base}
+                image_generation_prompt = _image_polish_prompt(image_generation_prompt_base)
+            else:
+                reference_policy = _reference_conditioning_policy_for_candidate(
+                    reference_conditioning_variants,
+                    candidate_index=candidate_index,
+                )
+                provider_reference_images, reference_conditioning = _provider_reference_image_urls(
+                    attachments,
+                    reference_binding,
+                    conditioning_policy=reference_policy,
+                )
+                reference_attempt_extra = _provider_reference_attempt_extra(
+                    provider_reference_images,
+                    reference_conditioning,
+                )
+                prompt_variant = _prompt_variant_for_candidate(
+                    image_prompt_variants,
+                    candidate_index=candidate_index,
+                    fallback_prompt=image_generation_prompt_base,
+                )
+                image_generation_prompt = _apply_provider_reference_conditioning_prompt(
+                    str(prompt_variant.get("prompt") or image_generation_prompt_base),
+                    reference_conditioning,
+                )
+            provider_image_generation_prompt = build_provider_facing_visual_prompt(
+                image_generation_prompt
             )
-            provider_reference_images, reference_conditioning = _provider_reference_image_urls(
-                attachments,
-                reference_binding,
-                conditioning_policy=reference_policy,
-            )
-            reference_attempt_extra = _provider_reference_attempt_extra(
-                provider_reference_images,
-                reference_conditioning,
-            )
-            image_generation_prompt = _apply_provider_reference_conditioning_prompt(
-                image_generation_prompt_base,
-                reference_conditioning,
-            )
+            image_attempt_extra = dict(reference_attempt_extra)
+            if image_prompt_variants:
+                image_attempt_extra["visual_arsenal_variant"] = _public_prompt_variant(prompt_variant)
             image_attempt_parameters = _image_attempt_parameters(
                 aspect_ratio,
                 attachments=attachments,
                 reference_binding=reference_binding,
-                extra=reference_attempt_extra,
+                extra=image_attempt_extra,
             )
             image_kwargs = {
-                "prompt": image_generation_prompt,
+                "prompt": provider_image_generation_prompt,
                 "aspect_ratio": image_aspect_ratio,
                 "reference_image_urls": provider_reference_images or None,
             }
-            _apply_image_provider_override(image_kwargs, image_provider_override)
+            grok_web_operation = grok_web_current_operation
+            if grok_web_operation:
+                image_kwargs["operation"] = grok_web_operation
+            if direct_polish_mode and direct_polish_source:
+                image_kwargs["image_url"] = direct_polish_source
+                image_kwargs["reference_image_urls"] = None
+                _apply_image_provider_override(image_kwargs, polish_provider_override)
+                polish_pass_metadata = {
+                    "enabled": True,
+                    "provider": polish_provider_override,
+                    "selected_source_image": direct_polish_source,
+                    "status": "pending",
+                    "mode": "direct_edit_anchor_polish",
+                }
+            else:
+                _apply_image_provider_override(image_kwargs, image_provider_override)
             image_request = {
-                "prompt": image_generation_prompt,
+                "prompt": provider_image_generation_prompt,
                 "arguments": image_kwargs,
-                "source_media": _source_media_from_attachments(attachments),
+                "source_media": _source_media_from_attachments(
+                    [direct_polish_source] if direct_polish_mode and direct_polish_source else attachments
+                ),
             }
+            if direct_polish_mode and direct_polish_source and polish_pass_metadata:
+                image_request["polish_pass"] = {
+                    "provider": polish_provider_override,
+                    "source_image": direct_polish_source,
+                    "source_artifact_id": "edit_anchor",
+                    "mode": "direct_edit_anchor_polish",
+                }
             image_payload = generate_image(**image_kwargs)
+            if direct_polish_mode and direct_polish_source and polish_pass_metadata:
+                polish_pass_metadata["status"] = "completed" if image_payload.get("success") else "failed"
+                image_payload["polish_pass"] = {
+                    "provider": polish_provider_override,
+                    "source_image": direct_polish_source,
+                    "source_artifact_id": "edit_anchor",
+                    "mode": "direct_edit_anchor_polish",
+                }
             if not image_payload.get("success"):
                 _annotate_generation_failure(
                     image_payload,
@@ -757,7 +1071,8 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 payload=image_payload,
                 artifact_key="image",
                 expected_kind="image",
-                prompt=image_generation_prompt,
+                prompt=provider_image_generation_prompt,
+                prompt_original=visual_agent_original_prompt,
                 provider=str(image_payload.get("provider") or ""),
                 model=str(image_payload.get("model") or ""),
                 requested_parameters=image_attempt_parameters,
@@ -780,12 +1095,13 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                     fallback_candidate = _record_payload_candidate(
                         ledger,
                         request_id=request_id,
-                        payload=fallback_payload,
-                        artifact_key="image",
-                        expected_kind="image",
-                        prompt=str(fallback_payload.get("prompt") or prompt),
-                        provider=str(fallback_payload.get("provider") or ""),
-                        model=str(fallback_payload.get("model") or ""),
+                            payload=fallback_payload,
+                            artifact_key="image",
+                            expected_kind="image",
+                            prompt=str(fallback_payload.get("prompt") or provider_image_generation_prompt),
+                            prompt_original=visual_agent_original_prompt,
+                            provider=str(fallback_payload.get("provider") or ""),
+                            model=str(fallback_payload.get("model") or ""),
                         requested_parameters=_image_attempt_parameters(
                             aspect_ratio,
                             attachments=attachments,
@@ -819,7 +1135,8 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                         payload=retry_payload,
                         artifact_key="image",
                         expected_kind="image",
-                        prompt=str(retry_payload.get("prompt") or prompt),
+                        prompt=str(retry_payload.get("prompt") or provider_image_generation_prompt),
+                        prompt_original=visual_agent_original_prompt,
                         provider=str(retry_payload.get("provider") or ""),
                         model=str(retry_payload.get("model") or ""),
                         requested_parameters=image_attempt_parameters,
@@ -873,13 +1190,17 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         learning["active_learning"]["image"] = image_learning
         selected_image = _selected_candidate(image_candidates, image_decision.selected_artifact_id)
         image_gate = _delivery_gate_decision(image_learning, selected_image, prompt=prompt)
+        if direct_polish_mode:
+            image_gate["polish_pass_attempted"] = True
         delivery_gate["image"] = image_gate
-        if _should_run_image_polish_pass(
+        if not direct_polish_mode and _should_run_image_polish_pass(
             polish_provider=polish_provider_override,
             selected_image=selected_image,
         ):
             source_image = str(selected_image.get("artifact_path") or "").strip()
-            polish_prompt = _image_polish_prompt(image_prompt_base)
+            polish_prompt = build_provider_facing_visual_prompt(
+                _image_polish_prompt(image_prompt_base)
+            )
             polish_kwargs = {
                 "prompt": polish_prompt,
                 "aspect_ratio": image_aspect_ratio,
@@ -919,6 +1240,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 artifact_key="image",
                 expected_kind="image",
                 prompt=polish_prompt,
+                prompt_original=visual_agent_original_prompt,
                 provider=str(polish_payload.get("provider") or ""),
                 model=str(polish_payload.get("model") or ""),
                 requested_parameters=_image_attempt_parameters(
@@ -1030,6 +1352,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 artifact_key="image",
                 expected_kind="image",
                 prompt=escalation_prompt,
+                prompt_original=visual_agent_original_prompt,
                 provider=str(escalation_payload.get("provider") or ""),
                 model=str(escalation_payload.get("model") or ""),
                 requested_parameters=_image_attempt_parameters(
@@ -1143,6 +1466,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 artifact_key="image",
                 expected_kind="image",
                 prompt=repair_prompt,
+                prompt_original=visual_agent_original_prompt,
                 provider=str(repair_payload.get("provider") or ""),
                 model=str(repair_payload.get("model") or ""),
                 requested_parameters=_image_attempt_parameters(
@@ -1229,6 +1553,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 artifact_key="video",
                 expected_kind="video",
                 prompt=prompt,
+                prompt_original=visual_agent_original_prompt,
                 provider="",
                 model="",
                 requested_parameters={
@@ -1248,7 +1573,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 ),
                 source_media=video_source_media,
             )
-            video_prompt = hardened_video["prompt"]
+            video_prompt = build_provider_facing_visual_prompt(hardened_video["prompt"])
             video_aspect_ratio = hardened_video["aspect_ratio"]
             video_payloads = []
             for candidate_index in range(video_budget):
@@ -1260,7 +1585,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                     "source_media": video_source_media,
                 }
                 video_request = {
-                    "prompt": video_generation_base_prompt,
+                    "prompt": video_prompt,
                     "arguments": video_kwargs,
                     "source_media": video_source_media,
                     "video_hardening": hardened_video.get("metadata", {}),
@@ -1293,6 +1618,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                     artifact_key="video",
                     expected_kind="video",
                     prompt=video_prompt,
+                    prompt_original=visual_agent_original_prompt,
                     provider=str(video_payload.get("provider") or ""),
                     model=str(video_payload.get("model") or ""),
                     requested_parameters={
@@ -1323,6 +1649,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                             artifact_key="video",
                             expected_kind="video",
                             prompt=str(fallback_payload.get("prompt") or prompt),
+                            prompt_original=visual_agent_original_prompt,
                             provider=str(fallback_payload.get("provider") or ""),
                             model=str(fallback_payload.get("model") or ""),
                             requested_parameters={
@@ -1356,6 +1683,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                             artifact_key="video",
                             expected_kind="video",
                             prompt=str(retry_payload.get("prompt") or prompt),
+                            prompt_original=visual_agent_original_prompt,
                             provider=str(retry_payload.get("provider") or ""),
                             model=str(retry_payload.get("model") or ""),
                             requested_parameters={
@@ -1406,7 +1734,9 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         delivery_gate["video"] = video_gate
         if selected_video and not video_gate["allowed"] and video_image_url and _string_list(video_gate.get("quality_issues")):
             video_repair_mode = _quality_repair_policy_mode(feedback_policy, "video")
-            repair_prompt = _video_quality_repair_prompt(video_prompt, video_gate, mode=video_repair_mode)
+            repair_prompt = build_provider_facing_visual_prompt(
+                _video_quality_repair_prompt(video_prompt, video_gate, mode=video_repair_mode)
+            )
             repair_kwargs = {
                 "prompt": repair_prompt,
                 "image_url": video_image_url,
@@ -1442,6 +1772,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 artifact_key="video",
                 expected_kind="video",
                 prompt=repair_prompt,
+                prompt_original=visual_agent_original_prompt,
                 provider=str(repair_payload.get("provider") or ""),
                 model=str(repair_payload.get("model") or ""),
                 requested_parameters={
@@ -1531,6 +1862,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             aspect_ratio=aspect_ratio,
             reference_conditioning=primary_reference_conditioning,
             reference_conditioning_variants=reference_conditioning_variants,
+            image_prompt_variants=_public_prompt_variants(image_prompt_variants),
         ),
     )
 
@@ -1671,6 +2003,7 @@ def _extra_generation_strategy(
     aspect_ratio: str | None,
     reference_conditioning: dict[str, Any] | None,
     reference_conditioning_variants: list[str] | None = None,
+    image_prompt_variants: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     extra: dict[str, Any] = {}
     if aspect_ratio:
@@ -1699,7 +2032,60 @@ def _extra_generation_strategy(
         extra["reference_conditioning"] = reference_conditioning
     if reference_conditioning_variants:
         extra["reference_conditioning_variants"] = reference_conditioning_variants
+    if image_prompt_variants:
+        extra["image_prompt_variants"] = image_prompt_variants
     return extra or None
+
+
+def _prompt_variant_for_candidate(
+    variants: list[dict[str, Any]],
+    *,
+    candidate_index: int,
+    fallback_prompt: str,
+) -> dict[str, Any]:
+    if variants:
+        return variants[candidate_index % len(variants)]
+    return {
+        "variant_id": "arsenal_fallback",
+        "source": "visual_arsenal",
+        "prompt": fallback_prompt,
+        "applied_dimensions": [],
+        "atom_signatures": [],
+    }
+
+
+def _should_apply_arsenal_prompt_variants(
+    *,
+    strategy_plan: StrategyPlan,
+    feedback_policy: dict[str, Any],
+    candidate_budget: int,
+) -> bool:
+    if strategy_plan.activation_status == "controlled" and not strategy_plan.prompt_mutation_allowed:
+        return False
+    if _feedback_policy_requests_prompt_repair(feedback_policy):
+        return True
+    return candidate_budget > 1
+
+
+def _feedback_policy_requests_prompt_repair(feedback_policy: dict[str, Any]) -> bool:
+    return bool(
+        feedback_policy.get("repair_dimensions")
+        or feedback_policy.get("quality_focus_operators")
+        or feedback_policy.get("require_preference_dimension_evidence")
+    )
+
+
+def _public_prompt_variants(variants: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [_public_prompt_variant(variant) for variant in variants]
+
+
+def _public_prompt_variant(variant: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "variant_id": str(variant.get("variant_id") or ""),
+        "source": str(variant.get("source") or ""),
+        "applied_dimensions": _string_list(variant.get("applied_dimensions")),
+        "atom_signatures": _string_list(variant.get("atom_signatures")),
+    }
 
 
 def _visual_quality_run_metadata(
@@ -1983,6 +2369,7 @@ def _run_storyboard_execution(
     quality_guidance: dict[str, Any],
     inline_vision_judge: bool | str,
     learning: dict[str, Any],
+    prompt_original: str,
 ) -> dict[str, Any]:
     image_provider_override = _image_provider_override(args, prompt=prompt)
     selected_artifact_ids: list[str] = []
@@ -2022,6 +2409,7 @@ def _run_storyboard_execution(
                 artifact_key="image",
                 expected_kind="image",
                 prompt=image_generation_prompt,
+                prompt_original=prompt_original,
                 provider=str(image_payload.get("provider") or ""),
                 model=str(image_payload.get("model") or ""),
                 requested_parameters={
@@ -2095,7 +2483,7 @@ def _run_storyboard_execution(
                 ),
                 source_media=_source_media_from_attachments([selected_image["artifact_path"]]),
             )
-            video_prompt = hardened_video["prompt"]
+            video_prompt = build_provider_facing_visual_prompt(hardened_video["prompt"])
             video_aspect_ratio = hardened_video["aspect_ratio"]
             video_source_media = _video_source_media(selected_image["artifact_path"])
             shot_summary["source_media_reference_count"] = _coerce_int(
@@ -2123,6 +2511,7 @@ def _run_storyboard_execution(
                     artifact_key="video",
                     expected_kind="video",
                     prompt=video_prompt,
+                    prompt_original=prompt_original,
                     provider=str(video_payload.get("provider") or ""),
                     model=str(video_payload.get("model") or ""),
                     requested_parameters={
@@ -2193,6 +2582,7 @@ def _run_storyboard_execution(
                 artifact_key="video",
                 expected_kind="video",
                 prompt=prompt,
+                prompt_original=prompt_original,
                 provider=str(composition_payload.get("provider") or "local"),
                 model=str(composition_payload.get("model") or "ffmpeg-concat"),
                 requested_parameters={
@@ -2583,7 +2973,22 @@ def _provider_reference_image_urls(
         return [], None
     role_by_index = _reference_role_by_index(reference_binding)
     if not role_by_index:
-        return list(attachments), None
+        policy = _normalise_reference_conditioning_policy(conditioning_policy, allow_empty=True)
+        if policy != "collective_inspiration":
+            return list(attachments), None
+        metadata = [
+            {
+                "provider_index": provider_index,
+                "index": provider_index,
+                "role_hint": "visual_reference",
+                "conditioning": "collective_reference_inspiration",
+            }
+            for provider_index, _attachment in enumerate(attachments, start=1)
+        ]
+        return list(attachments), {
+            "policy": policy,
+            "provider_reference_images": metadata,
+        }
     binding_item_by_index = _reference_binding_item_by_index(reference_binding)
     policy = _normalise_reference_conditioning_policy(conditioning_policy)
     max_provider_refs = VISUAL_PROVIDER_REFERENCE_SLOT_BUDGET
@@ -2714,11 +3119,13 @@ def _reference_conditioning_variants(
     policy_override: Any = None,
 ) -> list[str]:
     role_by_index = _reference_role_by_index(reference_binding)
-    if not attachments or not role_by_index:
+    if not attachments:
         return []
     override = _normalise_reference_conditioning_policy(policy_override, allow_empty=True)
     if override:
         return [override]
+    if not role_by_index:
+        return []
     roles = {str(role or "").strip() for role in role_by_index.values()}
     has_pose = "pose_composition" in roles
     if not has_pose:
@@ -2770,12 +3177,40 @@ def _normalise_reference_conditioning_policy(value: Any, *, allow_empty: bool = 
         "contour": "structure_contour",
         "edge": "structure_contour",
         "edge_guide": "structure_contour",
+        "collective": "collective_inspiration",
+        "collective_reference": "collective_inspiration",
+        "collective_inspiration": "collective_inspiration",
+        "unassigned": "collective_inspiration",
+        "unassigned_refs": "collective_inspiration",
     }
     normalized = aliases.get(raw, raw)
-    allowed = {"role_locked_originals", "structure_guide", "structure_contour"}
+    allowed = {"role_locked_originals", "structure_guide", "structure_contour", "collective_inspiration"}
     if normalized in allowed:
         return normalized
     return "" if allow_empty else "role_locked_originals"
+
+
+def _reference_conditioning_policy_override(
+    args: dict[str, Any],
+    *,
+    attachments: list[str],
+    reference_binding: dict[str, Any] | None,
+) -> Any:
+    explicit = args.get("reference_conditioning_policy")
+    if explicit:
+        return explicit
+    strategy = args.get("reference_strategy")
+    if (
+        isinstance(strategy, dict)
+        and str(strategy.get("mode") or "").strip() == "unassigned_collective_generation"
+        and strategy.get("edit_anchor") is not True
+        and attachments
+        and not reference_binding
+    ):
+        return "collective_inspiration"
+    if not attachments or reference_binding:
+        return None
+    return None
 
 
 def _apply_provider_reference_conditioning_prompt(
@@ -2789,6 +3224,31 @@ def _apply_provider_reference_conditioning_prompt(
     references = reference_conditioning.get("provider_reference_images")
     if not isinstance(references, list):
         return prompt
+    if references and all(
+        isinstance(item, dict)
+        and str(item.get("conditioning") or "").strip() == "collective_reference_inspiration"
+        for item in references
+    ):
+        indices = [
+            _coerce_int(item.get("provider_index"))
+            for item in references
+            if isinstance(item, dict) and _coerce_int(item.get("provider_index")) is not None
+        ]
+        provider_label = _provider_image_range_label(indices)
+        block = "\n".join(
+            [
+                "Provider reference image ordering for generation:",
+                f"- provider images {provider_label} form an unassigned collective identity/style reference set, "
+                "not an edit anchor or base image to clean up. Use them only as shared evidence for the requested "
+                "character identity, visual style, palette, and recurring design cues. Do not reproduce any single "
+                "reference image, remove watermarks from it, extend its canvas, or preserve its exact "
+                "background/crop/composition; create a single coherent new image with one consistent lighting "
+                "direction, one unified design, and a new pose/composition for the requested final image. "
+                "The result should be a synthesis, not a stitched blend, collage, average face, or cleanup of any reference.",
+                "When provider image ordering and user ref labels differ, user ref labels keep their original visible upload order.",
+            ]
+        )
+        return f"{prompt}\n\n{block}"
     lines: list[str] = []
     for item in references:
         if not isinstance(item, dict):
@@ -2832,6 +3292,16 @@ def _apply_provider_reference_conditioning_prompt(
                 "use it to refine body outline, limb placement, foreshortening, camera angle, and framing only. "
                 "It is not a separate user ref and must not change identity, face, hair, wardrobe, or color palette."
             )
+        elif conditioning == "collective_reference_inspiration":
+            lines.append(
+                f"- provider image {provider_index} is part of an unassigned collective identity/style reference set, "
+                "not an edit anchor or base image to clean up. Use it only as shared evidence for the requested "
+                "character identity, visual style, palette, and recurring design cues. Do not reproduce this image, "
+                "remove watermarks from it, extend its canvas, or preserve its exact background/crop/composition; "
+                "create a single coherent new image with one consistent lighting direction, one unified design, "
+                "and a new pose/composition for the requested final image. The result should be a synthesis, "
+                "not a stitched blend, collage, average face, or cleanup of any reference."
+            )
         else:
             lines.append(
                 f"- provider image {provider_index} = {user_label} ({role_hint}, original)"
@@ -2846,6 +3316,15 @@ def _apply_provider_reference_conditioning_prompt(
         ]
     )
     return f"{prompt}\n\n{block}"
+
+
+def _provider_image_range_label(indices: list[int | None]) -> str:
+    values = sorted({index for index in indices if index is not None})
+    if not values:
+        return "in this request"
+    if values == list(range(values[0], values[-1] + 1)):
+        return f"{values[0]}-{values[-1]}" if len(values) > 1 else str(values[0])
+    return ", ".join(str(value) for value in values)
 
 
 def _provider_reference_user_label(item: dict[str, Any], fallback_index: int) -> str:
@@ -3068,6 +3547,7 @@ def _record_payload_candidate(
     provider: str,
     model: str,
     requested_parameters: dict[str, Any],
+    prompt_original: str | None = None,
     candidate_index: int = 0,
     input_artifacts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
@@ -3077,7 +3557,7 @@ def _record_payload_candidate(
         candidate_index=candidate_index,
         provider=provider,
         model=model,
-        prompt_original=prompt,
+        prompt_original=prompt_original or prompt,
         prompt_mediated=prompt,
         parameters_requested=requested_parameters,
         parameters_effective=requested_parameters,
@@ -3783,6 +4263,7 @@ def _score_candidates(
             inline_enabled=inline_enabled,
             analyzer=vision_analyzer,
         )
+        vision_observation = augment_observation_with_reference_similarity(candidate, vision_observation)
         evidence = vision_observation.get("evidence") if isinstance(vision_observation.get("evidence"), dict) else {}
         candidate["vision_observation_source"] = evidence.get("source")
         vision_failure = (
@@ -4284,13 +4765,23 @@ def _quality_guidance_entry(
             "mode": mode,
             "prompt_suffix": "",
         }
-    dimension_guidance = _dimension_quality_guidance(feedback_policy)
+    dimension_guidance = _dimension_quality_guidance(
+        feedback_policy,
+        modality=modality,
+        request_category=request_category,
+    )
     if modality == "video":
         suffix = (
             "First-pass video quality guidance: use natural real-time motion, "
             "visible subject, camera, or environmental movement, preserve the source aspect ratio, "
             "avoid slow motion, avoid slow cinematic-only push-in, avoid stretching, "
             "and keep subject anatomy stable."
+        )
+    elif _anime_like_category(request_category):
+        suffix = (
+            "First-pass visual quality guidance: anime illustration polish, clean expressive facial features, "
+            "appealing stylized anatomy, refined wardrobe and legwear rendering, strong composition, "
+            "crisp linework, vibrant color harmony."
         )
     elif _portrait_like_category(request_category):
         suffix = (
@@ -4312,7 +4803,12 @@ def _quality_guidance_entry(
     }
 
 
-def _dimension_quality_guidance(feedback_policy: dict[str, Any]) -> str:
+def _dimension_quality_guidance(
+    feedback_policy: dict[str, Any],
+    *,
+    modality: str,
+    request_category: str,
+) -> str:
     dimensions = feedback_policy.get("repair_dimensions")
     if not isinstance(dimensions, list):
         return ""
@@ -4321,8 +4817,15 @@ def _dimension_quality_guidance(feedback_policy: dict[str, Any]) -> str:
         if not isinstance(item, dict):
             continue
         dimension = str(item.get("dimension") or "").strip()
+        if modality == "image" and dimension == "motion_quality":
+            continue
         hint = str(item.get("repair_hint") or "").strip()
-        instruction = _dimension_quality_instruction(dimension, hint)
+        instruction = _dimension_quality_instruction(
+            dimension,
+            hint,
+            modality=modality,
+            request_category=request_category,
+        )
         if instruction and instruction not in instructions:
             instructions.append(instruction)
     if not instructions:
@@ -4330,7 +4833,15 @@ def _dimension_quality_guidance(feedback_policy: dict[str, Any]) -> str:
     return "Dimension-specific quality guidance: " + "; ".join(instructions) + "."
 
 
-def _dimension_quality_instruction(dimension: str, repair_hint: str) -> str:
+def _dimension_quality_instruction(
+    dimension: str,
+    repair_hint: str,
+    *,
+    modality: str,
+    request_category: str,
+) -> str:
+    if dimension == "subject_beauty" and _anime_like_category(request_category):
+        return "subject_beauty: improve stylized attractiveness while preserving anime design intent"
     return {
         "subject_beauty": "subject_beauty: raise overall subject attractiveness while keeping natural realism",
         "face_naturalness": "face_naturalness: prioritize natural facial structure, clean eyes, and non-distorted expression",
@@ -4350,6 +4861,10 @@ def _apply_first_pass_quality_guidance(prompt: str, guidance: dict[str, Any]) ->
 
 def _portrait_like_category(category: str) -> bool:
     return any(token in str(category or "").lower() for token in ("portrait", "fashion", "character", "cosplay"))
+
+
+def _anime_like_category(category: str) -> bool:
+    return "anime" in str(category or "").lower()
 
 
 def _portrait_like_prompt(prompt: str) -> bool:
@@ -4380,6 +4895,8 @@ def _portrait_like_prompt(prompt: str) -> bool:
 
 
 def _visual_request_category(prompt: str) -> str:
+    if _anime_like_prompt(prompt):
+        return "anime_character"
     if _portrait_like_prompt(prompt):
         return "portrait"
     text = prompt.lower()
@@ -4398,6 +4915,29 @@ def _visual_request_category(prompt: str) -> str:
     ):
         return "product"
     return "scene"
+
+
+def _anime_like_prompt(prompt: str) -> bool:
+    text = str(prompt or "").lower()
+    compact = re.sub(r"\s+", "", text)
+    return any(
+        token in text
+        for token in (
+            "anime",
+            "manga",
+            "illustration",
+            "anime style",
+        )
+    ) or any(
+        token in compact
+        for token in (
+            "動漫",
+            "動畫風",
+            "二次元",
+            "漫畫",
+            "插畫",
+        )
+    )
 
 
 def _top_ranked_candidate(
@@ -4770,6 +5310,18 @@ def _learning_mode(
     if feedback_strategy_plan is not None:
         return "feedback_preferred_read_only"
     return "shadow"
+
+
+def _applicable_controlled_strategy_plan(
+    controlled_strategy_plan: StrategyPlan | None,
+    *,
+    wants_video: bool,
+) -> StrategyPlan | None:
+    if controlled_strategy_plan is None:
+        return None
+    if controlled_strategy_plan.strategy_signature == "image_first_rank_then_video" and not wants_video:
+        return None
+    return controlled_strategy_plan
 
 
 def _feedback_policy_with_controlled_strategy(

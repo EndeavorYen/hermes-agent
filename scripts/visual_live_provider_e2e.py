@@ -124,6 +124,7 @@ def build_visual_live_provider_e2e_report(
     video_budget: int = 1,
     duration: int = 4,
     require_video: bool = True,
+    require_image_first_video: bool = False,
     force_video_quality_repair: bool = False,
     storyboard: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -174,9 +175,16 @@ def build_visual_live_provider_e2e_report(
         evidence = inspect_visual_e2e_evidence(
             payload,
             require_video=require_video,
+            require_image_first_video=require_image_first_video,
         )
 
-    failures = _payload_failures(payload, evidence, mode=mode, require_video=require_video)
+    failures = _payload_failures(
+        payload,
+        evidence,
+        mode=mode,
+        require_video=require_video,
+        require_image_first_video=require_image_first_video,
+    )
     return {
         "success": not failures,
         "provider_mode": mode,
@@ -256,6 +264,14 @@ def build_visual_live_provider_e2e_suite_report(
                     video_budget=int(case.get("video_budget") or 1),
                     duration=int(case.get("duration") or 4),
                     require_video=case.get("require_video") is not False,
+                    require_image_first_video=(
+                        case.get("require_image_first_video") is True
+                        or (
+                            isinstance(case.get("quality_contract"), dict)
+                            and case["quality_contract"].get("requires_image_first_video")
+                            is True
+                        )
+                    ),
                     force_video_quality_repair=case.get("force_video_quality_repair") is True,
                     storyboard=case.get("storyboard") if isinstance(case.get("storyboard"), dict) else None,
                 )
@@ -642,6 +658,7 @@ def inspect_visual_e2e_evidence(
     payload: dict[str, Any] | None,
     *,
     require_video: bool,
+    require_image_first_video: bool = False,
 ) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return {}
@@ -653,6 +670,7 @@ def inspect_visual_e2e_evidence(
             "image_count": len(payload.get("images") or []),
             "video_count": len(payload.get("videos") or []),
             "video_source": video_source,
+            "image_first_video_required": require_image_first_video,
             "video_media_quality": _video_media_quality(payload, artifacts=[], attempts=[]),
             "runtime_policy_effect": _runtime_policy_effect_evidence(
                 payload,
@@ -744,6 +762,7 @@ def inspect_visual_e2e_evidence(
         "quality_repair_effectiveness": quality_repair_effectiveness,
         "providers": providers,
         "require_video": require_video,
+        "image_first_video_required": require_image_first_video,
         "quality_gate": quality_gate,
         "video_source": video_source,
         "video_media_quality": video_media_quality,
@@ -777,6 +796,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--video-budget", type=int, default=1)
     parser.add_argument("--duration", type=int, default=4)
     parser.add_argument("--no-video", action="store_true")
+    parser.add_argument(
+        "--image-first-video",
+        action="store_true",
+        help=(
+            "Require the generated video to use one ranked selected source image. "
+            "This matches the Raphael full-media proof command."
+        ),
+    )
     parser.add_argument("--json", action="store_true")
     parser.add_argument(
         "--report-path",
@@ -817,7 +844,8 @@ def _build_report_from_args(args: argparse.Namespace) -> dict[str, Any]:
         "candidate_budget": args.candidate_budget,
         "video_budget": args.video_budget,
         "duration": args.duration,
-        "require_video": not args.no_video,
+        "require_video": (not args.no_video) or bool(args.image_first_video),
+        "require_image_first_video": bool(args.image_first_video),
     }
     if args.capture_log_path is None:
         return build_visual_live_provider_e2e_report(**kwargs)
@@ -853,6 +881,7 @@ def _payload_failures(
     *,
     mode: str,
     require_video: bool,
+    require_image_first_video: bool = False,
 ) -> list[str]:
     failures: list[str] = []
     if not isinstance(payload, dict):
@@ -920,6 +949,13 @@ def _payload_failures(
         and not has_storyboard_video_source
     ):
         failures.append("video_source_not_single_image")
+    if (
+        require_image_first_video
+        and evidence.get("video_count", 0) >= 1
+        and not has_internal_ranked_video_source
+        and not has_storyboard_video_source
+    ):
+        failures.append("image_first_video_source_unverified")
     video_media_quality = (
         evidence.get("video_media_quality")
         if isinstance(evidence.get("video_media_quality"), dict)

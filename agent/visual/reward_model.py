@@ -18,6 +18,7 @@ _PREFERENCE_DIMENSION_SIGNALS = {
 }
 DEFAULT_QUALITY_ISSUE_PENALTIES = {
     "reference_identity_drift": 0.85,
+    "reference_overcopy": 0.9,
     "reference_role_evidence_missing": 0.65,
     "composition_bad": 0.6,
     "source_frame_grid": 1.0,

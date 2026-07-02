@@ -72,6 +72,57 @@ def test_slack_feedback_ingestion_resolves_thread_and_binds_selection(tmp_path):
     assert "U999" not in str(row)
 
 
+def test_slack_feedback_ingestion_binds_quality_praise_to_selected_artifact_and_prompt_arsenal(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.slack_feedback_ingestion import ingest_slack_visual_feedback
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+    request_id, artifact_ids = _seed_request_with_artifacts(ledger, tmp_path)
+    selected_artifact_id = artifact_ids[1]
+    selected_artifact = ledger.get_artifact(selected_artifact_id)
+    ledger.record_ranking(
+        request_id=request_id,
+        selected_attempt_id=selected_artifact["attempt_id"],
+        selected_artifact_id=selected_artifact_id,
+        decision="post",
+        scores={"reward": {"final_score": 0.91}},
+        metadata={
+            "strategy_signature": "vstrat_success",
+            "strategy_plan": {
+                "intent_signature": "visig_success",
+                "strategy_signature": "vstrat_success",
+            },
+        },
+    )
+
+    result = ingest_slack_visual_feedback(
+        ledger,
+        {
+            "text": "這次的產圖品質很棒!",
+            "channel": "C123",
+            "thread_ts": "1700000000.000100",
+            "ts": "1700000000.000250",
+        },
+    )
+
+    assert result["success"] is True
+    assert result["recorded_feedback_count"] == 1
+    row = ledger.get_feedback(result["feedback_ids"][0])
+    assert row["artifact_id"] == selected_artifact_id
+    assert row["polarity"] > 0
+    assert "general_positive" in row["parsed"]["signals"]
+    updates = ledger._list("visual_shadow_updates")
+    assert len(updates) == 1
+    update = updates[0]
+    assert update["request_id"] == request_id
+    assert update["intent_signature"] == "visig_success"
+    assert update["strategy_signature"] == "vstrat_success"
+    assert update["proposed_change"]["type"] == "approved_prompt_arsenal_entry"
+    assert update["evidence"]["artifact_id"] == selected_artifact_id
+    assert update["evidence"]["prompt_mediated"] == "prompt"
+
+
 def test_slack_feedback_ingestion_applies_all_rejected_to_current_artifacts(tmp_path):
     from agent.visual.attempt_ledger import VisualAttemptLedger
     from agent.visual.slack_feedback_ingestion import ingest_slack_visual_feedback

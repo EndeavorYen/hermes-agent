@@ -24,9 +24,9 @@ def _b64_png() -> str:
     return base64.b64encode(bytes.fromhex(_PNG_HEX)).decode()
 
 
-def _fake_response(*, b64=None, url=None, revised_prompt=None):
+def _fake_response(*, b64=None, url=None, revised_prompt=None, response_id=None):
     item = SimpleNamespace(b64_json=b64, url=url, revised_prompt=revised_prompt)
-    return SimpleNamespace(data=[item])
+    return SimpleNamespace(data=[item], id=response_id)
 
 
 @pytest.fixture(autouse=True)
@@ -206,6 +206,18 @@ class TestGenerate:
             result = provider.generate("a cat")
 
         assert result["revised_prompt"] == "A photo of a cat"
+
+    def test_response_id_passed_through(self, provider):
+        fake_client = MagicMock()
+        fake_client.images.generate.return_value = _fake_response(
+            b64=_b64_png(),
+            response_id="resp_openai_generation_1",
+        )
+
+        with _patched_openai(fake_client):
+            result = provider.generate("a cat")
+
+        assert result["response_id"] == "resp_openai_generation_1"
 
     def test_api_error_returns_error_response(self, provider):
         fake_client = MagicMock()

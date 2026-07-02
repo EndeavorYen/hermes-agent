@@ -1281,8 +1281,10 @@ def _build_visual_reference_context_entries_for_turn(
     """
     try:
         from agent.visual.session_references import (
+            collect_recent_original_visual_reference_entries,
             collect_recent_visual_reference_entries,
             normalise_visual_reference_entries,
+            prompt_requests_original_visual_references,
         )
     except Exception:
         return []
@@ -1321,6 +1323,12 @@ def _build_visual_reference_context_entries_for_turn(
             entry["user_ref_index"] = len(refs) + 1
         append_entry(entry)
     if refs and _prompt_mentions_numbered_visual_reference(current_message):
+        return refs[: max(0, limit)]
+    if prompt_requests_original_visual_references(current_message):
+        for entry in collect_recent_original_visual_reference_entries(history or [], limit=limit):
+            append_entry(dict(entry))
+            if len(refs) >= limit:
+                break
         return refs[: max(0, limit)]
     for entry in collect_recent_visual_reference_entries(history or [], limit=limit):
         append_entry(dict(entry))

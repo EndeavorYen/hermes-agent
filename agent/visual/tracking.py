@@ -133,7 +133,11 @@ def visual_delivery_context(
     return {
         "ledger": ledger,
         "request_id": str(request_id),
-        "attempt_id": artifact_entry.get("attempt_id") or metadata.get("visual_attempt_id"),
+        "attempt_id": (
+            artifact_entry.get("attempt_id")
+            or metadata.get("visual_attempt_id")
+            or artifact.get("attempt_id")
+        ),
         "artifact_id": artifact_id_text,
         "artifact_kind": artifact.get("kind"),
         "content_hash": artifact.get("content_hash"),

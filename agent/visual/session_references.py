@@ -238,6 +238,52 @@ def prompt_requests_visual_reference_reuse(prompt: Any) -> bool:
     )
 
 
+def prompt_requests_original_visual_references(prompt: Any) -> bool:
+    text = str(prompt or "").strip().lower()
+    if not text:
+        return False
+    compact = re.sub(r"\s+", "", text)
+    return (
+        "reference" in text
+        or "ref" in text
+        or "參考" in text
+        or "参考" in text
+        or "原圖" in text
+        or "原图" in text
+        or "原始" in text
+        or "原ref" in compact
+        or "原reference" in compact
+    )
+
+
+def entry_is_generated_visual_output(entry: dict[str, Any]) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    source = str(entry.get("source") or "").strip()
+    if source in {"previous_selected_artifact", "previous_tool_output", "generated_output"}:
+        return True
+    uri = str(entry.get("uri") or entry.get("path") or entry.get("attachment") or "").strip()
+    if not uri:
+        return False
+    normalized = uri.replace("\\", "/")
+    generated_markers = (
+        "/cache/images/grok_web_imagine_",
+        "/cache/images/visual-package",
+        "/cache/images/openai_",
+        "/cache/images/xai_",
+    )
+    return any(marker in normalized for marker in generated_markers)
+
+
+def filter_visual_reference_entries_for_prompt(
+    entries: list[dict[str, Any]],
+    prompt: Any,
+) -> list[dict[str, Any]]:
+    if not prompt_requests_original_visual_references(prompt):
+        return entries
+    return [entry for entry in entries if not entry_is_generated_visual_output(entry)]
+
+
 def _entries_from_tool_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
     if not payload.get("success"):
@@ -420,6 +466,30 @@ def collect_recent_visual_reference_entries(
     return entries[: max(0, limit)]
 
 
+def collect_recent_original_visual_reference_entries(
+    messages: list[dict[str, Any]],
+    *,
+    limit: int = MAX_SESSION_VISUAL_REFERENCES,
+) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for msg in reversed(messages or []):
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        candidate_entries: list[dict[str, Any]] = []
+        if role == "assistant":
+            candidate_entries = _entries_from_tool_calls(msg)
+        elif role == "user":
+            candidate_entries = _entries_from_message_content(msg.get("content"))
+        for entry in candidate_entries:
+            if entry_is_generated_visual_output(entry):
+                continue
+            _append_unique_entry(entries, entry)
+        if len(entries) >= limit:
+            break
+    return entries[: max(0, limit)]
+
+
 def collect_recent_visual_reference_paths(
     messages: list[dict[str, Any]],
     *,
@@ -451,14 +521,16 @@ def session_visual_reference_entries_for_prompt(
         default_role_hint="visual_reference",
         default_source="session_visual_context",
     )
+    entries = filter_visual_reference_entries_for_prompt(entries, prompt)
     if entries:
         return entries
-    return normalise_visual_reference_entries(
+    fallback_entries = normalise_visual_reference_entries(
         get_visual_reference_context(),
         limit=limit,
         default_role_hint="visual_reference",
         default_source="session_visual_context",
     )
+    return filter_visual_reference_entries_for_prompt(fallback_entries, prompt)
 
 
 def session_visual_reference_paths_for_prompt(

@@ -383,6 +383,78 @@ class VisualAttemptLedger:
             return self._list("visual_deliveries")
         return self._list("visual_deliveries", where="request_id = ?", params=(request_id,))
 
+    def latest_delivered_prompt_context(
+        self,
+        *,
+        platform: str | None = None,
+        destination_id: str | None = None,
+        thread_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        where_parts = ["d.delivery_status = ?"]
+        params: list[Any] = ["sent"]
+        if platform:
+            where_parts.append("d.platform = ?")
+            params.append(str(platform))
+        if destination_id:
+            where_parts.append("d.destination_id = ?")
+            params.append(str(destination_id))
+        if thread_id:
+            where_parts.append("d.thread_id = ?")
+            params.append(str(thread_id))
+
+        with self._connect() as conn:
+            request_id_column = self._actual_id_column(
+                "visual_requests",
+                self._table_columns(conn, "visual_requests"),
+                preferred="id",
+            )
+            attempt_id_column = self._actual_id_column(
+                "visual_attempts",
+                self._table_columns(conn, "visual_attempts"),
+                preferred="id",
+            )
+            artifact_id_column = self._actual_id_column(
+                "visual_artifacts",
+                self._table_columns(conn, "visual_artifacts"),
+                preferred="id",
+            )
+            delivery_id_column = self._actual_id_column(
+                "visual_deliveries",
+                self._table_columns(conn, "visual_deliveries"),
+                preferred="id",
+            )
+            attempt_join = "COALESCE(NULLIF(d.attempt_id, ''), art.attempt_id)"
+            where_sql = " AND ".join(where_parts)
+            row = conn.execute(
+                f"""
+                SELECT
+                    d.{delivery_id_column} AS delivery_id,
+                    d.request_id AS request_id,
+                    {attempt_join} AS attempt_id,
+                    d.artifact_id AS artifact_id,
+                    d.platform AS platform,
+                    d.destination_id AS destination_id,
+                    d.thread_id AS thread_id,
+                    d.created_at AS created_at,
+                    r.user_prompt AS user_prompt,
+                    a.prompt_original AS prompt_original,
+                    a.prompt_mediated AS prompt_mediated,
+                    a.provider AS provider,
+                    a.model AS model
+                FROM visual_deliveries d
+                JOIN visual_requests r ON d.request_id = r.{request_id_column}
+                LEFT JOIN visual_artifacts art ON d.artifact_id = art.{artifact_id_column}
+                LEFT JOIN visual_attempts a ON {attempt_join} = a.{attempt_id_column}
+                WHERE {where_sql}
+                ORDER BY d.created_at DESC, d.rowid DESC
+                LIMIT 1
+                """,
+                tuple(params),
+            ).fetchone()
+        if row is None:
+            return None
+        return {key: row[key] for key in row.keys()}
+
     def list_strategy_activations(
         self,
         *,

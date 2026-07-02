@@ -65,6 +65,149 @@ def test_attempt_ledger_records_request_attempt_artifact_and_delivery(tmp_path):
     assert ledger.get_delivery(delivery_id)["delivery_status"] == "sent"
 
 
+def test_attempt_ledger_finds_latest_delivered_prompt_context_by_thread(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+
+    ledger = VisualAttemptLedger(tmp_path / "attempts.sqlite3")
+    ledger.initialize()
+
+    request_id = ledger.record_request(user_prompt="first user prompt", status="completed")
+    attempt_id = ledger.record_attempt(
+        request_id=request_id,
+        provider="xai",
+        model="grok-imagine",
+        prompt_original="first original prompt",
+        prompt_mediated="first provider prompt",
+    )
+    artifact_id = ledger.record_artifact(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        kind="image",
+        local_path="/tmp/first.png",
+    )
+    ledger.record_delivery(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        artifact_id=artifact_id,
+        platform="slack",
+        destination_id="D1",
+        thread_id="T1",
+        delivery_status="sent",
+    )
+
+    other_request_id = ledger.record_request(user_prompt="other thread prompt", status="completed")
+    other_attempt_id = ledger.record_attempt(
+        request_id=other_request_id,
+        provider="openai",
+        model="image2",
+        prompt_original="other original prompt",
+        prompt_mediated="other provider prompt",
+    )
+    other_artifact_id = ledger.record_artifact(
+        request_id=other_request_id,
+        attempt_id=other_attempt_id,
+        kind="image",
+        local_path="/tmp/other.png",
+    )
+    ledger.record_delivery(
+        request_id=other_request_id,
+        attempt_id=other_attempt_id,
+        artifact_id=other_artifact_id,
+        platform="slack",
+        destination_id="D1",
+        thread_id="T2",
+        delivery_status="sent",
+    )
+
+    latest_request_id = ledger.record_request(user_prompt="latest user prompt", status="completed")
+    latest_attempt_id = ledger.record_attempt(
+        request_id=latest_request_id,
+        provider="xai",
+        model="grok-imagine-quality",
+        prompt_original="latest original prompt",
+        prompt_mediated="latest provider prompt",
+    )
+    latest_artifact_id = ledger.record_artifact(
+        request_id=latest_request_id,
+        attempt_id=latest_attempt_id,
+        kind="image",
+        local_path="/tmp/latest.png",
+    )
+    ledger.record_delivery(
+        request_id=latest_request_id,
+        attempt_id=latest_attempt_id,
+        artifact_id=latest_artifact_id,
+        platform="slack",
+        destination_id="D1",
+        thread_id="T1",
+        delivery_status="sent",
+    )
+
+    context = ledger.latest_delivered_prompt_context(
+        platform="slack",
+        destination_id="D1",
+        thread_id="T1",
+    )
+
+    assert context == {
+        "request_id": latest_request_id,
+        "attempt_id": latest_attempt_id,
+        "artifact_id": latest_artifact_id,
+        "delivery_id": context["delivery_id"],
+        "user_prompt": "latest user prompt",
+        "prompt_original": "latest original prompt",
+        "prompt_mediated": "latest provider prompt",
+        "provider": "xai",
+        "model": "grok-imagine-quality",
+        "platform": "slack",
+        "destination_id": "D1",
+        "thread_id": "T1",
+        "created_at": context["created_at"],
+    }
+
+
+def test_attempt_ledger_finds_prompt_context_via_artifact_when_delivery_attempt_missing(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+
+    ledger = VisualAttemptLedger(tmp_path / "attempts.sqlite3")
+    ledger.initialize()
+
+    request_id = ledger.record_request(user_prompt="raw prompt", status="completed")
+    attempt_id = ledger.record_attempt(
+        request_id=request_id,
+        provider="xai",
+        model="grok-imagine-quality",
+        prompt_original="clean user prompt",
+        prompt_mediated="provider-ready visual prompt",
+    )
+    artifact_id = ledger.record_artifact(
+        request_id=request_id,
+        attempt_id=attempt_id,
+        kind="image",
+        local_path="/tmp/generated.png",
+    )
+    ledger.record_delivery(
+        request_id=request_id,
+        attempt_id=None,
+        artifact_id=artifact_id,
+        platform="slack",
+        destination_id="D1",
+        thread_id="T1",
+        delivery_status="sent",
+    )
+
+    context = ledger.latest_delivered_prompt_context(
+        platform="slack",
+        destination_id="D1",
+        thread_id="T1",
+    )
+
+    assert context is not None
+    assert context["attempt_id"] == attempt_id
+    assert context["prompt_original"] == "clean user prompt"
+    assert context["prompt_mediated"] == "provider-ready visual prompt"
+
+
 def test_attempt_ledger_updates_request_status(tmp_path):
     from agent.visual.attempt_ledger import VisualAttemptLedger
 
