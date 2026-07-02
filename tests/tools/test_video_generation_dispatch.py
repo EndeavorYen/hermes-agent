@@ -21,8 +21,9 @@ def _reset_registry():
 class _RecordingProvider(VideoGenProvider):
     """Captures the kwargs the tool layer hands it."""
 
-    def __init__(self, name: str = "fake"):
+    def __init__(self, name: str = "fake", default_model: str = "model-a"):
         self._name = name
+        self._default_model = default_model
         self.last_kwargs: Dict[str, Any] = {}
 
     @property
@@ -30,10 +31,10 @@ class _RecordingProvider(VideoGenProvider):
         return self._name
 
     def list_models(self) -> List[Dict[str, Any]]:
-        return [{"id": "model-a"}]
+        return [{"id": self._default_model}]
 
     def default_model(self) -> Optional[str]:
-        return "model-a"
+        return self._default_model
 
     def capabilities(self) -> Dict[str, Any]:
         return {"modalities": ["text", "image"]}
@@ -98,6 +99,33 @@ class TestUnifiedDispatch:
         assert provider.last_kwargs["aspect_ratio"] == "16:9"
         assert provider.last_kwargs["resolution"] == "720p"
 
+    def test_internal_provider_override_routes_to_requested_provider(self):
+        primary = _RecordingProvider("xai", default_model="xai-model")
+        fallback = _RecordingProvider("fallback", default_model="fallback-model")
+        video_gen_registry.register_provider(primary)
+        video_gen_registry.register_provider(fallback)
+
+        result = self._run(
+            {"prompt": "a happy dog", "_provider": "fallback"},
+            configured="xai",
+        )
+
+        assert result["success"] is True
+        assert result["provider"] == "fallback"
+        assert result["model"] == "fallback-model"
+        assert primary.last_kwargs == {}
+        assert fallback.last_kwargs["model"] == "fallback-model"
+
+    def test_internal_model_override_routes_without_public_schema_arg(self):
+        provider = _RecordingProvider("rec", default_model="configured-model")
+        video_gen_registry.register_provider(provider)
+
+        result = self._run({"prompt": "a happy dog", "_model": "route-model"})
+
+        assert result["success"] is True
+        assert result["model"] == "route-model"
+        assert provider.last_kwargs["model"] == "route-model"
+
     def test_image_to_video_routes_with_image_url(self):
         provider = _RecordingProvider("rec")
         video_gen_registry.register_provider(provider)
@@ -138,3 +166,5 @@ class TestUnifiedDispatch:
         props = VIDEO_GENERATE_SCHEMA["parameters"]["properties"]
         assert "operation" not in props
         assert "video_url" not in props
+        assert "_provider" not in props
+        assert "_model" not in props
