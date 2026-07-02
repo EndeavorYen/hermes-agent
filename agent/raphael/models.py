@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping as MappingABC
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -43,6 +44,10 @@ def _require_schema(payload: Mapping[str, Any], expected: str, label: str) -> No
         raise ValueError(
             f"Unsupported Raphael {label} schema: {payload.get('schema_version')!r}"
         )
+
+
+def action_proposal_ref(proposal_id: str) -> str:
+    return hashlib.sha256(str(proposal_id or "").encode("utf-8")).hexdigest()[:12]
 
 
 @dataclass(frozen=True)
@@ -126,15 +131,12 @@ class ActionProposal:
             "status": self.status,
             "requires_approval": self.requires_approval,
         }
-        if self.metadata:
+        if self.metadata is not None:
             payload["metadata"] = dict(self.metadata)
         return payload
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> ActionProposal:
-        metadata = payload.get("metadata")
-        if metadata is not None and not isinstance(metadata, MappingABC):
-            raise ValueError("Raphael action proposal metadata must be a mapping")
         return cls(
             proposal_id=payload["proposal_id"],
             action_type=payload["action_type"],
@@ -143,7 +145,7 @@ class ActionProposal:
             evidence_refs=tuple(payload["evidence_refs"]),
             created_at=_datetime_from_iso(payload["created_at"]),
             status=payload.get("status", "pending"),
-            metadata=metadata,
+            metadata=payload.get("metadata"),
         )
 
 
@@ -396,9 +398,7 @@ class RaphaelMission:
         )
         object.__setattr__(self, "updated_at", _ensure_utc(self.updated_at))
         if self.last_user_request is not None:
-            object.__setattr__(
-                self, "last_user_request", str(self.last_user_request)
-            )
+            object.__setattr__(self, "last_user_request", str(self.last_user_request))
 
     @property
     def active_artifact(self) -> MissionArtifact | None:
@@ -468,12 +468,7 @@ class RaphaelState:
 
     @classmethod
     def empty(cls) -> RaphaelState:
-        return cls(
-            status_cards=(),
-            action_proposals=(),
-            updated_at=_utc_now(),
-            active_mission=None,
-        )
+        return cls(status_cards=(), action_proposals=(), updated_at=_utc_now())
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -523,4 +518,5 @@ __all__ = [
     "SkillTrace",
     "SkillTraceSummary",
     "StatusCard",
+    "action_proposal_ref",
 ]

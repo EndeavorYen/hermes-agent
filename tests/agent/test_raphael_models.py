@@ -76,30 +76,35 @@ def test_action_proposal_round_trips_auditable_metadata():
         proposal_id="proposal-2",
         action_type="skill_patch",
         risk=RiskLevel.R2,
-        summary="Patch Raphael proof gate after recurring failures.",
-        evidence_refs=("evolution:raphael.proof_gate", "signal_count:2"),
+        summary="Patch a skill after repeated proof failures.",
+        evidence_refs=("evolution:raphael.proof_gate", "pattern_count:2"),
         created_at=created_at,
         metadata={
             "affected_capability": "raphael.proof_gate",
-            "confidence": 0.82,
-            "promotion_gate": "focused tests plus LLM smoke",
-            "rollback_condition": "user says 不對 again",
             "rollout_plan": {
-                "manual_steps": ["Open a scoped PR."],
+                "status": "pending_approval",
                 "verification_commands": [
-                    "python -m pytest tests/agent/test_raphael_evolution.py -q"
+                    "pytest tests/agent/test_raphael_evolution.py -q",
                 ],
+                "promotion_gate": "focused tests plus LLM smoke",
                 "rollback_condition": "user says 不對 again",
             },
-            "approval_required": True,
         },
     )
 
     payload = proposal.to_dict()
 
-    assert payload["metadata"]["affected_capability"] == "raphael.proof_gate"
-    assert payload["metadata"]["confidence"] == 0.82
-    assert payload["metadata"]["rollback_condition"] == "user says 不對 again"
+    assert payload["metadata"] == {
+        "affected_capability": "raphael.proof_gate",
+        "rollout_plan": {
+            "status": "pending_approval",
+            "verification_commands": [
+                "pytest tests/agent/test_raphael_evolution.py -q",
+            ],
+            "promotion_gate": "focused tests plus LLM smoke",
+            "rollback_condition": "user says 不對 again",
+        },
+    }
     assert ActionProposal.from_dict(payload) == proposal
 
 

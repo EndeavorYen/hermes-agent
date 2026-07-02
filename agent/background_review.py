@@ -22,6 +22,7 @@ import contextlib
 import json
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -447,6 +448,8 @@ def _run_review_in_thread(
     agent: Any,
     messages_snapshot: List[Dict],
     prompt: str,
+    *,
+    review_label: Optional[str] = None,
 ) -> None:
     """Worker function executed in the background-review daemon thread.
 
@@ -653,20 +656,34 @@ def _run_review_in_thread(
 
         if actions:
             summary = " · ".join(dict.fromkeys(actions))
+            label = review_label or "Self-improvement review"
             agent._safe_print(
-                f"  💾 Self-improvement review: {summary}"
+                f"  💾 {label}: {summary}"
             )
             _bg_cb = agent.background_review_callback
             if _bg_cb:
                 try:
                     _bg_cb(
-                        f"💾 Self-improvement review: {summary}"
+                        f"💾 {label}: {summary}"
                     )
                 except Exception:
                     pass
+        _record_raphael_background_review_trace(
+            agent,
+            review_label=review_label,
+            outcome="completed_with_actions" if actions else "completed_no_action",
+            actions=actions,
+        )
 
     except Exception as e:
         logger.warning("Background memory/skill review failed: %s", e)
+        _record_raphael_background_review_trace(
+            agent,
+            review_label=review_label,
+            outcome="failed",
+            actions=[],
+            error=str(e),
+        )
         agent._emit_auxiliary_failure("background review", e)
     finally:
         # Safety-net cleanup for the exception path.  Normal
@@ -697,11 +714,59 @@ def _run_review_in_thread(
             pass
 
 
+def _record_raphael_background_review_trace(
+    agent: Any,
+    *,
+    review_label: Optional[str],
+    outcome: str,
+    actions: List[str],
+    error: str | None = None,
+) -> None:
+    if review_label != "Raphael evolution review":
+        return
+    try:
+        from agent.raphael.evolution import append_evolution_status_record
+        from agent.raphael.models import SkillTrace
+        from agent.raphael.skill_trace import append_skill_trace
+
+        created_at = datetime.now(timezone.utc)
+        metadata = {
+            "review_label": review_label,
+            "actions": list(actions),
+            "session_id": getattr(agent, "session_id", "") or "",
+        }
+        if error:
+            metadata["error"] = error
+        append_evolution_status_record(
+            status=f"background_{outcome}",
+            metadata=metadata,
+        )
+        append_skill_trace(
+            SkillTrace(
+                trace_id=f"raphael-background-review-{int(created_at.timestamp() * 1000)}",
+                task_id="",
+                created_at=created_at,
+                source="raphael_background_review",
+                skills_used=("raphael", "skill_manage"),
+                tools_used=("skill_manage",),
+                outcome=outcome,
+                user_corrections=(),
+                risk_incidents=() if outcome != "failed" else ("background_review_failed",),
+                metadata=metadata,
+            ),
+            max_string_length=500,
+        )
+    except Exception as trace_exc:
+        logger.debug("Raphael background review trace skipped: %s", trace_exc)
+
+
 def spawn_background_review_thread(
     agent: Any,
     messages_snapshot: List[Dict],
     review_memory: bool = False,
     review_skills: bool = False,
+    review_prompt: Optional[str] = None,
+    review_label: Optional[str] = None,
 ):
     """Build the review thread target and prompt for a background review.
 
@@ -712,7 +777,9 @@ def spawn_background_review_thread(
     # Pick the right prompt based on which triggers fired.  Allow per-agent
     # override (the prompts moved to module-level constants but old code paths
     # that set agent._MEMORY_REVIEW_PROMPT etc. directly keep working).
-    if review_memory and review_skills:
+    if review_prompt:
+        prompt = review_prompt
+    elif review_memory and review_skills:
         prompt = getattr(agent, "_COMBINED_REVIEW_PROMPT", _COMBINED_REVIEW_PROMPT)
     elif review_memory:
         prompt = getattr(agent, "_MEMORY_REVIEW_PROMPT", _MEMORY_REVIEW_PROMPT)
@@ -720,7 +787,12 @@ def spawn_background_review_thread(
         prompt = getattr(agent, "_SKILL_REVIEW_PROMPT", _SKILL_REVIEW_PROMPT)
 
     def _target() -> None:
-        _run_review_in_thread(agent, messages_snapshot, prompt)
+        _run_review_in_thread(
+            agent,
+            messages_snapshot,
+            prompt,
+            review_label=review_label,
+        )
 
     return _target, prompt
 

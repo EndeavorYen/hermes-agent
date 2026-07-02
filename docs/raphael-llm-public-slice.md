@@ -1,30 +1,46 @@
-# Raphael LLM Public Slice
+# Raphael LLM-Only Public Slice
 
-This document defines the Phase 6 public-readiness boundary for Raphael mode.
-It is intentionally LLM-only. It does not certify image generation, video
-generation, Grok Web Imagine, Slack media delivery, or visual artifact quality.
+> **TL;DR** — This is the first scoped LLM-only Raphael public slice. It can
+> pass the LLM release gate, but it does not ship a full media, "Sage King",
+> "wow", or "big evolution" launch claim.
 
-## What Phase 6 Can Prove
+## Release Boundary
 
-Phase 6 can mark the Raphael LLM control-layer slice ready only when all of the
-following are true:
+| Include | Paths | Reason |
+| --- | --- | --- |
+| Core control | `agent/raphael/appraisal.py`, `control.py`, `mission.py`, `proof.py`, `strategy.py`, `state.py`, `artifacts.py`, `labels.py` | Keeps intent, goal state, blockers, evidence, and follow-up continuity structured |
+| Summon UX | `agent/raphael/observer.py`, `prompt.py`, `governor.py`, `wow_score.py`, `agent/prompt_builder.py`, `agent/conversation_loop.py`, `agent/turn_finalizer.py` | Makes `拉斐爾？` behave as a controlled readiness/sage summon rather than a prompt persona |
+| Evolution audit | `agent/raphael/evolution.py`, `skill_trace.py`, `status.py`, `agent/background_review.py` | Records learning signals, prioritizes repeated self-correction patterns, and creates deduplicated approval-gated skill-patch proposals without silently mutating policy |
+| Lifecycle CLI | `hermes_cli/raphael_cmd.py`, `hermes_cli/subcommands/raphael.py`, `hermes_cli/config.py`, `plugins/raphael/*` | Provides install, enable, disable, uninstall, status, doctor, readiness, and release-gate |
+| Release evidence | `scripts/raphael_completion_audit.py`, `scripts/raphael_package_install_smoke.py`, `scripts/raphael_release_slice_boundary.py`, `scripts/raphael_release_slice_manifest.py`, `docs/raphael-mode.md`, `docs/raphael-release-slice-audit.md` | Keeps public readiness reproducible, blocks overbroad ultimate claims, and documents which changed paths belong to this slice |
+| LLM tests | `tests/agent/test_raphael_*.py`, `tests/hermes_cli/test_raphael_*.py`, `tests/plugins/test_raphael_plugin.py`, `tests/run_agent/test_*` | Proves the LLM slice without visual quota |
+
+## Explicit Exclusions
+
+| Exclude from this slice | Why |
+| --- | --- |
+| `plugins/image_gen/grok_web_imagine/*` | Full media release still needs live Grok proof |
+| `scripts/grok_web_imagine_live_e2e.py` and `scripts/openai_visual_live_e2e.py` | Provider evidence belongs to the media slice |
+| `agent/visual/*`, `tools/visual_*`, `gateway/*` media delivery changes | Keep visual routing and delivery review separate from LLM-only release |
+| Generated media, provider logs, cache files, Slack artifacts | Must remain local unless sanitized as fixtures |
+
+## Required Evidence
+
+The slice is mechanically reviewable when the scoped non-hostile commands pass
+from the current worktree. Public release additionally requires
+`hermes raphael readiness --readiness-profile llm --check` to pass with
+`Release scope: llm_only`; that gate does not cover media, Grok, video, or full
+Sage King claims.
 
 - Deterministic public-user simulations pass for summon routing, mission
   follow-up continuity, proof-gated success claims, and auditable evolution
   proposals.
 - At least one LLM-only live smoke is recorded in a JSON evidence file and
   classified as passed after matching the expected session id.
-- `hermes raphael readiness` reports `Overall: llm_ready`.
-- The Phase 6 public-readiness report records only the LLM slice as ready.
 - Public wording says "Raphael LLM control-layer slice is ready".
 - Public wording keeps media, visual, video, Grok, and full release claims
   outside that sentence.
-
-## What Phase 6 Must Not Claim
-
-Until later phases provide separate live evidence, public copy must not claim:
-
-- OpenAI image generation readiness remains blocked in Phase 6.
+- OpenAI image generation readiness remains scoped to a separate media gate.
 - Grok Web Imagine readiness remains blocked.
 - Video generation readiness remains blocked.
 - Slack/native media delivery readiness remains blocked.
@@ -34,33 +50,46 @@ Until later phases provide separate live evidence, public copy must not claim:
 
 ## Verification Commands
 
-Run deterministic readiness:
-
 ```bash
-hermes raphael readiness
+venv/bin/hermes raphael status
+venv/bin/hermes raphael doctor
+venv/bin/python scripts/raphael_completion_audit.py --target scoped
+venv/bin/python scripts/raphael_release_docs_audit.py
+venv/bin/python scripts/raphael_release_slice_boundary.py --from-git-status
+venv/bin/python scripts/raphael_release_slice_manifest.py --from-git-status
+venv/bin/python -m pytest tests/scripts/test_raphael_package_install_smoke.py -q
+venv/bin/python -m pytest tests/agent/test_raphael_*.py tests/agent/test_turn_finalizer.py tests/hermes_cli/test_raphael_*.py tests/plugins/test_raphael_plugin.py tests/tools/test_visual_agent_tool.py tests/tools/test_visual_package_tool.py tests/visual/test_agent_mode_handoff.py tests/gateway/test_media_extraction.py tests/gateway/test_platform_base.py tests/scripts/test_raphael_completion_audit.py tests/scripts/test_raphael_release_docs_audit.py tests/scripts/test_raphael_release_slice_boundary.py tests/scripts/test_raphael_release_slice_manifest.py -q
+venv/bin/ruff check agent/raphael hermes_cli/raphael_cmd.py hermes_cli/subcommands/raphael.py plugins/raphael scripts/raphael_completion_audit.py scripts/raphael_release_docs_audit.py scripts/raphael_release_slice_boundary.py scripts/raphael_release_slice_manifest.py scripts/raphael_package_install_smoke.py tests/agent/test_raphael_*.py tests/hermes_cli/test_raphael_*.py tests/plugins/test_raphael_plugin.py tests/scripts/test_raphael_completion_audit.py tests/scripts/test_raphael_release_docs_audit.py tests/scripts/test_raphael_release_slice_boundary.py tests/scripts/test_raphael_release_slice_manifest.py tests/scripts/test_raphael_package_install_smoke.py
+git diff --check
 ```
 
-After an approved LLM-only live smoke:
+Current live evidence:
 
-```bash
-hermes raphael readiness \
-  --llm-smoke-session-id phase6-smoke-session \
-  --llm-smoke-evidence-file /path/to/raphael-llm-smoke.json \
-  --gate-output /path/to/raphael-readiness.json
-```
+- `hermes raphael readiness --readiness-profile llm --check` currently passes as `ready_for_llm_only_release` and prints `Release scope: llm_only`.
+- `scripts/raphael_completion_audit.py --target scoped` currently reports `Raphael completion audit: partial`, `Scoped release ready: yes`, and `Ultimate Sage King ready: no`; default `--target ultimate` exits non-zero until full Sage King blockers are resolved.
+- `scripts/raphael_release_docs_audit.py` currently passes against the LLM/media readiness JSON files and the release-facing docs.
+- Current local boundary command `scripts/raphael_release_slice_boundary.py --from-git-status` classifies the current worktree into `68` LLM slice paths and `45` deferred media paths with `0` unclassified paths and `0` content-boundary violations. This boundary summary is local review evidence, not a field in the readiness JSON.
+- `scripts/raphael_release_slice_manifest.py --from-git-status` currently emits a reviewable `split_required` manifest with `allowed_public_claims: ["llm_only"]`, one `llm_scoped_release` slice, and one deferred media slice.
+- LLM-only live summon smoke `20260701_131600_93f518` proves same-session follow-up continuity with `gpt-5.5`, zero tool calls, and text-only output.
+- Hostile-shaped text-only smoke `20260701_130957_137750` proves public Raphael wording with `不要產圖` stays out of visual handoff and ends with zero tool calls.
+- Fresh package install smoke `package-install-20260701-fresh-home-fail-closed-v1.json` builds and installs the wheel, verifies install/disable/enable/uninstall, keeps evolution audit-only by default, proves installed media and LLM readiness fail closed when release evidence is absent in a fresh home, and verifies approval-gated proposal approve/reject lifecycle commands.
+- Fresh non-visual regression evidence `non-visual-regression-20260701-openai-quality-attachment-gate.json` records `1529` passing tests, no failures, no visual quota usage, and broad Raphael/media regression coverage.
+- Hostile review evidence `hostile-review-20260701-fresh-home-fail-closed-v1` explicitly disallows `sage_king`, `wow`, and `big_evolution` public claims while allowing only the scoped LLM-only slice and the separate OpenAI image-only media scope. The current readiness gate also requires all six quota-free user simulation cases to include `user_prompt`, `expected_visible_behavior`, `critical_assertions`, `next_action`, `proof_layer`, and `visual_quota_used:false`.
+- OpenAI media readiness is separate from this LLM-only slice. The historical
+  OpenAI image-only report has been revalidated as a limited
+  `media_openai_image_only` public scope. It does not prove default Grok,
+  xAI, video, or full image-first media readiness.
 
-The first command should remain blocked without live smoke evidence. The second
-may mark only the LLM slice ready when the evidence file exists, matches the
-supplied session id, records a passed smoke, and contains no forbidden media,
-visual, Grok, video, or full-release ready claim. Media, visual, and Grok slices
-must still show `not ready`.
+## Release Risks
 
-## Hostile Review Questions
+- Public defaults must keep evolution writes audit-only unless `--evolve` is explicit. This host may enable durable writes locally, but fresh install evidence must stay audit-only.
+- The worktree must be split or reviewed by slice; the current full diff is not a single coherent public release.
+- A hostile review must judge summon experience, goal continuity, and public-claim wording; schema correctness alone is insufficient.
+- Full media claims are out of scope until Grok live E2E and image-first video evidence pass.
 
-Before merging a Phase 6 PR, review these questions:
+## Next Gate
 
-- Would a user understand that Raphael is a control layer, not a persona skin?
-- Does the summon/follow-up/proof/evolution journey feel materially upgraded?
-- Did we prove the LLM slice with live evidence, or only with fixtures?
-- Did any wording imply image, video, Grok, or full-release readiness?
-- If a smoke failed, did the report classify the layer and next action?
+1. Confirm audit-only defaults in fresh install and package-install smoke.
+2. Run the required evidence commands above.
+3. Keep public wording scoped to `llm_only`.
+4. Defer full Sage King, wow, Grok, and video claims until separate hostile review and live evidence allow them.

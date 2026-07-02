@@ -7,7 +7,7 @@ def test_raphael_defaults_disabled_and_guarded():
     raphael = DEFAULT_CONFIG["raphael"]
 
     assert raphael["enabled"] is False
-    assert raphael["mode"] == "advisor"
+    assert raphael["mode"] == "sage_king"
     assert raphael["status_card_ttl_seconds"] == 900
     assert raphael["max_status_cards"] == 20
     assert raphael["default_conversation_mode_enabled"] is False
@@ -16,6 +16,11 @@ def test_raphael_defaults_disabled_and_guarded():
     assert raphael["cron_mutation_enabled"] is False
     assert raphael["memory_writes_enabled"] is False
     assert raphael["tool_install_enabled"] is False
+    assert raphael["evolution"] == {
+        "enabled": True,
+        "skill_review_enabled": True,
+        "memory_review_enabled": True,
+    }
 
 
 def test_raphael_skill_trace_defaults_enabled_and_bounded():
@@ -40,10 +45,11 @@ def test_load_config_deep_merges_raphael_defaults(tmp_path):
         config = load_config()
 
     assert config["raphael"]["enabled"] is True
-    assert config["raphael"]["mode"] == "advisor"
+    assert config["raphael"]["mode"] == "sage_king"
     assert config["raphael"]["status_card_ttl_seconds"] == 900
     assert config["raphael"]["default_conversation_mode_enabled"] is False
     assert config["raphael"]["public_delivery_enabled"] is False
+    assert config["raphael"]["evolution"]["enabled"] is True
 
 
 def test_load_config_deep_merges_raphael_skill_trace_defaults(tmp_path):

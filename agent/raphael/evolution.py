@@ -1,94 +1,246 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
-from datetime import datetime, timezone
-import hashlib
 import json
+import hashlib
+import math
 import re
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
-from agent.raphael.models import ActionProposal, RaphaelEvent, RiskLevel
+from agent.raphael.config import cfg_get, raphael_effective_enabled
+from agent.raphael.models import ActionProposal, RaphaelState, RiskLevel
+from agent.raphael.redaction import REDACTED_VALUE, redact_trace_payload
+from agent.raphael.state import get_raphael_state_dir, read_state, write_state
 
+EVOLUTION_RECORD_SCHEMA_VERSION = "raphael.evolution_record.v1"
+REVIEW_LABEL = "Raphael evolution review"
+EVOLUTION_METADATA_TEXT_LIMIT = 240
 
-_PUBLIC_TEXT_REDACTIONS = (
-    (
-        re.compile(r"data:[^\s,)]+;base64,[^\s,)]+", re.IGNORECASE),
-        "[redacted-base64]",
-    ),
-    (re.compile(r"base64:[^\s,)]+", re.IGNORECASE), "[redacted-base64]"),
-    (re.compile(r"candidate:[^\s,)]+", re.IGNORECASE), "[redacted-candidate]"),
-    (
-        re.compile(r"(?:file://)?/(?:private|Users|tmp|var)(?:/[^\s,)]+)*"),
-        "[redacted-path]",
-    ),
+_ALLOWED_EVOLUTION_METADATA_KEYS = frozenset(
+    {
+        "affected_capability",
+        "proposed_change",
+        "confidence",
+        "promotion_gate",
+        "rollback_condition",
+    }
 )
 
-EVOLUTION_SIGNAL_EVENT_KIND = "evolution_signal_recorded"
-PROOF_GATE_RECURRING_SIGNAL_THRESHOLD = 2
+_TEXT_EVOLUTION_METADATA_KEYS = (
+    "affected_capability",
+    "proposed_change",
+    "promotion_gate",
+    "rollback_condition",
+)
+
+_CAPABILITY_BY_REASON_CODE = {
+    "user_correction": "raphael.skill_evolution",
+    "visual_or_provider_failure": "visual.agent_mode",
+    "execution_loop_failure": "raphael.execution_loop",
+    "high_risk_mutation": "raphael.approval_policy",
+    "failed_proof": "raphael.proof_gate",
+}
+
+_SECRET_VALUE_RE = re.compile(
+    r"\b(?:sk-[A-Za-z0-9_\-]{3,}|xox[baprs]-[A-Za-z0-9_\-]{3,}|"
+    r"gh[pousr]_[A-Za-z0-9_\-]{3,}|ya29\.[A-Za-z0-9_\-]{3,}|"
+    r"AIza[A-Za-z0-9_\-]{3,})\b"
+)
+_PRIVATE_PATH_RE = re.compile(
+    r"(?:(?:/Users|/private/tmp|/private/var|/tmp)/[^\s,;:'\")\]}]+)"
+)
+_DATA_URI_RE = re.compile(r"data:[a-z0-9.+/-]+;base64,[a-z0-9+/=_-]+", re.I)
+_LONG_BASE64ISH_RE = re.compile(r"\b[A-Za-z0-9+/=_-]{80,}\b")
+
+_USER_CORRECTION_MARKERS = (
+    "不對",
+    "不是這樣",
+    "錯了",
+    "不要再",
+    "別再",
+    "你應該",
+    "請記住",
+    "記住",
+    "remember",
+    "主動進化",
+)
+
+_HIGH_RISK_MARKERS = (
+    "不用問",
+    "不要問",
+    "自動發布",
+    "自動修改 cron",
+    "修改 cron",
+    "install tool",
+    "安裝工具",
+    "public delivery",
+    "發布到 slack",
+    "send public",
+)
+
+_VISUAL_FAILURE_MARKERS = (
+    "failure_layer",
+    "provider_health",
+    "browser_automation",
+    "artifact_quality",
+    "prompt_moderation",
+    "delivery",
+    "候選圖未通過",
+    "stale",
+    "duplicate",
+    "visual_agent_generate",
+    "grok web imagine",
+)
+
+_PROOF_GATE_FAILURE_TERMS = (
+    "blocked",
+    "cannot verify",
+    "can't verify",
+    "insufficient",
+    "missing",
+    "not enough",
+    "proof failed",
+    "還不能判定完成",
+    "不能判定完成",
+    "缺少",
+    "沒有足夠",
+    "證據不足",
+)
 
 
-@dataclass(frozen=True)
-class RaphaelEvolutionSignal:
-    source: str
-    affected_capability: str
-    reason_codes: tuple[str, ...]
-    summary: str
-    evidence_refs: tuple[str, ...]
-    confidence: float
-    proposed_change: str
-    promotion_gate: str
-    rollback_condition: str
-    metadata: Mapping[str, Any] | None = None
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "source", str(self.source))
-        object.__setattr__(
-            self,
-            "affected_capability",
-            _normalize_capability(self.affected_capability),
+
+def _enabled(config: Mapping[str, Any] | None) -> bool:
+    if not raphael_effective_enabled(config, require_default_conversation=False):
+        return False
+    evolution_cfg = cfg_get(config or {}, "raphael", "evolution", default={})
+    if isinstance(evolution_cfg, Mapping):
+        return evolution_cfg.get("enabled", True) is True
+    return True
+
+
+def _flag(config: Mapping[str, Any] | None, *path: str, default: bool) -> bool:
+    return cfg_get(config or {}, *path, default=default) is True
+
+
+def _text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray, str)):
+        chunks: list[str] = []
+        for item in value:
+            if isinstance(item, Mapping):
+                text = item.get("text")
+                if isinstance(text, str):
+                    chunks.append(text)
+            elif isinstance(item, str):
+                chunks.append(item)
+        return "\n".join(chunks)
+    return "" if value is None else str(value)
+
+
+def _redact_value(value: Any) -> Any:
+    redacted = redact_trace_payload(value)
+    if isinstance(redacted, str):
+        redacted = _SECRET_VALUE_RE.sub(REDACTED_VALUE, redacted)
+        redacted = _DATA_URI_RE.sub("[redacted-media]", redacted)
+        redacted = _PRIVATE_PATH_RE.sub("[redacted-path]", redacted)
+        return _LONG_BASE64ISH_RE.sub("[redacted-payload]", redacted)
+    if isinstance(redacted, Mapping):
+        return {str(k): _redact_value(v) for k, v in redacted.items()}
+    if isinstance(redacted, Sequence) and not isinstance(
+        redacted, (str, bytes, bytearray)
+    ):
+        return [_redact_value(item) for item in redacted]
+    return redacted
+
+
+def _redacted_single_line(value: Any, *, limit: int = EVOLUTION_METADATA_TEXT_LIMIT) -> str:
+    redacted = _redact_value(value)
+    if isinstance(redacted, Mapping):
+        text = json.dumps(redacted, sort_keys=True, ensure_ascii=False)
+    elif isinstance(redacted, Sequence) and not isinstance(
+        redacted, (str, bytes, bytearray)
+    ):
+        text = json.dumps(list(redacted), sort_keys=True, ensure_ascii=False)
+    else:
+        text = "" if redacted is None else str(redacted)
+    text = " ".join(text.split())
+    return text[:limit]
+
+
+def _clamped_confidence(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(confidence):
+        return None
+    return round(max(0.0, min(1.0, confidence)), 2)
+
+
+def sanitize_raphael_evolution_metadata(
+    metadata: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    sanitized: dict[str, Any] = {}
+    for key in _TEXT_EVOLUTION_METADATA_KEYS:
+        if not isinstance(metadata, Mapping) or key not in metadata:
+            continue
+        text = _redacted_single_line(metadata.get(key))
+        if text:
+            sanitized[key] = text
+    if isinstance(metadata, Mapping) and "confidence" in metadata:
+        confidence = _clamped_confidence(metadata.get("confidence"))
+        if confidence is not None:
+            sanitized["confidence"] = confidence
+    return sanitized
+
+
+def sanitize_raphael_evolution_status_metadata(
+    metadata: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    if not isinstance(metadata, Mapping):
+        return {}
+    sanitized: dict[str, Any] = {}
+    review_label = _redacted_single_line(metadata.get("review_label"))
+    if review_label:
+        sanitized["review_label"] = review_label
+    actions = metadata.get("actions")
+    if isinstance(actions, Sequence) and not isinstance(actions, (str, bytes, bytearray)):
+        action_types = sorted(
+            {
+                _redacted_single_line(action, limit=80)
+                for action in actions
+                if _redacted_single_line(action, limit=80)
+            }
         )
-        object.__setattr__(
-            self,
-            "reason_codes",
-            tuple(str(reason) for reason in self.reason_codes if str(reason).strip()),
-        )
-        object.__setattr__(self, "summary", sanitize_evolution_text(self.summary))
-        object.__setattr__(
-            self,
-            "evidence_refs",
-            tuple(
-                sanitize_evolution_text(ref)
-                for ref in self.evidence_refs
-                if str(ref).strip()
-            ),
-        )
-        object.__setattr__(
-            self,
-            "confidence",
-            max(0.0, min(1.0, float(self.confidence))),
-        )
-        object.__setattr__(
-            self,
-            "proposed_change",
-            sanitize_evolution_text(self.proposed_change),
-        )
-        object.__setattr__(
-            self,
-            "promotion_gate",
-            sanitize_evolution_text(self.promotion_gate),
-        )
-        object.__setattr__(
-            self,
-            "rollback_condition",
-            sanitize_evolution_text(self.rollback_condition),
-        )
-        if self.metadata is not None:
-            object.__setattr__(
-                self,
-                "metadata",
-                sanitize_evolution_metadata(self.metadata),
-            )
+        sanitized["action_count"] = len(actions)
+        if action_types:
+            sanitized["action_types"] = action_types[:10]
+    session_id = str(metadata.get("session_id") or "").strip()
+    if session_id:
+        sanitized["session_hash"] = hashlib.sha256(
+            session_id.encode("utf-8")
+        ).hexdigest()[:12]
+    error = str(metadata.get("error") or "").strip()
+    if error:
+        error_class = error.split(":", 1)[0].splitlines()[0].strip()
+        if error_class:
+            sanitized["error_class"] = _redacted_single_line(error_class, limit=80)
+    outcome = _redacted_single_line(metadata.get("outcome"), limit=80)
+    if outcome:
+        sanitized["outcome"] = outcome
+    return sanitized
+
+
+def sanitize_evolution_text(value: Any) -> str:
+    return _redacted_single_line(value, limit=EVOLUTION_METADATA_TEXT_LIMIT)
 
 
 def build_evolution_signal(
@@ -103,411 +255,666 @@ def build_evolution_signal(
     promotion_gate: str,
     rollback_condition: str,
     metadata: Mapping[str, Any] | None = None,
-) -> RaphaelEvolutionSignal:
-    return RaphaelEvolutionSignal(
-        source=source,
-        affected_capability=affected_capability,
-        reason_codes=tuple(reason_codes),
-        summary=summary,
-        evidence_refs=tuple(evidence_refs),
-        confidence=confidence,
-        proposed_change=proposed_change,
-        promotion_gate=promotion_gate,
-        rollback_condition=rollback_condition,
-        metadata=metadata,
+) -> dict[str, Any]:
+    signal_metadata = {
+        "affected_capability": affected_capability,
+        "proposed_change": proposed_change,
+        "confidence": confidence,
+        "promotion_gate": promotion_gate,
+        "rollback_condition": rollback_condition,
+    }
+    if isinstance(metadata, Mapping):
+        signal_metadata.update(metadata)
+    return {
+        "schema_version": EVOLUTION_RECORD_SCHEMA_VERSION,
+        "created_at": _utc_now(),
+        "status": "review",
+        "should_review": True,
+        "review_skills": True,
+        "review_memory": False,
+        "proposal_only": True,
+        "mode": "active_evolution",
+        "reason_codes": [str(reason) for reason in reason_codes],
+        "evidence_summary": (
+            f"{affected_capability} recurring evolution signal: "
+            f"{','.join(str(reason) for reason in reason_codes)}"
+        ),
+        "evidence_refs": [str(ref) for ref in evidence_refs],
+        "review_label": REVIEW_LABEL,
+        "risk_level": RiskLevel.R2.value,
+        "user_message_preview": "",
+        "source": str(source),
+        "metadata": sanitize_raphael_evolution_metadata(signal_metadata),
+    }
+
+
+def _contains_any(text: str, markers: tuple[str, ...]) -> bool:
+    lowered = text.lower()
+    return any(marker.lower() in lowered for marker in markers)
+
+
+def _looks_like_user_correction_or_learning_request(text: str) -> bool:
+    if _contains_any(text, _USER_CORRECTION_MARKERS):
+        return True
+    lowered = text.lower()
+    durable_targets = ("skill", "技能", "memory", "記憶", "學習", "learning")
+    durable_verbs = ("evolve", "進化", "update", "改進", "修正", "保存", "save")
+    return _contains_any(lowered, durable_targets) and _contains_any(
+        lowered,
+        durable_verbs,
     )
+
+
+def _message_texts(messages: Sequence[Mapping[str, Any]] | None) -> list[str]:
+    texts: list[str] = []
+    for message in messages or []:
+        if not isinstance(message, Mapping):
+            continue
+        content = _text(message.get("content"))
+        name = _text(message.get("name"))
+        role = _text(message.get("role"))
+        texts.append("\n".join(part for part in (role, name, content) if part))
+    return texts
+
+
+def _looks_like_failed_proof_gate(
+    response_text: str,
+    messages: Sequence[Mapping[str, Any]] | None,
+) -> bool:
+    texts = [response_text]
+    for message in messages or []:
+        if not isinstance(message, Mapping):
+            continue
+        if _text(message.get("role")).lower() != "assistant":
+            continue
+        texts.append(_text(message.get("content")))
+    for text in texts:
+        lowered = text.lower()
+        if "proof gate" not in lowered:
+            continue
+        if any(term.lower() in lowered for term in _PROOF_GATE_FAILURE_TERMS):
+            return True
+    return False
+
+
+def _visual_failure_marker_layers(raw: str) -> list[str]:
+    lowered = raw.lower()
+    return [
+        marker
+        for marker in _VISUAL_FAILURE_MARKERS
+        if marker.lower() in lowered
+    ]
+
+
+def _is_tool_failure_evidence(message: Mapping[str, Any]) -> bool:
+    role = _text(message.get("role")).lower()
+    name = _text(message.get("name")).lower()
+    return (
+        role == "tool"
+        or bool(message.get("tool_call_id"))
+        or name in {"visual_agent_generate", "image_generate", "video_generate"}
+    )
+
+
+def _extract_failure_layers(
+    messages: Sequence[Mapping[str, Any]] | None,
+    *,
+    include_narrative: bool = False,
+) -> tuple[str, ...]:
+    layers: list[str] = []
+    for message in messages or []:
+        if not isinstance(message, Mapping):
+            continue
+        if not include_narrative and not _is_tool_failure_evidence(message):
+            continue
+        content = _text(message.get("content"))
+        name = _text(message.get("name"))
+        role = _text(message.get("role"))
+        raw = "\n".join(part for part in (role, name, content) if part)
+        try:
+            parsed = json.loads(raw.split("\n", 2)[-1])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            parsed = None
+        if isinstance(parsed, Mapping):
+            layer = parsed.get("failure_layer") or parsed.get("failure_class")
+            if layer:
+                layers.append(str(layer))
+            if parsed.get("success") is False and not layer:
+                layers.append("tool_failure")
+        if _contains_any(raw, _VISUAL_FAILURE_MARKERS):
+            for marker in _visual_failure_marker_layers(raw):
+                if marker not in layers:
+                    layers.append(marker)
+    return tuple(dict.fromkeys(layers))
+
+
+def _infer_affected_capability(reason_codes: Sequence[str]) -> str:
+    for reason in reason_codes:
+        capability = _CAPABILITY_BY_REASON_CODE.get(str(reason))
+        if capability:
+            return capability
+    return "raphael.control_layer"
+
+
+def _infer_evolution_metadata(
+    reason_codes: Sequence[str],
+    *,
+    proposal_only: bool,
+) -> dict[str, Any]:
+    if not reason_codes:
+        return {}
+    if proposal_only and "high_risk_mutation" in reason_codes:
+        return {
+            "affected_capability": _infer_affected_capability(reason_codes),
+            "proposed_change": (
+                "Draft an operator-approved change instead of mutating durable "
+                "runtime, tool, cron, or delivery policy automatically."
+            ),
+            "confidence": 0.45,
+            "promotion_gate": "Requires explicit human approval plus focused tests.",
+            "rollback_condition": (
+                "Discard if approval is absent or later evidence shows unsafe "
+                "automation pressure."
+            ),
+        }
+    return {
+        "affected_capability": _infer_affected_capability(reason_codes),
+        "proposed_change": (
+            "Review the affected Raphael capability and update the smallest "
+            "skill, policy, or control path supported by current evidence."
+        ),
+        "confidence": 0.66,
+        "promotion_gate": (
+            "Promote only after focused tests and a runtime, replay, or LLM smoke "
+            "prove the next run improves."
+        ),
+        "rollback_condition": (
+            "Rollback if user feedback or proof records show worse routing, "
+            "recovery, delivery, or privacy behavior."
+        ),
+    }
+
+
+def _evolution_record_group_key(record: Mapping[str, Any]) -> tuple[Any, ...]:
+    metadata = record.get("metadata")
+    if not isinstance(metadata, Mapping):
+        metadata = {}
+    reasons = record.get("reason_codes") or []
+    if isinstance(reasons, Sequence) and not isinstance(
+        reasons,
+        (str, bytes, bytearray),
+    ):
+        reason_key = tuple(str(reason) for reason in reasons)
+    else:
+        reason_key = (str(reasons),)
+    return (
+        str(record.get("status") or ""),
+        str(record.get("mode") or ""),
+        reason_key,
+        str(record.get("evidence_summary") or ""),
+        str(metadata.get("affected_capability") or ""),
+        str(metadata.get("proposed_change") or ""),
+        str(metadata.get("promotion_gate") or ""),
+        str(metadata.get("rollback_condition") or ""),
+    )
+
+
+def _collapse_evolution_record_patterns(
+    records: Sequence[Mapping[str, Any]],
+) -> list[tuple[Mapping[str, Any], int]]:
+    groups: dict[tuple[Any, ...], tuple[Mapping[str, Any], int]] = {}
+    order: list[tuple[Any, ...]] = []
+    for record in records:
+        if not isinstance(record, Mapping):
+            continue
+        key = _evolution_record_group_key(record)
+        if key not in groups:
+            groups[key] = (record, 1)
+            order.append(key)
+            continue
+        first_record, count = groups[key]
+        groups[key] = (first_record, count + 1)
+    return [groups[key] for key in order]
+
+
+def _selected_evolution_pattern(
+    records: Sequence[Mapping[str, Any]],
+    *,
+    min_count: int,
+) -> tuple[Mapping[str, Any], int] | None:
+    reviewable_records = [
+        record
+        for record in records
+        if isinstance(record, Mapping)
+        and (
+            record.get("should_review") is True
+            or str(record.get("mode") or "") == "active_evolution"
+        )
+    ]
+    grouped = _collapse_evolution_record_patterns(reviewable_records)
+    if not grouped:
+        return None
+    record, count = max(enumerate(grouped), key=lambda item: (item[1][1], item[0]))[1]
+    if count < min_count:
+        return None
+    return record, count
+
+
+def _format_capability_for_summary(capability: str) -> str:
+    text = str(capability or "raphael.control_layer").replace(".", " ").replace("_", " ")
+    text = " ".join(text.split())
+    if text.startswith("raphael "):
+        return "Raphael " + text.removeprefix("raphael ")
+    return text or "Raphael control layer"
+
+
+def _evolution_proposal_verification_commands(capability: str) -> list[str]:
+    commands = ["pytest tests/agent/test_raphael_evolution.py -q"]
+    if str(capability).startswith("raphael."):
+        commands.append("hermes raphael readiness --readiness-profile llm --check")
+    return commands
 
 
 def build_evolution_action_proposal(
-    signals: Sequence[RaphaelEvolutionSignal | Mapping[str, Any]],
+    records: Sequence[Mapping[str, Any]],
     *,
+    min_pattern_count: int = 2,
+    created_at: datetime | None = None,
     now: datetime | None = None,
 ) -> ActionProposal | None:
-    normalized = tuple(_coerce_signal(signal) for signal in signals)
-    normalized = tuple(signal for signal in normalized if signal is not None)
-    if not normalized:
+    selected = _selected_evolution_pattern(records, min_count=max(2, min_pattern_count))
+    if selected is None:
         return None
-
-    selected = _select_focus_signals(normalized)
-    if not selected:
-        return None
-    if _requires_recurring_evidence(selected) and len(selected) < 2:
-        return None
-    focus = selected[0]
-    signal_count = len(selected)
-    capability = focus.affected_capability
-    reason_codes = tuple(
-        sorted({reason for signal in selected for reason in signal.reason_codes})
+    record, count = selected
+    metadata = record.get("metadata")
+    if not isinstance(metadata, Mapping):
+        metadata = {}
+    capability = _redacted_single_line(
+        metadata.get("affected_capability") or "raphael.control_layer",
+        limit=96,
     )
-    evidence_refs = _proposal_evidence_refs(capability, selected)
-    proposed_change = focus.proposed_change or "improve the affected Raphael strategy"
-    promotion_gate = focus.promotion_gate or "focused tests"
-    rollback_condition = (
-        focus.rollback_condition
-        or "user feedback or proof records show worse behavior"
+    proposed_change = _redacted_single_line(
+        metadata.get("proposed_change") or record.get("evidence_summary"),
+        limit=160,
     )
-    confidence = max(signal.confidence for signal in selected)
-    label = _capability_label(capability)
-    recurring = f"{signal_count} recurring signals" if signal_count > 1 else "1 signal"
-    summary = sanitize_evolution_text(
-        f"Patch {label} after {recurring}: {proposed_change}. "
-        f"Promotion gate: {promotion_gate}. Rollback: {rollback_condition}."
+    promotion_gate = _redacted_single_line(
+        metadata.get("promotion_gate")
+        or "focused tests plus runtime, replay, or LLM smoke",
+        limit=160,
     )
-    proposal_id = _proposal_id(capability, reason_codes, proposed_change)
-    metadata = {
-        "affected_capability": capability,
-        "reason_codes": list(reason_codes),
-        "confidence": round(confidence, 2),
-        "recurring_signal_count": signal_count,
+    rollback_condition = _redacted_single_line(
+        metadata.get("rollback_condition")
+        or "next evidence or user feedback shows worse behavior",
+        limit=160,
+    )
+    proposal_seed = "|".join(
+        (capability, proposed_change, promotion_gate, rollback_condition)
+    )
+    proposal_hash = hashlib.sha256(proposal_seed.encode("utf-8")).hexdigest()[:16]
+    summary = (
+        f"Patch {_format_capability_for_summary(capability)} from {count} recurring "
+        f"signals: {proposed_change}. Promote after {promotion_gate}; rollback if "
+        f"{rollback_condition}."
+    )
+    rollout_plan = {
+        "status": "pending_approval",
+        "risk": RiskLevel.R2.value,
+        "manual_steps": [
+            f"Open a scoped issue or PR for {capability}.",
+            "Apply the proposed skill or strategy change only after approval.",
+            "Run the promotion gate before enabling the change.",
+        ],
+        "verification_commands": _evolution_proposal_verification_commands(capability),
         "promotion_gate": promotion_gate,
         "rollback_condition": rollback_condition,
-        "proposed_change": proposed_change,
-        "approval_required": True,
-        "source_signals": [signal.source for signal in selected],
-        "rollout_plan": {
-            "manual_steps": [
-                f"Open a scoped issue or PR for {capability}.",
-                "Apply the proposed skill or strategy change only after approval.",
-                "Run the promotion gate before enabling the change.",
-            ],
-            "verification_commands": _verification_commands(capability),
-            "rollback_condition": rollback_condition,
-        },
     }
     return ActionProposal(
-        proposal_id=proposal_id,
+        proposal_id=f"evolution-{proposal_hash}",
         action_type="skill_patch",
         risk=RiskLevel.R2,
         summary=summary,
-        evidence_refs=evidence_refs,
-        created_at=_ensure_utc(now) if now is not None else _utc_now(),
-        metadata=sanitize_evolution_metadata(metadata),
+        evidence_refs=(
+            f"evolution:{capability}",
+            f"pattern_count:{count}",
+        ),
+        created_at=created_at or now or datetime.now(timezone.utc),
+        metadata={
+            "affected_capability": capability,
+            "recurring_signal_count": count,
+            "proposed_change": proposed_change,
+            "rollout_plan": rollout_plan,
+        },
     )
 
 
 def record_evolution_action_proposal(
-    signals: Sequence[RaphaelEvolutionSignal | Mapping[str, Any]],
+    records: Sequence[Mapping[str, Any]],
     *,
-    now: datetime | None = None,
+    min_pattern_count: int = 2,
 ) -> ActionProposal | None:
-    proposal = build_evolution_action_proposal(signals, now=now)
+    proposal = build_evolution_action_proposal(
+        records,
+        min_pattern_count=min_pattern_count,
+    )
     if proposal is None:
         return None
-
-    from agent.raphael.state import read_state, write_state
-
     state = read_state()
-    proposal_family = _proposal_family_id(proposal.proposal_id)
-    for existing in state.action_proposals:
-        if (
-            _proposal_family_id(existing.proposal_id) == proposal_family
-            and existing.status == "pending"
-        ):
-            return existing
-
-    family_size = sum(
-        1
-        for existing in state.action_proposals
-        if _proposal_family_id(existing.proposal_id) == proposal_family
-    )
-    if family_size:
-        proposal = replace(
-            proposal,
-            proposal_id=f"{proposal.proposal_id}-r{family_size + 1}",
+    if any(item.proposal_id == proposal.proposal_id for item in state.action_proposals):
+        return proposal
+    write_state(
+        RaphaelState(
+            status_cards=state.status_cards,
+            action_proposals=(proposal, *state.action_proposals),
+            updated_at=datetime.now(timezone.utc),
         )
-
-    updated = replace(
-        state,
-        action_proposals=(*state.action_proposals, proposal),
-        updated_at=proposal.created_at,
     )
-    write_state(updated)
     return proposal
 
 
-def record_proof_gate_failure_signal(
-    proof_gate_result: Any,
-    *,
-    turn_id: str,
-    user_message: Any,
-    now: datetime | None = None,
-) -> ActionProposal | None:
-    if getattr(proof_gate_result, "status", None) == "passed":
-        return None
+@dataclass(frozen=True)
+class RaphaelEvolutionDecision:
+    should_review: bool
+    review_skills: bool
+    review_memory: bool
+    proposal_only: bool
+    mode: str
+    reason_codes: tuple[str, ...]
+    evidence_summary: str
+    review_label: str = REVIEW_LABEL
+    risk_level: str = "R1"
+    user_message_preview: str = ""
+    metadata: Mapping[str, Any] | None = None
 
-    observed_at = _ensure_utc(now) if now is not None else _utc_now()
-    signal = _proof_gate_signal_from_result(
-        proof_gate_result,
-        turn_id=str(turn_id or "unknown"),
-        user_message=user_message,
-    )
-    _append_evolution_signal_event(signal, observed_at=observed_at)
-    signals = _read_evolution_signal_events(
-        source="proof_gate",
-        affected_capability="raphael.proof_gate",
-    )
-    return record_evolution_action_proposal(signals, now=observed_at)
-
-
-def sanitize_evolution_metadata(value: Any) -> Any:
-    if isinstance(value, Mapping):
+    def to_dict(self) -> dict[str, Any]:
         return {
-            str(key): sanitize_evolution_metadata(item)
-            for key, item in value.items()
-            if str(key) != "durable_policy_mutated"
+            "should_review": self.should_review,
+            "review_skills": self.review_skills,
+            "review_memory": self.review_memory,
+            "proposal_only": self.proposal_only,
+            "mode": self.mode,
+            "reason_codes": list(self.reason_codes),
+            "evidence_summary": self.evidence_summary,
+            "review_label": self.review_label,
+            "risk_level": self.risk_level,
+            "user_message_preview": self.user_message_preview,
+            "metadata": sanitize_raphael_evolution_metadata(self.metadata),
         }
-    if isinstance(value, str):
-        return sanitize_evolution_text(value)
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return [sanitize_evolution_metadata(item) for item in value]
-    return value
 
 
-def sanitize_evolution_text(value: Any) -> str:
-    sanitized = str(value)
-    for pattern, replacement in _PUBLIC_TEXT_REDACTIONS:
-        sanitized = pattern.sub(replacement, sanitized)
-    return sanitized
-
-
-def _coerce_signal(
-    signal: RaphaelEvolutionSignal | Mapping[str, Any],
-) -> RaphaelEvolutionSignal | None:
-    if isinstance(signal, RaphaelEvolutionSignal):
-        return signal
-    if not isinstance(signal, Mapping):
-        return None
-    return build_evolution_signal(
-        source=str(signal.get("source") or "unknown"),
-        affected_capability=str(signal.get("affected_capability") or ""),
-        reason_codes=tuple(signal.get("reason_codes") or ()),
-        summary=str(signal.get("summary") or ""),
-        evidence_refs=tuple(signal.get("evidence_refs") or ()),
-        confidence=float(signal.get("confidence") or 0.0),
-        proposed_change=str(signal.get("proposed_change") or ""),
-        promotion_gate=str(signal.get("promotion_gate") or ""),
-        rollback_condition=str(signal.get("rollback_condition") or ""),
-        metadata=signal.get("metadata") if isinstance(signal.get("metadata"), Mapping) else None,
-    )
-
-
-def _select_focus_signals(
-    signals: Sequence[RaphaelEvolutionSignal],
-) -> tuple[RaphaelEvolutionSignal, ...]:
-    grouped: dict[str, list[RaphaelEvolutionSignal]] = {}
-    for signal in signals:
-        if not signal.affected_capability:
-            continue
-        grouped.setdefault(signal.affected_capability, []).append(signal)
-    if not grouped:
-        return ()
-    priority = (
-        "user_correction",
-        "hostile_review",
-        "proof_gate",
-        "provider_outcome",
-    )
-    for source in priority:
-        for capability, items in grouped.items():
-            focused = [item for item in items if item.source == source]
-            if focused:
-                return tuple(focused)
-    capability, items = max(grouped.items(), key=lambda item: len(item[1]))
-    return tuple(items)
-
-
-def _requires_recurring_evidence(signals: Sequence[RaphaelEvolutionSignal]) -> bool:
-    return bool(signals) and all(signal.source == "proof_gate" for signal in signals)
-
-
-def _proof_gate_signal_from_result(
-    proof_gate_result: Any,
+def decide_raphael_evolution(
     *,
-    turn_id: str,
     user_message: Any,
-) -> RaphaelEvolutionSignal:
-    status = sanitize_evolution_text(getattr(proof_gate_result, "status", "unknown"))
-    route_kind = sanitize_evolution_text(
-        getattr(proof_gate_result, "route_kind", "unknown")
+    final_response: str | None,
+    messages: Sequence[Mapping[str, Any]] | None,
+    turn_exit_reason: str | None,
+    config: Mapping[str, Any] | None,
+    metadata: Mapping[str, Any] | None = None,
+) -> RaphaelEvolutionDecision:
+    user_text = _text(user_message)
+    response_text = final_response or ""
+
+    if not _enabled(config):
+        return RaphaelEvolutionDecision(
+            should_review=False,
+            review_skills=False,
+            review_memory=False,
+            proposal_only=False,
+            mode="disabled",
+            reason_codes=(),
+            evidence_summary="Raphael evolution is disabled.",
+            risk_level="R0",
+            user_message_preview=_redacted_single_line(user_text, limit=240),
+            metadata=metadata,
+        )
+
+    reason_codes: list[str] = []
+    evidence: list[str] = []
+
+    high_risk = _contains_any(user_text, _HIGH_RISK_MARKERS)
+    if high_risk:
+        reason_codes.append("high_risk_mutation")
+        evidence.append("high-risk mutation request detected")
+
+    if _looks_like_user_correction_or_learning_request(user_text):
+        reason_codes.append("user_correction")
+        evidence.append("user corrected Raphael behavior or requested durable learning")
+
+    failure_layers = _extract_failure_layers(messages)
+    direct_visual_turn = (
+        turn_exit_reason is not None
+        and str(turn_exit_reason).startswith("direct_visual_agent")
     )
-    missing = tuple(getattr(proof_gate_result, "missing_proofs", ()) or ())
-    missing_summary = ", ".join(str(proof) for proof in missing) or "none"
-    next_action = getattr(proof_gate_result, "next_action", "")
-    next_proof_command = getattr(proof_gate_result, "next_proof_command", "")
-    return build_evolution_signal(
-        source="proof_gate",
-        affected_capability="raphael.proof_gate",
-        reason_codes=("failed_proof",),
-        summary=(
-            f"Raphael proof gate {status} for {route_kind}; "
-            f"missing proofs: {missing_summary}."
-        ),
-        evidence_refs=(
-            f"turn:{sanitize_evolution_text(turn_id)}",
-            f"proof_gate:{status}:{route_kind}",
-        ),
-        confidence=0.76,
-        proposed_change="tighten proof-gate next-action summaries",
-        promotion_gate="focused tests plus LLM smoke",
-        rollback_condition="user says proof guidance is still vague",
+    if direct_visual_turn:
+        failure_layers = tuple(
+            dict.fromkeys(
+                [
+                    *failure_layers,
+                    *_extract_failure_layers(
+                        [{"role": "assistant", "content": response_text}],
+                        include_narrative=True,
+                    ),
+                ]
+            )
+        )
+    if failure_layers:
+        reason_codes.append("visual_or_provider_failure")
+        evidence.append("failure layers: " + ", ".join(failure_layers[:6]))
+
+    if _looks_like_failed_proof_gate(response_text, messages):
+        reason_codes.append("failed_proof")
+        evidence.append("Raphael proof gate blocked an unverified completion claim")
+
+    if turn_exit_reason and "max_iterations" in str(turn_exit_reason):
+        reason_codes.append("execution_loop_failure")
+        evidence.append(f"turn_exit_reason={turn_exit_reason}")
+
+    reason_codes = list(dict.fromkeys(reason_codes))
+    if high_risk:
+        return RaphaelEvolutionDecision(
+            should_review=False,
+            review_skills=False,
+            review_memory=False,
+            proposal_only=True,
+            mode="proposal_only",
+            reason_codes=tuple(reason_codes),
+            evidence_summary="; ".join(evidence) or "high-risk mutation request",
+            risk_level="R2",
+            user_message_preview=_redacted_single_line(user_text, limit=240),
+            metadata={
+                **_infer_evolution_metadata(reason_codes, proposal_only=True),
+                **sanitize_raphael_evolution_metadata(metadata),
+            },
+        )
+
+    if not reason_codes:
+        return RaphaelEvolutionDecision(
+            should_review=False,
+            review_skills=False,
+            review_memory=False,
+            proposal_only=False,
+            mode="observe",
+            reason_codes=(),
+            evidence_summary="No durable Raphael learning signal detected.",
+            risk_level="R0",
+            user_message_preview=_redacted_single_line(user_text, limit=240),
+            metadata=metadata,
+        )
+
+    skill_review_enabled = _flag(
+        config,
+        "raphael",
+        "evolution",
+        "skill_review_enabled",
+        default=True,
+    )
+    memory_review_enabled = _flag(
+        config,
+        "raphael",
+        "evolution",
+        "memory_review_enabled",
+        default=True,
+    )
+    skill_writes_enabled = _flag(
+        config,
+        "raphael",
+        "skill_writes_enabled",
+        default=False,
+    )
+    memory_writes_enabled = _flag(
+        config,
+        "raphael",
+        "memory_writes_enabled",
+        default=False,
+    )
+    review_skills = skill_review_enabled and skill_writes_enabled
+    review_memory = (
+        memory_review_enabled
+        and memory_writes_enabled
+        and "user_correction" in reason_codes
+    )
+    should_review = review_skills or review_memory
+
+    return RaphaelEvolutionDecision(
+        should_review=should_review,
+        review_skills=review_skills,
+        review_memory=review_memory,
+        proposal_only=not should_review,
+        mode="active_evolution" if should_review else "proposal_only",
+        reason_codes=tuple(reason_codes),
+        evidence_summary="; ".join(evidence),
+        risk_level="R1" if should_review else "R1.5",
+        user_message_preview=_redacted_single_line(user_text, limit=240),
         metadata={
-            "route_kind": route_kind,
-            "status": status,
-            "missing_proofs": list(missing),
-            "next_action": next_action,
-            "next_proof_command": next_proof_command,
-            "user_message": user_message,
+            **_infer_evolution_metadata(reason_codes, proposal_only=not should_review),
+            **sanitize_raphael_evolution_metadata(metadata),
         },
     )
 
 
-def _append_evolution_signal_event(
-    signal: RaphaelEvolutionSignal,
-    *,
-    observed_at: datetime,
-) -> None:
-    from agent.raphael.state import append_event
-
-    event_hash = hashlib.sha256(
-        "|".join(
-            (
-                signal.source,
-                signal.affected_capability,
-                ",".join(signal.evidence_refs),
-                observed_at.isoformat(),
-            )
-        ).encode("utf-8")
-    ).hexdigest()[:12]
-    append_event(
-        RaphaelEvent(
-            event_id=f"evolution-signal-{event_hash}",
-            kind=EVOLUTION_SIGNAL_EVENT_KIND,
-            created_at=observed_at,
-            details={"signal": _signal_to_dict(signal)},
-        )
+def build_raphael_evolution_review_prompt(
+    decision: RaphaelEvolutionDecision,
+) -> str:
+    reason_codes = ", ".join(decision.reason_codes) or "none"
+    return (
+        "Raphael Sage King Evolution Review\n\n"
+        "You are Raphael's proactive skill-evolution loop, not a passive advisor. "
+        "Review the completed conversation above and decide whether Hermes should "
+        "evolve an existing class-level skill, add a support file, or save a durable "
+        "memory preference. Use memory and skill_manage only when the evidence is "
+        "strong and auditable.\n\n"
+        f"Evolution reasons: {reason_codes}\n"
+        f"Evidence summary: {decision.evidence_summary}\n"
+        f"Risk level: {decision.risk_level}\n\n"
+        "Rules:\n"
+        "- Prefer patching an existing relevant skill over creating a narrow new skill.\n"
+        "- Capture workflow corrections, provider failure recovery, proof ladders, "
+        "and user-facing communication lessons that should improve the next run.\n"
+        "- Keep every durable change auditable, reversible, and scoped; mention the "
+        "rollback condition in the skill text or support file when useful.\n"
+        "- Do not store raw prompts, private paths, API keys, provider response bodies, "
+        "base64, generated media, or user-private artifacts.\n"
+        "- Do not mutate cron, public delivery, tool installation, or provider config. "
+        "If such a change seems needed, propose it in text instead of calling a tool.\n"
+        "- If the evidence is weak or session-specific, say 'Nothing to save.' and stop.\n\n"
+        "Act like a Sage King control layer: identify the reusable lesson, update the "
+        "right capability, and leave enough evidence for rollback."
     )
 
 
-def _read_evolution_signal_events(
+def get_raphael_evolution_records_path():
+    return get_raphael_state_dir() / "evolution.jsonl"
+
+
+def append_evolution_record(
+    decision: RaphaelEvolutionDecision,
     *,
-    source: str,
-    affected_capability: str,
-    limit: int = 20,
-) -> tuple[RaphaelEvolutionSignal, ...]:
-    from agent.raphael.state import get_raphael_events_path
+    status: str,
+    metadata: Mapping[str, Any] | None = None,
+) -> None:
+    state_dir = get_raphael_state_dir()
+    state_dir.mkdir(parents=True, exist_ok=True)
+    record_metadata = {
+        **sanitize_raphael_evolution_metadata(decision.metadata),
+        **sanitize_raphael_evolution_metadata(metadata),
+    }
+    payload = {
+        "schema_version": EVOLUTION_RECORD_SCHEMA_VERSION,
+        "created_at": _utc_now(),
+        "status": str(status),
+        **decision.to_dict(),
+        "metadata": record_metadata,
+    }
+    redacted = _redact_value(payload)
+    with get_raphael_evolution_records_path().open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(redacted, sort_keys=True, ensure_ascii=False) + "\n")
+    record_evolution_action_proposal(read_evolution_records(limit=50))
 
-    path = get_raphael_events_path()
+
+def append_evolution_status_record(
+    *,
+    status: str,
+    metadata: Mapping[str, Any] | None = None,
+) -> None:
+    state_dir = get_raphael_state_dir()
+    state_dir.mkdir(parents=True, exist_ok=True)
+    record_metadata = sanitize_raphael_evolution_status_metadata(metadata)
+    payload = {
+        "schema_version": EVOLUTION_RECORD_SCHEMA_VERSION,
+        "created_at": _utc_now(),
+        "status": str(status),
+        "should_review": False,
+        "review_skills": False,
+        "review_memory": False,
+        "proposal_only": False,
+        "mode": "background_review",
+        "reason_codes": [],
+        "evidence_summary": "Raphael background review outcome.",
+        "review_label": REVIEW_LABEL,
+        "risk_level": "R0",
+        "user_message_preview": "",
+        "metadata": record_metadata,
+    }
+    redacted = _redact_value(payload)
+    with get_raphael_evolution_records_path().open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(redacted, sort_keys=True, ensure_ascii=False) + "\n")
+
+
+def read_evolution_records(limit: int | None = None) -> list[dict[str, Any]]:
+    path = get_raphael_evolution_records_path()
     if not path.exists():
-        return ()
-
-    signals: list[RaphaelEvolutionSignal] = []
+        return []
+    records: list[dict[str, Any]] = []
     for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
         try:
             payload = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if payload.get("kind") != EVOLUTION_SIGNAL_EVENT_KIND:
-            continue
-        details = payload.get("details")
-        raw_signal = details.get("signal") if isinstance(details, Mapping) else None
-        signal = _coerce_signal(raw_signal) if isinstance(raw_signal, Mapping) else None
-        if signal is None:
-            continue
-        if signal.source != source:
-            continue
-        if signal.affected_capability != affected_capability:
-            continue
-        signals.append(signal)
-    return tuple(signals[-max(1, limit):])
-
-
-def _signal_to_dict(signal: RaphaelEvolutionSignal) -> dict[str, Any]:
-    return {
-        "source": signal.source,
-        "affected_capability": signal.affected_capability,
-        "reason_codes": list(signal.reason_codes),
-        "summary": signal.summary,
-        "evidence_refs": list(signal.evidence_refs),
-        "confidence": signal.confidence,
-        "proposed_change": signal.proposed_change,
-        "promotion_gate": signal.promotion_gate,
-        "rollback_condition": signal.rollback_condition,
-        "metadata": (
-            None
-            if signal.metadata is None
-            else sanitize_evolution_metadata(signal.metadata)
-        ),
-    }
-
-
-def _proposal_evidence_refs(
-    capability: str,
-    signals: Sequence[RaphaelEvolutionSignal],
-) -> tuple[str, ...]:
-    refs: list[str] = [f"evolution:{capability}"]
-    for signal in signals:
-        refs.extend(signal.evidence_refs)
-    refs.append(f"signal_count:{len(signals)}")
-    seen: set[str] = set()
-    deduped = []
-    for ref in refs:
-        if ref not in seen:
-            seen.add(ref)
-            deduped.append(ref)
-    return tuple(deduped)
-
-
-def _proposal_id(
-    capability: str,
-    reason_codes: Sequence[str],
-    proposed_change: str,
-) -> str:
-    seed = "|".join((capability, ",".join(reason_codes), proposed_change))
-    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:12]
-    return f"evolution-{digest}"
-
-
-def _proposal_family_id(proposal_id: str) -> str:
-    return re.sub(r"-r\d+$", "", str(proposal_id))
-
-
-def _verification_commands(capability: str) -> list[str]:
-    if capability == "raphael.proof_gate":
-        return ["python -m pytest tests/agent/test_raphael_proof.py -q"]
-    if capability.startswith("visual."):
-        return ["python -m pytest tests/visual -q"]
-    return ["python -m pytest tests/agent -q"]
-
-
-def _capability_label(capability: str) -> str:
-    return {
-        "raphael.proof_gate": "Raphael proof gate",
-        "raphael.mode_router": "Raphael mode router",
-        "raphael.evidence_gate": "Raphael evidence gate",
-        "visual.provider_recovery": "visual provider recovery",
-    }.get(capability, capability.replace("_", " ").replace(".", " "))
-
-
-def _normalize_capability(value: str) -> str:
-    return str(value or "").strip().lower().replace(" ", "_").replace("-", "_")
-
-
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def _ensure_utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
+        if isinstance(payload, dict):
+            records.append(payload)
+    if limit is None:
+        return records
+    bounded = max(0, int(limit))
+    if bounded == 0:
+        return []
+    return records[-bounded:]
 
 
 __all__ = [
-    "RaphaelEvolutionSignal",
+    "EVOLUTION_RECORD_SCHEMA_VERSION",
+    "EVOLUTION_METADATA_TEXT_LIMIT",
+    "append_evolution_status_record",
+    "RaphaelEvolutionDecision",
+    "append_evolution_record",
     "build_evolution_action_proposal",
     "build_evolution_signal",
-    "record_proof_gate_failure_signal",
+    "build_raphael_evolution_review_prompt",
+    "decide_raphael_evolution",
+    "get_raphael_evolution_records_path",
+    "read_evolution_records",
     "record_evolution_action_proposal",
-    "sanitize_evolution_metadata",
     "sanitize_evolution_text",
+    "sanitize_raphael_evolution_metadata",
+    "sanitize_raphael_evolution_status_metadata",
 ]

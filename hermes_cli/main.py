@@ -11095,8 +11095,8 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
         "model", "pairing", "plugins", "portal", "postinstall", "profile", "proxy",
-        "prompt-size", "raphael",
-        "send", "sessions", "setup",
+        "prompt-size",
+        "raphael", "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "whatsapp-cloud", "chat", "secrets", "security",
         # Help-ish invocations — plugin commands not being listed in
@@ -11555,9 +11555,9 @@ def cmd_plugins(args):
 
 
 def cmd_raphael(args):
-    from hermes_cli.raphael_lifecycle import raphael_command
+    from hermes_cli.raphael_cmd import raphael_command
 
-    raise SystemExit(raphael_command(args))
+    raphael_command(args)
 
 
 def cmd_mcp(args):

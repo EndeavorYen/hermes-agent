@@ -1890,7 +1890,7 @@ DEFAULT_CONFIG = {
 
     "raphael": {
         "enabled": False,
-        "mode": "advisor",
+        "mode": "sage_king",
         "status_card_ttl_seconds": 900,
         "max_status_cards": 20,
         "default_conversation_mode_enabled": False,
@@ -1903,6 +1903,11 @@ DEFAULT_CONFIG = {
             "enabled": True,
             "max_summary_rows": 20,
             "max_trace_events": 500,
+        },
+        "evolution": {
+            "enabled": True,
+            "skill_review_enabled": True,
+            "memory_review_enabled": True,
         },
     },
 

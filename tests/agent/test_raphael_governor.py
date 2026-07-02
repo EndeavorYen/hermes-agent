@@ -7,10 +7,21 @@ from agent.raphael.governor import (
 def test_should_apply_requires_enabled_default_advisor_mode():
     assert should_apply_raphael_response_governor(
         {
+            "plugins": {"enabled": ["raphael"], "disabled": []},
             "raphael": {
                 "enabled": True,
                 "default_conversation_mode_enabled": True,
                 "mode": "advisor",
+            }
+        }
+    )
+    assert should_apply_raphael_response_governor(
+        {
+            "plugins": {"enabled": ["raphael"], "disabled": []},
+            "raphael": {
+                "enabled": True,
+                "default_conversation_mode_enabled": True,
+                "mode": "sage_king",
             }
         }
     )
@@ -30,9 +41,19 @@ def test_should_apply_requires_enabled_default_advisor_mode():
             }
         }
     )
+    assert not should_apply_raphael_response_governor(
+        {
+            "plugins": {"enabled": ["raphael"], "disabled": ["raphael"]},
+            "raphael": {
+                "enabled": True,
+                "default_conversation_mode_enabled": True,
+                "mode": "sage_king",
+            },
+        }
+    )
 
 
-def test_governor_caps_non_empty_lines_without_labeled_judgment():
+def test_governor_preserves_normal_answers_without_labeled_judgment():
     text = "\n".join(
         [
             "第一行",
@@ -48,10 +69,7 @@ def test_governor_caps_non_empty_lines_without_labeled_judgment():
 
     governed = apply_raphael_response_governor(text, enabled=True, max_lines=6)
 
-    lines = [line for line in governed.splitlines() if line.strip()]
-    assert len(lines) == 6
-    assert lines[-1] == "第六行"
-    assert "第七行" not in governed
+    assert governed == text
 
 
 def test_governor_preserves_code_blocks():
@@ -82,6 +100,25 @@ def test_governor_preserves_file_mutation_safety_footer():
     )
 
     assert apply_raphael_response_governor(text, enabled=True, max_lines=2) == text
+
+
+def test_governor_preserves_review_findings_and_evidence_reports():
+    text = "\n".join(
+        [
+            "Findings",
+            "- [P0] Direct visual handoff drops reference_binding at tools/visual_agent_tool.py:77.",
+            "- [P1] Prompt disclosure can leak another Slack thread.",
+            "",
+            "Evidence",
+            "- pytest tests/tools/test_visual_agent_tool.py -q",
+            "- non-live repro captured missing image_operation.",
+            "",
+            "Next",
+            "- Patch the merge path and rerun the visual agent suite.",
+        ]
+    )
+
+    assert apply_raphael_response_governor(text, enabled=True, max_lines=3) == text
 
 
 def test_governor_disabled_returns_original_text():
@@ -137,7 +174,7 @@ def test_governor_extracts_bulleted_labeled_judgment_lines():
     )
 
 
-def test_governor_falls_back_to_line_cap_without_labeled_judgment():
+def test_governor_does_not_fall_back_to_line_cap_without_labeled_judgment():
     text = "a\nb\nc\nd"
 
-    assert apply_raphael_response_governor(text, enabled=True, max_lines=2) == "a\nb"
+    assert apply_raphael_response_governor(text, enabled=True, max_lines=2) == text

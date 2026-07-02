@@ -1,6 +1,17 @@
 from agent.raphael.prompt import build_raphael_mode_prompt
 
 
+def _enabled_config(mode: str = "sage_king"):
+    return {
+        "plugins": {"enabled": ["raphael"], "disabled": []},
+        "raphael": {
+            "enabled": True,
+            "default_conversation_mode_enabled": True,
+            "mode": mode,
+        }
+    }
+
+
 def test_raphael_mode_prompt_disabled_by_default():
     assert build_raphael_mode_prompt({"raphael": {"enabled": True}}) == ""
 
@@ -17,34 +28,35 @@ def test_raphael_mode_prompt_requires_raphael_enabled():
     assert build_raphael_mode_prompt(config) == ""
 
 
-def test_raphael_mode_prompt_describes_read_only_default_contract():
-    config = {
-        "raphael": {
-            "enabled": True,
-            "default_conversation_mode_enabled": True,
-            "mode": "advisor",
-        }
-    }
+def test_raphael_mode_prompt_disabled_when_plugin_is_disabled():
+    config = _enabled_config()
+    config["plugins"] = {"enabled": ["raphael"], "disabled": ["raphael"]}
 
-    prompt = build_raphael_mode_prompt(config)
+    assert build_raphael_mode_prompt(config) == ""
+
+
+def test_raphael_mode_prompt_describes_sage_king_evolution_contract():
+    prompt = build_raphael_mode_prompt(_enabled_config())
 
     assert "Raphael Mode" in prompt
-    assert "read-only advisor layer" in prompt
-    assert "Do not create, patch, delete, install, or enable skills" in prompt
+    assert "Sage King" in prompt
+    assert "not a passive advisor" in prompt
+    assert "proactive skill evolution" in prompt
+    assert "auditable" in prompt
+    assert "rollback" in prompt
     assert "memory, cron, tools, or public delivery" in prompt
     assert "explicit user request" in prompt
 
 
-def test_raphael_mode_prompt_anchors_identity_for_great_sage_questions():
-    config = {
-        "raphael": {
-            "enabled": True,
-            "default_conversation_mode_enabled": True,
-            "mode": "advisor",
-        }
-    }
+def test_raphael_mode_prompt_accepts_legacy_advisor_mode_as_alias():
+    prompt = build_raphael_mode_prompt(_enabled_config(mode="advisor"))
 
-    prompt = build_raphael_mode_prompt(config)
+    assert "Sage King" in prompt
+    assert "not a passive advisor" in prompt
+
+
+def test_raphael_mode_prompt_anchors_identity_for_great_sage_questions():
+    prompt = build_raphael_mode_prompt(_enabled_config())
 
     assert "Raphael-style 大賢者" in prompt
     assert "你是大賢者嗎" in prompt
@@ -53,15 +65,7 @@ def test_raphael_mode_prompt_anchors_identity_for_great_sage_questions():
 
 
 def test_raphael_mode_prompt_defines_advisor_loop_without_noisy_boilerplate():
-    config = {
-        "raphael": {
-            "enabled": True,
-            "default_conversation_mode_enabled": True,
-            "mode": "advisor",
-        }
-    }
-
-    prompt = build_raphael_mode_prompt(config)
+    prompt = build_raphael_mode_prompt(_enabled_config())
 
     assert "解析 / 風險 / 建議 / 需要確認" in prompt
     assert "只有在有助於判斷時才使用" in prompt
@@ -69,15 +73,7 @@ def test_raphael_mode_prompt_defines_advisor_loop_without_noisy_boilerplate():
 
 
 def test_raphael_mode_prompt_enforces_concise_cold_precision():
-    config = {
-        "raphael": {
-            "enabled": True,
-            "default_conversation_mode_enabled": True,
-            "mode": "advisor",
-        }
-    }
-
-    prompt = build_raphael_mode_prompt(config)
+    prompt = build_raphael_mode_prompt(_enabled_config())
 
     assert "Concision / cold precision" in prompt
     assert "Default length: 1-3 short paragraphs" in prompt
@@ -89,15 +85,7 @@ def test_raphael_mode_prompt_enforces_concise_cold_precision():
 
 
 def test_raphael_mode_prompt_allows_rare_deadpan_asides():
-    config = {
-        "raphael": {
-            "enabled": True,
-            "default_conversation_mode_enabled": True,
-            "mode": "advisor",
-        }
-    }
-
-    prompt = build_raphael_mode_prompt(config)
+    prompt = build_raphael_mode_prompt(_enabled_config())
 
     assert "rare dry aside" in prompt
     assert "偶爾吐槽" in prompt
@@ -107,15 +95,7 @@ def test_raphael_mode_prompt_allows_rare_deadpan_asides():
 
 
 def test_raphael_mode_prompt_defines_response_governor_mvp():
-    config = {
-        "raphael": {
-            "enabled": True,
-            "default_conversation_mode_enabled": True,
-            "mode": "advisor",
-        }
-    }
-
-    prompt = build_raphael_mode_prompt(config)
+    prompt = build_raphael_mode_prompt(_enabled_config())
 
     assert "Response Governor MVP" in prompt
     assert "Before final answer, run an internal response governor" in prompt
@@ -124,16 +104,18 @@ def test_raphael_mode_prompt_defines_response_governor_mvp():
     assert "Compress first; expand only when the user asks" in prompt
 
 
-def test_raphael_mode_prompt_does_not_auto_generate_visual_status_card():
-    config = {
-        "raphael": {
-            "enabled": True,
-            "default_conversation_mode_enabled": True,
-            "mode": "advisor",
-        }
-    }
+def test_raphael_mode_prompt_forbids_public_internal_orchestration_labels():
+    prompt = build_raphael_mode_prompt(_enabled_config())
 
-    prompt = build_raphael_mode_prompt(config)
+    assert "Do not expose internal orchestration labels" in prompt
+    assert "call_visual_agent_generate" in prompt
+    assert "visual_generation_requested" in prompt
+    assert "chosen_route" in prompt
+    assert "natural user-facing language" in prompt
+
+
+def test_raphael_mode_prompt_does_not_auto_generate_visual_status_card():
+    prompt = build_raphael_mode_prompt(_enabled_config())
 
     assert "Static visual status card" in prompt
     assert "RPG status portrait" in prompt
@@ -146,15 +128,7 @@ def test_raphael_mode_prompt_does_not_auto_generate_visual_status_card():
 
 
 def test_raphael_mode_prompt_defines_original_cool_anime_girl_visual_persona():
-    config = {
-        "raphael": {
-            "enabled": True,
-            "default_conversation_mode_enabled": True,
-            "mode": "advisor",
-        }
-    }
-
-    prompt = build_raphael_mode_prompt(config)
+    prompt = build_raphael_mode_prompt(_enabled_config())
 
     assert "adult anime-style cool beautiful girl" in prompt
     assert "do not copy any named anime character" in prompt

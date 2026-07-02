@@ -1,22 +1,33 @@
 from __future__ import annotations
 
 from hermes_cli.config import cfg_get, load_config, read_raw_config
+from hermes_cli.raphael_cmd import (
+    disable_raphael_mode,
+    enable_raphael_mode,
+    raphael_setup_doctor,
+)
+from agent.raphael.config import raphael_effective_enabled
+from agent.raphael.evolution import read_evolution_records
 from agent.raphael.skill_trace import render_skill_summary, summarize_skill_usage
-from agent.raphael.state import read_state
+from agent.raphael.state import read_mission_state, read_state
 from agent.raphael.status import render_status
 
 _DISABLED_MESSAGE = (
-    "Raphael Advisor is disabled. Set raphael.enabled: true to enable "
-    "/raphael-status."
+    "Raphael mode is disabled. Use /raphael-enable or `hermes raphael enable` "
+    "to re-enable /raphael-status."
 )
 _SKILL_TRACE_DISABLED_MESSAGE = (
-    "Raphael Skill Trace is disabled. Set raphael.skill_trace.enabled: true "
+    "Raphael Skill Trace is disabled. Use /raphael-enable or "
+    "`hermes raphael enable` first, then set raphael.skill_trace.enabled: true "
     "to enable /raphael-skills."
 )
 
 
 def _raphael_enabled() -> bool:
-    return cfg_get(_read_config(), "raphael", "enabled", default=False) is True
+    return raphael_effective_enabled(
+        _read_config(),
+        require_default_conversation=False,
+    )
 
 
 def _max_status_cards() -> int:
@@ -74,7 +85,13 @@ def handle_status(raw_args: str) -> str:
         return "Usage: /raphael-status"
     if not _raphael_enabled():
         return _DISABLED_MESSAGE
-    return render_status(read_state(), max_cards=_max_status_cards())
+    mission = read_mission_state()
+    return render_status(
+        read_state(),
+        max_cards=_max_status_cards(),
+        evolution_records=read_evolution_records(limit=5),
+        mission_state=mission.to_dict() if mission is not None else None,
+    )
 
 
 def handle_skills(raw_args: str) -> str:
@@ -89,16 +106,52 @@ def handle_skills(raw_args: str) -> str:
     return render_skill_summary(summaries)
 
 
+def handle_doctor(raw_args: str) -> str:
+    if raw_args.strip():
+        return "Usage: /raphael-doctor"
+    return raphael_setup_doctor().message
+
+
+def handle_enable(raw_args: str) -> str:
+    if raw_args.strip():
+        return "Usage: /raphael-enable"
+    return enable_raphael_mode().message
+
+
+def handle_disable(raw_args: str) -> str:
+    if raw_args.strip():
+        return "Usage: /raphael-disable"
+    return disable_raphael_mode().message
+
+
 def register(ctx) -> None:
     ctx.register_command(
         "raphael-status",
         handle_status,
-        description="Show read-only Raphael advisor status",
+        description="Show Raphael Sage King status",
         args_hint="",
     )
     ctx.register_command(
         "raphael-skills",
         handle_skills,
-        description="Show read-only Raphael skill usage traces",
+        description="Show Raphael skill evolution traces",
+        args_hint="",
+    )
+    ctx.register_command(
+        "raphael-doctor",
+        handle_doctor,
+        description="Check Raphael local setup",
+        args_hint="",
+    )
+    ctx.register_command(
+        "raphael-enable",
+        handle_enable,
+        description="Enable Raphael mode",
+        args_hint="",
+    )
+    ctx.register_command(
+        "raphael-disable",
+        handle_disable,
+        description="Disable Raphael mode",
         args_hint="",
     )

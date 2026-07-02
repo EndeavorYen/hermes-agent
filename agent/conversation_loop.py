@@ -548,6 +548,39 @@ def run_conversation(
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
 
     try:
+        from agent.visual.prompt_disclosure import build_visual_prompt_disclosure_response
+
+        _visual_prompt_disclosure_response = build_visual_prompt_disclosure_response(
+            user_message,
+            original_user_message,
+        )
+    except Exception as _visual_prompt_disclosure_err:
+        logger.debug("visual prompt disclosure check skipped: %s", _visual_prompt_disclosure_err)
+        _visual_prompt_disclosure_response = None
+
+    if _visual_prompt_disclosure_response:
+        from agent.turn_finalizer import finalize_turn
+
+        final_response = _visual_prompt_disclosure_response
+        messages.append({"role": "assistant", "content": final_response})
+        _turn_exit_reason = "visual_prompt_disclosure"
+        return finalize_turn(
+            agent,
+            final_response=final_response,
+            api_call_count=api_call_count,
+            interrupted=interrupted,
+            failed=failed,
+            messages=messages,
+            conversation_history=conversation_history,
+            effective_task_id=effective_task_id,
+            turn_id=turn_id,
+            user_message=user_message,
+            original_user_message=original_user_message,
+            _should_review_memory=_should_review_memory,
+            _turn_exit_reason=_turn_exit_reason,
+        )
+
+    try:
         from agent.visual.agent_mode.handoff import (
             attach_direct_visual_agent_handoff_metadata,
             build_direct_visual_agent_handoff,
@@ -566,6 +599,46 @@ def run_conversation(
     if _visual_handoff:
         from agent.tool_dispatch_helpers import make_tool_result_message
         from agent.turn_finalizer import finalize_turn
+
+        _raphael_control = _visual_handoff.get("raphael_control")
+        if isinstance(_raphael_control, dict):
+            try:
+                from agent.raphael.state import record_control_decision
+
+                record_control_decision(
+                    _raphael_control,
+                    turn_id=turn_id,
+                    task_id=effective_task_id,
+                    source="direct_visual_agent_handoff",
+                )
+            except Exception as _raphael_state_err:
+                logger.debug(
+                    "Raphael control state recording skipped: %s",
+                    _raphael_state_err,
+                )
+
+        if _visual_handoff.get("mode") == "pre_llm_clarification":
+            final_response = str(
+                _visual_handoff.get("clarification_response")
+                or "請先補充 reference 對應後我再繼續。"
+            )
+            messages.append({"role": "assistant", "content": final_response})
+            _turn_exit_reason = "direct_visual_agent_clarification"
+            return finalize_turn(
+                agent,
+                final_response=final_response,
+                api_call_count=api_call_count,
+                interrupted=interrupted,
+                failed=failed,
+                messages=messages,
+                conversation_history=conversation_history,
+                effective_task_id=effective_task_id,
+                turn_id=turn_id,
+                user_message=user_message,
+                original_user_message=original_user_message,
+                _should_review_memory=_should_review_memory,
+                _turn_exit_reason=_turn_exit_reason,
+            )
 
         _tool_name = str(_visual_handoff.get("tool_name") or "visual_agent_generate")
         _tool_args = dict(_visual_handoff.get("arguments") or {})

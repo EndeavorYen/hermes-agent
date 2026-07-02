@@ -2,21 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import re
-from typing import Any
+
+from agent.raphael.config import raphael_effective_enabled
 
 _JUDGMENT_LINE_RE = re.compile(
     r"^\s*(?:[-*•]\s*)?(狀態|風險|下一步)\s*[:：]"
 )
 _JUDGMENT_ORDER = ("狀態", "風險", "下一步")
-
-
-def _cfg_get(config: Mapping[str, Any], *path: str, default: Any = None) -> Any:
-    current: Any = config
-    for key in path:
-        if not isinstance(current, Mapping):
-            return default
-        current = current.get(key, default)
-    return current
 
 
 def should_apply_raphael_response_governor(
@@ -30,20 +22,7 @@ def should_apply_raphael_response_governor(
         except Exception:
             return False
 
-    if _cfg_get(config, "raphael", "enabled", default=False) is not True:
-        return False
-    if (
-        _cfg_get(
-            config,
-            "raphael",
-            "default_conversation_mode_enabled",
-            default=False,
-        )
-        is not True
-    ):
-        return False
-    mode = str(_cfg_get(config, "raphael", "mode", default="advisor") or "").strip()
-    return not mode or mode == "advisor"
+    return raphael_effective_enabled(config)
 
 
 def _has_code_block(text: str) -> bool:
@@ -52,6 +31,23 @@ def _has_code_block(text: str) -> bool:
 
 def _has_file_mutation_footer(text: str) -> bool:
     return "file(s) were NOT modified" in text
+
+
+def _looks_like_review_or_evidence_report(text: str) -> bool:
+    lowered = text.lower()
+    if not any(marker in lowered for marker in ("findings", "evidence", "[p0]", "[p1]", "[p2]")):
+        return False
+    lines = [line.strip().lower().strip("*#") for line in text.splitlines()]
+    has_review_heading = any(
+        line in {"findings", "evidence", "verification", "tests", "open questions"}
+        for line in lines
+    )
+    has_finding_marker = any(marker in lowered for marker in ("[p0]", "[p1]", "[p2]"))
+    has_evidence_marker = any(
+        marker in lowered
+        for marker in ("pytest ", "runtime smoke", "non-live repro", "release state")
+    )
+    return has_review_heading and (has_finding_marker or has_evidence_marker)
 
 
 def _extract_judgment_lines(lines: list[str], max_lines: int) -> list[str]:
@@ -77,24 +73,15 @@ def apply_raphael_response_governor(
         return text
     if _has_code_block(text) or _has_file_mutation_footer(text):
         return text
+    if _looks_like_review_or_evidence_report(text):
+        return text
 
     lines = text.splitlines()
     judgment_lines = _extract_judgment_lines(lines, max_lines)
     if judgment_lines:
         return "\n".join(judgment_lines).rstrip()
 
-    non_empty_seen = 0
-    kept: list[str] = []
-    for line in lines:
-        if line.strip():
-            non_empty_seen += 1
-        if non_empty_seen > max_lines:
-            break
-        kept.append(line)
-
-    if non_empty_seen <= max_lines:
-        return text
-    return "\n".join(kept).rstrip()
+    return text
 
 
 __all__ = [

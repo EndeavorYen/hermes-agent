@@ -15,7 +15,7 @@ from agent.raphael.media_readiness import (
     render_media_readiness,
     write_media_readiness_gate,
 )
-from agent.raphael.mission import render_mission_status_summary
+from agent.raphael.mission import render_mission_status_summary, sanitize_public_text
 from agent.raphael.public_readiness import (
     build_public_llm_slice_readiness,
     load_llm_smoke_evidence,
@@ -191,7 +191,14 @@ def render_lifecycle_status() -> str:
         )
     lines.extend(["", mission_summary])
     try:
-        lines.extend(["", render_raphael_status(state)])
+        status_text = render_raphael_status(state)
+        status_text = sanitize_public_text(status_text)
+        if "Raphael Advisor" not in status_text:
+            status_text = "\n".join(["Raphael Advisor", status_text])
+        legacy_proposals = _render_legacy_pending_proposal_commands(state)
+        if legacy_proposals:
+            status_text = "\n".join([status_text, "", legacy_proposals])
+        lines.extend(["", status_text])
     except Exception:
         lines.extend(["", "Raphael Advisor", "Status unavailable."])
     return "\n".join(lines)
@@ -346,6 +353,27 @@ def _proposal_manual_steps(metadata: Any) -> list[str]:
     return [str(step) for step in manual_steps if str(step).strip()]
 
 
+def _render_legacy_pending_proposal_commands(state: Any) -> str:
+    proposals = [
+        proposal
+        for proposal in getattr(state, "action_proposals", ())
+        if getattr(proposal, "status", "") == "pending"
+    ]
+    if not proposals:
+        return ""
+    lines = ["Legacy Pending Action Proposals:"]
+    for proposal in proposals:
+        proposal_id = sanitize_public_text(str(proposal.proposal_id))
+        lines.extend(
+            [
+                f"- {proposal_id}: {sanitize_public_text(str(proposal.summary))}",
+                f"  Approve: hermes raphael proposal approve {proposal_id}",
+                f"  Reject: hermes raphael proposal reject {proposal_id}",
+            ]
+        )
+    return "\n".join(lines)
+
+
 def _load_json_mapping(path: str) -> dict[str, Any] | None:
     if not path:
         return None
@@ -390,8 +418,11 @@ def _ensure_raphael_defaults(config: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raw = {}
         config["raphael"] = raw
+    had_mode = "mode" in raw
     defaults = copy.deepcopy(DEFAULT_CONFIG["raphael"])
     _deep_merge_missing(raw, defaults)
+    if not had_mode:
+        raw["mode"] = "advisor"
     return raw
 
 

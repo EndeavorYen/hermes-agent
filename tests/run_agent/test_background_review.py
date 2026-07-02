@@ -150,6 +150,78 @@ def test_background_review_summarizer_receives_captured_messages_after_close(mon
     assert captured["notification_mode"] == "on"
 
 
+def test_raphael_background_review_completion_writes_skill_trace(monkeypatch):
+    import agent.background_review as bg_review
+    import agent.raphael.evolution as evolution
+    import agent.raphael.skill_trace as skill_trace
+
+    traces = []
+    records = []
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            self._session_messages = [
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_bg",
+                    "content": '{"success": true, "message": "Skill updated", "target": "skill"}',
+                }
+            ]
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(
+        bg_review,
+        "summarize_background_review_actions",
+        lambda *_args, **_kwargs: ["Skill updated"],
+    )
+    monkeypatch.setattr(
+        skill_trace,
+        "append_skill_trace",
+        lambda trace, **_kwargs: traces.append(trace),
+    )
+    monkeypatch.setattr(
+        evolution,
+        "append_evolution_status_record",
+        lambda *, status, metadata=None: records.append(
+            {"status": status, "metadata": metadata or {}}
+        ),
+    )
+
+    agent = _bare_agent()
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "不對，要主動進化"}],
+        review_skills=True,
+        review_label="Raphael evolution review",
+    )
+
+    assert len(traces) == 1
+    assert traces[0].source == "raphael_background_review"
+    assert traces[0].outcome == "completed_with_actions"
+    assert traces[0].metadata["actions"] == ["Skill updated"]
+    assert records == [
+        {
+            "status": "background_completed_with_actions",
+            "metadata": {
+                "actions": ["Skill updated"],
+                "review_label": "Raphael evolution review",
+                "session_id": "test-session",
+            },
+        }
+    ]
+
+
 def test_background_review_installs_auto_deny_approval_callback(monkeypatch):
     """Regression guard for #15216.
 
@@ -267,6 +339,86 @@ def test_background_review_summary_is_attributed_to_self_improvement_loop(monkey
     assert captured_bg_callback[0].startswith("💾 Self-improvement review:"), (
         captured_bg_callback[0]
     )
+
+
+def test_background_review_accepts_custom_raphael_evolution_prompt_and_label(
+    monkeypatch,
+):
+    """Raphael evolution must reuse the safe background review machinery while
+    clearly identifying itself and supplying its stronger skill-evolution prompt.
+    """
+    import json
+
+    captured_prints: list[str] = []
+    captured_bg_callback: list[str] = []
+    captured_user_messages: list[str] = []
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            self._session_messages = [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call_skill",
+                            "function": {
+                                "name": "skill_manage",
+                                "arguments": json.dumps(
+                                    {
+                                        "action": "patch",
+                                        "name": "raphael-workflows",
+                                        "old_string": "advisor",
+                                        "new_string": "sage king",
+                                    }
+                                ),
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_skill",
+                    "content": json.dumps(
+                        {
+                            "success": True,
+                            "message": "Patched SKILL.md in skill 'raphael-workflows' (1 replacement).",
+                            "_change": {"old": "advisor", "new": "sage king"},
+                        }
+                    ),
+                },
+            ]
+
+        def run_conversation(self, **kwargs):
+            captured_user_messages.append(kwargs["user_message"])
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+    agent._safe_print = lambda *a, **kw: captured_prints.append(" ".join(str(x) for x in a))
+    agent.background_review_callback = lambda msg: captured_bg_callback.append(msg)
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hi"}],
+        review_memory=False,
+        review_skills=True,
+        review_prompt="CUSTOM RAPHAEL EVOLUTION PROMPT",
+        review_label="Raphael evolution review",
+    )
+
+    assert captured_user_messages
+    assert captured_user_messages[0].startswith("CUSTOM RAPHAEL EVOLUTION PROMPT")
+    assert len(captured_prints) == 1
+    assert "Raphael evolution review" in captured_prints[0]
+    assert len(captured_bg_callback) == 1
+    assert captured_bg_callback[0].startswith("💾 Raphael evolution review:")
 
 
 def test_background_review_fork_skips_external_memory_plugins(monkeypatch):
