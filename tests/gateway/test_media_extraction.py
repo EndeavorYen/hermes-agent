@@ -259,6 +259,106 @@ caption
         )
         assert tags == []
 
+    def test_gateway_auto_append_visual_package_selected_media_only(self):
+        """visual_package_generate JSON only appends selected current artifacts."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {"role": "user", "content": "Make image and video"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_visual", "function": {"name": "visual_package_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_visual",
+                "content": (
+                    '{"success": true, "visual_request_id": "vrq_1", '
+                    '"images": ["/tmp/current.png"], "videos": ["/tmp/current.mp4"], '
+                    '"delivery_metadata": {'
+                    '"selected_visual_artifact_ids": ["var_img", "var_vid"], '
+                    '"visual_artifacts": {'
+                    '"/tmp/current.png": {"request_id": "vrq_1", "artifact_id": "var_img", "kind": "image"}, '
+                    '"/tmp/old.png": {"request_id": "vrq_old", "artifact_id": "var_old", "kind": "image"}, '
+                    '"/tmp/current.mp4": {"request_id": "vrq_1", "artifact_id": "var_vid", "kind": "video"}'
+                    "}}}"
+                ),
+            },
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+
+        assert tags == ["MEDIA:/tmp/current.png", "MEDIA:/tmp/current.mp4"]
+        assert voice is False
+
+    def test_gateway_auto_append_visual_agent_video_only_skips_source_image(self):
+        """visual_agent_generate video-only output skips internal source images."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {"role": "user", "content": "請產生一段 6 秒影片"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_visual_agent", "function": {"name": "visual_agent_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_visual_agent",
+                "content": (
+                    '{"success": true, "visual_request_id": "vrq_2", '
+                    '"images": [], "videos": ["/tmp/current.mp4"], '
+                    '"delivery_metadata": {'
+                    '"selected_visual_artifact_ids": ["var_vid"], '
+                    '"visual_artifacts": {'
+                    '"/tmp/internal-source.png": {"request_id": "vrq_2", "artifact_id": "var_img", "kind": "image"}, '
+                    '"/tmp/current.mp4": {"request_id": "vrq_2", "artifact_id": "var_vid", "kind": "video"}'
+                    "}}}"
+                ),
+            },
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+
+        assert tags == ["MEDIA:/tmp/current.mp4"]
+        assert voice is False
+
+    def test_gateway_auto_append_visual_package_dedupes_file_uri_variant(self):
+        """visual_package_generate should not append path and file:// variants twice."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {"role": "user", "content": "Make a video"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_visual", "function": {"name": "visual_package_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_visual",
+                "content": (
+                    '{"success": true, "visual_request_id": "vrq_3", '
+                    '"images": [], "videos": ["/tmp/current.mp4"], '
+                    '"delivery_metadata": {'
+                    '"selected_visual_artifact_ids": ["var_vid"], '
+                    '"visual_artifacts": {'
+                    '"/tmp/current.mp4": {"request_id": "vrq_3", "artifact_id": "var_vid", "kind": "video"}, '
+                    '"file:///tmp/current.mp4": {"request_id": "vrq_3", "artifact_id": "var_vid", "kind": "video"}'
+                    "}}}"
+                ),
+            },
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+
+        assert tags == ["MEDIA:/tmp/current.mp4"]
+        assert voice is False
+
     def test_collect_history_media_paths_includes_image_generate_json(self):
         """Regression for #46627: the history media-path collector must pick up
         image_generate JSON-payload paths (no MEDIA: tag), not just MEDIA:

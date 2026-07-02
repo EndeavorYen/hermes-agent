@@ -45,6 +45,7 @@ from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
 from typing import Callable, Dict, Optional, Any, List, Union
+from urllib.parse import unquote, urlparse
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
 # /usage; we still import it at module top in the gateway because test
@@ -959,6 +960,8 @@ _AUTO_APPEND_MEDIA_TOOL_NAMES = {
     "text_to_speech",
     "text_to_speech_tool",
     "image_generate",
+    "visual_agent_generate",
+    "visual_package_generate",
 }
 
 # ---- helpers: detect interrupted tool tails & auto-continue noise ----------
@@ -1026,6 +1029,86 @@ _TOOL_MEDIA_RE = re.compile(
     r'txt|csv|apk|ipa))',
     re.IGNORECASE,
 )
+
+
+def _normalise_tool_media_ref(ref: Any) -> Optional[str]:
+    if not isinstance(ref, str):
+        return None
+    text = ref.strip()
+    if not text:
+        return None
+    try:
+        parsed = urlparse(text)
+        if parsed.scheme == "file":
+            return unquote(parsed.path)
+    except Exception:
+        return text
+    return text
+
+
+def _tool_media_ref_lookup_keys(ref: str) -> List[str]:
+    keys = [ref]
+    normalised = _normalise_tool_media_ref(ref)
+    if normalised:
+        keys.append(normalised)
+        try:
+            path = Path(normalised)
+            keys.append(str(path))
+            if path.is_absolute():
+                keys.append(path.as_uri())
+        except Exception:
+            pass
+    return list(dict.fromkeys(key for key in keys if key))
+
+
+def _tool_media_seen(ref: str, history_media_paths: set, seen_refs: set) -> bool:
+    return any(
+        key in history_media_paths or key in seen_refs
+        for key in _tool_media_ref_lookup_keys(ref)
+    )
+
+
+def _selected_visual_payload_media_refs(payload: Dict[str, Any]) -> List[str]:
+    refs: List[str] = []
+    for field in ("images", "videos"):
+        value = payload.get(field)
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            ref = _normalise_tool_media_ref(item)
+            if ref:
+                refs.append(ref)
+
+    delivery_metadata = payload.get("delivery_metadata")
+    if not isinstance(delivery_metadata, dict):
+        return refs
+
+    selected_ids = {
+        str(item)
+        for item in delivery_metadata.get("selected_visual_artifact_ids") or []
+        if str(item).strip()
+    }
+    visual_artifacts = delivery_metadata.get("visual_artifacts")
+    if not selected_ids or not isinstance(visual_artifacts, dict):
+        return refs
+
+    allowed_keys = set()
+    for artifact_ref, artifact_meta in visual_artifacts.items():
+        if not isinstance(artifact_meta, dict):
+            continue
+        artifact_id = artifact_meta.get("artifact_id") or artifact_meta.get("id")
+        if str(artifact_id) not in selected_ids:
+            continue
+        for key in _tool_media_ref_lookup_keys(str(artifact_ref)):
+            allowed_keys.add(key)
+
+    return [
+        ref
+        for ref in refs
+        if any(key in allowed_keys for key in _tool_media_ref_lookup_keys(ref))
+    ]
 
 
 def _collect_auto_append_media_tags(
@@ -1096,6 +1179,24 @@ def _collect_auto_append_media_tags(
                             and path not in history_media_paths):
                         media_tags.append(f"MEDIA:{path}")
                         break
+            continue
+        if (
+            tool_name in {"visual_agent_generate", "visual_package_generate"}
+            and "MEDIA:" not in content
+        ):
+            try:
+                payload = json.loads(content)
+            except Exception:
+                payload = None
+            if isinstance(payload, dict) and payload.get("success"):
+                seen_refs: set = set()
+                for path in _selected_visual_payload_media_refs(payload):
+                    if (
+                        _TOOL_MEDIA_RE.fullmatch(f"MEDIA:{path}")
+                        and not _tool_media_seen(path, history_media_paths, seen_refs)
+                    ):
+                        media_tags.append(f"MEDIA:{path}")
+                        seen_refs.update(_tool_media_ref_lookup_keys(path))
             continue
         if "MEDIA:" not in content:
             continue
