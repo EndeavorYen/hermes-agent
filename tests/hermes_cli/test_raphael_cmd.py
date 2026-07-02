@@ -799,6 +799,13 @@ def _write_readiness_evidence(
                 _non_visual_regression_check(regression_report),
             )
             checks.setdefault("release_docs_audit", _release_docs_audit_check())
+            checks.setdefault("completion_audit", _completion_audit_check())
+            normalized_profile = str(payload.get("profile") or profile).strip().lower()
+            if normalized_profile == "llm":
+                checks.setdefault(
+                    "release_slice_manifest",
+                    _release_slice_manifest_check(),
+                )
             payload["checks"] = checks
         if include_verdict:
             payload = _payload_with_readiness_verdict(payload, profile=profile)
@@ -1811,6 +1818,48 @@ def _release_quality_gate_kwargs(home):
     package_report = _package_install_smoke_report(home)
     hostile_report = _write_hostile_review_report(home)
     regression_report = _write_non_visual_regression_report(home)
+    llm_check = _llm_smoke_check()
+    log_path = home / "logs" / "agent.log"
+    if log_path.exists():
+        log_text = log_path.read_text(encoding="utf-8")
+        log_line = next(
+            (
+                line
+                for line in log_text.splitlines()
+                if "Turn ended:" in line
+                and "session=20260701_131600_93f518" in line
+            ),
+            "",
+        )
+        llm_check["source_log_path"] = str(log_path)
+        if log_line:
+            llm_check["log_line"] = log_line
+    llm_check["source_transcript_path"] = str(transcript_report)
+    _write_raw_readiness_evidence(
+        home,
+        {
+            "schema_version": 1,
+            "producer": "hermes-raphael-release-gate",
+            "generated_at": _fresh_generated_at(),
+            "profile": "llm",
+            "checks": {
+                "install_disable_uninstall": _install_disable_uninstall_check(),
+                "package_install_smoke": _package_install_smoke_check(package_report),
+                "slash_command_surface": _slash_command_surface_check(),
+                "mode_router_contract": _mode_router_contract_check(),
+                "goal_state_contract": _goal_state_contract_check(),
+                "evolution_contract": _evolution_contract_check(),
+                "llm_live_smoke": llm_check,
+                "wow_experience": _wow_experience_check(),
+                "hostile_review": _hostile_review_check(hostile_report),
+                "non_visual_regression": _non_visual_regression_check(regression_report),
+                "release_docs_audit": _release_docs_audit_check(),
+                "completion_audit": _completion_audit_check(),
+                "release_slice_manifest": _release_slice_manifest_check(),
+            },
+        },
+        profile="llm",
+    )
     return {
         "llm_transcript_report_path": str(transcript_report),
         "package_install_report_path": str(package_report),
@@ -2786,6 +2835,8 @@ def test_raphael_readiness_llm_profile_does_not_require_visual_live_e2e(monkeypa
                 },
                 "llm_live_smoke": _llm_smoke_check(),
                 "wow_experience": _wow_experience_check(),
+                "completion_audit": _completion_audit_check(),
+                "release_slice_manifest": _release_slice_manifest_check(),
             },
         },
         profile="llm",
