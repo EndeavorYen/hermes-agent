@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import datetime
+import re
 import threading
 import uuid
 from typing import Any, Dict, Optional
@@ -1177,8 +1178,12 @@ IMAGE_GENERATE_SCHEMA = {
         "edit / transform an existing image (image-to-image) when the active "
         "model supports it. Pass `image_url` to edit that image; add "
         "`reference_image_urls` for style/composition references; omit both "
-        "for text-to-image. The underlying backend (FAL, OpenAI, xAI, etc.) "
-        "and model are user-configured and not selectable by the agent. "
+        "for text-to-image. The default backend/model comes from user config; "
+        "explicit provider intent in the prompt, such as Grok Imagine/xAI or "
+        "OpenAI Image2, may override that default. When the user explicitly "
+        "requests a provider and you rewrite the generation prompt, preserve "
+        "that intent by setting `provider` (for example `xai` for Grok "
+        "Imagine, `openai-codex` for OpenAI Image2). "
         "Returns the result in the `image` field — either a URL or an absolute "
         "file path. To show it to the user, reference that path/URL in your "
         "response using the file-delivery convention for the current platform "
@@ -1224,6 +1229,16 @@ IMAGE_GENERATE_SCHEMA = {
                     "(style, character, or composition references) to guide an "
                     "image-to-image edit. Supported only by some models and "
                     "capped per-model; the description above indicates the max."
+                ),
+            },
+            "provider": {
+                "type": "string",
+                "description": (
+                    "Optional image backend override that preserves explicit "
+                    "user intent after prompt rewriting. Use `xai` for Grok "
+                    "Imagine, `openai-codex` for OpenAI Image2 / gpt-image-2, "
+                    "`fal` for FAL, or another registered image provider id. "
+                    "Omit this to use configured defaults."
                 ),
             },
         },
@@ -1276,6 +1291,8 @@ def _dispatch_to_plugin_provider(
     aspect_ratio: str,
     image_url: Optional[str] = None,
     reference_image_urls: Optional[list] = None,
+    provider_override: Optional[str] = None,
+    model_override: Optional[str] = None,
 ):
     """Route the call to a plugin-registered provider when one is selected.
 
@@ -1292,12 +1309,20 @@ def _dispatch_to_plugin_provider(
     they are forwarded to the provider's ``generate()`` so the backend can
     route to its edit endpoint.
     """
-    configured = _read_configured_image_provider()
+    configured = (
+        provider_override.strip()
+        if isinstance(provider_override, str) and provider_override.strip()
+        else _read_configured_image_provider()
+    )
     if not configured:
         return None
 
     # Also read configured model so we can pass it to the plugin
-    configured_model = _read_configured_image_model()
+    configured_model = (
+        model_override.strip()
+        if isinstance(model_override, str) and model_override.strip()
+        else (None if provider_override else _read_configured_image_model())
+    )
 
     try:
         # Import locally so plugin discovery isn't triggered just by
@@ -1399,6 +1424,49 @@ def _dispatch_to_plugin_provider(
             "error_type": "provider_contract",
         })
     return json.dumps(result)
+
+
+def _legacy_reference_image_urls(args: Dict[str, Any]) -> Optional[list]:
+    """Return reference image aliases used by older runtime plugins."""
+    if args.get("reference_image_urls") is not None:
+        return args.get("reference_image_urls")
+    for key in ("reference_images", "input_images", "image_style_references"):
+        if args.get(key) is not None:
+            return args.get(key)
+    return None
+
+
+def _requested_image_provider(value: str) -> Optional[str]:
+    lowered = str(value or "").lower()
+    compact = re.sub(r"[\s_\-.]+", "", lowered)
+    if "grok" in lowered or "x.ai" in lowered or re.search(r"\bxai\b", lowered):
+        return "xai"
+    if (
+        "openai" in lowered
+        or "codex" in lowered
+        or "gpt-image" in lowered
+        or "image2" in compact
+    ):
+        return "openai-codex"
+    return None
+
+
+def _normalise_public_image_provider(value: Any) -> Optional[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    return _requested_image_provider(raw) or raw
+
+
+def _image_provider_override_arg(args: Dict[str, Any], prompt: str) -> Optional[str]:
+    internal_provider = args.get("_provider")
+    if isinstance(internal_provider, str) and internal_provider.strip():
+        return internal_provider.strip()
+    for key in ("provider", "image_provider"):
+        provider = _normalise_public_image_provider(args.get(key))
+        if provider:
+            return provider
+    return _requested_image_provider(prompt)
 
 
 # ---------------------------------------------------------------------------
@@ -1515,8 +1583,10 @@ def _handle_image_generate(args, **kw):
     if not prompt:
         return tool_error("prompt is required for image generation")
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
-    image_url = args.get("image_url")
-    reference_image_urls = args.get("reference_image_urls")
+    image_url = args.get("image_url") or args.get("input_image")
+    reference_image_urls = _legacy_reference_image_urls(args)
+    provider_override = _image_provider_override_arg(args, prompt)
+    model_override = args.get("_model")
     task_id = kw.get("task_id")
 
     # Route to a plugin-registered provider if one is active (and it's
@@ -1526,6 +1596,8 @@ def _handle_image_generate(args, **kw):
         prompt, aspect_ratio,
         image_url=image_url,
         reference_image_urls=reference_image_urls,
+        provider_override=provider_override,
+        model_override=model_override,
     )
     if dispatched is not None:
         return _postprocess_image_generate_result(dispatched, task_id=task_id)

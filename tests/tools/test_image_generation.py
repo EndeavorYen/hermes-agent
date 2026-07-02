@@ -366,17 +366,118 @@ class TestRegistryIntegration:
     def test_schema_exposes_expected_agent_params(self, image_tool):
         """The agent-facing schema exposes the unified text+image surface:
         prompt (required), aspect_ratio, and the image-to-image inputs
-        image_url + reference_image_urls. Model selection stays a user-level
+        image_url + reference_image_urls. A public provider override lets the
+        agent preserve explicit user intent such as Grok Imagine after it
+        rewrites the generation prompt. Model selection stays a user-level
         config choice, never an agent-level arg."""
         props = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]
         assert set(props.keys()) == {
-            "prompt", "aspect_ratio", "image_url", "reference_image_urls",
+            "prompt", "aspect_ratio", "image_url", "reference_image_urls", "provider",
         }
+        for forbidden in ("model", "_provider", "_model"):
+            assert forbidden not in props
+        assert "xai" in props["provider"]["description"]
+        assert "explicit provider intent" in image_tool.IMAGE_GENERATE_SCHEMA["description"]
         assert image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["required"] == ["prompt"]
 
     def test_aspect_ratio_enum_is_three_values(self, image_tool):
         enum = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]["aspect_ratio"]["enum"]
         assert set(enum) == {"landscape", "square", "portrait"}
+
+    def test_public_provider_override_routes_to_plugin(self, image_tool, monkeypatch):
+        import json
+        from unittest.mock import MagicMock
+
+        fake_provider = MagicMock()
+        fake_provider.generate.return_value = {
+            "success": True,
+            "image": "/tmp/xai.png",
+            "provider": "xai",
+        }
+        monkeypatch.setattr(image_tool, "_read_configured_image_provider", lambda: None)
+        monkeypatch.setattr(image_tool, "_read_configured_image_model", lambda: None)
+        monkeypatch.setattr(
+            "agent.image_gen_registry.get_provider",
+            lambda name: fake_provider if name == "xai" else None,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **k: None
+        )
+        monkeypatch.setattr(
+            image_tool,
+            "image_generate_tool",
+            lambda **_kw: json.dumps({"success": False, "error_type": "fallback_called"}),
+        )
+
+        result = json.loads(image_tool._handle_image_generate({
+            "prompt": "Use Grok Imagine for this",
+            "aspect_ratio": "square",
+            "provider": "xai",
+        }))
+
+        assert result["success"] is True
+        assert fake_provider.generate.call_args.kwargs["prompt"] == "Use Grok Imagine for this"
+        assert fake_provider.generate.call_args.kwargs["aspect_ratio"] == "square"
+
+    def test_prompt_provider_intent_routes_to_plugin(self, image_tool, monkeypatch):
+        import json
+        from unittest.mock import MagicMock
+
+        fake_provider = MagicMock()
+        fake_provider.generate.return_value = {
+            "success": True,
+            "image": "/tmp/xai-from-prompt.png",
+            "provider": "xai",
+        }
+        monkeypatch.setattr(image_tool, "_read_configured_image_provider", lambda: None)
+        monkeypatch.setattr(image_tool, "_read_configured_image_model", lambda: None)
+        monkeypatch.setattr(
+            "agent.image_gen_registry.get_provider",
+            lambda name: fake_provider if name == "xai" else None,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **k: None
+        )
+
+        result = json.loads(image_tool._handle_image_generate({
+            "prompt": "Use Grok Imagine for a cinematic product image",
+            "aspect_ratio": "portrait",
+        }))
+
+        assert result["success"] is True
+        assert fake_provider.generate.call_args.kwargs["aspect_ratio"] == "portrait"
+
+    def test_legacy_reference_images_alias_reaches_provider(self, image_tool, monkeypatch):
+        import json
+        from unittest.mock import MagicMock
+
+        fake_provider = MagicMock()
+        fake_provider.generate.return_value = {
+            "success": True,
+            "image": "/tmp/xai-edit.png",
+            "provider": "xai",
+        }
+        monkeypatch.setattr(image_tool, "_read_configured_image_provider", lambda: "xai")
+        monkeypatch.setattr(image_tool, "_read_configured_image_model", lambda: None)
+        monkeypatch.setattr(
+            "agent.image_gen_registry.get_provider",
+            lambda name: fake_provider if name == "xai" else None,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **k: None
+        )
+
+        result = json.loads(image_tool._handle_image_generate({
+            "prompt": "Use these references",
+            "aspect_ratio": "landscape",
+            "reference_images": [" /tmp/ref-a.png ", "/tmp/ref-b.png"],
+        }))
+
+        assert result["success"] is True
+        assert fake_provider.generate.call_args.kwargs["reference_image_urls"] == [
+            "/tmp/ref-a.png",
+            "/tmp/ref-b.png",
+        ]
 
 
 # ---------------------------------------------------------------------------
