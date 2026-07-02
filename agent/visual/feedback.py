@@ -37,6 +37,12 @@ def parse_visual_feedback(text: str) -> ParsedVisualFeedback:
     )
 
 
+def is_visual_feedback_only_text(text: str) -> bool:
+    parsed = parse_visual_feedback(text)
+    has_feedback_signal = bool(parsed.parsed.get("signals") or parsed.parsed.get("issues")) or _has_quality_feedback_marker(text)
+    return has_feedback_signal and not _requests_visual_generation_or_revision(text)
+
+
 def record_parsed_visual_feedback(
     ledger: VisualAttemptLedger,
     *,
@@ -71,6 +77,8 @@ def _extract_selection(text: str) -> tuple[int | None, str | None]:
 
 def _extract_signals(text: str) -> list[str]:
     signals = []
+    if _has_any(text, ("很棒", "可以", "可接受", "滿意", "ok", "looks good", "good output")):
+        signals.append("general_positive")
     if _has_any(text, ("構圖更好", "構圖不錯", "構圖算不錯", "composition good")):
         signals.append("composition_positive")
     elif "構圖" in text and _has_any(text, ("好", "不錯", "突破")) and not _has_any(text, ("不好", "差", "普普")):
@@ -115,7 +123,7 @@ def _score_polarity(text: str, signals: list[str], issues: list[str]) -> float:
     score = 0.0
     score += len(signals) * 0.6
     score -= len(issues) * 0.45
-    if _has_any(text, ("不錯", "好評", "給過", "加分", "很好", "成功")):
+    if _has_any(text, ("不錯", "好評", "給過", "加分", "很好", "很棒", "可以", "可接受", "滿意", "成功")):
         score += 0.6
     if _has_any(text, ("退貨", "差評", "扣分", "爛", "失敗")):
         score -= 0.8
@@ -139,6 +147,55 @@ def _artifact_for_selection(
 def _has_any(text: str, needles: tuple[str, ...]) -> bool:
     text_lc = text.lower()
     return any(needle.lower() in text_lc for needle in needles)
+
+
+def _has_quality_feedback_marker(text: str) -> bool:
+    compact = re.sub(r"\s+", "", str(text or "").lower())
+    return any(token in compact for token in ("品質", "產出", "效果", "風格", "人物", "角色", "構圖")) and any(
+        token in compact
+        for token in (
+            "很棒",
+            "可以",
+            "不錯",
+            "很好",
+            "滿意",
+            "漂亮",
+            "成功",
+            "失敗",
+            "退貨",
+            "怪",
+            "差",
+        )
+    )
+
+
+def _requests_visual_generation_or_revision(text: str) -> bool:
+    compact = re.sub(r"\s+", "", str(text or "").lower())
+    return any(
+        token in compact
+        for token in (
+            "請",
+            "幫我",
+            "再",
+            "重新",
+            "改",
+            "改進",
+            "修",
+            "產出一",
+            "產生一",
+            "生成一",
+            "做一",
+            "畫",
+            "繪製",
+            "create",
+            "generate",
+            "make",
+            "draw",
+            "revise",
+            "improve",
+            "edit",
+        )
+    )
 
 
 def _dedupe(values: list[str]) -> list[str]:

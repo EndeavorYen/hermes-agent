@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -130,6 +131,19 @@ class TestGenerate:
         # Filename prefix differs from the API-key plugin so cache audits can
         # tell the two backends apart.
         assert saved.name.startswith("openai_codex_")
+
+    def test_generate_preserves_codex_image_generation_call_id(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        def _collect(*_args, **_kwargs):
+            return SimpleNamespace(b64=_b64_png(), response_id="ig_codex_generation_1")
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
+
+        result = provider.generate("a cat", aspect_ratio="square")
+
+        assert result["success"] is True
+        assert result["response_id"] == "ig_codex_generation_1"
 
     def test_codex_stream_request_shape(self, provider, monkeypatch):
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
@@ -273,6 +287,45 @@ class TestGenerate:
             },
         }
         assert codex_plugin._extract_image_b64(payload) == _b64_png()
+
+    def test_final_response_sweep_recovers_image_generation_call_id(self):
+        payload = {
+            "type": "response.completed",
+            "response": {
+                "output": [{
+                    "type": "image_generation_call",
+                    "status": "completed",
+                    "id": "ig_final",
+                    "result": _b64_png(),
+                }],
+            },
+        }
+        extractor = getattr(codex_plugin, "_extract_image_generation_result", None)
+        assert extractor is not None
+
+        result = extractor(payload)
+
+        assert result is not None
+        assert result.b64 == _b64_png()
+        assert result.response_id == "ig_final"
+
+    def test_output_item_done_recovers_image_generation_call_id(self):
+        payload = {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "image_generation_call",
+                "id": "ig_nested",
+                "result": _b64_png(),
+            },
+        }
+        extractor = getattr(codex_plugin, "_extract_image_generation_result", None)
+        assert extractor is not None
+
+        result = extractor(payload)
+
+        assert result is not None
+        assert result.b64 == _b64_png()
+        assert result.response_id == "ig_nested"
 
     def test_empty_response_returns_error(self, provider, monkeypatch):
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")

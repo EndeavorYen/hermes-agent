@@ -49,6 +49,8 @@ DEFAULT_URL_CONTAINS = "grok.com,accounts.x.ai"
 MIN_USABLE_IMAGE_SIDE = 256
 MAX_REFERENCE_IMAGES = 4
 REFERENCE_UPLOAD_SETTLE_SECONDS = 1.5
+PROMPT_SUBMIT_READY_POLL_ATTEMPTS = 24
+PROMPT_SUBMIT_READY_POLL_SECONDS = 0.5
 SCREENSHOT_FALLBACK_SETTLE_MS = 12000
 MAX_SCREENSHOT_FALLBACK_SCALE = 2.0
 CDP_WEBSOCKET_TIMEOUT_SECONDS = max(30.0, (SCREENSHOT_FALLBACK_SETTLE_MS / 1000) + 10.0)
@@ -67,6 +69,10 @@ class VisibleState:
 class BrowserArtifact:
     path: Path
     source: str
+    page_url: str = ""
+    page_title: str = ""
+    durability: str = "unknown"
+    history_verified: bool = False
 
 
 class GrokWebImagineError(RuntimeError):
@@ -150,10 +156,60 @@ def _has_prompt_input(snapshot: Dict[str, Any]) -> bool:
             "message",
             "make",
             "create",
+            "輸入以想像",
             "問 grok",
             "你想知道什麼",
         ),
     )
+
+
+def _visible_snapshot_text(snapshot: Dict[str, Any]) -> str:
+    return "\n".join(
+        [
+            str(snapshot.get("title") or ""),
+            str(snapshot.get("text") or ""),
+            "\n".join(_text_values(snapshot.get("buttons") or [])),
+            "\n".join(_text_values(snapshot.get("inputs") or [])),
+        ]
+    )
+
+
+def _has_standalone_line(text: str, candidates: Iterable[str]) -> bool:
+    lines = {line.strip().lower() for line in str(text or "").splitlines() if line.strip()}
+    return any(candidate.lower() in lines for candidate in candidates)
+
+
+def _looks_like_imagine_results_gallery(snapshot: Dict[str, Any]) -> bool:
+    url = str(snapshot.get("url") or "").lower()
+    if "/imagine" not in url or "/imagine/post/" in url:
+        return False
+    visible_text = _visible_snapshot_text(snapshot)
+    if not _has_standalone_line(visible_text, ("explore", "探索")):
+        return False
+    if not _has_any(visible_text, ("history", "歷史紀錄")):
+        return False
+    return not _has_any(
+        visible_text,
+        (
+            "create images and videos",
+            "create images",
+            "create videos",
+            "generate image",
+            "精選範本",
+            "featured templates",
+        ),
+    )
+
+
+def _artifact_durability(snapshot: Dict[str, Any], source: str) -> tuple[str, bool]:
+    url_lower = str(snapshot.get("url") or "").lower()
+    if "/imagine/post/" in url_lower:
+        return "durable_history_or_post", True
+    if _looks_like_imagine_results_gallery(snapshot):
+        return "imagine_results_gallery", True
+    if source in {"browser_data_url", "browser_blob", "browser_fetch", "browser_screenshot", "browser_url"}:
+        return "ephemeral_browser_page", False
+    return "unknown", False
 
 
 def classify_visible_state(snapshot: Dict[str, Any]) -> VisibleState:
@@ -196,6 +252,18 @@ def classify_visible_state(snapshot: Dict[str, Any]) -> VisibleState:
             status="imagine_post_open",
             safe_to_submit=False,
             message="Grok Imagine is showing an existing result page; switch to the create composer first.",
+            url=url,
+            title=title,
+        )
+
+    if _looks_like_imagine_results_gallery(snapshot):
+        return VisibleState(
+            status="imagine_results_open",
+            safe_to_submit=False,
+            message=(
+                "Grok Imagine is showing a results gallery; open the new generation composer before "
+                "submitting another prompt."
+            ),
             url=url,
             title=title,
         )
@@ -301,10 +369,11 @@ def _fill_prompt_js(prompt: str) -> str:
         + json.dumps(prompt)
         + ";"
         "const visible = (e) => { const r = e.getBoundingClientRect(); return r.width > 20 && r.height > 20; };"
-        "const label = (e) => `${e.getAttribute('aria-label') || ''} ${e.getAttribute('placeholder') || ''}`.trim().toLowerCase();"
-        "const promptLike = (e) => /ask grok|what do you want|prompt|message|make|create|問 grok|你想知道什麼/.test(label(e));"
-        "const els = [...document.querySelectorAll('textarea,input,[contenteditable=true]')].filter(visible);"
-        "const el = els.find(promptLike) || els.find(e => e.tagName === 'TEXTAREA') || els.find(e => e.isContentEditable) || els[0];"
+        "const normalizeText = (s) => String(s || '').replace(/\\s+/g, '').toLowerCase();"
+        "const label = (e) => `${e.getAttribute('aria-label') || ''} ${e.getAttribute('placeholder') || ''} ${e.getAttribute('data-placeholder') || ''}`.trim().toLowerCase();"
+        "const promptLike = (e) => /ask grok|what do you want|prompt|message|make|create|輸入以想像|問 grok|你想知道什麼/.test(label(e));"
+        "const els = [...document.querySelectorAll('[role=textbox],textarea,input,[contenteditable=true]')].filter(visible);"
+        "const el = els.find(promptLike) || els.find(e => e.classList && e.classList.contains('ProseMirror')) || els.find(e => e.tagName === 'TEXTAREA') || els.find(e => e.isContentEditable) || els[0];"
         "if (!el) return {filled:false, reason:'no_prompt_input'};"
         "el.focus();"
         "if (el.isContentEditable) {"
@@ -323,7 +392,9 @@ def _fill_prompt_js(prompt: str) -> str:
         "el.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data:prompt}));"
         "el.dispatchEvent(new Event('change', {bubbles:true}));"
         "const filledText = (el.innerText || el.value || el.textContent || '').trim();"
-        "return {filled:filledText.includes(prompt), filledText:filledText.slice(0, 120)};"
+        "const submit = [...document.querySelectorAll('button[type=submit],button[aria-label=\"送出\"],button[aria-label=\"Submit\"],button[aria-label=\"Send\"]')].find(visible);"
+        "const submitDisabled = submit ? Boolean(submit.disabled || submit.getAttribute('aria-disabled') === 'true') : true;"
+        "return {filled:normalizeText(filledText).includes(normalizeText(prompt)), submitReady:Boolean(submit && !submitDisabled), submitDisabled, filledText:filledText.slice(0, 120)};"
         "})()"
     )
 
@@ -336,9 +407,9 @@ FOCUS_PROMPT_INPUT_JS = r"""
       return r.width > 20 && r.height > 20;
     };
     const label = (e) => `${e.getAttribute("aria-label") || ""} ${e.getAttribute("placeholder") || ""}`.trim().toLowerCase();
-    const promptLike = (e) => /ask grok|what do you want|prompt|message|make|create|問 grok|你想知道什麼/.test(label(e));
-    const els = [...document.querySelectorAll("textarea,input,[contenteditable=true]")].filter(visible);
-    const el = els.find(promptLike) || els.find(e => e.tagName === "TEXTAREA") || els.find(e => e.isContentEditable) || els[0];
+    const promptLike = (e) => /ask grok|what do you want|prompt|message|make|create|輸入以想像|問 grok|你想知道什麼/.test(label(e));
+    const els = [...document.querySelectorAll("[role=textbox],textarea,input,[contenteditable=true]")].filter(visible);
+    const el = els.find(promptLike) || els.find(e => e.classList && e.classList.contains("ProseMirror")) || els.find(e => e.tagName === "TEXTAREA") || els.find(e => e.isContentEditable) || els[0];
     if (!el) return {focused:false, reason:"no_prompt_input"};
     el.focus();
     if (el.isContentEditable) {
@@ -350,10 +421,13 @@ FOCUS_PROMPT_INPUT_JS = r"""
     } else if (typeof el.select === "function") {
       el.select();
     }
+    const rect = el.getBoundingClientRect();
     return {
       focused: document.activeElement === el || el.contains(document.activeElement),
       contentEditable: Boolean(el.isContentEditable),
       tag: el.tagName,
+      centerX: Math.round(rect.x + rect.width / 2),
+      centerY: Math.round(rect.y + Math.min(rect.height / 2, 24)),
       text: (el.innerText || el.value || el.textContent || "").trim().slice(0, 120)
     };
   };
@@ -370,17 +444,93 @@ def _prompt_input_state_js(prompt: str) -> str:
         + ";"
         "const grokPromptInputState = () => {"
         "const visible = (e) => { const r = e.getBoundingClientRect(); return r.width > 20 && r.height > 20; };"
-        "const label = (e) => `${e.getAttribute('aria-label') || ''} ${e.getAttribute('placeholder') || ''}`.trim().toLowerCase();"
-        "const promptLike = (e) => /ask grok|what do you want|prompt|message|make|create|問 grok|你想知道什麼/.test(label(e));"
-        "const els = [...document.querySelectorAll('textarea,input,[contenteditable=true]')].filter(visible);"
-        "const el = els.find(promptLike) || els.find(e => e.tagName === 'TEXTAREA') || els.find(e => e.isContentEditable) || els[0];"
+        "const normalizeText = (s) => String(s || '').replace(/\\s+/g, '').toLowerCase();"
+        "const label = (e) => `${e.getAttribute('aria-label') || ''} ${e.getAttribute('placeholder') || ''} ${e.getAttribute('data-placeholder') || ''}`.trim().toLowerCase();"
+        "const promptLike = (e) => /ask grok|what do you want|prompt|message|make|create|輸入以想像|問 grok|你想知道什麼/.test(label(e));"
+        "const els = [...document.querySelectorAll('[role=textbox],textarea,input,[contenteditable=true]')].filter(visible);"
+        "const el = els.find(promptLike) || els.find(e => e.classList && e.classList.contains('ProseMirror')) || els.find(e => e.tagName === 'TEXTAREA') || els.find(e => e.isContentEditable) || els[0];"
         "if (!el) return {filled:false, reason:'no_prompt_input'};"
         "const filledText = (el.innerText || el.value || el.textContent || '').trim();"
-        "return {filled:filledText.includes(prompt), filledText:filledText.slice(0, 120), tag:el.tagName};"
+        "const submit = [...document.querySelectorAll('button[type=submit],button[aria-label=\"送出\"],button[aria-label=\"Submit\"],button[aria-label=\"Send\"]')].find(visible);"
+        "const submitDisabled = submit ? Boolean(submit.disabled || submit.getAttribute('aria-disabled') === 'true') : true;"
+        "return {filled:normalizeText(filledText).includes(normalizeText(prompt)), submitReady:Boolean(submit && !submitDisabled), submitDisabled, submitLabel:submit ? (submit.innerText || submit.getAttribute('aria-label') || '') : '', filledText:filledText.slice(0, 120), tag:el.tagName};"
         "};"
         "return grokPromptInputState();"
         "})()"
     )
+
+
+def _normalise_prompt_fill_result(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"filled": False, "reason": "prompt_state_unconfirmed"}
+    if not value.get("filled"):
+        return value
+    if value.get("submitReady") is False or value.get("submitDisabled") is True:
+        return {
+            **value,
+            "filled": False,
+            "reason": "submit_disabled_after_fill",
+        }
+    return value
+
+
+def _preflight_prompt_probe_payload(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        return _failed_preflight_prompt_probe("prompt_state_unconfirmed")
+    prompt_text_present = value.get("filled") is True
+    submit_enabled = (
+        value.get("submitReady") is True and value.get("submitDisabled") is not True
+    )
+    reason = ""
+    if not prompt_text_present:
+        reason = str(value.get("reason") or "prompt_text_unverified")
+    elif not submit_enabled:
+        reason = str(value.get("reason") or "submit_disabled_after_fill")
+    return {
+        "attempted": True,
+        "prompt_text_present": prompt_text_present,
+        "submit_enabled": submit_enabled,
+        "reason": reason,
+        "tag": str(value.get("tag") or ""),
+        "filled_text_preview": str(value.get("filledText") or "")[:120],
+    }
+
+
+def _failed_preflight_prompt_probe(reason: str) -> Dict[str, Any]:
+    return {
+        "attempted": True,
+        "prompt_text_present": False,
+        "submit_enabled": False,
+        "reason": str(reason or "prompt_probe_failed"),
+        "tag": "",
+        "filled_text_preview": "",
+    }
+
+
+COMPOSER_DRAFT_STATE_JS = r"""
+(() => {
+  const visible = (e) => {
+    const r = e.getBoundingClientRect();
+    return r.width > 20 && r.height > 20;
+  };
+  const label = (e) => (
+    e.innerText || e.getAttribute("aria-label") || e.getAttribute("title") || e.textContent || ""
+  ).trim();
+  const promptLike = (e) => /ask grok|what do you want|prompt|message|make|create|輸入以想像|問 grok|你想知道什麼/i.test(
+    `${e.getAttribute("aria-label") || ""} ${e.getAttribute("placeholder") || ""} ${e.getAttribute("data-placeholder") || ""}`
+  );
+  const els = [...document.querySelectorAll("[role=textbox],textarea,input,[contenteditable=true]")].filter(visible);
+  const el = els.find(promptLike) || els.find(e => e.classList && e.classList.contains("ProseMirror")) || els.find(e => e.tagName === "TEXTAREA") || els.find(e => e.isContentEditable) || els[0];
+  const text = (el && (el.innerText || el.value || el.textContent) || "").trim();
+  const imageChips = [...document.querySelectorAll("button")]
+    .filter((e) => /^(remove image|移除圖片|移除图片)$/i.test(label(e))).length;
+  return {
+    dirty: text.length > 0 || imageChips > 0,
+    textLength: text.length,
+    imageChips,
+  };
+})()
+"""
 
 
 def _click_imagine_js() -> str:
@@ -425,6 +575,36 @@ CLICK_CURRENT_POST_EDIT_ACTION_JS = r"""
 """
 
 
+CLICK_CURRENT_POST_REGENERATE_ACTION_JS = r"""
+(() => {
+  const clickGrokCurrentPostRegenerateAction = () => {
+    const visible = (e) => {
+      const r = e.getBoundingClientRect();
+      return r.width > 12 && r.height > 12;
+    };
+    const label = (e) => (
+      e.innerText || e.getAttribute("aria-label") || e.getAttribute("title") || e.textContent || ""
+    ).trim();
+    const controls = [...document.querySelectorAll("button,a,[role=button],div,span")]
+      .filter((e) => visible(e) && !e.disabled && e.getAttribute("aria-disabled") !== "true")
+      .filter((e) => !e.closest(".query-bar"))
+      .map((e) => {
+        const r = e.getBoundingClientRect();
+        return {el:e, text:label(e), area:Math.max(0, r.width) * Math.max(0, r.height)};
+      })
+      .filter((item) => item.text);
+    controls.sort((a, b) => a.area - b.area);
+    const regenerate = controls.find((item) => /^(regenerate|reroll|retry|redo|try again|重新產生|重新生成|再生成|重試|重试|重做)$/i.test(item.text))
+      || controls.find((item) => /(regenerate|reroll|retry|redo|try again|重新產生|重新生成|再生成|重試|重试|重做)/i.test(item.text));
+    if (!regenerate) return {clicked:false, reason:"regenerate_action_not_found"};
+    regenerate.el.click();
+    return {clicked:true, label:regenerate.text.slice(0, 120)};
+  };
+  return clickGrokCurrentPostRegenerateAction();
+})()
+"""
+
+
 SUBMIT_PROMPT_JS = r"""
 (() => {
   const visible = (e) => {
@@ -437,8 +617,15 @@ SUBMIT_PROMPT_JS = r"""
   const submit = buttons.find((e) => e.matches("button[type=submit]"))
     || buttons.find((e) => /^(send|submit|generate|create|edit|modify|送出|產生|生成|編輯|编辑|修改)$/i.test(label(e)));
   if (!submit) return {submitted:false, reason:"no_submit_button"};
-  submit.click();
-  return {submitted:true, method:"submit_button", label:label(submit), type:submit.getAttribute("type")};
+  const r = submit.getBoundingClientRect();
+  return {
+    submitted:true,
+    method:"submit_button",
+    label:label(submit),
+    type:submit.getAttribute("type"),
+    centerX: Math.round(r.x + r.width / 2),
+    centerY: Math.round(r.y + r.height / 2)
+  };
 })()
 """
 
@@ -642,6 +829,82 @@ DISPATCH_FILE_INPUT_CHANGE_JS = r"""
 """
 
 
+OPEN_CURRENT_RESULT_FROM_GALLERY_JS = r"""
+(() => {
+  const visible = (e) => {
+    const r = e.getBoundingClientRect();
+    return r.width > 32 && r.height > 32;
+  };
+  const label = (e) => (
+    e.innerText || e.getAttribute("aria-label") || e.getAttribute("title") || e.textContent || ""
+  ).trim();
+  const score = (e) => {
+    const r = e.getBoundingClientRect();
+    return {
+      el:e,
+      href:e.href || e.getAttribute("href") || "",
+      text:label(e),
+      x:r.x,
+      y:r.y,
+      area:Math.max(0, r.width) * Math.max(0, r.height),
+    };
+  };
+  const notComposer = (e) => !e.closest(".query-bar") && !/new generation|new imagine|create new|新一代|新生成/i.test(label(e));
+  const anchors = [...document.querySelectorAll('a[href*="/imagine/post/"],[role=link][href*="/imagine/post/"]')]
+    .filter((e) => visible(e) && notComposer(e))
+    .map(score)
+    .filter((item) => item.area > 1200);
+  anchors.sort((a, b) => (a.y - b.y) || (a.x - b.x) || (b.area - a.area));
+  const targetAnchor = anchors[0];
+  if (targetAnchor) {
+    targetAnchor.el.click();
+    return {clicked:true, method:"post_link", href:targetAnchor.href, label:targetAnchor.text.slice(0, 120)};
+  }
+
+  const imageTargets = [...document.querySelectorAll("img")]
+    .filter((img) => visible(img) && notComposer(img) && ((img.naturalWidth || 0) >= 256 || img.width >= 256))
+    .map((img) => {
+      const clickable = img.closest('a,button,[role=button],[role=link]') || img;
+      const r = img.getBoundingClientRect();
+      return {
+        el:clickable,
+        text:label(clickable) || img.alt || "",
+        x:r.x,
+        y:r.y,
+        area:Math.max(0, r.width) * Math.max(0, r.height),
+      };
+    })
+    .filter((item) => item.area > 1200);
+  imageTargets.sort((a, b) => (a.y - b.y) || (a.x - b.x) || (b.area - a.area));
+  const imageTarget = imageTargets[0];
+  if (!imageTarget) return {clicked:false, reason:"current_result_not_found"};
+  imageTarget.el.click();
+  return {clicked:true, method:"image_card", label:imageTarget.text.slice(0, 120)};
+})()
+"""
+
+
+OPEN_NEW_GENERATION_COMPOSER_JS = r"""
+(() => {
+  const visible = (e) => {
+    const r = e.getBoundingClientRect();
+    return r.width > 12 && r.height > 12;
+  };
+  const label = (e) => (
+    e.innerText || e.getAttribute("aria-label") || e.getAttribute("title") || e.textContent || ""
+  ).trim();
+  const controls = [...document.querySelectorAll("button,a,[role=button]")]
+    .filter((e) => visible(e) && !e.disabled && e.getAttribute("aria-disabled") !== "true");
+  const target = controls.find((e) => (
+    /^(new generation|new imagine|create new|new creation|新一代|新生成|新增生成|建立新)$/i.test(label(e))
+  ));
+  if (!target) return {clicked:false, reason:"new_generation_action_not_found"};
+  target.click();
+  return {clicked:true, label:label(target).slice(0, 120)};
+})()
+"""
+
+
 class CDPClient:
     """Small Chrome DevTools Protocol client for visible-page automation."""
 
@@ -728,6 +991,48 @@ class CDPClient:
             if "error" in response:
                 raise GrokWebImagineError("cdp_error", str(response["error"]))
 
+    def click_xy(self, x: int, y: int) -> None:
+        for event in (
+            {"type": "mouseMoved", "x": int(x), "y": int(y)},
+            {
+                "type": "mousePressed",
+                "x": int(x),
+                "y": int(y),
+                "button": "left",
+                "clickCount": 1,
+            },
+            {
+                "type": "mouseReleased",
+                "x": int(x),
+                "y": int(y),
+                "button": "left",
+                "clickCount": 1,
+            },
+        ):
+            response = self._send("Input.dispatchMouseEvent", event)
+            if "error" in response:
+                raise GrokWebImagineError("cdp_error", str(response["error"]))
+
+    def open_new_generation_composer(self) -> Dict[str, Any]:
+        value = self.evaluate(OPEN_NEW_GENERATION_COMPOSER_JS)
+        if not isinstance(value, dict) or not value.get("clicked"):
+            reason = str(value.get("reason") if isinstance(value, dict) else "unknown")
+            raise GrokWebImagineError(
+                "new_generation_action_not_found",
+                f"Could not find a visible Grok Imagine new generation action ({reason}).",
+            )
+        return value
+
+    def open_current_result_from_gallery(self) -> Dict[str, Any]:
+        value = self.evaluate(OPEN_CURRENT_RESULT_FROM_GALLERY_JS)
+        if not isinstance(value, dict) or not value.get("clicked"):
+            reason = str(value.get("reason") if isinstance(value, dict) else "unknown")
+            raise GrokWebImagineError(
+                "current_result_action_not_found",
+                f"Could not find a visible Grok Imagine result to continue ({reason}).",
+            )
+        return value
+
     def submit_prompt(self) -> None:
         value = self.evaluate(SUBMIT_PROMPT_JS)
         if not isinstance(value, dict) or not value.get("submitted"):
@@ -736,12 +1041,60 @@ class CDPClient:
                 "submit_button_not_found",
                 f"Could not find a visible Grok Imagine submit button ({reason}).",
             )
+        try:
+            center_x = int(value.get("centerX") or 0)
+            center_y = int(value.get("centerY") or 0)
+        except (TypeError, ValueError):
+            center_x = 0
+            center_y = 0
+        if center_x <= 0 or center_y <= 0:
+            raise GrokWebImagineError(
+                "submit_button_not_found",
+                "Could not resolve a clickable Grok Imagine submit button center.",
+            )
+        self.click_xy(center_x, center_y)
+
+    def _wait_for_prompt_submit_ready(self, prompt: str, state: Dict[str, Any]) -> Dict[str, Any]:
+        latest = state
+        if not (
+            isinstance(latest, dict)
+            and latest.get("filled") is True
+            and (latest.get("submitReady") is False or latest.get("submitDisabled") is True)
+        ):
+            return _normalise_prompt_fill_result(latest)
+        for _ in range(PROMPT_SUBMIT_READY_POLL_ATTEMPTS):
+            time.sleep(PROMPT_SUBMIT_READY_POLL_SECONDS)
+            latest = self.evaluate(_prompt_input_state_js(prompt))
+            normalised = _normalise_prompt_fill_result(latest)
+            if normalised.get("filled"):
+                return normalised
+            if not (
+                isinstance(latest, dict)
+                and latest.get("filled") is True
+                and (latest.get("submitReady") is False or latest.get("submitDisabled") is True)
+            ):
+                return normalised
+        if isinstance(latest, dict):
+            return {**latest, "filled": False, "reason": "submit_disabled_after_fill"}
+        return {"filled": False, "reason": "submit_disabled_after_fill"}
 
     def fill_prompt(self, prompt: str) -> Dict[str, Any]:
         focused = self.evaluate(FOCUS_PROMPT_INPUT_JS)
         if not isinstance(focused, dict) or not focused.get("focused"):
             fallback = self.evaluate(_fill_prompt_js(prompt))
-            return fallback if isinstance(fallback, dict) else {"filled": False, "reason": "prompt_input_not_found"}
+            return self._wait_for_prompt_submit_ready(prompt, fallback if isinstance(fallback, dict) else {})
+
+        try:
+            center_x = int(focused.get("centerX") or 0)
+            center_y = int(focused.get("centerY") or 0)
+        except (TypeError, ValueError):
+            center_x = 0
+            center_y = 0
+        if center_x > 0 and center_y > 0:
+            try:
+                self.click_xy(center_x, center_y)
+            except GrokWebImagineError:
+                logger.debug("Could not click Grok web prompt editor before text insertion", exc_info=True)
 
         try:
             response = self._send("Input.insertText", {"text": prompt})
@@ -750,13 +1103,30 @@ class CDPClient:
         except GrokWebImagineError:
             logger.debug("Could not insert Grok web prompt via CDP input; falling back to DOM input", exc_info=True)
             fallback = self.evaluate(_fill_prompt_js(prompt))
-            return fallback if isinstance(fallback, dict) else {"filled": False, "reason": "prompt_insert_failed"}
+            if isinstance(fallback, dict):
+                return self._wait_for_prompt_submit_ready(prompt, fallback)
+            return {"filled": False, "reason": "prompt_insert_failed"}
 
         state = self.evaluate(_prompt_input_state_js(prompt))
+        normalised_state = self._wait_for_prompt_submit_ready(prompt, state if isinstance(state, dict) else {})
+        if normalised_state.get("filled"):
+            return normalised_state
         if isinstance(state, dict) and state.get("filled"):
-            return state
+            logger.debug("Grok web prompt text was present but submit button was not ready: %s", state)
         fallback = self.evaluate(_fill_prompt_js(prompt))
-        return fallback if isinstance(fallback, dict) else {"filled": False, "reason": "prompt_state_unconfirmed"}
+        normalised_fallback = self._wait_for_prompt_submit_ready(
+            prompt,
+            fallback if isinstance(fallback, dict) else {},
+        )
+        if normalised_fallback.get("filled"):
+            return normalised_fallback
+        if isinstance(fallback, dict) and fallback.get("filled"):
+            return {
+                **fallback,
+                "filled": False,
+                "reason": "submit_disabled_after_fill",
+            }
+        return {"filled": False, "reason": "prompt_state_unconfirmed"}
 
     def snapshot(self) -> Dict[str, Any]:
         value = self.evaluate(SNAPSHOT_JS)
@@ -766,8 +1136,16 @@ class CDPClient:
         value = self.evaluate(MEDIA_JS)
         return value if isinstance(value, list) else []
 
+    def composer_has_draft(self) -> bool:
+        value = self.evaluate(COMPOSER_DRAFT_STATE_JS)
+        return bool(isinstance(value, dict) and value.get("dirty"))
+
     def click_current_post_edit_action(self) -> Dict[str, Any]:
         value = self.evaluate(CLICK_CURRENT_POST_EDIT_ACTION_JS)
+        return value if isinstance(value, dict) else {"clicked": False, "reason": "unknown"}
+
+    def click_current_post_regenerate_action(self) -> Dict[str, Any]:
+        value = self.evaluate(CLICK_CURRENT_POST_REGENERATE_ACTION_JS)
         return value if isinstance(value, dict) else {"clicked": False, "reason": "unknown"}
 
     def attach_images(self, image_paths: List[str]) -> List[str]:
@@ -842,7 +1220,7 @@ class CDPClient:
                     unusable_candidate_srcs.add(src)
                     continue
                 try:
-                    return self._save_image_src(src)
+                    return self._with_page_context(self._save_image_src(src))
                 except GrokWebImagineError as exc:
                     if exc.code == "artifact_extract_failed" and "image_element_not_found" in exc.message:
                         before.add(src)
@@ -863,6 +1241,22 @@ class CDPClient:
             f"No new Grok web image appeared within {timeout_seconds}s; observed {len(last_media)} media nodes.",
         )
 
+    def _with_page_context(self, artifact: BrowserArtifact) -> BrowserArtifact:
+        try:
+            snapshot = self.snapshot()
+        except Exception:  # noqa: BLE001 - artifact extraction already succeeded; preserve it with low confidence.
+            logger.debug("Could not inspect Grok page after artifact extraction", exc_info=True)
+            return artifact
+        durability, history_verified = _artifact_durability(snapshot, artifact.source)
+        return BrowserArtifact(
+            path=artifact.path,
+            source=artifact.source,
+            page_url=str(snapshot.get("url") or ""),
+            page_title=str(snapshot.get("title") or ""),
+            durability=durability,
+            history_verified=history_verified,
+        )
+
     def generate_image(
         self,
         *,
@@ -880,6 +1274,12 @@ class CDPClient:
             state = classify_visible_state(self.snapshot())
         if state.status not in {"imagine_ready", "grok_ready"}:
             raise GrokWebImagineError(state.status, state.message)
+        if self.composer_has_draft():
+            self.open_new_generation_composer()
+            time.sleep(2)
+            state = classify_visible_state(self.snapshot())
+            if state.status not in {"imagine_ready", "grok_ready"}:
+                raise GrokWebImagineError(state.status, state.message)
 
         if image_paths:
             self.attach_images(image_paths)
@@ -929,6 +1329,28 @@ class CDPClient:
             raise GrokWebImagineError("prompt_input_not_found", "Could not find a visible Grok prompt input.")
 
         self.submit_prompt()
+        return self._wait_for_new_image(before, timeout_seconds)
+
+    def regenerate_current_image(
+        self,
+        *,
+        timeout_seconds: int = 240,
+    ) -> BrowserArtifact:
+        before = {str(item.get("src") or "") for item in self.media()}
+        state = classify_visible_state(self.snapshot())
+        if state.status != "imagine_post_open":
+            raise GrokWebImagineError(
+                "current_post_not_open",
+                "Open a Grok Imagine result post before using regenerate_current.",
+            )
+
+        clicked = self.click_current_post_regenerate_action()
+        if not clicked.get("clicked"):
+            reason = str(clicked.get("reason") or "unknown")
+            raise GrokWebImagineError(
+                "regenerate_action_not_found",
+                f"Could not find a visible Grok Imagine regenerate action on the current post ({reason}).",
+            )
         return self._wait_for_new_image(before, timeout_seconds)
 
     def _save_image_src(self, src: str) -> BrowserArtifact:
@@ -1159,12 +1581,75 @@ class GrokWebImagineProvider(ImageGenProvider):
     def capabilities(self) -> Dict[str, Any]:
         return {
             "modalities": ["text", "image", "image_edit"],
-            "operations": ["generate", "edit_current"],
+            "operations": ["generate", "edit_current", "continue_current", "regenerate_current"],
             "max_reference_images": MAX_REFERENCE_IMAGES,
         }
 
     def _client(self) -> CDPClient:
         return self._cdp_client or CDPClient(port=_configured_port(), url_contains=_configured_url_contains())
+
+    def preflight(self, probe_prompt: Optional[str] = None) -> Dict[str, Any]:
+        if not _is_enabled():
+            return {
+                "status": "disabled_by_default",
+                "safe_to_submit": False,
+                "ready": False,
+                "message": (
+                    "Grok web Imagine provider is disabled by default. Set "
+                    "HERMES_GROK_WEB_IMAGINE=1 or image_gen.grok_web_imagine.enabled=true."
+                ),
+                "url": "",
+                "title": "",
+                "quota_used": False,
+                "generation_called": False,
+            }
+        client = self._client()
+        try:
+            state = classify_visible_state(client.snapshot())
+        except GrokWebImagineError as exc:
+            state = VisibleState(status=exc.code, safe_to_submit=False, message=exc.message)
+        except (OSError, TimeoutError, urllib.error.URLError) as exc:
+            state = _cdp_unreachable_state(exc)
+        except Exception as exc:  # noqa: BLE001 - preflight reports setup failures instead of raising.
+            state = VisibleState(
+                status="browser_probe_failed",
+                safe_to_submit=False,
+                message=f"Could not inspect Grok web browser state: {exc}",
+            )
+        payload = _state_payload(state)
+        prompt_probe: Dict[str, Any] | None = None
+        if str(probe_prompt or "").strip() and state.status == "imagine_ready":
+            try:
+                prompt_probe = _preflight_prompt_probe_payload(
+                    client.fill_prompt(str(probe_prompt).strip())
+                )
+            except GrokWebImagineError as exc:
+                prompt_probe = _failed_preflight_prompt_probe(exc.code)
+            except Exception as exc:  # noqa: BLE001 - preflight reports setup failures instead of raising.
+                prompt_probe = _failed_preflight_prompt_probe(exc.__class__.__name__)
+            if not (
+                prompt_probe.get("prompt_text_present") is True
+                and prompt_probe.get("submit_enabled") is True
+            ):
+                payload = _state_payload(
+                    VisibleState(
+                        status=str(prompt_probe.get("reason") or "prompt_probe_failed"),
+                        safe_to_submit=False,
+                        message=(
+                            "Grok Imagine prompt probe failed before generation: "
+                            + str(prompt_probe.get("reason") or "prompt_probe_failed")
+                        ),
+                        url=state.url,
+                        title=state.title,
+                    )
+                )
+        return {
+            **payload,
+            "ready": payload.get("safe_to_submit") is True,
+            "quota_used": False,
+            "generation_called": False,
+            **({"prompt_probe": prompt_probe} if prompt_probe is not None else {}),
+        }
 
     def generate(
         self,
@@ -1179,9 +1664,17 @@ class GrokWebImagineProvider(ImageGenProvider):
         operation = str(kwargs.get("operation") or "generate").strip().lower()
         if operation in {"edit", "modify_current", "current_post_edit"}:
             operation = "edit_current"
-        if operation not in {"generate", "edit_current"}:
+        if operation in {"continue", "continue_current_post", "current_post_continue", "followup_current"}:
+            operation = "continue_current"
+        if operation in {"regenerate", "reroll", "redo", "retry_current", "current_post_regenerate"}:
+            operation = "regenerate_current"
+        execution_operation = "edit_current" if operation == "continue_current" else operation
+        if operation not in {"generate", "edit_current", "continue_current", "regenerate_current"}:
             return error_response(
-                error="Grok web Imagine supports operation='generate' or operation='edit_current'.",
+                error=(
+                    "Grok web Imagine supports operation='generate', operation='edit_current', "
+                    "operation='continue_current', or operation='regenerate_current'."
+                ),
                 error_type="unsupported_operation",
                 provider=PROVIDER_NAME,
                 model=MODEL_ID,
@@ -1211,12 +1704,22 @@ class GrokWebImagineProvider(ImageGenProvider):
                 prompt=prompt,
                 aspect_ratio=aspect,
             )
+        if execution_operation == "regenerate_current":
+            reference_image_paths = []
 
         client = self._client()
         try:
             state = classify_visible_state(client.snapshot())
-            if state.status == "imagine_post_open" and operation != "edit_current":
+            if state.status == "imagine_post_open" and execution_operation == "generate":
                 client.navigate(_configured_imagine_url())
+                time.sleep(2)
+                state = classify_visible_state(client.snapshot())
+            if state.status == "imagine_results_open" and execution_operation == "generate":
+                client.open_new_generation_composer()
+                time.sleep(2)
+                state = classify_visible_state(client.snapshot())
+            if state.status == "imagine_results_open" and execution_operation in {"edit_current", "regenerate_current"}:
+                client.open_current_result_from_gallery()
                 time.sleep(2)
                 state = classify_visible_state(client.snapshot())
         except GrokWebImagineError as exc:
@@ -1238,9 +1741,9 @@ class GrokWebImagineProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        if operation == "edit_current" and state.status != "imagine_post_open":
+        if execution_operation in {"edit_current", "regenerate_current"} and state.status != "imagine_post_open":
             return error_response(
-                error="Open a Grok Imagine result post before using operation='edit_current'.",
+                error=f"Open a Grok Imagine result post before using operation='{operation}'.",
                 error_type="current_post_not_open",
                 provider=PROVIDER_NAME,
                 model=MODEL_ID,
@@ -1248,7 +1751,7 @@ class GrokWebImagineProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        if operation != "edit_current" and not state.safe_to_submit:
+        if execution_operation == "generate" and not state.safe_to_submit:
             return error_response(
                 error=f"{state.message} Open the debug Chrome window and complete the setup before retrying.",
                 error_type=state.status,
@@ -1266,8 +1769,12 @@ class GrokWebImagineProvider(ImageGenProvider):
             }
             if reference_image_paths:
                 generate_kwargs["image_paths"] = reference_image_paths
-            if operation == "edit_current":
+            if execution_operation == "edit_current":
                 artifact = client.edit_current_image(**generate_kwargs)
+            elif execution_operation == "regenerate_current":
+                artifact = client.regenerate_current_image(
+                    timeout_seconds=int(kwargs.get("timeout_seconds") or 240),
+                )
             else:
                 artifact = client.generate_image(**generate_kwargs)
         except GrokWebImagineError as exc:
@@ -1289,17 +1796,50 @@ class GrokWebImagineProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
+        if not artifact.history_verified:
+            payload = error_response(
+                error=(
+                    "Grok web returned only an ephemeral browser artifact; durable Imagine history/post "
+                    "evidence was not verified, so this image is not safe to deliver as a Grok Web Imagine run."
+                ),
+                error_type="durable_history_not_verified",
+                provider=PROVIDER_NAME,
+                model=MODEL_ID,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+            payload.update(
+                {
+                    "artifact_path": str(artifact.path),
+                    "artifact_source": artifact.source,
+                    "artifact_durability": artifact.durability,
+                    "history_verified": artifact.history_verified,
+                    "page_url": artifact.page_url,
+                    "page_title": artifact.page_title,
+                    "quota_source": "consumer_web",
+                    "reference_image_count": len(reference_image_paths),
+                    "operation": operation,
+                }
+            )
+            return payload
+
         return success_response(
             image=str(artifact.path),
             model=MODEL_ID,
             prompt=prompt,
             aspect_ratio=aspect,
             provider=PROVIDER_NAME,
-            modality="image_edit" if operation == "edit_current" else ("image" if reference_image_paths else "text"),
+            modality="image_edit"
+            if execution_operation == "edit_current"
+            else ("image" if execution_operation == "regenerate_current" or reference_image_paths else "text"),
             extra={
                 "provider_family": "grok_web",
                 "quota_source": "consumer_web",
                 "artifact_source": artifact.source,
+                "artifact_durability": artifact.durability,
+                "history_verified": artifact.history_verified,
+                "page_url": artifact.page_url,
+                "page_title": artifact.page_title,
                 "reference_image_count": len(reference_image_paths),
                 "operation": operation,
             },
@@ -1325,7 +1865,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     probe = sub.add_parser("probe", help="Inspect visible Grok web state without submitting.")
     probe.add_argument("--port", type=int, default=DEFAULT_CDP_PORT)
-    probe.add_argument("--url-contains", default="x.ai")
+    probe.add_argument("--url-contains", default=DEFAULT_URL_CONTAINS)
 
     args = parser.parse_args(argv)
     if args.command == "probe":

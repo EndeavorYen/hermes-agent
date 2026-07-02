@@ -2991,7 +2991,12 @@ class BasePlatformAdapter(ABC):
             return str(content or "")
         payload = payloads[-1]
         package_status = str(payload.get("package_status") or "").strip().lower()
-        if payload.get("success") is False or package_status in {"failed", "failure", "error"}:
+        payload_error = payload.get("error") or payload.get("error_type")
+        if (
+            payload.get("success") is False
+            or package_status in {"failed", "failure", "error"}
+            or (payload.get("success") is not True and payload_error)
+        ):
             error = payload.get("error") or payload.get("message") or payload.get("error_type")
             detail = BasePlatformAdapter._short_visual_package_error(error)
             return f"Visual generation did not complete: {detail}" if detail else "Visual generation did not complete."
@@ -3041,6 +3046,27 @@ class BasePlatformAdapter(ABC):
         delivery_metadata = payload.get("delivery_metadata")
         if not isinstance(delivery_metadata, dict):
             return BasePlatformAdapter._visual_package_top_level_media_paths(payload)
+        try:
+            from agent.visual.delivery_manifest import build_visual_delivery_manifest
+            from agent.visual.delivery_manifest import select_deliverable_artifacts
+
+            manifest = build_visual_delivery_manifest(payload)
+            deliverables = select_deliverable_artifacts(manifest)
+            if deliverables:
+                selected_paths: set[str] = set()
+                for item in deliverables:
+                    path = BasePlatformAdapter._local_path_from_delivery_ref(
+                        item.get("ref")
+                    )
+                    if path:
+                        selected_paths.add(path)
+                return selected_paths
+            if delivery_metadata.get("visual_artifacts"):
+                return set()
+        except Exception:
+            logger.debug("Visual delivery manifest selection failed", exc_info=True)
+            if delivery_metadata.get("visual_artifacts"):
+                return set()
         selected_ids = {
             str(item)
             for item in delivery_metadata.get("selected_visual_artifact_ids") or []

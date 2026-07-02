@@ -3,6 +3,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import yaml
+
 
 _ONE_PIXEL_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
@@ -32,6 +34,541 @@ def test_direct_visual_handoff_accepts_explicit_image_to_video_request():
     assert handoff["visual_agent_llm_provider"] == "xai-oauth"
 
 
+def test_direct_visual_handoff_attaches_raphael_control_metadata(tmp_path, monkeypatch):
+    from agent.visual.agent_mode.handoff import (
+        attach_direct_visual_agent_handoff_metadata,
+        build_direct_visual_agent_handoff,
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "plugins": {"enabled": ["raphael"], "disabled": []},
+                "raphael": {
+                    "enabled": True,
+                    "default_conversation_mode_enabled": True,
+                    "mode": "sage_king",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.5",
+    )
+
+    handoff = build_direct_visual_agent_handoff(agent, "請產出一張圖片和一段影片")
+    payload = json.loads(
+        attach_direct_visual_agent_handoff_metadata(
+            json.dumps({"success": True, "images": ["/tmp/current.png"]}),
+            handoff,
+        )
+    )
+
+    control = payload["direct_visual_agent_handoff"]["raphael_control"]
+    assert control["mode"] == "visual_agent_generation"
+    assert control["next_action"] == "call_visual_agent_generate"
+    assert control["route"]["handoff_tool"] == "visual_agent_generate"
+    assert "artifact_quality_evidence" in control["evidence"]["required_proofs"]
+
+
+def test_direct_visual_handoff_fails_closed_when_raphael_evidence_is_missing(
+    tmp_path, monkeypatch
+):
+    from agent.visual.agent_mode.handoff import (
+        attach_direct_visual_agent_handoff_metadata,
+        build_direct_visual_agent_handoff,
+        format_direct_visual_agent_handoff_response,
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "plugins": {"enabled": ["raphael"], "disabled": []},
+                "raphael": {
+                    "enabled": True,
+                    "default_conversation_mode_enabled": True,
+                    "mode": "sage_king",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.5",
+    )
+
+    handoff = build_direct_visual_agent_handoff(agent, "請產出一張圖片和一段影片")
+    raw = attach_direct_visual_agent_handoff_metadata(
+        json.dumps({"success": True, "images": ["/tmp/current.png"]}),
+        handoff,
+    )
+    payload = json.loads(raw)
+
+    assert payload["success"] is False
+    assert payload["images"] == []
+    assert payload["error_type"] == "raphael_evidence_gate_failed"
+    gate = payload["direct_visual_agent_handoff"]["raphael_evidence_gate"]
+    assert gate["passed"] is False
+    assert "artifact_quality_evidence" in gate["missing_proofs"]
+    assert "selected_current_artifact_only" in gate["missing_proofs"]
+    assert format_direct_visual_agent_handoff_response(raw).startswith("視覺生成失敗：")
+
+
+def test_direct_visual_handoff_allows_payload_with_raphael_evidence(
+    tmp_path, monkeypatch
+):
+    import agent.raphael.state as raphael_state
+    from agent.visual.agent_mode.handoff import (
+        attach_direct_visual_agent_handoff_metadata,
+        build_direct_visual_agent_handoff,
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "plugins": {"enabled": ["raphael"], "disabled": []},
+                "raphael": {
+                    "enabled": True,
+                    "default_conversation_mode_enabled": True,
+                    "mode": "sage_king",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.5",
+    )
+
+    handoff = build_direct_visual_agent_handoff(agent, "請產出一張圖片")
+    raw = attach_direct_visual_agent_handoff_metadata(
+        json.dumps(
+            {
+                "success": True,
+                "images": ["/tmp/current.png"],
+                "generation_payloads": {"image": {"success": True, "provider": "fixture"}},
+                "rankings": {"selected_artifact_id": "artifact-1"},
+                "delivery_metadata": {
+                    "selected_visual_artifact_ids": ["artifact-1"],
+                    "visual_artifacts": {
+                        "/tmp/current.png": {
+                            "artifact_id": "artifact-1",
+                            "request_id": "vrq_1",
+                        }
+                    },
+                    "visual_quality_run": {
+                        "success": True,
+                        "summary": {
+                            "case_count": 1,
+                            "failed_case_count": 0,
+                            "quality_issue_count": 0,
+                        },
+                        "self_review": {
+                            "privacy_safe": True,
+                            "raw_prompt_omitted": True,
+                        },
+                    },
+                },
+                "delivery_recovery": {
+                    "status": "delivered",
+                    "deliver_rejected_artifact": False,
+                    "self_review": {
+                        "preserves_delivery_quality_gate": True,
+                        "avoids_stale_or_rejected_slack_delivery": True,
+                    },
+                },
+                "delivery_gate": {"image": {"allowed": True}},
+                "autonomous_validation": {"valid": True},
+            }
+        ),
+        handoff,
+    )
+    payload = json.loads(raw)
+
+    assert payload["success"] is True
+    assert payload["images"] == ["/tmp/current.png"]
+    gate = payload["direct_visual_agent_handoff"]["raphael_evidence_gate"]
+    assert gate["passed"] is True
+    assert gate["missing_proofs"] == []
+    mission = raphael_state.read_mission_state()
+    assert mission is not None
+    assert mission.active_artifact_id == "artifact-1"
+    assert mission.proof_status == "passed"
+    assert mission.phase == "proof_passed"
+
+
+def test_direct_visual_handoff_allows_video_payload_with_image_first_source_evidence(
+    tmp_path, monkeypatch
+):
+    from agent.visual.agent_mode.handoff import (
+        attach_direct_visual_agent_handoff_metadata,
+        build_direct_visual_agent_handoff,
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "plugins": {"enabled": ["raphael"], "disabled": []},
+                "raphael": {
+                    "enabled": True,
+                    "default_conversation_mode_enabled": True,
+                    "mode": "sage_king",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.5",
+    )
+
+    handoff = build_direct_visual_agent_handoff(agent, "請產出一段 6 秒時尚短片，主體是霧黑鋼筆")
+    assert handoff is not None
+    required = handoff["raphael_control"]["evidence"]["required_proofs"]
+    assert "image_first_video_source_evidence" in required
+    assert "single_ranked_video_source_image" in required
+
+    raw = attach_direct_visual_agent_handoff_metadata(
+        json.dumps(
+            {
+                "success": True,
+                "images": [],
+                "videos": ["/tmp/current.mp4"],
+                "generation_payloads": {
+                    "image": {"success": True, "provider": "fixture"},
+                    "video": [{"success": True, "provider": "fixture"}],
+                },
+                "rankings": {"selected_artifact_id": "artifact-video-1"},
+                "generation_strategy": {
+                    "image_first_for_video": True,
+                    "video_source_image": "/tmp/source.png",
+                    "video_source_image_count": 1,
+                    "video_source_policy": "single_ranked_selected_image",
+                },
+                "delivery_metadata": {
+                    "selected_visual_artifact_ids": ["artifact-video-1"],
+                    "visual_artifacts": {
+                        "/tmp/current.mp4": {
+                            "artifact_id": "artifact-video-1",
+                            "request_id": "vrq_video",
+                            "freshness_status": "fresh",
+                            "is_stable": True,
+                        }
+                    },
+                    "visual_quality_run": {
+                        "success": True,
+                        "summary": {
+                            "case_count": 1,
+                            "failed_case_count": 0,
+                            "quality_issue_count": 0,
+                            "image_first_video_source_covered_count": 1,
+                            "image_first_video_source_failure_count": 0,
+                            "video_source_image_count": 1,
+                        },
+                        "self_review": {
+                            "privacy_safe": True,
+                            "raw_prompt_omitted": True,
+                            "image_first_video_source_covered": True,
+                            "single_video_source_image": True,
+                        },
+                    },
+                },
+                "delivery_recovery": {
+                    "status": "delivered",
+                    "deliver_rejected_artifact": False,
+                    "self_review": {
+                        "preserves_delivery_quality_gate": True,
+                        "avoids_stale_or_rejected_slack_delivery": True,
+                    },
+                },
+                "delivery_gate": {"video": {"allowed": True}},
+                "autonomous_validation": {"valid": True},
+            }
+        ),
+        handoff,
+    )
+    payload = json.loads(raw)
+
+    assert payload["success"] is True
+    assert payload["videos"] == ["/tmp/current.mp4"]
+    gate = payload["direct_visual_agent_handoff"]["raphael_evidence_gate"]
+    assert gate["passed"] is True
+    assert gate["missing_proofs"] == []
+
+
+def test_direct_visual_handoff_rejects_delivery_allowed_without_quality_metadata(
+    tmp_path, monkeypatch
+):
+    from agent.visual.agent_mode.handoff import (
+        attach_direct_visual_agent_handoff_metadata,
+        build_direct_visual_agent_handoff,
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "plugins": {"enabled": ["raphael"], "disabled": []},
+                "raphael": {
+                    "enabled": True,
+                    "default_conversation_mode_enabled": True,
+                    "mode": "sage_king",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.5",
+    )
+
+    handoff = build_direct_visual_agent_handoff(agent, "請產出一張圖片")
+    raw = attach_direct_visual_agent_handoff_metadata(
+        json.dumps(
+            {
+                "success": True,
+                "images": ["/tmp/current.png"],
+                "generation_payloads": {"image": {"success": True, "provider": "fixture"}},
+                "rankings": {"selected_artifact_id": "artifact-1"},
+                "delivery_metadata": {
+                    "selected_visual_artifact_ids": ["artifact-1"],
+                    "visual_artifacts": {
+                        "/tmp/current.png": {
+                            "artifact_id": "artifact-1",
+                            "request_id": "vrq_1",
+                        }
+                    },
+                },
+                "delivery_recovery": {
+                    "status": "delivered",
+                    "deliver_rejected_artifact": False,
+                },
+                "delivery_gate": {"image": {"allowed": True}},
+                "autonomous_validation": {"valid": True},
+            }
+        ),
+        handoff,
+    )
+    payload = json.loads(raw)
+    gate = payload["direct_visual_agent_handoff"]["raphael_evidence_gate"]
+
+    assert payload["success"] is False
+    assert gate["passed"] is False
+    assert "artifact_quality_evidence" in gate["missing_proofs"]
+
+
+def test_direct_visual_handoff_rejects_stale_or_unmapped_selected_artifact(
+    tmp_path,
+    monkeypatch,
+):
+    from agent.visual.agent_mode.handoff import (
+        attach_direct_visual_agent_handoff_metadata,
+        build_direct_visual_agent_handoff,
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "plugins": {"enabled": ["raphael"], "disabled": []},
+                "raphael": {
+                    "enabled": True,
+                    "default_conversation_mode_enabled": True,
+                    "mode": "sage_king",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.5",
+    )
+
+    handoff = build_direct_visual_agent_handoff(agent, "請產出一張圖片")
+    raw = attach_direct_visual_agent_handoff_metadata(
+        json.dumps(
+            {
+                "success": True,
+                "images": ["/tmp/old-rejected-or-unrelated.png"],
+                "generation_payloads": {"image": {"success": True, "provider": "fixture"}},
+                "delivery_metadata": {
+                    "selected_visual_artifact_ids": ["missing-from-artifacts"],
+                    "visual_artifacts": {},
+                },
+                "delivery_recovery": {
+                    "deliver_rejected_artifact": False,
+                    "self_review": {
+                        "preserves_delivery_quality_gate": True,
+                        "avoids_stale_or_rejected_slack_delivery": True,
+                    },
+                },
+                "delivery_gate": {"image": {"allowed": True}},
+                "autonomous_validation": {"valid": True},
+            }
+        ),
+        handoff,
+    )
+    payload = json.loads(raw)
+    gate = payload["direct_visual_agent_handoff"]["raphael_evidence_gate"]
+
+    assert payload["success"] is False
+    assert "selected_current_artifact_only" in gate["missing_proofs"]
+    assert "stale_artifact_guard" in gate["missing_proofs"]
+    assert "delivery_cleanliness" in gate["missing_proofs"]
+
+
+def test_direct_visual_handoff_fails_closed_for_unknown_raphael_proof(
+    tmp_path, monkeypatch
+):
+    from agent.visual.agent_mode.handoff import (
+        attach_direct_visual_agent_handoff_metadata,
+        build_direct_visual_agent_handoff,
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "plugins": {"enabled": ["raphael"], "disabled": []},
+                "raphael": {
+                    "enabled": True,
+                    "default_conversation_mode_enabled": True,
+                    "mode": "sage_king",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.5",
+    )
+    handoff = build_direct_visual_agent_handoff(agent, "請產出一張圖片")
+    handoff["raphael_control"]["evidence"]["required_proofs"] = [
+        "future_visual_proof_not_implemented"
+    ]
+
+    raw = attach_direct_visual_agent_handoff_metadata(
+        json.dumps({"success": True, "images": ["/tmp/current.png"]}),
+        handoff,
+    )
+    payload = json.loads(raw)
+    gate = payload["direct_visual_agent_handoff"]["raphael_evidence_gate"]
+
+    assert payload["success"] is False
+    assert gate["passed"] is False
+    assert "future_visual_proof_not_implemented" in gate["missing_proofs"]
+
+
+def test_direct_visual_handoff_rejects_failed_artifact_quality_payload(
+    tmp_path, monkeypatch
+):
+    from agent.visual.agent_mode.handoff import (
+        attach_direct_visual_agent_handoff_metadata,
+        build_direct_visual_agent_handoff,
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "plugins": {"enabled": ["raphael"], "disabled": []},
+                "raphael": {
+                    "enabled": True,
+                    "default_conversation_mode_enabled": True,
+                    "mode": "sage_king",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.5",
+    )
+    handoff = build_direct_visual_agent_handoff(agent, "請產出一張圖片")
+    handoff["raphael_control"]["evidence"]["required_proofs"] = [
+        "artifact_quality_evidence"
+    ]
+
+    raw = attach_direct_visual_agent_handoff_metadata(
+        json.dumps(
+            {
+                "success": True,
+                "images": ["/tmp/current.png"],
+                "rankings": {"selected_artifact_id": "artifact-1"},
+                "delivery_gate": {"image": {"allowed": False}},
+                "autonomous_validation": {"valid": False},
+            }
+        ),
+        handoff,
+    )
+    payload = json.loads(raw)
+    gate = payload["direct_visual_agent_handoff"]["raphael_evidence_gate"]
+
+    assert payload["success"] is False
+    assert gate["passed"] is False
+    assert "artifact_quality_evidence" in gate["missing_proofs"]
+
+
+def test_direct_visual_handoff_omits_raphael_control_when_raphael_disabled(
+    tmp_path, monkeypatch
+):
+    from agent.visual.agent_mode.handoff import (
+        attach_direct_visual_agent_handoff_metadata,
+        build_direct_visual_agent_handoff,
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "plugins": {"enabled": ["raphael"], "disabled": []},
+                "raphael": {
+                    "enabled": False,
+                    "default_conversation_mode_enabled": False,
+                    "mode": "sage_king",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.5",
+    )
+
+    handoff = build_direct_visual_agent_handoff(agent, "請產出一張圖片和一段影片")
+    payload = json.loads(
+        attach_direct_visual_agent_handoff_metadata(
+            json.dumps({"success": True, "images": ["/tmp/current.png"]}),
+            handoff,
+        )
+    )
+
+    assert "raphael_control" not in payload["direct_visual_agent_handoff"]
+
+
 def test_direct_visual_handoff_materializes_data_uri_attachment(tmp_path, monkeypatch):
     from agent.visual.agent_mode import handoff as handoff_module
 
@@ -56,6 +593,37 @@ def test_direct_visual_handoff_materializes_data_uri_attachment(tmp_path, monkey
     assert Path(attachment).read_bytes() == _ONE_PIXEL_PNG
 
 
+def test_direct_visual_handoff_strips_visual_arsenal_metadata_from_prompt():
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.5",
+    )
+    message = [
+        {
+            "type": "text",
+            "text": (
+                "請用 Grok Imagine + reference 固定這位角色，產出不同姿勢候選並選最佳，只交付最佳圖片。\n\n"
+                "[Visual Arsenal source images]\n"
+                "The current Slack message includes user-uploaded source/reference images cached on this machine.\n"
+                "1. image_path: /Users/simon/.hermes/image_cache/img_ref.png (image/png)"
+            ),
+        },
+        {"type": "image_url", "image_url": {"url": "/tmp/ref.png"}},
+    ]
+
+    handoff = build_direct_visual_agent_handoff(agent, message)
+
+    assert handoff is not None
+    assert handoff["arguments"]["prompt"] == (
+        "請用 Grok Imagine + reference 固定這位角色，產出不同姿勢候選並選最佳，只交付最佳圖片。"
+    )
+    assert "Visual Arsenal" not in handoff["arguments"]["prompt"]
+    assert "image_cache" not in handoff["arguments"]["prompt"]
+
+
 def test_direct_visual_handoff_ignores_image_discussion_without_generation_intent():
     from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
 
@@ -66,6 +634,56 @@ def test_direct_visual_handoff_ignores_image_discussion_without_generation_inten
     )
 
     handoff = build_direct_visual_agent_handoff(agent, "這張圖片的構圖好看嗎？")
+
+    assert handoff is None
+
+
+def test_direct_visual_handoff_ignores_text_only_visual_route_analysis():
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.5",
+    )
+
+    prompts = (
+        "純文字回答，不使用工具。如果使用者要求 image + video，但禁止產圖，應路由到什麼 mode/provider？",
+        "只做 LLM 判斷，不要呼叫任何產圖工具，請分析 image/video proof gate。",
+        "Text-only visual route/provider/proof-gate analysis; no tools and no image generation.",
+        "請分析如果使用者要求產圖和生成影片，應該路由到哪個 provider / proof gate？",
+        "如果我要之後做 image + video，先不要實際做圖，請判斷 mode 和 provider。",
+        (
+            "同一個 hostile UX 測試，現在模擬真實文字任務：我要公開 Raphael，"
+            "但又怕 overclaim；我要使用者 wow，但不能產圖、不能用工具、不能假綠燈。"
+            "請只用六行回答：目標、成功條件、證據門檻、阻塞、修正策略、可公開說法。"
+            "不要宣稱已完成。"
+        ),
+    )
+
+    for prompt in prompts:
+        assert build_direct_visual_agent_handoff(agent, prompt) is None
+
+
+def test_direct_visual_handoff_respects_raphael_runtime_analysis_veto(monkeypatch):
+    from agent.visual.agent_mode import handoff as handoff_module
+
+    monkeypatch.setattr(
+        handoff_module,
+        "is_text_only_visual_analysis_request",
+        lambda _prompt: False,
+    )
+    monkeypatch.setattr(handoff_module, "_raphael_handoff_control_enabled", lambda: True)
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.5",
+    )
+
+    handoff = handoff_module.build_direct_visual_agent_handoff(
+        agent,
+        "我要公開 Raphael，但不能產圖、不能用工具。請只用六行回答，不要宣稱已完成。",
+    )
 
     assert handoff is None
 
@@ -110,6 +728,79 @@ def test_direct_visual_handoff_ignores_prompt_rewrite_request_even_when_it_menti
     )
 
     handoff = build_direct_visual_agent_handoff(agent, "請幫我優化剛剛產圖用的 prompt")
+
+    assert handoff is None
+
+
+def test_direct_visual_handoff_ignores_prompt_builder_request_with_images():
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.5",
+    )
+    message = [
+        {
+            "type": "text",
+            "text": (
+                "固定這位角色，替換不同的服裝與構圖，高品質，8K，光影，性感一些。"
+                "請給我 prompt 就好，不須產圖"
+            ),
+        },
+        {"type": "image_url", "image_url": {"url": "/tmp/ref-1.png"}},
+        {"type": "image_url", "image_url": {"url": "/tmp/ref-2.png"}},
+    ]
+
+    handoff = build_direct_visual_agent_handoff(agent, message)
+
+    assert handoff is None
+
+
+def test_direct_visual_handoff_ignores_prompt_edit_request_with_session_refs():
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+    from agent.visual.agent_mode.handoff import is_visual_prompt_builder_request
+    from gateway.session_context import reset_visual_reference_context, set_visual_reference_context
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.5",
+    )
+    token = set_visual_reference_context(
+        [
+            {
+                "uri": "/tmp/ref-1.png",
+                "role_hint": "visual_reference",
+                "source": "session_visual_context",
+            }
+        ]
+    )
+    try:
+        prompts = [
+            "是這一版 prompt, 再修改性感一點的服裝",
+            "就是我提供的那個 prompt, 你幫我修改 prompt, 替換更性感的服裝敘述",
+        ]
+        for prompt in prompts:
+            assert is_visual_prompt_builder_request(prompt) is True
+            assert build_direct_visual_agent_handoff(agent, prompt) is None
+    finally:
+        reset_visual_reference_context(token)
+
+
+def test_direct_visual_handoff_ignores_negative_visual_generation_instruction():
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.5",
+    )
+
+    handoff = build_direct_visual_agent_handoff(
+        agent,
+        "Live LLM smoke. Do not generate images or video. Reply exactly OK.",
+    )
 
     assert handoff is None
 
@@ -208,6 +899,160 @@ def test_direct_visual_handoff_uses_session_edit_anchor_for_followup_edit():
     }
 
 
+def test_direct_visual_handoff_continues_current_grok_web_result_for_followup_edit():
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+    from gateway.session_context import reset_visual_reference_context, set_visual_reference_context
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.5",
+    )
+    token = set_visual_reference_context(
+        [
+            {
+                "uri": "/tmp/previous-selected.png",
+                "role_hint": "edit_anchor",
+                "source": "previous_selected_artifact",
+            },
+            {
+                "uri": "/tmp/character.png",
+                "role_hint": "visual_reference",
+                "source": "previous_tool_reference",
+                "user_ref_index": 1,
+            },
+        ]
+    )
+    try:
+        handoff = build_direct_visual_agent_handoff(
+            agent,
+            "請使用 grok-web-imagine provider，可不可以再嘗試不同的構圖，可以類似原 ref 的構圖進行調整和優化",
+        )
+    finally:
+        reset_visual_reference_context(token)
+
+    assert handoff is not None
+    args = handoff["arguments"]
+    assert args["image_provider"] == "grok-web-imagine"
+    assert args["image_operation"] == "continue_current"
+    assert args["candidate_budget"] == 1
+    assert args["candidate_budget_source"] == "grok_web_current_result_operation"
+    assert args["attachments"] == ["/tmp/character.png"]
+
+
+def test_direct_visual_handoff_regenerates_current_grok_web_result_for_regenerate_request():
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+    from gateway.session_context import reset_visual_reference_context, set_visual_reference_context
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.5",
+    )
+    token = set_visual_reference_context(
+        [
+            {
+                "uri": "/tmp/previous-selected.png",
+                "role_hint": "edit_anchor",
+                "source": "previous_selected_artifact",
+            }
+        ]
+    )
+    try:
+        handoff = build_direct_visual_agent_handoff(
+            agent,
+            '[Replying to: "請使用 grok-web-imagine provider 產圖"]\n\n重新產生',
+        )
+    finally:
+        reset_visual_reference_context(token)
+
+    assert handoff is not None
+    args = handoff["arguments"]
+    assert args["image_provider"] == "grok-web-imagine"
+    assert args["image_operation"] == "regenerate_current"
+    assert args["attachments"] == ["/tmp/previous-selected.png"]
+
+
+def test_direct_visual_handoff_promotes_current_attachment_for_grok_web_polish():
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.5",
+    )
+    message = [
+        {"type": "text", "text": "用 grok web polish 試試看"},
+        {"type": "image_url", "image_url": {"url": "/tmp/current-selected.png"}},
+        {"type": "image_url", "image_url": {"url": "/tmp/older-reference.png"}},
+    ]
+
+    handoff = build_direct_visual_agent_handoff(agent, message)
+
+    assert handoff is not None
+    args = handoff["arguments"]
+    assert args["include_image"] is True
+    assert args["include_video"] is False
+    assert args["polish_provider"] == "grok-web-imagine"
+    assert args["polish_provider_source"] == "prompt_override"
+    assert args["attachments"] == ["/tmp/current-selected.png", "/tmp/older-reference.png"]
+    assert args["reference_binding"]["reference_order"][0] == {
+        "index": 1,
+        "role_hint": "edit_anchor",
+        "attachment": "/tmp/current-selected.png",
+        "source": "current_visual_context",
+        "user_ref_index": "previous_selected_output",
+    }
+    assert args["reference_binding"]["reference_order"][1] == {
+        "index": 2,
+        "role_hint": "visual_reference",
+        "attachment": "/tmp/older-reference.png",
+        "source": "current_visual_context",
+    }
+    assert "edit target" in args["prompt"]
+
+
+def test_direct_visual_handoff_promotes_session_reference_for_grok_web_polish():
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+    from gateway.session_context import reset_visual_reference_context, set_visual_reference_context
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.5",
+    )
+    token = set_visual_reference_context(
+        [
+            {
+                "uri": "/tmp/current-selected.png",
+                "role_hint": "visual_reference",
+                "source": "session_visual_context",
+            },
+            {
+                "uri": "/tmp/older-reference.png",
+                "role_hint": "visual_reference",
+                "source": "session_visual_context",
+            },
+        ]
+    )
+    try:
+        handoff = build_direct_visual_agent_handoff(agent, "用 grok web polish 試試看")
+    finally:
+        reset_visual_reference_context(token)
+
+    assert handoff is not None
+    args = handoff["arguments"]
+    assert args["polish_provider"] == "grok-web-imagine"
+    assert args["attachments"] == ["/tmp/current-selected.png", "/tmp/older-reference.png"]
+    assert args["reference_binding"]["reference_order"][0] == {
+        "index": 1,
+        "role_hint": "edit_anchor",
+        "attachment": "/tmp/current-selected.png",
+        "source": "session_visual_context",
+        "user_ref_index": "previous_selected_output",
+    }
+
+
 def test_direct_visual_handoff_formats_quality_gate_error_without_internal_label():
     from agent.visual.agent_mode.handoff import format_direct_visual_agent_handoff_response
 
@@ -222,6 +1067,21 @@ def test_direct_visual_handoff_formats_quality_gate_error_without_internal_label
     )
 
     assert response == "視覺生成失敗：參考圖角色/姿勢對應仍未通過品質檢查，已停止交付。"
+
+
+def test_direct_visual_handoff_formats_bare_tool_error_as_failure():
+    from agent.visual.agent_mode.handoff import format_direct_visual_agent_handoff_response
+
+    response = format_direct_visual_agent_handoff_response(
+        json.dumps(
+            {
+                "error": "visual_package_generate is for image/video generation, not visual feedback",
+                "request_type": "visual_feedback",
+            }
+        )
+    )
+
+    assert response == "視覺生成失敗：visual_package_generate is for image/video generation, not visual feedback"
 
 
 def test_direct_visual_handoff_formats_recovery_summary_for_blocked_candidate():

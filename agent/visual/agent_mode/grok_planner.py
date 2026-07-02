@@ -9,6 +9,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from agent.visual.feedback import is_visual_feedback_only_text
+
 logger = logging.getLogger(__name__)
 
 _PLANNER_IMAGE_MAX_BYTES = 18 * 1024 * 1024
@@ -32,8 +34,11 @@ def apply_visual_agent_llm_planner(args: dict[str, Any]) -> tuple[dict[str, Any]
     }
     attachments = _string_list(args.get("attachments"))
     user_content = _planner_user_content(prompt, args, attachments)
-    if isinstance(user_content, list):
-        plan["image_input_count"] = sum(1 for item in user_content if item.get("type") == "image_url")
+    plan["image_input_count"] = (
+        sum(1 for item in user_content if item.get("type") == "image_url")
+        if isinstance(user_content, list)
+        else 0
+    )
     try:
         from agent.auxiliary_client import call_llm, extract_content_or_reasoning
 
@@ -49,8 +54,13 @@ def apply_visual_agent_llm_planner(args: dict[str, Any]) -> tuple[dict[str, Any]
                         "provider prompt for an image/video generator, not a loose summary. "
                         "Preserve the user's intent, subject, constraints, provider choice, "
                         "and language. If reference images are attached, inspect them in "
-                        "the user's visible upload order and convert role-bound references "
-                        "into concrete visual observations. For a character_identity ref, "
+                        "the user's visible upload order. Convert explicitly role-bound "
+                        "references into concrete visual observations, but never invent "
+                        "fixed per-image roles when the user did not assign them. If the "
+                        "attached images are unassigned, treat them as a collective reference "
+                        "set for the requested subject/style and do not emit a reference "
+                        "mapping that labels individual refs as identity, pose, wardrobe, "
+                        "style, background, or similar roles. For a character_identity ref, "
                         "describe identity, face, hair, silhouette, outfit, and palette. "
                         "For a pose_composition ref, describe only body orientation, limb "
                         "placement, camera angle, framing, composition, and scene layout; "
@@ -70,6 +80,16 @@ def apply_visual_agent_llm_planner(args: dict[str, Any]) -> tuple[dict[str, Any]
         payload = _parse_json_object(extract_content_or_reasoning(response))
         visual_prompt = str(payload.get("visual_prompt") or payload.get("prompt") or "").strip()
         if visual_prompt:
+            if _same_prompt(visual_prompt, prompt):
+                plan["reason"] = "unchanged_visual_prompt"
+                raise _WeakVisualPromptPlan("unchanged_visual_prompt")
+            if is_visual_feedback_only_text(visual_prompt):
+                plan["reason"] = "feedback_like_visual_prompt"
+                raise _WeakVisualPromptPlan("feedback_like_visual_prompt")
+            if _unsupported_reference_role_mapping(visual_prompt, args, attachments):
+                plan["reason"] = "unsupported_reference_role_mapping"
+                raise _WeakVisualPromptPlan("unsupported_reference_role_mapping")
+            visual_prompt = _apply_unassigned_reference_policy_guard(visual_prompt, args, attachments)
             next_args = dict(args)
             next_args["prompt"] = visual_prompt
             next_args["visual_agent_original_prompt"] = prompt
@@ -81,6 +101,8 @@ def apply_visual_agent_llm_planner(args: dict[str, Any]) -> tuple[dict[str, Any]
             )
             return next_args, plan
         plan["reason"] = "empty_visual_prompt"
+    except _WeakVisualPromptPlan:
+        pass
     except Exception as exc:
         logger.debug("visual agent Grok planner failed; using deterministic prompt: %s", exc)
         plan["reason"] = exc.__class__.__name__
@@ -99,8 +121,22 @@ def apply_visual_agent_llm_planner(args: dict[str, Any]) -> tuple[dict[str, Any]
     return args, plan
 
 
+class _WeakVisualPromptPlan(Exception):
+    pass
+
+
+def _same_prompt(candidate: str, original: str) -> bool:
+    return re.sub(r"\s+", "", str(candidate or "")).lower() == re.sub(
+        r"\s+",
+        "",
+        str(original or ""),
+    ).lower()
+
+
 def _planner_user_content(prompt: str, args: dict[str, Any], attachments: list[str]) -> str | list[dict[str, Any]]:
     text = _planner_user_text(prompt, args, attachments)
+    if _uses_unassigned_reference_set(args, attachments):
+        return text
     image_parts = [_image_content_part(attachment) for attachment in attachments]
     image_parts = [part for part in image_parts if part]
     if not image_parts:
@@ -128,7 +164,12 @@ def _planner_user_text(prompt: str, args: dict[str, Any], attachments: list[str]
         lines.extend(
             [
                 "",
-                "Attached references are in the user's visible upload order. Inspect them before rewriting.",
+                "Attached references are an unassigned collective reference set in the user's visible "
+                "upload order. Inspect them before rewriting, but do not assign fixed per-image roles "
+                "such as ref 1 = identity, ref 2 = pose, ref 3 = wardrobe/style unless the user "
+                "explicitly mapped those roles. If the request says to fix/lock this character, use "
+                "the attached set as collective identity/style evidence and invent new pose candidates "
+                "from the user's request instead of copying pose/composition from one unassigned ref.",
             ]
         )
     return "\n".join(lines).strip()
@@ -152,18 +193,30 @@ def _reference_role_lines(binding: Any, attachments: list[str]) -> list[str]:
 
 def _deterministic_provider_ready_prompt(prompt: str, args: dict[str, Any], attachments: list[str]) -> str:
     role_items = _reference_role_items(args.get("reference_binding"), attachments)
-    if not role_items:
-        return prompt
-
     base_prompt = _strip_reference_binding_block(prompt)
     lines = [
         "Provider-ready visual prompt:",
         f"Objective: {base_prompt}",
-        "",
-        "Reference mapping from the user's visible upload order:",
     ]
-    for index, role_hint in role_items:
-        lines.append(f"- ref {index} = {role_hint}")
+
+    if role_items:
+        lines.extend(["", "Reference mapping from the user's visible upload order:"])
+        for index, role_hint in role_items:
+            lines.append(f"- ref {index} = {role_hint}")
+    elif attachments:
+        lines.extend(
+            [
+                "",
+                "Reference policy for unassigned uploaded images:",
+                "- Treat all attached images as an unassigned collective reference set for the requested "
+                "subject, character identity, style, and visual consistency.",
+                "- Do not assign fixed per-image roles such as ref 1 = identity, ref 2 = pose, or "
+                "ref 3 = wardrobe/style unless the user explicitly mapped those roles.",
+                "- If the user asks to fix/lock this character, preserve the character identity supported "
+                "by the reference set as a whole; generate new pose/composition candidates from the "
+                "request rather than copying pose/composition from any one unassigned reference.",
+            ]
+        )
 
     role_constraints = _role_constraint_lines(role_items)
     if role_constraints:
@@ -172,8 +225,12 @@ def _deterministic_provider_ready_prompt(prompt: str, args: dict[str, Any], atta
     lines.extend(
         [
             "",
-            "Quality target: polished high-quality final image, coherent anatomy, clean face and hands, "
-            "natural limb geometry, refined lighting, intentional composition, no candidate grid or collage.",
+            "Composition and camera: choose a confident, intentional frame that makes the subject readable; "
+            "use coherent perspective, balanced crop, and a clear focal point.",
+            "",
+            "Quality target: polished high-quality final image, beautiful subject rendering, coherent anatomy, "
+            "clean face and hands, natural limb geometry, refined lighting, attractive material texture, "
+            "intentional composition, no candidate grid or collage.",
             "",
             "Negative constraints: do not ignore explicit material/coverage constraints; do not mix reference "
             "roles; no malformed anatomy, duplicated limbs, warped face, broken feet or hands, bad crop, "
@@ -196,6 +253,85 @@ def _reference_role_items(binding: Any, attachments: list[str]) -> list[tuple[in
         role_hint = str(item.get("role_hint") or "visual_reference").strip() or "visual_reference"
         items.append((index, role_hint))
     return items
+
+
+def _has_role_specific_reference_binding(binding: Any, attachments: list[str]) -> bool:
+    return any(role != "visual_reference" for _index, role in _reference_role_items(binding, attachments))
+
+
+def _uses_unassigned_reference_set(args: dict[str, Any], attachments: list[str]) -> bool:
+    return bool(attachments) and not _has_role_specific_reference_binding(
+        args.get("reference_binding"),
+        attachments,
+    )
+
+
+def _unsupported_reference_role_mapping(
+    visual_prompt: str,
+    args: dict[str, Any],
+    attachments: list[str],
+) -> bool:
+    if not _uses_unassigned_reference_set(args, attachments):
+        return False
+    text = str(visual_prompt or "").lower()
+    compact = re.sub(r"\s+", " ", text)
+    assignment_pattern = re.compile(
+        r"(?:\bref(?:erence)?\s*\d+|img_[a-z0-9._-]+|image[_\s-]?\d+|"
+        r"第[一二三四五六七八九十\d]+張)\s*(?:=|:|is\s+|as\s+|為|當作|作為)"
+    )
+    mapping_marker = "reference_mapping" in compact or "reference mapping" in compact
+    has_assignment = bool(assignment_pattern.search(compact))
+    if not (mapping_marker or has_assignment):
+        return False
+    role_terms = (
+        "primary",
+        "secondary",
+        "identity",
+        "character",
+        "pose",
+        "composition",
+        "wardrobe",
+        "outfit",
+        "clothing",
+        "style",
+        "background",
+        "facial",
+        "face",
+        "hair",
+        "hand pose",
+        "full-body",
+        "角色",
+        "人物",
+        "身份",
+        "姿勢",
+        "動作",
+        "構圖",
+        "鏡頭",
+        "服裝",
+        "衣服",
+        "風格",
+        "背景",
+    )
+    return any(term in compact for term in role_terms)
+
+
+def _apply_unassigned_reference_policy_guard(
+    visual_prompt: str,
+    args: dict[str, Any],
+    attachments: list[str],
+) -> str:
+    if not _uses_unassigned_reference_set(args, attachments):
+        return visual_prompt
+    lowered_prompt = visual_prompt.lower()
+    if "collective reference set" in lowered_prompt and "fixed per-image roles" in lowered_prompt:
+        return visual_prompt
+    guard = (
+        "Reference policy: treat attached images as an unassigned collective reference set. "
+        "Do not assign fixed per-image roles or copy pose/composition/wardrobe/style from a "
+        "single reference unless the user explicitly mapped that role; preserve requested "
+        "character identity/style from the set as a whole.\n\n"
+    )
+    return f"{guard}{visual_prompt}".strip()
 
 
 def _strip_reference_binding_block(prompt: str) -> str:

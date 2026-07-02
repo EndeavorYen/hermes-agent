@@ -24,7 +24,7 @@ import json
 import logging
 import mimetypes
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 from urllib.parse import unquote, urlparse
 
 from agent.image_gen_provider import (
@@ -88,6 +88,11 @@ _CODEX_INSTRUCTIONS = (
     "for identity, style, composition, outfit, and palette unless the prompt "
     "explicitly says otherwise."
 )
+
+
+class _ImageGenerationResult(NamedTuple):
+    b64: str
+    response_id: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -245,27 +250,44 @@ def _build_responses_payload(
     }
 
 
-def _extract_image_b64(value: Any) -> Optional[str]:
-    """Return the newest image b64 embedded in a Responses event payload."""
-    found: Optional[str] = None
+def _image_generation_result_id(value: Dict[str, Any]) -> str:
+    for key in ("response_id", "result_id", "generation_id", "id", "call_id", "item_id"):
+        candidate = str(value.get(key) or "").strip()
+        if candidate:
+            return candidate
+    return ""
+
+
+def _extract_image_generation_result(value: Any) -> Optional[_ImageGenerationResult]:
+    """Return the newest image payload and provider id from a Responses event."""
+    found: Optional[_ImageGenerationResult] = None
     if isinstance(value, dict):
+        result_id = _image_generation_result_id(value)
         if value.get("type") == "image_generation_call":
             result = value.get("result")
             if isinstance(result, str) and result:
-                found = result
+                found = _ImageGenerationResult(result, result_id)
         partial = value.get("partial_image_b64")
         if isinstance(partial, str) and partial:
-            found = partial
+            found = _ImageGenerationResult(partial, result_id)
         for child in value.values():
-            nested = _extract_image_b64(child)
+            nested = _extract_image_generation_result(child)
             if nested:
+                if result_id and not nested.response_id:
+                    nested = _ImageGenerationResult(nested.b64, result_id)
                 found = nested
     elif isinstance(value, list):
         for child in value:
-            nested = _extract_image_b64(child)
+            nested = _extract_image_generation_result(child)
             if nested:
                 found = nested
     return found
+
+
+def _extract_image_b64(value: Any) -> Optional[str]:
+    """Return the newest image b64 embedded in a Responses event payload."""
+    result = _extract_image_generation_result(value)
+    return result.b64 if result else None
 
 
 def _iter_sse_json(response: Any):
@@ -322,8 +344,8 @@ def _collect_image_b64(
     size: str,
     quality: str,
     reference_images: Optional[List[str]] = None,
-) -> Optional[str]:
-    """Stream a Codex Responses image_generation call and return the b64 image."""
+) -> Optional[_ImageGenerationResult]:
+    """Stream a Codex Responses image_generation call and return image evidence."""
     import httpx
     from agent.auxiliary_client import _codex_cloudflare_headers
 
@@ -341,7 +363,7 @@ def _collect_image_b64(
     )
     timeout = httpx.Timeout(300.0, connect=30.0, read=300.0, write=30.0, pool=30.0)
 
-    image_b64: Optional[str] = None
+    image_result: Optional[_ImageGenerationResult] = None
     with httpx.Client(timeout=timeout, headers=headers) as http:
         with http.stream("POST", f"{_CODEX_BASE_URL}/responses", json=payload) as response:
             try:
@@ -353,11 +375,11 @@ def _collect_image_b64(
                     f"Codex Responses API returned HTTP {exc.response.status_code}: {body}"
                 ) from exc
             for event in _iter_sse_json(response):
-                found = _extract_image_b64(event)
+                found = _extract_image_generation_result(event)
                 if found:
-                    image_b64 = found
+                    image_result = found
 
-    return image_b64
+    return image_result
 
 
 # ---------------------------------------------------------------------------
@@ -486,7 +508,7 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             )
 
         try:
-            b64 = _collect_image_b64(
+            collected = _collect_image_b64(
                 token,
                 prompt=prompt,
                 size=size,
@@ -504,7 +526,14 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        if not b64:
+        if isinstance(collected, str):
+            b64 = collected
+            response_id = ""
+        else:
+            b64 = getattr(collected, "b64", None)
+            response_id = str(getattr(collected, "response_id", "") or "").strip()
+
+        if not isinstance(b64, str) or not b64:
             return error_response(
                 error="Codex response contained no image_generation_call result",
                 error_type="empty_response",
@@ -526,7 +555,7 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        return success_response(
+        result = success_response(
             image=str(saved_path),
             model=tier_id,
             prompt=prompt,
@@ -540,6 +569,9 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 "reference_conditioning": "responses_input_image" if reference_images else "none",
             },
         )
+        if response_id:
+            result["response_id"] = response_id
+        return result
 
 
 # ---------------------------------------------------------------------------

@@ -52,6 +52,25 @@ async def test_visual_package_generate_rejects_prompt_disclosure_without_generat
 
 
 @pytest.mark.asyncio
+async def test_visual_package_generate_rejects_feedback_only_praise_without_generating(monkeypatch):
+    from tools import visual_package_tool
+
+    def fail_generate_image(**kwargs):
+        raise AssertionError("visual feedback praise must not generate an image")
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fail_generate_image)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {"prompt": "這次的產圖品質很棒!"}
+        )
+    )
+
+    assert payload["error"] == "visual_package_generate is for image/video generation, not visual feedback"
+    assert payload["request_type"] == "visual_feedback"
+
+
+@pytest.mark.asyncio
 async def test_visual_package_generate_returns_selected_image_and_video(monkeypatch, tmp_path):
     from tools import visual_package_tool
 
@@ -106,6 +125,147 @@ async def test_visual_package_generate_returns_selected_image_and_video(monkeypa
     assert payload["autonomous_validation"]["evidence"]["learning_trace_count"] >= 2
     assert payload["autonomous_orchestration"]["runtime_hook"] == "post_generation"
     assert payload["autonomous_orchestration"]["next_action"] == "accept_and_monitor"
+
+
+@pytest.mark.asyncio
+async def test_visual_package_records_visual_agent_prompt_lineage(monkeypatch, tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image = tmp_path / "image.png"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    captured = {}
+
+    def fake_generate_image(**kwargs):
+        captured.update(kwargs)
+        return {
+            "success": True,
+            "image": str(image),
+            "provider": "fixture",
+            "model": "image-fixture",
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    provider_ready_prompt = (
+        "Provider-ready visual prompt:\n"
+        "Objective: draw a polished cinematic anime character portrait.\n\n"
+        "Quality target: refined anatomy, clean face, intentional composition.\n\n"
+        "Negative constraints: no bad hands, no watermark."
+    )
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": provider_ready_prompt,
+                "visual_agent_original_prompt": "畫動漫圖",
+                "include_image": True,
+                "include_video": False,
+                "candidate_budget": 1,
+            }
+        )
+    )
+
+    assert captured["prompt"] == (
+        "draw a polished cinematic anime character portrait.\n\n"
+        "Quality: refined anatomy, clean face, intentional composition.\n\n"
+        "Negative: no bad hands, no watermark."
+    )
+    ledger = VisualAttemptLedger(default_visual_ledger_path())
+    request = ledger.get_request(payload["visual_request_id"])
+    attempts = [
+        attempt
+        for attempt in ledger._list("visual_attempts")
+        if attempt["request_id"] == payload["visual_request_id"]
+    ]
+
+    assert request["user_prompt"] == "畫動漫圖"
+    assert attempts
+    assert attempts[0]["prompt_original"] == "畫動漫圖"
+    assert attempts[0]["prompt_mediated"] == captured["prompt"]
+    assert "visual_arsenal_variant" not in attempts[0]["parameters_requested"]
+
+
+@pytest.mark.asyncio
+async def test_visual_package_sends_provider_clean_prompt_without_thread_context(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    refs = [tmp_path / f"ref-{index}.png" for index in range(1, 4)]
+    for ref in refs:
+        ref.write_bytes(_ONE_PIXEL_PNG)
+    image = tmp_path / "image.png"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    captured = {}
+
+    def fake_generate_image(**kwargs):
+        captured.update(kwargs)
+        return {
+            "success": True,
+            "image": str(image),
+            "provider": "grok-web-imagine",
+            "model": "grok-web-imagine",
+            "vision_observation": {
+                "reference_adherence": 0.9,
+                "character_identity_adherence": 0.9,
+                "face_quality": 0.9,
+                "visual_appeal": 0.9,
+                "composition": 0.9,
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    prompt = (
+        "Provider-ready visual prompt:\n"
+        "Objective: [Replying to: \"請使用 grok-web-imagine provider / Grok Web Imagine + "
+        "reference 固定這位角色，產出不同姿勢候選並選最佳，只交付最佳圖片。\"]\n\n"
+        "[Thread context — prior messages in this thread (not yet in conversation history):]\n\n"
+        "[thread parent] simon: 請使用 grok-web-imagine provider / Grok Web Imagine + "
+        "reference 固定這位角色，產出不同姿勢候選並選最佳，只交付最佳圖片。\n\n"
+        "[End of thread context]\n\n"
+        "可不可以再嘗試不同的構圖，可以類似原 ref 的構圖進行調整和優化\n\n"
+        "Session visual context:\n\n"
+        "- attachment 1: visual_reference reference; preserve its role only when relevant.\n\n"
+        "Reference policy for unassigned uploaded images:\n\n"
+        "- Treat all attached images as an unassigned collective reference set.\n\n"
+        "Quality target: polished high-quality final image, beautiful subject rendering.\n\n"
+        "Provider reference image ordering for generation:\n\n"
+        "- provider images 1-3 form an unassigned collective identity/style reference set, "
+        "not an edit anchor or base image to clean up.\n"
+        "When provider image ordering and user ref labels differ, user ref labels keep their original visible upload order."
+    )
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": prompt,
+                "attachments": [str(ref) for ref in refs],
+                "reference_strategy": {
+                    "mode": "unassigned_collective_generation",
+                    "source": "visual_agent_planner",
+                    "requires_new_composition": True,
+                    "edit_anchor": False,
+                },
+                "image_provider": "grok-web-imagine",
+                "include_video": False,
+                "candidate_budget": 1,
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    provider_prompt = captured["prompt"]
+    assert provider_prompt.startswith("可不可以再嘗試不同的構圖")
+    assert "Reference use: use attached images as collective visual evidence" in provider_prompt
+    assert "Provider-ready visual prompt" not in provider_prompt
+    assert "Objective:" not in provider_prompt
+    assert "[Replying to:" not in provider_prompt
+    assert "[Thread context" not in provider_prompt
+    assert "[thread parent]" not in provider_prompt
+    assert "Session visual context" not in provider_prompt
+    assert "Provider reference image ordering" not in provider_prompt
 
 
 @pytest.mark.asyncio
@@ -518,7 +678,7 @@ async def test_visual_package_uses_pose_guide_without_raw_pose_reference(monkeyp
     assert str(ref2) not in provider_refs
     assert "reference_role_guides" in provider_refs[1]
     assert Path(provider_refs[1]).is_file()
-    assert "provider image 2 is a derived pose/composition guide from user ref 2" in image_calls[0]["prompt"]
+    assert "reference image 2 is a derived pose/composition guide from user ref 2" in image_calls[0]["prompt"]
     assert "derived pose/contour guide" not in image_calls[0]["prompt"]
     assert "original pose reference is intentionally not sent" in image_calls[0]["prompt"]
     assert payload["success"] is True
@@ -719,8 +879,8 @@ async def test_visual_package_replaces_raw_pose_reference_when_user_references_f
     assert provider_refs[1] != str(ref2)
     assert provider_refs[2] == str(ref3)
     assert str(ref2) not in provider_refs
-    assert "provider image 3 = user ref 3" in image_calls[0]["prompt"]
-    assert "provider image 2 is a derived pose/composition guide from user ref 2" in image_calls[0]["prompt"]
+    assert "reference image 3 = user ref 3" in image_calls[0]["prompt"]
+    assert "reference image 2 is a derived pose/composition guide from user ref 2" in image_calls[0]["prompt"]
     assert "pose/contour guide" not in image_calls[0]["prompt"]
 
 
@@ -916,6 +1076,89 @@ async def test_visual_package_forwards_explicit_image_provider_override(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_visual_package_unassigned_references_are_not_edit_anchors(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    refs = [tmp_path / f"ref-{index}.png" for index in range(1, 4)]
+    image = tmp_path / "image.png"
+    for ref in refs:
+        ref.write_bytes(_ONE_PIXEL_PNG)
+    image.write_bytes(_ONE_PIXEL_PNG)
+    image_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(image),
+            "provider": "xai",
+            "model": "grok-imagine-image-quality",
+            "vision_observation": {
+                "reference_adherence": 0.9,
+                "character_identity_adherence": 0.9,
+                "face_quality": 0.9,
+                "visual_appeal": 0.9,
+                "composition": 0.9,
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": (
+                    "Provider-ready visual prompt:\n"
+                    "Objective: 請用 Grok Imagine + reference 固定這位角色，"
+                    "產出不同姿勢候選並選最佳，只交付最佳圖片。"
+                ),
+                "attachments": [str(ref) for ref in refs],
+                "reference_strategy": {
+                    "mode": "unassigned_collective_generation",
+                    "source": "visual_agent_planner",
+                    "requires_new_composition": True,
+                    "edit_anchor": False,
+                },
+                "image_provider": "xai",
+                "include_video": False,
+                "candidate_budget": 1,
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert image_calls[0]["reference_image_urls"] == [str(ref) for ref in refs]
+    provider_prompt = image_calls[0]["prompt"]
+    assert "Reference use: use attached images as collective visual evidence" in provider_prompt
+    assert "create a new coherent image" in provider_prompt
+    assert "not a cleanup" in provider_prompt
+    assert "stitched blend" in provider_prompt
+    assert provider_prompt.count("Reference use: use attached images as collective visual evidence") == 1
+    conditioning = payload["generation_strategy"]["reference_conditioning"]
+    assert conditioning["provider_reference_images"] == [
+        {
+            "provider_index": 1,
+            "index": 1,
+            "role_hint": "visual_reference",
+            "conditioning": "collective_reference_inspiration",
+        },
+        {
+            "provider_index": 2,
+            "index": 2,
+            "role_hint": "visual_reference",
+            "conditioning": "collective_reference_inspiration",
+        },
+        {
+            "provider_index": 3,
+            "index": 3,
+            "role_hint": "visual_reference",
+            "conditioning": "collective_reference_inspiration",
+        },
+    ]
+
+
+@pytest.mark.asyncio
 async def test_visual_package_records_image_provider_source_in_generation_strategy(monkeypatch, tmp_path):
     from tools import visual_package_tool
 
@@ -1105,6 +1348,118 @@ async def test_visual_package_followup_reuses_session_visual_references(monkeypa
     assert payload["generation_strategy"]["image_reference_source"] == "session_visual_context"
 
 
+@pytest.mark.asyncio
+async def test_visual_package_grok_web_followup_continues_current_web_result(monkeypatch, tmp_path):
+    from gateway.session_context import (
+        reset_visual_reference_context,
+        set_visual_reference_context,
+    )
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image = tmp_path / "image.png"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    image_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(image),
+            "provider": "grok-web-imagine",
+            "model": "grok-web-imagine",
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    ref_token = set_visual_reference_context(["/tmp/previous-selected.png", "/tmp/original-ref.png"])
+    try:
+        payload = json.loads(
+            await visual_package_tool._handle_visual_package_generate(
+                {
+                    "prompt": "可不可以再嘗試不同的構圖，可以類似原 ref 的構圖進行調整和優化",
+                    "include_image": True,
+                    "include_video": False,
+                    "candidate_budget": 1,
+                    "image_provider": "grok-web-imagine",
+                    "image_provider_source": "prompt_override",
+                }
+            )
+        )
+    finally:
+        reset_visual_reference_context(ref_token)
+
+    assert payload["success"] is True
+    assert image_calls[0]["_provider"] == "grok-web-imagine"
+    assert image_calls[0]["operation"] == "continue_current"
+    assert payload["generation_strategy"]["image_reference_source"] == "session_visual_context"
+    assert payload["generation_strategy"]["grok_web_imagine_policy"]["mode"] == "controlled_visual_agent_provider"
+
+
+@pytest.mark.asyncio
+async def test_visual_package_original_ref_followup_filters_generated_session_outputs(monkeypatch, tmp_path):
+    from gateway.session_context import (
+        reset_visual_reference_context,
+        set_visual_reference_context,
+    )
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image = tmp_path / "image.png"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    image_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(image),
+            "provider": "grok-web-imagine",
+            "model": "grok-web-imagine",
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    ref_token = set_visual_reference_context(
+        [
+            {
+                "uri": "/Users/simon/.hermes/cache/images/grok_web_imagine_20260630_003533_a51c4a55.png",
+                "role_hint": "edit_anchor",
+                "source": "previous_selected_artifact",
+            },
+            {
+                "uri": "/tmp/original-character.png",
+                "role_hint": "visual_reference",
+                "source": "previous_tool_reference",
+                "user_ref_index": 1,
+            },
+        ]
+    )
+    try:
+        payload = json.loads(
+            await visual_package_tool._handle_visual_package_generate(
+                {
+                    "prompt": "可不可以再嘗試不同的構圖，可以類似原 ref 的構圖進行調整和優化",
+                    "include_image": True,
+                    "include_video": False,
+                    "candidate_budget": 1,
+                    "image_provider": "grok-web-imagine",
+                    "image_provider_source": "prompt_override",
+                    "image_operation": "continue_current",
+                }
+            )
+        )
+    finally:
+        reset_visual_reference_context(ref_token)
+
+    assert payload["success"] is True
+    assert image_calls[0]["reference_image_urls"] == ["/tmp/original-character.png"]
+    assert all(
+        "grok_web_imagine_" not in ref
+        for ref in image_calls[0]["reference_image_urls"]
+    )
+
+
 def test_visual_package_routes_controlled_grok_web_provider_when_enabled(monkeypatch, tmp_path):
     from tools import visual_package_tool
 
@@ -1222,6 +1577,92 @@ def test_visual_package_grok_web_polish_pass_edits_selected_candidate(monkeypatc
         "provider": "grok-web-imagine",
         "selected_source_image": str(source),
         "status": "completed",
+    }
+
+
+def test_visual_package_grok_web_polish_prompt_edits_current_anchor_directly(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    source = tmp_path / "current.png"
+    older = tmp_path / "older.png"
+    polished = tmp_path / "polished.png"
+    source.write_bytes(_ONE_PIXEL_PNG)
+    older.write_bytes(_ONE_PIXEL_PNG + b"older")
+    polished.write_bytes(_ONE_PIXEL_PNG + b"polished")
+    image_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(polished),
+            "provider": "grok-web-imagine",
+            "model": "grok-web-imagine",
+            "vision_observation": {
+                "reference_adherence": 0.95,
+                "subject_quality": 0.95,
+                "face_quality": 0.95,
+                "visual_appeal": 0.95,
+                "composition": 0.95,
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    prompt = (
+        "[Thread context — prior messages in this thread:]\n"
+        "simon: 這樣的大腿可以，那換個姿勢和構圖，更性感一些\n"
+        "[End of thread context]\n\n"
+        "用 grok web polish 試試看\n\n"
+        "Session visual context:\n"
+        "- attachment 1: visual_reference reference; preserve its role only when relevant.\n"
+        "- attachment 2: visual_reference reference; preserve its role only when relevant."
+    )
+    payload = json.loads(
+        asyncio.run(
+            visual_package_tool._handle_visual_package_generate(
+                {
+                    "prompt": prompt,
+                    "include_image": True,
+                    "include_video": False,
+                    "candidate_budget": 2,
+                    "attachments": [str(source), str(older)],
+                    "reference_binding": {
+                        "mode": "session_visual_context",
+                        "reference_order_source": "session_visual_context",
+                        "role_policy": "current_attachment_polish_anchor",
+                        "reference_order": [
+                            {
+                                "index": 1,
+                                "role_hint": "edit_anchor",
+                                "attachment": str(source),
+                                "user_ref_index": "previous_selected_output",
+                            },
+                            {
+                                "index": 2,
+                                "role_hint": "visual_reference",
+                                "attachment": str(older),
+                            },
+                        ],
+                    },
+                }
+            )
+        )
+    )
+
+    assert payload["success"] is True
+    assert len(image_calls) == 1
+    assert image_calls[0]["_provider"] == "grok-web-imagine"
+    assert image_calls[0]["image_url"] == str(source)
+    assert image_calls[0]["reference_image_urls"] is None
+    assert payload["images"] == [str(polished)]
+    assert payload["generation_strategy"]["polish_pass"] == {
+        "enabled": True,
+        "provider": "grok-web-imagine",
+        "selected_source_image": str(source),
+        "status": "completed",
+        "mode": "direct_edit_anchor_polish",
     }
 
 
@@ -1845,7 +2286,7 @@ async def test_visual_package_applies_self_validation_guidance_to_first_image_pr
     )
 
     assert payload["success"] is True
-    assert "First-pass visual quality guidance" in image_calls[0]["prompt"]
+    assert "Quality: clean facial features" in image_calls[0]["prompt"]
     assert "clean facial features" in image_calls[0]["prompt"]
     assert payload["generation_strategy"]["quality_guidance"]["image"]["mode"] == "preferred"
 
@@ -1948,7 +2389,7 @@ async def test_visual_package_applies_self_validation_guidance_to_first_video_pr
 
     assert payload["success"] is True
     assert "First-pass visual quality guidance" not in image_calls[0]["prompt"]
-    assert "First-pass video quality guidance" in video_calls[0]["prompt"]
+    assert "Video quality: use natural real-time motion" in video_calls[0]["prompt"]
     assert "avoid slow motion" in video_calls[0]["prompt"]
     assert "avoid slow cinematic-only push-in" in video_calls[0]["prompt"]
     assert "visible subject, camera, or environmental movement" in video_calls[0]["prompt"]
@@ -2054,8 +2495,8 @@ async def test_visual_package_applies_motion_dimension_guidance_to_video_only(mo
 
     assert payload["success"] is True
     assert "motion_quality" not in image_calls[0]["prompt"]
-    assert "Dimension-specific quality guidance" in video_calls[0]["prompt"]
-    assert "motion_quality: use clear real-time movement with stable anatomy" in video_calls[0]["prompt"]
+    assert "Additional quality refinements" in video_calls[0]["prompt"]
+    assert "use clear real-time movement with stable anatomy" in video_calls[0]["prompt"]
     assert payload["generation_strategy"]["feedback_policy"]["quality_repair_modes"] == {
         "image": "default",
         "video": "preferred",
@@ -3055,6 +3496,69 @@ async def test_visual_package_reads_controlled_strategy_without_prompt_mutation(
 
 
 @pytest.mark.asyncio
+async def test_visual_package_ignores_global_video_strategy_for_image_only_prompt_variants(monkeypatch, tmp_path):
+    from agent.visual.strategy_activation import record_strategy_activation
+    from agent.visual.strategy_policy import GLOBAL_VISUAL_AGENT_INTENT_SIGNATURE
+    from agent.visual.tracking import default_visual_ledger_path
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image = tmp_path / "image.png"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    ledger = visual_package_tool.VisualAttemptLedger(default_visual_ledger_path())
+    ledger.initialize()
+    record_strategy_activation(
+        ledger,
+        shadow_update_id="vsh_global_video",
+        intent_signature=GLOBAL_VISUAL_AGENT_INTENT_SIGNATURE,
+        strategy_signature="image_first_rank_then_video",
+        activation_status="controlled",
+        promotion_decision={
+            "decision": "promote_controlled",
+            "allowed": True,
+            "confidence": 0.88,
+        },
+        metadata={"scope": "global_visual_agent_mode"},
+    )
+    image_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(image),
+            "provider": "fixture",
+            "model": "image",
+            "vision_observation": {
+                "visual_appeal": 0.9,
+                "composition": 0.9,
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "固定這位角色，產出不同姿勢候選並選最佳，只交付最佳圖片，動漫圖。",
+                "include_video": False,
+                "candidate_budget": 2,
+                "candidate_budget_source": "planner_default",
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["learning"]["mode"] != "controlled_read_only"
+    assert payload["learning"]["strategy_plan"]["strategy_signature"] != "image_first_rank_then_video"
+    assert len(image_calls) == 2
+    assert image_calls[0]["prompt"] != image_calls[1]["prompt"]
+    assert "Visual Arsenal candidate strategy" not in image_calls[0]["prompt"]
+    assert "Creative direction:" in image_calls[1]["prompt"]
+    assert payload["generation_strategy"]["image_prompt_variants"][0]["variant_id"] == "arsenal_baseline"
+
+
+@pytest.mark.asyncio
 async def test_visual_package_applies_controlled_image_first_strategy_to_runtime_policy(monkeypatch, tmp_path):
     from agent.visual.strategy_activation import record_strategy_activation
     from agent.visual.strategy_policy import GLOBAL_VISUAL_AGENT_INTENT_SIGNATURE
@@ -3225,8 +3729,8 @@ async def test_visual_package_applies_feedback_dimension_repairs_from_auto_judge
             "repair_hint": "improve_fashion_material_quality",
         },
     ]
-    assert "face_naturalness" in image_calls[0]["prompt"]
-    assert "fashion_material_quality" in image_calls[0]["prompt"]
+    assert "prioritize natural facial structure" in image_calls[0]["prompt"]
+    assert "improve wardrobe and legwear material texture" in image_calls[0]["prompt"]
 
 
 @pytest.mark.asyncio
@@ -4070,9 +4574,254 @@ async def test_visual_package_applies_preference_dimension_guidance_from_self_va
             "repair_hint": "improve_fashion_material_quality",
         },
     ]
-    assert "Dimension-specific quality guidance" in calls[0]["prompt"]
-    assert "face_naturalness" in calls[0]["prompt"]
-    assert "fashion_material_quality" in calls[0]["prompt"]
+    assert "Additional quality refinements" in calls[0]["prompt"]
+    assert "prioritize natural facial structure" in calls[0]["prompt"]
+    assert "improve wardrobe and legwear material texture" in calls[0]["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_visual_package_anime_image_quality_guidance_stays_style_bounded(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
+    latest_report.parent.mkdir(parents=True)
+    latest_report.write_text(
+        json.dumps(
+            {
+                "success": True,
+                "automation": {
+                    "self_improvement": {
+                        "next_actions": [
+                            {
+                                "type": "repair_low_preference_dimension",
+                                "requires_human_feedback": False,
+                                "activation_status": "next_run",
+                                "confidence": 0.74,
+                                "source": "live_quality_burn",
+                                "dimension": "subject_beauty",
+                                "quality_issue": "subject_beauty_low",
+                                "repair_hint": "improve_subject_beauty",
+                            },
+                            {
+                                "type": "repair_low_preference_dimension",
+                                "requires_human_feedback": False,
+                                "activation_status": "next_run",
+                                "confidence": 0.74,
+                                "source": "live_quality_burn",
+                                "dimension": "motion_quality",
+                                "quality_issue": "motion_bad",
+                                "repair_hint": "improve_motion_quality",
+                            },
+                        ]
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    image_path = tmp_path / "image.png"
+    image_path.write_bytes(_ONE_PIXEL_PNG)
+    calls = []
+
+    def fake_generate_image(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(image_path),
+            "provider": "fixture",
+            "model": "image",
+            "vision_observation": {
+                "subject_beauty": 0.9,
+                "visual_appeal": 0.9,
+                "composition": 0.9,
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "動漫圖，性感一些，豐乳/水蛇腰/翹臀/蜜大腿/大長腿。",
+                "include_video": False,
+                "candidate_budget": 1,
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    prompt = calls[0]["prompt"]
+    assert "Quality: anime illustration polish" in prompt
+    assert "anime illustration polish" in prompt
+    assert "natural realism" not in prompt
+    assert "realistic details" not in prompt
+    assert "motion_quality" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_visual_package_uses_arsenal_prompt_variants_for_image_candidates(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
+    latest_report.parent.mkdir(parents=True)
+    latest_report.write_text(
+        json.dumps(
+            {
+                "success": True,
+                "automation": {
+                    "self_improvement": {
+                        "next_actions": [
+                            {
+                                "type": "repair_low_preference_dimension",
+                                "requires_human_feedback": False,
+                                "activation_status": "next_run",
+                                "confidence": 0.74,
+                                "source": "live_quality_burn",
+                                "dimension": "subject_beauty",
+                                "quality_issue": "subject_not_attractive",
+                                "repair_hint": "improve_subject_beauty",
+                            },
+                            {
+                                "type": "repair_low_preference_dimension",
+                                "requires_human_feedback": False,
+                                "activation_status": "next_run",
+                                "confidence": 0.74,
+                                "source": "live_quality_burn",
+                                "dimension": "fashion_material_quality",
+                                "quality_issue": "stockings_bad",
+                                "repair_hint": "improve_fashion_material_quality",
+                            },
+                        ]
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    image_path = tmp_path / "image.png"
+    image_path.write_bytes(_ONE_PIXEL_PNG)
+    calls = []
+
+    def fake_generate_image(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(image_path),
+            "provider": "fixture",
+            "model": "image",
+            "vision_observation": {
+                "subject_beauty": 0.9,
+                "fashion_material_quality": 0.9,
+                "visual_appeal": 0.9,
+                "composition": 0.9,
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "動漫圖，性感一些，固定角色身份，產出最佳圖片。",
+                "include_video": False,
+                "candidate_budget": 2,
+                "candidate_budget_source": "planner_default",
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert len(calls) == 2
+    assert calls[0]["prompt"] != calls[1]["prompt"]
+    assert "Visual Arsenal candidate strategy" not in calls[0]["prompt"]
+    assert "Creative direction:" in calls[1]["prompt"]
+    assert any("expressive anime face" in call["prompt"] for call in calls)
+    assert any("full character visible" in call["prompt"] for call in calls)
+    assert payload["generation_strategy"]["image_prompt_variants"] == [
+        {
+            "variant_id": "arsenal_baseline",
+            "source": "visual_arsenal",
+            "applied_dimensions": [],
+            "atom_signatures": [],
+        },
+        {
+            "variant_id": "arsenal_repair_combined",
+            "source": "visual_arsenal",
+            "applied_dimensions": ["subject_beauty", "fashion_material_quality"],
+            "atom_signatures": [],
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_visual_package_uses_approved_prompt_arsenal_entries_for_image_candidates(monkeypatch, tmp_path):
+    from agent.visual.tracking import default_visual_ledger_path
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ledger = visual_package_tool.VisualAttemptLedger(default_visual_ledger_path())
+    ledger.initialize()
+    previous_request_id = ledger.record_request(
+        status="completed",
+        normalized_intent={"kind": "visual_package", "category": "anime_character"},
+    )
+    ledger.record_shadow_update(
+        request_id=previous_request_id,
+        intent_signature="visig_previous",
+        strategy_signature="vstrat_previous",
+        proposed_change={
+            "type": "approved_prompt_arsenal_entry",
+            "request_category": "anime_character",
+            "prompt_role": "provider_ready_success_pattern",
+        },
+        evidence={
+            "prompt_mediated": (
+                "Anime illustration, youthful cheerful face, tight glossy qipao, "
+                "visible abdominal lines, dynamic best pose, soft cinematic lighting."
+            ),
+            "request_category": "anime_character",
+            "artifact_id": "var_previous",
+            "feedback_id": "vfb_previous",
+        },
+        confidence=0.9,
+    )
+    image_path = tmp_path / "image.png"
+    image_path.write_bytes(_ONE_PIXEL_PNG)
+    calls = []
+
+    def fake_generate_image(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(image_path),
+            "provider": "fixture",
+            "model": "image",
+            "vision_observation": {
+                "visual_appeal": 0.9,
+                "composition": 0.9,
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "動漫圖，固定角色身份，產出最佳圖片。",
+                "include_video": False,
+                "candidate_budget": 2,
+                "candidate_budget_source": "planner_default",
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert len(calls) == 2
+    assert "user-approved prior prompt pattern" in calls[1]["prompt"]
+    assert "tight glossy qipao" in calls[1]["prompt"]
+    assert payload["generation_strategy"]["image_prompt_variants"][1]["variant_id"] == "arsenal_approved_prompt_1"
 
 
 @pytest.mark.asyncio
@@ -4232,8 +4981,8 @@ async def test_visual_package_applies_quality_focus_operator_guidance_from_self_
     assert payload["generation_strategy"]["feedback_policy"]["applied_action_types"] == [
         "apply_quality_focus_operator"
     ]
-    assert "Dimension-specific quality guidance" in calls[0]["prompt"]
-    assert "fashion_material_quality" in calls[0]["prompt"]
+    assert "Additional quality refinements" in calls[0]["prompt"]
+    assert "improve wardrobe and legwear material texture" in calls[0]["prompt"]
 
 
 @pytest.mark.asyncio
@@ -4341,7 +5090,7 @@ async def test_visual_package_applies_live_quality_trend_actions_with_source(mon
             "source": "live_quality_trends",
         }
     ]
-    assert "fashion_material_quality" in image_calls[0]["prompt"]
+    assert "improve wardrobe and legwear material texture" in image_calls[0]["prompt"]
 
 
 @pytest.mark.asyncio
@@ -5961,6 +6710,67 @@ def test_score_candidates_carries_quality_issues_into_reward(monkeypatch, tmp_pa
 
     assert candidate["quality_issues"] == ["subject_not_attractive"]
     assert candidate["reward"]["dimensions"]["user_preference_fit"] <= 0.5
+
+
+def test_score_candidates_flags_reference_overcopy_from_local_images(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from tools import visual_package_tool
+
+    from PIL import Image
+    from PIL import ImageDraw
+
+    reference = tmp_path / "reference.png"
+    candidate_path = tmp_path / "candidate.png"
+    image = Image.new("RGB", (96, 96), (245, 245, 255))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((12, 20, 80, 70), fill=(80, 120, 220))
+    draw.ellipse((34, 28, 62, 56), fill=(240, 180, 120))
+    image.save(reference)
+    image.save(candidate_path)
+
+    ledger = VisualAttemptLedger(tmp_path / "visual.sqlite3")
+    ledger.initialize()
+    request_id = ledger.record_request(
+        user_prompt="redacted",
+        normalized_intent={"kind": "visual_package"},
+        modality="package",
+        operation="visual_package_generate",
+        status="started",
+        metadata={"intent_signature": "visig_demo"},
+    )
+    candidate = {
+        "attempt_id": "vat_demo",
+        "artifact_id": "var_demo",
+        "artifact_path": str(candidate_path),
+        "kind": "image",
+        "provider": "fixture",
+        "model": "image",
+        "content_hash": "hash-demo",
+        "input_artifacts": [{"index": 1, "role_hint": "visual_reference", "uri": str(reference)}],
+        "hard_gate": {"passed": True, "delivery_possible": True},
+        "scores": {"resolution": 0.9, "aspect_match": 0.9, "final_score": 0.9},
+    }
+
+    visual_package_tool._score_candidates(
+        ledger,
+        request_id=request_id,
+        intent_signature="visig_demo",
+        strategy_signature="vstrat_demo",
+        modality="image",
+        has_reference_image=True,
+        candidates=[candidate],
+        inline_vision_judge=False,
+    )
+    gate = visual_package_tool._delivery_gate_decision(
+        {"action": "ask_user"},
+        candidate,
+        prompt="請用 reference 固定角色，產出不同姿勢候選並選最佳。",
+    )
+
+    assert candidate["quality_issues"] == ["reference_overcopy"]
+    assert candidate["vision_observation_source"] == "artifact_observation+reference_similarity"
+    assert gate["allowed"] is False
+    assert gate["quality_issues"] == ["reference_overcopy"]
 
 
 def test_score_candidates_uses_candidate_vision_observation_for_aesthetic_issues(tmp_path):

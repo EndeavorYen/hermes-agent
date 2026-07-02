@@ -227,6 +227,7 @@ def _surface_artifact_defects(
             "missing_video_dimensions",
             "missing_video_duration",
             "reference_identity_drift",
+            "reference_overcopy",
             "visual_appeal_low",
             "composition_weak",
         }:
@@ -479,6 +480,7 @@ def _issue_for_defect(defect: str) -> str | None:
         "split_screen_layout": "source_frame_grid",
         "multi_panel_layout": "source_frame_grid",
         "reference_identity_drift": "reference_identity_drift",
+        "reference_overcopy": "reference_overcopy",
         "aspect_mismatch": "aspect_integrity_bad",
         "weak_aspect_integrity": "aspect_integrity_bad",
         "duration_mismatch": "motion_bad",

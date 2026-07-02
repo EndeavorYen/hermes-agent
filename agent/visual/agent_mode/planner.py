@@ -3,6 +3,9 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from agent.visual.feedback import is_visual_feedback_only_text
+from agent.visual.feedback import parse_visual_feedback
+
 
 BASE_LLM_PROVIDER = "openai-codex"
 BASE_LLM_MODEL = "gpt-5.5"
@@ -100,6 +103,20 @@ _LANDSCAPE_ASPECT_TOKENS = (
     "白紙",
     "鋼筆",
 )
+_POLISH_TOKENS = (
+    "polish",
+    "refine",
+    "enhance",
+    "quality pass",
+    "quality polish",
+    "web polish",
+    "精修",
+    "修圖",
+    "潤飾",
+    "美化",
+    "畫質提升",
+    "品質提升",
+)
 
 
 def plan_visual_agent_request(
@@ -109,13 +126,24 @@ def plan_visual_agent_request(
 ) -> dict[str, Any]:
     prompt = str(prompt or "").strip()
     attachments = [item for item in (attachments or []) if isinstance(item, str) and item.strip()]
+    if _looks_like_text_only_visual_analysis(prompt):
+        return _text_only_visual_analysis_plan()
+    feedback_only = _visual_feedback_only_plan(prompt)
+    if feedback_only is not None and not (attachments and _requests_visual_polish(prompt)):
+        return feedback_only
     reference_binding = _reference_binding_for_prompt(prompt, attachments)
     effective_prompt = _prompt_with_reference_binding(prompt, reference_binding)
     wants_image = _contains_any(prompt, _IMAGE_TOKENS) or _looks_like_draw_image_request(prompt)
     wants_video = _contains_any(prompt, _VIDEO_TOKENS)
+    polish_provider = _requested_polish_provider(prompt)
+    polish_requested = _requests_visual_polish(prompt)
+    if polish_requested and attachments and not wants_video:
+        wants_image = True
     if wants_video and attachments and _looks_like_image_to_video(prompt) and not _requests_new_image_output(prompt):
         wants_image = False
-    if not wants_image and not wants_video and attachments:
+    if not wants_image and not wants_video and attachments and polish_requested:
+        wants_image = True
+    elif not wants_image and not wants_video and attachments:
         wants_video = True
     image_first_for_video = wants_video and not wants_image
     storyboard_video = wants_video and _looks_like_storyboard_request(prompt)
@@ -130,6 +158,14 @@ def plan_visual_agent_request(
         arguments["attachments"] = attachments
     if reference_binding:
         arguments["reference_binding"] = reference_binding
+    elif attachments and wants_image:
+        arguments["reference_conditioning_policy"] = "collective_inspiration"
+        arguments["reference_strategy"] = {
+            "mode": "unassigned_collective_generation",
+            "source": "visual_agent_planner",
+            "requires_new_composition": True,
+            "edit_anchor": False,
+        }
     if wants_image or image_first_for_video:
         arguments["candidate_budget"] = 2
         arguments["candidate_budget_source"] = "planner_default"
@@ -148,6 +184,9 @@ def plan_visual_agent_request(
     if should_use_visual_package:
         arguments["image_provider"] = image_provider or VISUAL_MEDIA_PROVIDER_DEFAULT
         arguments["image_provider_source"] = image_provider_source
+        if polish_provider is not None:
+            arguments["polish_provider"] = polish_provider
+            arguments["polish_provider_source"] = "prompt_override"
     return {
         "tool_name": "visual_package_generate",
         "should_use_visual_package": should_use_visual_package,
@@ -169,9 +208,144 @@ def plan_visual_agent_request(
     }
 
 
+def _text_only_visual_analysis_plan() -> dict[str, Any]:
+    return {
+        "tool_name": "visual_feedback",
+        "should_use_visual_package": False,
+        "confidence": 0.91,
+        "arguments": {},
+        "provider_contract": _provider_contract(None),
+        "recovery_policy": {
+            "retry_budget": 0,
+            "safe_reframe_allowed": False,
+            "ask_user_on_low_confidence": False,
+        },
+        "reason": "text_only_visual_analysis",
+    }
+
+
+def _visual_feedback_only_plan(prompt: str) -> dict[str, Any] | None:
+    parsed = parse_visual_feedback(prompt)
+    if not is_visual_feedback_only_text(prompt):
+        return None
+    return {
+        "tool_name": "visual_feedback",
+        "should_use_visual_package": False,
+        "confidence": 0.86,
+        "arguments": {},
+        "provider_contract": _provider_contract(None),
+        "recovery_policy": {
+            "retry_budget": 0,
+            "safe_reframe_allowed": False,
+            "ask_user_on_low_confidence": False,
+        },
+        "reason": "visual_feedback_only",
+        "feedback": {
+            "polarity": parsed.polarity,
+            "signals": list(parsed.parsed.get("signals") or []),
+            "issues": list(parsed.parsed.get("issues") or []),
+            "selection_hint": parsed.selection_hint,
+            "selection_label": parsed.selection_label,
+        },
+    }
+
 def _contains_any(value: str, tokens: tuple[str, ...]) -> bool:
     lowered = value.lower()
     return any(token in lowered for token in tokens)
+
+
+def _looks_like_text_only_visual_analysis(prompt: str) -> bool:
+    lowered = str(prompt or "").lower()
+    compact = re.sub(r"\s+", "", lowered)
+    if not lowered:
+        return False
+    has_visual_term = (
+        _contains_any(lowered, _IMAGE_TOKENS)
+        or _contains_any(lowered, _VIDEO_TOKENS)
+        or any(token in compact for token in ("產圖", "生圖", "生成圖片", "生成影片"))
+    )
+    if not has_visual_term:
+        return False
+    no_media = any(
+        marker in compact
+        for marker in (
+            "不要產圖",
+            "不要生圖",
+            "不產圖",
+            "不能產圖",
+            "不得產圖",
+            "不准產圖",
+            "不能生圖",
+            "不要生成圖片",
+            "不能生成圖片",
+            "不要生成影片",
+            "不能生成影片",
+            "禁止產圖",
+            "禁止生成",
+        )
+    ) or any(
+        marker in lowered
+        for marker in (
+            "no image generation",
+            "no video generation",
+            "do not generate image",
+            "do not generate video",
+            "don't generate image",
+            "don't generate video",
+        )
+    )
+    no_tools = any(
+        marker in compact
+        for marker in (
+            "不要用工具",
+            "不用工具",
+            "不能用工具",
+            "不得用工具",
+            "不准用工具",
+            "不要呼叫工具",
+            "不能呼叫工具",
+            "不使用工具",
+        )
+    ) or any(
+        marker in lowered
+        for marker in (
+            "no tools",
+            "no-tool",
+            "without tools",
+            "do not use tools",
+            "do not call tools",
+            "don't use tools",
+            "don't call tools",
+        )
+    )
+    text_only = any(
+        marker in compact
+        for marker in (
+            "純文字",
+            "纯文字",
+            "文字任務",
+            "文字任务",
+            "只用六行回答",
+            "只用三行回答",
+            "只回答",
+        )
+    ) or any(marker in lowered for marker in ("text-only", "text only", "llm-only", "llm only"))
+    meta_or_analysis = any(
+        marker in compact
+        for marker in (
+            "分析",
+            "判斷",
+            "判断",
+            "路由",
+            "證據",
+            "证据",
+            "驗證",
+            "验证",
+            "公開raphael",
+            "宣稱完成",
+        )
+    ) or any(marker in lowered for marker in ("proof", "route", "routing", "provider", "overclaim"))
+    return no_media and (no_tools or text_only or meta_or_analysis)
 
 
 def _reference_binding_for_prompt(prompt: str, attachments: list[str]) -> dict[str, Any] | None:
@@ -453,7 +627,13 @@ def _reference_role_contract_block(binding: dict[str, Any]) -> str:
 def _requested_image_provider(value: str) -> str | None:
     lowered = str(value or "").lower()
     compact = re.sub(r"[\s_\-.]+", "", lowered)
-    if compact in {"grokwebimagine", "grokweb"} or "grok web imagine" in lowered:
+    if _requested_polish_provider(value):
+        return None
+    if (
+        "grokwebimagine" in compact
+        or "grokweb" in compact
+        or "grok web imagine" in lowered
+    ):
         return "grok-web-imagine"
     if "grok" in lowered or "x.ai" in lowered or re.search(r"\bxai\b", lowered):
         return "xai"
@@ -465,6 +645,37 @@ def _requested_image_provider(value: str) -> str | None:
     ):
         return "openai-codex"
     return None
+
+
+def _requested_polish_provider(value: str) -> str | None:
+    lowered = str(value or "").lower()
+    compact = re.sub(r"[\s_\-.]+", "", lowered)
+    if not _requests_visual_polish(value):
+        return None
+    if "grok web" in lowered or "web polish" in lowered or compact in {"grokwebpolish"}:
+        return "grok-web-imagine"
+    return None
+
+
+def _requests_visual_polish(value: str) -> bool:
+    lowered = str(value or "").lower()
+    compact = re.sub(r"\s+", "", lowered)
+    if "prompt" in lowered or "提示詞" in lowered or "提示词" in lowered:
+        return False
+    return any(token in lowered for token in _POLISH_TOKENS) or any(
+        token in compact
+        for token in (
+            "精修",
+            "修圖",
+            "润饰",
+            "潤飾",
+            "美化",
+            "畫質提升",
+            "画质提升",
+            "品質提升",
+            "品质提升",
+        )
+    )
 
 
 def _provider_contract(image_provider_override: str | None) -> dict[str, Any]:

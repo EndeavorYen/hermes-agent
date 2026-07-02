@@ -3,6 +3,41 @@ import os
 import time
 
 
+def test_visual_live_provider_e2e_cli_accepts_release_gate_image_first_video_flag(
+    monkeypatch,
+    capsys,
+):
+    from scripts import visual_live_provider_e2e
+
+    captured = {}
+
+    def fake_report(**kwargs):
+        captured.update(kwargs)
+        return {
+            "success": True,
+            "provider_mode": kwargs["mode"],
+            "failures": [],
+            "payload": {"success": True},
+            "evidence": {"image_first_video_required": kwargs["require_image_first_video"]},
+        }
+
+    monkeypatch.setattr(
+        visual_live_provider_e2e,
+        "build_visual_live_provider_e2e_report",
+        fake_report,
+    )
+
+    exit_code = visual_live_provider_e2e.main(
+        ["--mode", "fixture", "--image-first-video", "--video-budget", "1", "--json"]
+    )
+
+    assert exit_code == 0
+    assert captured["require_video"] is True
+    assert captured["require_image_first_video"] is True
+    output = json.loads(capsys.readouterr().out)
+    assert output["evidence"]["image_first_video_required"] is True
+
+
 def test_visual_live_provider_e2e_leaves_candidate_budget_to_feedback_policy_by_default(monkeypatch, tmp_path):
     from scripts import visual_live_provider_e2e
 

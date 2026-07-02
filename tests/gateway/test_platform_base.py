@@ -49,6 +49,54 @@ class TestSafeUrlForLog:
         assert safe_url_for_log(url, max_len=0) == ""
 
 
+class TestVisualPackageUserVisibleText:
+    def test_bare_error_payload_is_failure_not_completed(self):
+        content = (
+            '{"error": "visual_package_generate is for image/video generation, not visual feedback", '
+            '"request_type": "visual_feedback", '
+            '"visual_agent_tool": "visual_agent_generate"}'
+        )
+
+        text = BasePlatformAdapter.visual_package_user_visible_text(
+            content,
+            set(),
+            has_delivery=False,
+        )
+
+        assert text == (
+            "Visual generation did not complete: "
+            "visual_package_generate is for image/video generation, not visual feedback"
+        )
+
+
+class TestVisualPackageSelectedDeliveryPaths:
+    def test_fails_closed_when_artifacts_have_no_selected_ids(self):
+        content = (
+            '{"visual_request_id": "vrq_current", '
+            '"images": ["/tmp/current.png", "/tmp/rejected.png"], '
+            '"delivery_metadata": {"visual_artifacts": {'
+            '"/tmp/current.png": {"request_id": "vrq_current", "artifact_id": "var_current"}, '
+            '"/tmp/rejected.png": {"request_id": "vrq_current", "artifact_id": "var_rejected"}'
+            "}}}"
+        )
+
+        assert BasePlatformAdapter.visual_package_selected_delivery_paths(content) == set()
+
+    def test_does_not_fallback_to_top_level_path_for_unuploadable_selected_video(self):
+        content = (
+            '{"visual_request_id": "vrq_current", '
+            '"videos": ["/tmp/fallback-local-video.mp4"], '
+            '"delivery_metadata": {'
+            '"selected_visual_artifact_ids": ["var_video"], '
+            '"visual_artifacts": {'
+            '"https://provider.example/current.mp4": {'
+            '"request_id": "vrq_current", "artifact_id": "var_video", "kind": "video"'
+            "}}}}"
+        )
+
+        assert BasePlatformAdapter.visual_package_selected_delivery_paths(content) == set()
+
+
 # ---------------------------------------------------------------------------
 # MessageEvent — command parsing
 # ---------------------------------------------------------------------------
