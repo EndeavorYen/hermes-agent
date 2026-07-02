@@ -301,6 +301,7 @@ from hermes_cli.subcommands.insights import build_insights_parser
 from hermes_cli.subcommands.skills import build_skills_parser
 from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
+from hermes_cli.subcommands.raphael import build_raphael_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
 from hermes_cli.subcommands.claw import build_claw_parser
 
@@ -11930,7 +11931,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
         "model", "pairing", "pets", "plugins", "portal", "postinstall", "profile",
-        "project", "proxy",
+        "project", "proxy", "raphael",
         "prompt-size",
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
@@ -12390,6 +12391,12 @@ def cmd_plugins(args):
     plugins_command(args)
 
 
+def cmd_raphael(args):
+    from hermes_cli.raphael_cmd import raphael_command
+
+    raphael_command(args)
+
+
 def cmd_mcp(args):
     from hermes_cli.mcp_config import mcp_command
 
@@ -12778,6 +12785,11 @@ def main():
     # plugins command  (parser built in hermes_cli/subcommands/plugins.py)
     # =========================================================================
     build_plugins_parser(subparsers, cmd_plugins=cmd_plugins)
+
+    # =========================================================================
+    # raphael command  (parser built in hermes_cli/subcommands/raphael.py)
+    # =========================================================================
+    build_raphael_parser(subparsers, cmd_raphael=cmd_raphael)
 
     # =========================================================================
     # Plugin CLI commands — dynamically registered by memory/general plugins.

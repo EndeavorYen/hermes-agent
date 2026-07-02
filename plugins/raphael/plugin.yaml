@@ -1,0 +1,13 @@
+name: raphael
+version: 0.3.0
+description: Raphael Sage King control layer with install, doctor, status, skill trace, and reversible enable/disable commands.
+author: local
+kind: standalone
+provides_commands:
+  - raphael-status
+  - raphael-skills
+  - raphael-doctor
+  - raphael-enable
+  - raphael-disable
+provides_hooks: []
+provides_tools: []
