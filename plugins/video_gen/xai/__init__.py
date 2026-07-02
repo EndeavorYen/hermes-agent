@@ -23,6 +23,7 @@ import base64
 import logging
 import mimetypes
 import os
+import threading
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -512,21 +513,48 @@ def _run_xai_video_coroutine(
     aspect_ratio: str,
 ) -> Dict[str, Any]:
     try:
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(coro)
-        finally:
-            loop.close()
+        return _run_sync_video_coro(coro)
     except Exception as exc:
         logger.warning("xAI video %s unexpected failure: %s", operation_label, exc, exc_info=True)
         return error_response(
-            error=f"xAI video {operation_label} failed: {exc}",
-            error_type="api_error",
+            error=f"xAI video {operation_label} failed: {type(exc).__name__}: {exc}",
+            error_type=_xai_video_exception_error_type(exc),
             provider="xai",
             model=model or DEFAULT_MODEL,
             prompt=prompt,
             aspect_ratio=aspect_ratio,
         )
+
+
+def _run_sync_video_coro(coro):
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    result: Dict[str, Any] = {}
+    errors: List[BaseException] = []
+
+    def _runner() -> None:
+        try:
+            result["value"] = asyncio.run(coro)
+        except BaseException as exc:  # noqa: BLE001 - re-raised in caller thread
+            errors.append(exc)
+
+    thread = threading.Thread(target=_runner, name="xai-video-generate", daemon=True)
+    thread.start()
+    thread.join()
+    if errors:
+        raise errors[0]
+    return result.get("value")
+
+
+def _xai_video_exception_error_type(exc: Exception) -> str:
+    if isinstance(exc, (TimeoutError, httpx.TimeoutException)):
+        return "timeout"
+    if isinstance(exc, httpx.TransportError):
+        return "connection_error"
+    return "api_error"
 
 
 async def _generate_xai_video_async(

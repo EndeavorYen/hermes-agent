@@ -186,3 +186,22 @@ def test_video_input_from_public_url_rejects_bare_file_id():
         )
     )
     assert result is None
+
+
+def test_xai_video_coroutine_classifies_timeout_errors():
+    import httpx
+    from plugins.video_gen.xai import _run_xai_video_coroutine
+
+    async def _timeout():
+        raise httpx.TimeoutException("timed out")
+
+    result = _run_xai_video_coroutine(
+        _timeout(),
+        operation_label="generation",
+        model="grok-imagine-video",
+        prompt="storm clouds",
+        aspect_ratio="16:9",
+    )
+
+    assert result["success"] is False
+    assert result["error_type"] == "timeout"

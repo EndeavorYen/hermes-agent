@@ -97,6 +97,16 @@ class TestXAIEndpoint:
         assert _last_post(captured)["url"].endswith("/videos/generations")
         assert result["modality"] == "text"
 
+    @pytest.mark.asyncio
+    async def test_generate_can_run_inside_existing_event_loop(self, xai_provider):
+        provider, captured = xai_provider
+
+        result = provider.generate("a lantern floating over water")
+
+        assert result["success"] is True
+        assert _last_post(captured)["url"].endswith("/videos/generations")
+        assert result["modality"] == "text"
+
     def test_image_to_video_hits_generations(self, xai_provider):
         provider, captured = xai_provider
         result = provider.generate(
