@@ -363,6 +363,25 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
     # Drop None entries so providers see clean defaults.
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
 
+    if _should_defer_to_visual_package(
+        prompt=prompt,
+        image_url=image_url,
+        reference_image_urls=reference_image_urls,
+        provider_name=str(getattr(provider, "name", "")),
+        model=model,
+        disabled=bool(args.get("_disable_visual_package_route")),
+    ):
+        routed = _route_to_visual_package(
+            prompt=prompt,
+            reference_image_urls=reference_image_urls,
+            duration=duration,
+            aspect_ratio=aspect_ratio,
+            resolution=resolution,
+            provider=str(getattr(provider, "name", "")),
+            model=model,
+        )
+        return json.dumps(routed)
+
     try:
         result = provider.generate(prompt=prompt, **kwargs)
     except TypeError as exc:
@@ -406,6 +425,159 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
         ))
 
     return json.dumps(result)
+
+
+_IMAGE_FIRST_VISUAL_VIDEO_TOKENS = (
+    "fashion",
+    "portrait",
+    "product",
+    "cinematic",
+    "visual",
+    "image-first",
+    "圖片",
+    "照片",
+    "寫真",
+    "產品",
+    "時尚",
+    "鏡頭",
+    "短片",
+    "影片",
+)
+
+
+def _should_defer_to_visual_package(
+    *,
+    prompt: str,
+    image_url: str | None,
+    reference_image_urls: List[str] | None,
+    provider_name: str,
+    model: str | None,
+    disabled: bool = False,
+) -> bool:
+    if disabled or image_url:
+        return False
+    if not _uses_image_first_visual_package_auto_route(provider_name, model):
+        return False
+    if reference_image_urls and _looks_like_image_first_visual_video(prompt):
+        return True
+    if reference_image_urls:
+        return False
+    return _looks_like_image_first_visual_video(prompt)
+
+
+def _uses_image_first_visual_package_auto_route(provider_name: str, model: str | None) -> bool:
+    if provider_name.lower() != "xai":
+        return False
+    return "grok-imagine-video" in str(model or "").lower()
+
+
+def _looks_like_image_first_visual_video(prompt: str) -> bool:
+    lowered = str(prompt or "").lower()
+    return "video" in lowered and any(
+        token in lowered for token in _IMAGE_FIRST_VISUAL_VIDEO_TOKENS
+    )
+
+
+def _route_to_visual_package(
+    *,
+    prompt: str,
+    reference_image_urls: List[str] | None,
+    duration: int | None,
+    aspect_ratio: str,
+    resolution: str,
+    provider: str,
+    model: str | None,
+) -> Dict[str, Any]:
+    package_args: Dict[str, Any] = {
+        "prompt": prompt,
+        "include_image": False,
+        "include_video": True,
+        "candidate_budget": 2,
+        "candidate_budget_source": "planner_default",
+        "video_budget": 1,
+        "aspect_ratio": aspect_ratio,
+        "image_provider": "xai",
+    }
+    if reference_image_urls:
+        package_args["attachments"] = reference_image_urls
+    if duration is not None:
+        package_args["duration"] = duration
+    try:
+        from model_tools import _run_async
+        from tools.visual_package_tool import _handle_visual_package_generate
+
+        raw = _run_async(_handle_visual_package_generate(package_args))
+        package_payload = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception as exc:
+        return error_response(
+            error=f"visual_package_generate auto-route failed: {exc}",
+            error_type="visual_package_route_failed",
+            provider=provider,
+            model=model or "",
+            prompt=prompt,
+            route="image_first_visual_package",
+            source_tool="video_generate",
+            recommended_tool="visual_package_generate",
+            recommended_arguments=package_args,
+        )
+    if not isinstance(package_payload, dict):
+        return error_response(
+            error="visual_package_generate returned a non-dict payload",
+            error_type="visual_package_contract",
+            provider=provider,
+            model=model or "",
+            prompt=prompt,
+            route="image_first_visual_package",
+            source_tool="video_generate",
+            recommended_tool="visual_package_generate",
+            recommended_arguments=package_args,
+        )
+
+    videos = [
+        item.strip()
+        for item in package_payload.get("videos") or []
+        if isinstance(item, str) and item.strip()
+    ]
+    video_ref = videos[0] if videos else None
+    video_payload = _selected_visual_package_video_payload(package_payload)
+    success = bool(package_payload.get("success")) and bool(video_ref)
+    return {
+        "success": success,
+        "video": video_ref,
+        "videos": videos,
+        "images": package_payload.get("images", []),
+        "error": None if success else package_payload.get("error") or "visual_package_generate did not return a selected video",
+        "error_type": None if success else package_payload.get("error_type") or "visual_package_no_video",
+        "provider": str(video_payload.get("provider") or provider),
+        "model": str(video_payload.get("model") or model or ""),
+        "prompt": prompt,
+        "aspect_ratio": aspect_ratio,
+        "duration": duration,
+        "resolution": resolution,
+        "route": "image_first_visual_package",
+        "source_tool": "video_generate",
+        "recommended_tool": "visual_package_generate",
+        "recommended_arguments": package_args,
+        "visual_request_id": package_payload.get("visual_request_id"),
+        "package_status": package_payload.get("package_status"),
+        "delivery_metadata": package_payload.get("delivery_metadata"),
+        "generation_strategy": package_payload.get("generation_strategy"),
+        "generation_payloads": package_payload.get("generation_payloads"),
+    }
+
+
+def _selected_visual_package_video_payload(package_payload: Dict[str, Any]) -> Dict[str, Any]:
+    generation_payloads = package_payload.get("generation_payloads")
+    if not isinstance(generation_payloads, dict):
+        return {}
+    video_payload = generation_payloads.get("video")
+    if isinstance(video_payload, dict):
+        return video_payload
+    if isinstance(video_payload, list):
+        for item in video_payload:
+            if isinstance(item, dict) and item.get("success"):
+                return item
+    return {}
 
 
 # ---------------------------------------------------------------------------

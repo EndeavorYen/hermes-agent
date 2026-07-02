@@ -136,6 +136,61 @@ class TestUnifiedDispatch:
         assert result["model"] == "route-model"
         assert provider.last_kwargs["model"] == "route-model"
 
+    def test_xai_text_visual_video_routes_to_visual_package(self, monkeypatch):
+        from tools import visual_package_tool
+
+        captured: Dict[str, Any] = {}
+
+        async def fake_visual_package(args, **_kwargs):
+            captured.update(args)
+            return json.dumps(
+                {
+                    "success": True,
+                    "package_status": "success",
+                    "videos": ["/tmp/current-video.mp4"],
+                    "images": [],
+                    "visual_request_id": "vrq_auto_video",
+                    "generation_payloads": {
+                        "video": [
+                            {
+                                "success": True,
+                                "video": "/tmp/current-video.mp4",
+                                "provider": "xai",
+                                "model": "grok-imagine-video-1.5",
+                            }
+                        ]
+                    },
+                    "generation_strategy": {"image_first_for_video": True},
+                }
+            )
+
+        monkeypatch.setattr(
+            visual_package_tool,
+            "_handle_visual_package_generate",
+            fake_visual_package,
+        )
+        provider = _RecordingProvider("xai", default_model="grok-imagine-video-1.5")
+        video_gen_registry.register_provider(provider)
+
+        result = self._run({"prompt": "make a high quality fashion portrait video"})
+
+        assert result["success"] is True
+        assert result["video"] == "/tmp/current-video.mp4"
+        assert result["provider"] == "xai"
+        assert result["model"] == "grok-imagine-video-1.5"
+        assert result["route"] == "image_first_visual_package"
+        assert result["source_tool"] == "video_generate"
+        assert result["recommended_tool"] == "visual_package_generate"
+        assert result["visual_request_id"] == "vrq_auto_video"
+        assert result["generation_strategy"]["image_first_for_video"] is True
+        assert captured["prompt"] == "make a high quality fashion portrait video"
+        assert captured["include_image"] is False
+        assert captured["include_video"] is True
+        assert captured["candidate_budget"] == 2
+        assert captured["candidate_budget_source"] == "planner_default"
+        assert captured["video_budget"] == 1
+        assert provider.last_kwargs == {}
+
     def test_image_to_video_routes_with_image_url(self):
         provider = _RecordingProvider("rec")
         video_gen_registry.register_provider(provider)
