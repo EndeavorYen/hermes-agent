@@ -70,6 +70,7 @@ from tools.tool_backend_helpers import (
     nous_tool_gateway_unavailable_message,
     prefers_gateway,
 )
+from agent.visual.prompt_disclosure import is_visual_prompt_disclosure_request
 
 logger = logging.getLogger(__name__)
 
@@ -1582,6 +1583,11 @@ def _handle_image_generate(args, **kw):
     prompt = args.get("prompt", "")
     if not prompt:
         return tool_error("prompt is required for image generation")
+    if is_visual_prompt_disclosure_request(prompt):
+        return tool_error(
+            "image_generate is for image generation, not prompt disclosure",
+            request_type="visual_prompt_disclosure",
+        )
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
     image_url = args.get("image_url") or args.get("input_image")
     reference_image_urls = _legacy_reference_image_urls(args)

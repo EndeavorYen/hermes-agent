@@ -99,6 +99,16 @@ class TestUnifiedDispatch:
         assert provider.last_kwargs["aspect_ratio"] == "16:9"
         assert provider.last_kwargs["resolution"] == "720p"
 
+    def test_rejects_prompt_disclosure_without_provider_call(self):
+        provider = _RecordingProvider("rec")
+        video_gen_registry.register_provider(provider)
+
+        result = self._run({"prompt": "請給我你使用的 prompt"}, configured="rec")
+
+        assert result["error"] == "video_generate is for video generation, not prompt disclosure"
+        assert result["request_type"] == "visual_prompt_disclosure"
+        assert provider.last_kwargs == {}
+
     def test_internal_provider_override_routes_to_requested_provider(self):
         primary = _RecordingProvider("xai", default_model="xai-model")
         fallback = _RecordingProvider("fallback", default_model="fallback-model")

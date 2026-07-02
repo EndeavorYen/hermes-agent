@@ -447,6 +447,29 @@ class TestRegistryIntegration:
         assert result["success"] is True
         assert fake_provider.generate.call_args.kwargs["aspect_ratio"] == "portrait"
 
+    def test_rejects_prompt_disclosure_without_provider_call(self, image_tool, monkeypatch):
+        import json
+        from unittest.mock import MagicMock
+
+        fake_provider = MagicMock()
+        monkeypatch.setattr(image_tool, "_read_configured_image_provider", lambda: "xai")
+        monkeypatch.setattr(image_tool, "_read_configured_image_model", lambda: None)
+        monkeypatch.setattr(
+            "agent.image_gen_registry.get_provider",
+            lambda name: fake_provider if name == "xai" else None,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **k: None
+        )
+
+        result = json.loads(image_tool._handle_image_generate({
+            "prompt": "請給我你使用的 prompt",
+        }))
+
+        assert result["error"] == "image_generate is for image generation, not prompt disclosure"
+        assert result["request_type"] == "visual_prompt_disclosure"
+        fake_provider.generate.assert_not_called()
+
     def test_legacy_reference_images_alias_reaches_provider(self, image_tool, monkeypatch):
         import json
         from unittest.mock import MagicMock
