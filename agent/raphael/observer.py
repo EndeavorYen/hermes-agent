@@ -5,13 +5,7 @@ from dataclasses import dataclass
 import re
 from typing import Any
 
-from agent.raphael.proof import (
-    evaluate_raphael_proof_gate,
-    render_proof_gate_context,
-    should_render_proof_gate_for_text,
-)
-from agent.raphael.router import render_route_context, route_raphael_message
-from agent.raphael.state import read_state
+from agent.raphael.config import raphael_effective_enabled
 
 
 @dataclass(frozen=True)
@@ -125,15 +119,6 @@ _AUTO_STATUS_PORTRAIT_COOLDOWN_TURNS = 3
 _STATUS_PORTRAIT_MARKER = "Raphael Status Portrait"
 
 
-def _cfg_get(config: Mapping[str, Any], *path: str, default: Any = None) -> Any:
-    current: Any = config
-    for key in path:
-        if not isinstance(current, Mapping):
-            return default
-        current = current.get(key, default)
-    return current
-
-
 def _contains_any(text: str, keywords: tuple[str, ...]) -> bool:
     lowered = text.lower()
     return any(keyword.lower() in lowered for keyword in keywords)
@@ -160,24 +145,11 @@ def should_inject_raphael_observation(
         except Exception:
             return False
 
-    if _cfg_get(config, "raphael", "enabled", default=False) is not True:
-        return False
-    if (
-        _cfg_get(
-            config,
-            "raphael",
-            "default_conversation_mode_enabled",
-            default=False,
-        )
-        is not True
-    ):
-        return False
-    mode = str(_cfg_get(config, "raphael", "mode", default="advisor") or "").strip()
-    return not mode or mode == "advisor"
+    return raphael_effective_enabled(config)
 
 
-def observe_raphael_turn(user_message: str) -> RaphaelTurnObservation:
-    text = user_message if isinstance(user_message, str) else ""
+def observe_raphael_turn(user_message: Any) -> RaphaelTurnObservation:
+    text = _extract_user_text(user_message)
     visual_status_needed = _looks_like_raphael_visual_status_request(text)
 
     if _contains_any(text, _MUTATION_OR_PUBLIC_KEYWORDS):
@@ -257,6 +229,24 @@ def _render_raphael_turn_sketch(sketches: tuple[str, ...]) -> str:
     return "\n".join(
         ["Raphael Turn Sketch (recent, derived):"]
         + [f"- {sketch}" for sketch in sketches]
+    )
+
+
+def _render_raphael_invocation_gate(user_message: str) -> str:
+    try:
+        from agent.raphael.invocation import is_raphael_invocation
+    except Exception:
+        return ""
+    if not is_raphael_invocation(user_message):
+        return ""
+    return "\n".join(
+        [
+            "Raphael Invocation Gate:",
+            "summoned: true",
+            "public_reply_style: natural_status_risk_next_step",
+            "do_not_echo_internal_labels: true",
+            "auto_call_tool: false",
+        ]
     )
 
 
@@ -392,33 +382,35 @@ def _render_raphael_status_portrait_tool_call(decision: Mapping[str, Any]) -> st
     )
 
 
+def _render_raphael_control_degraded(
+    *,
+    failure_layer: str,
+    error: BaseException,
+    next_action: str,
+) -> str:
+    return "\n".join(
+        [
+            "Raphael Control Layer Degraded (ephemeral, internal):",
+            f"failure_layer: {failure_layer}",
+            f"error_class: {type(error).__name__}",
+            f"next_action: {next_action}",
+        ]
+    )
+
+
 def build_raphael_observation_context(
-    user_message: str,
+    user_message: Any,
     config: Mapping[str, Any] | None = None,
     *,
     conversation_history: Sequence[Mapping[str, Any]] | None = None,
 ) -> str:
     if not should_inject_raphael_observation(config):
         return ""
-    try:
-        active_mission = read_state().active_mission
-    except Exception:
-        active_mission = None
-    route = route_raphael_message(user_message, active_mission=active_mission)
-    route_context = render_route_context(route)
-    proof_gate = (
-        render_proof_gate_context(
-            evaluate_raphael_proof_gate(
-                route=route,
-                mission=active_mission,
-                evidence=(),
-            )
-        )
-        if should_render_proof_gate_for_text(user_message)
-        else ""
-    )
-    turn_observation = observe_raphael_turn(user_message)
+    message_text = _extract_user_text(user_message)
+    attachments = _extract_attachment_refs(user_message)
+    turn_observation = observe_raphael_turn(message_text)
     observation = render_raphael_observation(turn_observation)
+    invocation_gate = _render_raphael_invocation_gate(message_text)
     sketches = extract_raphael_turn_sketches(conversation_history)
     sketch = _render_raphael_turn_sketch(sketches)
     visual_decision = decide_raphael_visual_trigger(turn_observation, sketches)
@@ -434,9 +426,54 @@ def build_raphael_observation_context(
     status_portrait_tool_call = _render_raphael_status_portrait_tool_call(
         auto_portrait_decision
     )
-    blocks = [observation, route_context]
-    if proof_gate:
-        blocks.append(proof_gate)
+    blocks = [observation]
+    try:
+        from agent.raphael.appraisal import appraise_raphael_situation
+        from agent.raphael.invocation import (
+            is_casual_raphael_summon,
+            is_raphael_invocation,
+        )
+        from agent.raphael.mission import update_raphael_mission
+        from agent.raphael.state import read_mission_state, write_mission_state
+        from agent.raphael.strategy import simulate_raphael_strategies
+
+        appraisal = appraise_raphael_situation(
+            user_message,
+            conversation_history=conversation_history,
+            attachments=attachments,
+        )
+        current_mission = read_mission_state()
+        if not (
+            appraisal.task_type == "general"
+            and (
+                is_casual_raphael_summon(message_text)
+                or (
+                    current_mission is not None
+                    and not is_raphael_invocation(message_text)
+                )
+            )
+            or (
+                current_mission is not None
+                and _is_vague_current_task_takeover(message_text)
+            )
+        ):
+            strategies = simulate_raphael_strategies(appraisal)
+            mission = update_raphael_mission(
+                current_mission,
+                appraisal,
+                strategies,
+            )
+            write_mission_state(mission)
+    except Exception as exc:
+        blocks.append(
+            _render_raphael_control_degraded(
+                failure_layer="mission_state",
+                error=exc,
+                next_action="inspect Raphael state writer before trusting mission continuity",
+            )
+        )
+    if invocation_gate:
+        blocks.append(invocation_gate)
     if sketch:
         blocks.append(sketch)
     if visual_gate:
@@ -445,7 +482,92 @@ def build_raphael_observation_context(
         blocks.append(auto_portrait_gate)
     if status_portrait_tool_call:
         blocks.append(status_portrait_tool_call)
+    try:
+        from agent.raphael.control import (
+            build_raphael_control_decision,
+            render_raphael_control_context,
+        )
+
+        control_decision = build_raphael_control_decision(
+            user_message,
+            attachments=attachments,
+            conversation_history=conversation_history,
+        )
+        control_context = render_raphael_control_context(control_decision)
+        if control_context:
+            blocks.append(control_context)
+    except Exception as exc:
+        blocks.append(
+            _render_raphael_control_degraded(
+                failure_layer="control_decision",
+                error=exc,
+                next_action="inspect Raphael control decision before trusting handoff routing",
+            )
+        )
     return "\n\n".join(blocks)
+
+
+def _is_vague_current_task_takeover(text: str) -> bool:
+    compact = re.sub(r"[\s，,。！？!?:：、]+", "", str(text or "").lower())
+    return compact in {
+        "拉斐爾接管這個任務",
+        "拉斐尔接管这个任务",
+        "請拉斐爾接管這個任務",
+        "请拉斐尔接管这个任务",
+        "大賢者接管這個任務",
+        "大贤者接管这个任务",
+        "賢者之王接管這個任務",
+        "raphaeltakeoverthistask",
+        "pleaseraphaeltakeoverthistask",
+    }
+
+
+def _extract_user_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, Mapping):
+        text = value.get("text") or value.get("content")
+        if isinstance(text, str):
+            return text.strip()
+        if isinstance(text, Sequence) and not isinstance(text, (str, bytes, bytearray)):
+            return " ".join(_extract_user_text(item) for item in text).strip()
+        return ""
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return " ".join(_extract_user_text(item) for item in value).strip()
+    return ""
+
+
+def _extract_attachment_refs(value: Any) -> tuple[str, ...]:
+    refs: list[str] = []
+
+    def visit(item: Any) -> None:
+        if isinstance(item, Mapping):
+            item_type = str(item.get("type") or "").strip().lower()
+            image_url = item.get("image_url")
+            if isinstance(image_url, Mapping):
+                url = image_url.get("url")
+                if url:
+                    refs.append(str(url))
+            elif image_url:
+                refs.append(str(image_url))
+            for key in ("url", "path", "file", "file_path", "source"):
+                candidate = item.get(key)
+                if candidate and any(marker in item_type for marker in ("image", "file")):
+                    refs.append(str(candidate))
+            content = item.get("content")
+            if isinstance(content, Sequence) and not isinstance(
+                content,
+                (str, bytes, bytearray),
+            ):
+                for child in content:
+                    visit(child)
+            return
+        if isinstance(item, Sequence) and not isinstance(item, (str, bytes, bytearray)):
+            for child in item:
+                visit(child)
+
+    visit(value)
+    return tuple(ref for ref in refs if ref.strip())
 
 
 __all__ = [

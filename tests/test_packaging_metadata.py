@@ -116,6 +116,32 @@ def test_manifest_includes_bundled_skills():
     assert "graft optional-skills" in manifest
 
 
+def test_raphael_release_evidence_ships_in_wheel_and_sdist():
+    """Raphael readiness must work from an installed wheel, not only checkout cwd."""
+    evidence_dir = REPO_ROOT / "hermes_cli" / "release_evidence" / "raphael"
+    expected_files = {
+        "raphael-llm-public-slice.md",
+        "raphael-release-slice-audit.md",
+        "raphael_completion_audit.py",
+        "raphael_package_install_smoke.py",
+        "raphael_release_docs_audit.py",
+        "raphael_release_slice_boundary.py",
+        "raphael_release_slice_manifest.py",
+    }
+    packaged_files = {path.name for path in evidence_dir.iterdir() if path.is_file()}
+    assert expected_files <= packaged_files
+
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    package_data = data["tool"]["setuptools"].get("package-data", {})
+    hermes_cli_data = package_data.get("hermes_cli", [])
+
+    assert "release_evidence/raphael/*.md" in hermes_cli_data
+    assert "release_evidence/raphael/*.py" in hermes_cli_data
+
+    manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+    assert "recursive-include hermes_cli/release_evidence/raphael *.md *.py" in manifest
+
+
 def test_bundled_plugin_manifests_ship_in_both_wheel_and_sdist():
     """Regression test for #34034 / #28149.
 
@@ -264,4 +290,3 @@ def test_locale_catalogs_ship_in_both_wheel_and_sdist():
     # Every on-disk catalog has the .yaml extension the globs above match.
     on_disk = list((REPO_ROOT / "locales").glob("*.yaml"))
     assert on_disk, "expected locales/*.yaml catalogs on disk"
-

@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import yaml
 from agent.codex_responses_adapter import _normalize_codex_response
 
 import run_agent
@@ -3505,6 +3506,161 @@ class TestRunConversation:
             tool_payload_with_metadata["direct_visual_agent_handoff"]["visual_agent_llm_provider"]
             == "xai-oauth"
         )
+
+    def test_direct_visual_agent_handoff_asks_clarification_for_missing_ref_index(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "plugins": {"enabled": ["raphael"], "disabled": []},
+                    "raphael": {
+                        "enabled": True,
+                        "default_conversation_mode_enabled": True,
+                        "mode": "sage_king",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("visual_agent_generate", "visual_package_generate", "image_generate"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://chatgpt.com/backend-api/codex",
+                provider="openai-codex",
+                model="gpt-5.5",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+        self._setup_agent(agent)
+        agent.client = MagicMock()
+        agent.client.chat.completions.create.side_effect = AssertionError("main LLM should be bypassed")
+        message = [
+            {"type": "text", "text": "用 ref3 的服裝，ref1 的角色，產出圖片"},
+            {"type": "image_url", "image_url": {"url": "/tmp/ref1.png"}},
+            {"type": "image_url", "image_url": {"url": "/tmp/ref2.png"}},
+        ]
+
+        with (
+            patch.object(agent, "_invoke_tool") as invoke_tool,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation(message)
+
+        assert result["api_calls"] == 0
+        assert result["completed"] is True
+        assert result["turn_exit_reason"] == "direct_visual_agent_clarification"
+        assert not agent.client.chat.completions.create.called
+        invoke_tool.assert_not_called()
+        assert "ref3" in result["final_response"]
+        assert "2 個 reference" in result["final_response"]
+
+        from agent.raphael.state import get_raphael_events_path, read_state
+
+        state = read_state()
+        assert state.status_cards
+        assert state.status_cards[0].title == "Raphael blocked visual handoff"
+        assert "需要 ref3" in state.status_cards[0].summary
+        assert "missing_ref3" not in state.status_cards[0].summary
+        events = [
+            json.loads(line)
+            for line in get_raphael_events_path().read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert events[-1]["kind"] == "control_decision"
+        assert events[-1]["details"]["mode"] == "needs_clarification"
+        assert events[-1]["details"]["next_action"] == "ask_precise_clarification"
+        assert events[-1]["details"]["blockers"] == ["missing_ref3"]
+
+    def test_visual_prompt_disclosure_bypasses_model_from_ledger(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        from agent.visual.attempt_ledger import VisualAttemptLedger
+        from gateway.session_context import clear_session_vars
+        from gateway.session_context import set_session_vars
+
+        ledger_path = tmp_path / "attempts.sqlite3"
+        ledger = VisualAttemptLedger(ledger_path)
+        ledger.initialize()
+        request_id = ledger.record_request(user_prompt="user visual request", status="completed")
+        attempt_id = ledger.record_attempt(
+            request_id=request_id,
+            provider="xai",
+            model="grok-imagine",
+            prompt_original="user visual request",
+            prompt_mediated="provider-ready prompt",
+        )
+        artifact_id = ledger.record_artifact(
+            request_id=request_id,
+            attempt_id=attempt_id,
+            kind="image",
+            local_path="/tmp/generated.png",
+        )
+        ledger.record_delivery(
+            request_id=request_id,
+            attempt_id=attempt_id,
+            artifact_id=artifact_id,
+            platform="slack",
+            destination_id="D1",
+            thread_id="T1",
+            delivery_status="sent",
+        )
+
+        from agent.visual import prompt_disclosure
+
+        monkeypatch.setattr(prompt_disclosure, "default_visual_ledger_path", lambda: ledger_path)
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("visual_agent_generate", "visual_package_generate", "image_generate"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://chatgpt.com/backend-api/codex",
+                provider="openai-codex",
+                model="gpt-5.5",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+        self._setup_agent(agent)
+        agent.client = MagicMock()
+        agent.client.chat.completions.create.side_effect = AssertionError(
+            "prompt disclosure must not call the model"
+        )
+        tokens = set_session_vars(platform="slack", chat_id="D1", thread_id="T1")
+        try:
+            with (
+                patch.object(agent, "_persist_session"),
+                patch.object(agent, "_save_trajectory"),
+                patch.object(agent, "_cleanup_task_resources"),
+            ):
+                result = agent.run_conversation("請給我你使用的 prompt")
+        finally:
+            clear_session_vars(tokens)
+
+        assert result["api_calls"] == 0
+        assert result["turn_exit_reason"] == "visual_prompt_disclosure"
+        assert "provider-ready prompt" in result["final_response"]
+        assert "已產出圖片" not in result["final_response"]
 
     def test_tool_calls_then_stop(self, agent):
         self._setup_agent(agent)

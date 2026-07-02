@@ -1589,6 +1589,16 @@ class TestVisualPackageToolGuidance:
         assert "or any image/video generation tool" in prompt
         assert "answer from the latest visual tool result" in prompt
 
+    def test_visual_agent_guidance_keeps_route_and_proof_analysis_text_only(self):
+        prompt = build_visual_package_tool_guidance(
+            {"visual_agent_generate", "visual_package_generate", "image_generate"}
+        )
+
+        assert "route/provider/proof-gate analysis" in prompt
+        assert "do not call visual tools" in prompt
+        assert "text-only" in prompt
+        assert "no-tools" in prompt
+
     def test_includes_visual_self_validation_status_when_available(self):
         prompt = build_visual_package_tool_guidance(
             {

@@ -151,8 +151,8 @@ def summarize_skill_usage(
 
 def _format_outcomes(outcome_counts: dict[str, int] | Any) -> str:
     if not outcome_counts:
-        return "none"
-    return ", ".join(
+        return "尚無"
+    return "、".join(
         f"{outcome}={count}"
         for outcome, count in sorted(dict(outcome_counts).items())
     )
@@ -160,8 +160,11 @@ def _format_outcomes(outcome_counts: dict[str, int] | Any) -> str:
 
 def render_skill_summary(summaries: Sequence[SkillTraceSummary]) -> str:
     lines = [
-        "Raphael Skill Trace",
-        "Mode: read-only skill usage summary",
+        "Raphael Skill Evolution Trace",
+        "Mode: skill usage and evolution audit",
+        "",
+        "Skill Evolution Brief:",
+        *_format_skill_evolution_brief(summaries),
         "",
         "Skill Usage:",
     ]
@@ -175,26 +178,71 @@ def render_skill_summary(summaries: Sequence[SkillTraceSummary]) -> str:
                 if summary.latest_activity_at is not None
                 else "never"
             )
-            state = summary.state or "unknown"
-            created_by = summary.created_by or "unknown"
+            state = _format_skill_state(summary.state)
+            created_by = _format_created_by(summary.created_by)
             lines.append(
-                f"- {summary.skill_name}: "
-                f"use={summary.use_count} "
-                f"view={summary.view_count} "
-                f"patch={summary.patch_count} "
-                f"latest={latest} "
-                f"state={state} "
-                f"created_by={created_by} "
-                f"outcomes={_format_outcomes(summary.outcome_counts)}"
+                f"- {summary.skill_name}:\n"
+                f"  使用：{summary.use_count} 次；"
+                f"檢視：{summary.view_count} 次；"
+                f"修補：{summary.patch_count} 次\n"
+                f"  最近活動：{latest}\n"
+                f"  狀態：{state}；"
+                f"建立者：{created_by}；"
+                f"結果：{_format_outcomes(summary.outcome_counts)}"
             )
 
     lines.extend(
         [
             "",
-            "Safety: Raphael Skill Trace is read-only and does not propose or modify skills.",
+            "安全邊界：技能演化必須經過受控背景審核；"
+            "紀錄需可審計，策略變更需附回滾條件。",
         ]
     )
     return "\n".join(lines)
+
+
+def _format_skill_state(state: str | None) -> str:
+    return {
+        "active": "啟用",
+        "inactive": "停用",
+        "disabled": "停用",
+    }.get(str(state or "unknown"), str(state or "unknown"))
+
+
+def _format_created_by(created_by: str | None) -> str:
+    return {
+        "user": "使用者",
+        "system": "系統",
+        "unknown": "未記錄",
+    }.get(str(created_by or "unknown"), str(created_by or "unknown"))
+
+
+def _format_skill_evolution_brief(
+    summaries: Sequence[SkillTraceSummary],
+) -> list[str]:
+    tracked_count = len(summaries)
+    active_count = sum(1 for summary in summaries if summary.state == "active")
+    patched_count = sum(1 for summary in summaries if summary.patch_count > 0)
+    latest_activity = max(
+        (
+            summary.latest_activity_at
+            for summary in summaries
+            if summary.latest_activity_at is not None
+        ),
+        default=None,
+    )
+    outcome_counts: dict[str, int] = {}
+    for summary in summaries:
+        for outcome, count in dict(summary.outcome_counts).items():
+            outcome_counts[outcome] = outcome_counts.get(outcome, 0) + int(count)
+    latest = latest_activity.isoformat() if latest_activity is not None else "never"
+    return [
+        f"- 追蹤技能：{tracked_count} 個",
+        f"- 活躍技能：{active_count} 個",
+        f"- 已修補技能：{patched_count} 個",
+        f"- 最近活動：{latest}",
+        f"- 學習結果：{_format_outcomes(outcome_counts)}",
+    ]
 
 
 __all__ = [

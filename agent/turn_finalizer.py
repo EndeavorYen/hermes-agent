@@ -23,6 +23,7 @@ keep the exact logger name (``"agent.conversation_loop"``).
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 
@@ -261,8 +262,6 @@ def finalize_turn(
             logger.debug("turn-completion explainer failed: %s", _exp_err)
 
     _response_transformed = False
-    _raphael_proof_gate_result = None
-    _raphael_evolution_proposal = None
 
     # Plugin hook: transform_llm_output
     # Fired once per turn after the tool-calling loop completes.
@@ -288,64 +287,41 @@ def finalize_turn(
 
     if final_response and not interrupted:
         try:
+            final_response = _apply_raphael_general_proof_gate(
+                final_response,
+                user_message=original_user_message,
+                messages=messages,
+                conversation_history=conversation_history,
+                turn_id=turn_id,
+                task_id=effective_task_id,
+            )
+        except Exception as exc:
+            logger.debug("Raphael general proof gate skipped: %s", exc)
+
+    if final_response and not interrupted:
+        try:
             from agent.raphael.governor import (
                 apply_raphael_response_governor,
                 should_apply_raphael_response_governor,
             )
 
-            final_response = apply_raphael_response_governor(
-                final_response,
-                enabled=should_apply_raphael_response_governor(),
-            )
+            if not _is_explicit_raphael_invocation(original_user_message):
+                final_response = apply_raphael_response_governor(
+                    final_response,
+                    enabled=should_apply_raphael_response_governor(),
+                )
         except Exception as exc:
             logger.warning("Raphael response governor failed: %s", exc)
 
     if final_response and not interrupted:
         try:
-            from agent.raphael.governor import should_apply_raphael_response_governor
-            from agent.raphael.proof import (
-                claim_kind_from_text,
-                evaluate_raphael_proof_gate,
-                extract_raphael_proof_evidence,
-                render_proof_gate_user_message,
-                should_render_proof_gate_for_text,
+            final_response = _apply_raphael_invocation_response_shape(
+                final_response,
+                user_message=original_user_message,
+                conversation_history=conversation_history,
             )
-            from agent.raphael.router import route_raphael_message
-
-            if (
-                should_apply_raphael_response_governor()
-                and should_render_proof_gate_for_text(final_response)
-            ):
-                _raphael_proof_gate_result = evaluate_raphael_proof_gate(
-                    route=route_raphael_message(str(original_user_message or user_message)),
-                    evidence=extract_raphael_proof_evidence(messages),
-                    claim_kind=claim_kind_from_text(final_response),
-                )
-                if _raphael_proof_gate_result.status != "passed":
-                    final_response = (
-                        final_response.rstrip()
-                        + "\n\n"
-                        + render_proof_gate_user_message(_raphael_proof_gate_result)
-                    )
-                    try:
-                        from agent.raphael.evolution import (
-                            record_proof_gate_failure_signal,
-                        )
-
-                        _raphael_evolution_proposal = (
-                            record_proof_gate_failure_signal(
-                                _raphael_proof_gate_result,
-                                turn_id=turn_id,
-                                user_message=original_user_message or user_message,
-                            )
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "Raphael evolution signal recording failed: %s",
-                            exc,
-                        )
         except Exception as exc:
-            logger.warning("Raphael proof gate failed: %s", exc)
+            logger.debug("Raphael invocation response shaping skipped: %s", exc)
 
     # Plugin hook: post_llm_call
     # Fired once per turn after the tool-calling loop completes.
@@ -417,23 +393,6 @@ def finalize_turn(
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
-    if _raphael_proof_gate_result is not None:
-        result["raphael_proof_gate"] = {
-            "status": _raphael_proof_gate_result.status,
-            "failure_layer": _raphael_proof_gate_result.failure_layer,
-            "required_proofs": list(_raphael_proof_gate_result.required_proofs),
-            "available_proofs": list(_raphael_proof_gate_result.available_proofs),
-            "missing_proofs": list(_raphael_proof_gate_result.missing_proofs),
-            "next_action": _raphael_proof_gate_result.next_action,
-            "next_proof_command": _raphael_proof_gate_result.next_proof_command,
-        }
-    if _raphael_evolution_proposal is not None:
-        result["raphael_evolution_proposal"] = {
-            "proposal_id": _raphael_evolution_proposal.proposal_id,
-            "action_type": _raphael_evolution_proposal.action_type,
-            "risk": _raphael_evolution_proposal.risk.value,
-            "status": _raphael_evolution_proposal.status,
-        }
     # If a /steer landed after the final assistant turn (no more tool
     # batches to drain into), hand it back to the caller so it can be
     # delivered as the next user turn instead of being silently lost.
@@ -460,6 +419,113 @@ def finalize_turn(
         _should_review_skills = True
         agent._iters_since_skill = 0
 
+    _review_prompt = None
+    _review_label = None
+    _raphael_evolution = None
+    _evolution_metadata = None
+    if final_response and not interrupted:
+        try:
+            from hermes_cli.config import load_config
+            from agent.raphael.evolution import (
+                append_evolution_record,
+                build_raphael_evolution_review_prompt,
+                decide_raphael_evolution,
+            )
+            from agent.raphael.models import SkillTrace
+            from agent.raphael.skill_trace import append_skill_trace
+
+            _raphael_evolution = decide_raphael_evolution(
+                user_message=original_user_message,
+                final_response=final_response,
+                messages=messages,
+                turn_exit_reason=_turn_exit_reason,
+                config=load_config(),
+            )
+            _evolution_metadata = {
+                "task_id": effective_task_id,
+                "turn_id": turn_id,
+                "turn_exit_reason": _turn_exit_reason,
+            }
+            if _raphael_evolution.should_review:
+                append_evolution_record(
+                    _raphael_evolution,
+                    status="scheduled",
+                    metadata=_evolution_metadata,
+                )
+                append_skill_trace(
+                    SkillTrace(
+                        trace_id=f"raphael-evolution-{turn_id}",
+                        task_id=str(effective_task_id or ""),
+                        created_at=datetime.now(timezone.utc),
+                        source="raphael_evolution",
+                        skills_used=tuple(
+                            skill
+                            for skill in (
+                                "raphael",
+                                "skill_manage" if _raphael_evolution.review_skills else "",
+                                "memory" if _raphael_evolution.review_memory else "",
+                            )
+                            if skill
+                        ),
+                        tools_used=tuple(
+                            tool
+                            for tool in (
+                                "skill_manage" if _raphael_evolution.review_skills else "",
+                                "memory" if _raphael_evolution.review_memory else "",
+                            )
+                            if tool
+                        ),
+                        outcome="scheduled",
+                        user_corrections=tuple(_raphael_evolution.reason_codes),
+                        risk_incidents=(),
+                        metadata={
+                            "mode": _raphael_evolution.mode,
+                            "reason_codes": list(_raphael_evolution.reason_codes),
+                            "evidence_summary": _raphael_evolution.evidence_summary,
+                            "turn_exit_reason": _turn_exit_reason,
+                        },
+                    ),
+                    max_string_length=500,
+                )
+                _should_review_memory = (
+                    _should_review_memory or _raphael_evolution.review_memory
+                )
+                _should_review_skills = (
+                    _should_review_skills or _raphael_evolution.review_skills
+                )
+                _review_prompt = build_raphael_evolution_review_prompt(
+                    _raphael_evolution
+                )
+                _review_label = _raphael_evolution.review_label
+            elif _raphael_evolution.proposal_only:
+                append_evolution_record(
+                    _raphael_evolution,
+                    status="proposal_only",
+                    metadata=_evolution_metadata,
+                )
+                append_skill_trace(
+                    SkillTrace(
+                        trace_id=f"raphael-evolution-{turn_id}",
+                        task_id=str(effective_task_id or ""),
+                        created_at=datetime.now(timezone.utc),
+                        source="raphael_evolution",
+                        skills_used=("raphael",),
+                        tools_used=(),
+                        outcome="proposal_only",
+                        user_corrections=(),
+                        risk_incidents=tuple(_raphael_evolution.reason_codes),
+                        metadata={
+                            "mode": _raphael_evolution.mode,
+                            "reason_codes": list(_raphael_evolution.reason_codes),
+                            "evidence_summary": _raphael_evolution.evidence_summary,
+                            "turn_exit_reason": _turn_exit_reason,
+                        },
+                    ),
+                    max_string_length=500,
+                )
+        except Exception as exc:
+            logger.debug("Raphael evolution scheduling skipped: %s", exc)
+
     # External memory provider: sync the completed turn + queue next prefetch.
     agent._sync_external_memory_for_turn(
         original_user_message=original_user_message,
@@ -476,9 +542,50 @@ def finalize_turn(
                 messages_snapshot=list(messages),
                 review_memory=_should_review_memory,
                 review_skills=_should_review_skills,
+                review_prompt=_review_prompt,
+                review_label=_review_label,
             )
-        except Exception:
-            pass  # Background review is best-effort
+        except Exception as exc:
+            logger.debug("Background review spawn failed: %s", exc)
+            if _raphael_evolution is not None and _evolution_metadata is not None:
+                try:
+                    from agent.raphael.evolution import append_evolution_record
+                    from agent.raphael.models import SkillTrace
+                    from agent.raphael.skill_trace import append_skill_trace
+
+                    append_evolution_record(
+                        _raphael_evolution,
+                        status="background_spawn_failed",
+                        metadata={
+                            **_evolution_metadata,
+                            "error": str(exc),
+                        },
+                    )
+                    append_skill_trace(
+                        SkillTrace(
+                            trace_id=f"raphael-evolution-spawn-failed-{turn_id}",
+                            task_id=str(effective_task_id or ""),
+                            created_at=datetime.now(timezone.utc),
+                            source="raphael_evolution",
+                            skills_used=("raphael",),
+                            tools_used=(),
+                            outcome="background_spawn_failed",
+                            user_corrections=(),
+                            risk_incidents=tuple(_raphael_evolution.reason_codes),
+                            metadata={
+                                "mode": _raphael_evolution.mode,
+                                "reason_codes": list(_raphael_evolution.reason_codes),
+                                "turn_exit_reason": _turn_exit_reason,
+                                "error": str(exc),
+                            },
+                        ),
+                        max_string_length=500,
+                    )
+                except Exception as record_exc:
+                    logger.debug(
+                        "Raphael background review failure recording skipped: %s",
+                        record_exc,
+                    )
 
     # Note: Memory provider on_session_end() + shutdown_all() are NOT
     # called here — run_conversation() is called once per user message in
@@ -506,3 +613,209 @@ def finalize_turn(
         logger.warning("on_session_end hook failed: %s", exc)
 
     return result
+
+
+def _apply_raphael_general_proof_gate(
+    final_response,
+    *,
+    user_message,
+    messages,
+    conversation_history,
+    turn_id,
+    task_id,
+):
+    from agent.raphael.control import build_raphael_control_decision
+    from agent.raphael.observer import should_inject_raphael_observation
+    from agent.raphael.proof import raphael_has_required_proof
+
+    if not should_inject_raphael_observation():
+        return final_response
+    decision = build_raphael_control_decision(
+        user_message,
+        conversation_history=conversation_history,
+    )
+    is_visual_task = str(decision.mode).startswith("visual_agent")
+    if decision.mode != "tool_task" and not is_visual_task:
+        return final_response
+    if not _raphael_claims_completion(final_response):
+        return final_response
+    required = decision.evidence.required_proofs or ()
+    if raphael_has_required_proof(messages, required):
+        return final_response
+
+    decision_payload = decision.to_dict()
+    evidence = dict(decision_payload.get("evidence") or {})
+    evidence["failure_layer"] = "artifact_quality" if is_visual_task else "proof_gate"
+    evidence["next_repair_action"] = "run_required_proofs_before_completion_claim"
+    decision_payload["evidence"] = evidence
+    decision_payload["next_action"] = "run_required_proofs_before_completion_claim"
+    try:
+        from agent.raphael.state import record_control_decision
+
+        record_control_decision(
+            decision_payload,
+            turn_id=turn_id,
+            task_id=task_id,
+            source="general_tool_proof_gate",
+        )
+    except Exception:
+        pass
+    required_text = ", ".join(str(item) for item in required) or "verification evidence"
+    risk_text = (
+        "這是 visual/artifact 任務，但目前缺少 "
+        if is_visual_task
+        else "這是工具/runtime 任務，但目前缺少 "
+    )
+    next_step = (
+        "先透過 visual_agent_generate 或等效 handoff 產出目前選中 artifact，"
+        "再回報 artifact quality、selection、delivery 證據。"
+        if is_visual_task
+        else "先執行必要測試或 runtime smoke，再回報具體證據。"
+    )
+    return "\n".join(
+        [
+            "狀態：還不能判定完成，Raphael proof gate 沒看到足夠證據。",
+            f"風險：{risk_text}{required_text}。",
+            f"下一步：{next_step}",
+        ]
+    )
+
+
+def _apply_raphael_invocation_response_shape(
+    final_response,
+    *,
+    user_message,
+    conversation_history,
+):
+    from agent.raphael.appraisal import appraise_raphael_situation
+    from agent.raphael.invocation import (
+        is_raphael_invocation,
+        render_raphael_invocation_response,
+    )
+    from agent.raphael.mission import update_raphael_mission
+    from agent.raphael.observer import should_inject_raphael_observation
+    from agent.raphael.state import read_mission_state
+    from agent.raphael.strategy import simulate_raphael_strategies
+
+    if not should_inject_raphael_observation():
+        return final_response
+    if not is_raphael_invocation(user_message):
+        return final_response
+    response_text = str(final_response or "")
+    if "解析完成。" in response_text and (
+        "局勢判讀" in response_text or "狀態：Raphael 待命" in response_text
+    ):
+        return final_response
+    if "還不能判定完成" in response_text or "Raphael proof gate" in response_text:
+        return final_response
+    if _raphael_user_requested_exact_reply_shape(user_message):
+        return final_response
+    appraisal = appraise_raphael_situation(
+        user_message,
+        conversation_history=conversation_history,
+    )
+    strategies = simulate_raphael_strategies(appraisal)
+    mission = update_raphael_mission(read_mission_state(), appraisal, strategies)
+    prefix = render_raphael_invocation_response(appraisal, strategies, mission)
+    return f"{prefix}\n\n回應：\n{response_text}"
+
+
+def _is_explicit_raphael_invocation(user_message) -> bool:
+    try:
+        from agent.raphael.invocation import is_raphael_invocation
+
+        return is_raphael_invocation(user_message)
+    except Exception:
+        return False
+
+
+def _raphael_user_requested_exact_reply_shape(user_message) -> bool:
+    text = str(user_message or "").lower()
+    compact = "".join(text.split())
+    reply_markers = (
+        "只回覆",
+        "只回答",
+        "只用",
+        "僅回覆",
+        "仅回复",
+        "only reply",
+        "only respond",
+        "reply only",
+        "respond only",
+    )
+    shape_markers = (
+        "三行",
+        "二行",
+        "兩行",
+        "两行",
+        "四行",
+        "五行",
+        "六行",
+        "2行",
+        "3行",
+        "4行",
+        "5行",
+        "6行",
+        "2 lines",
+        "3 lines",
+        "4 lines",
+        "5 lines",
+        "6 lines",
+        "two lines",
+        "three lines",
+        "four lines",
+        "five lines",
+        "six lines",
+        "一句",
+        "一行",
+        "one line",
+        "single line",
+    )
+    return any(marker in text or marker in compact for marker in reply_markers) and any(
+        marker in text or marker in compact for marker in shape_markers
+    )
+
+
+def _raphael_claims_completion(text) -> bool:
+    lowered = str(text or "").lower()
+    negative_markers = (
+        "不能宣稱完成",
+        "不要宣稱完成",
+        "不可宣稱完成",
+        "不應宣稱完成",
+        "不該宣稱完成",
+        "不能說完成",
+        "不可說完成",
+        "不能判定完成",
+        "還不能判定完成",
+        "尚不能判定完成",
+        "不可以宣稱完成",
+        "不算完成",
+        "not complete",
+        "not completed",
+        "cannot claim completion",
+        "can't claim completion",
+        "do not claim completion",
+        "should not claim completion",
+    )
+    if any(marker in lowered for marker in negative_markers):
+        return False
+    markers = (
+        "done",
+        "fixed",
+        "completed",
+        "passed",
+        "verified",
+        "已完成",
+        "完成",
+        "修好了",
+        "修復完成",
+        "驗證完成",
+        "測試通過",
+        "可以上線",
+        "已產出",
+        "已生成",
+        "產出圖片",
+        "生成圖片",
+    )
+    return any(marker in lowered for marker in markers)

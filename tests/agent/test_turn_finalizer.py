@@ -39,6 +39,9 @@ class _FakeAgent:
     valid_tool_names = set()
     _stream_callback = None
 
+    def __init__(self):
+        self.background_review_calls = []
+
     def _save_trajectory(self, *_args, **_kwargs):
         pass
 
@@ -66,32 +69,8 @@ class _FakeAgent:
     def _sync_external_memory_for_turn(self, **_kwargs):
         pass
 
-
-def _run_finalize(
-    *,
-    final_response: str,
-    messages: list[dict] | None = None,
-    user_message: str = "請幫我看一下目前狀態",
-):
-    return finalize_turn(
-        _FakeAgent(),
-        final_response=final_response,
-        api_call_count=1,
-        interrupted=False,
-        failed=False,
-        messages=messages
-        or [
-            {"role": "user", "content": user_message},
-            {"role": "assistant", "content": final_response},
-        ],
-        conversation_history=None,
-        effective_task_id="task-1",
-        turn_id="turn-1",
-        user_message=user_message,
-        original_user_message=user_message,
-        _should_review_memory=False,
-        _turn_exit_reason="text_response",
-    )
+    def _spawn_background_review(self, **kwargs):
+        self.background_review_calls.append(kwargs)
 
 
 def test_finalize_turn_applies_raphael_response_governor(monkeypatch):
@@ -123,298 +102,704 @@ def test_finalize_turn_applies_raphael_response_governor(monkeypatch):
     assert result["final_response"] == "Line one\nRaphael governed=True"
 
 
-def test_finalize_turn_blocks_completion_claim_without_required_tool_proof(monkeypatch):
-    import agent.raphael.governor as governor
+def test_finalize_turn_shapes_explicit_raphael_summon_response(monkeypatch):
+    import agent.raphael.observer as observer
 
-    monkeypatch.setattr(governor, "should_apply_raphael_response_governor", lambda: True)
-    monkeypatch.setattr(
-        governor,
-        "apply_raphael_response_governor",
-        lambda text, *, enabled: text,
-    )
+    monkeypatch.setattr(observer, "should_inject_raphael_observation", lambda: True)
 
     result = finalize_turn(
         _FakeAgent(),
-        final_response="完成了，測試也通過。",
+        final_response="我會處理。",
         api_call_count=1,
         interrupted=False,
         failed=False,
-        messages=[
-            {"role": "user", "content": "請修復 repo 裡的測試失敗"},
-            {"role": "assistant", "content": "完成了，測試也通過。"},
-        ],
+        messages=[{"role": "user", "content": "拉斐爾，分析這個 runtime 任務"}],
         conversation_history=None,
         effective_task_id="task-1",
         turn_id="turn-1",
-        user_message="請修復 repo 裡的測試失敗",
-        original_user_message="請修復 repo 裡的測試失敗",
+        user_message="拉斐爾，分析這個 runtime 任務",
+        original_user_message="拉斐爾，分析這個 runtime 任務",
         _should_review_memory=False,
         _turn_exit_reason="text_response",
     )
 
-    assert "Raphael proof gate blocked" in result["final_response"]
-    assert "failure_layer: proof_gate" in result["final_response"]
-    assert "python -m pytest <focused-test-target> -q" in result["final_response"]
-    assert result["raphael_proof_gate"]["status"] == "blocked"
-    assert result["raphael_proof_gate"]["missing_proofs"] == [
-        "focused_tests",
-        "diff_hygiene",
-    ]
+    assert result["final_response"].startswith("解析完成。")
+    assert "局勢判讀" in result["final_response"]
+    assert "並列推演" in result["final_response"]
+    assert "最優路線" in result["final_response"]
+    assert "我會處理。" in result["final_response"]
+    assert "type=" not in result["final_response"]
+    assert "risk=" not in result["final_response"]
+    assert "focused_tests" not in result["final_response"]
+    assert "plan_execute_verify" not in result["final_response"]
 
 
-def test_finalize_turn_records_repeated_proof_gate_failures_as_evolution_proposal(
+def test_finalize_turn_shapes_casual_raphael_summon_as_standby_prompt(monkeypatch):
+    import agent.raphael.observer as observer
+
+    monkeypatch.setattr(observer, "should_inject_raphael_observation", lambda: True)
+
+    result = finalize_turn(
+        _FakeAgent(),
+        final_response="在。",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=[{"role": "user", "content": "拉斐爾？"}],
+        conversation_history=None,
+        effective_task_id="task-1",
+        turn_id="turn-1",
+        user_message="拉斐爾？",
+        original_user_message="拉斐爾？",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response",
+    )
+
+    assert result["final_response"].startswith("解析完成。")
+    assert "狀態：Raphael 待命" in result["final_response"]
+    assert "可接管：目標判讀、策略推演、證據驗證、演化提案" in result["final_response"]
+    assert "請給我任務目標" in result["final_response"]
+    assert "回應：\n在。" in result["final_response"]
+    assert "目標：拉斐爾" not in result["final_response"]
+    assert "局勢判讀" not in result["final_response"]
+    assert "並列推演" not in result["final_response"]
+
+
+def test_finalize_turn_preserves_explicit_three_line_raphael_summon_format(monkeypatch):
+    import agent.raphael.observer as observer
+
+    monkeypatch.setattr(observer, "should_inject_raphael_observation", lambda: True)
+    response = "\n".join(
+        [
+            "狀態：已喚醒；文字模式，禁止工具與產圖。",
+            "可接管：可以；我會只做判讀、壓縮、決策建議。",
+            "下一步：給我目標或現況，我直接切成最小可執行動作。",
+        ]
+    )
+
+    result = finalize_turn(
+        _FakeAgent(),
+        final_response=response,
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=[
+            {
+                "role": "user",
+                "content": "拉斐爾？不要呼叫工具，不要產圖。請只回覆三行：狀態、可接管、下一步。",
+            }
+        ],
+        conversation_history=None,
+        effective_task_id="task-1",
+        turn_id="turn-1",
+        user_message="拉斐爾？不要呼叫工具，不要產圖。請只回覆三行：狀態、可接管、下一步。",
+        original_user_message="拉斐爾？不要呼叫工具，不要產圖。請只回覆三行：狀態、可接管、下一步。",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response",
+    )
+
+    assert result["final_response"] == response
+    assert "解析完成。" not in result["final_response"]
+    assert "回應：" not in result["final_response"]
+    assert len(result["final_response"].splitlines()) == 3
+
+
+def test_finalize_turn_does_not_double_wrap_existing_standby_summon_response(
     monkeypatch,
-    tmp_path,
 ):
-    import agent.raphael.governor as governor
-    from agent.raphael.models import RaphaelState
-    from agent.raphael.state import read_state, write_state
+    import agent.raphael.observer as observer
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    monkeypatch.setattr(governor, "should_apply_raphael_response_governor", lambda: True)
-    monkeypatch.setattr(
-        governor,
-        "apply_raphael_response_governor",
-        lambda text, *, enabled: text,
-    )
-    write_state(RaphaelState.empty())
-
-    first = _run_finalize(
-        final_response="完成了，測試也通過。",
-        user_message="請修復 repo 裡的測試失敗",
-    )
-    after_first = read_state()
-    second = _run_finalize(
-        final_response="完成了，測試也通過。",
-        user_message="請修復 repo 裡的測試失敗",
-    )
-    after_second = read_state()
-
-    assert first["raphael_proof_gate"]["status"] == "blocked"
-    assert second["raphael_proof_gate"]["status"] == "blocked"
-    assert after_first.action_proposals == ()
-    assert len(after_second.action_proposals) == 1
-    proposal = after_second.action_proposals[0]
-    assert proposal.status == "pending"
-    assert proposal.metadata["affected_capability"] == "raphael.proof_gate"
-    assert proposal.metadata["recurring_signal_count"] == 2
-
-
-def test_finalize_turn_allows_completion_claim_with_required_tool_proof(monkeypatch):
-    import agent.raphael.governor as governor
-
-    monkeypatch.setattr(governor, "should_apply_raphael_response_governor", lambda: True)
-    monkeypatch.setattr(
-        governor,
-        "apply_raphael_response_governor",
-        lambda text, *, enabled: text,
+    monkeypatch.setattr(observer, "should_inject_raphael_observation", lambda: True)
+    standby = "\n".join(
+        [
+            "解析完成。",
+            "狀態：Raphael 待命；請給我任務目標。",
+            "可接管：目標判讀、策略推演、證據驗證、演化提案。",
+            "下一步：說出你要我接管的任務、artifact 或阻塞點。",
+        ]
     )
 
     result = finalize_turn(
         _FakeAgent(),
-        final_response="完成了，測試與 diff hygiene 都通過。",
+        final_response=standby,
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=[{"role": "user", "content": "拉斐爾？"}],
+        conversation_history=None,
+        effective_task_id="task-1",
+        turn_id="turn-1",
+        user_message="拉斐爾？",
+        original_user_message="拉斐爾？",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response",
+    )
+
+    assert result["final_response"] == standby
+    assert result["final_response"].count("解析完成。") == 1
+    assert "回應：" not in result["final_response"]
+
+
+def test_finalize_turn_preserves_raphael_summon_shape_after_governor(monkeypatch):
+    import agent.raphael.governor as governor
+    import agent.raphael.observer as observer
+
+    monkeypatch.setattr(observer, "should_inject_raphael_observation", lambda: True)
+    monkeypatch.setattr(governor, "should_apply_raphael_response_governor", lambda: True)
+
+    result = finalize_turn(
+        _FakeAgent(),
+        final_response="下一步：先規劃，再執行，最後用證據驗證",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=[{"role": "user", "content": "拉斐爾，請分析這個 runtime bug"}],
+        conversation_history=None,
+        effective_task_id="task-1",
+        turn_id="turn-1",
+        user_message="拉斐爾，請分析這個 runtime bug",
+        original_user_message="拉斐爾，請分析這個 runtime bug",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response",
+    )
+
+    assert result["final_response"].startswith("解析完成。")
+    assert "局勢判讀" in result["final_response"]
+    assert "並列推演" in result["final_response"]
+    assert "最優路線" in result["final_response"]
+    assert "必要證據" in result["final_response"]
+    assert "回應：" in result["final_response"]
+
+
+def test_finalize_turn_keeps_full_raphael_summon_body_when_governor_enabled(monkeypatch):
+    import agent.raphael.governor as governor
+    import agent.raphael.observer as observer
+
+    monkeypatch.setattr(observer, "should_inject_raphael_observation", lambda: True)
+    monkeypatch.setattr(governor, "should_apply_raphael_response_governor", lambda: True)
+
+    result = finalize_turn(
+        _FakeAgent(),
+        final_response="\n".join(
+            [
+                "局勢判讀：這是 runtime 文字分析。",
+                "細節分析：這行是原始推理摘要，不能被治理器裁掉。",
+                "必要證據：tool_call_count=0。",
+                "下一步：保持 LLM-only。",
+            ]
+        ),
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=[{"role": "user", "content": "拉斐爾，請 LLM-only 分析 runtime bug"}],
+        conversation_history=None,
+        effective_task_id="task-1",
+        turn_id="turn-1",
+        user_message="拉斐爾，請 LLM-only 分析 runtime bug",
+        original_user_message="拉斐爾，請 LLM-only 分析 runtime bug",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response",
+    )
+
+    assert result["final_response"].startswith("解析完成。")
+    assert "回應：" in result["final_response"]
+    assert "細節分析：這行是原始推理摘要，不能被治理器裁掉。" in result["final_response"]
+    assert "必要證據：tool_call_count=0。" in result["final_response"]
+    assert "下一步：保持 LLM-only。" in result["final_response"]
+
+
+def test_finalize_turn_schedules_raphael_evolution_review(monkeypatch):
+    import agent.raphael.evolution as evolution
+    import agent.raphael.skill_trace as skill_trace
+
+    decision = evolution.RaphaelEvolutionDecision(
+        should_review=True,
+        review_skills=True,
+        review_memory=False,
+        proposal_only=False,
+        mode="active_evolution",
+        reason_codes=("user_correction",),
+        evidence_summary="user corrected Raphael behavior",
+        review_label="Raphael evolution review",
+        risk_level="R1",
+        user_message_preview="不對，要主動進化",
+    )
+    records = []
+    traces = []
+
+    monkeypatch.setattr(
+        evolution,
+        "decide_raphael_evolution",
+        lambda **_kwargs: decision,
+    )
+    monkeypatch.setattr(
+        evolution,
+        "build_raphael_evolution_review_prompt",
+        lambda _decision: "CUSTOM RAPHAEL EVOLUTION PROMPT",
+    )
+    monkeypatch.setattr(
+        evolution,
+        "append_evolution_record",
+        lambda _decision, *, status, metadata=None: records.append(
+            {"status": status, "metadata": metadata or {}}
+        ),
+    )
+    monkeypatch.setattr(
+        skill_trace,
+        "append_skill_trace",
+        lambda trace, **_kwargs: traces.append(trace),
+    )
+
+    agent = _FakeAgent()
+    agent.valid_tool_names = {"skill_manage"}
+
+    result = finalize_turn(
+        agent,
+        final_response="收到，我會修正",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=[{"role": "user", "content": "不對，要主動進化"}],
+        conversation_history=None,
+        effective_task_id="task-1",
+        turn_id="turn-1",
+        user_message="不對，要主動進化",
+        original_user_message="不對，要主動進化",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response",
+    )
+
+    assert result["final_response"] == "收到，我會修正"
+    assert records == [
+        {
+            "status": "scheduled",
+            "metadata": {
+                "task_id": "task-1",
+                "turn_id": "turn-1",
+                "turn_exit_reason": "text_response",
+            },
+        }
+    ]
+    assert agent.background_review_calls == [
+        {
+            "messages_snapshot": result["messages"],
+            "review_memory": False,
+            "review_skills": True,
+            "review_prompt": "CUSTOM RAPHAEL EVOLUTION PROMPT",
+            "review_label": "Raphael evolution review",
+        }
+    ]
+    assert len(traces) == 1
+    assert traces[0].task_id == "task-1"
+    assert traces[0].source == "raphael_evolution"
+    assert traces[0].skills_used == ("raphael", "skill_manage")
+    assert traces[0].outcome == "scheduled"
+    assert traces[0].metadata["reason_codes"] == ["user_correction"]
+
+
+def test_finalize_turn_records_raphael_background_review_spawn_failure(monkeypatch):
+    import agent.raphael.evolution as evolution
+    import agent.raphael.skill_trace as skill_trace
+
+    decision = evolution.RaphaelEvolutionDecision(
+        should_review=True,
+        review_skills=True,
+        review_memory=False,
+        proposal_only=False,
+        mode="active_evolution",
+        reason_codes=("visual_or_provider_failure",),
+        evidence_summary="failure layers: artifact_quality",
+        review_label="Raphael evolution review",
+        risk_level="R1",
+        user_message_preview="生成圖片",
+    )
+    records = []
+    traces = []
+
+    monkeypatch.setattr(evolution, "decide_raphael_evolution", lambda **_kwargs: decision)
+    monkeypatch.setattr(
+        evolution,
+        "build_raphael_evolution_review_prompt",
+        lambda _decision: "CUSTOM RAPHAEL EVOLUTION PROMPT",
+    )
+    monkeypatch.setattr(
+        evolution,
+        "append_evolution_record",
+        lambda _decision, *, status, metadata=None: records.append(
+            {"status": status, "metadata": metadata or {}}
+        ),
+    )
+    monkeypatch.setattr(
+        skill_trace,
+        "append_skill_trace",
+        lambda trace, **_kwargs: traces.append(trace),
+    )
+
+    class FailingReviewAgent(_FakeAgent):
+        def _spawn_background_review(self, **_kwargs):
+            raise RuntimeError("review spawn failed")
+
+    agent = FailingReviewAgent()
+    agent.valid_tool_names = {"skill_manage"}
+
+    result = finalize_turn(
+        agent,
+        final_response="視覺生成失敗：候選圖未通過。",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=[{"role": "user", "content": "生成圖片"}],
+        conversation_history=None,
+        effective_task_id="task-1",
+        turn_id="turn-1",
+        user_message="生成圖片",
+        original_user_message="生成圖片",
+        _should_review_memory=False,
+        _turn_exit_reason="direct_visual_agent_handoff",
+    )
+
+    assert result["final_response"] == "視覺生成失敗：候選圖未通過。"
+    assert [record["status"] for record in records] == [
+        "scheduled",
+        "background_spawn_failed",
+    ]
+    assert traces[-1].outcome == "background_spawn_failed"
+    assert traces[-1].risk_incidents == ("visual_or_provider_failure",)
+
+
+def test_finalize_turn_blocks_unverified_tool_task_completion_claim(monkeypatch):
+    import agent.raphael.observer as observer
+    import agent.raphael.state as raphael_state
+
+    recorded = []
+    monkeypatch.setattr(observer, "should_inject_raphael_observation", lambda: True)
+    monkeypatch.setattr(
+        raphael_state,
+        "record_control_decision",
+        lambda decision, **kwargs: recorded.append((decision, kwargs)),
+    )
+
+    result = finalize_turn(
+        _FakeAgent(),
+        final_response="已完成修復並驗證。",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=[{"role": "user", "content": "請修復這個 runtime bug 並驗證"}],
+        conversation_history=None,
+        effective_task_id="task-1",
+        turn_id="turn-1",
+        user_message="請修復這個 runtime bug 並驗證",
+        original_user_message="請修復這個 runtime bug 並驗證",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response",
+    )
+
+    assert "還不能判定完成" in result["final_response"]
+    assert "focused_tests" in result["final_response"]
+    assert recorded
+    decision = recorded[-1][0]
+    assert decision["mode"] == "tool_task"
+    assert decision["evidence"]["failure_layer"] == "proof_gate"
+
+
+def test_finalize_turn_preserves_explicit_non_completion_tool_task_review(monkeypatch):
+    import agent.raphael.observer as observer
+
+    monkeypatch.setattr(observer, "should_inject_raphael_observation", lambda: True)
+    final_response = "不能宣稱完成：目前缺少 focused tests 與 runtime smoke。"
+
+    result = finalize_turn(
+        _FakeAgent(),
+        final_response=final_response,
         api_call_count=1,
         interrupted=False,
         failed=False,
         messages=[
-            {"role": "user", "content": "請修復 repo 裡的測試失敗"},
-            {
-                "role": "assistant",
-                "tool_calls": [
-                    {
-                        "id": "call_pytest",
-                        "function": {
-                            "name": "exec_command",
-                            "arguments": '{"cmd": "python -m pytest tests/foo.py -q"}',
-                        },
-                    },
-                    {
-                        "id": "call_diff",
-                        "function": {
-                            "name": "exec_command",
-                            "arguments": '{"cmd": "git diff --check"}',
-                        },
-                    },
-                ],
-            },
+            {"role": "user", "content": "請審查這個 runtime bug 是否可以宣稱完成"},
+            {"role": "assistant", "content": final_response},
+        ],
+        conversation_history=None,
+        effective_task_id="task-1",
+        turn_id="turn-1",
+        user_message="請審查這個 runtime bug 是否可以宣稱完成",
+        original_user_message="請審查這個 runtime bug 是否可以宣稱完成",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response",
+    )
+
+    assert result["final_response"] == final_response
+
+
+def test_finalize_turn_blocks_completion_claim_after_unrelated_tool_call(monkeypatch):
+    import agent.raphael.observer as observer
+
+    monkeypatch.setattr(observer, "should_inject_raphael_observation", lambda: True)
+
+    result = finalize_turn(
+        _FakeAgent(),
+        final_response="已完成修復並驗證。",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=[
+            {"role": "user", "content": "請修復這個 runtime bug 並驗證"},
+            {"role": "assistant", "tool_calls": [{"function": {"name": "read_file"}}]},
+            {"role": "tool", "name": "read_file", "content": "read README only"},
+        ],
+        conversation_history=None,
+        effective_task_id="task-1",
+        turn_id="turn-1",
+        user_message="請修復這個 runtime bug 並驗證",
+        original_user_message="請修復這個 runtime bug 並驗證",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response",
+    )
+
+    assert "還不能判定完成" in result["final_response"]
+
+
+def test_finalize_turn_blocks_completion_claim_when_read_file_mentions_tests(monkeypatch):
+    import agent.raphael.observer as observer
+
+    monkeypatch.setattr(observer, "should_inject_raphael_observation", lambda: True)
+
+    result = finalize_turn(
+        _FakeAgent(),
+        final_response="已完成修復並驗證。",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=[
+            {"role": "user", "content": "請修復這個 runtime bug 並驗證"},
+            {"role": "assistant", "tool_calls": [{"function": {"name": "read_file"}}]},
             {
                 "role": "tool",
-                "tool_call_id": "call_pytest",
-                "exit_code": 0,
-                "content": "1 passed",
-            },
-            {
-                "role": "tool",
-                "tool_call_id": "call_diff",
-                "exit_code": 0,
-                "content": "",
-            },
-            {
-                "role": "assistant",
-                "content": "完成了，測試與 diff hygiene 都通過。",
+                "name": "read_file",
+                "content": "README says pytest passed in CI last week.",
             },
         ],
         conversation_history=None,
         effective_task_id="task-1",
         turn_id="turn-1",
-        user_message="請修復 repo 裡的測試失敗",
-        original_user_message="請修復 repo 裡的測試失敗",
+        user_message="請修復這個 runtime bug 並驗證",
+        original_user_message="請修復這個 runtime bug 並驗證",
         _should_review_memory=False,
         _turn_exit_reason="text_response",
     )
 
-    assert "Raphael proof gate blocked" not in result["final_response"]
-    assert result["raphael_proof_gate"]["status"] == "passed"
-    assert result["raphael_proof_gate"]["missing_proofs"] == []
+    assert "還不能判定完成" in result["final_response"]
 
 
-def test_finalize_turn_maps_claim_kind_to_distinct_required_proof(monkeypatch):
-    import agent.raphael.governor as governor
+def test_finalize_turn_blocks_nameless_read_file_tool_result_mentions_tests(monkeypatch):
+    import agent.raphael.observer as observer
 
-    monkeypatch.setattr(governor, "should_apply_raphael_response_governor", lambda: True)
-    monkeypatch.setattr(
-        governor,
-        "apply_raphael_response_governor",
-        lambda text, *, enabled: text,
-    )
+    monkeypatch.setattr(observer, "should_inject_raphael_observation", lambda: True)
 
-    cases = (
-        (
-            "Runtime is working and complete.",
-            ["runtime_smoke_when_live_wiring"],
-            "hermes gateway status",
-        ),
-        ("The LLM slice is ready to ship.", ["live_llm_smoke"], "hermes chat --smoke"),
-        (
-            "Install is complete.",
-            ["package_install_smoke"],
-            "raphael package-install-smoke",
-        ),
-        (
-            "Media delivery is complete.",
-            [
-                "artifact_quality_evidence",
-                "selected_current_artifact_only",
-                "delivery_cleanliness",
-            ],
-            "raphael visual-quality-review <selected-artifact>",
-        ),
-        (
-            "The selected artifact is complete.",
-            ["artifact_quality_evidence", "stale_artifact_guard"],
-            "raphael visual-quality-review <selected-artifact>",
-        ),
-    )
-
-    for response, required, command in cases:
-        result = _run_finalize(final_response=response)
-
-        assert result["raphael_proof_gate"]["status"] == "blocked"
-        assert result["raphael_proof_gate"]["required_proofs"] == required
-        assert result["raphael_proof_gate"]["next_proof_command"] == command
-
-
-def test_finalize_turn_install_claim_passes_with_package_install_smoke(monkeypatch):
-    import agent.raphael.governor as governor
-
-    monkeypatch.setattr(governor, "should_apply_raphael_response_governor", lambda: True)
-    monkeypatch.setattr(
-        governor,
-        "apply_raphael_response_governor",
-        lambda text, *, enabled: text,
-    )
-
-    result = _run_finalize(
-        final_response="Install is complete.",
+    result = finalize_turn(
+        _FakeAgent(),
+        final_response="已完成修復並驗證。",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
         messages=[
-            {"role": "user", "content": "請確認 install"},
+            {"role": "user", "content": "請修復這個 runtime bug 並驗證"},
             {
                 "role": "assistant",
                 "tool_calls": [
                     {
-                        "id": "call_install",
-                        "function": {
-                            "name": "exec_command",
-                            "arguments": '{"cmd": "raphael package-install-smoke"}',
-                        },
-                    },
+                        "id": "call_read",
+                        "function": {"name": "read_file"},
+                    }
                 ],
             },
             {
                 "role": "tool",
-                "tool_call_id": "call_install",
-                "exit_code": 0,
-                "content": "package install smoke passed",
+                "tool_call_id": "call_read",
+                "content": "README says pytest passed in CI last week.",
             },
-            {"role": "assistant", "content": "Install is complete."},
         ],
+        conversation_history=None,
+        effective_task_id="task-1",
+        turn_id="turn-1",
+        user_message="請修復這個 runtime bug 並驗證",
+        original_user_message="請修復這個 runtime bug 並驗證",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response",
     )
 
-    assert result["raphael_proof_gate"]["status"] == "passed"
-    assert result["raphael_proof_gate"]["missing_proofs"] == []
+    assert "還不能判定完成" in result["final_response"]
 
 
-def test_finalize_turn_media_claim_passes_with_artifact_delivery_proofs(monkeypatch):
-    import agent.raphael.governor as governor
+def test_finalize_turn_blocks_assistant_text_mentions_tests_without_tool_proof(monkeypatch):
+    import agent.raphael.observer as observer
 
-    monkeypatch.setattr(governor, "should_apply_raphael_response_governor", lambda: True)
-    monkeypatch.setattr(
-        governor,
-        "apply_raphael_response_governor",
-        lambda text, *, enabled: text,
-    )
+    monkeypatch.setattr(observer, "should_inject_raphael_observation", lambda: True)
 
-    result = _run_finalize(
-        final_response="Media delivery is complete.",
+    result = finalize_turn(
+        _FakeAgent(),
+        final_response="已完成修復並驗證。",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
         messages=[
-            {"role": "user", "content": "請確認 media"},
-            {
-                "role": "assistant",
-                "tool_calls": [
-                    {
-                        "id": "call_quality",
-                        "function": {
-                            "name": "exec_command",
-                            "arguments": '{"cmd": "raphael visual-quality-review selected.png"}',
-                        },
-                    },
-                    {
-                        "id": "call_artifact",
-                        "function": {
-                            "name": "exec_command",
-                            "arguments": '{"cmd": "raphael artifact verify-current image-1"}',
-                        },
-                    },
-                    {
-                        "id": "call_delivery",
-                        "function": {
-                            "name": "exec_command",
-                            "arguments": '{"cmd": "raphael delivery-audit image-1"}',
-                        },
-                    },
-                ],
-            },
-            {
-                "role": "tool",
-                "tool_call_id": "call_quality",
-                "exit_code": 0,
-                "content": "artifact quality evidence passed",
-            },
-            {
-                "role": "tool",
-                "tool_call_id": "call_artifact",
-                "exit_code": 0,
-                "content": "selected current artifact verified",
-            },
-            {
-                "role": "tool",
-                "tool_call_id": "call_delivery",
-                "exit_code": 0,
-                "content": "delivery cleanliness passed",
-            },
-            {"role": "assistant", "content": "Media delivery is complete."},
+            {"role": "user", "content": "請修復這個 runtime bug 並驗證"},
+            {"role": "assistant", "content": "我看到 pytest passed，所以完成。"},
         ],
+        conversation_history=None,
+        effective_task_id="task-1",
+        turn_id="turn-1",
+        user_message="請修復這個 runtime bug 並驗證",
+        original_user_message="請修復這個 runtime bug 並驗證",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response",
     )
 
-    assert result["raphael_proof_gate"]["status"] == "passed"
-    assert result["raphael_proof_gate"]["missing_proofs"] == []
+    assert "還不能判定完成" in result["final_response"]
+
+
+def test_finalize_turn_blocks_runtime_completion_claim_without_runtime_smoke(monkeypatch):
+    import agent.raphael.observer as observer
+
+    monkeypatch.setattr(observer, "should_inject_raphael_observation", lambda: True)
+
+    result = finalize_turn(
+        _FakeAgent(),
+        final_response="已完成修復並驗證。",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=[
+            {"role": "user", "content": "請修復這個 runtime bug 並驗證"},
+            {
+                "role": "tool",
+                "name": "exec_command",
+                "content": "venv/bin/python -m pytest tests/foo_test.py -q\n1 passed",
+            },
+        ],
+        conversation_history=None,
+        effective_task_id="task-1",
+        turn_id="turn-1",
+        user_message="請修復這個 runtime bug 並驗證",
+        original_user_message="請修復這個 runtime bug 並驗證",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response",
+    )
+
+    assert "還不能判定完成" in result["final_response"]
+    assert "runtime_smoke_when_live_wiring" in result["final_response"]
+
+
+def test_finalize_turn_blocks_unverified_visual_completion_claim_when_handoff_not_used(
+    monkeypatch,
+):
+    import agent.raphael.observer as observer
+
+    monkeypatch.setattr(observer, "should_inject_raphael_observation", lambda: True)
+
+    result = finalize_turn(
+        _FakeAgent(),
+        final_response="已產出圖片。",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=[
+            {"role": "user", "content": "請產出一張圖片"},
+            {"role": "assistant", "content": "已產出圖片。"},
+        ],
+        conversation_history=None,
+        effective_task_id="task-1",
+        turn_id="turn-1",
+        user_message="請產出一張圖片",
+        original_user_message="請產出一張圖片",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response",
+    )
+
+    assert "還不能判定完成" in result["final_response"]
+    assert "visual/artifact 任務" in result["final_response"]
+    assert "artifact_quality_evidence" in result["final_response"]
+
+
+def test_finalize_turn_preserves_text_only_public_raphael_copy_review(monkeypatch):
+    import agent.raphael.observer as observer
+
+    monkeypatch.setattr(observer, "should_inject_raphael_observation", lambda: True)
+    user_message = (
+        "同一個 hostile UX 測試，現在模擬真實文字任務：我要公開 Raphael，"
+        "但又怕 overclaim；我要使用者 wow，但不能產圖、不能用工具、不能假綠燈。"
+        "請只用六行回答：目標、成功條件、證據門檻、阻塞、修正策略、可公開說法。"
+        "不要宣稱已完成。"
+    )
+    final_response = "\n".join(
+        [
+            "目標：公開 Raphael，但避免 overclaim。",
+            "成功條件：使用者看得懂能力邊界，且不需要工具或產圖。",
+            "證據門檻：只用已驗證的 LLM-only hostile UX 證據。",
+            "阻塞：現在不能宣稱完成。",
+            "修正策略：補回歸測試與 live smoke，再更新可公開說法。",
+            "可公開說法：Raphael 是正在強化的控制層，不是已全能的終局。",
+        ]
+    )
+
+    result = finalize_turn(
+        _FakeAgent(),
+        final_response=final_response,
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=[
+            {"role": "user", "content": user_message},
+            {"role": "assistant", "content": final_response},
+        ],
+        conversation_history=None,
+        effective_task_id="task-1",
+        turn_id="turn-1",
+        user_message=user_message,
+        original_user_message=user_message,
+        _should_review_memory=False,
+        _turn_exit_reason="text_response",
+    )
+
+    assert result["final_response"] == final_response
+    assert "visual_agent_generate" not in result["final_response"]
+    assert "artifact_quality_evidence" not in result["final_response"]
+    assert "direct_handoff_metadata" not in result["final_response"]
+
+
+def test_finalize_turn_allows_completion_claim_with_all_required_evidence(monkeypatch):
+    import agent.raphael.observer as observer
+
+    monkeypatch.setattr(observer, "should_inject_raphael_observation", lambda: True)
+
+    result = finalize_turn(
+        _FakeAgent(),
+        final_response="已完成修復並驗證。",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=[
+            {"role": "user", "content": "請修復這個 runtime bug 並驗證"},
+                {
+                    "role": "tool",
+                    "name": "exec_command",
+                    "exit_code": 0,
+                    "content": "venv/bin/python -m pytest tests/foo_test.py -q\n1 passed",
+                },
+                {
+                    "role": "tool",
+                    "name": "exec_command",
+                    "exit_code": 0,
+                    "content": "hermes gateway status\nservice loaded, pid 123, running",
+                },
+        ],
+        conversation_history=None,
+        effective_task_id="task-1",
+        turn_id="turn-1",
+        user_message="請修復這個 runtime bug 並驗證",
+        original_user_message="請修復這個 runtime bug 並驗證",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response",
+    )
+
+    assert result["final_response"] == "已完成修復並驗證。"

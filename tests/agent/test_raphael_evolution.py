@@ -1,183 +1,499 @@
 from __future__ import annotations
 
-import json
 import os
-from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
 from agent.raphael.evolution import (
+    append_evolution_record,
+    append_evolution_status_record,
     build_evolution_action_proposal,
-    build_evolution_signal,
+    build_raphael_evolution_review_prompt,
+    decide_raphael_evolution,
+    read_evolution_records,
     record_evolution_action_proposal,
 )
-from agent.raphael.models import RaphaelState, RiskLevel
-from agent.raphael.state import get_raphael_events_path, read_state, write_state
+from agent.raphael.models import RiskLevel
+from agent.raphael.state import read_state
 
 
-NOW = datetime(2026, 7, 2, 12, 0, tzinfo=timezone.utc)
+def _config(**raphael_overrides):
+    raphael = {
+        "enabled": True,
+        "mode": "advisor",
+        "skill_writes_enabled": True,
+        "memory_writes_enabled": True,
+        "evolution": {
+            "enabled": True,
+            "skill_review_enabled": True,
+            "memory_review_enabled": True,
+        },
+    }
+    raphael.update(raphael_overrides)
+    return {"plugins": {"enabled": ["raphael"], "disabled": []}, "raphael": raphael}
 
 
-def _hermes_home_env(path: Path):
+def _home_env(path: Path):
     return patch.dict(os.environ, {"HERMES_HOME": str(path)})
 
 
-def test_user_correction_builds_auditable_approval_gated_proposal():
-    signal = build_evolution_signal(
-        source="user_correction",
-        affected_capability="raphael.mode_router",
-        reason_codes=("user_correction",),
-        summary="User said the visual edit routed to the wrong artifact.",
-        evidence_refs=("turn:123",),
-        confidence=0.84,
-        proposed_change="tighten active-artifact follow-up routing",
-        promotion_gate="focused tests plus LLM smoke",
-        rollback_condition="user reports follow-up edits attach to the wrong artifact again",
-        metadata={"raw_prompt": "data:image/png;base64,SECRET"},
+def test_disabled_raphael_never_schedules_evolution_review():
+    decision = decide_raphael_evolution(
+        user_message="不對，這個 workflow 要記住",
+        final_response="ok",
+        messages=[],
+        turn_exit_reason="text_response",
+        config={"raphael": {"enabled": False}},
     )
 
-    proposal = build_evolution_action_proposal((signal,), now=NOW)
+    assert decision.should_review is False
+    assert decision.review_skills is False
+    assert decision.review_memory is False
+    assert decision.mode == "disabled"
+
+
+def test_plugin_disabled_raphael_never_schedules_evolution_review():
+    decision = decide_raphael_evolution(
+        user_message="不對，這個 workflow 要記住",
+        final_response="ok",
+        messages=[],
+        turn_exit_reason="text_response",
+        config={
+            "plugins": {"enabled": ["raphael"], "disabled": ["raphael"]},
+            "raphael": {
+                "enabled": True,
+                "default_conversation_mode_enabled": True,
+                "skill_writes_enabled": True,
+                "memory_writes_enabled": True,
+                "evolution": {"enabled": True},
+            },
+        },
+    )
+
+    assert decision.should_review is False
+    assert decision.review_skills is False
+    assert decision.review_memory is False
+    assert decision.mode == "disabled"
+
+
+def test_user_correction_triggers_active_skill_evolution_review():
+    decision = decide_raphael_evolution(
+        user_message="不對，拉斐爾模式不是這樣，要像賢者之王一樣主動進化技能",
+        final_response="我會修正",
+        messages=[],
+        turn_exit_reason="text_response",
+        config=_config(),
+    )
+
+    assert decision.should_review is True
+    assert decision.review_skills is True
+    assert decision.review_memory is True
+    assert decision.mode == "active_evolution"
+    assert "user_correction" in decision.reason_codes
+    assert decision.review_label == "Raphael evolution review"
+
+
+def test_casual_raphael_or_skill_questions_do_not_trigger_evolution_review():
+    for user_message in ("你是大賢者嗎？", "What skills are available?"):
+        decision = decide_raphael_evolution(
+            user_message=user_message,
+            final_response="簡短回答",
+            messages=[],
+            turn_exit_reason="text_response",
+            config=_config(),
+        )
+
+        assert decision.should_review is False
+        assert decision.mode == "observe"
+        assert decision.reason_codes == ()
+
+
+def test_assistant_memory_wording_does_not_trigger_durable_evolution():
+    decision = decide_raphael_evolution(
+        user_message="請簡短回答這個問題",
+        final_response="我會記住，下次保持簡短。",
+        messages=[],
+        turn_exit_reason="text_response",
+        config=_config(),
+    )
+
+    assert decision.should_review is False
+    assert decision.review_memory is False
+    assert decision.mode == "observe"
+    assert decision.reason_codes == ()
+
+
+def test_visual_provider_failure_triggers_skill_evolution_not_generic_success():
+    messages = [
+        {
+            "role": "tool",
+            "name": "visual_agent_generate",
+            "content": (
+                '{"success": false, "failure_layer": "provider_health", '
+                '"error": "Grok Web Imagine browser automation timed out"}'
+            ),
+        }
+    ]
+
+    decision = decide_raphael_evolution(
+        user_message="幫我做 image + video",
+        final_response="候選圖未通過",
+        messages=messages,
+        turn_exit_reason="direct_visual_agent_handoff",
+        config=_config(),
+    )
+
+    assert decision.should_review is True
+    assert decision.review_skills is True
+    assert "visual_or_provider_failure" in decision.reason_codes
+    assert "provider_health" in decision.evidence_summary
+    assert decision.metadata["affected_capability"] == "visual.agent_mode"
+    assert "promotion_gate" in decision.metadata
+    assert "rollback_condition" in decision.metadata
+
+
+def test_llm_only_narrative_mentions_visual_tool_without_visual_failure_evidence():
+    messages = [
+        {
+            "role": "user",
+            "content": (
+                "拉斐爾，請 LLM-only 分析 routing bug，不要呼叫工具、不要產圖；"
+                "檢查 visual_agent_generate 是否被誤觸發。"
+            ),
+        },
+        {
+            "role": "assistant",
+            "content": (
+                "解析完成：visual_agent_generate 只是被提到的錯誤路線，"
+                "本回合 tool calls = 0。"
+            ),
+        },
+    ]
+
+    decision = decide_raphael_evolution(
+        user_message=messages[0]["content"],
+        final_response=messages[1]["content"],
+        messages=messages,
+        turn_exit_reason="text_response(finish_reason=stop)",
+        config=_config(),
+    )
+
+    assert decision.should_review is False
+    assert decision.mode == "observe"
+    assert "visual_or_provider_failure" not in decision.reason_codes
+
+
+def test_direct_visual_handoff_text_failure_triggers_visual_evolution():
+    decision = decide_raphael_evolution(
+        user_message="幫我做 image + video",
+        final_response="視覺生成失敗：候選圖未通過。",
+        messages=[{"role": "user", "content": "幫我做 image + video"}],
+        turn_exit_reason="direct_visual_agent_handoff",
+        config=_config(),
+    )
+
+    assert decision.should_review is True
+    assert decision.review_skills is True
+    assert "visual_or_provider_failure" in decision.reason_codes
+    assert "候選圖未通過" in decision.evidence_summary
+
+
+def test_failed_proof_gate_triggers_proof_evolution_signal():
+    final_response = (
+        "狀態：還不能判定完成，Raphael proof gate 沒看到足夠證據。\n"
+        "風險：這是工具/runtime 任務，但目前缺少 focused_tests。\n"
+        "下一步：先執行必要測試或 runtime smoke，再回報具體證據。"
+    )
+
+    decision = decide_raphael_evolution(
+        user_message="請修復 Hermes runtime bug 並驗證到能上線",
+        final_response=final_response,
+        messages=[{"role": "assistant", "content": final_response}],
+        turn_exit_reason="text_response",
+        config=_config(),
+    )
+
+    assert decision.should_review is True
+    assert decision.review_skills is True
+    assert "failed_proof" in decision.reason_codes
+    assert "proof gate" in decision.evidence_summary.lower()
+    assert decision.metadata["affected_capability"] == "raphael.proof_gate"
+    assert "promotion_gate" in decision.metadata
+
+
+def test_high_risk_mutation_stays_proposal_only_without_background_writes():
+    decision = decide_raphael_evolution(
+        user_message="之後自動修改 cron、發布到 Slack、安裝工具，不用再問我",
+        final_response="我不能直接這樣做",
+        messages=[],
+        turn_exit_reason="text_response",
+        config=_config(),
+    )
+
+    assert decision.should_review is False
+    assert decision.review_skills is False
+    assert decision.review_memory is False
+    assert decision.proposal_only is True
+    assert decision.mode == "proposal_only"
+    assert "high_risk_mutation" in decision.reason_codes
+
+
+def test_review_prompt_frames_raphael_as_sage_king_skill_evolver():
+    decision = decide_raphael_evolution(
+        user_message="不要再只做被動 advisor，要主動進化",
+        final_response="收到",
+        messages=[],
+        turn_exit_reason="text_response",
+        config=_config(),
+    )
+
+    prompt = build_raphael_evolution_review_prompt(decision)
+
+    assert "Raphael Sage King Evolution Review" in prompt
+    assert "not a passive advisor" in prompt
+    assert "skill_manage" in prompt
+    assert "auditable" in prompt
+    assert "rollback" in prompt
+    assert "user_correction" in prompt
+
+
+def test_evolution_records_are_redacted_and_round_trip(tmp_path):
+    home = tmp_path / "hermes-home"
+    decision = decide_raphael_evolution(
+        user_message="我的 token 是 sk-secret，請記住不要外洩；不對，這要成為技能",
+        final_response="ok",
+        messages=[],
+        turn_exit_reason="text_response",
+        config=_config(),
+    )
+
+    with _home_env(home):
+        append_evolution_record(decision, status="scheduled")
+        records = read_evolution_records(limit=5)
+
+    assert len(records) == 1
+    assert records[0]["status"] == "scheduled"
+    assert records[0]["reason_codes"] == list(decision.reason_codes)
+    assert "sk-secret" not in str(records[0])
+    assert "[redacted]" in str(records[0])
+
+
+def test_evolution_record_preview_redacts_private_paths_and_large_payloads(tmp_path):
+    home = tmp_path / "hermes-home"
+    decision = decide_raphael_evolution(
+        user_message=(
+            "不對，請記住 /Users/simon/private/ref.png 和 "
+            "data:image/png;base64,"
+            + "a" * 120
+        ),
+        final_response="ok",
+        messages=[],
+        turn_exit_reason="text_response",
+        config=_config(),
+    )
+
+    with _home_env(home):
+        append_evolution_record(decision, status="scheduled")
+        records = read_evolution_records(limit=1)
+
+    serialized = str(records[0])
+    assert "/Users/simon/private/ref.png" not in serialized
+    assert "data:image/png;base64" not in serialized
+    assert "a" * 80 not in serialized
+    assert "[redacted-path]" in serialized
+
+
+def test_evolution_metadata_is_sanitized_auditable_and_persisted(tmp_path):
+    home = tmp_path / "hermes-home"
+    decision = decide_raphael_evolution(
+        user_message="不對，視覺 fallback 要學會分類，不要污染 durable policy",
+        final_response="我會讓拉斐爾記錄可回滾的技能改進",
+        messages=[],
+        turn_exit_reason="text_response",
+        config=_config(),
+        metadata={
+            "affected_capability": "visual.agent_mode.provider_recovery",
+            "proposed_change": "x" * 300 + " sk-secret",
+            "confidence": 1.7,
+            "promotion_gate": "focused tests plus live LLM smoke",
+            "rollback_condition": "disable if stale artifacts reappear",
+            "raw_prompt": "must not be stored",
+        },
+    )
+
+    assert decision.metadata["affected_capability"] == (
+        "visual.agent_mode.provider_recovery"
+    )
+    assert len(decision.metadata["proposed_change"]) <= 240
+    assert decision.metadata["confidence"] == 1.0
+    assert "raw_prompt" not in decision.metadata
+    assert "sk-secret" not in str(decision.metadata)
+
+    with _home_env(home):
+        append_evolution_record(
+            decision,
+            status="scheduled",
+            metadata={
+                "confidence": 0.42,
+                "rollback_condition": "revert if user says 不對 again",
+                "private_log": "drop me",
+            },
+        )
+        records = read_evolution_records(limit=1)
+
+    assert records[0]["metadata"]["affected_capability"] == (
+        "visual.agent_mode.provider_recovery"
+    )
+    assert records[0]["metadata"]["confidence"] == 0.42
+    assert records[0]["metadata"]["rollback_condition"] == (
+        "revert if user says 不對 again"
+    )
+    assert "private_log" not in records[0]["metadata"]
+
+
+def test_evolution_metadata_redacts_real_tokens_without_redacting_skill_words():
+    decision = decide_raphael_evolution(
+        user_message="不對，請強化 skill routing 並遮蔽 sk-secret",
+        final_response="ok",
+        messages=[],
+        turn_exit_reason="text_response",
+        config=_config(),
+        metadata={
+            "proposed_change": "Improve skill routing while hiding sk-secret.",
+            "confidence": 0.7,
+        },
+    )
+
+    assert "skill routing" in decision.metadata["proposed_change"]
+    assert "sk-secret" not in decision.metadata["proposed_change"]
+    assert "[redacted]" in decision.metadata["proposed_change"]
+
+
+def test_evolution_status_metadata_keeps_auditable_summary_without_raw_details(tmp_path):
+    home = tmp_path / "hermes-home"
+
+    with _home_env(home):
+        append_evolution_status_record(
+            status="background_failed",
+            metadata={
+                "review_label": "Raphael evolution review",
+                "actions": ["skill_manage.patch", "memory.write"],
+                "session_id": "session-private-123",
+                "error": "RuntimeError: /Users/simon/private/log.txt failed",
+                "raw_prompt": "drop me",
+            },
+        )
+        records = read_evolution_records(limit=1)
+
+    metadata = records[0]["metadata"]
+    assert metadata["review_label"] == "Raphael evolution review"
+    assert metadata["action_count"] == 2
+    assert metadata["action_types"] == ["memory.write", "skill_manage.patch"]
+    assert metadata["error_class"] == "RuntimeError"
+    assert "session_hash" in metadata
+    assert "session-private-123" not in str(metadata)
+    assert "/Users/simon/private/log.txt" not in str(metadata)
+    assert "raw_prompt" not in metadata
+
+
+def test_repeated_evolution_pattern_builds_approval_gated_skill_patch_proposal():
+    proof_record = {
+        "status": "scheduled",
+        "mode": "active_evolution",
+        "should_review": True,
+        "reason_codes": ["failed_proof"],
+        "evidence_summary": "Raphael proof gate blocked an unverified completion claim",
+        "metadata": {
+            "affected_capability": "raphael.proof_gate",
+            "proposed_change": "tighten proof-gate next-action summaries",
+            "promotion_gate": "focused tests plus LLM smoke",
+            "rollback_condition": "user says 不對 again",
+        },
+    }
+    visual_record = {
+        "status": "scheduled",
+        "mode": "active_evolution",
+        "should_review": True,
+        "reason_codes": ["visual_or_provider_failure"],
+        "evidence_summary": "single visual lesson",
+        "metadata": {
+            "affected_capability": "visual.agent_mode",
+            "proposed_change": "prefer image-first video repair loop",
+            "promotion_gate": "visual E2E evidence",
+            "rollback_condition": "artifact quality gets worse",
+        },
+    }
+
+    proposal = build_evolution_action_proposal(
+        [proof_record, dict(proof_record), visual_record]
+    )
 
     assert proposal is not None
     assert proposal.action_type == "skill_patch"
     assert proposal.risk == RiskLevel.R2
     assert proposal.requires_approval is True
-    assert proposal.status == "pending"
     assert proposal.proposal_id.startswith("evolution-")
-    assert "Raphael mode router" in proposal.summary
-    assert "tighten active-artifact follow-up routing" in proposal.summary
-    assert "base64" not in proposal.summary
-    assert proposal.evidence_refs == (
-        "evolution:raphael.mode_router",
-        "turn:123",
-        "signal_count:1",
-    )
-    assert proposal.metadata["affected_capability"] == "raphael.mode_router"
-    assert proposal.metadata["confidence"] == 0.84
-    assert proposal.metadata["promotion_gate"] == "focused tests plus LLM smoke"
-    assert proposal.metadata["rollback_condition"].startswith("user reports")
-    assert proposal.metadata["approval_required"] is True
-    assert proposal.metadata["rollout_plan"]["manual_steps"] == [
-        "Open a scoped issue or PR for raphael.mode_router.",
-        "Apply the proposed skill or strategy change only after approval.",
-        "Run the promotion gate before enabling the change.",
-    ]
-    assert "durable_policy_mutated" not in proposal.metadata
-
-
-def test_repeated_proof_failures_create_proof_gate_proposal():
-    first = build_evolution_signal(
-        source="proof_gate",
-        affected_capability="raphael.proof_gate",
-        reason_codes=("failed_proof",),
-        summary="Proof gate blocked a vague completion claim.",
-        evidence_refs=("proof:1",),
-        confidence=0.74,
-        proposed_change="tighten proof-gate next-action summaries",
-        promotion_gate="focused tests plus LLM smoke",
-        rollback_condition="user says proof guidance is still vague",
-    )
-    second = build_evolution_signal(
-        source="proof_gate",
-        affected_capability="raphael.proof_gate",
-        reason_codes=("failed_proof",),
-        summary="Proof gate blocked another unsupported success claim.",
-        evidence_refs=("proof:2",),
-        confidence=0.78,
-        proposed_change="tighten proof-gate next-action summaries",
-        promotion_gate="focused tests plus LLM smoke",
-        rollback_condition="user says proof guidance is still vague",
-    )
-
-    proposal = build_evolution_action_proposal((first, second), now=NOW)
-
-    assert proposal is not None
     assert "Raphael proof gate" in proposal.summary
     assert "2 recurring signals" in proposal.summary
+    assert "tighten proof-gate next-action summaries" in proposal.summary
+    assert "focused tests plus LLM smoke" in proposal.summary
+    assert "user says 不對 again" in proposal.summary
+    assert "visual agent mode" not in proposal.summary
+    assert "evolution:raphael.proof_gate" in proposal.evidence_refs
+    assert "pattern_count:2" in proposal.evidence_refs
+
+
+def test_repeated_evolution_skill_patch_proposal_includes_rollout_plan():
+    proof_record = {
+        "status": "scheduled",
+        "mode": "active_evolution",
+        "should_review": True,
+        "reason_codes": ["failed_proof"],
+        "evidence_summary": "Raphael proof gate blocked an unverified completion claim",
+        "metadata": {
+            "affected_capability": "raphael.proof_gate",
+            "proposed_change": "tighten proof-gate next-action summaries",
+            "promotion_gate": "focused tests plus LLM smoke",
+            "rollback_condition": "user says 不對 again",
+        },
+    }
+
+    proposal = build_evolution_action_proposal([proof_record, dict(proof_record)])
+
+    assert proposal is not None
+    assert proposal.metadata["affected_capability"] == "raphael.proof_gate"
     assert proposal.metadata["recurring_signal_count"] == 2
-    assert proposal.metadata["reason_codes"] == ["failed_proof"]
-    assert proposal.evidence_refs == (
-        "evolution:raphael.proof_gate",
-        "proof:1",
-        "proof:2",
-        "signal_count:2",
-    )
+    assert proposal.metadata["rollout_plan"] == {
+        "status": "pending_approval",
+        "risk": "R2",
+        "verification_commands": [
+            "pytest tests/agent/test_raphael_evolution.py -q",
+            "hermes raphael readiness --readiness-profile llm --check",
+        ],
+        "promotion_gate": "focused tests plus LLM smoke",
+        "rollback_condition": "user says 不對 again",
+    }
 
 
-def test_single_proof_failure_does_not_create_proof_gate_proposal():
-    signal = build_evolution_signal(
-        source="proof_gate",
-        affected_capability="raphael.proof_gate",
-        reason_codes=("failed_proof",),
-        summary="Proof gate blocked one unsupported claim.",
-        evidence_refs=("proof:1",),
-        confidence=0.74,
-        proposed_change="tighten proof-gate next-action summaries",
-        promotion_gate="focused tests plus LLM smoke",
-        rollback_condition="user says proof guidance is still vague",
-    )
-
-    assert build_evolution_action_proposal((signal,), now=NOW) is None
-
-
-def test_hostile_review_and_provider_outcomes_create_bounded_proposals():
-    hostile = build_evolution_signal(
-        source="hostile_review",
-        affected_capability="raphael.evidence_gate",
-        reason_codes=("hostile_review_blocker",),
-        summary="Reviewer found overblocking in finalizer proof extraction.",
-        evidence_refs=("review:13",),
-        confidence=0.88,
-        proposed_change="accept realistic tool_call proof shapes",
-        promotion_gate="regression tests for tool_call proofs",
-        rollback_condition="finalizer blocks proven tool outputs again",
-    )
-    provider = build_evolution_signal(
-        source="provider_outcome",
-        affected_capability="visual.provider_recovery",
-        reason_codes=("provider_health",),
-        summary="Provider timeout repeated during no-live fallback planning.",
-        evidence_refs=("provider:xai-timeout",),
-        confidence=0.7,
-        proposed_change="classify provider timeout before retry policy",
-        promotion_gate="provider failure taxonomy tests",
-        rollback_condition="provider recovery guidance gets less specific",
-    )
-
-    assert build_evolution_action_proposal((hostile,), now=NOW) is not None
-    assert build_evolution_action_proposal((provider,), now=NOW) is not None
-
-
-def test_record_evolution_action_proposal_deduplicates_pending_state(tmp_path):
+def test_record_evolution_action_proposal_is_deduplicated_and_preserves_state(tmp_path):
     home = tmp_path / "hermes-home"
-    first_signal = build_evolution_signal(
-        source="proof_gate",
-        affected_capability="raphael.proof_gate",
-        reason_codes=("failed_proof",),
-        summary="Proof gate blocked an unsupported claim.",
-        evidence_refs=("proof:1",),
-        confidence=0.8,
-        proposed_change="tighten proof-gate next-action summaries",
-        promotion_gate="focused tests",
-        rollback_condition="user says 不對 again",
-    )
-    second_signal = build_evolution_signal(
-        source="proof_gate",
-        affected_capability="raphael.proof_gate",
-        reason_codes=("failed_proof",),
-        summary="Proof gate blocked another unsupported claim.",
-        evidence_refs=("proof:2",),
-        confidence=0.81,
-        proposed_change="tighten proof-gate next-action summaries",
-        promotion_gate="focused tests",
-        rollback_condition="user says 不對 again",
-    )
-    signals = (first_signal, second_signal)
+    proof_record = {
+        "status": "scheduled",
+        "mode": "active_evolution",
+        "should_review": True,
+        "reason_codes": ["failed_proof"],
+        "evidence_summary": "Raphael proof gate blocked an unverified completion claim",
+        "metadata": {
+            "affected_capability": "raphael.proof_gate",
+            "proposed_change": "tighten proof-gate next-action summaries",
+            "promotion_gate": "focused tests plus LLM smoke",
+            "rollback_condition": "user says 不對 again",
+        },
+    }
 
-    with _hermes_home_env(home):
-        write_state(RaphaelState(status_cards=(), action_proposals=(), updated_at=NOW))
-        first = record_evolution_action_proposal(signals, now=NOW)
-        second = record_evolution_action_proposal(signals, now=NOW)
+    with _home_env(home):
+        first = record_evolution_action_proposal([proof_record, dict(proof_record)])
+        second = record_evolution_action_proposal([proof_record, dict(proof_record)])
         state = read_state()
 
     assert first is not None
@@ -188,99 +504,34 @@ def test_record_evolution_action_proposal_deduplicates_pending_state(tmp_path):
     assert state.action_proposals[0].requires_approval is True
 
 
-def test_resolved_proposal_allows_new_pending_follow_up(tmp_path):
-    from agent.raphael.state import resolve_action_proposal
-
+def test_append_evolution_record_promotes_repeated_pattern_to_pending_proposal(tmp_path):
     home = tmp_path / "hermes-home"
-    signals = (
-        build_evolution_signal(
-            source="proof_gate",
-            affected_capability="raphael.proof_gate",
-            reason_codes=("failed_proof",),
-            summary="Proof gate blocked an unsupported claim.",
-            evidence_refs=("proof:1",),
-            confidence=0.8,
-            proposed_change="tighten proof-gate next-action summaries",
-            promotion_gate="focused tests",
-            rollback_condition="user says 不對 again",
-        ),
-        build_evolution_signal(
-            source="proof_gate",
-            affected_capability="raphael.proof_gate",
-            reason_codes=("failed_proof",),
-            summary="Proof gate blocked another unsupported claim.",
-            evidence_refs=("proof:2",),
-            confidence=0.81,
-            proposed_change="tighten proof-gate next-action summaries",
-            promotion_gate="focused tests",
-            rollback_condition="user says 不對 again",
-        ),
+    final_response = (
+        "狀態：還不能判定完成，Raphael proof gate 沒看到足夠證據。\n"
+        "下一步：先執行必要測試或 runtime smoke，再回報具體證據。"
+    )
+    decision = decide_raphael_evolution(
+        user_message="請修復 Hermes runtime bug 並驗證到能上線",
+        final_response=final_response,
+        messages=[{"role": "assistant", "content": final_response}],
+        turn_exit_reason="text_response",
+        config=_config(),
+        metadata={
+            "proposed_change": "tighten proof-gate next-action summaries",
+            "promotion_gate": "focused tests plus LLM smoke",
+            "rollback_condition": "user says 不對 again",
+        },
     )
 
-    with _hermes_home_env(home):
-        write_state(RaphaelState(status_cards=(), action_proposals=(), updated_at=NOW))
-        first = record_evolution_action_proposal(signals, now=NOW)
-        assert first is not None
-        resolve_action_proposal(
-            first.proposal_id,
-            status="rejected",
-            resolved_by="operator",
-            note="Rejected to wait for more evidence.",
-            now=NOW,
-        )
-        follow_up = record_evolution_action_proposal(signals, now=NOW)
+    with _home_env(home):
+        append_evolution_record(decision, status="scheduled")
+        assert read_state().action_proposals == ()
+        append_evolution_record(decision, status="scheduled")
         state = read_state()
 
-    assert follow_up is not None
-    assert follow_up.proposal_id != first.proposal_id
-    assert follow_up.status == "pending"
-    assert [proposal.status for proposal in state.action_proposals] == [
-        "rejected",
-        "pending",
-    ]
-
-
-def test_approval_records_audit_event_without_mutating_policy(tmp_path):
-    from agent.raphael.state import resolve_action_proposal
-
-    home = tmp_path / "hermes-home"
-    signal = build_evolution_signal(
-        source="user_correction",
-        affected_capability="raphael.proof_gate",
-        reason_codes=("user_correction",),
-        summary="User said proof guidance was vague.",
-        evidence_refs=("turn:1",),
-        confidence=0.82,
-        proposed_change="tighten proof-gate next-action summaries",
-        promotion_gate="focused tests",
-        rollback_condition="user says 不對 again",
-    )
-
-    with _hermes_home_env(home):
-        proposal = record_evolution_action_proposal((signal,), now=NOW)
-        assert proposal is not None
-        resolved = resolve_action_proposal(
-            proposal.proposal_id,
-            status="approved",
-            resolved_by="operator",
-            note="Approved for a follow-up PR only.",
-            now=NOW,
-        )
-        state = read_state()
-        event_payload = json.loads(
-            get_raphael_events_path().read_text(encoding="utf-8").splitlines()[-1]
-        )
-
-    assert resolved.status == "approved"
-    assert state.action_proposals[0].status == "approved"
-    assert state.action_proposals[0].metadata["resolution"] == {
-        "status": "approved",
-        "resolved_by": "operator",
-        "resolved_at": NOW.isoformat(),
-        "note": "Approved for a follow-up PR only.",
-        "durable_policy_mutated": False,
-    }
-    assert event_payload["kind"] == "action_proposal_resolved"
-    assert event_payload["details"]["proposal_id"] == proposal.proposal_id
-    assert event_payload["details"]["status"] == "approved"
-    assert event_payload["details"]["durable_policy_mutated"] is False
+    assert len(state.action_proposals) == 1
+    proposal = state.action_proposals[0]
+    assert proposal.action_type == "skill_patch"
+    assert proposal.requires_approval is True
+    assert "Raphael proof gate" in proposal.summary
+    assert "2 recurring signals" in proposal.summary

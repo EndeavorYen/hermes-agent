@@ -7,7 +7,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent.raphael.models import (
+    ActionProposal,
     EVENT_SCHEMA_VERSION,
+    RiskLevel,
     STATE_SCHEMA_VERSION,
     RaphaelEvent,
     RaphaelState,
@@ -19,6 +21,8 @@ from agent.raphael.state import (
     get_raphael_state_dir,
     get_raphael_state_path,
     read_state,
+    record_control_decision,
+    resolve_action_proposal,
     write_state,
 )
 
@@ -113,3 +117,160 @@ def test_append_event_writes_jsonl_with_event_schema(tmp_path):
     payload = json.loads(lines[0])
     assert payload["schema_version"] == EVENT_SCHEMA_VERSION
     assert payload == event.to_dict()
+
+
+def test_record_control_decision_writes_user_facing_status_card(tmp_path):
+    home = tmp_path / "hermes-home"
+
+    with _hermes_home_env(home):
+        record_control_decision(
+            {
+                "mode": "visual_agent_generation",
+                "goal": {
+                    "target_artifact": "new_visual_package",
+                    "phase": "route_and_handoff",
+                    "blockers": ["missing_ref3"],
+                },
+                "next_action": "call_visual_agent_generate",
+                "evidence": {"failure_layer": "handoff_failure"},
+                "confidence": 0.91,
+            },
+            turn_id="turn-1",
+            task_id="task-1",
+            source="general_tool_proof_gate",
+        )
+        state = read_state()
+
+    assert len(state.status_cards) == 1
+    card = state.status_cards[0]
+    assert "視覺生成" in card.summary
+    assert "新視覺作品" in card.summary
+    assert "路由與交接" in card.summary
+    assert "呼叫 visual agent 生成" in card.summary
+    assert "需要 ref3" in card.summary
+    assert "handoff failure" in card.summary
+    assert "mode=" not in card.summary
+    assert "target=" not in card.summary
+    assert "phase=" not in card.summary
+    assert "next_action=" not in card.summary
+    assert "blockers=" not in card.summary
+    assert "failure_layer=" not in card.summary
+
+
+def _action_proposal(
+    proposal_id: str = "proposal-1",
+    *,
+    status: str = "pending",
+) -> ActionProposal:
+    return ActionProposal(
+        proposal_id=proposal_id,
+        action_type="skill_patch",
+        risk=RiskLevel.R2,
+        summary="Patch Raphael proof gate after recurring failed-proof signals.",
+        evidence_refs=("evolution:raphael.proof_gate", "pattern_count:2"),
+        created_at=datetime(2026, 6, 16, 9, 0, tzinfo=timezone.utc),
+        status=status,
+        metadata={
+            "affected_capability": "raphael.proof_gate",
+            "rollout_plan": {
+                "status": "pending_approval",
+                "verification_commands": [
+                    "pytest tests/agent/test_raphael_evolution.py -q",
+                ],
+                "promotion_gate": "focused tests plus LLM smoke",
+                "rollback_condition": "next evidence shows worse behavior",
+            },
+        },
+    )
+
+
+def test_resolve_action_proposal_rejects_pending_proposal_with_audit_event(tmp_path):
+    home = tmp_path / "hermes-home"
+    state = RaphaelState(
+        status_cards=(),
+        action_proposals=(_action_proposal(),),
+        updated_at=datetime(2026, 6, 16, 9, 1, tzinfo=timezone.utc),
+    )
+
+    with _hermes_home_env(home):
+        write_state(state)
+        updated = resolve_action_proposal(
+            "proposal-1",
+            "rejected",
+            reviewer="operator",
+            reason="Declined; contains sk-secret123 and /Users/simon/private/trace.json",
+            now=datetime(2026, 6, 16, 9, 5, tzinfo=timezone.utc),
+        )
+        stored = read_state()
+        event_payload = json.loads(
+            get_raphael_events_path().read_text(encoding="utf-8").splitlines()[0]
+        )
+
+    assert updated is not None
+    assert stored.action_proposals[0].status == "rejected"
+    metadata = stored.action_proposals[0].metadata
+    assert metadata is not None
+    assert metadata["rollout_plan"]["status"] == "rejected"
+    assert metadata["resolution"]["status"] == "rejected"
+    assert metadata["resolution"]["reviewer"] == "operator"
+    assert "sk-secret123" not in metadata["resolution"]["reason"]
+    assert "/Users/simon/private/trace.json" not in metadata["resolution"]["reason"]
+    assert event_payload["kind"] == "action_proposal_resolved"
+    assert event_payload["details"]["proposal_id"] == "proposal-1"
+    assert event_payload["details"]["from_status"] == "pending"
+    assert event_payload["details"]["to_status"] == "rejected"
+    assert "sk-secret123" not in json.dumps(event_payload)
+    assert "/Users/simon/private/trace.json" not in json.dumps(event_payload)
+
+
+def test_resolve_action_proposal_approves_without_marking_applied(tmp_path):
+    home = tmp_path / "hermes-home"
+    state = RaphaelState(
+        status_cards=(),
+        action_proposals=(_action_proposal(),),
+        updated_at=datetime(2026, 6, 16, 9, 1, tzinfo=timezone.utc),
+    )
+
+    with _hermes_home_env(home):
+        write_state(state)
+        updated = resolve_action_proposal(
+            "proposal-1",
+            "approved",
+            reviewer="operator",
+            reason="Approved for manual rollout after tests.",
+            now=datetime(2026, 6, 16, 9, 5, tzinfo=timezone.utc),
+        )
+        stored = read_state()
+
+    assert updated is not None
+    assert stored.action_proposals[0].status == "approved"
+    metadata = stored.action_proposals[0].metadata
+    assert metadata is not None
+    assert metadata["rollout_plan"]["status"] == "approved"
+    assert metadata["resolution"]["status"] == "approved"
+    assert metadata["resolution"]["status"] != "applied"
+    assert metadata["rollout_plan"]["status"] != "applied"
+
+
+def test_resolve_action_proposal_unknown_id_preserves_state_without_event(tmp_path):
+    home = tmp_path / "hermes-home"
+    state = RaphaelState(
+        status_cards=(),
+        action_proposals=(_action_proposal("proposal-1"),),
+        updated_at=datetime(2026, 6, 16, 9, 1, tzinfo=timezone.utc),
+    )
+
+    with _hermes_home_env(home):
+        write_state(state)
+        updated = resolve_action_proposal(
+            "missing-proposal",
+            "rejected",
+            reviewer="operator",
+            reason="No such proposal.",
+            now=datetime(2026, 6, 16, 9, 5, tzinfo=timezone.utc),
+        )
+        stored = read_state()
+
+    assert updated is None
+    assert stored == state
+    assert not (home / "raphael" / "events.jsonl").exists()
