@@ -9,6 +9,7 @@ from typing import Iterable
 
 
 LLM_INCLUDE_PREFIXES: tuple[str, ...] = (
+    ".github/workflows/tests.yml",
     ".gitignore",
     "MANIFEST.in",
     "agent/background_review.py",
@@ -28,6 +29,7 @@ LLM_INCLUDE_PREFIXES: tuple[str, ...] = (
     "plugins/raphael/",
     "pyproject.toml",
     "run_agent.py",
+    "scripts/release.py",
     "scripts/raphael_completion_audit.py",
     "scripts/raphael_release_docs_audit.py",
     "scripts/raphael_package_install_smoke.py",

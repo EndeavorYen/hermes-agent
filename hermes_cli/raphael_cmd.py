@@ -4607,18 +4607,26 @@ def _release_docs_audit_release_gate_check(
     try:
         from scripts.raphael_release_docs_audit import audit_release_docs
 
+        llm_record = (
+            llm_readiness
+            if llm_readiness is not None
+            else _read_json_mapping(llm_readiness_path)
+        )
+        media_record = (
+            media_readiness
+            if media_readiness is not None
+            else _read_json_mapping(media_readiness_path)
+        )
         result = audit_release_docs(
             release_audit_doc=release_audit_doc.read_text(encoding="utf-8"),
             llm_slice_doc=llm_slice_doc.read_text(encoding="utf-8"),
-            llm_readiness=llm_readiness
-            if llm_readiness is not None
-            else _read_json_mapping(llm_readiness_path),
-            media_readiness=media_readiness
-            if media_readiness is not None
-            else _read_json_mapping(media_readiness_path),
+            llm_readiness=llm_record,
+            media_readiness=media_record,
         )
         violations = result.violations
     except Exception as exc:
+        llm_record = {}
+        media_record = {}
         violations = (f"audit_error:{exc.__class__.__name__}",)
     passed = not violations
     return {
@@ -4632,6 +4640,10 @@ def _release_docs_audit_release_gate_check(
         "violations": list(violations),
         "source_doc_paths": [str(release_audit_doc), str(llm_slice_doc)],
         "source_readiness_paths": [str(llm_readiness_path), str(media_readiness_path)],
+        "source_readiness_records": {
+            "llm": _release_docs_audit_readiness_record(llm_record),
+            "media": _release_docs_audit_readiness_record(media_record),
+        },
     }
 
 
@@ -6326,19 +6338,65 @@ def _release_docs_audit_has_release_evidence(check: dict[str, Any]) -> bool:
         or violations
     ):
         return False
-    paths = check.get("source_readiness_paths")
-    llm_path = media_path = None
-    if isinstance(paths, list) and len(paths) >= 2:
-        llm_path = Path(str(paths[0]))
-        media_path = Path(str(paths[1]))
-    current = _release_docs_audit_release_gate_check(
-        llm_readiness_path=llm_path,
-        media_readiness_path=media_path,
-    )
+    records = check.get("source_readiness_records")
+    if isinstance(records, Mapping):
+        current = _release_docs_audit_release_gate_check(
+            llm_readiness=_mapping_from_any(records.get("llm")),
+            media_readiness=_mapping_from_any(records.get("media")),
+        )
+    else:
+        paths = check.get("source_readiness_paths")
+        llm_path = media_path = None
+        if isinstance(paths, list) and len(paths) >= 2:
+            llm_path = Path(str(paths[0]))
+            media_path = Path(str(paths[1]))
+        current = _release_docs_audit_release_gate_check(
+            llm_readiness_path=llm_path,
+            media_readiness_path=media_path,
+        )
     return (
         str(current.get("status") or "").strip() == "pass"
         and current.get("violations") == []
     )
+
+
+def _release_docs_audit_readiness_record(readiness: Mapping[str, Any]) -> dict[str, Any]:
+    checks = readiness.get("checks")
+    selected_checks: dict[str, dict[str, Any]] = {}
+    if isinstance(checks, Mapping):
+        for check_name, fields in {
+            "package_install_smoke": ("run_id",),
+            "hostile_review": ("run_id",),
+            "llm_live_smoke": ("session_id",),
+            "non_visual_regression": ("run_id", "passed_count"),
+        }.items():
+            check = checks.get(check_name)
+            if not isinstance(check, Mapping):
+                continue
+            selected = {
+                field: check.get(field)
+                for field in fields
+                if check.get(field) not in (None, "")
+            }
+            if selected:
+                selected_checks[check_name] = selected
+    record: dict[str, Any] = {
+        "profile": readiness.get("profile"),
+        "public_claim_scope": readiness.get("public_claim_scope"),
+        "media_release_scope": readiness.get("media_release_scope"),
+        "remaining_media_gaps": readiness.get("remaining_media_gaps"),
+        "public_claim_exclusions": readiness.get("public_claim_exclusions"),
+        "checks": selected_checks,
+    }
+    return {
+        str(key): value
+        for key, value in record.items()
+        if value not in (None, "", [], {})
+    }
+
+
+def _mapping_from_any(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
 
 
 def _completion_audit_has_release_evidence(check: dict[str, Any]) -> bool:

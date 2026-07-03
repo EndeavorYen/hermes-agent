@@ -211,6 +211,33 @@ _RUNTIME_ANALYSIS_MARKERS = (
     "驗證",
     "分析",
 )
+_LEARN_INTENT_MARKERS = (
+    "/learn",
+    "learn this",
+    "learn from this",
+    "learn the workflow",
+    "learn this workflow",
+    "distill this",
+    "學起來",
+    "學成",
+    "學一下",
+    "記成",
+    "整理成",
+)
+_LEARN_SKILL_TARGET_MARKERS = (
+    "skill",
+    "skills",
+    "skill.md",
+    "技能",
+    "流程",
+    "workflow",
+    "runbook",
+    "playbook",
+    "procedure",
+    "可重用",
+    "可複用",
+    "reusable",
+)
 
 
 def build_raphael_control_decision(
@@ -432,6 +459,31 @@ def build_raphael_control_decision(
             confidence=0.86,
         )
 
+    if _looks_like_learn_skill_request(prompt):
+        return RaphaelControlDecision(
+            mode="learn_skill",
+            goal=RaphaelGoalDecision(
+                summary=_summary(prompt),
+                target_artifact="reusable_skill",
+                success_conditions=(
+                    "source_and_requirements_preserved",
+                    "skill_authoring_standards_applied",
+                    "durable_skill_write_auditable",
+                ),
+                phase="learn_from_current_context",
+            ),
+            route=RaphaelRouteDecision(),
+            evidence=RaphaelEvidenceDecision(
+                required_proofs=(
+                    "learn_request_preserved",
+                    "skill_authoring_standards_applied",
+                    "skill_manage_write_evidence",
+                ),
+            ),
+            next_action="dispatch_learn_skill",
+            confidence=0.84,
+        )
+
     if _contains_any(prompt, _TOOL_TASK_MARKERS):
         return RaphaelControlDecision(
             mode="tool_task",
@@ -496,6 +548,8 @@ def render_raphael_control_context(decision: RaphaelControlDecision) -> str:
         lines.append("required_proofs: " + ", ".join(decision.evidence.required_proofs))
     if decision.evidence.failure_layer:
         lines.append(f"failure_layer: {decision.evidence.failure_layer}")
+    if decision.mode == "learn_skill":
+        lines.append("learn_command: /learn")
     return "\n".join(lines)
 
 
@@ -945,6 +999,13 @@ def _looks_like_text_only_runtime_analysis(prompt: str) -> bool:
     if has_runtime:
         return has_text_only or has_no_tool or has_no_media
     return has_text_only and (has_no_tool or has_no_media)
+
+
+def _looks_like_learn_skill_request(prompt: str) -> bool:
+    return _contains_any(prompt, _LEARN_INTENT_MARKERS) and _contains_any(
+        prompt,
+        _LEARN_SKILL_TARGET_MARKERS,
+    )
 
 
 def _contains_any(text: str, markers: tuple[str, ...]) -> bool:

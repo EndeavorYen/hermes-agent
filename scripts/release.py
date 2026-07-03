@@ -125,6 +125,7 @@ AUTHOR_MAP = {
     "rebel@rebels-Mac-Studio-2.local": "rebel0789",  # PR #47308 salvage (redact browser_type typed text across display surfaces; #47197)
     "267614622+agt-user@users.noreply.github.com": "agt-user",  # PR #48496 salvage (telegram CLOSE-WAIT polling heartbeat, #48495)
     "80915+DavidMetcalfe@users.noreply.github.com": "DavidMetcalfe",  # PR #52272 salvage (route reasoning-model thinking-timeouts to timeout not context_overflow + reasoning-specific guidance; #52271)
+    "DavidMetcalfe@users.noreply.github.com": "DavidMetcalfe",  # legacy noreply alias
     "66773372+Tranquil-Flow@users.noreply.github.com": "Tranquil-Flow",  # PR #52623 salvage (auxiliary Anthropic base_url host validation; #52608)
     "nikshepsvn@gmail.com": "nikshepsvn",  # PR #27426 salvage (two-layer guard against hallucinated acp_command crashing the gateway on hosts with no ACP CLI)
     "65363919+coygeek@users.noreply.github.com": "coygeek",  # PR #37735 salvage (redact provider error text at api-server HTTP boundary; #37733)
@@ -1294,6 +1295,8 @@ AUTHOR_MAP = {
     "yehuosi@users.noreply.github.com": "yehuosi",
     "31932854+jelrod27@users.noreply.github.com": "jelrod27",
     "11262660+konsisumer@users.noreply.github.com": "konsisumer",
+    "konsisumer@users.noreply.github.com": "konsisumer",  # legacy noreply alias
+    "naqerl@users.noreply.github.com": "naqerl",  # legacy noreply alias
     "23434080+sicnuyudidi@users.noreply.github.com": "sicnuyudidi",
     "haimu0x0@proton.me": "haimu0x",
     "abdelmajidnidnasser1@gmail.com": "NIDNASSER-Abdelmajid",
@@ -1834,6 +1837,7 @@ AUTHOR_MAP = {
     "max.petrusenko.agent@gmail.com": "maxpetrusenko",  # PR #54128 co-author
     "poli.koltsova@gmail.com": "wnuuee1",  # commit 9fd2b2cb PR author
     "yosapol@jitrak.dev": "Eji4h",  # direct email match
+    "endeavorisforever@gmail.com": "EndeavorYen",  # direct email match
 }
 
 
