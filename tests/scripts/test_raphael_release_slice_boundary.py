@@ -7,8 +7,10 @@ def test_raphael_llm_slice_boundary_classifies_changed_paths():
     result = boundary.classify_paths(
         [
             "agent/raphael/control.py",
+            ".github/workflows/tests.yml",
             "agent/conversation_loop.py",
             "hermes_cli/raphael_cmd.py",
+            "scripts/release.py",
             "scripts/raphael_completion_audit.py",
             "scripts/raphael_package_install_smoke.py",
             "scripts/raphael_release_slice_manifest.py",
@@ -24,8 +26,10 @@ def test_raphael_llm_slice_boundary_classifies_changed_paths():
     )
 
     assert result.unclassified == ()
+    assert ".github/workflows/tests.yml" in result.included
     assert "agent/raphael/control.py" in result.included
     assert "hermes_cli/raphael_cmd.py" in result.included
+    assert "scripts/release.py" in result.included
     assert "scripts/raphael_completion_audit.py" in result.included
     assert "scripts/raphael_package_install_smoke.py" in result.included
     assert "scripts/raphael_release_slice_manifest.py" in result.included
