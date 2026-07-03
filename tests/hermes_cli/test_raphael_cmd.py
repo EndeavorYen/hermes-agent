@@ -798,7 +798,7 @@ def _write_readiness_evidence(
                 "non_visual_regression",
                 _non_visual_regression_check(regression_report),
             )
-            checks.setdefault("release_docs_audit", _release_docs_audit_check())
+            checks.setdefault("release_docs_audit", _release_docs_audit_check(home=home))
             checks.setdefault("completion_audit", _completion_audit_check())
             normalized_profile = str(payload.get("profile") or profile).strip().lower()
             if normalized_profile == "llm":
@@ -808,6 +808,7 @@ def _write_readiness_evidence(
                 )
             payload["checks"] = checks
         if include_verdict:
+            _write_release_docs_audit_readiness_sources(home, payload)
             payload = _payload_with_readiness_verdict(payload, profile=profile)
     evidence_dir = home / "raphael"
     evidence_dir.mkdir(parents=True, exist_ok=True)
@@ -830,6 +831,7 @@ def _write_raw_readiness_evidence(
     evidence_dir = home / "raphael"
     evidence_dir.mkdir(parents=True, exist_ok=True)
     if include_verdict and isinstance(payload, dict):
+        _write_release_docs_audit_readiness_sources(home, payload)
         payload = _payload_with_readiness_verdict(payload, profile=profile)
     text = json.dumps(payload)
     targets = [evidence_dir / "release_readiness.json"]
@@ -1150,12 +1152,21 @@ def _wow_user_simulation_cases():
     ]
 
 
-def _release_docs_audit_check(*, status="pass", violations=None, source_readiness_paths=None):
+def _release_docs_audit_check(
+    *,
+    status="pass",
+    violations=None,
+    source_readiness_paths=None,
+    home=None,
+):
     if source_readiness_paths is None:
-        source_readiness_paths = [
-            str(Path.home() / ".hermes" / "raphael" / "release_readiness.llm.json"),
-            str(Path.home() / ".hermes" / "raphael" / "release_readiness.media.json"),
-        ]
+        if home is not None:
+            source_readiness_paths = _release_docs_audit_readiness_source_paths(home)
+        else:
+            source_readiness_paths = [
+                str(Path.home() / ".hermes" / "raphael" / "release_readiness.llm.json"),
+                str(Path.home() / ".hermes" / "raphael" / "release_readiness.media.json"),
+            ]
     return {
         "status": status,
         "evidence": "release docs audit passed",
@@ -1163,6 +1174,76 @@ def _release_docs_audit_check(*, status="pass", violations=None, source_readines
         "run_id": "release-docs-audit-1",
         "violations": list(violations or []),
         "source_readiness_paths": list(source_readiness_paths),
+    }
+
+
+def _release_docs_audit_readiness_source_paths(home):
+    evidence_dir = home / "raphael" / "release_quality"
+    return [
+        str(evidence_dir / "docs-audit-readiness.llm.json"),
+        str(evidence_dir / "docs-audit-readiness.media.json"),
+    ]
+
+
+def _write_release_docs_audit_readiness_sources(home, payload):
+    if not isinstance(payload, dict):
+        return
+    checks = payload.get("checks")
+    if not isinstance(checks, dict) or "release_docs_audit" not in checks:
+        return
+    evidence_dir = home / "raphael" / "release_quality"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    (evidence_dir / "docs-audit-readiness.llm.json").write_text(
+        json.dumps(_release_docs_audit_llm_source()),
+        encoding="utf-8",
+    )
+    (evidence_dir / "docs-audit-readiness.media.json").write_text(
+        json.dumps(_release_docs_audit_media_source()),
+        encoding="utf-8",
+    )
+
+
+def _release_docs_audit_llm_source():
+    return {
+        "schema_version": 1,
+        "profile": "llm",
+        "public_claim_scope": "llm_only",
+        "checks": {
+            "package_install_smoke": {
+                "run_id": "package-install-20260701-fresh-home-fail-closed-v1",
+            },
+            "hostile_review": {
+                "run_id": "hostile-review-20260701-fresh-home-fail-closed-v1",
+            },
+            "llm_live_smoke": {"session_id": "20260701_131600_93f518"},
+            "non_visual_regression": {
+                "run_id": "non-visual-regression-20260701-openai-quality-attachment-gate",
+                "passed_count": 1529,
+            },
+        },
+    }
+
+
+def _release_docs_audit_media_source():
+    return {
+        "schema_version": 1,
+        "profile": "media",
+        "public_claim_scope": "media_openai_image_only",
+        "media_release_scope": "media_openai_image_only",
+        "remaining_media_gaps": ["xai_grok_generation", "video_generation"],
+        "checks": {
+            "package_install_smoke": {
+                "run_id": "package-install-20260701-fresh-home-fail-closed-v1",
+            },
+            "hostile_review": {
+                "run_id": "hostile-review-20260701-fresh-home-fail-closed-v1",
+            },
+            "llm_live_smoke": {"session_id": "20260701_163247_d9b87d"},
+            "non_visual_regression": {
+                "run_id": "non-visual-regression-20260701-wow-user-simulation-proof-v1",
+                "passed_count": 1541,
+            },
+        },
     }
 
 
@@ -1265,7 +1346,7 @@ def _llm_release_ready_checks(home, *, release_docs_audit=True):
         checks["release_docs_audit"] = (
             release_docs_audit
             if isinstance(release_docs_audit, dict)
-            else _release_docs_audit_check()
+            else _release_docs_audit_check(home=home)
         )
     return checks
 
@@ -1853,7 +1934,7 @@ def _release_quality_gate_kwargs(home):
                 "wow_experience": _wow_experience_check(),
                 "hostile_review": _hostile_review_check(hostile_report),
                 "non_visual_regression": _non_visual_regression_check(regression_report),
-                "release_docs_audit": _release_docs_audit_check(),
+                "release_docs_audit": _release_docs_audit_check(home=home),
                 "completion_audit": _completion_audit_check(),
                 "release_slice_manifest": _release_slice_manifest_check(),
             },
