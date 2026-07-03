@@ -191,6 +191,29 @@ def test_control_does_not_route_runtime_log_attachment_to_visual_handoff():
     assert decision.next_action == "plan_execute_verify"
 
 
+def test_control_routes_explicit_learning_requests_to_learn_skill_handoff():
+    decision = build_raphael_control_decision(
+        "拉斐爾，把剛剛 Hermes upgrade 的排查流程學起來，整理成可重用 skill"
+    )
+
+    assert decision.mode == "learn_skill"
+    assert decision.goal.target_artifact == "reusable_skill"
+    assert decision.goal.phase == "learn_from_current_context"
+    assert decision.route.handoff_tool is None
+    assert decision.next_action == "dispatch_learn_skill"
+    assert decision.evidence.required_proofs == (
+        "learn_request_preserved",
+        "skill_authoring_standards_applied",
+        "skill_manage_write_evidence",
+    )
+
+    context = render_raphael_control_context(decision)
+
+    assert "mode: learn_skill" in context
+    assert "next_action: dispatch_learn_skill" in context
+    assert "learn_command: /learn" in context
+
+
 def test_control_followup_edit_targets_current_visual_artifact():
     decision = build_raphael_control_decision(
         "很好，但足底應該也包含連身衣，而不是露出裸足，請改進",
