@@ -10,7 +10,7 @@ from agent.raphael.config import raphael_effective_enabled
 from agent.raphael.evolution import read_evolution_records
 from agent.raphael.skill_trace import render_skill_summary, summarize_skill_usage
 from agent.raphael.state import read_mission_state, read_state
-from agent.raphael.status import render_status
+from agent.raphael.status import collect_curator_health, render_status
 
 _DISABLED_MESSAGE = (
     "Raphael mode is disabled. Use /raphael-enable or `hermes raphael enable` "
@@ -91,6 +91,7 @@ def handle_status(raw_args: str) -> str:
         max_cards=_max_status_cards(),
         evolution_records=read_evolution_records(limit=5),
         mission_state=mission.to_dict() if mission is not None else None,
+        curator_health=collect_curator_health(),
     )
 
 

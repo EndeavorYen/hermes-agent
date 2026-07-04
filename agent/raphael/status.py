@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import re
 from typing import Any
 
+from agent.raphael.evolution import summarize_learning_outcome
 from agent.raphael.invocation import (
     format_raphael_proof_text,
     format_raphael_route_text,
@@ -52,6 +53,7 @@ def render_status(
     max_cards: int = 20,
     evolution_records: Sequence[Mapping[str, Any]] | None = None,
     mission_state: Mapping[str, Any] | None = None,
+    curator_health: Mapping[str, Any] | None = None,
 ) -> str:
     cards = active_cards(state, now=now)
     card_groups = _collapse_status_cards(cards)[: max(0, max_cards)]
@@ -143,6 +145,9 @@ def render_status(
     else:
         lines.append("No active mission.")
 
+    lines.extend(["", "Skill Library Health:"])
+    lines.extend(_format_curator_health_lines(curator_health))
+
     lines.extend(["", "Skill Evolution:"])
     lines.append(
         "Enabled through gated background review when Raphael detects durable "
@@ -195,6 +200,11 @@ def render_status(
                         "回滾條件："
                         f"{_format_evolution_metadata_text('rollback_condition', rollback)}"
                     )
+                learning_outcome = metadata.get("learning_outcome")
+                if isinstance(learning_outcome, Mapping):
+                    metadata_parts.append(
+                        summarize_learning_outcome(learning_outcome)
+                    )
             metadata_suffix = (
                 "（" + "；".join(metadata_parts) + "）" if metadata_parts else ""
             )
@@ -216,6 +226,79 @@ def render_status(
         ]
     )
     return "\n".join(lines)
+
+
+def _format_curator_health_lines(
+    curator_health: Mapping[str, Any] | None,
+) -> list[str]:
+    if not isinstance(curator_health, Mapping):
+        return ["curator: not checked"]
+    enabled = curator_health.get("enabled") is True
+    consolidate = curator_health.get("consolidate") is True
+    agent_created = _format_count(curator_health.get("agent_created_skills"))
+    stale = _format_count(curator_health.get("stale"))
+    archived = _format_count(curator_health.get("archived"))
+    return [
+        f"curator: {'enabled' if enabled else 'disabled'}",
+        f"agent-created skills: {agent_created}",
+        f"stale: {stale}; archived: {archived}",
+        f"consolidation: {'on' if consolidate else 'off'}",
+        "review: run --dry-run before any archive or consolidation",
+    ]
+
+
+def _format_count(value: Any) -> str:
+    if isinstance(value, bool):
+        return "0"
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        return "0"
+    return str(max(0, count))
+
+
+def collect_curator_health() -> dict[str, Any]:
+    """Read skill-library health without running curator mutations."""
+    try:
+        from hermes_constants import get_hermes_home
+
+        if not (get_hermes_home() / "skills").exists():
+            return _empty_curator_health()
+        from agent import curator
+        from tools import skill_usage
+
+        state = curator.load_state()
+        rows = skill_usage.agent_created_report()
+        paused = bool(state.get("paused", False)) if isinstance(state, Mapping) else False
+        by_state = {"active": 0, "stale": 0, "archived": 0}
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            state_name = str(row.get("state") or "active")
+            by_state[state_name] = by_state.get(state_name, 0) + 1
+        return {
+            "enabled": bool(curator.is_enabled()),
+            "paused": paused,
+            "consolidate": bool(curator.get_consolidate()),
+            "agent_created_skills": len(rows),
+            "active": by_state.get("active", 0),
+            "stale": by_state.get("stale", 0),
+            "archived": by_state.get("archived", 0),
+        }
+    except Exception:
+        return _empty_curator_health()
+
+
+def _empty_curator_health() -> dict[str, Any]:
+    return {
+        "enabled": False,
+        "paused": False,
+        "consolidate": False,
+        "agent_created_skills": 0,
+        "active": 0,
+        "stale": 0,
+        "archived": 0,
+    }
 
 
 def _format_sage_king_brief(
@@ -601,4 +684,4 @@ def _format_capability_text(value: Any) -> str:
     return text
 
 
-__all__ = ["active_cards", "render_status"]
+__all__ = ["active_cards", "collect_curator_health", "render_status"]

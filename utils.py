@@ -271,8 +271,12 @@ def atomic_roundtrip_yaml_update(
     should survive a single setting mutation.  Writes still use the same temp
     file + fsync + atomic replace pattern.
     """
-    from ruamel.yaml import YAML
-    from ruamel.yaml.comments import CommentedMap
+    try:
+        from ruamel.yaml import YAML
+        from ruamel.yaml.comments import CommentedMap
+    except ImportError:
+        _atomic_pyyaml_key_update(path, key_path, value)
+        return
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -315,6 +319,114 @@ def atomic_roundtrip_yaml_update(
             os.fsync(f.fileno())
         real_path = atomic_replace(tmp_path, path)
         _restore_file_mode(real_path, original_mode)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _atomic_pyyaml_key_update(
+    path: Union[str, Path],
+    key_path: str,
+    value: Any,
+) -> None:
+    """Fallback key update for environments missing ruamel.yaml."""
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    if path.exists():
+        text = path.read_text(encoding="utf-8")
+        updated_text = _update_existing_yaml_scalar_text(text, key_path, value)
+        if updated_text is not None:
+            _atomic_text_write(path, updated_text)
+            return
+        with path.open("r", encoding="utf-8") as f:
+            config = yaml.safe_load(f) or {}
+    else:
+        config = {}
+
+    if not isinstance(config, dict):
+        config = {}
+
+    current = config
+    keys = key_path.split(".")
+    for key in keys[:-1]:
+        next_value = current.get(key)
+        if not isinstance(next_value, dict):
+            next_value = {}
+            current[key] = next_value
+        current = next_value
+    current[keys[-1]] = value
+
+    atomic_yaml_write(path, config, sort_keys=False)
+
+
+def _update_existing_yaml_scalar_text(
+    text: str,
+    key_path: str,
+    value: Any,
+) -> str | None:
+    """Replace an existing scalar YAML key while preserving comments."""
+
+    keys = key_path.split(".")
+    stack: list[tuple[int, str]] = []
+    lines = text.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        stripped = line.lstrip(" ")
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(stripped)
+        key, separator, _tail = stripped.partition(":")
+        normalized_key = key.strip()
+        if not separator or not normalized_key or normalized_key.startswith("-"):
+            continue
+        while stack and indent <= stack[-1][0]:
+            stack.pop()
+        path = [entry[1] for entry in stack] + [normalized_key]
+        if path == keys:
+            newline = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
+            content = line[: len(line) - len(newline)] if newline else line
+            comment = ""
+            comment_index = content.find("#")
+            if comment_index >= 0:
+                comment = content[comment_index:].rstrip()
+            rendered = f"{line[:indent]}{normalized_key}: {_format_yaml_scalar(value)}"
+            if comment:
+                rendered = f"{rendered}  {comment}"
+            lines[index] = f"{rendered}{newline}"
+            return "".join(lines)
+        stack.append((indent, normalized_key))
+    return None
+
+
+def _format_yaml_scalar(value: Any) -> str:
+    rendered = yaml.safe_dump(
+        value,
+        allow_unicode=True,
+        default_flow_style=True,
+        sort_keys=False,
+    ).strip()
+    lines = [line for line in rendered.splitlines() if line != "..."]
+    return " ".join(lines) or "null"
+
+
+def _atomic_text_write(path: Path, text: str) -> None:
+    original_mode = _preserve_file_mode(path)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(path.parent),
+        prefix=f".{path.stem}_",
+        suffix=".tmp",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        real_path = atomic_replace(tmp_path, path)
+        _restore_file_mode(Path(real_path), original_mode)
     except BaseException:
         try:
             os.unlink(tmp_path)

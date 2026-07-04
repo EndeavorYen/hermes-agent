@@ -118,6 +118,31 @@ class TestSaveConfigValueAtomic:
         assert "你好，保持中文输出" in text
         assert "\\u4f60" not in text
 
+    def test_roundtrip_update_falls_back_when_ruamel_missing(
+        self,
+        config_env,
+        monkeypatch,
+    ):
+        """Config updates should still save when ruamel.yaml is unavailable."""
+        import builtins
+
+        real_import = builtins.__import__
+
+        def blocked_ruamel_import(name, *args, **kwargs):
+            if name == "ruamel.yaml" or name.startswith("ruamel."):
+                raise ImportError("blocked ruamel")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", blocked_ruamel_import)
+
+        from utils import atomic_roundtrip_yaml_update
+
+        atomic_roundtrip_yaml_update(config_env, "model.default", "fallback-model")
+
+        result = yaml.safe_load(config_env.read_text())
+        assert result["model"]["default"] == "fallback-model"
+        assert result["model"]["provider"] == "openrouter"
+
     def test_file_not_truncated_on_error(self, config_env, monkeypatch):
         """If atomic_yaml_write raises, the original file is untouched."""
         original_content = config_env.read_text()
