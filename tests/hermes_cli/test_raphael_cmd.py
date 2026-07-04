@@ -2199,6 +2199,41 @@ def test_raphael_status_labels_durable_evolution_as_local_override(
     )
 
 
+def test_raphael_status_includes_read_only_curator_health(
+    monkeypatch,
+    tmp_path,
+):
+    from hermes_cli import raphael_cmd
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        raphael_cmd,
+        "collect_raphael_curator_health",
+        lambda: {
+            "enabled": True,
+            "paused": False,
+            "consolidate": False,
+            "agent_created_skills": 9,
+            "stale": 0,
+            "archived": 0,
+        },
+    )
+    _write_config(
+        tmp_path,
+        {
+            "plugins": {"enabled": ["raphael"], "disabled": []},
+            "raphael": {"enabled": True, "default_conversation_mode_enabled": True},
+        },
+    )
+
+    status = raphael_cmd.raphael_lifecycle_status()
+
+    assert "Skill library: curator enabled" in status.message
+    assert "agent-created skills: 9" in status.message
+    assert "stale: 0" in status.message
+    assert "consolidation: off" in status.message
+
+
 def test_raphael_status_guides_install_when_enabled_but_slash_unavailable(
     monkeypatch,
     tmp_path,

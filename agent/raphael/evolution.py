@@ -23,6 +23,7 @@ _ALLOWED_EVOLUTION_METADATA_KEYS = frozenset(
         "affected_capability",
         "proposed_change",
         "confidence",
+        "learning_outcome",
         "promotion_gate",
         "rollback_condition",
     }
@@ -199,7 +200,41 @@ def sanitize_raphael_evolution_metadata(
         confidence = _clamped_confidence(metadata.get("confidence"))
         if confidence is not None:
             sanitized["confidence"] = confidence
+    if isinstance(metadata, Mapping) and isinstance(
+        metadata.get("learning_outcome"),
+        Mapping,
+    ):
+        outcome = _sanitize_learning_outcome(metadata.get("learning_outcome"))
+        if outcome:
+            sanitized["learning_outcome"] = outcome
     return sanitized
+
+
+def _sanitize_learning_outcome(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    sanitized: dict[str, Any] = {}
+    for key in ("skill_name", "source", "rollback"):
+        text = _redacted_single_line(value.get(key))
+        if text:
+            sanitized[key] = text
+    if isinstance(value.get("saved"), bool):
+        sanitized["saved"] = value.get("saved")
+    return sanitized
+
+
+def summarize_learning_outcome(record: Mapping[str, Any]) -> str:
+    skill_name = _redacted_single_line(record.get("skill_name")) or "unknown-skill"
+    source = _redacted_single_line(record.get("source")) or "unspecified source"
+    rollback = (
+        _redacted_single_line(record.get("rollback"))
+        or "remove or archive the saved learning artifact"
+    )
+    status = "saved" if record.get("saved") is True else "not saved"
+    return (
+        f"Learning outcome: {status}; skill={skill_name}; "
+        f"source={source}; rollback={rollback}"
+    )
 
 
 def sanitize_raphael_evolution_status_metadata(
@@ -917,4 +952,5 @@ __all__ = [
     "sanitize_evolution_text",
     "sanitize_raphael_evolution_metadata",
     "sanitize_raphael_evolution_status_metadata",
+    "summarize_learning_outcome",
 ]

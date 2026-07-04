@@ -18,6 +18,7 @@ LLM_INCLUDE_PREFIXES: tuple[str, ...] = (
     "agent/raphael/",
     "agent/turn_finalizer.py",
     "docs/raphael-",
+    "docs/plans/2026-07-05-raphael-learning-absorption-plan.md",
     "hermes_cli/config.py",
     "hermes_cli/main.py",
     "hermes_cli/plugins.py",
@@ -38,6 +39,7 @@ LLM_INCLUDE_PREFIXES: tuple[str, ...] = (
     "tests/agent/test_prompt_builder.py",
     "tests/agent/test_raphael_",
     "tests/agent/test_turn_finalizer.py",
+    "tests/cli/test_cli_save_config_value.py",
     "tests/hermes_cli/test_raphael_",
     "tests/test_packaging_metadata.py",
     "tests/plugins/test_raphael_plugin.py",
@@ -48,6 +50,8 @@ LLM_INCLUDE_PREFIXES: tuple[str, ...] = (
     "tests/scripts/test_raphael_release_docs_audit.py",
     "tests/scripts/test_raphael_release_slice_boundary.py",
     "tests/scripts/test_raphael_release_slice_manifest.py",
+    "tests/test_tui_gateway_server.py",
+    "utils.py",
 )
 
 LLM_DEFERRED_MEDIA_PREFIXES: tuple[str, ...] = (

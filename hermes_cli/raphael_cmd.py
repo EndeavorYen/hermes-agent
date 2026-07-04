@@ -40,6 +40,7 @@ from agent.raphael.config import raphael_plugin_active
 from agent.raphael.state import read_state as read_raphael_state
 from agent.raphael.state import resolve_action_proposal
 from agent.raphael.status import (
+    collect_curator_health as collect_raphael_curator_health,
     format_action_proposal_resolution_guidance,
 )
 from agent.raphael.status import render_status as render_raphael_status
@@ -639,6 +640,7 @@ def _lifecycle_status_message(
         f"Conversation injection: {injection_state}",
         f"Slash commands: {slash_state}",
         f"Evolution writes: {evolution_writes}",
+        f"Skill library: {_raphael_curator_health_label()}",
         "Public claim: enabled mode is not release evidence",
     ]
     if (
@@ -689,6 +691,26 @@ def _raphael_evolution_writes_label(
     if skill_writes or memory_writes:
         return "partially durable (local override; public default is audit-only)"
     return "audit-only"
+
+
+def _raphael_curator_health_label() -> str:
+    health = collect_raphael_curator_health()
+    enabled = health.get("enabled") is True
+    paused = health.get("paused") is True
+    state = "paused" if paused else "enabled" if enabled else "disabled"
+    try:
+        agent_created = max(0, int(health.get("agent_created_skills", 0)))
+    except (TypeError, ValueError):
+        agent_created = 0
+    try:
+        stale = max(0, int(health.get("stale", 0)))
+    except (TypeError, ValueError):
+        stale = 0
+    consolidate = "on" if health.get("consolidate") is True else "off"
+    return (
+        f"curator {state}; agent-created skills: {agent_created}; "
+        f"stale: {stale}; consolidation: {consolidate}"
+    )
 
 
 def raphael_setup_doctor() -> RaphaelSetupDoctorStatus:

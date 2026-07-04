@@ -9,13 +9,17 @@ def test_raphael_llm_slice_boundary_classifies_changed_paths():
             "agent/raphael/control.py",
             ".github/workflows/tests.yml",
             "agent/conversation_loop.py",
+            "docs/plans/2026-07-05-raphael-learning-absorption-plan.md",
             "hermes_cli/raphael_cmd.py",
             "scripts/release.py",
             "scripts/raphael_completion_audit.py",
             "scripts/raphael_package_install_smoke.py",
             "scripts/raphael_release_slice_manifest.py",
+            "tests/cli/test_cli_save_config_value.py",
             "tests/scripts/test_raphael_completion_audit.py",
             "tests/scripts/test_raphael_release_slice_manifest.py",
+            "tests/test_tui_gateway_server.py",
+            "utils.py",
             "plugins/image_gen/grok_web_imagine/__init__.py",
             "scripts/visual_live_provider_e2e.py",
             "tests/scripts/test_visual_live_provider_e2e.py",
@@ -28,13 +32,17 @@ def test_raphael_llm_slice_boundary_classifies_changed_paths():
     assert result.unclassified == ()
     assert ".github/workflows/tests.yml" in result.included
     assert "agent/raphael/control.py" in result.included
+    assert "docs/plans/2026-07-05-raphael-learning-absorption-plan.md" in result.included
     assert "hermes_cli/raphael_cmd.py" in result.included
     assert "scripts/release.py" in result.included
     assert "scripts/raphael_completion_audit.py" in result.included
     assert "scripts/raphael_package_install_smoke.py" in result.included
     assert "scripts/raphael_release_slice_manifest.py" in result.included
+    assert "tests/cli/test_cli_save_config_value.py" in result.included
     assert "tests/scripts/test_raphael_completion_audit.py" in result.included
     assert "tests/scripts/test_raphael_release_slice_manifest.py" in result.included
+    assert "tests/test_tui_gateway_server.py" in result.included
+    assert "utils.py" in result.included
     assert "plugins/image_gen/grok_web_imagine/__init__.py" in result.deferred_media
     assert "scripts/visual_live_provider_e2e.py" in result.deferred_media
     assert "tests/scripts/test_visual_live_provider_e2e.py" in result.deferred_media

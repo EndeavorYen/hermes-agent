@@ -2,7 +2,7 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 
 from agent.raphael.models import ActionProposal, RaphaelState, RiskLevel, StatusCard
-from agent.raphael.status import active_cards, render_status
+from agent.raphael.status import active_cards, collect_curator_health, render_status
 
 
 NOW = datetime(2026, 6, 16, 9, 0, tzinfo=timezone.utc)
@@ -478,8 +478,93 @@ def test_render_status_includes_recent_evolution_records():
     assert "confidence=" not in output
     assert "promotion=" not in output
     assert "rollback=" not in output
-    assert "user_correction" not in output
-    assert "raphael.skill_evolution" not in output
+
+
+def test_render_status_includes_learning_outcome_summary():
+    output = render_status(
+        _state(),
+        now=NOW,
+        evolution_records=[
+            {
+                "status": "scheduled",
+                "mode": "active_evolution",
+                "reason_codes": ["user_correction"],
+                "evidence_summary": "user requested durable learning",
+                "metadata": {
+                    "learning_outcome": {
+                        "skill_name": "hermes-upgrade-operations",
+                        "source": "current conversation",
+                        "saved": True,
+                        "rollback": "archive the skill with hermes curator restore",
+                    },
+                },
+            }
+        ],
+    )
+
+    assert "Learning outcome: saved" in output
+    assert "hermes-upgrade-operations" in output
+    assert "current conversation" in output
+    assert "rollback=archive the skill with hermes curator restore" in output
+
+
+def test_render_status_includes_curator_health_without_mutation():
+    output = render_status(
+        _state(),
+        now=NOW,
+        curator_health={
+            "enabled": True,
+            "consolidate": False,
+            "agent_created_skills": 9,
+            "stale": 0,
+            "archived": 0,
+        },
+    )
+
+    assert "Skill Library Health:" in output
+    assert "curator: enabled" in output.lower()
+    assert "agent-created skills: 9" in output
+    assert "stale: 0" in output
+    assert "consolidation: off" in output.lower()
+    assert "run --dry-run" in output
+
+
+def test_collect_curator_health_is_read_only(monkeypatch):
+    from agent import curator
+    from tools import skill_usage
+
+    called = {"run": False}
+
+    def _fail_run(*args, **kwargs):
+        called["run"] = True
+        raise AssertionError("status collection must not run curator review")
+
+    monkeypatch.setattr(curator, "load_state", lambda: {"paused": False})
+    monkeypatch.setattr(curator, "is_enabled", lambda: True)
+    monkeypatch.setattr(curator, "get_consolidate", lambda: False)
+    monkeypatch.setattr(curator, "run_curator_review", _fail_run)
+    monkeypatch.setattr(
+        skill_usage,
+        "agent_created_report",
+        lambda: [
+            {"name": "alpha", "state": "active"},
+            {"name": "beta", "state": "stale"},
+            {"name": "gamma", "state": "archived"},
+        ],
+    )
+
+    health = collect_curator_health()
+
+    assert health == {
+        "enabled": True,
+        "paused": False,
+        "consolidate": False,
+        "agent_created_skills": 3,
+        "active": 1,
+        "stale": 1,
+        "archived": 1,
+    }
+    assert called["run"] is False
 
 
 def test_render_status_collapses_duplicate_recent_evolution_records():

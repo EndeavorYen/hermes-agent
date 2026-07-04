@@ -12,6 +12,7 @@ from agent.raphael.evolution import (
     decide_raphael_evolution,
     read_evolution_records,
     record_evolution_action_proposal,
+    summarize_learning_outcome,
 )
 from agent.raphael.models import RiskLevel
 from agent.raphael.state import read_state
@@ -35,6 +36,21 @@ def _config(**raphael_overrides):
 
 def _home_env(path: Path):
     return patch.dict(os.environ, {"HERMES_HOME": str(path)})
+
+
+def test_learning_outcome_summary_requires_artifact_and_rollback():
+    summary = summarize_learning_outcome(
+        {
+            "skill_name": "hermes-upgrade-operations",
+            "source": "current conversation",
+            "saved": True,
+            "rollback": "archive the skill with hermes curator restore or delete the pending proposal",
+        }
+    )
+
+    assert "hermes-upgrade-operations" in summary
+    assert "current conversation" in summary
+    assert "rollback" in summary.lower()
 
 
 def test_disabled_raphael_never_schedules_evolution_review():
