@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import types
 
 from agent.turn_finalizer import finalize_turn
@@ -877,6 +878,62 @@ def test_finalize_turn_blocks_unverified_visual_completion_claim_when_handoff_no
     assert "還不能判定完成" in result["final_response"]
     assert "visual/artifact 任務" in result["final_response"]
     assert "artifact_quality_evidence" in result["final_response"]
+
+
+def test_finalize_turn_preserves_visual_completion_when_image_tool_delivered(
+    monkeypatch,
+    tmp_path,
+):
+    import agent.raphael.observer as observer
+
+    monkeypatch.setattr(observer, "should_inject_raphael_observation", lambda: True)
+    image_path = tmp_path / "selected.png"
+    image_path.write_bytes(b"png")
+
+    result = finalize_turn(
+        _FakeAgent(),
+        final_response="已產出圖片。",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=[
+            {"role": "user", "content": "Use the two reference images to create an anime image"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call-image",
+                        "function": {"name": "image_generate"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call-image",
+                "name": "image_generate",
+                "content": json.dumps(
+                    {
+                        "success": True,
+                        "image": str(image_path),
+                        "images": [str(image_path)],
+                        "delivery_metadata": {
+                            "selected_visual_artifact_ids": ["artifact-1"],
+                        },
+                    }
+                ),
+            },
+            {"role": "assistant", "content": "已產出圖片。"},
+        ],
+        conversation_history=None,
+        effective_task_id="task-1",
+        turn_id="turn-1",
+        user_message="Use the two reference images to create an anime image",
+        original_user_message="Use the two reference images to create an anime image",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response",
+    )
+
+    assert result["final_response"] == "已產出圖片。"
 
 
 def test_finalize_turn_does_not_proof_gate_visual_prompt_builder_response(

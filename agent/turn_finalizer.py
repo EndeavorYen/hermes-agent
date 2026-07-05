@@ -22,13 +22,31 @@ keep the exact logger name (``"agent.conversation_loop"``).
 
 from __future__ import annotations
 
+import json
 import os
 import re
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 
 _VISUAL_PROMPT_DRAFT_MAX_CHARS = 1200
+_VISUAL_GENERATION_TOOL_NAMES = {
+    "image_generate",
+    "visual_agent_generate",
+    "visual_package_generate",
+    "video_generate",
+}
+_VISUAL_MEDIA_EXTENSIONS = (
+    ".gif",
+    ".jpeg",
+    ".jpg",
+    ".mov",
+    ".mp4",
+    ".png",
+    ".webm",
+    ".webp",
+)
 _FENCED_BLOCK_RE = re.compile(
     r"```(?:[a-zA-Z0-9_-]+)?[ \t]*\n?(.*?)```",
     flags=re.DOTALL,
@@ -669,6 +687,10 @@ def _apply_raphael_general_proof_gate(
         return final_response
     if not _raphael_claims_completion(final_response):
         return final_response
+    if _raphael_claims_visual_delivery(
+        final_response
+    ) and _turn_has_successful_visual_delivery(messages):
+        return final_response
     required = decision.evidence.required_proofs or ()
     if raphael_has_required_proof(messages, required):
         return final_response
@@ -709,6 +731,135 @@ def _apply_raphael_general_proof_gate(
             f"下一步：{next_step}",
         ]
     )
+
+
+def _turn_has_successful_visual_delivery(messages) -> bool:
+    tool_call_names = _tool_call_name_map(messages)
+    for message in messages or ():
+        if not isinstance(message, Mapping) or message.get("role") != "tool":
+            continue
+        tool_name = str(message.get("name") or message.get("tool_name") or "").lower()
+        if not tool_name:
+            tool_name = tool_call_names.get(str(message.get("tool_call_id") or ""), "")
+        if tool_name not in _VISUAL_GENERATION_TOOL_NAMES:
+            continue
+        payload = _tool_result_payload(message.get("content"))
+        if _payload_has_successful_visual_delivery(payload):
+            return True
+    return False
+
+
+def _tool_call_name_map(messages) -> dict[str, str]:
+    names: dict[str, str] = {}
+    for message in messages or ():
+        if not isinstance(message, Mapping):
+            continue
+        for tool_call in message.get("tool_calls") or ():
+            if not isinstance(tool_call, Mapping):
+                continue
+            call_id = str(tool_call.get("id") or "")
+            function = tool_call.get("function")
+            function = function if isinstance(function, Mapping) else {}
+            name = str(function.get("name") or "").lower()
+            if call_id and name:
+                names[call_id] = name
+    return names
+
+
+def _tool_result_payload(content):
+    if (
+        isinstance(content, (Mapping, Sequence))
+        and not isinstance(content, (str, bytes, bytearray))
+    ):
+        return content
+    if not isinstance(content, str) or not content.strip():
+        return None
+    try:
+        return json.loads(content)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _payload_has_successful_visual_delivery(payload) -> bool:
+    if isinstance(payload, Mapping):
+        if not _payload_success(payload):
+            return False
+        if _mapping_has_visual_media_ref(payload):
+            return True
+        return _delivery_metadata_has_selected_artifact(payload.get("delivery_metadata"))
+    if isinstance(payload, Sequence) and not isinstance(payload, (str, bytes, bytearray)):
+        return any(_payload_has_successful_visual_delivery(item) for item in payload)
+    return False
+
+
+def _payload_success(payload: Mapping) -> bool:
+    if payload.get("success") is True:
+        return True
+    status = str(
+        payload.get("package_status")
+        or payload.get("status")
+        or payload.get("state")
+        or ""
+    ).strip().lower()
+    return status in {"success", "succeeded", "completed", "ok"}
+
+
+def _mapping_has_visual_media_ref(payload: Mapping) -> bool:
+    for key in ("image", "image_path", "video", "video_path", "output_path"):
+        if _looks_like_visual_media_ref(payload.get(key)):
+            return True
+    for key in ("images", "videos", "media_files", "outputs"):
+        if _sequence_has_visual_media_ref(payload.get(key)):
+            return True
+    return False
+
+
+def _sequence_has_visual_media_ref(value) -> bool:
+    if isinstance(value, Mapping):
+        return _mapping_has_visual_media_ref(value)
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return _looks_like_visual_media_ref(value)
+    for item in value:
+        if _looks_like_visual_media_ref(item):
+            return True
+        if isinstance(item, Mapping) and _mapping_has_visual_media_ref(item):
+            return True
+        if isinstance(item, Sequence) and not isinstance(item, (str, bytes, bytearray)):
+            if _sequence_has_visual_media_ref(item):
+                return True
+    return False
+
+
+def _delivery_metadata_has_selected_artifact(value) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    selected = value.get("selected_visual_artifact_ids")
+    if isinstance(selected, Sequence) and not isinstance(
+        selected, (str, bytes, bytearray)
+    ):
+        if any(str(item or "").strip() for item in selected):
+            return True
+    artifacts = value.get("visual_artifacts")
+    if isinstance(artifacts, Mapping):
+        for artifact in artifacts.values():
+            if (
+                isinstance(artifact, Mapping)
+                and str(artifact.get("artifact_id") or "").strip()
+            ):
+                return True
+    return False
+
+
+def _looks_like_visual_media_ref(value) -> bool:
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    if not text or text.lower().startswith("data:"):
+        return False
+    lowered = text.lower()
+    if lowered.startswith(("http://", "https://", "/")):
+        return True
+    return lowered.endswith(_VISUAL_MEDIA_EXTENSIONS)
 
 
 def _apply_visual_prompt_draft_response_shape(
@@ -968,6 +1119,7 @@ def _raphael_user_requested_exact_reply_shape(user_message) -> bool:
 
 def _raphael_claims_completion(text) -> bool:
     lowered = str(text or "").lower()
+    compact = re.sub(r"\s+", "", lowered)
     negative_markers = (
         "不能宣稱完成",
         "不要宣稱完成",
@@ -988,7 +1140,7 @@ def _raphael_claims_completion(text) -> bool:
         "do not claim completion",
         "should not claim completion",
     )
-    if any(marker in lowered for marker in negative_markers):
+    if any(marker in lowered or marker in compact for marker in negative_markers):
         return False
     markers = (
         "done",
@@ -1008,4 +1160,41 @@ def _raphael_claims_completion(text) -> bool:
         "產出圖片",
         "生成圖片",
     )
-    return any(marker in lowered for marker in markers)
+    return any(marker in lowered or marker in compact for marker in markers)
+
+
+def _raphael_claims_visual_delivery(text) -> bool:
+    lowered = str(text or "").lower()
+    compact = re.sub(r"\s+", "", lowered)
+    has_visual = any(
+        token in compact
+        for token in (
+            "image",
+            "media",
+            "video",
+            "visual",
+            "artifact",
+            "圖片",
+            "圖像",
+            "產圖",
+            "影片",
+            "媒體",
+            "成品",
+        )
+    )
+    has_completion = any(
+        token in compact
+        for token in (
+            "generated",
+            "created",
+            "delivered",
+            "completed",
+            "done",
+            "已產出",
+            "已生成",
+            "產出",
+            "生成",
+            "完成",
+        )
+    )
+    return has_visual and has_completion
