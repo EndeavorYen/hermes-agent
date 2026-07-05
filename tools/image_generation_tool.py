@@ -26,7 +26,9 @@ import os
 import datetime
 import re
 import threading
+import urllib.parse
 import uuid
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 # fal_client is imported lazily — see _load_fal_client(). Pulling it
@@ -70,7 +72,8 @@ from tools.tool_backend_helpers import (
     nous_tool_gateway_unavailable_message,
     prefers_gateway,
 )
-from agent.visual.prompt_disclosure import is_visual_prompt_disclosure_request
+from agent.visual.agent_mode.handoff import is_visual_prompt_builder_request
+from agent.visual.agent_mode.handoff import is_visual_prompt_disclosure_request
 
 logger = logging.getLogger(__name__)
 
@@ -376,15 +379,20 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
         },
         "max_reference_images": 3,
     },
-    # Krea 2 on FAL — same model family as ``plugins/image_gen/krea``, but billed
-    # through FAL / the FAL managed gateway. Native ``krea-2-*`` ids route to the
-    # dedicated Krea plugin instead.
+    # Krea 2 — Krea's first foundation image model, day-0 partner launch on
+    # fal (2026-05-27). Same model family as our direct ``plugins/image_gen/krea``
+    # backend, exposed here for users who prefer to bill through their
+    # existing FAL key / Nous Portal subscription rather than register
+    # directly with Krea.  Both variants share the same parameter schema —
+    # only model id, price, and recommended use case differ.
     "fal-ai/krea/v2/medium/text-to-image": {
         "display": "Krea 2 Medium",
         "speed": "~15-25s",
         "strengths": "Illustration, anime, painting, expressive/artistic styles",
         "price": "$0.030 (text) / $0.035 (style refs)",
         "size_style": "aspect_ratio",
+        # Krea natively accepts 1:1, 4:3, 3:2, 16:9, 2.35:1, 4:5, 2:3, 9:16 —
+        # we map our 3 abstract ratios to the closest match.
         "sizes": {
             "landscape": "16:9",
             "square": "1:1",
@@ -604,13 +612,7 @@ def _build_fal_payload(
                 payload[k] = v
 
     supports = meta["supports"]
-    # ``prompt`` is required by every FAL text-to-image endpoint; keep it even
-    # if a model's ``supports`` whitelist omits it, so a missing whitelist entry
-    # can't silently strip the prompt and send an empty request.
-    return {
-        k: v for k, v in payload.items()
-        if k in supports or k == "prompt"
-    }
+    return {k: v for k, v in payload.items() if k in supports}
 
 
 def _build_fal_edit_payload(
@@ -659,15 +661,7 @@ def _build_fal_edit_payload(
             if v is not None:
                 payload[k] = v
 
-    # ``prompt`` and ``image_urls`` are required by every FAL edit endpoint;
-    # keep them even if a model's ``edit_supports`` whitelist omits them, so a
-    # missing whitelist entry can't silently drop the prompt or the source
-    # images and send a broken edit request.
-    _required = {"prompt", "image_urls"}
-    return {
-        k: v for k, v in payload.items()
-        if k in edit_supports or k in _required
-    }
+    return {k: v for k, v in payload.items() if k in edit_supports}
 
 
 # ---------------------------------------------------------------------------
@@ -835,6 +829,49 @@ def _postprocess_image_generate_result(raw: str, task_id: str | None = None) -> 
     payload.setdefault("host_image", image)
     payload.setdefault("agent_visible_image", agent_path)
     return json.dumps(payload, ensure_ascii=False)
+
+
+def _track_image_generate_result(
+    raw: str,
+    *,
+    prompt: str,
+    aspect_ratio: str,
+    image_url: Optional[str],
+    reference_image_urls: Optional[list],
+) -> str:
+    try:
+        payload = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        return raw
+    if not isinstance(payload, dict):
+        return raw
+
+    try:
+        from agent.visual.tracking import record_visual_generation_attempt
+
+        has_reference = bool(image_url) or bool(reference_image_urls)
+        operation = "reference_image_edit" if has_reference else "text_to_image"
+        modality = "image" if has_reference else "text"
+        provider = str(payload.get("provider") or _read_configured_image_provider() or "fal")
+        model = str(payload.get("model") or _read_configured_image_model() or _resolve_fal_model()[0])
+        tracked = record_visual_generation_attempt(
+            payload,
+            user_prompt=prompt,
+            prompt_original=prompt,
+            prompt_mediated=prompt,
+            modality=modality,
+            operation=operation,
+            artifact_key="image",
+            kind="image",
+            provider=provider,
+            model=model,
+            parameters_requested={"aspect_ratio": aspect_ratio},
+            parameters_effective={"aspect_ratio": payload.get("aspect_ratio") or aspect_ratio},
+        )
+        return json.dumps(tracked, indent=2, ensure_ascii=False)
+    except Exception as exc:  # noqa: BLE001 - image generation must not depend on tracking
+        logger.warning("Image generation tracking skipped: %s", exc)
+        return raw
 
 
 def image_generate_tool(
@@ -1185,13 +1222,11 @@ IMAGE_GENERATE_SCHEMA = {
         "requests a provider and you rewrite the generation prompt, preserve "
         "that intent by setting `provider` (for example `xai` for Grok "
         "Imagine, `openai-codex` for OpenAI Image2). "
-        "Returns the result in the `image` field — either a URL or an absolute "
-        "file path. To show it to the user, reference that path/URL in your "
-        "response using the file-delivery convention for the current platform "
-        "(your platform guidance describes how files are delivered here). When "
-        "the active terminal backend has a different filesystem, successful "
-        "local-file results may also include `agent_visible_image` for "
-        "follow-up terminal/file operations."
+        "Returns either a URL or an absolute file path in the `image` field; "
+        "display it with markdown ![description](url-or-path) and the gateway "
+        "will deliver it. When the active terminal backend has a different "
+        "filesystem, successful local-file results may also include "
+        "`agent_visible_image` for follow-up terminal/file operations."
     ),
     "parameters": {
         "type": "object",
@@ -1230,6 +1265,25 @@ IMAGE_GENERATE_SCHEMA = {
                     "(style, character, or composition references) to guide an "
                     "image-to-image edit. Supported only by some models and "
                     "capped per-model; the description above indicates the max."
+                ),
+            },
+            "operation": {
+                "type": "string",
+                "enum": ["generate", "edit_current"],
+                "description": (
+                    "Optional operation hint for browser-backed providers. "
+                    "`generate` starts a new image request. `edit_current` "
+                    "keeps the currently open generated result in the provider "
+                    "web UI and applies the prompt as an additive/modify edit."
+                ),
+            },
+            "agent_mode": {
+                "type": "boolean",
+                "description": (
+                    "When true, route natural image generation through Hermes "
+                    "visual agent mode: generate candidates, rank/select the "
+                    "best current artifact, apply quality gates, and return "
+                    "only the selected image."
                 ),
             },
             "provider": {
@@ -1292,6 +1346,7 @@ def _dispatch_to_plugin_provider(
     aspect_ratio: str,
     image_url: Optional[str] = None,
     reference_image_urls: Optional[list] = None,
+    operation: Optional[str] = None,
     provider_override: Optional[str] = None,
     model_override: Optional[str] = None,
 ):
@@ -1372,13 +1427,15 @@ def _dispatch_to_plugin_provider(
             norm_refs = normalize_reference_images(reference_image_urls)
         if norm_refs:
             kwargs["reference_image_urls"] = norm_refs
+        if isinstance(operation, str) and operation.strip():
+            kwargs["operation"] = operation.strip()
         result = provider.generate(**kwargs)
     except TypeError as exc:
         # A provider whose generate() signature predates image_url support
         # (third-party plugin not yet updated) — retry without the new kwargs
         # so text-to-image keeps working, but surface a clear note when the
         # user actually asked for an edit.
-        if "image_url" in kwargs or "reference_image_urls" in kwargs:
+        if "image_url" in kwargs or "reference_image_urls" in kwargs or "operation" in kwargs:
             logger.warning(
                 "image_gen provider '%s' rejected image-to-image kwargs "
                 "(signature too narrow): %s",
@@ -1427,8 +1484,142 @@ def _dispatch_to_plugin_provider(
     return json.dumps(result)
 
 
+GROK_WEB_IMAGINE_PROVIDER = "grok-web-imagine"
+
+
+def _truthy_env(value: Optional[str]) -> bool:
+    return bool(isinstance(value, str) and value.strip().lower() in {"1", "true", "yes", "on"})
+
+
+def _grok_web_imagine_fallback_enabled() -> bool:
+    if _truthy_env(os.getenv("HERMES_GROK_WEB_IMAGINE_FALLBACK")):
+        return True
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        image_gen = cfg.get("image_gen") if isinstance(cfg, dict) else None
+        web_cfg = image_gen.get("grok_web_imagine") if isinstance(image_gen, dict) else None
+        return bool(isinstance(web_cfg, dict) and web_cfg.get("fallback_on_xai_quota") is True)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not read grok web fallback config: %s", exc)
+        return False
+
+
+def _json_object(raw: Any) -> Optional[Dict[str, Any]]:
+    try:
+        value = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _is_xai_image_provider(value: Any) -> bool:
+    provider = str(value or "").strip().lower()
+    return provider in {"xai", "xai-oauth", "xai_grok", "xai-grok"}
+
+
+def _has_reference_conditioning(image_url: Optional[str], reference_image_urls: Optional[list]) -> bool:
+    if isinstance(image_url, str) and image_url.strip():
+        return True
+    if isinstance(reference_image_urls, (list, tuple)):
+        return any(isinstance(item, str) and item.strip() for item in reference_image_urls)
+    return False
+
+
+def _grok_web_fallback_can_preserve_reference_conditioning(
+    image_url: Optional[str],
+    reference_image_urls: Optional[list],
+) -> bool:
+    values: list[str] = []
+    if isinstance(image_url, str) and image_url.strip():
+        values.append(image_url.strip())
+    if isinstance(reference_image_urls, (list, tuple)):
+        values.extend(item.strip() for item in reference_image_urls if isinstance(item, str) and item.strip())
+    if not values:
+        return True
+
+    for raw in values:
+        if raw.startswith(("http://", "https://")):
+            return False
+        if raw.startswith("data:image/"):
+            continue
+        path_value = raw
+        if raw.startswith("file://"):
+            parsed = urllib.parse.urlparse(raw)
+            path_value = urllib.parse.unquote(parsed.path)
+        if not Path(path_value).expanduser().is_file():
+            return False
+    return True
+
+
+def _maybe_fallback_to_grok_web_imagine_on_xai_quota(
+    raw: Any,
+    *,
+    prompt: str,
+    aspect_ratio: str,
+    image_url: Optional[str],
+    reference_image_urls: Optional[list],
+    operation: Optional[str] = None,
+    primary_provider_hint: Optional[str] = None,
+) -> Any:
+    payload = _json_object(raw)
+    if not payload or payload.get("success"):
+        return raw
+    if not _grok_web_imagine_fallback_enabled():
+        return raw
+
+    primary_provider = payload.get("provider") or primary_provider_hint or _read_configured_image_provider()
+    if not _is_xai_image_provider(primary_provider):
+        return raw
+    if _has_reference_conditioning(
+        image_url,
+        reference_image_urls,
+    ) and not _grok_web_fallback_can_preserve_reference_conditioning(image_url, reference_image_urls):
+        return raw
+
+    try:
+        from agent.visual.provider_failures import classify_visual_provider_failure
+
+        failure = classify_visual_provider_failure(payload)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not classify image provider failure for grok web fallback: %s", exc)
+        return raw
+    if failure.get("failure_class") != "quota_exceeded":
+        return raw
+
+    fallback_raw = _dispatch_to_plugin_provider(
+        prompt,
+        aspect_ratio,
+        image_url=image_url,
+        reference_image_urls=reference_image_urls,
+        operation=operation,
+        provider_override=GROK_WEB_IMAGINE_PROVIDER,
+        model_override=GROK_WEB_IMAGINE_PROVIDER,
+    )
+    fallback_payload = _json_object(fallback_raw)
+    if not fallback_payload:
+        return fallback_raw if fallback_raw is not None else raw
+
+    fallback_payload.setdefault("fallback_attempted", True)
+    fallback_payload.setdefault("fallback_from_provider", str(primary_provider or "xai"))
+    fallback_payload.setdefault("fallback_reason", "xai_api_quota_exceeded")
+    fallback_payload.setdefault("primary_failure_class", failure.get("failure_class"))
+    fallback_payload.setdefault("primary_provider_message_code", failure.get("provider_message_code"))
+    fallback_payload.setdefault("primary_error_type", payload.get("error_type"))
+    fallback_payload.setdefault("provider_family", "grok_web")
+    fallback_payload.setdefault("quota_source", "consumer_web")
+    return json.dumps(fallback_payload, ensure_ascii=False)
+
+
 def _legacy_reference_image_urls(args: Dict[str, Any]) -> Optional[list]:
-    """Return reference image aliases used by older runtime plugins."""
+    """Return reference image aliases used by older runtime plugins.
+
+    The public schema now uses ``reference_image_urls``. Local runtime plugins
+    installed before that rename may still send ``reference_images`` or the
+    older input/style aliases; normalize them at the handler boundary so
+    provider APIs stay unchanged.
+    """
     if args.get("reference_image_urls") is not None:
         return args.get("reference_image_urls")
     for key in ("reference_images", "input_images", "image_style_references"):
@@ -1437,9 +1628,21 @@ def _legacy_reference_image_urls(args: Dict[str, Any]) -> Optional[list]:
     return None
 
 
-def _requested_image_provider(value: str) -> Optional[str]:
+def _truthy_arg(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on", "agent", "agent_mode"}
+    return False
+
+
+def _requested_image_provider(value: str) -> str | None:
     lowered = str(value or "").lower()
     compact = re.sub(r"[\s_\-.]+", "", lowered)
+    if compact in {"grokwebimagine", "grokweb"} or "grok web imagine" in lowered:
+        return GROK_WEB_IMAGINE_PROVIDER
     if "grok" in lowered or "x.ai" in lowered or re.search(r"\bxai\b", lowered):
         return "xai"
     if (
@@ -1452,14 +1655,14 @@ def _requested_image_provider(value: str) -> Optional[str]:
     return None
 
 
-def _normalise_public_image_provider(value: Any) -> Optional[str]:
+def _normalise_public_image_provider(value: Any) -> str | None:
     raw = str(value or "").strip()
     if not raw:
         return None
     return _requested_image_provider(raw) or raw
 
 
-def _image_provider_override_arg(args: Dict[str, Any], prompt: str) -> Optional[str]:
+def _image_provider_override_arg(args: Dict[str, Any], prompt: str) -> str | None:
     internal_provider = args.get("_provider")
     if isinstance(internal_provider, str) and internal_provider.strip():
         return internal_provider.strip()
@@ -1470,113 +1673,185 @@ def _image_provider_override_arg(args: Dict[str, Any], prompt: str) -> Optional[
     return _requested_image_provider(prompt)
 
 
-# ---------------------------------------------------------------------------
-# Managed-mode Krea routing
-# ---------------------------------------------------------------------------
-#
-# Native ``krea-2-*`` plugin model ids are served by the dedicated Krea managed
-# gateway. ``fal-ai/krea/v2/*`` FAL catalog ids stay on the FAL path (BYO key
-# or FAL managed gateway). Routing only fires in managed mode; direct/BYO users
-# keep their unchanged pipeline.
-
-_KREA_NATIVE_MODELS = {"krea-2-medium", "krea-2-large", "krea-2-medium-turbo"}
+def _agent_mode_requested(args: Dict[str, Any], prompt: str) -> bool:
+    if _truthy_arg(args.get("_disable_visual_agent_route")):
+        return False
+    if _truthy_arg(args.get("agent_mode")) or _truthy_arg(args.get("visual_agent_mode")):
+        return True
+    return _prompt_requests_image_agent_mode(prompt)
 
 
-def _normalize_krea_model(model_id: Optional[str]) -> Optional[str]:
-    """Return the native Krea plugin model id when ``model_id`` is ``krea-2-*``."""
-    if not isinstance(model_id, str):
-        return None
-    candidate = model_id.strip()
-    if candidate in _KREA_NATIVE_MODELS:
-        return candidate
-    return None
+def _prompt_requests_image_agent_mode(prompt: str) -> bool:
+    text = str(prompt or "").lower()
+    compact = "".join(ch for ch in text if not ch.isspace())
+    return any(
+        token in text
+        for token in (
+            "visual agent mode",
+            "agent mode",
+            "agent-mode",
+            "image agent mode",
+        )
+    ) or any(
+        token in compact
+        for token in (
+            "visualagentmode",
+            "imageagentmode",
+            "agent模式",
+            "代理模式",
+            "智能體模式",
+        )
+    )
 
 
-def is_krea_model(model_id: Optional[str]) -> bool:
-    """True when ``model_id`` is a native Krea plugin id (``krea-2-*``)."""
-    return _normalize_krea_model(model_id) is not None
+def _coerce_candidate_budget(value: Any, *, default: int = 2) -> int:
+    try:
+        budget = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(8, budget))
 
 
-def _maybe_route_managed_krea(
+def _image_agent_attachments(
+    image_url: Any,
+    reference_image_urls: Optional[list],
+) -> list[str]:
+    attachments: list[str] = []
+    if isinstance(image_url, str) and image_url.strip():
+        attachments.append(image_url.strip())
+    if reference_image_urls is not None:
+        from agent.image_gen_provider import normalize_reference_images
+
+        refs = normalize_reference_images(reference_image_urls) or []
+        attachments.extend(ref for ref in refs if ref not in attachments)
+    return attachments
+
+
+def _session_reference_image_urls_for_followup(
+    prompt: str,
+    *,
+    image_url: Any,
+    reference_image_urls: Optional[list],
+) -> list[str]:
+    if _has_reference_conditioning(
+        image_url if isinstance(image_url, str) else None,
+        reference_image_urls,
+    ):
+        return []
+    try:
+        from agent.visual.session_references import session_visual_reference_paths_for_prompt
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Session visual reference lookup unavailable: %s", exc)
+        return []
+    return session_visual_reference_paths_for_prompt(prompt)
+
+
+def _selected_visual_package_image_payload(
+    package_payload: dict[str, Any],
+    image_ref: str | None,
+) -> dict[str, Any]:
+    generation_payloads = package_payload.get("generation_payloads")
+    image_payloads = generation_payloads.get("image") if isinstance(generation_payloads, dict) else None
+    if isinstance(image_payloads, dict):
+        image_payloads = [image_payloads]
+    if not isinstance(image_payloads, list):
+        return {}
+    for payload in image_payloads:
+        if isinstance(payload, dict) and image_ref and payload.get("image") == image_ref:
+            return payload
+    for payload in image_payloads:
+        if isinstance(payload, dict):
+            return payload
+    return {}
+
+
+def _route_visual_image_to_package(
+    *,
     prompt: str,
     aspect_ratio: str,
-    image_url: Optional[str] = None,
-    reference_image_urls: Optional[list] = None,
-) -> Optional[str]:
-    """Route a native ``krea-2-*`` model to the managed Krea gateway, in managed mode.
-
-    Returns a JSON result string when handled by the Krea managed gateway, or
-    ``None`` to fall through to the normal plugin/FAL pipeline. Fires only when
-    all hold:
-      - the configured image model is a native ``krea-2-*`` id, AND
-      - the user isn't already routed to the Krea plugin via
-        ``image_gen.provider`` (that path dispatches normally), AND
-      - the managed Krea gateway is resolvable (portal/managed mode).
-
-    Direct/BYO users (no managed gateway) fall through untouched.
-    """
-    # ``provider == "krea"`` is already handled by the standard plugin dispatch.
-    if _read_configured_image_provider() == "krea":
-        return None
-
-    normalized = _normalize_krea_model(_read_configured_image_model())
-    if normalized is None:
-        return None
-
-    # Only intercept on the managed path; BYO/direct users keep their pipeline.
-    try:
-        from plugins.image_gen.krea import _resolve_managed_krea_gateway
-
-        if _resolve_managed_krea_gateway() is None:
-            return None
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("Managed Krea routing probe failed: %s", exc)
-        return None
+    image_url: Any,
+    reference_image_urls: Optional[list],
+    provider_override: Any,
+    candidate_budget: Any,
+) -> Dict[str, Any]:
+    package_args: Dict[str, Any] = {
+        "prompt": prompt,
+        "include_image": True,
+        "include_video": False,
+        "candidate_budget": _coerce_candidate_budget(candidate_budget),
+        "candidate_budget_source": "agent_mode",
+        "aspect_ratio": aspect_ratio,
+    }
+    attachments = _image_agent_attachments(image_url, reference_image_urls)
+    if attachments:
+        package_args["attachments"] = attachments
+    if isinstance(provider_override, str) and provider_override.strip():
+        package_args["image_provider"] = provider_override.strip()
 
     try:
-        from agent.image_gen_registry import get_provider
-        from hermes_cli.plugins import _ensure_plugins_discovered
+        from model_tools import _run_async
+        from tools.visual_package_tool import _handle_visual_package_generate
 
-        _ensure_plugins_discovered()
-        provider = get_provider("krea")
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("Managed Krea routing: provider unavailable: %s", exc)
-        return None
-    if provider is None:
-        return None
+        package_raw = _run_async(_handle_visual_package_generate(package_args))
+        package_payload = json.loads(package_raw) if isinstance(package_raw, str) else package_raw
+    except Exception as exc:  # noqa: BLE001 - return a tool-shaped failure
+        return {
+            "success": False,
+            "image": None,
+            "error": f"visual_package_generate agent-mode route failed: {exc}",
+            "error_type": "visual_package_route_failed",
+            "prompt": prompt,
+            "aspect_ratio": aspect_ratio,
+            "route": "image_visual_package",
+            "source_tool": "image_generate",
+            "recommended_tool": "visual_package_generate",
+            "recommended_arguments": package_args,
+        }
+    if not isinstance(package_payload, dict):
+        return {
+            "success": False,
+            "image": None,
+            "error": "visual_package_generate returned a non-dict payload",
+            "error_type": "visual_package_contract",
+            "prompt": prompt,
+            "aspect_ratio": aspect_ratio,
+            "route": "image_visual_package",
+            "source_tool": "image_generate",
+            "recommended_tool": "visual_package_generate",
+            "recommended_arguments": package_args,
+        }
 
-    kwargs: Dict[str, Any] = {
+    images = [
+        item
+        for item in package_payload.get("images", [])
+        if isinstance(item, str) and item.strip()
+    ]
+    image_ref = images[0] if images else None
+    success = bool(package_payload.get("success")) and bool(image_ref)
+    image_payload = _selected_visual_package_image_payload(package_payload, image_ref)
+    payload: Dict[str, Any] = {
+        "success": success,
+        "image": image_ref,
+        "images": images,
+        "error": None if success else package_payload.get("error") or "visual_package_generate did not return a selected image",
+        "error_type": None if success else package_payload.get("error_type") or "visual_package_no_image",
+        "provider": str(image_payload.get("provider") or provider_override or package_payload.get("provider") or ""),
+        "model": str(image_payload.get("model") or package_payload.get("model") or ""),
         "prompt": prompt,
         "aspect_ratio": aspect_ratio,
-        "model": normalized,
+        "route": "image_visual_package",
+        "source_tool": "image_generate",
+        "recommended_tool": "visual_package_generate",
+        "recommended_arguments": package_args,
+        "visual_package_request_id": package_payload.get("visual_request_id"),
+        "visual_request_id": package_payload.get("visual_request_id"),
+        "package_status": package_payload.get("package_status"),
+        "delivery_metadata": package_payload.get("delivery_metadata"),
+        "generation_strategy": package_payload.get("generation_strategy"),
+        "rankings": package_payload.get("rankings"),
+        "autonomous_validation": package_payload.get("autonomous_validation"),
     }
-    try:
-        if isinstance(image_url, str) and image_url.strip():
-            kwargs["image_url"] = image_url.strip()
-        norm_refs = None
-        if reference_image_urls is not None:
-            from agent.image_gen_provider import normalize_reference_images
-
-            norm_refs = normalize_reference_images(reference_image_urls)
-        if norm_refs:
-            kwargs["reference_image_urls"] = norm_refs
-        result = provider.generate(**kwargs)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Managed Krea routing failed: %s", exc)
-        return json.dumps({
-            "success": False,
-            "image": None,
-            "error": f"Managed Krea generation error: {exc}",
-            "error_type": "provider_exception",
-        })
-    if not isinstance(result, dict):
-        return json.dumps({
-            "success": False,
-            "image": None,
-            "error": "Krea provider returned a non-dict result",
-            "error_type": "provider_contract",
-        })
-    return json.dumps(result)
+    return payload
 
 
 def _handle_image_generate(args, **kw):
@@ -1588,38 +1863,75 @@ def _handle_image_generate(args, **kw):
             "image_generate is for image generation, not prompt disclosure",
             request_type="visual_prompt_disclosure",
         )
+    if not _truthy_arg(args.get("_disable_visual_agent_route")) and is_visual_prompt_builder_request(prompt):
+        return tool_error(
+            "image_generate is for image generation, not prompt drafting",
+            request_type="visual_prompt_builder",
+            recommended_action="return a copyable visual prompt in text instead of generating media",
+        )
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
     image_url = args.get("image_url") or args.get("input_image")
     reference_image_urls = _legacy_reference_image_urls(args)
+    operation = args.get("operation")
     provider_override = _image_provider_override_arg(args, prompt)
     model_override = args.get("_model")
     task_id = kw.get("task_id")
+    session_reference_image_urls = _session_reference_image_urls_for_followup(
+        prompt,
+        image_url=image_url,
+        reference_image_urls=reference_image_urls,
+    )
+    if session_reference_image_urls:
+        reference_image_urls = session_reference_image_urls
+
+    disable_visual_tracking = bool(args.get("_disable_visual_tracking"))
+    if _agent_mode_requested(args, prompt):
+        routed = json.dumps(
+            _route_visual_image_to_package(
+                prompt=prompt,
+                aspect_ratio=aspect_ratio,
+                image_url=image_url,
+                reference_image_urls=reference_image_urls,
+                provider_override=provider_override,
+                candidate_budget=args.get("candidate_budget"),
+            ),
+            ensure_ascii=False,
+        )
+        postprocessed = _postprocess_image_generate_result(routed, task_id=task_id)
+        # The visual package route records the canonical visual_request itself;
+        # avoid creating a second image_generate request for the same artifact.
+        return postprocessed
 
     # Route to a plugin-registered provider if one is active (and it's
-    # not the in-tree FAL path). When ``image_gen.provider == "krea"`` this
-    # already reaches the Krea plugin's managed gateway path.
+    # not the in-tree FAL path).
     dispatched = _dispatch_to_plugin_provider(
         prompt, aspect_ratio,
         image_url=image_url,
         reference_image_urls=reference_image_urls,
+        operation=operation,
         provider_override=provider_override,
         model_override=model_override,
     )
     if dispatched is not None:
-        return _postprocess_image_generate_result(dispatched, task_id=task_id)
-
-    # Managed-mode Krea routing: when no explicit plugin provider is configured
-    # but the selected model is a native ``krea-2-*`` id, a portal user routes to
-    # the dedicated Krea managed gateway. ``fal-ai/krea/v2/*`` models stay on the
-    # FAL path below. Runs after plugin dispatch (which returns None when no
-    # provider is set) so the BYO/direct FAL path stays untouched.
-    krea_routed = _maybe_route_managed_krea(
-        prompt, aspect_ratio,
-        image_url=image_url,
-        reference_image_urls=reference_image_urls,
-    )
-    if krea_routed is not None:
-        return _postprocess_image_generate_result(krea_routed, task_id=task_id)
+        dispatched = _maybe_fallback_to_grok_web_imagine_on_xai_quota(
+            dispatched,
+            prompt=prompt,
+            aspect_ratio=aspect_ratio,
+            image_url=image_url,
+            reference_image_urls=reference_image_urls,
+            operation=operation,
+            primary_provider_hint=provider_override or _read_configured_image_provider(),
+        )
+        postprocessed = _postprocess_image_generate_result(dispatched, task_id=task_id)
+        if disable_visual_tracking:
+            return postprocessed
+        return _track_image_generate_result(
+            postprocessed,
+            prompt=prompt,
+            aspect_ratio=aspect_ratio,
+            image_url=image_url,
+            reference_image_urls=reference_image_urls,
+        )
 
     raw = image_generate_tool(
         prompt=prompt,
@@ -1627,7 +1939,16 @@ def _handle_image_generate(args, **kw):
         image_url=image_url,
         reference_image_urls=reference_image_urls,
     )
-    return _postprocess_image_generate_result(raw, task_id=task_id)
+    postprocessed = _postprocess_image_generate_result(raw, task_id=task_id)
+    if disable_visual_tracking:
+        return postprocessed
+    return _track_image_generate_result(
+        postprocessed,
+        prompt=prompt,
+        aspect_ratio=aspect_ratio,
+        image_url=image_url,
+        reference_image_urls=reference_image_urls,
+    )
 
 
 # ---------------------------------------------------------------------------

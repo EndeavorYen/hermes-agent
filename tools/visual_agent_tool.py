@@ -1,35 +1,90 @@
 from __future__ import annotations
 
-import inspect
 import json
 from typing import Any
 
+from agent.visual.agent_mode.grok_planner import apply_visual_agent_llm_planner
+from agent.visual.agent_mode.handoff import is_visual_prompt_disclosure_request
+from agent.visual.agent_mode.handoff import normalise_visual_agent_attachment
 from agent.visual.agent_mode.planner import plan_visual_agent_request
-from agent.visual.prompt_disclosure import is_visual_prompt_disclosure_request
-from tools.registry import registry, tool_error
+from tools.registry import registry
+from tools.registry import tool_error
 from tools.visual_package_tool import _handle_visual_package_generate
+from tools.visual_package_tool import check_visual_package_requirements
+
+
+_DIRECT_VISUAL_PACKAGE_OVERRIDE_KEYS = frozenset(
+    {
+        "aspect_ratio",
+        "autonomy_level",
+        "candidate_budget",
+        "candidate_budget_source",
+        "duration",
+        "grok_web_operation",
+        "image_model",
+        "image_operation",
+        "image_provider",
+        "image_provider_source",
+        "include_image",
+        "include_video",
+        "operation",
+        "polish_provider",
+        "polish_provider_source",
+        "reference_binding",
+        "reference_conditioning_policy",
+        "reference_strategy",
+        "storyboard",
+        "video_budget",
+        "video_model",
+        "video_provider",
+        "video_provider_source",
+    }
+)
 
 
 VISUAL_AGENT_SCHEMA: dict[str, Any] = {
     "name": "visual_agent_generate",
     "description": (
-        "Plan and execute natural visual requests for image generation, video "
-        "generation, image plus video, draw/anime/character art, reference "
-        "image workflows, and image-first video. Use this for user-facing "
-        "visual agent mode requests; it delegates selected media generation "
-        "to visual_package_generate."
+        "User-friendly visual agent mode for natural image/video requests. "
+        "Use this only when the user explicitly asks to generate, output, deliver, "
+        "revise, or regenerate media: images, videos, image plus video packages, "
+        "reference-based variations, product photos, portrait/fashion/glamour "
+        "visuals, draw/anime/character art, animate/make-it-move requests, "
+        "draw/anime/character art prompts, "
+        "storyboard/multi-shot video requests, or short motion clips without "
+        "advanced parameters. The tool plans the request, then dispatches to "
+        "visual_package_generate so Hermes can generate candidates, rank/select "
+        "current artifacts, apply image quality gates for image-only requests, "
+        "animate the best image when video is requested, and "
+        "return only selected media for delivery. Grok Imagine/xAI image "
+        "requests with reference images or fixed-character follow-ups should use "
+        "this tool path; xAI reference image generation is not text-to-image only. "
+        "For a visual brief with references but no explicit media-output request, "
+        "do not call this tool; answer with a stronger prompt in text."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "prompt": {
                 "type": "string",
-                "description": "Natural-language request for an image, video, or visual package.",
+                "description": "Natural-language visual request from the user.",
             },
             "attachments": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Optional image paths, data URIs, or URLs supplied by the user.",
+                "description": "Optional image paths or URLs supplied by the user.",
+            },
+            "aspect_ratio": {
+                "type": "string",
+                "description": "Optional requested output aspect ratio when the user explicitly asks for one.",
+            },
+            "duration": {
+                "type": "integer",
+                "description": "Optional video duration in seconds when explicitly requested outside the prompt text.",
+            },
+            "visual_agent_llm_rounds": {
+                "type": "integer",
+                "description": "Optional operator control for visual prompt-planner rounds; defaults to 2 and clamps to 2-3.",
             },
         },
         "required": ["prompt"],
@@ -38,16 +93,10 @@ VISUAL_AGENT_SCHEMA: dict[str, Any] = {
 
 
 def check_visual_agent_requirements() -> bool:
-    try:
-        from tools.visual_package_tool import check_visual_package_requirements
-
-        return bool(check_visual_package_requirements())
-    except Exception:
-        return False
+    return check_visual_package_requirements()
 
 
-async def _handle_visual_agent_generate(args: dict[str, Any], **kw: Any) -> str:
-    args = args or {}
+async def _handle_visual_agent_generate(args: dict[str, Any], **_kw: Any) -> str:
     prompt = str(args.get("prompt") or "").strip()
     if not prompt:
         return tool_error("prompt is required for visual agent generation")
@@ -55,55 +104,85 @@ async def _handle_visual_agent_generate(args: dict[str, Any], **kw: Any) -> str:
         return tool_error(
             "visual_agent_generate is for image/video generation, not prompt disclosure",
             request_type="visual_prompt_disclosure",
-        )
+    )
 
-    attachments = args.get("attachments")
+    attachments = _normalise_attachments(args.get("attachments"))
+    force_image_output = bool(
+        args.get("include_image")
+        or args.get("image_operation")
+        or args.get("grok_web_operation")
+        or str(args.get("visual_agent_handoff_mode") or "") == "pre_llm_direct"
+    )
     plan = plan_visual_agent_request(
         prompt,
-        attachments=attachments if isinstance(attachments, list) else None,
+        attachments=attachments,
+        force_image_output=force_image_output,
     )
     if not plan.get("should_use_visual_package"):
+        if attachments and plan.get("reason") == "not_visual_agent_request":
+            return tool_error(
+                "visual_agent_generate requires an explicit image or video output request",
+                request_type="visual_prompt_draft_default",
+            )
         return tool_error("visual_agent_generate requires a visual image or video request")
 
     package_args = dict(plan.get("arguments") or {})
-    package_args.update(_explicit_package_overrides(args))
-    raw = _handle_visual_package_generate(package_args, **kw)
-    if inspect.isawaitable(raw):
-        raw = await raw
-    payload = _loads_tool_payload(raw)
-    payload["visual_agent_plan"] = plan
-    payload["visual_agent_provider_contract"] = plan.get("provider_contract") or {}
-    return json.dumps(payload, ensure_ascii=False)
+    _merge_direct_visual_package_overrides(package_args, args)
+    for key in (
+        "visual_agent_llm_provider",
+        "visual_agent_llm_model",
+        "visual_agent_handoff_mode",
+        "visual_agent_llm_rounds",
+    ):
+        if args.get(key):
+            package_args[key] = args[key]
+    package_args, llm_plan = apply_visual_agent_llm_planner(package_args)
 
-
-def _explicit_package_overrides(args: dict[str, Any]) -> dict[str, Any]:
-    allowed = {
-        "include_image",
-        "include_video",
-        "candidate_budget",
-        "candidate_budget_source",
-        "video_budget",
-        "duration",
-        "aspect_ratio",
-        "image_provider",
-        "image_provider_source",
-        "storyboard",
-    }
-    return {key: args[key] for key in allowed if key in args}
-
-
-def _loads_tool_payload(raw: Any) -> dict[str, Any]:
-    if isinstance(raw, dict):
-        return raw
-    if not isinstance(raw, str):
-        return {"success": False, "error": "visual_package_generate returned a non-string response"}
+    raw = await _handle_visual_package_generate(package_args)
     try:
         payload = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        return {"success": False, "error": f"visual_package_generate returned invalid JSON: {exc}"}
+    except Exception:
+        return raw
     if isinstance(payload, dict):
-        return payload
-    return {"success": False, "error": "visual_package_generate returned non-object JSON"}
+        payload["visual_agent_plan"] = plan
+        payload["visual_agent_provider_contract"] = plan.get("provider_contract")
+        if llm_plan is not None:
+            payload["visual_agent_llm_plan"] = llm_plan
+        payload["visual_agent_tool"] = "visual_agent_generate"
+        return json.dumps(payload, ensure_ascii=False)
+    return raw
+
+
+def _merge_direct_visual_package_overrides(
+    package_args: dict[str, Any],
+    args: dict[str, Any],
+) -> None:
+    for key in _DIRECT_VISUAL_PACKAGE_OVERRIDE_KEYS:
+        if key not in args:
+            continue
+        value = args[key]
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        package_args[key] = str(value) if key == "aspect_ratio" else value
+
+
+def _normalise_attachments(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        return []
+    attachments: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        attachment = normalise_visual_agent_attachment(item)
+        if attachment:
+            attachments.append(attachment)
+    return attachments
 
 
 registry.register(
@@ -114,5 +193,5 @@ registry.register(
     check_fn=check_visual_agent_requirements,
     requires_env=[],
     is_async=True,
-    emoji="VA",
+    emoji="🧭",
 )

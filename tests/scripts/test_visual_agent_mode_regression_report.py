@@ -1,0 +1,83 @@
+import json
+import os
+import subprocess
+import sys
+
+
+def test_visual_agent_mode_regression_report_passes_default_fixture_set():
+    from scripts.visual_agent_mode_regression_report import build_visual_agent_mode_regression_report
+
+    report = build_visual_agent_mode_regression_report()
+
+    assert report["success"] is True
+    assert report["case_count"] >= 4
+    assert report["failures"] == []
+    assert {case["case_id"] for case in report["cases"]} >= {
+        "image_plus_video_reference",
+        "attachment_to_video",
+        "move_attachment_to_video",
+        "text_video_image_first",
+        "storyboard_video",
+        "friendly_draw_character",
+    }
+    assert all("prompt" not in case for case in report["cases"])
+    product_case = next(case for case in report["cases"] if case["case_id"] == "image_only_product")
+    assert product_case["arguments"]["aspect_ratio"] == "16:9"
+    storyboard_case = next(case for case in report["cases"] if case["case_id"] == "storyboard_video")
+    assert storyboard_case["arguments"]["storyboard_enabled"] is True
+    assert storyboard_case["arguments"]["storyboard_shot_count"] == 3
+
+
+def test_visual_agent_mode_regression_report_flags_broken_image_first_plan(monkeypatch):
+    from scripts import visual_agent_mode_regression_report
+
+    real_planner = visual_agent_mode_regression_report.plan_visual_agent_request
+
+    def fake_planner(prompt, *, attachments=None):
+        plan = real_planner(prompt, attachments=attachments)
+        if plan["reason"] == "text_to_video_image_first_request":
+            plan["arguments"].pop("candidate_budget", None)
+        return plan
+
+    monkeypatch.setattr(
+        visual_agent_mode_regression_report,
+        "plan_visual_agent_request",
+        fake_planner,
+    )
+
+    report = visual_agent_mode_regression_report.build_visual_agent_mode_regression_report()
+
+    assert report["success"] is False
+    assert any(
+        failure["case_id"] == "text_video_image_first"
+        and "candidate_budget_lt_2" in failure["failures"]
+        for failure in report["failures"]
+    )
+
+
+def test_visual_agent_mode_regression_report_cli_json(capsys):
+    from scripts.visual_agent_mode_regression_report import main
+
+    code = main(["--json"])
+
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["success"] is True
+
+
+def test_visual_agent_mode_regression_report_script_runs_directly_from_repo_root():
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+
+    result = subprocess.run(
+        [sys.executable, "scripts/visual_agent_mode_regression_report.py", "--json"],
+        cwd=os.getcwd(),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["success"] is True

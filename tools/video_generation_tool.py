@@ -309,6 +309,49 @@ def _normalize_reference_images(value: Any) -> Optional[List[str]]:
     return out or None
 
 
+def _track_video_generate_payload(
+    payload: Dict[str, Any],
+    *,
+    prompt: str,
+    image_url: Optional[str],
+    provider: str,
+    model: str,
+    aspect_ratio: str,
+    duration: Optional[int],
+    resolution: str,
+) -> Dict[str, Any]:
+    try:
+        from agent.visual.tracking import record_visual_generation_attempt
+
+        operation = "image_to_video" if image_url else "text_to_video"
+        modality = str(payload.get("modality") or ("image" if image_url else "text"))
+        return record_visual_generation_attempt(
+            payload,
+            user_prompt=prompt,
+            prompt_original=prompt,
+            prompt_mediated=prompt,
+            modality=modality,
+            operation=operation,
+            artifact_key="video",
+            kind="video",
+            provider=provider,
+            model=model,
+            parameters_requested={
+                "aspect_ratio": aspect_ratio,
+                "duration": duration,
+                "resolution": resolution,
+            },
+            parameters_effective={
+                "aspect_ratio": payload.get("aspect_ratio") or aspect_ratio,
+                "duration": payload.get("duration") or duration,
+                "resolution": payload.get("resolution") or resolution,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - video generation must not depend on tracking
+        logger.warning("Video generation tracking skipped: %s", exc)
+        return payload
+
+
 def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
     prompt = (args.get("prompt") or "").strip()
     image_url = (args.get("image_url") or "").strip() or None
@@ -424,6 +467,16 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
             prompt=prompt,
         ))
 
+    result = _track_video_generate_payload(
+        result,
+        prompt=prompt,
+        image_url=image_url,
+        provider=str(getattr(provider, "name", "") or configured or ""),
+        model=str(model or ""),
+        aspect_ratio=aspect_ratio,
+        duration=duration,
+        resolution=resolution,
+    )
     return json.dumps(result)
 
 

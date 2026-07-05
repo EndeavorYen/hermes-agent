@@ -1,0 +1,699 @@
+from __future__ import annotations
+
+
+def test_feedback_policy_applies_next_actions_to_runtime_strategy():
+    from agent.visual.feedback_policy import resolve_visual_feedback_policy
+
+    policy = resolve_visual_feedback_policy(
+        {
+            "next_actions": [
+                {
+                    "type": "increase_candidate_budget",
+                    "max_candidate_budget": 4,
+                    "confidence": 0.65,
+                },
+                {
+                    "type": "prefer_image_first_video",
+                    "confidence": 0.75,
+                },
+                {
+                    "type": "rerank_before_slack",
+                    "confidence": 0.70,
+                },
+                {
+                    "type": "prefer_quality_repair_retry",
+                    "confidence": 0.90,
+                    "success_rate": 1.0,
+                },
+            ]
+        },
+        wants_image=True,
+        wants_video=True,
+        explicit_candidate_budget=None,
+        default_candidate_budget=2,
+    )
+
+    assert policy["candidate_budget"] == 4
+    assert policy["candidate_budget_source"] == "feedback_loop"
+    assert policy["prefer_image_first_video"] is True
+    assert policy["rerank_before_delivery"] is True
+    assert policy["quality_repair_mode"] == "preferred"
+    assert policy["applied_action_types"] == [
+        "increase_candidate_budget",
+        "prefer_image_first_video",
+        "rerank_before_slack",
+        "prefer_quality_repair_retry",
+    ]
+
+
+def test_feedback_policy_preserves_live_quality_trend_action_source():
+    from agent.visual.feedback_policy import resolve_visual_feedback_policy
+
+    policy = resolve_visual_feedback_policy(
+        {
+            "next_actions": [
+                {
+                    "type": "increase_candidate_budget",
+                    "source": "live_quality_trends",
+                    "max_candidate_budget": 4,
+                    "requires_human_feedback": False,
+                },
+                {
+                    "type": "prefer_image_first_video",
+                    "source": "live_quality_trends",
+                    "requires_human_feedback": False,
+                },
+                {
+                    "type": "repair_low_preference_dimension",
+                    "source": "live_quality_trends",
+                    "dimension": "fashion_material_quality",
+                    "quality_issue": "stockings_bad",
+                    "repair_hint": "improve_fashion_material_quality",
+                    "requires_human_feedback": False,
+                },
+            ],
+            "policy_sources": ["feedback_loop", "scheduled_self_validation"],
+        },
+        wants_image=True,
+        wants_video=True,
+        explicit_candidate_budget=None,
+        default_candidate_budget=1,
+    )
+
+    assert policy["candidate_budget"] == 4
+    assert policy["candidate_budget_source"] == "live_quality_trends"
+    assert policy["prefer_image_first_video"] is True
+    assert policy["rerank_before_delivery"] is True
+    assert policy["repair_dimensions"] == [
+        {
+            "dimension": "fashion_material_quality",
+            "quality_issue": "stockings_bad",
+            "repair_hint": "improve_fashion_material_quality",
+            "source": "live_quality_trends",
+        }
+    ]
+    assert policy["applied_action_sources"] == ["live_quality_trends"]
+
+
+def test_feedback_policy_exposes_preferred_strategy_without_prompt_mutation():
+    from agent.visual.feedback_policy import resolve_visual_feedback_policy
+
+    policy = resolve_visual_feedback_policy(
+        {
+            "next_actions": [
+                {
+                    "type": "prefer_strategy",
+                    "track": "aesthetic",
+                    "strategy_signature": "image_first_rank_then_video",
+                    "source": "live_quality_burn",
+                    "bucket": "live_visual_agent_mode",
+                    "activation_status": "shadow",
+                    "confidence": 0.91,
+                    "requires_human_feedback": False,
+                }
+            ],
+            "policy_sources": ["scheduled_self_validation"],
+        },
+        wants_image=True,
+        wants_video=True,
+        explicit_candidate_budget=None,
+        default_candidate_budget=1,
+    )
+
+    assert policy["candidate_budget"] == 2
+    assert policy["candidate_budget_source"] == "feedback_loop"
+    assert policy["prefer_image_first_video"] is True
+    assert policy["rerank_before_delivery"] is True
+    assert policy["strategy_preference"] == {
+        "strategy_signature": "image_first_rank_then_video",
+        "source": "live_quality_burn",
+        "bucket": "live_visual_agent_mode",
+        "activation_status": "shadow",
+        "confidence": 0.91,
+        "candidate_budget": None,
+        "prompt_mutation_allowed": False,
+    }
+    assert policy["applied_action_types"] == ["prefer_strategy"]
+
+
+def test_feedback_policy_uses_proven_strategy_budget_over_stale_budget_increase():
+    from agent.visual.feedback_policy import resolve_visual_feedback_policy
+
+    policy = resolve_visual_feedback_policy(
+        {
+            "next_actions": [
+                {
+                    "type": "increase_candidate_budget",
+                    "max_candidate_budget": 4,
+                    "source": "feedback_loop",
+                    "requires_human_feedback": False,
+                },
+                {
+                    "type": "prefer_strategy",
+                    "track": "aesthetic",
+                    "strategy_signature": "image_first_rank_then_video",
+                    "source": "live_quality_burn",
+                    "bucket": "live_visual_agent_mode",
+                    "activation_status": "shadow",
+                    "confidence": 0.82,
+                    "candidate_budget": 2,
+                    "requires_human_feedback": False,
+                },
+            ],
+            "policy_sources": ["feedback_loop", "scheduled_self_validation"],
+        },
+        wants_image=True,
+        wants_video=True,
+        explicit_candidate_budget=None,
+        default_candidate_budget=2,
+    )
+
+    assert policy["candidate_budget"] == 2
+    assert policy["candidate_budget_source"] == "live_quality_burn"
+    assert policy["prefer_image_first_video"] is True
+    assert policy["rerank_before_delivery"] is True
+    assert policy["strategy_preference"]["candidate_budget"] == 2
+    assert policy["applied_action_types"] == ["increase_candidate_budget", "prefer_strategy"]
+
+
+def test_feedback_policy_makes_image_first_video_action_executable():
+    from agent.visual.feedback_policy import resolve_visual_feedback_policy
+
+    policy = resolve_visual_feedback_policy(
+        {
+            "next_actions": [
+                {
+                    "type": "prefer_image_first_video",
+                    "track": "provider",
+                    "reason": "live_quality_burn_video_missing_after_image",
+                    "confidence": 0.78,
+                    "requires_human_feedback": False,
+                }
+            ]
+        },
+        wants_image=True,
+        wants_video=True,
+        explicit_candidate_budget=None,
+        default_candidate_budget=1,
+    )
+
+    assert policy["prefer_image_first_video"] is True
+    assert policy["rerank_before_delivery"] is True
+    assert policy["candidate_budget"] == 2
+    assert policy["candidate_budget_source"] == "feedback_loop"
+    assert policy["applied_action_types"] == ["prefer_image_first_video"]
+
+
+def test_feedback_policy_applies_video_aspect_enforcement_action():
+    from agent.visual.feedback_policy import resolve_visual_feedback_policy
+
+    policy = resolve_visual_feedback_policy(
+        {
+            "next_actions": [
+                {
+                    "type": "enforce_video_source_aspect_ratio",
+                    "track": "provider",
+                    "reason": "live_quality_burn_video_aspect_ratio_mismatch",
+                    "modality": "video",
+                    "quality_issue": "aspect_integrity_bad",
+                    "repair_hint": "preserve_source_aspect_ratio",
+                    "requires_human_feedback": False,
+                }
+            ],
+            "policy_sources": ["scheduled_self_validation"],
+        },
+        wants_image=True,
+        wants_video=True,
+        explicit_candidate_budget=None,
+        default_candidate_budget=1,
+    )
+
+    assert policy["prefer_image_first_video"] is True
+    assert policy["rerank_before_delivery"] is True
+    assert policy["enforce_video_source_aspect_ratio"] is True
+    assert policy["quality_repair_modes"]["video"] == "preferred"
+    assert policy["applied_action_types"] == ["enforce_video_source_aspect_ratio"]
+
+
+def test_feedback_policy_applies_single_video_source_enforcement_action():
+    from agent.visual.feedback_policy import resolve_visual_feedback_policy
+
+    policy = resolve_visual_feedback_policy(
+        {
+            "next_actions": [
+                {
+                    "type": "enforce_single_video_source_image",
+                    "track": "provider",
+                    "reason": "live_quality_burn_video_source_not_single_image",
+                    "modality": "video",
+                    "quality_issue": "source_frame_grid",
+                    "repair_hint": "use_single_ranked_selected_image",
+                    "requires_human_feedback": False,
+                }
+            ],
+            "policy_sources": ["scheduled_self_validation"],
+        },
+        wants_image=True,
+        wants_video=True,
+        explicit_candidate_budget=None,
+        default_candidate_budget=1,
+    )
+
+    assert policy["prefer_image_first_video"] is True
+    assert policy["rerank_before_delivery"] is True
+    assert policy["enforce_single_video_source_image"] is True
+    assert policy["quality_repair_modes"]["video"] == "preferred"
+    assert policy["candidate_budget"] == 2
+    assert policy["applied_action_types"] == ["enforce_single_video_source_image"]
+
+
+def test_feedback_policy_respects_explicit_user_candidate_budget():
+    from agent.visual.feedback_policy import resolve_visual_feedback_policy
+
+    policy = resolve_visual_feedback_policy(
+        {
+            "next_actions": [
+                {
+                    "type": "increase_candidate_budget",
+                    "max_candidate_budget": 4,
+                    "confidence": 0.65,
+                },
+                {
+                    "type": "prefer_quality_repair_retry",
+                    "confidence": 0.90,
+                },
+            ]
+        },
+        wants_image=True,
+        wants_video=False,
+        explicit_candidate_budget=1,
+        default_candidate_budget=2,
+    )
+
+    assert policy["candidate_budget"] == 1
+    assert policy["candidate_budget_source"] == "user"
+    assert policy["quality_repair_mode"] == "preferred"
+    assert policy["applied_action_types"] == ["prefer_quality_repair_retry"]
+
+
+def test_feedback_policy_escalates_failed_quality_repair_strategy():
+    from agent.visual.feedback_policy import resolve_visual_feedback_policy
+
+    policy = resolve_visual_feedback_policy(
+        {
+            "next_actions": [
+                {
+                    "type": "escalate_quality_repair_strategy",
+                    "confidence": 1.0,
+                    "max_candidate_budget": 4,
+                }
+            ]
+        },
+        wants_image=True,
+        wants_video=False,
+        explicit_candidate_budget=None,
+        default_candidate_budget=2,
+    )
+
+    assert policy["candidate_budget"] == 4
+    assert policy["candidate_budget_source"] == "feedback_loop"
+    assert policy["quality_repair_mode"] == "escalated"
+    assert policy["applied_action_types"] == ["escalate_quality_repair_strategy"]
+
+
+def test_feedback_policy_applies_preference_dimension_repair_actions():
+    from agent.visual.feedback_policy import resolve_visual_feedback_policy
+
+    policy = resolve_visual_feedback_policy(
+        {
+            "next_actions": [
+                {
+                    "type": "repair_low_preference_dimension",
+                    "dimension": "face_naturalness",
+                    "quality_issue": "face_unnatural",
+                    "repair_hint": "improve_face_naturalness",
+                    "confidence": 0.72,
+                },
+                {
+                    "type": "repair_low_preference_dimension",
+                    "dimension": "fashion_material_quality",
+                    "quality_issue": "stockings_bad",
+                    "repair_hint": "improve_fashion_material_quality",
+                    "confidence": 0.72,
+                },
+            ]
+        },
+        wants_image=True,
+        wants_video=True,
+        explicit_candidate_budget=None,
+        default_candidate_budget=1,
+    )
+
+    assert policy["quality_repair_mode"] == "preferred"
+    assert policy["rerank_before_delivery"] is True
+    assert policy["candidate_budget"] == 2
+    assert policy["candidate_budget_source"] == "feedback_loop"
+    assert policy["repair_dimensions"] == [
+        {
+            "dimension": "face_naturalness",
+            "quality_issue": "face_unnatural",
+            "repair_hint": "improve_face_naturalness",
+        },
+        {
+            "dimension": "fashion_material_quality",
+            "quality_issue": "stockings_bad",
+            "repair_hint": "improve_fashion_material_quality",
+        },
+    ]
+    assert policy["applied_action_types"] == ["repair_low_preference_dimension"]
+
+
+def test_feedback_policy_infers_motion_quality_repair_as_video_only():
+    from agent.visual.feedback_policy import resolve_visual_feedback_policy
+
+    policy = resolve_visual_feedback_policy(
+        {
+            "next_actions": [
+                {
+                    "type": "repair_low_preference_dimension",
+                    "dimension": "motion_quality",
+                    "quality_issue": "motion_bad",
+                    "repair_hint": "improve_motion_quality",
+                    "confidence": 0.72,
+                },
+            ]
+        },
+        wants_image=True,
+        wants_video=True,
+        explicit_candidate_budget=None,
+        default_candidate_budget=1,
+    )
+
+    assert policy["quality_repair_modes"] == {
+        "image": "default",
+        "video": "preferred",
+    }
+    assert policy["repair_dimensions"] == [
+        {
+            "dimension": "motion_quality",
+            "quality_issue": "motion_bad",
+            "repair_hint": "improve_motion_quality",
+        },
+    ]
+
+
+def test_feedback_policy_applies_quality_focus_operator_actions():
+    from agent.visual.feedback_policy import resolve_visual_feedback_policy
+
+    policy = resolve_visual_feedback_policy(
+        {
+            "next_actions": [
+                {
+                    "type": "apply_quality_focus_operator",
+                    "track": "aesthetic",
+                    "source": "live_quality_burn",
+                    "focus": "legwear_material",
+                    "dimension": "fashion_material_quality",
+                    "strategy_operator": "refine_legwear_material",
+                    "repair_hint": "improve_fashion_material_quality",
+                    "quality_issues": ["stockings_bad"],
+                    "requires_human_feedback": False,
+                }
+            ],
+            "policy_sources": ["feedback_loop", "scheduled_self_validation"],
+        },
+        wants_image=True,
+        wants_video=True,
+        explicit_candidate_budget=None,
+        default_candidate_budget=1,
+    )
+
+    assert policy["candidate_budget"] == 2
+    assert policy["candidate_budget_source"] == "live_quality_burn"
+    assert policy["rerank_before_delivery"] is True
+    assert policy["quality_repair_mode"] == "preferred"
+    assert policy["quality_repair_modes"]["image"] == "preferred"
+    assert policy["repair_dimensions"] == [
+        {
+            "dimension": "fashion_material_quality",
+            "quality_issue": "stockings_bad",
+            "repair_hint": "improve_fashion_material_quality",
+        }
+    ]
+    assert policy["quality_focus_operators"] == [
+        {
+            "focus": "legwear_material",
+            "dimension": "fashion_material_quality",
+            "strategy_operator": "refine_legwear_material",
+            "source": "live_quality_burn",
+        }
+    ]
+    assert policy["applied_action_types"] == ["apply_quality_focus_operator"]
+    assert policy["applied_action_sources"] == ["live_quality_burn"]
+
+
+def test_feedback_policy_applies_preference_dimension_evidence_action_without_prompt_repair():
+    from agent.visual.feedback_policy import resolve_visual_feedback_policy
+
+    policy = resolve_visual_feedback_policy(
+        {
+            "next_actions": [
+                {
+                    "type": "require_preference_dimension_evidence",
+                    "track": "evaluation",
+                    "source": "live_quality_burn",
+                    "focus": "adult_fashion_portrait",
+                    "dimension": "subject_beauty",
+                    "evaluation_operator": "inline_vision_preference_dimensions",
+                    "requires_human_feedback": False,
+                }
+            ],
+            "policy_sources": ["scheduled_self_validation"],
+        },
+        wants_image=True,
+        wants_video=True,
+        explicit_candidate_budget=None,
+        default_candidate_budget=1,
+    )
+
+    assert policy["candidate_budget"] == 1
+    assert policy["candidate_budget_source"] == "default"
+    assert policy["quality_repair_mode"] == "default"
+    assert policy["repair_dimensions"] == []
+    assert policy["require_preference_dimension_evidence"] is True
+    assert policy["required_preference_dimensions"] == ["subject_beauty"]
+    assert policy["applied_action_types"] == ["require_preference_dimension_evidence"]
+    assert policy["applied_action_sources"] == ["live_quality_burn"]
+
+
+def test_feedback_policy_applies_safe_reframe_provider_retry():
+    from agent.visual.feedback_policy import resolve_visual_feedback_policy
+
+    policy = resolve_visual_feedback_policy(
+        {
+            "next_actions": [
+                {
+                    "type": "safe_reframe_provider_retry",
+                    "track": "provider",
+                    "confidence": 0.7,
+                    "requires_human_feedback": False,
+                    "provider_failure_classes": {"content_moderation": 2, "timeout": 1},
+                    "provider_error_codes": {"api_error": 2, "case_timeout": 1},
+                }
+            ]
+        },
+        wants_image=True,
+        wants_video=True,
+        explicit_candidate_budget=None,
+        default_candidate_budget=1,
+    )
+
+    assert policy["provider_recovery_mode"] == "safe_reframe"
+    assert policy["provider_retry_budget"] == 2
+    assert policy["provider_failure_context"] == {
+        "provider_failure_classes": {"content_moderation": 2, "timeout": 1},
+        "provider_error_codes": {"api_error": 2, "case_timeout": 1},
+    }
+    assert policy["applied_action_types"] == ["safe_reframe_provider_retry"]
+
+
+def test_feedback_policy_applies_provider_connectivity_retry_without_safe_reframe():
+    from agent.visual.feedback_policy import resolve_visual_feedback_policy
+
+    policy = resolve_visual_feedback_policy(
+        {
+            "next_actions": [
+                {
+                    "type": "check_provider_connectivity_or_retry",
+                    "track": "provider",
+                    "confidence": 0.88,
+                    "requires_human_feedback": False,
+                    "provider_failure_classes": {"provider_unavailable": 16},
+                    "provider_error_codes": {"connection_error": 16},
+                }
+            ]
+        },
+        wants_image=True,
+        wants_video=True,
+        explicit_candidate_budget=None,
+        default_candidate_budget=1,
+    )
+
+    assert policy["provider_recovery_mode"] == "provider_connectivity_retry"
+    assert policy["provider_retry_budget"] == 1
+    assert policy["provider_failure_context"] == {
+        "provider_failure_classes": {"provider_unavailable": 16},
+        "provider_error_codes": {"connection_error": 16},
+    }
+    assert policy["applied_action_types"] == ["check_provider_connectivity_or_retry"]
+
+
+def test_feedback_policy_applies_provider_quota_action_without_retry_budget():
+    from agent.visual.feedback_policy import resolve_visual_feedback_policy
+
+    policy = resolve_visual_feedback_policy(
+        {
+            "next_actions": [
+                {
+                    "type": "resolve_provider_quota_or_switch_provider",
+                    "track": "provider",
+                    "confidence": 0.95,
+                    "requires_human_feedback": False,
+                    "provider_failure_classes": {"quota_exceeded": 1},
+                    "provider_error_codes": {"personal-team-blocked:spending-limit": 1},
+                }
+            ]
+        },
+        wants_image=True,
+        wants_video=True,
+        explicit_candidate_budget=None,
+        default_candidate_budget=2,
+    )
+
+    assert policy["provider_recovery_mode"] == "provider_account_blocked"
+    assert policy["provider_retry_budget"] == 0
+    assert policy["provider_failure_context"] == {
+        "provider_failure_classes": {"quota_exceeded": 1},
+        "provider_error_codes": {"personal-team-blocked:spending-limit": 1},
+    }
+    assert policy["applied_action_types"] == ["resolve_provider_quota_or_switch_provider"]
+
+
+def test_feedback_policy_applies_missing_video_fallback_action_without_retry_budget():
+    from agent.visual.feedback_policy import resolve_visual_feedback_policy
+
+    policy = resolve_visual_feedback_policy(
+        {
+            "next_actions": [
+                {
+                    "type": "configure_video_fallback_provider",
+                    "track": "provider",
+                    "confidence": 0.9,
+                    "requires_human_feedback": False,
+                    "provider_failure_classes": {"quota_exceeded": 2},
+                    "provider_error_codes": {"personal-team-blocked:spending-limit": 2},
+                    "video_fallback_diagnostics": [
+                        {
+                            "failed_provider": "xai",
+                            "failed_provider_family": "xai",
+                            "registered_provider_names": ["fal", "xai"],
+                            "available_provider_names": [],
+                            "unavailable_provider_names": ["fal"],
+                            "fallback_provider_names": [],
+                            "setup_actions": [
+                                {
+                                    "provider": "fal",
+                                    "env_vars": ["FAL_KEY"],
+                                    "configured_env_vars": [],
+                                    "missing_env_vars": ["FAL_KEY"],
+                                    "post_setup": "",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ]
+        },
+        wants_image=True,
+        wants_video=True,
+        explicit_candidate_budget=None,
+        default_candidate_budget=2,
+    )
+
+    assert policy["provider_recovery_mode"] == "video_fallback_unavailable"
+    assert policy["provider_retry_budget"] == 0
+    assert policy["provider_failure_context"] == {
+        "provider_failure_classes": {"quota_exceeded": 2},
+        "provider_error_codes": {"personal-team-blocked:spending-limit": 2},
+    }
+    assert policy["video_fallback_diagnostics"] == [
+        {
+            "failed_provider": "xai",
+            "failed_provider_family": "xai",
+            "registered_provider_names": ["fal", "xai"],
+            "available_provider_names": [],
+            "unavailable_provider_names": ["fal"],
+            "fallback_provider_names": [],
+            "setup_actions": [
+                {
+                    "provider": "fal",
+                    "env_vars": ["FAL_KEY"],
+                    "configured_env_vars": [],
+                    "missing_env_vars": ["FAL_KEY"],
+                    "post_setup": "",
+                }
+            ],
+        }
+    ]
+    assert policy["requires_operator_setup"] is True
+    assert policy["operator_setup_actions"] == [
+        {
+            "provider": "fal",
+            "missing_env_vars": ["FAL_KEY"],
+            "post_setup": "",
+        }
+    ]
+    assert policy["applied_action_types"] == ["configure_video_fallback_provider"]
+
+
+def test_feedback_policy_applies_visual_judge_provider_setup_action():
+    from agent.visual.feedback_policy import resolve_visual_feedback_policy
+
+    policy = resolve_visual_feedback_policy(
+        {
+            "next_actions": [
+                {
+                    "type": "configure_visual_judge_provider",
+                    "track": "evaluation",
+                    "reason": "live_quality_burn_inline_vision_quota_exceeded",
+                    "confidence": 0.9,
+                    "requires_human_feedback": False,
+                    "requires_operator_setup": True,
+                    "evaluation_operator": "inline_vision_preference_dimensions",
+                    "provider_failure_classes": {"quota_exceeded": 4},
+                    "operator_setup_actions": [
+                        {
+                            "provider": "vision_judge",
+                            "missing_env_vars": [],
+                            "post_setup": "Configure a non-quota-blocked visual judge provider or restore quota for the active visual judge provider.",
+                        }
+                    ],
+                }
+            ]
+        },
+        wants_image=True,
+        wants_video=True,
+        explicit_candidate_budget=None,
+        default_candidate_budget=2,
+    )
+
+    assert policy["requires_operator_setup"] is True
+    assert policy["operator_setup_actions"] == [
+        {
+            "provider": "vision_judge",
+            "missing_env_vars": [],
+            "post_setup": "Configure a non-quota-blocked visual judge provider or restore quota for the active visual judge provider.",
+        }
+    ]
+    assert policy["applied_action_types"] == ["configure_visual_judge_provider"]
+    assert policy["applied_action_sources"] == ["feedback_loop"]

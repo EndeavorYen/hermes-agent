@@ -23,8 +23,16 @@ keep the exact logger name (``"agent.conversation_loop"``).
 from __future__ import annotations
 
 import os
+import re
+from datetime import datetime, timezone
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+
+_VISUAL_PROMPT_DRAFT_MAX_CHARS = 1200
+_FENCED_BLOCK_RE = re.compile(
+    r"```(?:[a-zA-Z0-9_-]+)?[ \t]*\n?(.*?)```",
+    flags=re.DOTALL,
+)
 
 
 def finalize_turn(
@@ -122,92 +130,25 @@ def finalize_turn(
                 )
 
     # Determine if conversation completed successfully
-    normal_text_response = str(_turn_exit_reason).startswith("text_response(")
     completed = (
         final_response is not None
+        and api_call_count < agent.max_iterations
         and not failed
-        and (
-            api_call_count < agent.max_iterations
-            or normal_text_response
-        )
     )
-
-    # Post-loop cleanup must never lose the response.  Trajectory save,
-    # resource teardown, and session persistence all touch fallible
-    # surfaces — file I/O / JSON serialization (_save_trajectory), remote
-    # VM/browser teardown over the network (_cleanup_task_resources), and
-    # SQLite writes (_persist_session).  A raise from any of them used to
-    # propagate straight out of run_conversation, discarding the partial
-    # final_response the caller is waiting for (subprocess wrappers saw an
-    # empty stdout with no traceback — #8049).  Each step is now guarded
-    # independently so one failure can't skip the others, and any errors
-    # are surfaced on the result dict via ``cleanup_errors`` rather than
-    # killing the turn.
-    _cleanup_errors = []
 
     # Save trajectory if enabled.  ``user_message`` may be a multimodal
     # list of parts; the trajectory format wants a plain string.
-    try:
-        agent._save_trajectory(messages, _summarize_user_message_for_log(user_message), completed)
-    except Exception as _save_err:
-        _cleanup_errors.append(f"save_trajectory: {_save_err}")
-        logger.error("finalize_turn: _save_trajectory failed: %s", _save_err, exc_info=True)
+    agent._save_trajectory(messages, _summarize_user_message_for_log(user_message), completed)
 
     # Clean up VM and browser for this task after conversation completes
-    try:
-        agent._cleanup_task_resources(effective_task_id)
-    except Exception as _cleanup_err:
-        _cleanup_errors.append(f"cleanup_task_resources: {_cleanup_err}")
-        logger.error("finalize_turn: _cleanup_task_resources failed: %s", _cleanup_err, exc_info=True)
+    agent._cleanup_task_resources(effective_task_id)
 
     # Persist session to both JSON log and SQLite only after private retry
     # scaffolding has been removed. Otherwise a later user "continue" turn
     # can replay assistant("(empty)") / recovery nudges and fall into the
     # same empty-response loop again.
-    try:
-        agent._drop_trailing_empty_response_scaffolding(messages)
-
-        # When the turn was interrupted and the last message is a tool
-        # result, append a synthetic assistant message to close the
-        # tool-call sequence. Without this, the session persists a
-        # ``tool → user`` alternation that strict providers (Gemini,
-        # Claude) reject, causing them to hallucinate a continuation of
-        # the user's message on the next turn (#48879).
-        #
-        # ``_drop_trailing_empty_response_scaffolding`` only rewinds the
-        # tool tail when an empty-response scaffolding flag is present; a
-        # clean ``/stop`` interrupt after a successful tool sets no such
-        # flag, so the tool result survives as the tail and we close it
-        # here instead. On an interrupt ``final_response`` is typically
-        # empty, so fall back to an explicit placeholder rather than
-        # persisting an empty-content assistant turn.
-        if interrupted:
-            from agent.message_sanitization import close_interrupted_tool_sequence
-            close_interrupted_tool_sequence(messages, final_response)
-
-        # Some recovery/fallback paths return a real final_response without
-        # adding a closing assistant message to the transcript (e.g. the
-        # partial-stream and prior-turn-content recovery ``break`` sites in
-        # ``conversation_loop``). If persisted as-is, the durable session can
-        # end at a tool/user message even though the caller — and the gateway
-        # platform — already saw a completed assistant response. The next turn
-        # then replays a user-only backlog and the model re-answers every
-        # "unanswered" message. Close the durable turn at the source, at the
-        # single chokepoint every recovery ``break`` flows through, so the
-        # invariant "delivered final_response ⇒ assistant row in transcript"
-        # holds regardless of which path produced it. (#43849 / #44100)
-        if final_response and not interrupted:
-            try:
-                _tail_role = messages[-1].get("role") if messages else None
-            except Exception:
-                _tail_role = None
-            if _tail_role != "assistant":
-                messages.append({"role": "assistant", "content": final_response})
-
-        agent._persist_session(messages, conversation_history)
-    except Exception as _persist_err:
-        _cleanup_errors.append(f"persist_session: {_persist_err}")
-        logger.error("finalize_turn: _persist_session failed: %s", _persist_err, exc_info=True)
+    agent._drop_trailing_empty_response_scaffolding(messages)
+    agent._persist_session(messages, conversation_history)
 
     # ── Turn-exit diagnostic log ─────────────────────────────────────
     # Always logged at INFO so agent.log captures WHY every turn ended.
@@ -308,14 +249,7 @@ def finalize_turn(
                     and len(_stripped) <= 24
                     and _stripped[-1:] not in {".", "!", "?", "。", "！", "？", "`", ")"}
                 )
-                _is_partial_stream_recovery = (
-                    str(_turn_exit_reason) == "partial_stream_recovery"
-                )
-                if (
-                    _is_empty_terminal
-                    or _is_partial_fragment
-                    or _is_partial_stream_recovery
-                ):
+                if _is_empty_terminal or _is_partial_fragment:
                     _explanation = agent._format_turn_completion_explanation(
                         _turn_exit_reason
                     )
@@ -357,6 +291,63 @@ def finalize_turn(
                     break  # First non-empty string wins
         except Exception as exc:
             logger.warning("transform_llm_output hook failed: %s", exc)
+
+    if final_response and not interrupted:
+        try:
+            final_response = _apply_raphael_general_proof_gate(
+                final_response,
+                user_message=original_user_message,
+                messages=messages,
+                conversation_history=conversation_history,
+                turn_id=turn_id,
+                task_id=effective_task_id,
+            )
+        except Exception as exc:
+            logger.debug("Raphael general proof gate skipped: %s", exc)
+
+    if final_response and not interrupted:
+        try:
+            from agent.raphael.governor import (
+                apply_raphael_response_governor,
+                should_apply_raphael_response_governor,
+            )
+
+            if not _is_explicit_raphael_invocation(original_user_message):
+                final_response = apply_raphael_response_governor(
+                    final_response,
+                    enabled=should_apply_raphael_response_governor(),
+                )
+        except Exception as exc:
+            logger.warning("Raphael response governor failed: %s", exc)
+
+    if final_response and not interrupted:
+        try:
+            final_response = _apply_raphael_invocation_response_shape(
+                final_response,
+                user_message=original_user_message,
+                conversation_history=conversation_history,
+            )
+        except Exception as exc:
+            logger.debug("Raphael invocation response shaping skipped: %s", exc)
+
+    if final_response and not interrupted and completed:
+        try:
+            final_response = _apply_visual_prompt_draft_response_shape(
+                final_response,
+                user_message=original_user_message,
+            )
+        except Exception as exc:
+            logger.debug("visual prompt draft response shaping skipped: %s", exc)
+
+    if final_response and not interrupted and completed:
+        try:
+            _maybe_record_visual_prompt_draft_arsenal(
+                agent,
+                user_message=original_user_message,
+                final_response=final_response,
+            )
+        except Exception as exc:
+            logger.debug("visual prompt draft arsenal recording skipped: %s", exc)
 
     # Plugin hook: post_llm_call
     # Fired once per turn after the tool-calling loop completes.
@@ -428,11 +419,6 @@ def finalize_turn(
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
-    # Surface any post-loop cleanup failures so the caller can distinguish a
-    # clean turn from one whose trajectory/session/resource teardown raised
-    # (the response is still returned either way — #8049).
-    if _cleanup_errors:
-        result["cleanup_errors"] = _cleanup_errors
     # If a /steer landed after the final assistant turn (no more tool
     # batches to drain into), hand it back to the caller so it can be
     # delivered as the next user turn instead of being silently lost.
@@ -459,6 +445,113 @@ def finalize_turn(
         _should_review_skills = True
         agent._iters_since_skill = 0
 
+    _review_prompt = None
+    _review_label = None
+    _raphael_evolution = None
+    _evolution_metadata = None
+    if final_response and not interrupted:
+        try:
+            from hermes_cli.config import load_config
+            from agent.raphael.evolution import (
+                append_evolution_record,
+                build_raphael_evolution_review_prompt,
+                decide_raphael_evolution,
+            )
+            from agent.raphael.models import SkillTrace
+            from agent.raphael.skill_trace import append_skill_trace
+
+            _raphael_evolution = decide_raphael_evolution(
+                user_message=original_user_message,
+                final_response=final_response,
+                messages=messages,
+                turn_exit_reason=_turn_exit_reason,
+                config=load_config(),
+            )
+            _evolution_metadata = {
+                "task_id": effective_task_id,
+                "turn_id": turn_id,
+                "turn_exit_reason": _turn_exit_reason,
+            }
+            if _raphael_evolution.should_review:
+                append_evolution_record(
+                    _raphael_evolution,
+                    status="scheduled",
+                    metadata=_evolution_metadata,
+                )
+                append_skill_trace(
+                    SkillTrace(
+                        trace_id=f"raphael-evolution-{turn_id}",
+                        task_id=str(effective_task_id or ""),
+                        created_at=datetime.now(timezone.utc),
+                        source="raphael_evolution",
+                        skills_used=tuple(
+                            skill
+                            for skill in (
+                                "raphael",
+                                "skill_manage" if _raphael_evolution.review_skills else "",
+                                "memory" if _raphael_evolution.review_memory else "",
+                            )
+                            if skill
+                        ),
+                        tools_used=tuple(
+                            tool
+                            for tool in (
+                                "skill_manage" if _raphael_evolution.review_skills else "",
+                                "memory" if _raphael_evolution.review_memory else "",
+                            )
+                            if tool
+                        ),
+                        outcome="scheduled",
+                        user_corrections=tuple(_raphael_evolution.reason_codes),
+                        risk_incidents=(),
+                        metadata={
+                            "mode": _raphael_evolution.mode,
+                            "reason_codes": list(_raphael_evolution.reason_codes),
+                            "evidence_summary": _raphael_evolution.evidence_summary,
+                            "turn_exit_reason": _turn_exit_reason,
+                        },
+                    ),
+                    max_string_length=500,
+                )
+                _should_review_memory = (
+                    _should_review_memory or _raphael_evolution.review_memory
+                )
+                _should_review_skills = (
+                    _should_review_skills or _raphael_evolution.review_skills
+                )
+                _review_prompt = build_raphael_evolution_review_prompt(
+                    _raphael_evolution
+                )
+                _review_label = _raphael_evolution.review_label
+            elif _raphael_evolution.proposal_only:
+                append_evolution_record(
+                    _raphael_evolution,
+                    status="proposal_only",
+                    metadata=_evolution_metadata,
+                )
+                append_skill_trace(
+                    SkillTrace(
+                        trace_id=f"raphael-evolution-{turn_id}",
+                        task_id=str(effective_task_id or ""),
+                        created_at=datetime.now(timezone.utc),
+                        source="raphael_evolution",
+                        skills_used=("raphael",),
+                        tools_used=(),
+                        outcome="proposal_only",
+                        user_corrections=(),
+                        risk_incidents=tuple(_raphael_evolution.reason_codes),
+                        metadata={
+                            "mode": _raphael_evolution.mode,
+                            "reason_codes": list(_raphael_evolution.reason_codes),
+                            "evidence_summary": _raphael_evolution.evidence_summary,
+                            "turn_exit_reason": _turn_exit_reason,
+                        },
+                    ),
+                    max_string_length=500,
+                )
+        except Exception as exc:
+            logger.debug("Raphael evolution scheduling skipped: %s", exc)
+
     # External memory provider: sync the completed turn + queue next prefetch.
     agent._sync_external_memory_for_turn(
         original_user_message=original_user_message,
@@ -475,9 +568,50 @@ def finalize_turn(
                 messages_snapshot=list(messages),
                 review_memory=_should_review_memory,
                 review_skills=_should_review_skills,
+                review_prompt=_review_prompt,
+                review_label=_review_label,
             )
-        except Exception:
-            pass  # Background review is best-effort
+        except Exception as exc:
+            logger.debug("Background review spawn failed: %s", exc)
+            if _raphael_evolution is not None and _evolution_metadata is not None:
+                try:
+                    from agent.raphael.evolution import append_evolution_record
+                    from agent.raphael.models import SkillTrace
+                    from agent.raphael.skill_trace import append_skill_trace
+
+                    append_evolution_record(
+                        _raphael_evolution,
+                        status="background_spawn_failed",
+                        metadata={
+                            **_evolution_metadata,
+                            "error": str(exc),
+                        },
+                    )
+                    append_skill_trace(
+                        SkillTrace(
+                            trace_id=f"raphael-evolution-spawn-failed-{turn_id}",
+                            task_id=str(effective_task_id or ""),
+                            created_at=datetime.now(timezone.utc),
+                            source="raphael_evolution",
+                            skills_used=("raphael",),
+                            tools_used=(),
+                            outcome="background_spawn_failed",
+                            user_corrections=(),
+                            risk_incidents=tuple(_raphael_evolution.reason_codes),
+                            metadata={
+                                "mode": _raphael_evolution.mode,
+                                "reason_codes": list(_raphael_evolution.reason_codes),
+                                "turn_exit_reason": _turn_exit_reason,
+                                "error": str(exc),
+                            },
+                        ),
+                        max_string_length=500,
+                    )
+                except Exception as record_exc:
+                    logger.debug(
+                        "Raphael background review failure recording skipped: %s",
+                        record_exc,
+                    )
 
     # Note: Memory provider on_session_end() + shutdown_all() are NOT
     # called here — run_conversation() is called once per user message in
@@ -505,3 +639,373 @@ def finalize_turn(
         logger.warning("on_session_end hook failed: %s", exc)
 
     return result
+
+
+def _apply_raphael_general_proof_gate(
+    final_response,
+    *,
+    user_message,
+    messages,
+    conversation_history,
+    turn_id,
+    task_id,
+):
+    from agent.raphael.control import build_raphael_control_decision
+    from agent.raphael.observer import should_inject_raphael_observation
+    from agent.raphael.proof import raphael_has_required_proof
+    from agent.visual.agent_mode.handoff import is_visual_prompt_builder_request
+
+    if not should_inject_raphael_observation():
+        return final_response
+    prompt_text = _plain_text_for_visual_prompt_learning(user_message)
+    if is_visual_prompt_builder_request(prompt_text):
+        return final_response
+    decision = build_raphael_control_decision(
+        user_message,
+        conversation_history=conversation_history,
+    )
+    is_visual_task = str(decision.mode).startswith("visual_agent")
+    if decision.mode != "tool_task" and not is_visual_task:
+        return final_response
+    if not _raphael_claims_completion(final_response):
+        return final_response
+    required = decision.evidence.required_proofs or ()
+    if raphael_has_required_proof(messages, required):
+        return final_response
+
+    decision_payload = decision.to_dict()
+    evidence = dict(decision_payload.get("evidence") or {})
+    evidence["failure_layer"] = "artifact_quality" if is_visual_task else "proof_gate"
+    evidence["next_repair_action"] = "run_required_proofs_before_completion_claim"
+    decision_payload["evidence"] = evidence
+    decision_payload["next_action"] = "run_required_proofs_before_completion_claim"
+    try:
+        from agent.raphael.state import record_control_decision
+
+        record_control_decision(
+            decision_payload,
+            turn_id=turn_id,
+            task_id=task_id,
+            source="general_tool_proof_gate",
+        )
+    except Exception:
+        pass
+    required_text = ", ".join(str(item) for item in required) or "verification evidence"
+    risk_text = (
+        "這是 visual/artifact 任務，但目前缺少 "
+        if is_visual_task
+        else "這是工具/runtime 任務，但目前缺少 "
+    )
+    next_step = (
+        "先透過 visual_agent_generate 或等效 handoff 產出目前選中 artifact，"
+        "再回報 artifact quality、selection、delivery 證據。"
+        if is_visual_task
+        else "先執行必要測試或 runtime smoke，再回報具體證據。"
+    )
+    return "\n".join(
+        [
+            "狀態：還不能判定完成，Raphael proof gate 沒看到足夠證據。",
+            f"風險：{risk_text}{required_text}。",
+            f"下一步：{next_step}",
+        ]
+    )
+
+
+def _apply_visual_prompt_draft_response_shape(
+    final_response,
+    *,
+    user_message,
+):
+    prompt = _plain_text_for_visual_prompt_learning(user_message)
+    if not prompt:
+        return final_response
+    from agent.visual.agent_mode.handoff import is_visual_prompt_builder_request
+
+    if not is_visual_prompt_builder_request(prompt):
+        return final_response
+    copy_text = _extract_visual_prompt_copy_text(str(final_response or ""))
+    if not copy_text:
+        return final_response
+    focused = _limit_visual_prompt_draft_text(copy_text)
+    return f"```text\n{focused}\n```"
+
+
+def _extract_visual_prompt_copy_text(response_text: str) -> str:
+    text = str(response_text or "").strip()
+    if not text:
+        return ""
+    matches = list(_FENCED_BLOCK_RE.finditer(text))
+    if not matches:
+        return _clean_visual_prompt_copy_text(text)
+
+    blocks: list[str] = []
+    for match in matches:
+        block = _clean_visual_prompt_copy_text(match.group(1))
+        if not block:
+            continue
+        prefix = text[max(0, match.start() - 120):match.start()]
+        if _looks_like_negative_prompt_label(prefix) and not _starts_with_negative_prompt_label(block):
+            block = "Negative prompt: " + block
+        blocks.append(block)
+    return _clean_visual_prompt_copy_text("\n".join(blocks))
+
+
+def _clean_visual_prompt_copy_text(value: str) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    text = re.sub(r"^\s*(?:positive\s+prompt|正面\s*prompt|正面提示詞|正面提示词)\s*[:：]\s*", "", text, flags=re.IGNORECASE | re.MULTILINE)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    return text.strip()
+
+
+def _looks_like_negative_prompt_label(value: str) -> bool:
+    lowered = str(value or "").lower()
+    compact = re.sub(r"\s+", "", lowered)
+    return any(
+        marker in lowered
+        for marker in ("negative prompt", "negative constraints", "negative:")
+    ) or any(marker in compact for marker in ("負面prompt", "負面提示詞", "負面提示词", "反向提示詞", "反向提示词"))
+
+
+def _starts_with_negative_prompt_label(value: str) -> bool:
+    text = str(value or "").strip().lower()
+    compact = re.sub(r"\s+", "", text)
+    return text.startswith(("negative prompt", "negative constraints", "negative:")) or compact.startswith(
+        ("負面prompt", "負面提示詞", "負面提示词", "反向提示詞", "反向提示词")
+    )
+
+
+def _limit_visual_prompt_draft_text(
+    value: str,
+    *,
+    max_chars: int = _VISUAL_PROMPT_DRAFT_MAX_CHARS,
+) -> str:
+    text = _clean_visual_prompt_copy_text(value)
+    if len(text) <= max_chars:
+        return text
+
+    marker = _negative_prompt_marker(text)
+    if marker is None:
+        return _truncate_prompt_text(text, max_chars)
+
+    positive = text[: marker.start()].strip()
+    negative = text[marker.start():].strip()
+    negative_limit = min(420, max_chars // 2)
+    negative = _truncate_prompt_text(negative, negative_limit) if len(negative) > negative_limit else negative
+    positive_limit = max(240, max_chars - len(negative) - 2)
+    positive = _truncate_prompt_text(positive, positive_limit)
+    return (positive + "\n" + negative).strip()
+
+
+def _negative_prompt_marker(value: str) -> re.Match[str] | None:
+    return re.search(
+        r"(?im)(?:^|\n)\s*(?:negative\s+prompt|negative\s+constraints|negative|負面\s*prompt|負面提示詞|負面提示词|反向提示詞|反向提示词)\s*[:：]",
+        value,
+    )
+
+
+def _truncate_prompt_text(value: str, max_chars: int) -> str:
+    text = _clean_visual_prompt_copy_text(value)
+    if len(text) <= max_chars:
+        return text
+    clipped = text[:max(0, max_chars)].rstrip()
+    boundary_floor = max(0, int(max_chars * 0.55))
+    boundary = max(
+        clipped.rfind(separator, boundary_floor)
+        for separator in ("。", "；", ";", ".", "，", ",", "\n")
+    )
+    if boundary > boundary_floor:
+        clipped = clipped[:boundary].rstrip()
+    return clipped.rstrip(" ,，;；")
+
+
+def _maybe_record_visual_prompt_draft_arsenal(
+    agent,
+    *,
+    user_message,
+    final_response,
+) -> None:
+    prompt = _plain_text_for_visual_prompt_learning(user_message)
+    if not prompt:
+        return
+    from agent.visual.agent_mode.handoff import is_visual_prompt_builder_request
+
+    if not is_visual_prompt_builder_request(prompt):
+        return
+    from agent.visual import tracking as _visual_tracking
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.prompt_arsenal import record_prompt_draft_arsenal_entry
+
+    ledger = VisualAttemptLedger(_visual_tracking.default_visual_ledger_path())
+    record_prompt_draft_arsenal_entry(
+        ledger,
+        user_prompt=prompt,
+        prompt_response=str(final_response or ""),
+        platform=str(getattr(agent, "platform", "") or ""),
+        channel_id=str(getattr(agent, "channel_id", None) or getattr(agent, "_channel_id", "") or ""),
+        thread_id=str(
+            getattr(agent, "thread_id", None)
+            or getattr(agent, "_thread_id", None)
+            or getattr(agent, "_thread_ts", "")
+            or ""
+        ),
+        message_id=str(getattr(agent, "message_id", None) or getattr(agent, "_message_ts", "") or ""),
+    )
+
+
+def _plain_text_for_visual_prompt_learning(value) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+                elif item.get("type") in {"text", "input_text"} and isinstance(item.get("content"), str):
+                    parts.append(item["content"])
+        return "\n".join(part for part in parts if part).strip()
+    return ""
+
+
+def _apply_raphael_invocation_response_shape(
+    final_response,
+    *,
+    user_message,
+    conversation_history,
+):
+    from agent.raphael.appraisal import appraise_raphael_situation
+    from agent.raphael.invocation import (
+        is_raphael_invocation,
+        render_raphael_invocation_response,
+    )
+    from agent.raphael.mission import update_raphael_mission
+    from agent.raphael.observer import should_inject_raphael_observation
+    from agent.raphael.state import read_mission_state
+    from agent.raphael.strategy import simulate_raphael_strategies
+
+    if not should_inject_raphael_observation():
+        return final_response
+    if not is_raphael_invocation(user_message):
+        return final_response
+    response_text = str(final_response or "")
+    if "解析完成。" in response_text and (
+        "局勢判讀" in response_text or "狀態：Raphael 待命" in response_text
+    ):
+        return final_response
+    if "還不能判定完成" in response_text or "Raphael proof gate" in response_text:
+        return final_response
+    if _raphael_user_requested_exact_reply_shape(user_message):
+        return final_response
+    appraisal = appraise_raphael_situation(
+        user_message,
+        conversation_history=conversation_history,
+    )
+    strategies = simulate_raphael_strategies(appraisal)
+    mission = update_raphael_mission(read_mission_state(), appraisal, strategies)
+    prefix = render_raphael_invocation_response(appraisal, strategies, mission)
+    return f"{prefix}\n\n回應：\n{response_text}"
+
+
+def _is_explicit_raphael_invocation(user_message) -> bool:
+    try:
+        from agent.raphael.invocation import is_raphael_invocation
+
+        return is_raphael_invocation(user_message)
+    except Exception:
+        return False
+
+
+def _raphael_user_requested_exact_reply_shape(user_message) -> bool:
+    text = str(user_message or "").lower()
+    compact = "".join(text.split())
+    reply_markers = (
+        "只回覆",
+        "只回答",
+        "只用",
+        "僅回覆",
+        "仅回复",
+        "only reply",
+        "only respond",
+        "reply only",
+        "respond only",
+    )
+    shape_markers = (
+        "三行",
+        "二行",
+        "兩行",
+        "两行",
+        "四行",
+        "五行",
+        "六行",
+        "2行",
+        "3行",
+        "4行",
+        "5行",
+        "6行",
+        "2 lines",
+        "3 lines",
+        "4 lines",
+        "5 lines",
+        "6 lines",
+        "two lines",
+        "three lines",
+        "four lines",
+        "five lines",
+        "six lines",
+        "一句",
+        "一行",
+        "one line",
+        "single line",
+    )
+    return any(marker in text or marker in compact for marker in reply_markers) and any(
+        marker in text or marker in compact for marker in shape_markers
+    )
+
+
+def _raphael_claims_completion(text) -> bool:
+    lowered = str(text or "").lower()
+    negative_markers = (
+        "不能宣稱完成",
+        "不要宣稱完成",
+        "不可宣稱完成",
+        "不應宣稱完成",
+        "不該宣稱完成",
+        "不能說完成",
+        "不可說完成",
+        "不能判定完成",
+        "還不能判定完成",
+        "尚不能判定完成",
+        "不可以宣稱完成",
+        "不算完成",
+        "not complete",
+        "not completed",
+        "cannot claim completion",
+        "can't claim completion",
+        "do not claim completion",
+        "should not claim completion",
+    )
+    if any(marker in lowered for marker in negative_markers):
+        return False
+    markers = (
+        "done",
+        "fixed",
+        "completed",
+        "passed",
+        "verified",
+        "已完成",
+        "完成",
+        "修好了",
+        "修復完成",
+        "驗證完成",
+        "測試通過",
+        "可以上線",
+        "已產出",
+        "已生成",
+        "產出圖片",
+        "生成圖片",
+    )
+    return any(marker in lowered for marker in markers)

@@ -1,0 +1,230 @@
+def test_delivery_manifest_selects_only_selected_artifacts():
+    from agent.visual.delivery_manifest import build_visual_delivery_manifest
+    from agent.visual.delivery_manifest import select_deliverable_artifacts
+
+    payload = {
+        "visual_request_id": "vrq_1",
+        "images": ["/tmp/selected.png"],
+        "videos": ["https://vidgen.example/current.mp4"],
+        "delivery_metadata": {
+            "selected_visual_artifact_ids": ["var_selected", "var_video"],
+            "visual_artifacts": {
+                "/tmp/selected.png": {
+                    "request_id": "vrq_1",
+                    "attempt_id": "vat_1",
+                    "artifact_id": "var_selected",
+                    "kind": "image",
+                    "content_hash": "hash-selected",
+                },
+                "/tmp/old.png": {
+                    "request_id": "vrq_old",
+                    "attempt_id": "vat_old",
+                    "artifact_id": "var_old",
+                    "kind": "image",
+                    "content_hash": "hash-old",
+                },
+                "https://vidgen.example/current.mp4": {
+                    "request_id": "vrq_1",
+                    "attempt_id": "vat_2",
+                    "artifact_id": "var_video",
+                    "kind": "video",
+                    "source_identity": "https://vidgen.example/current.mp4",
+                },
+            },
+        },
+    }
+
+    manifest = build_visual_delivery_manifest(payload)
+    deliverables = select_deliverable_artifacts(manifest)
+
+    assert manifest["request_id"] == "vrq_1"
+    assert [item["artifact_id"] for item in deliverables] == ["var_selected", "var_video"]
+    assert deliverables[0]["ref"] == "/tmp/selected.png"
+    assert deliverables[0]["identity"] == "hash-selected"
+    assert deliverables[1]["ref"] == "https://vidgen.example/current.mp4"
+    assert deliverables[1]["identity"] == "https://vidgen.example/current.mp4"
+
+
+def test_delivery_manifest_deduplicates_selected_artifacts_by_identity():
+    from agent.visual.delivery_manifest import build_visual_delivery_manifest
+    from agent.visual.delivery_manifest import select_deliverable_artifacts
+
+    payload = {
+        "visual_request_id": "vrq_1",
+        "delivery_metadata": {
+            "selected_visual_artifact_ids": ["var_a", "var_b"],
+            "visual_artifacts": {
+                "/tmp/a.png": {"request_id": "vrq_1", "artifact_id": "var_a", "content_hash": "same"},
+                "/tmp/b.png": {"request_id": "vrq_1", "artifact_id": "var_b", "content_hash": "same"},
+            },
+        },
+    }
+
+    manifest = build_visual_delivery_manifest(payload)
+
+    assert [item["artifact_id"] for item in select_deliverable_artifacts(manifest)] == ["var_a"]
+
+
+def test_delivery_manifest_deduplicates_same_artifact_with_multiple_lookup_refs():
+    from agent.visual.delivery_manifest import build_visual_delivery_manifest
+    from agent.visual.delivery_manifest import select_deliverable_artifacts
+
+    payload = {
+        "visual_request_id": "vrq_1",
+        "images": ["/tmp/current.png"],
+        "delivery_metadata": {
+            "selected_visual_artifact_ids": ["var_img"],
+            "visual_artifacts": {
+                "/tmp/current.png": {"request_id": "vrq_1", "artifact_id": "var_img"},
+                "file:///tmp/current.png": {"request_id": "vrq_1", "artifact_id": "var_img"},
+            },
+        },
+    }
+
+    manifest = build_visual_delivery_manifest(payload)
+
+    deliverables = select_deliverable_artifacts(manifest)
+    assert [item["artifact_id"] for item in deliverables] == ["var_img"]
+    assert deliverables[0]["ref"] == "/tmp/current.png"
+
+
+def test_delivery_manifest_empty_payload_is_safe():
+    from agent.visual.delivery_manifest import build_visual_delivery_manifest
+    from agent.visual.delivery_manifest import select_deliverable_artifacts
+
+    manifest = build_visual_delivery_manifest({})
+
+    assert manifest["request_id"] is None
+    assert select_deliverable_artifacts(manifest) == []
+
+
+def test_delivery_manifest_fails_closed_without_selected_artifact_ids():
+    from agent.visual.delivery_manifest import build_visual_delivery_manifest
+    from agent.visual.delivery_manifest import select_deliverable_artifacts
+
+    payload = {
+        "visual_request_id": "vrq_1",
+        "images": ["/tmp/current.png"],
+        "delivery_metadata": {
+            "visual_artifacts": {
+                "/tmp/current.png": {
+                    "request_id": "vrq_1",
+                    "artifact_id": "var_current",
+                    "kind": "image",
+                },
+                "/tmp/old.png": {
+                    "request_id": "vrq_old",
+                    "artifact_id": "var_old",
+                    "kind": "image",
+                },
+            },
+        },
+    }
+
+    manifest = build_visual_delivery_manifest(payload)
+
+    assert select_deliverable_artifacts(manifest) == []
+    assert "missing_selected_visual_artifact_ids" in manifest["failures"]
+
+
+def test_delivery_manifest_skips_selected_artifacts_from_other_requests():
+    from agent.visual.delivery_manifest import build_visual_delivery_manifest
+    from agent.visual.delivery_manifest import select_deliverable_artifacts
+
+    payload = {
+        "visual_request_id": "vrq_current",
+        "delivery_metadata": {
+            "selected_visual_artifact_ids": ["var_current", "var_old"],
+            "visual_artifacts": {
+                "/tmp/current.png": {
+                    "request_id": "vrq_current",
+                    "artifact_id": "var_current",
+                    "kind": "image",
+                },
+                "/tmp/old.png": {
+                    "request_id": "vrq_old",
+                    "artifact_id": "var_old",
+                    "kind": "image",
+                },
+            },
+        },
+    }
+
+    manifest = build_visual_delivery_manifest(payload)
+    deliverables = select_deliverable_artifacts(manifest)
+
+    assert [item["artifact_id"] for item in deliverables] == ["var_current"]
+    assert "cross_request_visual_artifact" in manifest["failures"]
+
+
+def test_delivery_manifest_fails_closed_for_selected_stale_artifact_from_ledger(monkeypatch, tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.delivery_manifest import build_visual_delivery_manifest
+    from agent.visual.delivery_manifest import select_deliverable_artifacts
+    from agent.visual.tracking import default_visual_ledger_path
+    from agent.visual.tracking import visual_delivery_metadata
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ledger = VisualAttemptLedger(default_visual_ledger_path())
+    ledger.initialize()
+    request_id = ledger.record_request(
+        user_prompt="current request",
+        normalized_intent={"kind": "visual_package"},
+        modality="package",
+        operation="visual_package_generate",
+        status="completed",
+    )
+    artifact_id = ledger.record_artifact(
+        request_id=request_id,
+        kind="image",
+        local_path="/tmp/stale-selected.png",
+        uri="/tmp/stale-selected.png",
+        content_hash="sha256:old",
+        mime_type="image/png",
+        is_stable=True,
+        freshness_status="stale",
+    )
+    payload = {
+        "visual_request_id": request_id,
+        "images": ["/tmp/stale-selected.png"],
+        "delivery_metadata": visual_delivery_metadata(
+            request_id=request_id,
+            attempt_id=None,
+            artifact_ids=[artifact_id],
+            artifact_paths=["/tmp/stale-selected.png"],
+            selected_artifact_ids=[artifact_id],
+        ),
+    }
+
+    manifest = build_visual_delivery_manifest(payload)
+
+    assert select_deliverable_artifacts(manifest) == []
+    assert "stale_visual_artifact" in manifest["failures"]
+
+
+def test_delivery_manifest_marks_remote_video_unuploadable():
+    from agent.visual.delivery_manifest import build_visual_delivery_manifest
+    from agent.visual.delivery_manifest import select_deliverable_artifacts
+
+    payload = {
+        "visual_request_id": "vrq_1",
+        "videos": ["https://vidgen.example/current.mp4"],
+        "delivery_metadata": {
+            "selected_visual_artifact_ids": ["var_video"],
+            "visual_artifacts": {
+                "https://vidgen.example/current.mp4": {
+                    "request_id": "vrq_1",
+                    "artifact_id": "var_video",
+                    "kind": "video",
+                },
+            },
+        },
+    }
+
+    manifest = build_visual_delivery_manifest(payload)
+    deliverables = select_deliverable_artifacts(manifest)
+
+    assert deliverables[0]["artifact_id"] == "var_video"
+    assert deliverables[0]["delivery_ref_type"] == "remote_url"
+    assert deliverables[0]["uploadable_file"] is False
+    assert "video_ref_not_local_file" in manifest["failures"]
