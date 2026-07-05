@@ -523,6 +523,9 @@ def test_visual_package_character_design_ref_only_uses_structured_safe_prompt_an
     from tools import visual_package_tool
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    refs = [tmp_path / "ref-1.png", tmp_path / "ref-2.png"]
+    for ref in refs:
+        ref.write_bytes(_ONE_PIXEL_PNG)
     image = tmp_path / "character-design.png"
     image.write_bytes(_ONE_PIXEL_PNG)
     image_calls = []
@@ -553,6 +556,7 @@ def test_visual_package_character_design_ref_only_uses_structured_safe_prompt_an
                     "include_video": False,
                     "image_provider": "openai-codex",
                     "candidate_budget": 1,
+                    "attachments": [str(ref) for ref in refs],
                 }
             )
         )
@@ -561,6 +565,7 @@ def test_visual_package_character_design_ref_only_uses_structured_safe_prompt_an
     provider_prompt = image_calls[0]["prompt"]
     assert payload["success"] is True
     assert image_calls[0]["_provider"] == "openai-codex"
+    assert image_calls[0]["reference_image_urls"] == [str(ref) for ref in refs]
     assert "Structured OpenAI-safe character design brief" in provider_prompt
     assert "Allowed design focus" in provider_prompt
     assert "Forbidden content" in provider_prompt

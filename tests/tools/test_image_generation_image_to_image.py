@@ -373,6 +373,24 @@ class TestDynamicSchema:
         assert "image-to-image / editing" in desc
         assert "up to 5 reference image(s)" in desc
 
+    def test_openai_codex_provider_advertises_reference_images(self, cfg_home, monkeypatch):
+        from tools import image_generation_tool
+        from agent import image_gen_registry as reg
+        import importlib
+
+        provider_mod = importlib.import_module("plugins.image_gen.openai-codex")
+        provider = provider_mod.OpenAICodexImageGenProvider()
+        _write_cfg(cfg_home, {"image_gen": {"provider": "openai-codex"}})
+        reg.register_provider(provider)
+        self._no_discovery(monkeypatch)
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "openai-codex")
+
+        desc = image_generation_tool._build_dynamic_image_schema()["description"]
+        assert "OpenAI (Codex auth)" in desc
+        assert "image-to-image / editing" in desc
+        assert "up to 16 reference image(s)" in desc
+        assert "text-to-image only" not in desc
+
     def test_builder_wired_into_registry(self):
         from tools.registry import discover_builtin_tools, registry
 

@@ -611,8 +611,9 @@ def _build_fal_payload(
             if v is not None:
                 payload[k] = v
 
-    supports = meta["supports"]
-    return {k: v for k, v in payload.items() if k in supports}
+    supports = set(meta["supports"])
+    mandatory = {"prompt"}
+    return {k: v for k, v in payload.items() if k in supports or k in mandatory}
 
 
 def _build_fal_edit_payload(
@@ -661,7 +662,8 @@ def _build_fal_edit_payload(
             if v is not None:
                 payload[k] = v
 
-    return {k: v for k, v in payload.items() if k in edit_supports}
+    mandatory = {"prompt", "image_urls"}
+    return {k: v for k, v in payload.items() if k in edit_supports or k in mandatory}
 
 
 # ---------------------------------------------------------------------------
