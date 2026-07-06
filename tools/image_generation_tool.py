@@ -1775,7 +1775,9 @@ def _route_visual_image_to_package(
     reference_image_urls: Optional[list],
     provider_override: Any,
     candidate_budget: Any,
+    visual_plan: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    attachments = _image_agent_attachments(image_url, reference_image_urls)
     package_args: Dict[str, Any] = {
         "prompt": prompt,
         "include_image": True,
@@ -1784,7 +1786,16 @@ def _route_visual_image_to_package(
         "candidate_budget_source": "agent_mode",
         "aspect_ratio": aspect_ratio,
     }
-    attachments = _image_agent_attachments(image_url, reference_image_urls)
+    if visual_plan:
+        plan_args = visual_plan.get("arguments")
+        if isinstance(plan_args, dict):
+            package_args.update(plan_args)
+            package_args["prompt"] = str(plan_args.get("prompt") or prompt)
+            package_args["include_image"] = True
+            package_args["include_video"] = False
+            package_args.setdefault("aspect_ratio", aspect_ratio)
+            package_args.setdefault("candidate_budget", _coerce_candidate_budget(candidate_budget))
+            package_args.setdefault("candidate_budget_source", "planner_default")
     if attachments:
         package_args["attachments"] = attachments
     if isinstance(provider_override, str) and provider_override.strip():
@@ -1856,6 +1867,35 @@ def _route_visual_image_to_package(
     return payload
 
 
+def _image_generate_visual_plan_for_special_route(
+    prompt: str,
+    *,
+    image_url: Any,
+    reference_image_urls: Optional[list],
+) -> Dict[str, Any] | None:
+    attachments = _image_agent_attachments(image_url, reference_image_urls)
+    try:
+        from agent.visual.agent_mode.planner import plan_visual_agent_request
+
+        plan = plan_visual_agent_request(prompt, attachments=attachments)
+    except Exception:
+        return None
+    if not isinstance(plan, dict) or not plan.get("should_use_visual_package"):
+        return None
+    arguments = plan.get("arguments")
+    arguments = arguments if isinstance(arguments, dict) else {}
+    if any(
+        arguments.get(flag)
+        for flag in (
+            "character_design_ref_only",
+            "composition_guide_only",
+            "hybrid_final_combine",
+        )
+    ):
+        return plan
+    return None
+
+
 def _handle_image_generate(args, **kw):
     prompt = args.get("prompt", "")
     if not prompt:
@@ -1887,7 +1927,15 @@ def _handle_image_generate(args, **kw):
         reference_image_urls = session_reference_image_urls
 
     disable_visual_tracking = bool(args.get("_disable_visual_tracking"))
-    if _agent_mode_requested(args, prompt):
+    visual_plan = None
+    agent_mode_route = _agent_mode_requested(args, prompt)
+    if not agent_mode_route:
+        visual_plan = _image_generate_visual_plan_for_special_route(
+            prompt,
+            image_url=image_url,
+            reference_image_urls=reference_image_urls,
+        )
+    if agent_mode_route or visual_plan:
         routed = json.dumps(
             _route_visual_image_to_package(
                 prompt=prompt,
@@ -1896,6 +1944,7 @@ def _handle_image_generate(args, **kw):
                 reference_image_urls=reference_image_urls,
                 provider_override=provider_override,
                 candidate_budget=args.get("candidate_budget"),
+                visual_plan=visual_plan,
             ),
             ensure_ascii=False,
         )

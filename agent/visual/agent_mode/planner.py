@@ -779,6 +779,11 @@ def _planned_candidate_budget(
     match = re.search(r"([2-4])\s*(?:張|张|個|个|candidates?|options?)", text, re.IGNORECASE)
     if match:
         return max(2, min(4, int(match.group(1))))
+    match = re.search(r"([二兩两三四])\s*(?:張|张|個|个)", text)
+    if match:
+        count = {"二": 2, "兩": 2, "两": 2, "三": 3, "四": 4}.get(match.group(1))
+        if count is not None:
+            return count
     return 3
 
 

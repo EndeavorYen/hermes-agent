@@ -324,6 +324,21 @@ def test_agent_mode_planner_provider_contract_uses_composition_guide_default_pro
     assert plan["provider_contract"]["visual_media_provider_override"] == "openai-codex"
 
 
+def test_agent_mode_planner_composition_guide_parses_chinese_candidate_count():
+    from agent.visual.agent_mode.planner import plan_visual_agent_request
+
+    plan = plan_visual_agent_request(
+        "現在用 openai 幫我產出構圖，一樣產出四張不同構圖讓我挑選，"
+        "可以是動作、特寫、或是某個情境下的某一個當下動作",
+        attachments=["/tmp/ref1.png", "/tmp/ref2.png"],
+    )
+
+    assert plan["reason"] == "composition_guide_request"
+    assert plan["arguments"]["composition_guide_only"] is True
+    assert plan["arguments"]["candidate_budget"] == 4
+    assert plan["arguments"]["image_provider"] == "openai-codex"
+
+
 def test_agent_mode_planner_allows_openai_image2_media_override():
     from agent.visual.agent_mode.planner import plan_visual_agent_request
 

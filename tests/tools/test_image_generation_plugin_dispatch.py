@@ -293,6 +293,73 @@ class TestPluginDispatch:
         assert captured["image_provider"] == "xai"
         assert captured["candidate_budget"] == 2
 
+    def test_handle_image_generate_routes_composition_guide_request_through_planner(
+        self, monkeypatch, tmp_path
+    ):
+        from tools import image_generation_tool
+        from tools import visual_package_tool
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        captured: Dict[str, Any] = {}
+
+        async def fake_visual_package(args, **_kwargs):
+            captured.update(args)
+            return json.dumps(
+                {
+                    "success": True,
+                    "package_status": "success",
+                    "images": ["/tmp/composition-guide.png"],
+                    "generation_payloads": {
+                        "image": [
+                            {
+                                "success": True,
+                                "image": "/tmp/composition-guide.png",
+                                "provider": "openai-codex",
+                                "model": "gpt-image-2-high",
+                            }
+                        ],
+                    },
+                }
+            )
+
+        def fail_low_level_dispatch(*_args, **_kwargs):
+            raise AssertionError("composition guide requests must not bypass visual planner")
+
+        monkeypatch.setattr(
+            visual_package_tool,
+            "_handle_visual_package_generate",
+            fake_visual_package,
+        )
+        monkeypatch.setattr(
+            image_generation_tool,
+            "_dispatch_to_plugin_provider",
+            fail_low_level_dispatch,
+        )
+
+        prompt = (
+            "現在用 openai 幫我產出構圖，一樣產出四張不同構圖讓我挑選，"
+            "可以是動作、特寫、或是某個情境下的某一個當下動作"
+        )
+        payload = json.loads(
+            image_generation_tool._handle_image_generate(
+                {
+                    "prompt": prompt,
+                    "reference_image_urls": ["/tmp/ref1.png", "/tmp/ref2.png"],
+                }
+            )
+        )
+
+        assert payload["success"] is True
+        assert payload["route"] == "image_visual_package"
+        assert captured["prompt"] == prompt
+        assert captured["include_image"] is True
+        assert captured["include_video"] is False
+        assert captured["composition_guide_only"] is True
+        assert captured["candidate_budget"] == 4
+        assert captured["candidate_budget_source"] == "planner_default"
+        assert captured["attachments"] == ["/tmp/ref1.png", "/tmp/ref2.png"]
+        assert captured["image_provider"] == "openai-codex"
+
     def test_handle_image_generate_can_disable_visual_tracking(self, monkeypatch, tmp_path):
         from tools import image_generation_tool
 

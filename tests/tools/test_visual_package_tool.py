@@ -623,6 +623,7 @@ def test_visual_package_composition_guide_only_ranks_best_pose_candidate(
                     "composition_guide_only": True,
                     "include_image": True,
                     "include_video": False,
+                    "attachments": ["/tmp/identity-ref-1.png", "/tmp/identity-ref-2.png"],
                     "image_provider": "openai-codex",
                     "candidate_budget": 2,
                 }
@@ -631,6 +632,8 @@ def test_visual_package_composition_guide_only_ranks_best_pose_candidate(
     )
 
     assert len(image_calls) == 2
+    assert image_calls[0]["reference_image_urls"] is None
+    assert image_calls[1]["reference_image_urls"] is None
     assert payload["success"] is True
     assert payload["images"] == [str(strong)]
     assert payload["generation_strategy"]["composition_guide_only"] is True

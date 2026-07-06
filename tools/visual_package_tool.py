@@ -1040,19 +1040,27 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 prompt_variant: dict[str, Any] = {"prompt": image_generation_prompt_base}
                 image_generation_prompt = _image_polish_prompt(image_generation_prompt_base)
             else:
-                reference_policy = _reference_conditioning_policy_for_candidate(
-                    reference_conditioning_variants,
-                    candidate_index=candidate_index,
-                )
-                provider_reference_images, reference_conditioning = _provider_reference_image_urls(
-                    attachments,
-                    reference_binding,
-                    conditioning_policy=reference_policy,
-                )
-                reference_attempt_extra = _provider_reference_attempt_extra(
-                    provider_reference_images,
-                    reference_conditioning,
-                )
+                if composition_guide_only:
+                    provider_reference_images = []
+                    reference_conditioning = None
+                    reference_attempt_extra = {
+                        "composition_guide_only": True,
+                        "reference_conditioning": "disabled_for_abstract_guide",
+                    }
+                else:
+                    reference_policy = _reference_conditioning_policy_for_candidate(
+                        reference_conditioning_variants,
+                        candidate_index=candidate_index,
+                    )
+                    provider_reference_images, reference_conditioning = _provider_reference_image_urls(
+                        attachments,
+                        reference_binding,
+                        conditioning_policy=reference_policy,
+                    )
+                    reference_attempt_extra = _provider_reference_attempt_extra(
+                        provider_reference_images,
+                        reference_conditioning,
+                    )
                 prompt_variant = _prompt_variant_for_candidate(
                     image_prompt_variants,
                     candidate_index=candidate_index,
