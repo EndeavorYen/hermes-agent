@@ -439,8 +439,8 @@ def _make_live_slack_adapter() -> Any:
     from gateway.config import Platform
     from gateway.config import PlatformConfig
     from gateway.config import load_gateway_config
-    from gateway.platforms.slack import AsyncWebClient
-    from gateway.platforms.slack import SlackAdapter
+
+    AsyncWebClient, SlackAdapter = _slack_adapter_exports()
 
     config = load_gateway_config()
     pconfig = config.platforms.get(Platform.SLACK)
@@ -456,6 +456,19 @@ def _make_live_slack_adapter() -> Any:
     adapter = SlackAdapter(pconfig)
     adapter._app = SimpleNamespace(client=AsyncWebClient(token=bot_token))
     return adapter
+
+
+def _slack_adapter_exports() -> tuple[Any, Any]:
+    try:
+        from plugins.platforms.slack.adapter import AsyncWebClient
+        from plugins.platforms.slack.adapter import SlackAdapter
+
+        return AsyncWebClient, SlackAdapter
+    except Exception:
+        from gateway.platforms.slack import AsyncWebClient
+        from gateway.platforms.slack import SlackAdapter
+
+        return AsyncWebClient, SlackAdapter
 
 
 def _load_runtime_env() -> None:

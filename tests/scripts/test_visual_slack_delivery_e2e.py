@@ -1020,7 +1020,7 @@ def test_make_live_slack_adapter_loads_runtime_env(monkeypatch):
     from types import SimpleNamespace
 
     from gateway import config as gateway_config
-    from gateway.platforms import slack as slack_mod
+    import plugins.platforms.slack.adapter as slack_mod
     from scripts import visual_slack_delivery_e2e
 
     loaded = []

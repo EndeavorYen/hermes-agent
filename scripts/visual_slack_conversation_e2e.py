@@ -186,22 +186,24 @@ def _capture_slack_message_event(
     mode: str,
 ) -> dict[str, Any]:
     captured: list[Any] = []
+    if mode == "fixture":
+        event = _synthetic_slack_message_event(
+            prompt=prompt,
+            target=target,
+            thread_id=thread_id,
+        )
+        return {
+            "success": True,
+            "failures": [],
+            "summary": _summarize_message_event(event),
+            "event": event,
+        }
     try:
         from gateway.config import PlatformConfig
-        from gateway.platforms.slack import SlackAdapter
+        from scripts.visual_slack_delivery_e2e import _slack_adapter_exports
+
+        _, SlackAdapter = _slack_adapter_exports()
     except Exception as exc:  # noqa: BLE001 - report should classify missing Slack wiring
-        if mode == "fixture":
-            event = _synthetic_slack_message_event(
-                prompt=prompt,
-                target=target,
-                thread_id=thread_id,
-            )
-            return {
-                "success": True,
-                "failures": [],
-                "summary": _summarize_message_event(event),
-                "event": event,
-            }
         return {
             "success": False,
             "failures": [f"slack_ingress_unavailable:{type(exc).__name__}"],

@@ -99,7 +99,7 @@ def test_visual_slack_conversation_e2e_fixture_dispatches_slack_ingress_and_deli
             "attachments": [],
             "target": "D_TEST",
             "thread_id": report["ingress"]["thread_id"],
-            "candidate_budget": 1,
+            "candidate_budget": 2,
             "video_budget": 1,
             "duration": 4,
             "require_video": True,
