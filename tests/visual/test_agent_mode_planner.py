@@ -306,6 +306,8 @@ def test_agent_mode_planner_provider_contract_uses_character_design_default_prov
     assert plan["arguments"]["image_provider"] == "openai-codex"
     assert plan["arguments"]["image_provider_source"] == "character_design_default"
     assert plan["provider_contract"]["visual_media_provider_override"] == "openai-codex"
+    assert plan["provider_contract"]["visual_agent_llm_provider"] is None
+    assert plan["provider_contract"]["visual_agent_llm_model"] is None
 
 
 def test_agent_mode_planner_provider_contract_uses_composition_guide_default_provider():
@@ -322,6 +324,8 @@ def test_agent_mode_planner_provider_contract_uses_composition_guide_default_pro
     assert plan["arguments"]["image_provider"] == "openai-codex"
     assert plan["arguments"]["image_provider_source"] == "composition_guide_default"
     assert plan["provider_contract"]["visual_media_provider_override"] == "openai-codex"
+    assert plan["provider_contract"]["visual_agent_llm_provider"] is None
+    assert plan["provider_contract"]["visual_agent_llm_model"] is None
 
 
 def test_agent_mode_planner_composition_guide_parses_chinese_candidate_count():

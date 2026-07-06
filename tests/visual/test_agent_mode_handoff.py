@@ -34,6 +34,29 @@ def test_direct_visual_handoff_accepts_explicit_image_to_video_request():
     assert handoff["visual_agent_llm_provider"] == "xai-oauth"
 
 
+def test_direct_visual_handoff_skips_grok_planner_for_openai_composition_guide():
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.5",
+    )
+
+    handoff = build_direct_visual_agent_handoff(
+        agent,
+        "現在用 openai 幫我產出構圖，一樣產出兩張不同構圖讓我挑選",
+    )
+
+    assert handoff is not None
+    assert handoff["arguments"]["composition_guide_only"] is True
+    assert handoff["arguments"]["image_provider"] == "openai-codex"
+    assert "visual_agent_llm_provider" not in handoff["arguments"]
+    assert "visual_agent_llm_model" not in handoff["arguments"]
+    assert handoff["visual_agent_llm_provider"] is None
+    assert handoff["visual_agent_llm_model"] is None
+
+
 def test_direct_visual_handoff_attaches_raphael_control_metadata(tmp_path, monkeypatch):
     from agent.visual.agent_mode.handoff import (
         attach_direct_visual_agent_handoff_metadata,

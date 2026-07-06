@@ -270,7 +270,12 @@ def plan_visual_agent_request(
         "should_use_visual_package": should_use_visual_package,
         "confidence": _confidence(wants_image=wants_image, wants_video=wants_video, attachments=attachments),
         "arguments": arguments,
-        "provider_contract": _provider_contract(contract_image_provider),
+        "provider_contract": _provider_contract(
+            contract_image_provider,
+            visual_agent_llm_enabled=not (
+                character_design_ref_only or composition_guide_only
+            ),
+        ),
         "recovery_policy": {
             "retry_budget": 1,
             "safe_reframe_allowed": True,
@@ -808,12 +813,20 @@ def _requests_visual_polish(value: str) -> bool:
     )
 
 
-def _provider_contract(image_provider_override: str | None) -> dict[str, Any]:
+def _provider_contract(
+    image_provider_override: str | None,
+    *,
+    visual_agent_llm_enabled: bool = True,
+) -> dict[str, Any]:
     return {
         "base_llm_provider": BASE_LLM_PROVIDER,
         "base_llm_model": BASE_LLM_MODEL,
-        "visual_agent_llm_provider": VISUAL_AGENT_LLM_PROVIDER,
-        "visual_agent_llm_model": VISUAL_AGENT_LLM_MODEL,
+        "visual_agent_llm_provider": (
+            VISUAL_AGENT_LLM_PROVIDER if visual_agent_llm_enabled else None
+        ),
+        "visual_agent_llm_model": (
+            VISUAL_AGENT_LLM_MODEL if visual_agent_llm_enabled else None
+        ),
         "visual_media_provider_default": VISUAL_MEDIA_PROVIDER_DEFAULT,
         "visual_media_model_default": VISUAL_MEDIA_MODEL_DEFAULT,
         "visual_media_provider_override": image_provider_override,
