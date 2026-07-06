@@ -162,6 +162,43 @@ def test_visual_slack_conversation_e2e_uses_visual_agent_plan_for_text_video(
     assert report["self_review"]["auto_next_action_count"] == 0
 
 
+def test_visual_slack_conversation_e2e_forwards_composition_guide_plan_flags(
+    monkeypatch,
+    tmp_path,
+):
+    from scripts import visual_slack_conversation_e2e
+
+    prompt = (
+        "現在用 openai 幫我產出構圖，一樣產出四張不同構圖讓我挑選，"
+        "可以是動作、特寫、或是某個情境下的某一個當下動作"
+    )
+    delivery_calls = []
+
+    def fake_delivery(**kwargs):
+        delivery_calls.append(kwargs)
+        return _fake_delivery_report(**kwargs)
+
+    monkeypatch.setattr(
+        visual_slack_conversation_e2e,
+        "build_visual_slack_delivery_e2e_report",
+        fake_delivery,
+    )
+
+    report = visual_slack_conversation_e2e.build_visual_slack_conversation_e2e_report(
+        mode="fixture",
+        work_dir=tmp_path,
+        prompt=prompt,
+        target="D_TEST",
+    )
+
+    assert report["success"] is True
+    assert report["visual_agent_plan"]["reason"] == "composition_guide_request"
+    assert delivery_calls[0]["require_video"] is False
+    assert delivery_calls[0]["include_image"] is True
+    assert delivery_calls[0]["candidate_budget"] == 4
+    assert delivery_calls[0]["composition_guide_only"] is True
+
+
 def test_visual_slack_conversation_e2e_blocks_video_only_candidate_grid_source(
     monkeypatch,
     tmp_path,

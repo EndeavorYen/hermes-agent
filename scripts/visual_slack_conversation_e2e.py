@@ -121,6 +121,21 @@ def build_visual_slack_conversation_e2e_report(
             "storyboard": _planned_optional_dict(planned_args.get("storyboard")),
             "upload": upload,
         }
+        _add_optional_bool(
+            delivery_kwargs,
+            "character_design_ref_only",
+            planned_args.get("character_design_ref_only"),
+        )
+        _add_optional_bool(
+            delivery_kwargs,
+            "composition_guide_only",
+            planned_args.get("composition_guide_only"),
+        )
+        _add_optional_bool(
+            delivery_kwargs,
+            "hybrid_final_combine",
+            planned_args.get("hybrid_final_combine"),
+        )
         slack_delivery = build_visual_slack_delivery_e2e_report(**delivery_kwargs)
         initial_slack_delivery = slack_delivery
         if slack_delivery.get("success") is not True:
@@ -339,6 +354,12 @@ def _planned_optional_bool(value: Any) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
+def _add_optional_bool(target: dict[str, Any], key: str, value: Any) -> None:
+    planned = _planned_optional_bool(value)
+    if planned is not None:
+        target[key] = planned
+
+
 def _planned_optional_str(value: Any) -> str | None:
     if value in (None, ""):
         return None
@@ -370,6 +391,9 @@ def _summarize_visual_agent_plan(plan: dict[str, Any]) -> dict[str, Any]:
             "video_budget": args.get("video_budget"),
             "duration": args.get("duration"),
             "aspect_ratio": args.get("aspect_ratio"),
+            "character_design_ref_only": args.get("character_design_ref_only"),
+            "composition_guide_only": args.get("composition_guide_only"),
+            "hybrid_final_combine": args.get("hybrid_final_combine"),
             "attachment_count": len(_string_list(args.get("attachments"))),
             "storyboard_enabled": bool(storyboard.get("enabled")),
             "storyboard_shot_count": storyboard.get("shot_count"),

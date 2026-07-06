@@ -621,6 +621,35 @@ def test_visual_slack_delivery_live_preserves_runtime_hermes_home(monkeypatch, t
     assert captured["hermes_home"] == str(runtime_home)
 
 
+def test_visual_slack_delivery_passes_composition_guide_flag_to_visual_package(
+    monkeypatch,
+    tmp_path,
+):
+    from scripts import visual_slack_delivery_e2e
+
+    captured = {}
+
+    def fake_package(args):
+        captured.update(args)
+        return _fake_visual_package_payload(tmp_path)
+
+    monkeypatch.setattr(visual_slack_delivery_e2e, "run_visual_package", fake_package)
+
+    report = visual_slack_delivery_e2e.build_visual_slack_delivery_e2e_report(
+        mode="fixture",
+        work_dir=tmp_path,
+        target="D_TEST",
+        require_video=False,
+        candidate_budget=4,
+        composition_guide_only=True,
+    )
+
+    assert report["success"] is True
+    assert captured["include_video"] is False
+    assert captured["candidate_budget"] == 4
+    assert captured["composition_guide_only"] is True
+
+
 def test_visual_slack_delivery_exports_provider_recovery_evidence(monkeypatch, tmp_path):
     from scripts import visual_slack_delivery_e2e
 

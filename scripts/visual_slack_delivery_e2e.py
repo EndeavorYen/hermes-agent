@@ -48,6 +48,9 @@ def build_visual_slack_delivery_e2e_report(
     require_video: bool = True,
     upload: bool | None = None,
     storyboard: dict[str, Any] | None = None,
+    character_design_ref_only: bool | None = None,
+    composition_guide_only: bool | None = None,
+    hybrid_final_combine: bool | None = None,
 ) -> dict[str, Any]:
     mode = mode.strip().lower()
     if mode not in {"fixture", "live"}:
@@ -74,6 +77,12 @@ def build_visual_slack_delivery_e2e_report(
             if storyboard:
                 package_args["include_image"] = False
                 package_args["storyboard"] = storyboard
+            if character_design_ref_only is not None:
+                package_args["character_design_ref_only"] = character_design_ref_only
+            if composition_guide_only is not None:
+                package_args["composition_guide_only"] = composition_guide_only
+            if hybrid_final_combine is not None:
+                package_args["hybrid_final_combine"] = hybrid_final_combine
             payload = run_visual_package(package_args)
 
         visual_evidence = inspect_visual_e2e_evidence(payload, require_video=require_video)
@@ -832,6 +841,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--duration", type=int, default=4)
     parser.add_argument("--no-video", action="store_true")
     parser.add_argument("--upload", action="store_true")
+    parser.add_argument("--character-design-ref-only", action="store_true")
+    parser.add_argument("--composition-guide-only", action="store_true")
+    parser.add_argument("--hybrid-final-combine", action="store_true")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--allow-failures", action="store_true")
     args = parser.parse_args(argv)
@@ -847,6 +859,9 @@ def main(argv: list[str] | None = None) -> int:
         duration=args.duration,
         require_video=not args.no_video,
         upload=True if args.upload else None,
+        character_design_ref_only=True if args.character_design_ref_only else None,
+        composition_guide_only=True if args.composition_guide_only else None,
+        hybrid_final_combine=True if args.hybrid_final_combine else None,
     )
     if args.json:
         print(json.dumps(report, ensure_ascii=False, sort_keys=True))
