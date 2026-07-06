@@ -3058,7 +3058,10 @@ def _composition_guide_prompt(prompt: str) -> str:
         "not final character art. Show simplified grayscale body layout, gesture line, camera angle, crop, "
         "limb placement, body orientation, foreground overlap, and negative space. Use readable mannequin "
         "or silhouette-like shapes. No face, no detailed outfit, no identity, no erotic detail, no background "
-        "scene, no text, no watermark. Prioritize dynamic tension, clear line of action, and a usable final "
+        "scene, no text, no watermark. Render exactly one single uninterrupted frame: one canvas, one pose, "
+        "one composition, one camera angle. no split panels, no contact sheet, no side-by-side comparison, "
+        "no grid, no collage, no storyboard sheet, and no multiple poses inside one image. Prioritize dynamic "
+        "tension, clear line of action, and a usable final "
         "illustration composition."
     )
 
@@ -3885,6 +3888,16 @@ def _package_error(
         return {
             "error_type": "delivery_gate_blocked",
             "error": "visual candidate blocked by active-learning delivery gate",
+        }
+    if any(
+        isinstance(gate, dict)
+        and gate.get("allowed") is False
+        and gate.get("reason") == "no_selected_candidate"
+        for gate in delivery_gate.values()
+    ):
+        return {
+            "error_type": "no_deliverable_media",
+            "error": "visual generation produced no selected deliverable media",
         }
     return {"error_type": None, "error": None}
 

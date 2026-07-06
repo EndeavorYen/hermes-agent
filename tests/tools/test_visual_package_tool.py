@@ -702,12 +702,55 @@ def test_visual_package_composition_guide_delivers_candidates_without_vision_gat
     )
 
     assert len(image_calls) == 2
+    assert "single uninterrupted frame" in image_calls[0]["prompt"]
+    assert "no split panels" in image_calls[0]["prompt"]
     assert vision_calls == []
     assert payload["success"] is True
     assert set(payload["images"]) == {str(path) for path in guides}
     assert payload["delivery_gate"]["image"]["allowed"] is True
     assert payload["delivery_gate"]["image"]["reason"] == "composition_guide_delivery"
     assert payload["generation_strategy"]["composition_guide_only"] is True
+
+
+def test_visual_package_reports_no_deliverable_when_provider_returns_no_image(
+    monkeypatch,
+    tmp_path,
+):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    def fake_generate_image(**kwargs):
+        return {
+            "success": True,
+            "provider": "openai-codex",
+            "model": "gpt-image-2-high",
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        asyncio.run(
+            visual_package_tool._handle_visual_package_generate(
+                {
+                    "prompt": "現在用 openai 幫我產出構圖，產出一張構圖讓我挑選",
+                    "composition_guide_only": True,
+                    "include_image": True,
+                    "include_video": False,
+                    "image_provider": "openai-codex",
+                    "candidate_budget": 1,
+                }
+            )
+        )
+    )
+
+    assert payload["success"] is False
+    assert payload["package_status"] == "failed"
+    assert payload["error_type"] == "no_deliverable_media"
+    assert payload["error"] == "visual generation produced no selected deliverable media"
+    assert payload["images"] == []
+    assert payload["delivery_gate"]["image"]["allowed"] is False
+    assert payload["delivery_gate"]["image"]["reason"] == "no_selected_candidate"
 
 
 def test_visual_package_hybrid_final_combine_retries_once_on_quality_gate(
