@@ -635,12 +635,17 @@ def test_visual_package_composition_guide_only_ranks_best_pose_candidate(
     assert image_calls[0]["reference_image_urls"] is None
     assert image_calls[1]["reference_image_urls"] is None
     assert payload["success"] is True
-    assert payload["images"] == [str(strong)]
+    assert payload["images"] == [str(strong), str(weak)]
     assert payload["generation_strategy"]["composition_guide_only"] is True
     assert payload["rankings"]["image"]["selected_artifact_id"]
+    assert payload["rankings"]["image"]["ranked_artifact_ids"]
     artifact_id = payload["rankings"]["image"]["selected_artifact_id"]
+    selected_ids = payload["delivery_metadata"]["selected_visual_artifact_ids"]
+    assert len(selected_ids) == 2
+    assert selected_ids[0] == artifact_id
     assert payload["delivery_metadata"]["visual_artifacts"][str(strong)]["artifact_id"] == artifact_id
     assert payload["delivery_metadata"]["visual_artifacts"][str(strong)]["artifact_role"] == "pose_composition_ref"
+    assert payload["delivery_metadata"]["visual_artifacts"][str(weak)]["artifact_role"] == "pose_composition_ref"
 
 
 def test_visual_package_hybrid_final_combine_retries_once_on_quality_gate(

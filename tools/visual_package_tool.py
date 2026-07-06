@@ -1649,8 +1649,24 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             if selected_image_role:
                 artifact_roles_by_id[str(selected_image["artifact_id"])] = selected_image_role
             if requested_image:
-                selected_artifact_ids.append(selected_image["artifact_id"])
-                selected_images.append(selected_image["artifact_path"])
+                deliverable_images = (
+                    _ranked_candidate_options(
+                        image_candidates,
+                        image_decision.ranked_artifact_ids,
+                    )
+                    if composition_guide_only
+                    else [selected_image]
+                )
+                for deliverable_image in deliverable_images:
+                    artifact_id = str(deliverable_image.get("artifact_id") or "").strip()
+                    artifact_path = str(deliverable_image.get("artifact_path") or "").strip()
+                    if not artifact_id or not artifact_path:
+                        continue
+                    selected_artifact_ids.append(artifact_id)
+                    selected_images.append(artifact_path)
+                    deliverable_role = str(deliverable_image.get("artifact_role") or "").strip()
+                    if deliverable_role:
+                        artifact_roles_by_id[artifact_id] = deliverable_role
 
     if wants_video:
         if policy_image_first_for_video and video_source_image:
@@ -4659,6 +4675,26 @@ def _selected_candidate(
         (candidate for candidate in candidates if candidate.get("artifact_id") == selected_artifact_id),
         None,
     )
+
+
+def _ranked_candidate_options(
+    candidates: list[dict[str, Any]],
+    ranked_artifact_ids: list[str],
+) -> list[dict[str, Any]]:
+    by_id = {
+        str(candidate.get("artifact_id")): candidate
+        for candidate in candidates
+        if candidate.get("artifact_id")
+    }
+    ranked: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for artifact_id in ranked_artifact_ids or []:
+        key = str(artifact_id)
+        candidate = by_id.get(key)
+        if candidate and key not in seen:
+            ranked.append(candidate)
+            seen.add(key)
+    return ranked
 
 
 def _enforce_non_grid_video_source_decision(

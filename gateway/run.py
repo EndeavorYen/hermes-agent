@@ -1068,6 +1068,13 @@ def _tool_media_seen(ref: str, history_media_paths: set, seen_refs: set) -> bool
     )
 
 
+def _add_tool_media_ref(refs: set, ref: Any) -> None:
+    normalised = _normalise_tool_media_ref(ref)
+    if not normalised:
+        return
+    refs.update(_tool_media_ref_lookup_keys(normalised))
+
+
 def _selected_visual_payload_media_refs(payload: Dict[str, Any]) -> List[str]:
     refs: List[str] = []
     for field in ("images", "videos"):
@@ -1109,6 +1116,211 @@ def _selected_visual_payload_media_refs(payload: Dict[str, Any]) -> List[str]:
         for ref in refs
         if any(key in allowed_keys for key in _tool_media_ref_lookup_keys(ref))
     ]
+
+
+def _current_turn_messages(messages: List[Dict[str, Any]], history_offset: int = 0) -> List[Dict[str, Any]]:
+    if history_offset and len(messages) >= history_offset:
+        return messages[history_offset:]
+    return messages
+
+
+def _tool_name_by_call_id(messages: List[Dict[str, Any]]) -> Dict[str, str]:
+    tool_name_by_call_id: Dict[str, str] = {}
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        for call in msg.get("tool_calls") or []:
+            call_id = call.get("id") or call.get("call_id")
+            fn = call.get("function") or {}
+            name = str(fn.get("name") or call.get("name") or "")
+            if call_id and name:
+                tool_name_by_call_id[str(call_id)] = name
+    return tool_name_by_call_id
+
+
+def _collect_current_turn_delivery_media_paths(
+    messages: List[Dict[str, Any]],
+    history_offset: int = 0,
+) -> set:
+    """Return deliverable media refs produced by current-turn media tools."""
+    refs: set = set()
+    new_messages = _current_turn_messages(messages, history_offset)
+    tool_name_by_call_id = _tool_name_by_call_id(new_messages)
+    for msg in new_messages:
+        if msg.get("role") not in ("tool", "function"):
+            continue
+        call_id = str(msg.get("tool_call_id") or msg.get("call_id") or "")
+        tool_name = tool_name_by_call_id.get(call_id)
+        if tool_name not in _AUTO_APPEND_MEDIA_TOOL_NAMES:
+            continue
+        content = str(msg.get("content") or "")
+        payload: Any = None
+        try:
+            payload = json.loads(content)
+        except Exception:
+            payload = None
+
+        if tool_name == "image_generate" and isinstance(payload, dict) and payload.get("success"):
+            for field in _JSON_MEDIA_TOOL_PATH_FIELDS:
+                path = payload.get(field)
+                if isinstance(path, str) and path:
+                    _add_tool_media_ref(refs, path)
+                    break
+        elif (
+            tool_name in {"visual_agent_generate", "visual_package_generate"}
+            and isinstance(payload, dict)
+            and payload.get("success")
+        ):
+            for path in _selected_visual_payload_media_refs(payload):
+                _add_tool_media_ref(refs, path)
+
+        if "MEDIA:" in content:
+            for match in _TOOL_MEDIA_RE.finditer(content):
+                path = match.group(1).strip().rstrip('",}')
+                if path:
+                    _add_tool_media_ref(refs, path)
+    return refs
+
+
+def _is_managed_visual_media_ref(ref: Any) -> bool:
+    normalised = _normalise_tool_media_ref(ref)
+    if not normalised:
+        return False
+    try:
+        path = Path(normalised).resolve(strict=False)
+    except Exception:
+        return False
+    roots = (
+        Path(get_hermes_home()) / "visual-arsenal" / "library" / "assets",
+        Path(get_hermes_home()) / "media" / "generated",
+        Path(get_hermes_home()) / "cache" / "images",
+        Path(get_hermes_home()) / "cache" / "videos",
+        Path(get_hermes_home()) / "image_cache",
+        Path(get_hermes_home()) / "video_cache",
+    )
+    for root in roots:
+        try:
+            path.relative_to(root.resolve(strict=False))
+            return True
+        except ValueError:
+            continue
+        except Exception:
+            continue
+    return False
+
+
+def _text_may_contain_managed_visual_media_ref(text: str) -> bool:
+    if not isinstance(text, str) or not text:
+        return False
+    needles = (
+        "/visual-arsenal/library/assets/",
+        "/media/generated/",
+        "/cache/images/",
+        "/cache/videos/",
+        "/image_cache/",
+        "/video_cache/",
+    )
+    return any(needle in text for needle in needles)
+
+
+def _is_current_turn_media_ref(ref: Any, current_turn_media_paths: set) -> bool:
+    return any(key in current_turn_media_paths for key in _tool_media_ref_lookup_keys(str(ref)))
+
+
+def _is_prior_turn_media_ref(ref: Any, history_media_paths: set) -> bool:
+    return any(key in history_media_paths for key in _tool_media_ref_lookup_keys(str(ref)))
+
+
+def _is_old_managed_visual_media_ref(ref: Any, turn_started_at: Optional[float]) -> bool:
+    if not _is_managed_visual_media_ref(ref) or turn_started_at is None:
+        return False
+    normalised = _normalise_tool_media_ref(ref)
+    if not normalised:
+        return False
+    try:
+        return Path(normalised).stat().st_mtime < (float(turn_started_at) - 1.0)
+    except Exception:
+        return False
+
+
+def _filter_response_media_refs_to_current_turn(
+    media_files,
+    *,
+    current_turn_media_paths: set,
+    history_media_paths: set,
+    turn_started_at: Optional[float] = None,
+) -> List[tuple]:
+    """Drop final-response media refs that point at stale visual artifacts.
+
+    This is a delivery-layer guard. The model may inspect Visual Arsenal or
+    quote old paths in text, but media upload is reserved for artifacts produced
+    by the current turn's producer tools, unless the file is unrelated to a
+    prior/managed visual artifact.
+    """
+    filtered: List[tuple] = []
+    for media_path, is_voice in media_files or []:
+        if _is_current_turn_media_ref(media_path, current_turn_media_paths):
+            filtered.append((media_path, bool(is_voice)))
+            continue
+        stale = _is_prior_turn_media_ref(media_path, history_media_paths)
+        old_managed_visual = _is_old_managed_visual_media_ref(media_path, turn_started_at)
+        if stale or old_managed_visual:
+            logger.warning(
+                "Skipping stale visual media delivery path from final response: %s",
+                str(media_path)[:200],
+            )
+            continue
+        filtered.append((media_path, bool(is_voice)))
+    return filtered
+
+
+def _sanitize_final_response_media_refs(
+    response: str,
+    *,
+    current_turn_media_paths: set,
+    history_media_paths: set,
+    turn_started_at: Optional[float] = None,
+) -> str:
+    """Remove stale visual media refs before platform adapters extract files."""
+    if not response:
+        return response
+    if not (
+        current_turn_media_paths
+        or history_media_paths
+        or _text_may_contain_managed_visual_media_ref(response)
+    ):
+        return response
+    try:
+        from gateway.platforms.base import BasePlatformAdapter
+    except Exception:
+        return response
+
+    media_files, without_media = BasePlatformAdapter.extract_media(response)
+    images, without_images = BasePlatformAdapter.extract_images(without_media)
+    local_files, cleaned = BasePlatformAdapter.extract_local_files(without_images)
+    combined = list(media_files or []) + [(path, False) for path in (local_files or [])]
+    if not combined:
+        return response
+    kept = _filter_response_media_refs_to_current_turn(
+        combined,
+        current_turn_media_paths=current_turn_media_paths,
+        history_media_paths=history_media_paths,
+        turn_started_at=turn_started_at,
+    )
+    if len(kept) == len(combined):
+        return response
+
+    rebuilt = cleaned.strip()
+    if images:
+        image_lines = [f"![{alt}]({url})" if alt else str(url) for url, alt in images]
+        rebuilt = (rebuilt + "\n" if rebuilt else "") + "\n".join(image_lines)
+    if kept:
+        if any(is_voice for _, is_voice in kept):
+            rebuilt = (rebuilt + "\n" if rebuilt else "") + "[[audio_as_voice]]"
+        rebuilt = (rebuilt + "\n" if rebuilt else "") + "\n".join(
+            f"MEDIA:{path}" for path, _is_voice in kept
+        )
+    return rebuilt.strip()
 
 
 def _collect_auto_append_media_tags(
@@ -1238,14 +1450,9 @@ def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
         if msg.get("role") not in {"tool", "function"}:
             continue
         content = str(msg.get("content", "") or "")
-        if "MEDIA:" in content:
-            for match in _TOOL_MEDIA_RE.finditer(content):
-                p = match.group(1).strip().rstrip('",}')
-                if p:
-                    paths.add(p)
-            continue
         cid = str(msg.get("tool_call_id") or msg.get("call_id") or "")
-        if tool_name_by_call_id.get(cid) == "image_generate":
+        tool_name = tool_name_by_call_id.get(cid)
+        if tool_name == "image_generate":
             try:
                 payload = json.loads(content)
             except Exception:
@@ -1254,8 +1461,21 @@ def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
                 for field in _JSON_MEDIA_TOOL_PATH_FIELDS:
                     jp = payload.get(field)
                     if isinstance(jp, str) and jp:
-                        paths.add(jp)
+                        _add_tool_media_ref(paths, jp)
                         break
+        elif tool_name in {"visual_agent_generate", "visual_package_generate"}:
+            try:
+                payload = json.loads(content)
+            except Exception:
+                payload = None
+            if isinstance(payload, dict) and payload.get("success"):
+                for ref in _selected_visual_payload_media_refs(payload):
+                    _add_tool_media_ref(paths, ref)
+        if "MEDIA:" in content:
+            for match in _TOOL_MEDIA_RE.finditer(content):
+                p = match.group(1).strip().rstrip('",}')
+                if p:
+                    _add_tool_media_ref(paths, p)
     return paths
 
 # ---------------------------------------------------------------------------
@@ -11182,6 +11402,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
                 response = f"{response}\n\n{_footer_line}"
 
+            if response and not _intentional_silence:
+                _history_offset_for_media = agent_result.get("history_offset", len(history))
+                _history_media_for_delivery = set(agent_result.get("history_media_paths") or [])
+                if not _history_media_for_delivery and agent_messages and _history_offset_for_media:
+                    _history_media_for_delivery = _collect_history_media_paths(
+                        agent_messages[:_history_offset_for_media]
+                    )
+                _current_turn_media_for_delivery = _collect_current_turn_delivery_media_paths(
+                    agent_messages,
+                    history_offset=_history_offset_for_media,
+                )
+                response = _sanitize_final_response_media_refs(
+                    response,
+                    current_turn_media_paths=_current_turn_media_for_delivery,
+                    history_media_paths=_history_media_for_delivery,
+                    turn_started_at=_msg_start_time,
+                )
+
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
                 **hook_ctx,
@@ -17888,6 +18126,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
                     "context_length": _context_length,
+                    "history_media_paths": sorted(_history_media_paths),
                 }
             
             # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -17989,6 +18228,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "model": _resolved_model,
                 "context_length": _context_length,
                 "session_id": effective_session_id,
+                "history_media_paths": sorted(_history_media_paths),
                 "response_previewed": result.get("response_previewed", False),
                 "response_transformed": result.get("response_transformed", False),
                 # Pass through the agent_persisted flag so the persistence block
