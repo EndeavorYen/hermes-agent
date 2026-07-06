@@ -399,6 +399,63 @@ class TestPluginDispatch:
         assert payload["success"] is True
         assert payload["image"] == "/tmp/internal.png"
 
+    def test_disable_visual_agent_route_also_bypasses_special_visual_package_route(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        from tools import image_generation_tool
+        from tools import visual_package_tool
+
+        image = tmp_path / "composition-guide.png"
+        image.write_bytes(b"png")
+
+        def fail_visual_package_route(*_args, **_kwargs):
+            raise AssertionError(
+                "_disable_visual_agent_route must prevent recursive visual_package_generate routing"
+            )
+
+        monkeypatch.setattr(
+            visual_package_tool,
+            "_handle_visual_package_generate",
+            fail_visual_package_route,
+        )
+        monkeypatch.setattr(
+            image_generation_tool,
+            "_dispatch_to_plugin_provider",
+            lambda *args, **kwargs: json.dumps(
+                {
+                    "success": True,
+                    "image": str(image),
+                    "provider": "fixture",
+                    "model": "fixture-image",
+                }
+            ),
+        )
+        monkeypatch.setattr(
+            image_generation_tool,
+            "_postprocess_image_generate_result",
+            lambda raw, task_id=None: raw,
+        )
+        monkeypatch.setattr(
+            image_generation_tool,
+            "_track_image_generate_result",
+            lambda raw, **kwargs: raw,
+        )
+
+        payload = json.loads(
+            image_generation_tool._handle_image_generate(
+                {
+                    "prompt": "產出構圖：黑白簡單 pose composition guide，無角色細節",
+                    "_disable_visual_agent_route": True,
+                }
+            )
+        )
+
+        assert payload["success"] is True
+        assert payload["image"] == str(image)
+        assert payload["provider"] == "fixture"
+
     def test_handle_grok_prompt_overrides_configured_openai_provider(self, monkeypatch, tmp_path):
         from tools import image_generation_tool
         from agent import image_gen_registry as registry_module

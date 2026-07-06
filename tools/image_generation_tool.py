@@ -1928,8 +1928,9 @@ def _handle_image_generate(args, **kw):
 
     disable_visual_tracking = bool(args.get("_disable_visual_tracking"))
     visual_plan = None
+    disable_visual_agent_route = _truthy_arg(args.get("_disable_visual_agent_route"))
     agent_mode_route = _agent_mode_requested(args, prompt)
-    if not agent_mode_route:
+    if not agent_mode_route and not disable_visual_agent_route:
         visual_plan = _image_generate_visual_plan_for_special_route(
             prompt,
             image_url=image_url,
