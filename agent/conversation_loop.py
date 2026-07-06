@@ -515,6 +515,159 @@ def _sync_failover_system_message(agent, api_messages, active_system_prompt):
     return sp
 
 
+def _try_direct_visual_agent_handoff(
+    agent: Any,
+    *,
+    user_message: Any,
+    original_user_message: Any,
+    messages: List[Dict[str, Any]],
+    conversation_history: List[Dict[str, Any]] | None,
+    effective_task_id: str,
+    turn_id: str,
+    should_review_memory: bool,
+) -> Dict[str, Any] | None:
+    """Execute a deterministic visual-agent handoff before the base LLM.
+
+    Natural visual generation requests should not depend on the base model
+    choosing the right tool. The handoff still records a normal assistant
+    tool-call turn and tool result so gateway media extraction, audit trails,
+    and transcript replay see the same shape as a model-selected tool call.
+    """
+    try:
+        from agent.visual.agent_mode.handoff import (
+            attach_direct_visual_agent_handoff_metadata,
+            build_direct_visual_agent_handoff,
+            format_direct_visual_agent_handoff_response,
+        )
+    except Exception as exc:
+        logger.debug("direct visual-agent handoff unavailable: %s", exc)
+        return None
+
+    handoff = build_direct_visual_agent_handoff(
+        agent,
+        user_message,
+        original_user_message,
+    )
+    if not handoff:
+        return None
+
+    mode = str(handoff.get("mode") or "")
+    if mode == "pre_llm_clarification":
+        final_response = str(
+            handoff.get("clarification_response")
+            or "請先補充 reference 對應後我再繼續。"
+        ).strip()
+        messages.append(
+            {
+                "role": "assistant",
+                "content": final_response,
+                "finish_reason": "direct_visual_agent_clarification",
+            }
+        )
+        from agent.turn_finalizer import finalize_turn
+
+        return finalize_turn(
+            agent,
+            final_response=final_response,
+            api_call_count=0,
+            interrupted=False,
+            failed=False,
+            messages=messages,
+            conversation_history=conversation_history,
+            effective_task_id=effective_task_id,
+            turn_id=turn_id,
+            user_message=user_message,
+            original_user_message=original_user_message,
+            _should_review_memory=should_review_memory,
+            _turn_exit_reason="direct_visual_agent_clarification",
+        )
+
+    tool_name = str(handoff.get("tool_name") or "").strip()
+    arguments = handoff.get("arguments") if isinstance(handoff.get("arguments"), dict) else {}
+    if not tool_name or not arguments:
+        logger.warning("direct visual-agent handoff produced no executable tool call")
+        return None
+
+    tool_call_id = f"direct_visual_{uuid.uuid4().hex[:24]}"
+    assistant_msg = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": tool_call_id,
+                "type": "function",
+                "function": {
+                    "name": tool_name,
+                    "arguments": json.dumps(arguments, ensure_ascii=False),
+                },
+            }
+        ],
+        "finish_reason": "tool_calls",
+        "_direct_visual_agent_handoff": True,
+    }
+    messages.append(assistant_msg)
+    try:
+        agent._emit_interim_assistant_message(assistant_msg)
+    except Exception:
+        pass
+    try:
+        agent._flush_messages_to_session_db(messages, conversation_history)
+    except Exception as exc:
+        logger.warning(
+            "Incremental direct visual handoff persistence failed before execution "
+            "(session=%s): %s",
+            getattr(agent, "session_id", None) or "none",
+            exc,
+        )
+
+    logger.info(
+        "direct visual-agent handoff activated: tool=%s session=%s",
+        tool_name,
+        getattr(agent, "session_id", None) or "none",
+    )
+    from tools.registry import registry
+
+    raw_tool_result = registry.dispatch(tool_name, arguments)
+    if not isinstance(raw_tool_result, str):
+        raw_tool_result = json.dumps(raw_tool_result, ensure_ascii=False)
+    raw_tool_result = attach_direct_visual_agent_handoff_metadata(raw_tool_result, handoff)
+    messages.append(
+        {
+            "role": "tool",
+            "name": tool_name,
+            "tool_call_id": tool_call_id,
+            "content": raw_tool_result,
+        }
+    )
+
+    final_response = format_direct_visual_agent_handoff_response(raw_tool_result)
+    messages.append(
+        {
+            "role": "assistant",
+            "content": final_response,
+            "finish_reason": "direct_visual_agent_handoff",
+        }
+    )
+
+    from agent.turn_finalizer import finalize_turn
+
+    return finalize_turn(
+        agent,
+        final_response=final_response,
+        api_call_count=0,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=conversation_history,
+        effective_task_id=effective_task_id,
+        turn_id=turn_id,
+        user_message=user_message,
+        original_user_message=original_user_message,
+        _should_review_memory=should_review_memory,
+        _turn_exit_reason="direct_visual_agent_handoff",
+    )
+
+
 def run_conversation(
     agent,
     user_message: str,
@@ -629,6 +782,19 @@ def run_conversation(
             effective_task_id=effective_task_id,
             should_review_memory=_should_review_memory,
         )
+
+    _direct_visual_result = _try_direct_visual_agent_handoff(
+        agent,
+        user_message=user_message,
+        original_user_message=original_user_message,
+        messages=messages,
+        conversation_history=conversation_history,
+        effective_task_id=effective_task_id,
+        turn_id=turn_id,
+        should_review_memory=_should_review_memory,
+    )
+    if _direct_visual_result is not None:
+        return _direct_visual_result
 
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
