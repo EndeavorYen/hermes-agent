@@ -874,6 +874,9 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         )
         if feedback_strategy_plan is not None:
             strategy_plan = feedback_strategy_plan
+    if composition_guide_only:
+        inline_vision_judge = False
+        provider_retry_budget = 0
     learning: dict[str, Any] = {
         "mode": _learning_mode(
             controlled_strategy_plan=controlled_strategy_plan,
@@ -1264,7 +1267,9 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         learning["active_learning"]["image"] = image_learning
         selected_image = _selected_candidate(image_candidates, image_decision.selected_artifact_id)
         image_gate = _delivery_gate_decision(image_learning, selected_image, prompt=prompt)
-        if hybrid_final_combine:
+        if composition_guide_only:
+            image_gate = _composition_guide_delivery_gate(image_learning, selected_image)
+        elif hybrid_final_combine:
             hybrid_quality_gate_metadata = _hybrid_final_combine_quality_gate(selected_image)
             if hybrid_quality_gate_metadata.get("passed") is not True:
                 image_gate = _with_hybrid_quality_gate_block(image_gate, hybrid_quality_gate_metadata)
@@ -1273,9 +1278,13 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         if direct_polish_mode:
             image_gate["polish_pass_attempted"] = True
         delivery_gate["image"] = image_gate
-        if not direct_polish_mode and _should_run_image_polish_pass(
-            polish_provider=polish_provider_override,
-            selected_image=selected_image,
+        if (
+            not direct_polish_mode
+            and not composition_guide_only
+            and _should_run_image_polish_pass(
+                polish_provider=polish_provider_override,
+                selected_image=selected_image,
+            )
         ):
             source_image = str(selected_image.get("artifact_path") or "").strip()
             polish_prompt = build_provider_facing_visual_prompt(
@@ -1385,6 +1394,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         if (
             selected_image
             and not image_gate["allowed"]
+            and not composition_guide_only
             and not hybrid_final_combine
             and _should_escalate_candidate_budget(image_gate)
         ):
@@ -1500,7 +1510,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 image_gate["candidate_budget_escalated"] = True
                 image_gate["escalated_from"] = escalated_from
                 delivery_gate["image"] = image_gate
-        if selected_image and not image_gate["allowed"]:
+        if selected_image and not image_gate["allowed"] and not composition_guide_only:
             image_repair_mode = (
                 "hybrid_final_combine"
                 if hybrid_final_combine
@@ -4821,6 +4831,27 @@ def _delivery_gate_decision(
         "active_learning_action": action,
         "quality_issues": quality_issues,
         "ignored_quality_issues": ignored_quality_issues,
+    }
+
+
+def _composition_guide_delivery_gate(
+    active_learning: dict[str, Any],
+    candidate: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if candidate is None:
+        return {
+            "allowed": False,
+            "reason": "no_selected_candidate",
+            "active_learning_action": active_learning.get("action"),
+            "quality_issues": [],
+            "ignored_quality_issues": [],
+        }
+    return {
+        "allowed": True,
+        "reason": "composition_guide_delivery",
+        "active_learning_action": active_learning.get("action"),
+        "quality_issues": [],
+        "ignored_quality_issues": [],
     }
 
 

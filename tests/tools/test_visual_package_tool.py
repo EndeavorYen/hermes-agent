@@ -648,6 +648,68 @@ def test_visual_package_composition_guide_only_ranks_best_pose_candidate(
     assert payload["delivery_metadata"]["visual_artifacts"][str(weak)]["artifact_role"] == "pose_composition_ref"
 
 
+def test_visual_package_composition_guide_delivers_candidates_without_vision_gate(
+    monkeypatch,
+    tmp_path,
+):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    guides = [tmp_path / "guide-1.png", tmp_path / "guide-2.png"]
+    for index, guide in enumerate(guides):
+        guide.write_bytes(_ONE_PIXEL_PNG + bytes([index]))
+    image_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        image_path = guides[len(image_calls) - 1]
+        return {
+            "success": True,
+            "image": str(image_path),
+            "provider": "openai-codex",
+            "model": "gpt-image-2-high",
+        }
+
+    vision_calls = []
+
+    def fake_inline_vision(candidate):
+        vision_calls.append(candidate["artifact_path"])
+        return {
+            "pose_composition": 0.1,
+            "composition": 0.1,
+            "visual_appeal": 0.1,
+            "confidence": 0.1,
+            "quality_issues": ["abstract_guide_should_not_be_quality_gated"],
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+    monkeypatch.setattr(visual_package_tool, "analyze_candidate_with_vision_tool", fake_inline_vision)
+
+    payload = json.loads(
+        asyncio.run(
+            visual_package_tool._handle_visual_package_generate(
+                {
+                    "prompt": "現在用 openai 幫我產出構圖，產出兩張不同構圖讓我挑選，黑白簡單 pose guide",
+                    "composition_guide_only": True,
+                    "include_image": True,
+                    "include_video": False,
+                    "image_provider": "openai-codex",
+                    "candidate_budget": 2,
+                    "inline_vision_judge": True,
+                }
+            )
+        )
+    )
+
+    assert len(image_calls) == 2
+    assert vision_calls == []
+    assert payload["success"] is True
+    assert set(payload["images"]) == {str(path) for path in guides}
+    assert payload["delivery_gate"]["image"]["allowed"] is True
+    assert payload["delivery_gate"]["image"]["reason"] == "composition_guide_delivery"
+    assert payload["generation_strategy"]["composition_guide_only"] is True
+
+
 def test_visual_package_hybrid_final_combine_retries_once_on_quality_gate(
     monkeypatch,
     tmp_path,
