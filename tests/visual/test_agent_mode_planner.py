@@ -247,6 +247,18 @@ def test_agent_mode_planner_infers_portrait_aspect_for_full_body_fashion_request
     assert plan["arguments"]["aspect_ratio"] == "9:16"
 
 
+def test_agent_mode_planner_does_not_turn_final_image_video_composition_quality_into_guide():
+    from agent.visual.agent_mode.planner import plan_visual_agent_request
+
+    plan = plan_visual_agent_request("請產出一張性感時尚寫真圖片和一段短影片，重視美女臉、絲襪質感、腿部構圖。")
+
+    assert plan["reason"] == "image_plus_video_request"
+    assert plan["arguments"]["include_image"] is True
+    assert plan["arguments"]["include_video"] is True
+    assert "composition_guide_only" not in plan["arguments"]
+    assert plan["arguments"]["image_provider_source"] == "visual_agent_default"
+
+
 def test_agent_mode_planner_infers_landscape_aspect_for_desk_product_photography():
     from agent.visual.agent_mode.planner import plan_visual_agent_request
 

@@ -648,6 +648,23 @@ def test_visual_package_composition_guide_only_ranks_best_pose_candidate(
     assert payload["delivery_metadata"]["visual_artifacts"][str(weak)]["artifact_role"] == "pose_composition_ref"
 
 
+def test_visual_package_category_treats_openai_composition_as_composition_guide():
+    from tools import visual_package_tool
+
+    assert (
+        visual_package_tool._visual_request_category(
+            "用 openai 幫我產出構圖，給我四張構圖候選，每張都有個情境的某個瞬間。請開始"
+        )
+        == "composition_guide"
+    )
+
+
+def test_visual_package_category_does_not_treat_openai_as_pen_product():
+    from tools import visual_package_tool
+
+    assert visual_package_tool._visual_request_category("用 openai 幫我畫一張月光神社場景") == "scene"
+
+
 def test_visual_package_composition_guide_delivers_candidates_without_vision_gate(
     monkeypatch,
     tmp_path,

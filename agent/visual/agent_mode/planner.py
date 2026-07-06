@@ -126,12 +126,16 @@ _COMPOSITION_GUIDE_ONLY_TOKENS = (
     "先产构图",
     "產出構圖",
     "产出构图",
+    "生成構圖",
+    "生成构图",
+    "給我構圖",
+    "给我构图",
     "產畫面構圖",
     "产画面构图",
-    "畫面構圖",
-    "画面构图",
     "構圖草圖",
     "构图草图",
+    "構圖候選",
+    "构图候选",
     "動作構圖",
     "动作构图",
 )
@@ -761,9 +765,12 @@ def _looks_like_composition_guide_request(value: str) -> bool:
     if _contains_any(lowered, _COMPOSITION_GUIDE_ONLY_TOKENS):
         return True
     compact = re.sub(r"\s+", "", lowered)
-    return "構圖" in compact and any(
-        token in compact
-        for token in ("先產", "產出", "生成", "給我", "草圖", "guide")
+    if "構圖" not in compact and "构图" not in compact:
+        return False
+    return any(token in compact for token in ("構圖草圖", "构图草图", "構圖候選", "构图候选")) or (
+        any(token in compact for token in ("先產", "先产", "生成", "給我", "给我"))
+        and any(token in compact for token in ("構圖", "构图"))
+        and not any(token in compact for token in ("腿部構圖", "腿部构图", "畫面構圖", "画面构图"))
     )
 
 

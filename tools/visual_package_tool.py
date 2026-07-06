@@ -5407,26 +5407,68 @@ def _portrait_like_prompt(prompt: str) -> bool:
 
 
 def _visual_request_category(prompt: str) -> str:
+    if _composition_guide_like_prompt(prompt):
+        return "composition_guide"
     if _anime_like_prompt(prompt):
         return "anime_character"
     if _portrait_like_prompt(prompt):
         return "portrait"
-    text = prompt.lower()
-    if any(
-        token in text
-        for token in (
-            "product",
-            "object",
-            "pen",
-            "fountain pen",
-            "鋼筆",
-            "產品",
-            "物品",
-            "商品",
-        )
-    ):
+    if _product_like_prompt(prompt):
         return "product"
     return "scene"
+
+
+def _composition_guide_like_prompt(prompt: str) -> bool:
+    text = str(prompt or "").lower()
+    compact = re.sub(r"\s+", "", text)
+    return any(
+        token in text
+        for token in (
+            "pose guide",
+            "composition guide",
+            "layout guide",
+        )
+    ) or any(
+        token in compact
+        for token in (
+            "先產構圖",
+            "先产构图",
+            "產出構圖",
+            "产出构图",
+            "生成構圖",
+            "生成构图",
+            "給我構圖",
+            "给我构图",
+            "產畫面構圖",
+            "产画面构图",
+            "構圖草圖",
+            "构图草图",
+            "構圖候選",
+            "构图候选",
+            "動作構圖",
+            "动作构图",
+        )
+    ) or any(token in compact for token in ("構圖草圖", "构图草图", "構圖候選", "构图候选")) or (
+        ("構圖" in compact or "构图" in compact)
+        and any(token in compact for token in ("先產", "先产", "生成", "給我", "给我"))
+        and not any(token in compact for token in ("腿部構圖", "腿部构图", "畫面構圖", "画面构图"))
+    )
+
+
+def _product_like_prompt(prompt: str) -> bool:
+    text = str(prompt or "").lower()
+    compact = re.sub(r"\s+", "", text)
+    if any(token in compact for token in ("鋼筆", "產品", "物品", "商品")):
+        return True
+    return any(
+        re.search(pattern, text)
+        for pattern in (
+            r"\bproduct\b",
+            r"\bobject\b",
+            r"\bfountain\s+pen\b",
+            r"\bpen\b",
+        )
+    )
 
 
 def _anime_like_prompt(prompt: str) -> bool:
