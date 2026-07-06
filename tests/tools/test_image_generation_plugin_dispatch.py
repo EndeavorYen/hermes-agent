@@ -356,7 +356,7 @@ class TestPluginDispatch:
         assert captured["include_video"] is False
         assert captured["composition_guide_only"] is True
         assert captured["candidate_budget"] == 4
-        assert captured["candidate_budget_source"] == "planner_default"
+        assert captured["candidate_budget_source"] == "user"
         assert captured["attachments"] == ["/tmp/ref1.png", "/tmp/ref2.png"]
         assert captured["image_provider"] == "openai-codex"
 

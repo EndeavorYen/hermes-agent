@@ -218,11 +218,12 @@ def plan_visual_agent_request(
             "edit_anchor": False,
         }
     if wants_image or image_first_for_video:
-        arguments["candidate_budget"] = _planned_candidate_budget(
+        candidate_budget, candidate_budget_source = _planned_candidate_budget(
             prompt,
             composition_guide_only=composition_guide_only,
         )
-        arguments["candidate_budget_source"] = "planner_default"
+        arguments["candidate_budget"] = candidate_budget
+        arguments["candidate_budget_source"] = candidate_budget_source
     if wants_video:
         arguments["video_budget"] = 1
     if character_design_ref_only:
@@ -777,19 +778,19 @@ def _planned_candidate_budget(
     value: str,
     *,
     composition_guide_only: bool,
-) -> int:
+) -> tuple[int, str]:
     if not composition_guide_only:
-        return 2
+        return 2, "planner_default"
     text = str(value or "")
     match = re.search(r"([2-4])\s*(?:張|张|個|个|candidates?|options?)", text, re.IGNORECASE)
     if match:
-        return max(2, min(4, int(match.group(1))))
+        return max(2, min(4, int(match.group(1)))), "user"
     match = re.search(r"([二兩两三四])\s*(?:張|张|個|个)", text)
     if match:
         count = {"二": 2, "兩": 2, "两": 2, "三": 3, "四": 4}.get(match.group(1))
         if count is not None:
-            return count
-    return 3
+            return count, "user"
+    return 3, "planner_default"
 
 
 def _requests_visual_polish(value: str) -> bool:

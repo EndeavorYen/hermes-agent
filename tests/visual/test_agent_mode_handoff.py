@@ -51,6 +51,8 @@ def test_direct_visual_handoff_skips_grok_planner_for_openai_composition_guide()
     assert handoff is not None
     assert handoff["arguments"]["composition_guide_only"] is True
     assert handoff["arguments"]["image_provider"] == "openai-codex"
+    assert handoff["arguments"]["candidate_budget"] == 2
+    assert handoff["arguments"]["candidate_budget_source"] == "user"
     assert "visual_agent_llm_provider" not in handoff["arguments"]
     assert "visual_agent_llm_model" not in handoff["arguments"]
     assert handoff["visual_agent_llm_provider"] is None

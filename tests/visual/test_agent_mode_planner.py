@@ -321,6 +321,7 @@ def test_agent_mode_planner_provider_contract_uses_composition_guide_default_pro
     assert plan["arguments"]["include_image"] is True
     assert plan["arguments"]["include_video"] is False
     assert plan["arguments"]["candidate_budget"] == 4
+    assert plan["arguments"]["candidate_budget_source"] == "user"
     assert plan["arguments"]["image_provider"] == "openai-codex"
     assert plan["arguments"]["image_provider_source"] == "composition_guide_default"
     assert plan["provider_contract"]["visual_media_provider_override"] == "openai-codex"
@@ -340,7 +341,19 @@ def test_agent_mode_planner_composition_guide_parses_chinese_candidate_count():
     assert plan["reason"] == "composition_guide_request"
     assert plan["arguments"]["composition_guide_only"] is True
     assert plan["arguments"]["candidate_budget"] == 4
+    assert plan["arguments"]["candidate_budget_source"] == "user"
     assert plan["arguments"]["image_provider"] == "openai-codex"
+
+
+def test_agent_mode_planner_composition_guide_default_count_is_not_user_locked():
+    from agent.visual.agent_mode.planner import plan_visual_agent_request
+
+    plan = plan_visual_agent_request("先產構圖，低角度全身動態姿勢")
+
+    assert plan["reason"] == "composition_guide_request"
+    assert plan["arguments"]["composition_guide_only"] is True
+    assert plan["arguments"]["candidate_budget"] == 3
+    assert plan["arguments"]["candidate_budget_source"] == "planner_default"
 
 
 def test_agent_mode_planner_allows_openai_image2_media_override():
