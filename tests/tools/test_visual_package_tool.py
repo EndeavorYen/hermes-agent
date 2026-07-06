@@ -712,6 +712,65 @@ def test_visual_package_composition_guide_delivers_candidates_without_vision_gat
     assert payload["generation_strategy"]["composition_guide_only"] is True
 
 
+def test_visual_package_composition_guide_internal_image_calls_do_not_reenter_route(
+    monkeypatch,
+    tmp_path,
+):
+    from tools import image_generation_tool
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    guides = [tmp_path / f"guide-{index}.png" for index in range(4)]
+    for index, guide in enumerate(guides):
+        guide.write_bytes(_ONE_PIXEL_PNG + bytes([index]))
+    provider_calls = []
+
+    def fail_visual_package_reroute(**_kwargs):
+        raise AssertionError("internal visual package image calls must not re-enter visual package routing")
+
+    def fake_dispatch_to_provider(prompt, aspect_ratio, **kwargs):
+        provider_calls.append({"prompt": prompt, "aspect_ratio": aspect_ratio, **kwargs})
+        image_path = guides[len(provider_calls) - 1]
+        return json.dumps(
+            {
+                "success": True,
+                "image": str(image_path),
+                "provider": "openai-codex",
+                "model": "gpt-image-2-high",
+            }
+        )
+
+    def fail_tracking(raw, **_kwargs):
+        raise AssertionError("internal visual package image calls must not create nested visual requests")
+
+    monkeypatch.setattr(image_generation_tool, "_route_visual_image_to_package", fail_visual_package_reroute)
+    monkeypatch.setattr(image_generation_tool, "_dispatch_to_plugin_provider", fake_dispatch_to_provider)
+    monkeypatch.setattr(image_generation_tool, "_track_image_generate_result", fail_tracking)
+
+    payload = json.loads(
+        asyncio.run(
+            visual_package_tool._handle_visual_package_generate(
+                {
+                    "prompt": (
+                        "現在用 openai 幫我產出構圖，一樣產出四張不同構圖讓我挑選，"
+                        "可以是動作、特寫、或是某個情境下的某一個當下動作"
+                    ),
+                    "composition_guide_only": True,
+                    "include_image": True,
+                    "include_video": False,
+                    "image_provider": "openai-codex",
+                    "candidate_budget": 4,
+                }
+            )
+        )
+    )
+
+    assert len(provider_calls) == 4
+    assert payload["success"] is True
+    assert set(payload["images"]) == {str(path) for path in guides}
+    assert payload["generation_strategy"]["composition_guide_only"] is True
+
+
 def test_visual_package_reports_no_deliverable_when_provider_returns_no_image(
     monkeypatch,
     tmp_path,
@@ -751,6 +810,17 @@ def test_visual_package_reports_no_deliverable_when_provider_returns_no_image(
     assert payload["images"] == []
     assert payload["delivery_gate"]["image"]["allowed"] is False
     assert payload["delivery_gate"]["image"]["reason"] == "no_selected_candidate"
+
+
+def test_visual_package_exception_failure_classifies_resource_exhaustion():
+    from tools import visual_package_tool
+
+    failure = visual_package_tool._visual_package_exception_failure(
+        OSError("[Errno 24] Too many open files: '/Users/simon/.hermes/.drain_request.json'")
+    )
+
+    assert failure["error_type"] == "visual_package_resource_exhaustion"
+    assert "restart the gateway" in failure["recovery_hint"]
 
 
 def test_visual_package_hybrid_final_combine_retries_once_on_quality_gate(

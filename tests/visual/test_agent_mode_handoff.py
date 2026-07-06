@@ -1133,6 +1133,23 @@ def test_direct_visual_handoff_formats_bare_tool_error_as_failure():
     assert response == "視覺生成失敗：visual_package_generate is for image/video generation, not visual feedback"
 
 
+def test_direct_visual_handoff_formats_resource_exhaustion_as_actionable_failure():
+    from agent.visual.agent_mode.handoff import format_direct_visual_agent_handoff_response
+
+    response = format_direct_visual_agent_handoff_response(
+        json.dumps(
+            {
+                "success": False,
+                "package_status": "failed",
+                "error_type": "visual_package_resource_exhaustion",
+                "error": "unable to open database file",
+            }
+        )
+    )
+
+    assert response == "視覺生成失敗：本機 visual package 資源耗盡，已停止避免重複產生；請重啟 gateway 後再試。"
+
+
 def test_direct_visual_handoff_formats_recovery_summary_for_blocked_candidate():
     from agent.visual.agent_mode.handoff import format_direct_visual_agent_handoff_response
 

@@ -664,15 +664,40 @@ async def _handle_visual_package_generate(args: dict[str, Any], **_kw: Any) -> s
         return json.dumps(payload, ensure_ascii=False)
     except Exception as exc:  # noqa: BLE001 - tool should surface structured failure
         logger.warning("visual package generation failed: %s", exc)
+        failure = _visual_package_exception_failure(exc)
         return json.dumps(
             {
                 "success": False,
                 "package_status": "failed",
-                "error": str(exc),
-                "error_type": type(exc).__name__,
+                "error": failure["error"],
+                "error_type": failure["error_type"],
+                "recovery_hint": failure.get("recovery_hint"),
             },
             ensure_ascii=False,
         )
+
+
+def _visual_package_exception_failure(exc: Exception) -> dict[str, str]:
+    message = str(exc)
+    lowered = message.lower()
+    if (
+        "too many open files" in lowered
+        or "unable to open database file" in lowered
+        or "database is locked" in lowered
+    ):
+        return {
+            "error_type": "visual_package_resource_exhaustion",
+            "error": message,
+            "recovery_hint": (
+                "visual package generation hit local resource/database exhaustion; "
+                "restart the gateway and check for recursive visual routing or stale in-flight requests"
+            ),
+        }
+    return {
+        "error_type": type(exc).__name__,
+        "error": message,
+        "recovery_hint": "inspect visual package logs for the first failing provider or routing layer",
+    }
 
 
 def _visual_agent_original_prompt(args: dict[str, Any], fallback_prompt: str) -> str:

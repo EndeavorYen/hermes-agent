@@ -1203,6 +1203,8 @@ def format_direct_visual_agent_handoff_response(raw_tool_result: str) -> str:
         recovery_detail = _format_delivery_recovery_detail(payload.get("delivery_recovery"))
         if recovery_detail:
             return recovery_detail
+        if payload.get("error_type") == "visual_package_resource_exhaustion":
+            return "視覺生成失敗：本機 visual package 資源耗盡，已停止避免重複產生；請重啟 gateway 後再試。"
         detail = _short_error_detail(
             payload.get("error") or payload.get("message") or payload.get("error_type")
         )
