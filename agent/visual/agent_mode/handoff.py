@@ -53,7 +53,8 @@ def build_direct_visual_agent_handoff(
         return None
 
     source = original_user_message if original_user_message is not None else user_message
-    prompt = _extract_text(source) or _extract_text(user_message)
+    raw_prompt = _extract_raw_text(source) or _extract_raw_text(user_message)
+    prompt = strip_visual_prompt_metadata(raw_prompt) or _extract_text(source) or _extract_text(user_message)
     attachments = _extract_attachments(source) or _extract_attachments(user_message)
     if (
         is_visual_prompt_disclosure_request(prompt)
@@ -79,7 +80,7 @@ def build_direct_visual_agent_handoff(
         return None
 
     plan = plan_visual_agent_request(
-        prompt,
+        raw_prompt or prompt,
         attachments=attachments,
         force_image_output=bool(session_reference_entries),
     )
@@ -1291,6 +1292,29 @@ def _extract_text(value: Any) -> str:
                 if text:
                     parts.append(text)
     return strip_visual_prompt_metadata("\n".join(parts))
+
+
+def _extract_raw_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        return _extract_raw_text(value.get("content"))
+    if not isinstance(value, (list, tuple)):
+        return ""
+    parts: list[str] = []
+    for item in value:
+        if isinstance(item, str) and item.strip():
+            parts.append(item.strip())
+        elif isinstance(item, dict):
+            if item.get("type") in {"text", "input_text"}:
+                text = str(item.get("text") or "").strip()
+                if text:
+                    parts.append(text)
+            elif isinstance(item.get("content"), (str, list, tuple, dict)):
+                text = _extract_raw_text(item.get("content"))
+                if text:
+                    parts.append(text)
+    return "\n".join(parts).strip()
 
 
 def _extract_attachments(value: Any) -> list[str]:

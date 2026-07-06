@@ -5,6 +5,7 @@ from typing import Any
 
 from agent.visual.feedback import is_visual_feedback_only_text
 from agent.visual.feedback import parse_visual_feedback
+from agent.visual.prompt_text import strip_visual_prompt_metadata
 
 
 BASE_LLM_PROVIDER = "openai-codex"
@@ -166,7 +167,8 @@ def plan_visual_agent_request(
     attachments: list[str] | None = None,
     force_image_output: bool = False,
 ) -> dict[str, Any]:
-    prompt = str(prompt or "").strip()
+    raw_prompt = str(prompt or "").strip()
+    prompt = strip_visual_prompt_metadata(raw_prompt) or raw_prompt
     attachments = [item for item in (attachments or []) if isinstance(item, str) and item.strip()]
     if _looks_like_text_only_visual_analysis(prompt):
         return _text_only_visual_analysis_plan()
@@ -240,7 +242,7 @@ def plan_visual_agent_request(
     duration = _duration_seconds(prompt)
     if duration is not None:
         arguments["duration"] = duration
-    image_provider = _requested_image_provider(prompt)
+    image_provider = _requested_image_provider(prompt) or _requested_image_provider(raw_prompt)
     if image_provider is not None:
         image_provider_source = "prompt_override"
     elif character_design_ref_only:

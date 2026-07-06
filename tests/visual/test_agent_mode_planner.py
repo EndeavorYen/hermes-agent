@@ -345,6 +345,31 @@ def test_agent_mode_planner_composition_guide_parses_chinese_candidate_count():
     assert plan["arguments"]["image_provider"] == "openai-codex"
 
 
+def test_agent_mode_planner_uses_current_slack_thread_intent_for_composition_guide():
+    from agent.visual.agent_mode.planner import plan_visual_agent_request
+
+    prompt = """[Replying to: "用 openai 幫我繪製這位人物的設定圖"]
+
+[Thread context — prior messages in this thread (not yet in conversation history):]
+[thread parent] simon: 用 openai 幫我繪製這位人物的設定圖
+simon: 這四張根本看起來就一模一樣，不同畫風是指四個不同繪者的風格，請重新產生
+simon: 現在用 openai 幫我產出構圖，一樣產出四張不同構圖讓我挑選
+[End of thread context]
+
+用 openai 幫我產出構圖，給我四張構圖候選，每張都有個情境的某個瞬間。請開始"""
+
+    plan = plan_visual_agent_request(prompt)
+
+    assert plan["reason"] == "composition_guide_request"
+    assert plan["arguments"]["prompt"].startswith("用 openai 幫我產出構圖")
+    assert "Thread context" not in plan["arguments"]["prompt"]
+    assert "Replying to" not in plan["arguments"]["prompt"]
+    assert plan["arguments"]["composition_guide_only"] is True
+    assert "character_design_ref_only" not in plan["arguments"]
+    assert plan["arguments"]["candidate_budget"] == 4
+    assert plan["arguments"]["candidate_budget_source"] == "user"
+
+
 def test_agent_mode_planner_composition_guide_default_count_is_not_user_locked():
     from agent.visual.agent_mode.planner import plan_visual_agent_request
 

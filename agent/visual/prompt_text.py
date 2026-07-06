@@ -66,6 +66,8 @@ def strip_visual_prompt_metadata(value: Any) -> str:
         if index >= 0:
             cut_at = min(cut_at, index)
     text = text[:cut_at].strip()
+    text = _THREAD_CONTEXT_RE.sub("", text)
+    text = _REPLYING_TO_RE.sub("", text).strip()
     return re.sub(r"\n{3,}", "\n\n", text)
 
 
