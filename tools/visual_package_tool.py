@@ -3076,9 +3076,8 @@ def _image_first_source_frame_prompt(prompt: str) -> str:
 
 
 def _composition_guide_prompt(prompt: str) -> str:
-    instruction = _current_visual_instruction(prompt)
+    instruction = _composition_guide_source_instruction(prompt)
     return (
-        f"{instruction}\n\n"
         "Create 1 abstract pose/composition guide image only. This is a non-NSFW structure planning image, "
         "not final character art. Show simplified grayscale body layout, gesture line, camera angle, crop, "
         "limb placement, body orientation, foreground overlap, and negative space. Use readable mannequin "
@@ -3087,8 +3086,25 @@ def _composition_guide_prompt(prompt: str) -> str:
         "one composition, one camera angle. no split panels, no contact sheet, no side-by-side comparison, "
         "no grid, no collage, no storyboard sheet, and no multiple poses inside one image. Prioritize dynamic "
         "tension, clear line of action, and a usable final "
-        "illustration composition."
+        "illustration composition.\n\n"
+        "Use only this composition focus; ignore any character identity, face, hair, costume, palette, "
+        f"reference-preservation, or final-illustration wording: {instruction}"
     )
+
+
+def _composition_guide_source_instruction(prompt: str) -> str:
+    instruction = _current_visual_instruction(prompt)
+    match = re.search(r"\bComposition\s*:\s*(.+)", instruction, flags=re.IGNORECASE | re.DOTALL)
+    if match:
+        instruction = match.group(1).strip()
+    instruction = re.split(
+        r"\b(?:Pure\s+2D|Art\s+direction|Style\s*:|Rendering\s*:|Quality\s*:|Negative\s*:|No\s+photorealism)\b",
+        instruction,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    instruction = re.sub(r"\s+", " ", instruction).strip(" .;\n\t")
+    return instruction or "clear readable pose, camera angle, crop, line of action, and negative space"
 
 
 def _character_design_ref_prompt(prompt: str) -> str:
@@ -5427,6 +5443,9 @@ def _composition_guide_like_prompt(prompt: str) -> bool:
             "pose guide",
             "composition guide",
             "layout guide",
+            "composition candidate",
+            "pose candidate",
+            "composition study",
         )
     ) or any(
         token in compact
@@ -5447,6 +5466,12 @@ def _composition_guide_like_prompt(prompt: str) -> bool:
             "构图候选",
             "動作構圖",
             "动作构图",
+            "人物構圖",
+            "人物构图",
+            "角色構圖",
+            "角色构图",
+            "人體構圖",
+            "人体构图",
         )
     ) or any(token in compact for token in ("構圖草圖", "构图草图", "構圖候選", "构图候选")) or (
         ("構圖" in compact or "构图" in compact)

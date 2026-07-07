@@ -659,10 +659,41 @@ def test_visual_package_category_treats_openai_composition_as_composition_guide(
     )
 
 
+def test_visual_package_category_treats_person_composition_as_composition_guide():
+    from tools import visual_package_tool
+
+    assert visual_package_tool._visual_request_category("繼續產出人物構圖，給我四張候選") == "composition_guide"
+
+
 def test_visual_package_category_does_not_treat_openai_as_pen_product():
     from tools import visual_package_tool
 
     assert visual_package_tool._visual_request_category("用 openai 幫我畫一張月光神社場景") == "scene"
+
+
+def test_visual_package_composition_guide_prompt_strips_character_identity_language():
+    from tools import visual_package_tool
+
+    prompt = (
+        "OpenAI gpt-image-2: Generate ONE portrait illustration composition candidate labeled "
+        "conceptually as G1 (do not draw text labels). Same adult elf woman character as the "
+        "reference images: preserve identity, pointed elf ears, hairstyle, costume family, palette, "
+        "facial vibe, body silhouette, and fantasy elegance. Composition: dynamic full-body action "
+        "at the instant she lunges forward on a forest-stone path, one hand drawing a glowing spell arc "
+        "and the other gripping her cloak/ribbon; strong diagonal silhouette, wind-swept hair and fabric, "
+        "low camera angle, clear readable pose, dramatic moonlit rim light. Pure 2D fantasy illustration."
+    )
+
+    provider_prompt = visual_package_tool._composition_guide_prompt(prompt)
+
+    assert "dynamic full-body action" in provider_prompt
+    assert "low camera angle" in provider_prompt
+    assert "abstract pose/composition guide" in provider_prompt
+    assert "preserve identity" not in provider_prompt
+    assert "pointed elf ears" not in provider_prompt
+    assert "costume family" not in provider_prompt
+    assert "facial vibe" not in provider_prompt
+    assert "Pure 2D fantasy illustration" not in provider_prompt
 
 
 def test_visual_package_composition_guide_delivers_candidates_without_vision_gate(

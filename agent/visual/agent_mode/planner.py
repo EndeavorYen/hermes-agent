@@ -122,6 +122,9 @@ _COMPOSITION_GUIDE_ONLY_TOKENS = (
     "pose guide",
     "composition guide",
     "layout guide",
+    "composition candidate",
+    "pose candidate",
+    "composition study",
     "先產構圖",
     "先产构图",
     "產出構圖",
@@ -138,6 +141,12 @@ _COMPOSITION_GUIDE_ONLY_TOKENS = (
     "构图候选",
     "動作構圖",
     "动作构图",
+    "人物構圖",
+    "人物构图",
+    "角色構圖",
+    "角色构图",
+    "人體構圖",
+    "人体构图",
 )
 _CHARACTER_DESIGN_REF_TOKENS = (
     "character design",
@@ -791,6 +800,10 @@ def _planned_candidate_budget(
     if not composition_guide_only:
         return 2, "planner_default"
     text = str(value or "")
+    if re.search(r"\b(?:one|single|1)\b\s+[^.\n]{0,80}\b(?:candidate|option|guide|composition)", text, re.IGNORECASE):
+        return 1, "user"
+    if re.search(r"(?:一|1)\s*(?:張|张)", text):
+        return 1, "user"
     match = re.search(r"([2-4])\s*(?:張|张|個|个|candidates?|options?)", text, re.IGNORECASE)
     if match:
         return max(2, min(4, int(match.group(1)))), "user"

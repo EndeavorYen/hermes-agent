@@ -357,6 +357,18 @@ def test_agent_mode_planner_composition_guide_parses_chinese_candidate_count():
     assert plan["arguments"]["image_provider"] == "openai-codex"
 
 
+def test_agent_mode_planner_treats_person_composition_as_abstract_guide():
+    from agent.visual.agent_mode.planner import plan_visual_agent_request
+
+    plan = plan_visual_agent_request("繼續用 openai 產出人物構圖，給我四張候選")
+
+    assert plan["reason"] == "composition_guide_request"
+    assert plan["arguments"]["composition_guide_only"] is True
+    assert plan["arguments"]["candidate_budget"] == 4
+    assert plan["arguments"]["candidate_budget_source"] == "user"
+    assert plan["arguments"]["image_provider"] == "openai-codex"
+
+
 def test_agent_mode_planner_uses_current_slack_thread_intent_for_composition_guide():
     from agent.visual.agent_mode.planner import plan_visual_agent_request
 

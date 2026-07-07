@@ -1571,6 +1571,10 @@ class TestVisualPackageToolGuidance:
         assert "1200 characters" in prompt
         assert "Character / Face / Outfit / Scene" in prompt
         assert "multiple blocks only when the user explicitly asks" in prompt
+        assert "人物構圖" in prompt
+        assert "composition candidate" in prompt
+        assert "abstract mannequin" in prompt
+        assert "Do not hand-write a `image_generate` prompt" in prompt
         assert "storyboard" in prompt
         assert "multi-shot" in prompt
         assert "quality gates" in prompt
