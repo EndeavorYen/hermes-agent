@@ -82,6 +82,118 @@ def test_autonomous_validation_accepts_complete_package(tmp_path):
     assert report["evidence"]["learning_trace_count"] == 1
 
 
+def test_autonomous_validation_accepts_video_only_delivery_with_image_first_source(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.autonomous_validation import validate_visual_generation_payload
+
+    db_path = tmp_path / "visual.sqlite3"
+    ledger = VisualAttemptLedger(db_path)
+    ledger.initialize()
+    request_id = ledger.record_request(
+        user_prompt="reference image to video",
+        normalized_intent={"kind": "visual_package", "image_first_for_video": True},
+        modality="package",
+        operation="visual_package_generate",
+        status="started",
+    )
+    image_attempt_id = ledger.record_attempt(
+        request_id=request_id,
+        candidate_index=0,
+        provider="xai",
+        model="grok-imagine-image-quality",
+        prompt_original="prompt",
+        prompt_mediated="prompt",
+        parameters_requested={},
+        parameters_effective={},
+        status="completed",
+    )
+    image_artifact_id = ledger.record_artifact(
+        request_id=request_id,
+        attempt_id=image_attempt_id,
+        kind="image",
+        source_url="https://example.invalid/source.png",
+        mime_type="image/png",
+        is_stable=True,
+        freshness_status="fresh",
+    )
+    video_attempt_id = ledger.record_attempt(
+        request_id=request_id,
+        candidate_index=0,
+        provider="xai",
+        model="grok-imagine-video",
+        prompt_original="prompt",
+        prompt_mediated="prompt",
+        parameters_requested={"duration_seconds": 15},
+        parameters_effective={"duration_seconds": 15, "source_image_artifact_id": image_artifact_id},
+        input_artifacts=[{"artifact_id": image_artifact_id, "kind": "image"}],
+        status="completed",
+    )
+    video_artifact_id = ledger.record_artifact(
+        request_id=request_id,
+        attempt_id=video_attempt_id,
+        kind="video",
+        local_path=str(tmp_path / "video.mp4"),
+        uri=str(tmp_path / "video.mp4"),
+        content_hash="sha256:video",
+        mime_type="video/mp4",
+        width=1280,
+        height=720,
+        duration_seconds=15,
+        is_stable=True,
+        freshness_status="fresh",
+    )
+    for artifact_id, attempt_id, modality in (
+        (image_artifact_id, image_attempt_id, "image"),
+        (video_artifact_id, video_attempt_id, "video"),
+    ):
+        ledger.record_judgment(
+            request_id=request_id,
+            attempt_id=attempt_id,
+            artifact_id=artifact_id,
+            judge_name="visual_quality_judge",
+            score=0.9,
+            verdict="pass",
+            details={"scores": {"aesthetic_fit": 0.9}},
+            metadata={
+                "intent_signature": "visig_video",
+                "strategy_signature": "vstrat_image_first_video",
+                "modality": modality,
+            },
+        )
+        ledger.record_ranking(
+            request_id=request_id,
+            selected_artifact_id=artifact_id,
+            decision="post",
+            scores={"reward": {"final_score": 0.9, "confidence": 0.9}},
+            metadata={"active_learning": {"action": "auto_post"}},
+        )
+    ledger.record_shadow_update(
+        request_id=request_id,
+        intent_signature="visig_video",
+        strategy_signature="vstrat_image_first_video",
+        proposed_change={"type": "strategy_observation"},
+        evidence={"selected_artifact_id": video_artifact_id},
+        confidence=0.9,
+        activation_status="shadow",
+    )
+
+    report = validate_visual_generation_payload(
+        {
+            "success": True,
+            "visual_request_id": request_id,
+            "generation_strategy": {"requested_image": False, "image_first_for_video": True},
+            "images": [],
+            "videos": [str(tmp_path / "video.mp4")],
+        },
+        db_path=db_path,
+        require_video=True,
+    )
+
+    assert report["success"] is True
+    assert report["decision"] == "accept"
+    assert "missing_image_output" not in report["failures"]
+
+
 def test_autonomous_validation_retries_missing_judgment(tmp_path):
     from agent.visual.attempt_ledger import VisualAttemptLedger
     from agent.visual.autonomous_validation import validate_visual_generation_payload

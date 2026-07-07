@@ -981,7 +981,7 @@ def _forbids_image_output(lowered: str, compact: str) -> bool:
 
 
 def _duration_seconds(value: str) -> int | None:
-    match = re.search(r"(\d+)\s*(?:秒|seconds?|sec)", value.lower())
+    match = re.search(r"(\d+)\s*(?:秒鐘?|s\b|secs?\b|seconds?\b)", value.lower())
     if not match:
         return None
     duration = int(match.group(1))

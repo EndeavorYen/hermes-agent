@@ -80,7 +80,7 @@ def _failures(
     failures: list[str] = []
     if payload.get("success") is not True:
         failures.append(str(payload.get("error_type") or "provider_generation_failed"))
-    if evidence.get("image_count", 0) < 1:
+    if _requires_delivered_image(payload, require_video=require_video) and evidence.get("image_count", 0) < 1:
         failures.append("missing_image_output")
     if require_video and evidence.get("video_count", 0) < 1:
         failures.append("missing_video_output")
@@ -97,6 +97,18 @@ def _failures(
         if evidence.get("judgments_with_learning_metadata", 0) < expected:
             failures.append("missing_judgment_learning_metadata")
     return sorted(set(failures))
+
+
+def _requires_delivered_image(payload: dict[str, Any], *, require_video: bool) -> bool:
+    strategy = payload.get("generation_strategy")
+    if isinstance(strategy, dict):
+        requested_image = strategy.get("requested_image")
+        if isinstance(requested_image, bool):
+            return requested_image
+    requested_image = payload.get("requested_image")
+    if isinstance(requested_image, bool):
+        return requested_image
+    return not require_video or bool(payload.get("images"))
 
 
 def _decision(failures: list[str]) -> str:

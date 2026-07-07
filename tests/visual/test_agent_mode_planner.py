@@ -176,6 +176,20 @@ def test_agent_mode_planner_routes_video_only_request():
     assert plan["reason"] == "attachment_to_video_image_first_request"
 
 
+def test_agent_mode_planner_parses_compact_s_suffix_video_duration():
+    from agent.visual.agent_mode.planner import plan_visual_agent_request
+
+    plan = plan_visual_agent_request(
+        "用 xai，根據我提供的 ref , 產出 15s 性感影片，具乳，水蛇腰，翹臀，蜜大腿",
+        attachments=["/tmp/ref.png"],
+    )
+
+    assert plan["should_use_visual_package"] is True
+    assert plan["arguments"]["include_video"] is True
+    assert plan["arguments"]["duration"] == 15
+    assert plan["reason"] == "attachment_to_video_image_first_request"
+
+
 def test_agent_mode_planner_routes_move_this_image_as_attachment_video():
     from agent.visual.agent_mode.planner import plan_visual_agent_request
 

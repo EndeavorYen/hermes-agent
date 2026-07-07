@@ -432,6 +432,11 @@ async def test_visual_package_video_only_uses_single_ranked_source_without_deliv
         entry["artifact_id"]
         for entry in payload["delivery_metadata"]["visual_artifacts"].values()
     } == {payload["rankings"]["video"]["selected_artifact_id"]}
+    assert payload["autonomous_validation"]["decision"] == "accept"
+    assert "missing_image_output" not in payload["autonomous_validation"]["failures"]
+    quality_run = payload["delivery_metadata"]["visual_quality_run"]
+    assert quality_run["success"] is True
+    assert quality_run["summary"]["failed_case_count"] == 0
     assert payload["generation_payloads"]["image"][0]["image"] is None
     assert payload["generation_payloads"]["image"][1]["image"] is None
 

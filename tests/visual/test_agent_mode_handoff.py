@@ -34,6 +34,31 @@ def test_direct_visual_handoff_accepts_explicit_image_to_video_request():
     assert handoff["visual_agent_llm_provider"] == "xai-oauth"
 
 
+def test_direct_visual_handoff_preserves_compact_s_suffix_video_duration():
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.5",
+    )
+    message = [
+        {
+            "type": "text",
+            "text": "用 xai，根據我提供的 ref , 產出 15s 性感影片，具乳，水蛇腰，翹臀，蜜大腿",
+        },
+        {"type": "image_url", "image_url": {"url": "/tmp/ref.png"}},
+    ]
+
+    handoff = build_direct_visual_agent_handoff(agent, message)
+
+    assert handoff is not None
+    assert handoff["arguments"]["include_video"] is True
+    assert handoff["arguments"]["attachments"] == ["/tmp/ref.png"]
+    assert handoff["arguments"]["duration"] == 15
+    assert handoff["arguments"]["image_provider"] == "xai"
+
+
 def test_direct_visual_handoff_skips_grok_planner_for_openai_composition_guide():
     from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
 
