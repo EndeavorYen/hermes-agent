@@ -3807,6 +3807,97 @@ async def test_visual_package_generate_materializes_successful_remote_video_url(
 
 
 @pytest.mark.asyncio
+async def test_visual_package_uses_provider_effective_video_duration_for_quality_gate(monkeypatch, tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image = tmp_path / "image.png"
+    video = tmp_path / "video.mp4"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    video.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+
+    def fake_probe_media_reference(ref):
+        is_video = str(ref).endswith(".mp4")
+        return SimpleNamespace(
+            sha256=f"hash:{ref}",
+            is_stable=True,
+            freshness_status="fresh",
+            local_path=str(ref) if str(ref).startswith("/") else None,
+            mime_type="video/mp4" if is_video else "image/png",
+            bytes=10,
+            width=1280,
+            height=720,
+            duration_seconds=6.0 if is_video else None,
+        )
+
+    monkeypatch.setattr(visual_package_tool, "probe_media_reference", fake_probe_media_reference)
+    monkeypatch.setattr(
+        visual_package_tool,
+        "generate_image",
+        lambda **kwargs: {
+            "success": True,
+            "image": str(image),
+            "provider": "xai",
+            "model": "grok-imagine-image-quality",
+        },
+    )
+
+    def fake_generate_video(**kwargs):
+        assert kwargs["duration"] == 15
+        return {
+            "success": True,
+            "video": str(video),
+            "duration": 6,
+            "provider": "xai",
+            "model": "grok-imagine-video-1.5",
+            "vision_observation": {
+                "aspect_integrity": 1.0,
+                "motion_quality": 0.9,
+                "composition": 0.9,
+                "confidence": 0.9,
+                "artifact_defects": [],
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_video", fake_generate_video)
+
+    payload = json.loads(
+        await visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "用 xai 根據 ref 產出 15s 優雅動態影片，只交付影片。",
+                "include_image": False,
+                "include_video": True,
+                "candidate_budget": 1,
+                "video_budget": 1,
+                "duration": 15,
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["videos"] == [str(video)]
+    video_payload = payload["generation_payloads"]["video"]
+    assert video_payload["duration"] == 6
+    assert payload["delivery_gate"]["video"]["allowed"] is True
+    assert "duration_mismatch" not in json.dumps(payload["rankings"]["video"], ensure_ascii=False)
+
+    ledger = VisualAttemptLedger(default_visual_ledger_path())
+    video_attempt = next(
+        row
+        for row in ledger._list(
+            "visual_attempts",
+            where="request_id = ?",
+            params=(payload["visual_request_id"],),
+        )
+        if row["model"] == "grok-imagine-video-1.5"
+    )
+    assert video_attempt["parameters_requested"]["duration_seconds"] == 15
+    assert video_attempt["parameters_effective"]["duration_seconds"] == 6
+
+
+@pytest.mark.asyncio
 async def test_visual_package_does_not_select_remote_video_when_materialization_fails(monkeypatch, tmp_path):
     from tools import visual_package_tool
 

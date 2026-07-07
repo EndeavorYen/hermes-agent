@@ -3849,6 +3849,7 @@ def _record_payload_candidate(
     artifact_role: str | None = None,
 ) -> dict[str, Any] | None:
     success = bool(payload.get("success"))
+    effective_parameters = _effective_generation_parameters(payload, requested_parameters)
     attempt_id = ledger.record_attempt(
         request_id=request_id,
         candidate_index=candidate_index,
@@ -3857,7 +3858,7 @@ def _record_payload_candidate(
         prompt_original=prompt_original or prompt,
         prompt_mediated=prompt,
         parameters_requested=requested_parameters,
-        parameters_effective=requested_parameters,
+        parameters_effective=effective_parameters,
         input_artifacts=input_artifacts or None,
         status="completed" if success else "failed",
         error_type=payload.get("error_type") if not success else None,
@@ -3879,7 +3880,7 @@ def _record_payload_candidate(
     score = judge_artifact(
         artifact,
         expected_kind=expected_kind,
-        requested_parameters=requested_parameters,
+        requested_parameters=effective_parameters,
     )
     candidate = {
         "attempt_id": attempt_id,
@@ -3892,7 +3893,8 @@ def _record_payload_candidate(
         "width": artifact.get("width"),
         "height": artifact.get("height"),
         "duration_seconds": artifact.get("duration_seconds"),
-        "requested_parameters": requested_parameters,
+        "requested_parameters": effective_parameters,
+        "user_requested_parameters": requested_parameters,
         "input_artifacts": input_artifacts or [],
         "hard_gate": score["hard_gate"],
         "scores": score["scores"],
@@ -3901,6 +3903,23 @@ def _record_payload_candidate(
     if artifact_role:
         candidate["artifact_role"] = artifact_role
     return candidate
+
+
+def _effective_generation_parameters(
+    payload: dict[str, Any],
+    requested_parameters: dict[str, Any],
+) -> dict[str, Any]:
+    effective = dict(requested_parameters)
+    duration = payload.get("duration_seconds", payload.get("duration"))
+    if duration is not None:
+        effective["duration_seconds"] = duration
+    aspect_ratio = payload.get("aspect_ratio")
+    if aspect_ratio:
+        effective["aspect_ratio"] = aspect_ratio
+    resolution = payload.get("resolution")
+    if resolution:
+        effective["resolution"] = resolution
+    return effective
 
 
 def _package_error(
