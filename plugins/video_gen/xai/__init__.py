@@ -53,6 +53,7 @@ DEFAULT_RESOLUTION = "720p"
 DEFAULT_TIMEOUT_SECONDS = 240
 DEFAULT_POLL_INTERVAL_SECONDS = 5
 DEFAULT_EXTEND_DURATION = 6
+IMAGE_TO_VIDEO_MAX_DURATION = 6
 
 VALID_ASPECT_RATIOS = {"1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"}
 VALID_RESOLUTIONS = {"480p", "720p"}
@@ -248,6 +249,7 @@ def _normalize_reference_images(
 def _clamp_duration(
     duration: Optional[int],
     *,
+    has_image_input: bool = False,
     has_reference_images: bool = False,
     max_seconds: int = 15,
     default: int = DEFAULT_DURATION,
@@ -257,6 +259,8 @@ def _clamp_duration(
         value = 1
     if value > max_seconds:
         value = max_seconds
+    if has_image_input and value > IMAGE_TO_VIDEO_MAX_DURATION:
+        value = IMAGE_TO_VIDEO_MAX_DURATION
     if has_reference_images and value > 10:
         value = 10
     return value
@@ -401,6 +405,7 @@ class XAIVideoGenProvider(VideoGenProvider):
             "aspect_ratios": sorted(VALID_ASPECT_RATIOS),
             "resolutions": sorted(VALID_RESOLUTIONS),
             "max_duration": 15,
+            "max_image_duration": IMAGE_TO_VIDEO_MAX_DURATION,
             "min_duration": 1,
             "supports_audio": False,
             "supports_negative_prompt": False,
@@ -641,7 +646,11 @@ async def _generate_xai_video_async(
             )
         resolved_model = DEFAULT_TEXT_TO_VIDEO_MODEL
 
-    clamped_duration = _clamp_duration(duration, has_reference_images=bool(refs))
+    clamped_duration = _clamp_duration(
+        duration,
+        has_image_input=bool(image_input),
+        has_reference_images=bool(refs),
+    )
     payload = {
         "model": resolved_model,
         "prompt": prompt,
