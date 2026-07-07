@@ -1567,6 +1567,8 @@ class TestVisualPackageToolGuidance:
         assert "visual brief with references but no explicit media-output request" in prompt
         assert "answer with a stronger prompt in text" in prompt
         assert "single copyable text block" in prompt
+        assert "asks for a suitable prompt" in prompt
+        assert "do not call visual tools" in prompt
         assert "Negative prompt" in prompt
         assert "1200 characters" in prompt
         assert "Character / Face / Outfit / Scene" in prompt

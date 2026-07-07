@@ -813,6 +813,30 @@ def test_direct_visual_handoff_ignores_prompt_builder_request_with_images():
     assert handoff is None
 
 
+def test_direct_visual_handoff_ignores_suitable_xai_video_prompt_request_with_image():
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+    from agent.visual.agent_mode.handoff import is_visual_prompt_builder_request
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.5",
+    )
+    message = [
+        {
+            "type": "text",
+            "text": (
+                "我想要用這張在 xai imagine 中產出 12s 影片，請給我合適的 prompt。"
+                "稍微嬌羞，稍微性感，稍微嫵媚，稍微傲嬌，胸，整體呈現讓人有種「好婆喔！」的感覺"
+            ),
+        },
+        {"type": "image_url", "image_url": {"url": "/tmp/ref.png"}},
+    ]
+
+    assert is_visual_prompt_builder_request(message[0]["text"]) is True
+    assert build_direct_visual_agent_handoff(agent, message) is None
+
+
 def test_direct_visual_handoff_defaults_reference_visual_brief_to_prompt_only():
     from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
 

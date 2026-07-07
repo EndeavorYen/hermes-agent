@@ -416,6 +416,34 @@ async def test_visual_agent_generate_rejects_prompt_only_reference_brief_without
     assert payload["request_type"] == "visual_prompt_draft_default"
 
 
+@pytest.mark.asyncio
+async def test_visual_agent_generate_rejects_suitable_xai_video_prompt_request_without_generating(monkeypatch):
+    from tools import visual_agent_tool
+
+    async def fake_visual_package_generate(args, **kwargs):
+        raise AssertionError("prompt builder request must not dispatch visual generation")
+
+    monkeypatch.setattr(
+        visual_agent_tool,
+        "_handle_visual_package_generate",
+        fake_visual_package_generate,
+    )
+
+    raw = await visual_agent_tool._handle_visual_agent_generate(
+        {
+            "prompt": (
+                "我想要用這張在 xai imagine 中產出 12s 影片，請給我合適的 prompt。"
+                "稍微嬌羞，稍微性感，稍微嫵媚，稍微傲嬌，胸，整體呈現讓人有種「好婆喔！」的感覺"
+            ),
+            "attachments": ["/tmp/ref.png"],
+        }
+    )
+    payload = json.loads(raw)
+
+    assert payload["error"] == "visual_agent_generate is for image/video generation, not prompt drafting"
+    assert payload["request_type"] == "visual_prompt_builder"
+
+
 def test_visual_agent_schema_warns_visual_briefs_default_to_prompt_only():
     from tools.visual_agent_tool import VISUAL_AGENT_SCHEMA
 

@@ -5,6 +5,7 @@ from typing import Any
 
 from agent.visual.agent_mode.grok_planner import apply_visual_agent_llm_planner
 from agent.visual.agent_mode.handoff import is_visual_prompt_disclosure_request
+from agent.visual.agent_mode.handoff import is_visual_prompt_builder_request
 from agent.visual.agent_mode.handoff import normalise_visual_agent_attachment
 from agent.visual.agent_mode.planner import plan_visual_agent_request
 from tools.registry import registry
@@ -105,6 +106,12 @@ async def _handle_visual_agent_generate(args: dict[str, Any], **_kw: Any) -> str
             "visual_agent_generate is for image/video generation, not prompt disclosure",
             request_type="visual_prompt_disclosure",
     )
+    if is_visual_prompt_builder_request(prompt):
+        return tool_error(
+            "visual_agent_generate is for image/video generation, not prompt drafting",
+            request_type="visual_prompt_builder",
+            recommended_action="return a copyable visual prompt in text instead of generating media",
+        )
 
     attachments = _normalise_attachments(args.get("attachments"))
     force_image_output = bool(

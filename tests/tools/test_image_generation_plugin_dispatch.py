@@ -180,6 +180,34 @@ class TestPluginDispatch:
         assert payload["request_type"] == "visual_prompt_builder"
         assert provider.last_kwargs == {}
 
+    def test_handle_image_generate_rejects_suitable_xai_video_prompt_request(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from agent import image_gen_registry as registry_module
+        from hermes_cli import plugins as plugins_module
+
+        provider = _NamedRecordingProvider("xai")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "xai")
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_model", lambda: "grok-imagine-image-quality")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda *a, **k: None)
+        monkeypatch.setattr(registry_module, "get_provider", lambda name: provider if name == "xai" else None)
+
+        payload = json.loads(
+            image_generation_tool._handle_image_generate(
+                {
+                    "prompt": (
+                        "我想要用這張在 xai imagine 中產出 12s 影片，請給我合適的 prompt。"
+                        "稍微嬌羞，稍微性感，稍微嫵媚，稍微傲嬌，胸，整體呈現讓人有種「好婆喔！」的感覺"
+                    ),
+                    "reference_image_urls": ["/tmp/ref.png"],
+                }
+            )
+        )
+
+        assert payload["error"] == "image_generate is for image generation, not prompt drafting"
+        assert payload["request_type"] == "visual_prompt_builder"
+        assert provider.last_kwargs == {}
+
     def test_handle_agent_mode_image_routes_to_visual_package(self, monkeypatch, tmp_path):
         from tools import image_generation_tool
         from tools import visual_package_tool

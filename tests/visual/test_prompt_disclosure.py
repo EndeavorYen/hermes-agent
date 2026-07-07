@@ -16,6 +16,19 @@ def test_visual_prompt_disclosure_ignores_prompt_builder_request():
     )
 
 
+def test_visual_prompt_builder_detects_suitable_xai_video_prompt_request():
+    from agent.visual.prompt_disclosure import is_visual_prompt_builder_request
+    from agent.visual.prompt_disclosure import is_visual_prompt_disclosure_request
+
+    prompt = (
+        "我想要用這張在 xai imagine 中產出 12s 影片，請給我合適的 prompt。"
+        "稍微嬌羞，稍微性感，稍微嫵媚，稍微傲嬌，胸，整體呈現讓人有種「好婆喔！」的感覺"
+    )
+
+    assert is_visual_prompt_builder_request(prompt) is True
+    assert is_visual_prompt_disclosure_request(prompt) is False
+
+
 def test_visual_prompt_disclosure_ignores_plain_generation_request():
     from agent.visual.prompt_disclosure import is_visual_prompt_disclosure_request
 
