@@ -447,16 +447,19 @@ class TestGenerate:
             }],
         }
 
+        cached_path = Path("/tmp/xai_grok-imagine-image_20260708_014800_deadbeef.png")
         with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp), \
-             patch("plugins.image_gen.xai.save_url_image") as mock_save_url:
+             patch("plugins.image_gen.xai.save_url_image", return_value=cached_path) as mock_save_url:
             provider = XAIImageGenProvider()
             result = provider.generate(prompt="A cat playing piano")
 
         assert result["success"] is True
-        assert result["image"] == "https://xai-files.example/stored.png"
+        assert result["image"] == str(cached_path)
         assert result["public_url"] == "https://xai-files.example/stored.png"
         assert "file_id" not in result
-        mock_save_url.assert_not_called()
+        call_args, call_kwargs = mock_save_url.call_args
+        assert call_args[0] == "https://xai-files.example/stored.png"
+        assert call_kwargs.get("prefix", "").startswith("xai_")
 
 
 # ---------------------------------------------------------------------------

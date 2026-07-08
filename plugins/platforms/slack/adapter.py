@@ -10,12 +10,15 @@ Uses slack-bolt (Python) with Socket Mode for:
 
 import asyncio
 import contextvars
+import datetime
 import json
 import logging
 import os
 import re
 import time
+import uuid
 from dataclasses import dataclass, field
+from urllib.parse import urlparse
 from typing import Dict, Optional, Any, Tuple, List
 
 try:
@@ -72,6 +75,42 @@ _slash_user_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "_slash_user_id",
     default=None,
 )
+
+
+def _remote_image_upload_filename(
+    image_url: str,
+    *,
+    extension: str,
+) -> str:
+    host = (urlparse(image_url).hostname or "").lower()
+    provider = "image"
+    if "x.ai" in host:
+        provider = "xai"
+    elif "openai" in host:
+        provider = "openai"
+    elif "krea" in host:
+        provider = "krea"
+    elif "fal" in host:
+        provider = "fal"
+    safe_ext = extension.lower().lstrip(".") or "png"
+    if safe_ext == "jpeg":
+        safe_ext = "jpg"
+    if not re.fullmatch(r"[a-z0-9]+", safe_ext):
+        safe_ext = "png"
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    short = uuid.uuid4().hex[:8]
+    return f"{provider}_image_{ts}_{short}.{safe_ext}"
+
+
+def _image_extension_from_content_type(content_type: str) -> str:
+    ct = (content_type or "").lower()
+    if "jpeg" in ct or "jpg" in ct:
+        return "jpg"
+    if "gif" in ct:
+        return "gif"
+    if "webp" in ct:
+        return "webp"
+    return "png"
 
 
 @dataclass
@@ -1777,18 +1816,16 @@ class SlackAdapter(BasePlatformAdapter):
                             try:
                                 response = await http_client.get(image_url)
                                 response.raise_for_status()
-                                ext = "png"
-                                ct = response.headers.get("content-type", "")
-                                if "jpeg" in ct or "jpg" in ct:
-                                    ext = "jpg"
-                                elif "gif" in ct:
-                                    ext = "gif"
-                                elif "webp" in ct:
-                                    ext = "webp"
+                                ext = _image_extension_from_content_type(
+                                    response.headers.get("content-type", "")
+                                )
                                 file_uploads.append(
                                     {
                                         "content": response.content,
-                                        "filename": f"image_{len(file_uploads)}.{ext}",
+                                        "filename": _remote_image_upload_filename(
+                                            image_url,
+                                            extension=ext,
+                                        ),
                                     }
                                 )
                             except Exception as dl_err:
@@ -2177,10 +2214,13 @@ class SlackAdapter(BasePlatformAdapter):
                 response.raise_for_status()
 
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
+            ext = _image_extension_from_content_type(
+                response.headers.get("content-type", "")
+            )
             result = await self._get_client(chat_id).files_upload_v2(
                 channel=chat_id,
                 content=response.content,
-                filename="image.png",
+                filename=_remote_image_upload_filename(image_url, extension=ext),
                 initial_comment=caption or "",
                 thread_ts=thread_ts,
             )

@@ -403,7 +403,17 @@ class XAIImageGenProvider(ImageGenProvider):
         public_url = file_output.get("public_url") if isinstance(file_output.get("public_url"), str) else None
 
         if public_url:
-            image_ref = public_url
+            try:
+                saved_path = save_url_image(public_url, prefix=f"xai_{model_id}")
+            except Exception as exc:
+                logger.warning(
+                    "xAI stored image URL %s could not be cached (%s); falling back to bare URL.",
+                    public_url,
+                    exc,
+                )
+                image_ref = public_url
+            else:
+                image_ref = str(saved_path)
         elif b64:
             try:
                 saved_path = save_b64_image(b64, prefix=f"xai_{model_id}")
