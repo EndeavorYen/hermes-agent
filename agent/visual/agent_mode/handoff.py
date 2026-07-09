@@ -56,6 +56,8 @@ def build_direct_visual_agent_handoff(
     raw_prompt = _extract_raw_text(source) or _extract_raw_text(user_message)
     prompt = strip_visual_prompt_metadata(raw_prompt) or _extract_text(source) or _extract_text(user_message)
     attachments = _extract_attachments(source) or _extract_attachments(user_message)
+    if _is_long_form_story_video_pipeline_request(raw_prompt, prompt):
+        return None
     if (
         is_visual_prompt_disclosure_request(prompt)
         or is_visual_prompt_builder_request(prompt)
@@ -1477,6 +1479,91 @@ def _is_explicit_visual_generation_request(prompt: str) -> bool:
     if any(token in lowered for token in english_generation):
         return True
     return any(token in compact for token in chinese_generation)
+
+
+def _is_long_form_story_video_pipeline_request(raw_prompt: Any, prompt: str) -> bool:
+    """Let story-video/long-form documentary requests use their production skill.
+
+    ``visual_agent_generate`` is a short-form image/video package route. Slack
+    follow-ups include the parent thread text in ``raw_prompt``; keep using that
+    parent contract so "continue/generate video" replies do not detach into a
+    generic 6-second visual package.
+    """
+    combined = f"{raw_prompt or ''}\n{prompt or ''}".lower()
+    compact = re.sub(r"\s+", "", combined)
+    if not compact:
+        return False
+
+    story_or_documentary = any(
+        marker in combined
+        for marker in (
+            "story video",
+            "story-video",
+            "documentary",
+            "explainer video",
+        )
+    ) or any(
+        marker in compact
+        for marker in (
+            "故事影片",
+            "story影片",
+            "科普影片",
+            "介紹影片",
+            "介绍影片",
+            "整部影片",
+            "長影片",
+            "长影片",
+        )
+    )
+    story_skill_or_pipeline = any(
+        marker in combined
+        for marker in (
+            "story-video",
+            "story video",
+            "pipeline",
+            "storyboard",
+        )
+    ) or any(
+        marker in compact
+        for marker in (
+            "故事影片",
+            "skill",
+            "流程",
+            "腳本",
+            "脚本",
+            "分鏡",
+            "分镜",
+            "旁白",
+            "配音",
+            "字幕",
+            "場景",
+            "场景",
+        )
+    )
+    long_duration = _mentions_long_form_video_duration(combined, compact)
+    whole_video_wording = any(
+        marker in compact
+        for marker in (
+            "做一部",
+            "製作一部",
+            "制作一部",
+            "幫我做一部",
+            "帮我做一部",
+        )
+    )
+    return story_or_documentary and (story_skill_or_pipeline or long_duration or whole_video_wording)
+
+
+def _mentions_long_form_video_duration(text: str, compact: str) -> bool:
+    # Seconds-length clips still belong to visual-agent mode. Minute-length
+    # videos need story/script/render orchestration instead.
+    if re.search(r"\b(?:[2-9]|\d{2,})\s*(?:min|mins|minute|minutes)\b", text):
+        return True
+    if re.search(r"(?:[2-9]|\d{2,})\s*(?:分鐘|分钟)", text):
+        return True
+    if any(marker in compact for marker in ("大概5mins", "約5mins", "约5mins", "5分鐘", "5分钟")):
+        return True
+    return False
 
 
 def _looks_like_negative_visual_generation_instruction(lowered: str, compact: str) -> bool:

@@ -59,6 +59,44 @@ def test_direct_visual_handoff_preserves_compact_s_suffix_video_duration():
     assert handoff["arguments"]["image_provider"] == "xai"
 
 
+def test_direct_visual_handoff_skips_long_form_story_video_pipeline_requests():
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.5",
+    )
+
+    handoff = build_direct_visual_agent_handoff(
+        agent,
+        "幫我做一部恐龍起源的科普影片 (可用之前故事影片的 skill 或流程)，圖片走真實照片風格，請開始，大概 5mins",
+    )
+
+    assert handoff is None
+
+
+def test_direct_visual_handoff_skips_followup_in_long_form_story_video_thread():
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.5",
+    )
+    prompt = """[Replying to: "幫我做一部恐龍起源的科普影片 (可用之前故事影片的 skill 或流程)，圖片走真實照片風格，請開始，大概 5mins"]
+
+[Thread context — prior messages in this thread (not yet in conversation history):]
+[thread parent] simon: 幫我做一部恐龍起源的科普影片 (可用之前故事影片的 skill 或流程)，圖片走真實照片風格，請開始，大概 5mins
+[End of thread context]
+
+請繼續產出影片"""
+
+    handoff = build_direct_visual_agent_handoff(agent, prompt)
+
+    assert handoff is None
+
+
 def test_direct_visual_handoff_skips_grok_planner_for_openai_composition_guide():
     from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
 
