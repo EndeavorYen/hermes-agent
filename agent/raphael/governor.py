@@ -9,6 +9,9 @@ _JUDGMENT_LINE_RE = re.compile(
     r"^\s*(?:[-*•]\s*)?(狀態|風險|下一步)\s*[:：]"
 )
 _JUDGMENT_ORDER = ("狀態", "風險", "下一步")
+_JUDGMENT_VALUE_RE = re.compile(
+    r"^\s*(?:[-*•]\s*)?(?:狀態|風險|下一步)\s*[:：]\s*(?P<value>.*)$"
+)
 
 
 def should_apply_raphael_response_governor(
@@ -54,7 +57,12 @@ def _extract_judgment_lines(lines: list[str], max_lines: int) -> list[str]:
     found: dict[str, str] = {}
     for line in lines:
         match = _JUDGMENT_LINE_RE.match(line)
-        if match and match.group(1) not in found:
+        if not match or match.group(1) in found:
+            continue
+        value_match = _JUDGMENT_VALUE_RE.match(line)
+        if not value_match or not value_match.group("value").strip():
+            continue
+        if match:
             found[match.group(1)] = line.strip()
     return [
         found[label]
@@ -78,7 +86,7 @@ def apply_raphael_response_governor(
 
     lines = text.splitlines()
     judgment_lines = _extract_judgment_lines(lines, max_lines)
-    if judgment_lines:
+    if len(judgment_lines) >= 2:
         return "\n".join(judgment_lines).rstrip()
 
     return text

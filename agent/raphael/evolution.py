@@ -395,6 +395,21 @@ def _is_story_video_validation_block(raw: str) -> bool:
     return "STORY_VIDEO_GATE: BLOCKED" in raw or "STORY_VIDEO_RENDER_CONTRACT: BLOCKED" in raw
 
 
+def _has_story_video_validation_block(
+    messages: Sequence[Mapping[str, Any]] | None,
+) -> bool:
+    for message in messages or []:
+        if not isinstance(message, Mapping):
+            continue
+        content = _text(message.get("content"))
+        name = _text(message.get("name"))
+        role = _text(message.get("role"))
+        raw = "\n".join(part for part in (role, name, content) if part)
+        if _is_story_video_validation_block(raw):
+            return True
+    return False
+
+
 def _extract_failure_layers(
     messages: Sequence[Mapping[str, Any]] | None,
     *,
@@ -720,11 +735,14 @@ def decide_raphael_evolution(
         reason_codes.append("user_correction")
         evidence.append("user corrected Raphael behavior or requested durable learning")
 
-    failure_layers = _extract_failure_layers(messages)
     direct_visual_turn = (
         turn_exit_reason is not None
         and str(turn_exit_reason).startswith("direct_visual_agent")
     )
+    if _has_story_video_validation_block(messages) and not direct_visual_turn:
+        failure_layers = ()
+    else:
+        failure_layers = _extract_failure_layers(messages)
     if direct_visual_turn:
         failure_layers = tuple(
             dict.fromkeys(

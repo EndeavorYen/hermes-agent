@@ -174,6 +174,18 @@ def test_governor_extracts_bulleted_labeled_judgment_lines():
     )
 
 
+def test_governor_ignores_single_empty_judgment_label():
+    text = "\n".join(
+        [
+            "BLOCKED",
+            "阻塞原因：v1 checklist 缺 render-contract evidence。",
+            "下一步：",
+        ]
+    )
+
+    assert apply_raphael_response_governor(text, enabled=True, max_lines=6) == text
+
+
 def test_governor_does_not_fall_back_to_line_cap_without_labeled_judgment():
     text = "a\nb\nc\nd"
 
