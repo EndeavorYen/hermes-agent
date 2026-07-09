@@ -678,6 +678,8 @@ def _apply_raphael_general_proof_gate(
     prompt_text = _plain_text_for_visual_prompt_learning(user_message)
     if is_visual_prompt_builder_request(prompt_text):
         return final_response
+    if _turn_contains_story_video_validation_block(messages):
+        return final_response
     decision = build_raphael_control_decision(
         user_message,
         conversation_history=conversation_history,
@@ -731,6 +733,34 @@ def _apply_raphael_general_proof_gate(
             f"下一步：{next_step}",
         ]
     )
+
+
+def _turn_contains_story_video_validation_block(messages) -> bool:
+    for message in messages or ():
+        if not isinstance(message, Mapping):
+            continue
+        text_parts = []
+        content = message.get("content")
+        if isinstance(content, str):
+            text_parts.append(content)
+            payload = _tool_result_payload(content)
+            if isinstance(payload, Mapping):
+                text_parts.extend(
+                    str(payload.get(key) or "")
+                    for key in ("output", "error", "message")
+                )
+        elif isinstance(content, Mapping):
+            text_parts.extend(
+                str(content.get(key) or "")
+                for key in ("output", "error", "message")
+            )
+        combined = "\n".join(part for part in text_parts if part)
+        if (
+            "STORY_VIDEO_GATE: BLOCKED" in combined
+            or "STORY_VIDEO_RENDER_CONTRACT: BLOCKED" in combined
+        ):
+            return True
+    return False
 
 
 def _turn_has_successful_visual_delivery(messages) -> bool:

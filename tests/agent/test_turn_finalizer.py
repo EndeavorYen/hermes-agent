@@ -74,6 +74,23 @@ class _FakeAgent:
         self.background_review_calls.append(kwargs)
 
 
+class _FakeRaphaelEvidence:
+    required_proofs = ("focused_tests", "runtime_smoke_when_live_wiring")
+
+
+class _FakeRaphaelDecision:
+    mode = "tool_task"
+    evidence = _FakeRaphaelEvidence()
+
+    def to_dict(self):
+        return {
+            "mode": self.mode,
+            "evidence": {
+                "required_proofs": list(self.evidence.required_proofs),
+            },
+        }
+
+
 def test_finalize_turn_applies_raphael_response_governor(monkeypatch):
     import agent.raphael.governor as governor
 
@@ -101,6 +118,57 @@ def test_finalize_turn_applies_raphael_response_governor(monkeypatch):
     )
 
     assert result["final_response"] == "Line one\nRaphael governed=True"
+
+
+def test_finalize_turn_preserves_story_video_validation_block_under_proof_gate(
+    monkeypatch,
+):
+    import agent.raphael.control as control
+    import agent.raphael.observer as observer
+    import agent.raphael.proof as proof
+    import agent.visual.agent_mode.handoff as handoff
+
+    monkeypatch.setattr(observer, "should_inject_raphael_observation", lambda: True)
+    monkeypatch.setattr(handoff, "is_visual_prompt_builder_request", lambda _text: False)
+    monkeypatch.setattr(
+        control,
+        "build_raphael_control_decision",
+        lambda *_args, **_kwargs: _FakeRaphaelDecision(),
+    )
+    monkeypatch.setattr(proof, "raphael_has_required_proof", lambda *_args, **_kwargs: False)
+
+    response = (
+        "檢查完成：BLOCKED\n"
+        "阻塞原因：舊 v1 checklist 缺 render-contract evidence。\n"
+        "下一步：migrate to v2 and rerender with structured render QC."
+    )
+    result = finalize_turn(
+        _FakeAgent(),
+        final_response=response,
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=[
+            {
+                "role": "tool",
+                "name": "terminal",
+                "content": (
+                    '{"success": false, "output": "STORY_VIDEO_GATE: BLOCKED\\n'
+                    'FAIL schema: v1 checklist cannot certify final after render-contract gates"}'
+                ),
+            }
+        ],
+        conversation_history=[],
+        effective_task_id="task-1",
+        turn_id="turn-1",
+        user_message="只檢查 story-video 專案是否可以稱為 final",
+        original_user_message="只檢查 story-video 專案是否可以稱為 final",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response",
+    )
+
+    assert result["final_response"] == response
+    assert "Raphael proof gate" not in result["final_response"]
 
 
 def test_finalize_turn_records_visual_prompt_draft_in_prompt_arsenal(monkeypatch, tmp_path):
