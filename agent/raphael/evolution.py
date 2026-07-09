@@ -391,6 +391,10 @@ def _is_tool_failure_evidence(message: Mapping[str, Any]) -> bool:
     )
 
 
+def _is_story_video_validation_block(raw: str) -> bool:
+    return "STORY_VIDEO_GATE: BLOCKED" in raw or "STORY_VIDEO_RENDER_CONTRACT: BLOCKED" in raw
+
+
 def _extract_failure_layers(
     messages: Sequence[Mapping[str, Any]] | None,
     *,
@@ -406,6 +410,8 @@ def _extract_failure_layers(
         name = _text(message.get("name"))
         role = _text(message.get("role"))
         raw = "\n".join(part for part in (role, name, content) if part)
+        if _is_story_video_validation_block(raw):
+            continue
         try:
             parsed = json.loads(raw.split("\n", 2)[-1])
         except (TypeError, ValueError, json.JSONDecodeError):

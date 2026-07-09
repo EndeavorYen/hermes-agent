@@ -1572,6 +1572,8 @@ class AIAgent:
         messages_snapshot: List[Dict],
         review_memory: bool = False,
         review_skills: bool = False,
+        review_prompt: Optional[str] = None,
+        review_label: Optional[str] = None,
     ) -> None:
         """Spawn the background memory/skill review thread.
 
@@ -1588,6 +1590,8 @@ class AIAgent:
             messages_snapshot,
             review_memory=review_memory,
             review_skills=review_skills,
+            review_prompt=review_prompt,
+            review_label=review_label,
         )
         # Carry the active profile into the review thread so MEMORY.md / skill
         # review writes land in the right profile (#54937).

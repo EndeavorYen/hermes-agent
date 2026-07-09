@@ -168,6 +168,41 @@ def test_visual_provider_failure_triggers_skill_evolution_not_generic_success():
     assert "rollback_condition" in decision.metadata
 
 
+def test_story_video_validation_block_does_not_trigger_visual_evolution():
+    messages = [
+        {
+            "role": "tool",
+            "name": "terminal",
+            "content": (
+                '{"success": false, "failure_layer": "delivery", "output": '
+                '"STORY_VIDEO_GATE: BLOCKED\\n'
+                'FAIL schema: v1 checklist cannot certify final after render-contract gates"}'
+            ),
+        },
+        {
+            "role": "tool",
+            "name": "terminal",
+            "content": (
+                '{"success": false, "failure_layer": "delivery", "output": '
+                '"STORY_VIDEO_RENDER_CONTRACT: BLOCKED\\n'
+                'FAIL tts_contract: expected structured tts_contract"}'
+            ),
+        },
+    ]
+
+    decision = decide_raphael_evolution(
+        user_message="只檢查這個 story-video 專案是否可以稱 final，不要生成影片",
+        final_response="BLOCKED：舊 v1 checklist 缺 render-contract evidence。",
+        messages=messages,
+        turn_exit_reason="text_response(finish_reason=stop)",
+        config=_config(),
+    )
+
+    assert decision.should_review is False
+    assert decision.mode == "observe"
+    assert "visual_or_provider_failure" not in decision.reason_codes
+
+
 def test_llm_only_narrative_mentions_visual_tool_without_visual_failure_evidence():
     messages = [
         {
