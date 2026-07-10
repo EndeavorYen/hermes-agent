@@ -47,6 +47,11 @@ _VISUAL_MEDIA_EXTENSIONS = (
     ".webm",
     ".webp",
 )
+_STORY_VIDEO_SHORT_CALLS = (
+    "故事影片下一步",
+    "故事影片出片",
+    "故事影片修正",
+)
 _FENCED_BLOCK_RE = re.compile(
     r"```(?:[a-zA-Z0-9_-]+)?[ \t]*\n?(.*?)```",
     flags=re.DOTALL,
@@ -347,6 +352,16 @@ def finalize_turn(
             )
         except Exception as exc:
             logger.debug("Raphael invocation response shaping skipped: %s", exc)
+
+    if final_response and not interrupted and completed:
+        try:
+            final_response = _apply_story_video_next_call_footer(
+                final_response,
+                user_message=original_user_message,
+                messages=messages,
+            )
+        except Exception as exc:
+            logger.debug("story-video next-call footer skipped: %s", exc)
 
     if final_response and not interrupted and completed:
         try:
@@ -680,6 +695,8 @@ def _apply_raphael_general_proof_gate(
         return final_response
     if _turn_contains_story_video_validation_block(messages):
         return final_response
+    if _is_story_video_planning_only_request(prompt_text):
+        return final_response
     decision = build_raphael_control_decision(
         user_message,
         conversation_history=conversation_history,
@@ -761,6 +778,97 @@ def _turn_contains_story_video_validation_block(messages) -> bool:
         ):
             return True
     return False
+
+
+def _is_story_video_planning_only_request(text) -> bool:
+    lowered = str(text or "").lower()
+    compact = re.sub(r"\s+", "", lowered)
+    if not compact:
+        return False
+
+    story_markers = (
+        "story video",
+        "story-video",
+        "documentary",
+        "explainer video",
+        "故事影片",
+        "科普影片",
+        "介紹影片",
+        "介绍影片",
+        "整部影片",
+        "長影片",
+        "长影片",
+    )
+    if not any(marker in lowered or marker in compact for marker in story_markers):
+        return False
+
+    no_generation_markers = (
+        "先不要產圖",
+        "先不要產影片",
+        "不要產圖",
+        "不要產影片",
+        "不要生成圖片",
+        "不要生成影片",
+        "不要出片",
+        "do not generate",
+        "don't generate",
+        "without generating",
+        "no image generation",
+        "no video generation",
+        "planning only",
+    )
+    if any(marker in lowered or marker in compact for marker in no_generation_markers):
+        return True
+
+    planning_markers = (
+        "projectcontract",
+        "storyboard",
+        "sceneledger",
+        "productionchecklist",
+        "workflow",
+        "story-videoworkflow",
+        "分鏡",
+        "分镜",
+        "場景表",
+        "场景表",
+        "流程",
+    )
+    planning_hits = sum(1 for marker in planning_markers if marker in compact)
+    return planning_hits >= 2
+
+
+def _is_story_video_workflow_request(text) -> bool:
+    lowered = str(text or "").lower()
+    compact = re.sub(r"\s+", "", lowered)
+    if not compact:
+        return False
+    story_markers = (
+        "故事影片",
+        "產影片",
+        "story video",
+        "story-video",
+        "科普影片",
+        "documentary",
+        "explainer video",
+    )
+    return any(marker in lowered or marker in compact for marker in story_markers)
+
+
+def _response_has_story_video_short_call(text) -> bool:
+    return any(call in str(text or "") for call in _STORY_VIDEO_SHORT_CALLS)
+
+
+def _apply_story_video_next_call_footer(final_response, *, user_message, messages):
+    if _turn_contains_story_video_validation_block(messages):
+        return final_response
+    if not _is_story_video_workflow_request(_plain_text_for_visual_prompt_learning(user_message)):
+        return final_response
+    if _response_has_story_video_short_call(final_response):
+        return final_response
+    return (
+        final_response.rstrip()
+        + "\n\nRaphael 提示：下一步可直接說「故事影片下一步」。"
+    )
 
 
 def _turn_has_successful_visual_delivery(messages) -> bool:

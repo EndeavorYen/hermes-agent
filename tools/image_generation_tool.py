@@ -74,6 +74,7 @@ from tools.tool_backend_helpers import (
 )
 from agent.visual.agent_mode.handoff import is_visual_prompt_builder_request
 from agent.visual.agent_mode.handoff import is_visual_prompt_disclosure_request
+from tools.story_video_provider_guard import resolve_story_video_image_provider
 
 logger = logging.getLogger(__name__)
 
@@ -1916,6 +1917,13 @@ def _handle_image_generate(args, **kw):
     reference_image_urls = _legacy_reference_image_urls(args)
     operation = args.get("operation")
     provider_override = _image_provider_override_arg(args, prompt)
+    provider_override, story_video_provider_error = resolve_story_video_image_provider(
+        args,
+        prompt=prompt,
+        provider_override=provider_override,
+    )
+    if story_video_provider_error is not None:
+        return json.dumps(story_video_provider_error, ensure_ascii=False)
     model_override = args.get("_model")
     task_id = kw.get("task_id")
     session_reference_image_urls = _session_reference_image_urls_for_followup(

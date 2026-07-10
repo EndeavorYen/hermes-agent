@@ -208,6 +208,70 @@ class TestPluginDispatch:
         assert payload["request_type"] == "visual_prompt_builder"
         assert provider.last_kwargs == {}
 
+    def test_story_video_image_prompt_forces_openai_when_configured_provider_is_xai(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from agent import image_gen_registry as registry_module
+        from hermes_cli import plugins as plugins_module
+
+        xai_provider = _NamedRecordingProvider("xai")
+        openai_provider = _NamedRecordingProvider("openai-codex")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "xai")
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_model", lambda: "grok-imagine-image-quality")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda *a, **k: None)
+        monkeypatch.setattr(
+            registry_module,
+            "get_provider",
+            lambda name: {
+                "xai": xai_provider,
+                "openai-codex": openai_provider,
+            }.get(name),
+        )
+
+        payload = json.loads(
+            image_generation_tool._handle_image_generate(
+                {
+                    "prompt": (
+                        "Scene S03 keyframe concept for a 5-minute Traditional Chinese "
+                        "science explainer about dinosaur origins. Photoreal natural-history "
+                        "documentary paleoart. Leave the bottom 20% visually clean for subtitles."
+                    ),
+                    "aspect_ratio": "landscape",
+                }
+            )
+        )
+
+        assert payload["success"] is True
+        assert payload["provider"] == "openai-codex"
+        assert openai_provider.last_kwargs["prompt"].startswith("Scene S03")
+        assert xai_provider.last_kwargs == {}
+
+    def test_story_video_image_prompt_rejects_explicit_xai_provider(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from agent import image_gen_registry as registry_module
+        from hermes_cli import plugins as plugins_module
+
+        xai_provider = _NamedRecordingProvider("xai")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "xai")
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_model", lambda: "grok-imagine-image-quality")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda *a, **k: None)
+        monkeypatch.setattr(registry_module, "get_provider", lambda name: xai_provider if name == "xai" else None)
+
+        payload = json.loads(
+            image_generation_tool._handle_image_generate(
+                {
+                    "prompt": "故事影片 scene keyframe，科普影片 5mins，真實照片風格",
+                    "_provider": "xai",
+                }
+            )
+        )
+
+        assert payload["success"] is False
+        assert payload["error_type"] == "story_video_provider_blocked"
+        assert payload["provider"] == "xai"
+        assert xai_provider.last_kwargs == {}
+
     def test_handle_agent_mode_image_routes_to_visual_package(self, monkeypatch, tmp_path):
         from tools import image_generation_tool
         from tools import visual_package_tool

@@ -56,6 +56,7 @@ from agent.video_gen_provider import (
 )
 from agent.visual.prompt_disclosure import is_visual_prompt_disclosure_request
 from tools.registry import registry, tool_error
+from tools.story_video_provider_guard import story_video_video_block_payload
 
 logger = logging.getLogger(__name__)
 
@@ -381,14 +382,23 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
             "reference-to-video; use a provider-specific tool for video edit/extend"
         )
 
-    # Resolve the active provider.
     configured = provider_override or _read_configured_video_provider()
+    configured_model = None if provider_override else _read_configured_video_model()
+    story_video_error = story_video_video_block_payload(
+        args,
+        prompt=prompt,
+        provider=configured,
+        model=model_override or configured_model,
+    )
+    if story_video_error is not None:
+        return json.dumps(story_video_error, ensure_ascii=False)
+
+    # Resolve the active provider.
     provider = _resolve_active_provider(provider_override=provider_override)
     if provider is None:
         return _missing_provider_error(configured)
 
     # Resolve model: explicit arg wins, then config, then provider default.
-    configured_model = None if provider_override else _read_configured_video_model()
     model = model_override or configured_model or provider.default_model()
 
     kwargs: Dict[str, Any] = {
