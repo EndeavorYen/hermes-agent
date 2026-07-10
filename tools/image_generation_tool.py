@@ -70,6 +70,7 @@ from tools.tool_backend_helpers import (
     nous_tool_gateway_unavailable_message,
     prefers_gateway,
 )
+from tools.story_video_provider_guard import normalize_visual_provider
 from tools.story_video_provider_guard import resolve_story_video_image_provider
 
 logger = logging.getLogger(__name__)
@@ -843,27 +844,12 @@ def _truthy_arg(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _requested_image_provider(value: Any) -> str | None:
-    lowered = str(value or "").lower()
-    compact = re.sub(r"[\s_\-.]+", "", lowered)
-    if "grok" in lowered or "x.ai" in lowered or re.search(r"\bxai\b", lowered):
-        return "xai"
-    if (
-        "openai" in lowered
-        or "codex" in lowered
-        or "gpt-image" in lowered
-        or "image2" in compact
-    ):
-        return "openai-codex"
-    return None
-
-
-def _image_provider_override_arg(args: Dict[str, Any], prompt: str) -> str | None:
+def _image_provider_override_arg(args: Dict[str, Any], _prompt: str) -> str | None:
     for key in ("_provider", "provider", "image_provider"):
         value = args.get(key)
         if isinstance(value, str) and value.strip():
-            return _requested_image_provider(value) or value.strip()
-    return _requested_image_provider(prompt)
+            return normalize_visual_provider(value)
+    return None
 
 
 def _agent_mode_requested(args: Dict[str, Any], prompt: str) -> bool:

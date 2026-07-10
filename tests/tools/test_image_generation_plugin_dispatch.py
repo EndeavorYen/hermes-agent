@@ -52,6 +52,26 @@ class _NamedRecordingProvider(ImageGenProvider):
 
 
 class TestPluginDispatch:
+    def test_explicit_provider_override_preserves_exact_registry_ids(self):
+        from tools import image_generation_tool
+
+        assert image_generation_tool._image_provider_override_arg(
+            {"_provider": "openai"},
+            "draw a still",
+        ) == "openai"
+        assert image_generation_tool._image_provider_override_arg(
+            {"image_provider": "custom-openai"},
+            "draw a still",
+        ) == "custom-openai"
+
+    def test_prompt_provider_negation_and_comparison_do_not_infer_override(self):
+        from tools import image_generation_tool
+
+        assert image_generation_tool._image_provider_override_arg(
+            {},
+            "Do not use xai; compare OpenAI with custom-openai before drawing.",
+        ) is None
+
     def test_dispatch_routes_to_codex_provider(self, monkeypatch, tmp_path):
         from tools import image_generation_tool
         from agent import image_gen_registry as registry_module

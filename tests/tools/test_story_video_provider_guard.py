@@ -45,3 +45,41 @@ def test_story_video_generic_video_payload_does_not_echo_prompt():
     assert error is not None
     assert error["error_type"] == "story_video_provider_blocked"
     assert "privacy-marker-2481" not in str(error)
+
+
+def test_story_video_false_flag_does_not_trigger_detection():
+    from tools.story_video_provider_guard import story_video_request_detected
+
+    assert story_video_request_detected(
+        "animate this ordinary still for 6s",
+        {"story_video": False},
+    ) is False
+
+
+def test_story_video_attachment_path_does_not_trigger_detection():
+    from tools.story_video_provider_guard import story_video_request_detected
+
+    assert story_video_request_detected(
+        "animate this ordinary still for 6s",
+        {"image_url": "/story_video/still.png", "duration": 6},
+    ) is False
+
+
+def test_story_video_explicit_truthy_workflow_flag_triggers_detection():
+    from tools.story_video_provider_guard import story_video_request_detected
+
+    assert story_video_request_detected(
+        "render the next source still",
+        {"story_video_workflow": True},
+    ) is True
+
+
+def test_story_video_provider_aliases_are_exact_not_substring_matches():
+    from tools.story_video_provider_guard import normalize_visual_provider
+
+    assert normalize_visual_provider("x.ai") == "xai"
+    assert normalize_visual_provider("grok imagine") == "xai"
+    assert normalize_visual_provider("image_2") == "openai-codex"
+    assert normalize_visual_provider("openai codex") == "openai-codex"
+    assert normalize_visual_provider("openai") == "openai"
+    assert normalize_visual_provider("custom-openai") == "custom-openai"

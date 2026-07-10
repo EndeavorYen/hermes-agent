@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 from typing import Any
 
@@ -40,38 +39,62 @@ _CHINESE_LONG_FORM_VIDEO_RE = re.compile(
     r"(?:\d+\s*分鐘|\d+\s*mins?|\d+\s*min|大概\s*\d+|旁白|字幕|場景帳本)"
 )
 
+_STORY_VIDEO_FLAG_KEYS = (
+    "story_video",
+    "story_video_mode",
+    "story_video_workflow",
+    "use_story_video_workflow",
+)
 
-def _text_fragments(value: Any, *, depth: int = 0) -> list[str]:
-    if value is None or depth > 4:
-        return []
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, (int, float, bool)):
-        return [str(value)]
-    if isinstance(value, dict):
-        out: list[str] = []
-        for key, item in value.items():
-            out.extend(_text_fragments(key, depth=depth + 1))
-            out.extend(_text_fragments(item, depth=depth + 1))
-        return out
-    if isinstance(value, (list, tuple, set)):
-        out: list[str] = []
-        for item in value:
-            out.extend(_text_fragments(item, depth=depth + 1))
-        return out
-    try:
-        return [json.dumps(value, ensure_ascii=False, default=str)]
-    except Exception:
-        return [str(value)]
+_XAI_PROVIDER_ALIASES = {
+    "xai",
+    "x.ai",
+    "x-ai",
+    "x_ai",
+    "grok",
+    "grok imagine",
+    "grok-imagine",
+    "grok_imagine",
+    "grok imagine image",
+    "grok-imagine-image",
+    "grok_imagine_image",
+    "grok imagine image quality",
+    "grok-imagine-image-quality",
+    "grok_imagine_image_quality",
+}
+
+_OPENAI_CODEX_PROVIDER_ALIASES = {
+    "codex",
+    "image2",
+    "image 2",
+    "image-2",
+    "image_2",
+    "codex/image2",
+    "openai-codex",
+    "openai codex",
+    "openai_codex",
+    "openai-codex/image2",
+    "gpt-image-2",
+    "gpt image 2",
+    "gpt_image_2",
+    "gpt-image-2-high",
+}
 
 
-def story_video_request_detected(*values: Any) -> bool:
-    text = "\n".join(
-        fragment
-        for value in values
-        for fragment in _text_fragments(value)
-        if fragment
-    )
+def _truthy_story_video_flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def story_video_request_detected(prompt: Any, args: Any = None) -> bool:
+    if isinstance(args, dict) and any(
+        _truthy_story_video_flag(args.get(key)) for key in _STORY_VIDEO_FLAG_KEYS
+    ):
+        return True
+    text = str(prompt or "").strip() if isinstance(prompt, str) else ""
     if not text:
         return False
     lowered = text.lower()
@@ -104,12 +127,11 @@ def normalize_visual_provider(value: Any) -> str | None:
     raw = str(value or "").strip()
     if not raw:
         return None
-    lowered = raw.lower()
-    compact = re.sub(r"[\s_\-.]+", "", lowered)
-    if "openai" in lowered or "codex" in lowered or "gpt-image" in lowered or "image2" in compact:
-        return STORY_VIDEO_IMAGE_PROVIDER
-    if "grok" in lowered or "x.ai" in lowered or re.search(r"\bxai\b", lowered):
+    lowered = re.sub(r"\s+", " ", raw.lower())
+    if lowered in _XAI_PROVIDER_ALIASES:
         return "xai"
+    if lowered in _OPENAI_CODEX_PROVIDER_ALIASES:
+        return STORY_VIDEO_IMAGE_PROVIDER
     return raw
 
 
