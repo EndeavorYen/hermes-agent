@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from plugins.story_video.state import (
     StoryVideoStateStore,
     parse_operator_call,
@@ -115,3 +117,64 @@ def test_repair_call_records_issue_and_returns_repair_next_call(tmp_path) -> Non
 
     assert context.repair_request == "旁白講完不要乾等"
     assert context.next_call == "修正：旁白講完不要乾等"
+
+
+def test_loading_advanced_phase_clears_stale_legacy_repair(tmp_path) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    start = parse_operator_call("故事影片：恐龍起源｜5分｜真實照片")
+    assert start is not None
+    context = store.create_or_load(
+        source_key="source-1",
+        session_id="session-1",
+        call=start,
+        original_request="start",
+    )
+    context_path = context.project_dir / "story_video_run_context.json"
+    payload = context.to_dict()
+    payload.update(
+        {
+            "phase": "render",
+            "last_validated_phase": "voice",
+            "repair_request": "補齊 voice：audio narration segments",
+        }
+    )
+    context_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    reloaded = store.for_session("session-1")
+
+    assert reloaded is not None
+    assert reloaded.repair_request == ""
+    assert reloaded.next_call == "出片"
+    assert json.loads(context_path.read_text(encoding="utf-8"))["repair_request"] == ""
+
+
+def test_new_cross_phase_repair_is_not_treated_as_stale(tmp_path) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    start = parse_operator_call("故事影片：恐龍起源｜5分｜真實照片")
+    assert start is not None
+    context = store.create_or_load(
+        source_key="source-1",
+        session_id="session-1",
+        call=start,
+        original_request="start",
+    )
+    context = store.update(
+        context,
+        phase="render",
+        last_validated_phase="voice",
+        repair_request="",
+    )
+    repair = parse_operator_call(
+        "修正：補齊 voice：重新錄製 S03", has_active_project=True
+    )
+    assert repair is not None
+
+    repaired = store.create_or_load(
+        source_key="source-1",
+        session_id="session-1",
+        call=repair,
+        original_request="repair",
+    )
+
+    assert repaired.repair_phase == "render"
+    assert repaired.next_call == "修正：補齊 voice：重新錄製 S03"

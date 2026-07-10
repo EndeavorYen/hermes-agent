@@ -153,6 +153,7 @@ class StoryVideoRunContext:
     last_validated_phase: str = ""
     status: str = "active"
     repair_request: str = ""
+    repair_phase: str = ""
     provider_policy: dict[str, Any] = field(
         default_factory=lambda: json.loads(json.dumps(DEFAULT_PROVIDER_POLICY))
     )
@@ -161,13 +162,26 @@ class StoryVideoRunContext:
 
     @property
     def next_call(self) -> str | None:
-        if self.repair_request:
+        if self.repair_request and not self.repair_is_stale:
             return f"修正：{self.repair_request}"
         if self.status == "complete" or self.phase == "complete":
             return None
         if self.phase == "render":
             return "出片"
         return "繼續"
+
+    @property
+    def repair_is_stale(self) -> bool:
+        if not self.repair_request:
+            return False
+        if self.repair_phase:
+            return self.repair_phase != self.phase
+        match = re.match(r"^\s*補齊\s+([^：:]+)\s*[：:]", self.repair_request)
+        if match is None or not self.last_validated_phase:
+            return False
+        target_phase = match.group(1).strip().lower()
+        validated_phase = self.last_validated_phase.strip().lower()
+        return target_phase == validated_phase and self.phase != self.last_validated_phase
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -235,11 +249,13 @@ class StoryVideoStateStore:
             repair_request = (
                 call.repair_request if call.action == "repair" else context.repair_request
             )
+            repair_phase = context.phase if call.action == "repair" else context.repair_phase
             context = StoryVideoRunContext.from_dict(
                 {
                     **context.to_dict(),
                     "session_ids": list(sessions),
                     "repair_request": repair_request,
+                    "repair_phase": repair_phase,
                     "updated_at": _utc_now(),
                 }
             )
@@ -271,6 +287,11 @@ class StoryVideoStateStore:
         context: StoryVideoRunContext,
         **changes: Any,
     ) -> StoryVideoRunContext:
+        if changes.get("phase", context.phase) != context.phase:
+            changes.setdefault("repair_request", "")
+            changes.setdefault("repair_phase", "")
+        elif changes.get("repair_request") == "":
+            changes.setdefault("repair_phase", "")
         updated = replace(context, updated_at=_utc_now(), **changes)
         self.save(updated)
         return updated
@@ -298,7 +319,16 @@ class StoryVideoStateStore:
             payload = self._read_json(Path(context_path), None)
             if not isinstance(payload, dict):
                 return None
-            return StoryVideoRunContext.from_dict(payload)
+            context = StoryVideoRunContext.from_dict(payload)
+            if context.repair_is_stale:
+                context = replace(
+                    context,
+                    repair_request="",
+                    repair_phase="",
+                    updated_at=_utc_now(),
+                )
+                self._write_json(Path(context_path), context.to_dict())
+            return context
 
     @staticmethod
     def _read_json(path: Path, default: Any) -> Any:

@@ -212,7 +212,11 @@ def story_video_control(
     action = str(args.get("action") or "status").lower()
     if action == "repair":
         issue = str(args.get("repair_request") or "目前問題").strip()
-        context = state_store.update(context, repair_request=issue)
+        context = state_store.update(
+            context,
+            repair_request=issue,
+            repair_phase=context.phase,
+        )
         return json.dumps(_context_payload(context), ensure_ascii=False)
     if action == "validate":
         proof = validate_phase(context)
@@ -230,6 +234,7 @@ def story_video_control(
             context = state_store.update(
                 context,
                 repair_request=f"補齊 {proof.phase}：{detail}",
+                repair_phase=proof.phase,
             )
             payload.update(_context_payload(context))
             payload["success"] = False
@@ -242,6 +247,7 @@ def story_video_control(
                 phase=_next_phase(context.phase),
                 last_validated_phase=proof.phase,
                 repair_request="",
+                repair_phase="",
                 status="complete" if _next_phase(context.phase) == "complete" else "active",
             )
             payload.update(_context_payload(context))
