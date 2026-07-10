@@ -145,8 +145,15 @@ def pre_llm_call(
         "provider=openai-codex. Never call generic video_generate for the body, "
         "and never use xAI/Grok through terminal or delegation. Use local locked "
         "narration/render components only; generic text_to_speech is forbidden. "
-        "Call story_video_control(action=status) before work and "
-        "story_video_control(action=validate) after completing the current phase."
+        "Complete the current phase in this turn; do not stop after announcing "
+        "what you will do. During planning, immediately create storyboard.md, "
+        "scene_ledger.json, and production_checklist.json in project_dir from "
+        "the original request; PROJECT_CONTRACT.md already exists. Do not inspect "
+        "other story-video projects, source code, memory, or skills, and do not "
+        "invoke brainstorming, nested Hermes sessions, web research, or media "
+        "generation unless the operator explicitly requests them. The output gate "
+        "validates the phase automatically. Use story_video_control only when it "
+        "is exposed as a direct tool; never invoke it through terminal."
     )
     return {"context": instruction}
 
