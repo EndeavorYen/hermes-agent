@@ -53,10 +53,14 @@ class _FakeAsyncClient:
         return _FakeResponse(200, {"request_id": "req-123"})
 
     async def get(self, url, headers=None, timeout=None):
+        request_payload = self.posts[-1]["json"]
         return _FakeResponse(200, {
             "status": "done",
-            "video": {"url": "https://xai-cdn/out.mp4", "duration": 8},
-            "model": self.posts[-1]["json"]["model"],
+            "video": {
+                "url": "https://xai-cdn/out.mp4",
+                "duration": request_payload["duration"],
+            },
+            "model": request_payload["model"],
         })
 
 
@@ -93,6 +97,16 @@ class TestXAIEndpoint:
     def test_text_to_video_hits_generations(self, xai_provider):
         provider, captured = xai_provider
         result = provider.generate("a dog on a skateboard")
+        assert result["success"] is True
+        assert _last_post(captured)["url"].endswith("/videos/generations")
+        assert result["modality"] == "text"
+
+    @pytest.mark.asyncio
+    async def test_generate_can_run_inside_existing_event_loop(self, xai_provider):
+        provider, captured = xai_provider
+
+        result = provider.generate("a lantern floating over water")
+
         assert result["success"] is True
         assert _last_post(captured)["url"].endswith("/videos/generations")
         assert result["modality"] == "text"
@@ -198,6 +212,18 @@ class TestXAIClamping:
         provider, captured = xai_provider
         provider.generate("x", duration=30)
         assert _last_post(captured)["json"]["duration"] == 15
+
+    def test_image_to_video_duration_clamped_to_supported_six_seconds(self, xai_provider):
+        provider, captured = xai_provider
+        result = provider.generate(
+            "animate this",
+            image_url="https://example.com/cat.png",
+            duration=15,
+        )
+
+        assert result["success"] is True
+        assert _last_post(captured)["json"]["duration"] == 6
+        assert result["duration"] == 6
 
     def test_duration_clamped_when_refs_present(self, xai_provider):
         provider, captured = xai_provider

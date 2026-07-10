@@ -429,7 +429,7 @@ class TestGenerate:
         assert "expires_after" not in payload["storage_options"]
         assert payload["storage_options"]["filename"].endswith(".png")
 
-    def test_public_url_file_output_wins_over_temporary_url(self):
+    def test_public_url_file_output_is_cached_and_preserved(self, tmp_path):
         from plugins.image_gen.xai import XAIImageGenProvider
 
         mock_resp = MagicMock()
@@ -447,16 +447,23 @@ class TestGenerate:
             }],
         }
 
+        cached_path = tmp_path / "xai_grok-imagine-image_20260708_014800_deadbeef.png"
         with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp), \
-             patch("plugins.image_gen.xai.save_url_image") as mock_save_url:
+             patch(
+                 "plugins.image_gen.xai.save_url_image",
+                 return_value=cached_path,
+             ) as mock_save_url:
             provider = XAIImageGenProvider()
             result = provider.generate(prompt="A cat playing piano")
 
         assert result["success"] is True
-        assert result["image"] == "https://xai-files.example/stored.png"
+        assert result["image"] == str(cached_path)
         assert result["public_url"] == "https://xai-files.example/stored.png"
         assert "file_id" not in result
-        mock_save_url.assert_not_called()
+        mock_save_url.assert_called_once_with(
+            "https://xai-files.example/stored.png",
+            prefix="xai_grok-imagine-image",
+        )
 
 
 # ---------------------------------------------------------------------------

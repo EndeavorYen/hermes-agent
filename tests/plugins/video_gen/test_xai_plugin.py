@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import httpx
 import pytest
 
 from agent import video_gen_registry
@@ -186,6 +187,35 @@ def test_video_input_from_public_url_rejects_bare_file_id():
         )
     )
     assert result is None
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected_error_type"),
+    [
+        (httpx.TimeoutException("timed out"), "timeout"),
+        (httpx.ConnectError("connection failed"), "connection_error"),
+        (RuntimeError("bad response"), "api_error"),
+    ],
+)
+def test_xai_video_coroutine_preserves_transport_error_class(
+    exc,
+    expected_error_type,
+):
+    from plugins.video_gen.xai import _run_xai_video_coroutine
+
+    async def _fail():
+        raise exc
+
+    result = _run_xai_video_coroutine(
+        _fail(),
+        operation_label="generation",
+        model="grok-imagine-video",
+        prompt="storm clouds",
+        aspect_ratio="16:9",
+    )
+
+    assert result["success"] is False
+    assert result["error_type"] == expected_error_type
 
 
 def test_xai_video_image_input_blocks_credential_store_symlink(tmp_path, monkeypatch):

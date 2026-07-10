@@ -286,6 +286,29 @@ class TestGenerate:
         }
         assert codex_plugin._extract_image_b64(payload) == _b64_png()
 
+    def test_completed_response_exposes_provider_response_id(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        collected = codex_plugin._extract_image_generation_result(
+            {
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_image_123",
+                    "output": [
+                        {
+                            "type": "image_generation_call",
+                            "result": _b64_png(),
+                        }
+                    ],
+                },
+            }
+        )
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", lambda *a, **kw: collected)
+
+        result = provider.generate("a cat")
+
+        assert result["success"] is True
+        assert result["response_id"] == "resp_image_123"
+
     def test_empty_response_returns_error(self, provider, monkeypatch):
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
         monkeypatch.setattr(codex_plugin, "_collect_image_b64", lambda *a, **kw: None)

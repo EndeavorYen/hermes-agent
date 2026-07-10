@@ -23,6 +23,7 @@ import base64
 import logging
 import mimetypes
 import os
+import threading
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -52,6 +53,7 @@ DEFAULT_RESOLUTION = "720p"
 DEFAULT_TIMEOUT_SECONDS = 240
 DEFAULT_POLL_INTERVAL_SECONDS = 5
 DEFAULT_EXTEND_DURATION = 6
+IMAGE_TO_VIDEO_MAX_DURATION = 6
 
 VALID_ASPECT_RATIOS = {"1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"}
 VALID_RESOLUTIONS = {"480p", "720p"}
@@ -267,6 +269,7 @@ def _normalize_reference_images(
 def _clamp_duration(
     duration: Optional[int],
     *,
+    has_image_input: bool = False,
     has_reference_images: bool = False,
     max_seconds: int = 15,
     default: int = DEFAULT_DURATION,
@@ -276,6 +279,8 @@ def _clamp_duration(
         value = 1
     if value > max_seconds:
         value = max_seconds
+    if has_image_input and value > IMAGE_TO_VIDEO_MAX_DURATION:
+        value = IMAGE_TO_VIDEO_MAX_DURATION
     if has_reference_images and value > 10:
         value = 10
     return value
@@ -420,6 +425,7 @@ class XAIVideoGenProvider(VideoGenProvider):
             "aspect_ratios": sorted(VALID_ASPECT_RATIOS),
             "resolutions": sorted(VALID_RESOLUTIONS),
             "max_duration": 15,
+            "max_image_duration": IMAGE_TO_VIDEO_MAX_DURATION,
             "min_duration": 1,
             "supports_audio": False,
             "supports_negative_prompt": False,
@@ -532,21 +538,56 @@ def _run_xai_video_coroutine(
     aspect_ratio: str,
 ) -> Dict[str, Any]:
     try:
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(coro)
-        finally:
-            loop.close()
+        return _run_sync_video_coro(coro)
     except Exception as exc:
         logger.warning("xAI video %s unexpected failure: %s", operation_label, exc, exc_info=True)
         return error_response(
-            error=f"xAI video {operation_label} failed: {exc}",
-            error_type="api_error",
+            error=(
+                f"xAI video {operation_label} failed: "
+                f"{type(exc).__name__}: {exc}"
+            ),
+            error_type=_xai_video_exception_error_type(exc),
             provider="xai",
             model=model or DEFAULT_MODEL,
             prompt=prompt,
             aspect_ratio=aspect_ratio,
         )
+
+
+def _run_sync_video_coro(coro):
+    """Run a provider coroutine from sync callers, including nested loops."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    result: Dict[str, Any] = {}
+    errors: List[BaseException] = []
+
+    def _runner() -> None:
+        try:
+            result["value"] = asyncio.run(coro)
+        except BaseException as exc:  # noqa: BLE001 - re-raised in caller
+            errors.append(exc)
+
+    thread = threading.Thread(
+        target=_runner,
+        name="xai-video-generate",
+        daemon=True,
+    )
+    thread.start()
+    thread.join()
+    if errors:
+        raise errors[0]
+    return result.get("value")
+
+
+def _xai_video_exception_error_type(exc: BaseException) -> str:
+    if isinstance(exc, (TimeoutError, httpx.TimeoutException)):
+        return "timeout"
+    if isinstance(exc, httpx.TransportError):
+        return "connection_error"
+    return "api_error"
 
 
 async def _generate_xai_video_async(
@@ -633,7 +674,11 @@ async def _generate_xai_video_async(
             )
         resolved_model = DEFAULT_TEXT_TO_VIDEO_MODEL
 
-    clamped_duration = _clamp_duration(duration, has_reference_images=bool(refs))
+    clamped_duration = _clamp_duration(
+        duration,
+        has_image_input=bool(image_input),
+        has_reference_images=bool(refs),
+    )
     payload = {
         "model": resolved_model,
         "prompt": prompt,
