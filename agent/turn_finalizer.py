@@ -47,11 +47,6 @@ _VISUAL_MEDIA_EXTENSIONS = (
     ".webm",
     ".webp",
 )
-_STORY_VIDEO_SHORT_CALLS = (
-    "故事影片下一步",
-    "故事影片出片",
-    "故事影片修正",
-)
 _FENCED_BLOCK_RE = re.compile(
     r"```(?:[a-zA-Z0-9_-]+)?[ \t]*\n?(.*?)```",
     flags=re.DOTALL,
@@ -352,16 +347,6 @@ def finalize_turn(
             )
         except Exception as exc:
             logger.debug("Raphael invocation response shaping skipped: %s", exc)
-
-    if final_response and not interrupted and completed:
-        try:
-            final_response = _apply_story_video_next_call_footer(
-                final_response,
-                user_message=original_user_message,
-                messages=messages,
-            )
-        except Exception as exc:
-            logger.debug("story-video next-call footer skipped: %s", exc)
 
     if final_response and not interrupted and completed:
         try:
@@ -695,8 +680,23 @@ def _apply_raphael_general_proof_gate(
         return final_response
     if _turn_contains_story_video_validation_block(messages):
         return final_response
-    if _is_story_video_planning_only_request(prompt_text):
+    if _turn_story_video_phase_proof(messages) is not None:
         return final_response
+    if _is_story_video_planning_only_request(prompt_text):
+        return "\n".join(
+            [
+                "狀態：故事影片 planning 尚未通過 phase proof。",
+                (
+                    "風險：目前只有完成宣告，尚未證明 PROJECT_CONTRACT.md、"
+                    "storyboard.md、scene_ledger.json 與 production_checklist.json "
+                    "已由目前專案建立並可讀。"
+                ),
+                (
+                    "下一步：先呼叫 story_video_control(action=validate)；"
+                    "通過後再回報規劃完成，不需要產圖或 visual artifact。"
+                ),
+            ]
+        )
     decision = build_raphael_control_decision(
         user_message,
         conversation_history=conversation_history,
@@ -780,6 +780,26 @@ def _turn_contains_story_video_validation_block(messages) -> bool:
     return False
 
 
+def _turn_story_video_phase_proof(messages) -> tuple[str, str] | None:
+    pattern = re.compile(
+        r"STORY_VIDEO_PHASE_PROOF:\s*([a-z_]+)\s+(PASS|BLOCKED)",
+        flags=re.I,
+    )
+    for message in messages or ():
+        if not isinstance(message, Mapping):
+            continue
+        text_parts = []
+        content = message.get("content")
+        if isinstance(content, str):
+            text_parts.append(content)
+        elif isinstance(content, Mapping):
+            text_parts.extend(str(value) for value in content.values())
+        match = pattern.search("\n".join(text_parts))
+        if match:
+            return match.group(1).lower(), match.group(2).upper()
+    return None
+
+
 def _is_story_video_planning_only_request(text) -> bool:
     lowered = str(text or "").lower()
     compact = re.sub(r"\s+", "", lowered)
@@ -835,40 +855,6 @@ def _is_story_video_planning_only_request(text) -> bool:
     )
     planning_hits = sum(1 for marker in planning_markers if marker in compact)
     return planning_hits >= 2
-
-
-def _is_story_video_workflow_request(text) -> bool:
-    lowered = str(text or "").lower()
-    compact = re.sub(r"\s+", "", lowered)
-    if not compact:
-        return False
-    story_markers = (
-        "故事影片",
-        "產影片",
-        "story video",
-        "story-video",
-        "科普影片",
-        "documentary",
-        "explainer video",
-    )
-    return any(marker in lowered or marker in compact for marker in story_markers)
-
-
-def _response_has_story_video_short_call(text) -> bool:
-    return any(call in str(text or "") for call in _STORY_VIDEO_SHORT_CALLS)
-
-
-def _apply_story_video_next_call_footer(final_response, *, user_message, messages):
-    if _turn_contains_story_video_validation_block(messages):
-        return final_response
-    if not _is_story_video_workflow_request(_plain_text_for_visual_prompt_learning(user_message)):
-        return final_response
-    if _response_has_story_video_short_call(final_response):
-        return final_response
-    return (
-        final_response.rstrip()
-        + "\n\nRaphael 提示：下一步可直接說「故事影片下一步」。"
-    )
 
 
 def _turn_has_successful_visual_delivery(messages) -> bool:
