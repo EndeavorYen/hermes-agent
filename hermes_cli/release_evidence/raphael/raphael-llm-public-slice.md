@@ -40,7 +40,7 @@ venv/bin/python scripts/raphael_release_docs_audit.py
 venv/bin/python scripts/raphael_release_slice_boundary.py --from-git-status
 venv/bin/python scripts/raphael_release_slice_manifest.py --from-git-status
 venv/bin/python -m pytest tests/scripts/test_raphael_package_install_smoke.py -q
-venv/bin/python -m pytest tests/agent/test_raphael_*.py tests/agent/test_turn_finalizer.py tests/hermes_cli/test_raphael_*.py tests/plugins/test_raphael_plugin.py tests/tools/test_visual_agent_tool.py tests/tools/test_visual_package_tool.py tests/visual/test_agent_mode_handoff.py tests/gateway/test_media_extraction.py tests/gateway/test_platform_base.py tests/scripts/test_raphael_completion_audit.py tests/scripts/test_raphael_release_docs_audit.py tests/scripts/test_raphael_release_slice_boundary.py tests/scripts/test_raphael_release_slice_manifest.py -q
+venv/bin/python -m pytest tests/agent/test_raphael_*.py tests/hermes_cli/test_raphael_*.py tests/plugins/test_raphael_plugin.py tests/run_agent/test_background_review.py tests/scripts/test_raphael_*.py -q
 venv/bin/ruff check agent/raphael hermes_cli/raphael_cmd.py hermes_cli/subcommands/raphael.py plugins/raphael scripts/raphael_completion_audit.py scripts/raphael_release_docs_audit.py scripts/raphael_release_slice_boundary.py scripts/raphael_release_slice_manifest.py scripts/raphael_package_install_smoke.py tests/agent/test_raphael_*.py tests/hermes_cli/test_raphael_*.py tests/plugins/test_raphael_plugin.py tests/scripts/test_raphael_completion_audit.py tests/scripts/test_raphael_release_docs_audit.py tests/scripts/test_raphael_release_slice_boundary.py tests/scripts/test_raphael_release_slice_manifest.py tests/scripts/test_raphael_package_install_smoke.py
 git diff --check
 ```
@@ -50,7 +50,7 @@ Current live evidence:
 - `hermes raphael readiness --readiness-profile llm --check` currently passes as `ready_for_llm_only_release` and prints `Release scope: llm_only`.
 - `scripts/raphael_completion_audit.py --target scoped` currently reports `Raphael completion audit: partial`, `Scoped release ready: yes`, and `Ultimate Sage King ready: no`; default `--target ultimate` exits non-zero until full Sage King blockers are resolved.
 - `scripts/raphael_release_docs_audit.py` currently passes against the LLM/media readiness JSON files and the release-facing docs.
-- Current local boundary command `scripts/raphael_release_slice_boundary.py --from-git-status` classifies the current worktree into `68` LLM slice paths and `45` deferred media paths with `0` unclassified paths and `0` content-boundary violations. This boundary summary is local review evidence, not a field in the readiness JSON.
+- Boundary results are run-specific and are not checked-in release evidence. The canonical packaged policy deliberately leaves unrelated CI, old implementation plans, generic release automation, and generic tests/utilities unclassified instead of absorbing them into the Raphael slice.
 - `scripts/raphael_release_slice_manifest.py --from-git-status` currently emits a reviewable `split_required` manifest with `allowed_public_claims: ["llm_only"]`, one `llm_scoped_release` slice, and one deferred media slice.
 - LLM-only live summon smoke `20260701_131600_93f518` proves same-session follow-up continuity with `gpt-5.5`, zero tool calls, and text-only output.
 - Hostile-shaped text-only smoke `20260701_130957_137750` proves public Raphael wording with `不要產圖` stays out of visual handoff and ends with zero tool calls.

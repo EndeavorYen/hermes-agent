@@ -53,6 +53,33 @@ class _FakeAgent:
     _stream_callback = None
     _spawn_background_review = AIAgent._spawn_background_review
 
+    def __init__(self):
+        self._credential_pool = None
+        self._memory_store = object()
+        self._memory_enabled = True
+        self._user_profile_enabled = False
+        self._cached_system_prompt = "cached prompt"
+        self.session_start = None
+        self.enabled_toolsets = None
+        self.disabled_toolsets = None
+        self.memory_notifications = "on"
+        self.safe_prints: list[str] = []
+        self.background_callbacks: list[str] = []
+        self.background_review_callback = self.background_callbacks.append
+
+    def _current_main_runtime(self):
+        return {
+            "api_key": None,
+            "base_url": self.base_url,
+            "api_mode": None,
+        }
+
+    def _safe_print(self, *args, **_kwargs):
+        self.safe_prints.append(" ".join(str(item) for item in args))
+
+    def _emit_auxiliary_failure(self, label, error):
+        raise AssertionError(f"unexpected {label}: {error}")
+
     def _save_trajectory(self, *_args, **_kwargs):
         pass
 
@@ -100,7 +127,7 @@ def test_temp_home_evolution_forwards_review_contract_without_spawn_failure(
         risk_level="R1",
         user_message_preview="不對，要主動進化",
     )
-    captured: dict = {}
+    review_prompts: list[str] = []
 
     monkeypatch.setattr(evolution, "decide_raphael_evolution", lambda **_kwargs: decision)
     monkeypatch.setattr(
@@ -109,27 +136,35 @@ def test_temp_home_evolution_forwards_review_contract_without_spawn_failure(
         lambda _decision: "CUSTOM RAPHAEL EVOLUTION PROMPT",
     )
 
-    def fake_spawn(
-        agent,
-        messages_snapshot,
-        review_memory=False,
-        review_skills=False,
-        review_prompt=None,
-        review_label=None,
-    ):
-        captured.update(
-            review_memory=review_memory,
-            review_skills=review_skills,
-            review_prompt=review_prompt,
-            review_label=review_label,
-        )
-        return (lambda: None), review_prompt
+    class FakeReviewAgent:
+        def __init__(self, **_kwargs):
+            self._session_messages = []
 
-    monkeypatch.setattr(background_review, "spawn_background_review_thread", fake_spawn)
+        def run_conversation(self, **kwargs):
+            review_prompts.append(kwargs["user_message"])
+            self._session_messages = [
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_review",
+                    "content": (
+                        '{"success": true, "message": "Skill updated", '
+                        '"target": "skill"}'
+                    ),
+                }
+            ]
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
     monkeypatch.setattr(run_agent_module.threading, "Thread", _ImmediateThread)
 
+    agent = _FakeAgent()
     result = finalize_turn(
-        _FakeAgent(),
+        agent,
         final_response="收到，我會修正",
         api_call_count=1,
         interrupted=False,
@@ -145,12 +180,21 @@ def test_temp_home_evolution_forwards_review_contract_without_spawn_failure(
     )
 
     assert result["final_response"] == "收到，我會修正"
-    assert captured == {
-        "review_memory": False,
-        "review_skills": True,
-        "review_prompt": "CUSTOM RAPHAEL EVOLUTION PROMPT",
-        "review_label": "Raphael evolution review",
-    }
+    assert review_prompts
+    assert review_prompts[0].startswith("CUSTOM RAPHAEL EVOLUTION PROMPT")
+    assert agent.safe_prints == ["  💾 Raphael evolution review: Skill updated"]
+    assert agent.background_callbacks == ["💾 Raphael evolution review: Skill updated"]
     outcomes = [record.get("status") for record in evolution.read_evolution_records()]
     assert "scheduled" in outcomes
     assert "background_spawn_failed" not in outcomes
+
+
+def test_review_label_is_single_line_redacted_and_bounded():
+    secret = "sk-" + "secret1234567890"
+    label = f" Raphael\nreview {secret} " + "x" * 200
+
+    sanitized = background_review._sanitize_review_label(label)
+
+    assert "\n" not in sanitized
+    assert secret not in sanitized
+    assert len(sanitized) <= 80

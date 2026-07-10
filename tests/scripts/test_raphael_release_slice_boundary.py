@@ -11,6 +11,7 @@ def test_raphael_llm_slice_boundary_classifies_changed_paths():
             "agent/conversation_loop.py",
             "docs/plans/2026-07-05-raphael-learning-absorption-plan.md",
             "hermes_cli/raphael_cmd.py",
+            "hermes_cli/raphael_lifecycle.py",
             "scripts/release.py",
             "scripts/raphael_completion_audit.py",
             "scripts/raphael_package_install_smoke.py",
@@ -29,25 +30,50 @@ def test_raphael_llm_slice_boundary_classifies_changed_paths():
         profile="llm",
     )
 
-    assert result.unclassified == ()
-    assert ".github/workflows/tests.yml" in result.included
+    assert result.unclassified == (
+        ".github/workflows/tests.yml",
+        "agent/conversation_loop.py",
+        "docs/plans/2026-07-05-raphael-learning-absorption-plan.md",
+        "scripts/release.py",
+        "tests/cli/test_cli_save_config_value.py",
+        "tests/test_tui_gateway_server.py",
+        "utils.py",
+    )
     assert "agent/raphael/control.py" in result.included
-    assert "docs/plans/2026-07-05-raphael-learning-absorption-plan.md" in result.included
     assert "hermes_cli/raphael_cmd.py" in result.included
-    assert "scripts/release.py" in result.included
+    assert "hermes_cli/raphael_lifecycle.py" in result.included
     assert "scripts/raphael_completion_audit.py" in result.included
     assert "scripts/raphael_package_install_smoke.py" in result.included
     assert "scripts/raphael_release_slice_manifest.py" in result.included
-    assert "tests/cli/test_cli_save_config_value.py" in result.included
     assert "tests/scripts/test_raphael_completion_audit.py" in result.included
     assert "tests/scripts/test_raphael_release_slice_manifest.py" in result.included
-    assert "tests/test_tui_gateway_server.py" in result.included
-    assert "utils.py" in result.included
     assert "plugins/image_gen/grok_web_imagine/__init__.py" in result.deferred_media
     assert "scripts/visual_live_provider_e2e.py" in result.deferred_media
     assert "tests/scripts/test_visual_live_provider_e2e.py" in result.deferred_media
     assert "agent/visual/agent_mode/handoff.py" in result.deferred_media
     assert "tools/visual_package_tool.py" in result.deferred_media
+
+
+def test_source_and_packaged_boundary_policy_are_identical():
+    from hermes_cli.release_evidence.raphael import (
+        raphael_release_slice_boundary as packaged,
+    )
+    from scripts import raphael_release_slice_boundary as source
+
+    paths = [
+        "agent/raphael/control.py",
+        "hermes_cli/raphael_lifecycle.py",
+        ".github/workflows/tests.yml",
+        "scripts/release.py",
+        "scripts/openai_visual_live_e2e.py",
+    ]
+
+    assert source.LLM_INCLUDE_PREFIXES == packaged.LLM_INCLUDE_PREFIXES
+    assert source.LLM_DEFERRED_MEDIA_PREFIXES == packaged.LLM_DEFERRED_MEDIA_PREFIXES
+    assert source.STRICT_CONTENT_BOUNDARY_PREFIXES == (
+        packaged.STRICT_CONTENT_BOUNDARY_PREFIXES
+    )
+    assert source.classify_paths(paths) == packaged.classify_paths(paths)
 
 
 def test_raphael_llm_slice_boundary_flags_unclassified_paths():
