@@ -476,7 +476,10 @@ caption
         assert "/tmp/alias-a.png" in other_thread
 
     def test_reused_path_with_new_artifact_identity_is_current(self):
-        from gateway.run import _collect_current_turn_delivery_media_paths
+        from gateway.run import (
+            _collect_current_turn_delivery_media_paths,
+            _visual_delivery_history_key,
+        )
 
         path = "/tmp/reused-output.png"
         messages = [
@@ -509,7 +512,97 @@ caption
         current = _collect_current_turn_delivery_media_paths(
             messages,
             history_media_paths={path},
-            history_media_identities={"sha256:old"},
+            history_media_identities={
+                _visual_delivery_history_key("vrq_old", "sha256:old")
+            },
+        )
+
+        assert path in current
+
+    def test_auto_append_allows_reused_path_with_new_artifact_identity(self):
+        from gateway.run import (
+            _collect_auto_append_media_tags,
+            _visual_delivery_history_key,
+        )
+
+        path = "/tmp/reused-auto-append.png"
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_visual",
+                        "function": {"name": "visual_package_generate"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_visual",
+                "content": (
+                    '{"success": true, "visual_request_id": "vrq_new", '
+                    '"images": ["'
+                    + path
+                    + '"], "videos": [], "delivery_metadata": {'
+                    '"selected_visual_artifact_ids": ["new"], '
+                    '"visual_artifacts": {"'
+                    + path
+                    + '": {"request_id": "vrq_new", "artifact_id": "new", '
+                    '"content_hash": "sha256:new", "kind": "image"}}}}'
+                ),
+            },
+        ]
+
+        tags, _ = _collect_auto_append_media_tags(
+            messages,
+            history_media_paths={path},
+            history_media_identities={
+                _visual_delivery_history_key("vrq_old", "sha256:old")
+            },
+        )
+
+        assert tags == [f"MEDIA:{path}"]
+
+    def test_same_identity_is_allowed_for_a_new_visual_request(self):
+        from gateway.run import (
+            _collect_current_turn_delivery_media_paths,
+            _visual_delivery_history_key,
+        )
+
+        path = "/tmp/same-content-new-request.png"
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_visual",
+                        "function": {"name": "visual_package_generate"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_visual",
+                "content": (
+                    '{"success": true, "visual_request_id": "vrq_new", '
+                    '"images": ["'
+                    + path
+                    + '"], "videos": [], "delivery_metadata": {'
+                    '"selected_visual_artifact_ids": ["new"], '
+                    '"visual_artifacts": {"'
+                    + path
+                    + '": {"request_id": "vrq_new", "artifact_id": "new", '
+                    '"content_hash": "sha256:same", "kind": "image"}}}}'
+                ),
+            },
+        ]
+
+        current = _collect_current_turn_delivery_media_paths(
+            messages,
+            history_media_paths={path},
+            history_media_identities={
+                _visual_delivery_history_key("vrq_old", "sha256:same")
+            },
         )
 
         assert path in current

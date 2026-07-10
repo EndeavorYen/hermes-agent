@@ -1135,6 +1135,15 @@ def _selected_visual_payload_media_refs(payload: Dict[str, Any]) -> List[str]:
     return refs
 
 
+def _visual_delivery_history_key(request_id: Any, identity: Any) -> str:
+    """Encode request-scoped artifact identity without delimiter ambiguity."""
+    return json.dumps(
+        [str(request_id or ""), str(identity or "")],
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+
+
 def _current_turn_messages(
     messages: List[Dict[str, Any]],
     history_offset: int = 0,
@@ -1200,9 +1209,10 @@ def _collect_current_turn_delivery_media_paths(
                     continue
                 identity = str(deliverable.get("identity") or path)
                 request_id = str(deliverable.get("request_id") or "")
+                history_key = _visual_delivery_history_key(request_id, identity)
                 identity_is_path_fallback = identity in _tool_media_ref_lookup_keys(path)
                 if identity_history_available:
-                    if identity in history_media_identities:
+                    if history_key in history_media_identities:
                         continue
                     if identity_is_path_fallback and _tool_media_seen(
                         path,
@@ -1405,6 +1415,7 @@ def _collect_auto_append_media_tags(
     messages: List[Dict[str, Any]],
     history_offset: int = 0,
     history_media_paths: Optional[set] = None,
+    history_media_identities: Optional[set] = None,
 ) -> tuple[List[str], bool]:
     """Collect real media tags from current-turn producer-tool results only.
 
@@ -1425,6 +1436,8 @@ def _collect_auto_append_media_tags(
     of #160. The producer-tool allowlist still applies on the fallback path.
     """
     history_media_paths = history_media_paths or set()
+    identity_history_available = history_media_identities is not None
+    history_media_identities = history_media_identities or set()
     # Only trust the slice boundary when the message list still contains the
     # full history prefix. Otherwise scan everything (compression-safe fallback).
     if history_offset and len(messages) >= history_offset:
@@ -1477,17 +1490,36 @@ def _collect_auto_append_media_tags(
                 payload = None
             if isinstance(payload, dict) and payload.get("success"):
                 seen_refs: set = set()
-                for path in _selected_visual_payload_media_refs(payload):
-                    if (
-                        _TOOL_MEDIA_RE.fullmatch(f"MEDIA:{path}")
-                        and not _tool_media_seen(
+                for deliverable in _selected_visual_payload_deliverables(payload):
+                    path = _normalise_tool_media_ref(deliverable.get("ref"))
+                    if not path or not _TOOL_MEDIA_RE.fullmatch(f"MEDIA:{path}"):
+                        continue
+                    identity = str(deliverable.get("identity") or path)
+                    request_id = str(deliverable.get("request_id") or "")
+                    history_key = _visual_delivery_history_key(
+                        request_id,
+                        identity,
+                    )
+                    identity_is_path_fallback = (
+                        identity in _tool_media_ref_lookup_keys(path)
+                    )
+                    if identity_history_available:
+                        if history_key in history_media_identities:
+                            continue
+                        if identity_is_path_fallback and _tool_media_seen(
                             path,
                             history_media_paths,
                             seen_refs,
-                        )
+                        ):
+                            continue
+                    elif _tool_media_seen(
+                        path,
+                        history_media_paths,
+                        seen_refs,
                     ):
-                        media_tags.append(f"MEDIA:{path}")
-                        seen_refs.update(_tool_media_ref_lookup_keys(path))
+                        continue
+                    media_tags.append(f"MEDIA:{path}")
+                    seen_refs.update(_tool_media_ref_lookup_keys(path))
             continue
         if "MEDIA:" not in content:
             continue
@@ -1584,7 +1616,12 @@ def _collect_history_media_identities(
         for deliverable in _selected_visual_payload_deliverables(payload):
             identity = str(deliverable.get("identity") or "").strip()
             if identity:
-                identities.add(identity)
+                identities.add(
+                    _visual_delivery_history_key(
+                        deliverable.get("request_id"),
+                        identity,
+                    )
+                )
     return identities
 
 
@@ -19243,6 +19280,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     result.get("messages", []),
                     history_offset=len(agent_history),
                     history_media_paths=_history_media_paths,
+                    history_media_identities=_history_media_identities,
                 )
 
                 if media_tags:
