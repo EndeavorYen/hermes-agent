@@ -133,13 +133,84 @@ def _validate_voice(context: StoryVideoRunContext) -> PhaseProof:
     return PhaseProof(phase="voice", ok=True)
 
 
+def _render_manifest_path(context: StoryVideoRunContext) -> Path | None:
+    for rel in ("render_manifest.json", "manifests/render_manifest.json"):
+        path = context.project_dir / rel
+        if _nonempty(path):
+            return path
+    return None
+
+
+def _render_artifact_violations(
+    context: StoryVideoRunContext,
+    manifest: dict[str, Any],
+) -> tuple[list[str], list[str]]:
+    missing: list[str] = []
+    violations: list[str] = []
+    output = manifest.get("output")
+    if not isinstance(output, dict):
+        return ["primary render output metadata"], violations
+
+    artifact = str(output.get("path") or "").strip()
+    if not artifact:
+        missing.append("primary render output path")
+    elif not _nonempty(context.project_dir / artifact):
+        missing.append(artifact)
+
+    subtitles = output.get("subtitles")
+    if not isinstance(subtitles, dict) or subtitles.get("hard_burned") is not True:
+        violations.append("primary render has no hard-burned subtitles")
+
+    motion_policy = str(
+        (manifest.get("timeline") or {}).get("motion_policy") or ""
+    ).lower()
+    if "static" in motion_policy or not any(
+        token in motion_policy for token in ("zoom", "pan", "motion")
+    ):
+        violations.append("primary render has no non-static motion policy")
+
+    qc_rel = str(manifest.get("qc_report") or "render_qc.json").strip()
+    qc = _load_json(context.project_dir / qc_rel)
+    if not isinstance(qc, dict):
+        missing.append(qc_rel)
+        return missing, violations
+    evidence = qc.get("artifact_quality_evidence") or {}
+    caption = (
+        evidence.get("caption_visibility") if isinstance(evidence, dict) else None
+    )
+    if not isinstance(caption, dict) or (
+        str(caption.get("status") or "").upper() != "PASS"
+        or caption.get("hard_burned") is not True
+    ):
+        violations.append("render QC lacks hard-burned subtitle evidence")
+    motion = evidence.get("motion") if isinstance(evidence, dict) else None
+    if not isinstance(motion, dict) or (
+        str(motion.get("status") or "").upper() != "PASS"
+    ):
+        violations.append("render QC lacks non-static motion evidence")
+    return missing, violations
+
+
 def _validate_render(context: StoryVideoRunContext) -> PhaseProof:
     missing: list[str] = []
-    for rel in ("manifests/render_manifest.json", "render_qc.json"):
-        if not _nonempty(context.project_dir / rel):
-            missing.append(rel)
-    qc = _load_json(context.project_dir / "render_qc.json")
     violations: list[str] = []
+    manifest_path = _render_manifest_path(context)
+    manifest = _load_json(manifest_path) if manifest_path is not None else None
+    if not isinstance(manifest, dict):
+        missing.append("render_manifest.json")
+    else:
+        artifact_missing, artifact_violations = _render_artifact_violations(
+            context, manifest
+        )
+        missing.extend(artifact_missing)
+        violations.extend(artifact_violations)
+
+    qc_rel = (
+        str(manifest.get("qc_report") or "render_qc.json")
+        if isinstance(manifest, dict)
+        else "render_qc.json"
+    )
+    qc = _load_json(context.project_dir / qc_rel)
     if isinstance(qc, dict):
         provider_qc = (
             (qc.get("visual_source_contract") or {}).get("provider_qc")

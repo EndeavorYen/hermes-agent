@@ -20,6 +20,46 @@ def _active_context(tmp_path):
     return store, context
 
 
+def _write_render_fixture(
+    context,
+    *,
+    hard_burned: bool = True,
+    motion_policy: str = "stable center zoom 1.0 -> 1.025",
+) -> None:
+    output = context.project_dir / "renders" / "final.mp4"
+    output.parent.mkdir(parents=True)
+    output.write_bytes(b"rendered video")
+    manifest = {
+        "timeline": {"motion_policy": motion_policy},
+        "output": {
+            "path": "renders/final.mp4",
+            "subtitles": {"hard_burned": hard_burned},
+        },
+        "qc_report": "render_qc.json",
+    }
+    for path in (
+        context.project_dir / "render_manifest.json",
+        context.project_dir / "manifests" / "render_manifest.json",
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+    (context.project_dir / "render_qc.json").write_text(
+        json.dumps(
+            {
+                "visual_source_contract": {"provider_qc": "PASS"},
+                "artifact_quality_evidence": {
+                    "caption_visibility": {
+                        "status": "PASS",
+                        "hard_burned": hard_burned,
+                    },
+                    "motion": {"status": "PASS"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_planning_validation_blocks_with_exact_missing_artifacts(tmp_path) -> None:
     _store, context = _active_context(tmp_path)
 
@@ -165,13 +205,7 @@ def test_batch_validation_accepts_scene_ledger_selected_asset_path(tmp_path) -> 
 def test_render_validation_requires_clean_provider_audit(tmp_path) -> None:
     store, context = _active_context(tmp_path)
     context = store.update(context, phase="render")
-    manifest_path = context.project_dir / "manifests" / "render_manifest.json"
-    manifest_path.parent.mkdir(parents=True)
-    manifest_path.write_text("{}", encoding="utf-8")
-    (context.project_dir / "render_qc.json").write_text(
-        json.dumps({"visual_source_contract": {"provider_qc": "PASS"}}),
-        encoding="utf-8",
-    )
+    _write_render_fixture(context)
 
     blocked = validate_phase(context)
     ProviderAudit(context).append_event(
@@ -188,3 +222,28 @@ def test_render_validation_requires_clean_provider_audit(tmp_path) -> None:
     assert blocked.ok is False
     assert "provider audit has no events" in blocked.violations
     assert passed.ok is True
+
+
+def test_render_validation_blocks_soft_subtitles_and_static_motion(tmp_path) -> None:
+    store, context = _active_context(tmp_path)
+    context = store.update(context, phase="render")
+    _write_render_fixture(
+        context,
+        hard_burned=False,
+        motion_policy="stable static hold",
+    )
+    ProviderAudit(context).append_event(
+        ProviderAuditEvent(
+            kind="api",
+            phase="render",
+            provider="openai-codex",
+            model="gpt-5.6-sol",
+            status="ok",
+        )
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert "primary render has no hard-burned subtitles" in proof.violations
+    assert "primary render has no non-static motion policy" in proof.violations
