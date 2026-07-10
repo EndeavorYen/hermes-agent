@@ -19,10 +19,24 @@ from __future__ import annotations
 import logging
 import os
 import time
+import uuid
 from types import SimpleNamespace
 from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
+
+
+def _invoke_runtime_hook(name: str, **kwargs: Any) -> list[Any]:
+    """Invoke a plugin hook without letting plugin failures break the turn."""
+    try:
+        from hermes_cli.plugins import has_hook, invoke_hook
+
+        if not has_hook(name):
+            return []
+        return invoke_hook(name, **kwargs)
+    except Exception:
+        logger.warning("codex app-server %s hook failed", name, exc_info=True)
+        return []
 
 
 def _codex_note_to_tool_progress(note: dict) -> tuple[str, str, dict] | None:
@@ -305,6 +319,7 @@ def run_codex_app_server_turn(
     original_user_message: Any,
     messages: List[Dict[str, Any]],
     effective_task_id: str,
+    turn_id: str = "",
     should_review_memory: bool = False,
 ) -> Dict[str, Any]:
     """Codex app-server runtime path. Hands the entire turn to a `codex
@@ -386,10 +401,46 @@ def run_codex_app_server_turn(
     # standard run_conversation() flow (line ~11823) before the early
     # return reaches us. Do NOT append again — that would duplicate.
 
+    api_request_id = (
+        f"{agent.session_id or 'codex'}:{turn_id or effective_task_id}:"
+        f"codex-app-server:{uuid.uuid4().hex[:8]}"
+    )
+    api_started_at = time.time()
+    hook_context = {
+        "task_id": effective_task_id,
+        "turn_id": turn_id,
+        "api_request_id": api_request_id,
+        "session_id": agent.session_id or "",
+        "platform": agent.platform or "",
+        "model": agent.model,
+        "provider": agent.provider,
+        "base_url": agent.base_url,
+        "api_mode": agent.api_mode,
+        "api_call_count": 1,
+    }
+    _invoke_runtime_hook(
+        "pre_api_request",
+        **hook_context,
+        user_message=original_user_message,
+        conversation_history=list(messages),
+        request_messages=list(messages),
+        message_count=len(messages),
+        tool_count=len(getattr(agent, "tools", None) or []),
+        started_at=api_started_at,
+        request={"transport": "codex_app_server"},
+    )
+
     try:
         turn = agent._codex_session.run_turn(user_input=user_message)
     except Exception as exc:
         logger.exception("codex app-server turn failed")
+        _invoke_runtime_hook(
+            "api_request_error",
+            **hook_context,
+            api_duration=time.time() - api_started_at,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+        )
         # Crash → unconditionally drop the session so the next turn
         # respawns from scratch instead of reusing a dead client.
         try:
@@ -408,6 +459,30 @@ def run_codex_app_server_turn(
             "partial": True,
             "error": str(exc),
         }
+
+    api_duration = time.time() - api_started_at
+    if turn.error is None:
+        _invoke_runtime_hook(
+            "post_api_request",
+            **hook_context,
+            api_duration=api_duration,
+            started_at=api_started_at,
+            ended_at=time.time(),
+            finish_reason="interrupted" if turn.interrupted else "stop",
+            message_count=len(messages),
+            response_model=agent.model,
+            response={"transport": "codex_app_server"},
+            assistant_content_chars=len(turn.final_text or ""),
+            assistant_tool_call_count=turn.tool_iterations,
+        )
+    else:
+        _invoke_runtime_hook(
+            "api_request_error",
+            **hook_context,
+            api_duration=api_duration,
+            error_type="CodexAppServerError",
+            error_message=str(turn.error),
+        )
 
     # If the turn signalled the underlying client is wedged (deadline
     # blown, post-tool watchdog tripped, OAuth refresh died, subprocess
@@ -466,6 +541,30 @@ def run_codex_app_server_turn(
     _record_codex_app_server_compaction(agent, turn)
     usage_result = _record_codex_app_server_usage(agent, turn)
     api_calls = 1
+    final_text = turn.final_text
+
+    if final_text and not turn.interrupted:
+        for hook_result in _invoke_runtime_hook(
+            "transform_llm_output",
+            response_text=final_text,
+            session_id=agent.session_id or "",
+            model=agent.model,
+            platform=agent.platform or "",
+        ):
+            if isinstance(hook_result, str) and hook_result:
+                final_text = hook_result
+                break
+        _invoke_runtime_hook(
+            "post_llm_call",
+            session_id=agent.session_id or "",
+            task_id=effective_task_id,
+            turn_id=turn_id,
+            user_message=original_user_message,
+            assistant_response=final_text,
+            conversation_history=list(messages),
+            model=agent.model,
+            platform=agent.platform or "",
+        )
 
     # Now check the skill nudge AFTER iters were incremented — same
     # pattern the chat_completions path uses (line ~15432).
@@ -484,7 +583,7 @@ def run_codex_app_server_turn(
         try:
             agent._sync_external_memory_for_turn(
                 original_user_message=original_user_message,
-                final_response=turn.final_text,
+                final_response=final_text,
                 interrupted=False,
                 messages=messages,
             )
@@ -495,7 +594,7 @@ def run_codex_app_server_turn(
     # path (line ~15449). Only fires when a trigger actually tripped AND
     # we have a real final response.
     if (
-        turn.final_text
+        final_text
         and not turn.interrupted
         and (should_review_memory or should_review_skills)
     ):
@@ -509,7 +608,7 @@ def run_codex_app_server_turn(
             logger.debug("background review spawn raised", exc_info=True)
 
     return {
-        "final_response": turn.final_text,
+        "final_response": final_text,
         "messages": messages,
         "api_calls": api_calls,
         "completed": not turn.interrupted and turn.error is None,

@@ -28,6 +28,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import hermes_cli.plugins
+
 from agent.codex_runtime import run_codex_app_server_turn
 from hermes_state import SessionDB
 from run_agent import AIAgent
@@ -74,6 +76,47 @@ def test_codex_success_flushes_and_reports_persisted():
     assert result["completed"] is True
     # With the agent as sole persister, the gateway must SKIP its DB write.
     assert result["agent_persisted"] is True
+
+
+def test_codex_success_runs_api_and_output_hooks(monkeypatch):
+    calls = []
+
+    def invoke_hook(name, **kwargs):
+        calls.append((name, kwargs))
+        if name == "transform_llm_output":
+            return ["TRANSFORMED_CODEX_ASSISTANT"]
+        return []
+
+    monkeypatch.setattr(hermes_cli.plugins, "has_hook", lambda _name: True)
+    monkeypatch.setattr(hermes_cli.plugins, "invoke_hook", invoke_hook)
+    agent = _make_agent(session_db=None)
+    agent.model = "gpt-5.5"
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.platform = "cli"
+
+    result = run_codex_app_server_turn(
+        agent,
+        user_message="hello",
+        original_user_message="hello",
+        messages=[{"role": "user", "content": "hello"}],
+        effective_task_id="task-1",
+        turn_id="turn-1",
+    )
+
+    names = [name for name, _kwargs in calls]
+    assert names == [
+        "pre_api_request",
+        "post_api_request",
+        "transform_llm_output",
+        "post_llm_call",
+    ]
+    assert result["final_response"] == "TRANSFORMED_CODEX_ASSISTANT"
+    pre_api = calls[0][1]
+    post_api = calls[1][1]
+    assert pre_api["api_request_id"] == post_api["api_request_id"]
+    assert post_api["response_model"] == "gpt-5.5"
+    assert calls[3][1]["assistant_response"] == "TRANSFORMED_CODEX_ASSISTANT"
 
 
 def test_codex_turn_persists_each_message_exactly_once():
