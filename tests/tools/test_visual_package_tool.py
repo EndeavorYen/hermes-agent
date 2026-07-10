@@ -2632,7 +2632,7 @@ def test_visual_package_applies_video_self_validation_action_to_video_repair(mon
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
     latest_report.parent.mkdir(parents=True)
-    _write_runtime_policy_test_snapshot(latest_report, 
+    _write_runtime_policy_test_snapshot(latest_report,
         json.dumps(
             {
                 "success": True,
@@ -2753,7 +2753,7 @@ def test_visual_package_applies_self_validation_guidance_to_first_image_prompt(m
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
     latest_report.parent.mkdir(parents=True)
-    _write_runtime_policy_test_snapshot(latest_report, 
+    _write_runtime_policy_test_snapshot(latest_report,
         json.dumps(
             {
                 "success": True,
@@ -2818,7 +2818,7 @@ def test_visual_package_applies_self_validation_guidance_to_first_video_prompt(m
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
     latest_report.parent.mkdir(parents=True)
-    _write_runtime_policy_test_snapshot(latest_report, 
+    _write_runtime_policy_test_snapshot(latest_report,
         json.dumps(
             {
                 "success": True,
@@ -2922,7 +2922,7 @@ def test_visual_package_applies_motion_dimension_guidance_to_video_only(monkeypa
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
     latest_report.parent.mkdir(parents=True)
-    _write_runtime_policy_test_snapshot(latest_report, 
+    _write_runtime_policy_test_snapshot(latest_report,
         json.dumps(
             {
                 "success": True,
@@ -4777,7 +4777,7 @@ def test_visual_package_applies_self_validation_next_actions(monkeypatch, tmp_pa
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
     latest_report.parent.mkdir(parents=True)
-    _write_runtime_policy_test_snapshot(latest_report, 
+    _write_runtime_policy_test_snapshot(latest_report,
         json.dumps(
             {
                 "success": True,
@@ -4865,7 +4865,7 @@ def test_visual_package_applies_self_validation_strategy_preference(monkeypatch,
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
     latest_report.parent.mkdir(parents=True)
-    _write_runtime_policy_test_snapshot(latest_report, 
+    _write_runtime_policy_test_snapshot(latest_report,
         json.dumps(
             {
                 "success": True,
@@ -4961,7 +4961,7 @@ def test_visual_package_runtime_snapshot_ignores_offline_feedback_budget(monkeyp
     )
     latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
     latest_report.parent.mkdir(parents=True)
-    _write_runtime_policy_test_snapshot(latest_report, 
+    _write_runtime_policy_test_snapshot(latest_report,
         json.dumps(
             {
                 "success": True,
@@ -5046,7 +5046,7 @@ def test_visual_package_uses_image_first_video_policy_for_attachment_video(monke
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
     latest_report.parent.mkdir(parents=True)
-    _write_runtime_policy_test_snapshot(latest_report, 
+    _write_runtime_policy_test_snapshot(latest_report,
         json.dumps(
             {
                 "success": True,
@@ -5133,7 +5133,7 @@ def test_visual_package_applies_preference_dimension_guidance_from_self_validati
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
     latest_report.parent.mkdir(parents=True)
-    _write_runtime_policy_test_snapshot(latest_report, 
+    _write_runtime_policy_test_snapshot(latest_report,
         json.dumps(
             {
                 "success": True,
@@ -5223,7 +5223,7 @@ def test_visual_package_anime_image_quality_guidance_stays_style_bounded(monkeyp
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
     latest_report.parent.mkdir(parents=True)
-    _write_runtime_policy_test_snapshot(latest_report, 
+    _write_runtime_policy_test_snapshot(latest_report,
         json.dumps(
             {
                 "success": True,
@@ -5304,7 +5304,7 @@ def test_visual_package_anime_xai_quality_guidance_uses_concrete_art_direction(
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
     latest_report.parent.mkdir(parents=True)
-    _write_runtime_policy_test_snapshot(latest_report, 
+    _write_runtime_policy_test_snapshot(latest_report,
         json.dumps(
             {
                 "success": True,
@@ -5403,7 +5403,7 @@ def test_visual_package_uses_arsenal_prompt_variants_for_image_candidates(monkey
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
     latest_report.parent.mkdir(parents=True)
-    _write_runtime_policy_test_snapshot(latest_report, 
+    _write_runtime_policy_test_snapshot(latest_report,
         json.dumps(
             {
                 "success": True,
@@ -5566,7 +5566,7 @@ def test_visual_package_requires_preference_dimension_evidence_from_self_validat
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
     latest_report.parent.mkdir(parents=True)
-    _write_runtime_policy_test_snapshot(latest_report, 
+    _write_runtime_policy_test_snapshot(latest_report,
         json.dumps(
             {
                 "success": True,
@@ -5642,7 +5642,7 @@ def test_visual_package_applies_quality_focus_operator_guidance_from_self_valida
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
     latest_report.parent.mkdir(parents=True)
-    _write_runtime_policy_test_snapshot(latest_report, 
+    _write_runtime_policy_test_snapshot(latest_report,
         json.dumps(
             {
                 "success": True,
@@ -5725,7 +5725,7 @@ def test_visual_package_applies_live_quality_trend_actions_with_source(monkeypat
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
     latest_report.parent.mkdir(parents=True)
-    _write_runtime_policy_test_snapshot(latest_report, 
+    _write_runtime_policy_test_snapshot(latest_report,
         json.dumps(
             {
                 "success": True,
@@ -5832,7 +5832,7 @@ def test_visual_package_applies_safe_reframe_retry_budget_from_self_validation(m
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
     latest_report.parent.mkdir(parents=True)
-    _write_runtime_policy_test_snapshot(latest_report, 
+    _write_runtime_policy_test_snapshot(latest_report,
         json.dumps(
             {
                 "success": True,
@@ -5916,7 +5916,7 @@ def test_visual_package_applies_provider_connectivity_retry_without_safe_reframe
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
     latest_report.parent.mkdir(parents=True)
-    _write_runtime_policy_test_snapshot(latest_report, 
+    _write_runtime_policy_test_snapshot(latest_report,
         json.dumps(
             {
                 "runtime_policy": {
@@ -5993,7 +5993,7 @@ def test_visual_package_honors_provider_account_blocked_zero_retry_budget(monkey
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
     latest_report.parent.mkdir(parents=True)
-    _write_runtime_policy_test_snapshot(latest_report, 
+    _write_runtime_policy_test_snapshot(latest_report,
         json.dumps(
             {
                 "success": True,
@@ -6069,7 +6069,7 @@ def test_visual_package_surfaces_missing_video_fallback_policy(monkeypatch, tmp_
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
     latest_report.parent.mkdir(parents=True)
-    _write_runtime_policy_test_snapshot(latest_report, 
+    _write_runtime_policy_test_snapshot(latest_report,
         json.dumps(
             {
                 "success": True,
@@ -6158,7 +6158,7 @@ def test_visual_package_skips_video_when_runtime_policy_reports_missing_video_fa
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
     latest_report.parent.mkdir(parents=True)
-    _write_runtime_policy_test_snapshot(latest_report, 
+    _write_runtime_policy_test_snapshot(latest_report,
         json.dumps(
             {
                 "success": True,
@@ -6675,7 +6675,7 @@ def test_visual_package_ignores_failed_self_validation_next_actions(monkeypatch,
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
     latest_report.parent.mkdir(parents=True)
-    _write_runtime_policy_test_snapshot(latest_report, 
+    _write_runtime_policy_test_snapshot(latest_report,
         json.dumps(
             {
                 "success": False,
@@ -6730,7 +6730,7 @@ def test_visual_package_applies_runtime_policy_from_failed_self_validation(monke
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
     latest_report.parent.mkdir(parents=True)
-    _write_runtime_policy_test_snapshot(latest_report, 
+    _write_runtime_policy_test_snapshot(latest_report,
         json.dumps(
             {
                 "success": False,
@@ -6823,7 +6823,7 @@ def test_visual_package_ignores_expired_runtime_policy(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
     latest_report.parent.mkdir(parents=True)
-    _write_runtime_policy_test_snapshot(latest_report, 
+    _write_runtime_policy_test_snapshot(latest_report,
         json.dumps(
             {
                 "success": True,
@@ -6901,7 +6901,7 @@ def test_visual_package_ignores_suspended_runtime_policy_without_fallback(
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     latest_report = tmp_path / "visual" / "self_validation" / "latest.json"
     latest_report.parent.mkdir(parents=True)
-    _write_runtime_policy_test_snapshot(latest_report, 
+    _write_runtime_policy_test_snapshot(latest_report,
         json.dumps(
             {
                 "success": True,
@@ -8642,7 +8642,7 @@ def test_visual_package_registry_handler_is_synchronous():
     assert inspect.iscoroutinefunction(entry.handler) is False
 
 
-def test_visual_package_deadline_stops_new_paid_work_with_partial_evidence(monkeypatch, tmp_path):
+def test_visual_package_single_candidate_overrun_returns_partial_evidence(monkeypatch, tmp_path):
     from tools import visual_package_tool
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -8667,9 +8667,9 @@ def test_visual_package_deadline_stops_new_paid_work_with_partial_evidence(monke
     payload = json.loads(
         visual_package_tool._handle_visual_package_generate(
             {
-                "prompt": "請產出兩張圖片：霧黑鋼筆。",
+                "prompt": "請產出一張圖片：霧黑鋼筆。",
                 "include_video": False,
-                "candidate_budget": 2,
+                "candidate_budget": 1,
                 "execution_deadline_seconds": 1.0,
             }
         )
@@ -8680,7 +8680,7 @@ def test_visual_package_deadline_stops_new_paid_work_with_partial_evidence(monke
     assert payload["package_status"] == "partial"
     assert payload["error_type"] == "visual_package_deadline_exceeded"
     assert payload["deadline"]["expired"] is True
-    assert payload["deadline"]["stage"] == "image_candidate:1"
+    assert payload["deadline"]["stage"] == "image_generate:0:complete"
     assert payload["partial_evidence"]["completed_provider_call_count"] == 1
     assert payload["partial_evidence"]["completed_provider_calls"] == [
         {

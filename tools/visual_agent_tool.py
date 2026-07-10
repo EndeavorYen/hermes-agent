@@ -105,7 +105,7 @@ def check_visual_agent_requirements() -> bool:
     return check_visual_package_requirements()
 
 
-async def _handle_visual_agent_generate(args: dict[str, Any], **_kw: Any) -> str:
+def _handle_visual_agent_generate(args: dict[str, Any], **_kw: Any) -> str:
     prompt = str(args.get("prompt") or "").strip()
     if not prompt:
         return tool_error("prompt is required for visual agent generation")
@@ -207,6 +207,6 @@ registry.register(
     handler=_handle_visual_agent_generate,
     check_fn=check_visual_agent_requirements,
     requires_env=[],
-    is_async=True,
+    is_async=False,
     emoji="🧭",
 )

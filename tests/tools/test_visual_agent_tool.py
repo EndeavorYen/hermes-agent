@@ -11,8 +11,18 @@ _ONE_PIXEL_PNG = base64.b64decode(
 )
 
 
-@pytest.mark.asyncio
-async def test_visual_agent_generate_plans_natural_image_plus_video_request(monkeypatch):
+def test_visual_agent_registry_handler_is_synchronous():
+    import inspect
+
+    from tools.registry import discover_builtin_tools, registry
+
+    discover_builtin_tools()
+    entry = registry._tools["visual_agent_generate"]
+    assert entry.is_async is False
+    assert inspect.iscoroutinefunction(entry.handler) is False
+
+
+def test_visual_agent_generate_plans_natural_image_plus_video_request(monkeypatch):
     from tools import visual_agent_tool
 
     captured = {}
@@ -33,7 +43,7 @@ async def test_visual_agent_generate_plans_natural_image_plus_video_request(monk
         fake_visual_package_generate,
     )
 
-    raw = await visual_agent_tool._handle_visual_agent_generate(
+    raw = visual_agent_tool._handle_visual_agent_generate(
         {
             "prompt": "請用這張 reference 產出一張圖片和一段 6 秒影片",
             "attachments": ["/tmp/ref.png"],
@@ -53,8 +63,7 @@ async def test_visual_agent_generate_plans_natural_image_plus_video_request(monk
     assert captured["video_budget"] == 1
 
 
-@pytest.mark.asyncio
-async def test_visual_agent_generate_materializes_data_uri_attachment(monkeypatch, tmp_path):
+def test_visual_agent_generate_materializes_data_uri_attachment(monkeypatch, tmp_path):
     from tools import visual_agent_tool
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -71,7 +80,7 @@ async def test_visual_agent_generate_materializes_data_uri_attachment(monkeypatc
         fake_visual_package_generate,
     )
 
-    raw = await visual_agent_tool._handle_visual_agent_generate(
+    raw = visual_agent_tool._handle_visual_agent_generate(
         {
             "prompt": "請用這張 reference 產出一張圖片",
             "attachments": [data_uri],
@@ -86,8 +95,7 @@ async def test_visual_agent_generate_materializes_data_uri_attachment(monkeypatc
     assert Path(attachment).read_bytes() == _ONE_PIXEL_PNG
 
 
-@pytest.mark.asyncio
-async def test_visual_agent_generate_binds_ref_indices_to_visible_upload_order(monkeypatch):
+def test_visual_agent_generate_binds_ref_indices_to_visible_upload_order(monkeypatch):
     from tools import visual_agent_tool
 
     captured = {}
@@ -102,7 +110,7 @@ async def test_visual_agent_generate_binds_ref_indices_to_visible_upload_order(m
         fake_visual_package_generate,
     )
 
-    raw = await visual_agent_tool._handle_visual_agent_generate(
+    raw = visual_agent_tool._handle_visual_agent_generate(
         {
             "prompt": "把 ref 1 的角色，套用 ref2 的姿勢，產出圖片即可",
             "attachments": ["/tmp/upload-first-character.png", "/tmp/upload-second-pose.png"],
@@ -136,8 +144,7 @@ async def test_visual_agent_generate_binds_ref_indices_to_visible_upload_order(m
     }
 
 
-@pytest.mark.asyncio
-async def test_visual_agent_generate_derives_roles_from_prompt_not_ref_defaults(monkeypatch):
+def test_visual_agent_generate_derives_roles_from_prompt_not_ref_defaults(monkeypatch):
     from tools import visual_agent_tool
 
     captured = {}
@@ -152,7 +159,7 @@ async def test_visual_agent_generate_derives_roles_from_prompt_not_ref_defaults(
         fake_visual_package_generate,
     )
 
-    raw = await visual_agent_tool._handle_visual_agent_generate(
+    raw = visual_agent_tool._handle_visual_agent_generate(
         {
             "prompt": "ref1 和 ref2 都是人物，ref3 是服裝，請融合成一張圖片",
             "attachments": [
@@ -196,8 +203,7 @@ async def test_visual_agent_generate_derives_roles_from_prompt_not_ref_defaults(
     ]
 
 
-@pytest.mark.asyncio
-async def test_visual_agent_generate_routes_text_only_video_to_image_first(monkeypatch):
+def test_visual_agent_generate_routes_text_only_video_to_image_first(monkeypatch):
     from tools import visual_agent_tool
 
     captured = {}
@@ -212,7 +218,7 @@ async def test_visual_agent_generate_routes_text_only_video_to_image_first(monke
         fake_visual_package_generate,
     )
 
-    raw = await visual_agent_tool._handle_visual_agent_generate(
+    raw = visual_agent_tool._handle_visual_agent_generate(
         {"prompt": "幫我產生一段 6 秒時尚短片，主體是霧黑鋼筆"}
     )
     payload = json.loads(raw)
@@ -228,8 +234,7 @@ async def test_visual_agent_generate_routes_text_only_video_to_image_first(monke
     assert payload["images"] == []
 
 
-@pytest.mark.asyncio
-async def test_visual_agent_generate_passes_storyboard_contract_for_multishot_video(monkeypatch):
+def test_visual_agent_generate_passes_storyboard_contract_for_multishot_video(monkeypatch):
     from tools import visual_agent_tool
 
     captured = {}
@@ -244,7 +249,7 @@ async def test_visual_agent_generate_passes_storyboard_contract_for_multishot_vi
         fake_visual_package_generate,
     )
 
-    raw = await visual_agent_tool._handle_visual_agent_generate(
+    raw = visual_agent_tool._handle_visual_agent_generate(
         {"prompt": "請做一支 3 段分鏡的連貫產品影片：霧黑鋼筆放在白紙上，柔和窗光。"}
     )
     payload = json.loads(raw)
@@ -258,8 +263,7 @@ async def test_visual_agent_generate_passes_storyboard_contract_for_multishot_vi
     assert payload["visual_agent_plan"]["arguments"]["storyboard"]["composition_target"] == "single_coherent_video"
 
 
-@pytest.mark.asyncio
-async def test_visual_agent_generate_accepts_friendly_draw_character_prompt(monkeypatch):
+def test_visual_agent_generate_accepts_friendly_draw_character_prompt(monkeypatch):
     from tools import visual_agent_tool
 
     captured = {}
@@ -274,7 +278,7 @@ async def test_visual_agent_generate_accepts_friendly_draw_character_prompt(monk
         fake_visual_package_generate,
     )
 
-    raw = await visual_agent_tool._handle_visual_agent_generate(
+    raw = visual_agent_tool._handle_visual_agent_generate(
         {"prompt": "幫我畫一位銀髮高冷美少女角色，乾淨背景"}
     )
     payload = json.loads(raw)
@@ -287,8 +291,7 @@ async def test_visual_agent_generate_accepts_friendly_draw_character_prompt(monk
     assert captured["candidate_budget_source"] == "planner_default"
 
 
-@pytest.mark.asyncio
-async def test_visual_agent_generate_routes_grok_imagine_request_to_xai_provider(monkeypatch):
+def test_visual_agent_generate_routes_grok_imagine_request_to_xai_provider(monkeypatch):
     from tools import visual_agent_tool
 
     captured = {}
@@ -303,7 +306,7 @@ async def test_visual_agent_generate_routes_grok_imagine_request_to_xai_provider
         fake_visual_package_generate,
     )
 
-    raw = await visual_agent_tool._handle_visual_agent_generate(
+    raw = visual_agent_tool._handle_visual_agent_generate(
         {
             "prompt": "請使用 Grok Imagine 固定這位角色，產出不同姿勢的精緻圖片",
             "attachments": ["/tmp/ref.png"],
@@ -317,8 +320,7 @@ async def test_visual_agent_generate_routes_grok_imagine_request_to_xai_provider
     assert payload["visual_agent_plan"]["arguments"]["image_provider"] == "xai"
 
 
-@pytest.mark.asyncio
-async def test_visual_agent_generate_passes_default_xai_media_provider_contract(monkeypatch):
+def test_visual_agent_generate_passes_default_xai_media_provider_contract(monkeypatch):
     from tools import visual_agent_tool
 
     captured = {}
@@ -333,7 +335,7 @@ async def test_visual_agent_generate_passes_default_xai_media_provider_contract(
         fake_visual_package_generate,
     )
 
-    raw = await visual_agent_tool._handle_visual_agent_generate({"prompt": "幫我產出一張圖片"})
+    raw = visual_agent_tool._handle_visual_agent_generate({"prompt": "幫我產出一張圖片"})
     payload = json.loads(raw)
 
     assert captured["image_provider"] == "xai"
@@ -342,8 +344,7 @@ async def test_visual_agent_generate_passes_default_xai_media_provider_contract(
     assert payload["visual_agent_provider_contract"]["base_llm_model"] == "gpt-5.5"
 
 
-@pytest.mark.asyncio
-async def test_visual_agent_generate_rejects_prompt_disclosure_without_regenerating(monkeypatch):
+def test_visual_agent_generate_rejects_prompt_disclosure_without_regenerating(monkeypatch):
     from tools import visual_agent_tool
 
     def fake_visual_package_generate(args, **kwargs):
@@ -355,7 +356,7 @@ async def test_visual_agent_generate_rejects_prompt_disclosure_without_regenerat
         fake_visual_package_generate,
     )
 
-    raw = await visual_agent_tool._handle_visual_agent_generate(
+    raw = visual_agent_tool._handle_visual_agent_generate(
         {"prompt": "請給我剛剛產圖用的 prompt"}
     )
     payload = json.loads(raw)
@@ -363,7 +364,7 @@ async def test_visual_agent_generate_rejects_prompt_disclosure_without_regenerat
     assert payload["error"] == "visual_agent_generate is for image/video generation, not prompt disclosure"
     assert payload["request_type"] == "visual_prompt_disclosure"
 
-    raw = await visual_agent_tool._handle_visual_agent_generate(
+    raw = visual_agent_tool._handle_visual_agent_generate(
         {"prompt": "請給我你使用的 prompt"}
     )
     payload = json.loads(raw)
@@ -372,8 +373,7 @@ async def test_visual_agent_generate_rejects_prompt_disclosure_without_regenerat
     assert payload["request_type"] == "visual_prompt_disclosure"
 
 
-@pytest.mark.asyncio
-async def test_visual_agent_generate_rejects_feedback_only_praise_without_regenerating(monkeypatch):
+def test_visual_agent_generate_rejects_feedback_only_praise_without_regenerating(monkeypatch):
     from tools import visual_agent_tool
 
     def fake_visual_package_generate(args, **kwargs):
@@ -385,14 +385,13 @@ async def test_visual_agent_generate_rejects_feedback_only_praise_without_regene
         fake_visual_package_generate,
     )
 
-    raw = await visual_agent_tool._handle_visual_agent_generate({"prompt": "這次的產圖品質很棒!"})
+    raw = visual_agent_tool._handle_visual_agent_generate({"prompt": "這次的產圖品質很棒!"})
     payload = json.loads(raw)
 
     assert payload["error"] == "visual_agent_generate requires a visual image or video request"
 
 
-@pytest.mark.asyncio
-async def test_visual_agent_generate_rejects_prompt_only_reference_brief_without_regenerating(monkeypatch):
+def test_visual_agent_generate_rejects_prompt_only_reference_brief_without_regenerating(monkeypatch):
     from tools import visual_agent_tool
 
     def fake_visual_package_generate(args, **kwargs):
@@ -404,7 +403,7 @@ async def test_visual_agent_generate_rejects_prompt_only_reference_brief_without
         fake_visual_package_generate,
     )
 
-    raw = await visual_agent_tool._handle_visual_agent_generate(
+    raw = visual_agent_tool._handle_visual_agent_generate(
         {
             "prompt": "固定這位角色，替換不同的服裝與構圖，高品質，8K，光影，性感一些",
             "attachments": ["/tmp/ref-1.png", "/tmp/ref-2.png"],
@@ -416,8 +415,7 @@ async def test_visual_agent_generate_rejects_prompt_only_reference_brief_without
     assert payload["request_type"] == "visual_prompt_draft_default"
 
 
-@pytest.mark.asyncio
-async def test_visual_agent_generate_rejects_suitable_xai_video_prompt_request_without_generating(monkeypatch):
+def test_visual_agent_generate_rejects_suitable_xai_video_prompt_request_without_generating(monkeypatch):
     from tools import visual_agent_tool
 
     def fake_visual_package_generate(args, **kwargs):
@@ -429,7 +427,7 @@ async def test_visual_agent_generate_rejects_suitable_xai_video_prompt_request_w
         fake_visual_package_generate,
     )
 
-    raw = await visual_agent_tool._handle_visual_agent_generate(
+    raw = visual_agent_tool._handle_visual_agent_generate(
         {
             "prompt": (
                 "我想要用這張在 xai imagine 中產出 12s 影片，請給我合適的 prompt。"
@@ -454,8 +452,7 @@ def test_visual_agent_schema_warns_visual_briefs_default_to_prompt_only():
     assert "answer with a stronger prompt in text" in description
 
 
-@pytest.mark.asyncio
-async def test_visual_agent_generate_uses_grok_planner_for_direct_handoff(monkeypatch):
+def test_visual_agent_generate_uses_grok_planner_for_direct_handoff(monkeypatch):
     from tools import visual_agent_tool
 
     captured = {"llm_calls": []}
@@ -502,7 +499,7 @@ async def test_visual_agent_generate_uses_grok_planner_for_direct_handoff(monkey
     )
     monkeypatch.setattr("agent.auxiliary_client.call_llm", fake_call_llm)
 
-    raw = await visual_agent_tool._handle_visual_agent_generate(
+    raw = visual_agent_tool._handle_visual_agent_generate(
         {
             "prompt": "請產出一張圖片",
             "visual_agent_llm_provider": "xai-oauth",
@@ -524,8 +521,7 @@ async def test_visual_agent_generate_uses_grok_planner_for_direct_handoff(monkey
     assert payload["visual_agent_llm_plan"]["refinement_rounds_completed"] == 2
 
 
-@pytest.mark.asyncio
-async def test_visual_agent_grok_planner_can_run_operator_requested_three_rounds(monkeypatch):
+def test_visual_agent_grok_planner_can_run_operator_requested_three_rounds(monkeypatch):
     from tools import visual_agent_tool
 
     captured = {"llm_calls": []}
@@ -566,7 +562,7 @@ async def test_visual_agent_grok_planner_can_run_operator_requested_three_rounds
     )
     monkeypatch.setattr("agent.auxiliary_client.call_llm", fake_call_llm)
 
-    raw = await visual_agent_tool._handle_visual_agent_generate(
+    raw = visual_agent_tool._handle_visual_agent_generate(
         {
             "prompt": "請產出一張圖片",
             "visual_agent_llm_provider": "xai-oauth",
@@ -586,8 +582,7 @@ async def test_visual_agent_grok_planner_can_run_operator_requested_three_rounds
     assert payload["visual_agent_llm_plan"]["refinement_rounds_requested"] == 3
 
 
-@pytest.mark.asyncio
-async def test_visual_agent_generate_preserves_direct_handoff_reference_operation_and_budget(
+def test_visual_agent_generate_preserves_direct_handoff_reference_operation_and_budget(
     monkeypatch,
 ):
     from tools import visual_agent_tool
@@ -625,7 +620,7 @@ async def test_visual_agent_generate_preserves_direct_handoff_reference_operatio
     )
     monkeypatch.setattr("agent.auxiliary_client.call_llm", fail_call_llm)
 
-    raw = await visual_agent_tool._handle_visual_agent_generate(
+    raw = visual_agent_tool._handle_visual_agent_generate(
         {
             "prompt": (
                 "請使用 grok-web-imagine provider，可不可以再嘗試不同的構圖，"
@@ -658,8 +653,7 @@ async def test_visual_agent_generate_preserves_direct_handoff_reference_operatio
     assert captured["include_video"] is False
 
 
-@pytest.mark.asyncio
-async def test_visual_agent_grok_planner_receives_reference_images_and_roles(monkeypatch, tmp_path):
+def test_visual_agent_grok_planner_receives_reference_images_and_roles(monkeypatch, tmp_path):
     from tools import visual_agent_tool
 
     ref1 = tmp_path / "ref1.png"
@@ -700,7 +694,7 @@ async def test_visual_agent_grok_planner_receives_reference_images_and_roles(mon
     )
     monkeypatch.setattr("agent.auxiliary_client.call_llm", fake_call_llm)
 
-    raw = await visual_agent_tool._handle_visual_agent_generate(
+    raw = visual_agent_tool._handle_visual_agent_generate(
         {
             "prompt": "把 ref 1 的角色，套用 ref2 的姿勢，產出圖片即可",
             "attachments": [str(ref1), str(ref2)],
@@ -725,8 +719,7 @@ async def test_visual_agent_grok_planner_receives_reference_images_and_roles(mon
     assert payload["visual_agent_llm_plan"]["image_input_count"] == 2
 
 
-@pytest.mark.asyncio
-async def test_visual_agent_grok_planner_rejects_unrequested_reference_role_mapping(
+def test_visual_agent_grok_planner_rejects_unrequested_reference_role_mapping(
     monkeypatch, tmp_path
 ):
     from tools import visual_agent_tool
@@ -772,7 +765,7 @@ async def test_visual_agent_grok_planner_rejects_unrequested_reference_role_mapp
     )
     monkeypatch.setattr("agent.auxiliary_client.call_llm", fake_call_llm)
 
-    raw = await visual_agent_tool._handle_visual_agent_generate(
+    raw = visual_agent_tool._handle_visual_agent_generate(
         {
             "prompt": "請用 Grok Imagine + reference 固定這位角色，產出不同姿勢候選並選最佳，只交付最佳圖片，動漫圖，性感一些。",
             "attachments": [str(ref1), str(ref2), str(ref3)],
@@ -809,8 +802,7 @@ async def test_visual_agent_grok_planner_rejects_unrequested_reference_role_mapp
     assert payload["visual_agent_llm_plan"]["reason"] == "unsupported_reference_role_mapping"
 
 
-@pytest.mark.asyncio
-async def test_visual_agent_generate_falls_back_when_grok_planner_fails(monkeypatch):
+def test_visual_agent_generate_falls_back_when_grok_planner_fails(monkeypatch):
     from tools import visual_agent_tool
 
     captured = {}
@@ -829,7 +821,7 @@ async def test_visual_agent_generate_falls_back_when_grok_planner_fails(monkeypa
     )
     monkeypatch.setattr("agent.auxiliary_client.call_llm", fail_call_llm)
 
-    raw = await visual_agent_tool._handle_visual_agent_generate(
+    raw = visual_agent_tool._handle_visual_agent_generate(
         {
             "prompt": "請產出一張圖片",
             "visual_agent_llm_provider": "xai-oauth",
@@ -849,8 +841,7 @@ async def test_visual_agent_generate_falls_back_when_grok_planner_fails(monkeypa
     assert payload["visual_agent_llm_plan"]["prompt_changed"] is True
 
 
-@pytest.mark.asyncio
-async def test_visual_agent_generate_rejects_implicit_anime_brief_before_grok_planner(monkeypatch):
+def test_visual_agent_generate_rejects_implicit_anime_brief_before_grok_planner(monkeypatch):
     from tools import visual_agent_tool
 
     def fake_visual_package_generate(args, **kwargs):
@@ -866,7 +857,7 @@ async def test_visual_agent_generate_rejects_implicit_anime_brief_before_grok_pl
     )
     monkeypatch.setattr("agent.auxiliary_client.call_llm", fake_call_llm)
 
-    raw = await visual_agent_tool._handle_visual_agent_generate(
+    raw = visual_agent_tool._handle_visual_agent_generate(
         {
             "prompt": "動漫圖，性感一些",
             "visual_agent_llm_provider": "xai-oauth",
@@ -878,8 +869,7 @@ async def test_visual_agent_generate_rejects_implicit_anime_brief_before_grok_pl
     assert payload["error"] == "visual_agent_generate requires a visual image or video request"
 
 
-@pytest.mark.asyncio
-async def test_visual_agent_grok_planner_rejects_feedback_like_prompt(monkeypatch):
+def test_visual_agent_grok_planner_rejects_feedback_like_prompt(monkeypatch):
     from tools import visual_agent_tool
 
     captured = {}
@@ -906,7 +896,7 @@ async def test_visual_agent_grok_planner_rejects_feedback_like_prompt(monkeypatc
     )
     monkeypatch.setattr("agent.auxiliary_client.call_llm", fake_call_llm)
 
-    raw = await visual_agent_tool._handle_visual_agent_generate(
+    raw = visual_agent_tool._handle_visual_agent_generate(
         {
             "prompt": "固定這位角色，產出不同姿勢候選並選最佳，只交付最佳圖片，動漫圖，性感一些。",
             "visual_agent_llm_provider": "xai-oauth",
@@ -924,8 +914,7 @@ async def test_visual_agent_grok_planner_rejects_feedback_like_prompt(monkeypatc
     assert payload["visual_agent_llm_plan"]["reason"] == "feedback_like_visual_prompt"
 
 
-@pytest.mark.asyncio
-async def test_visual_agent_grok_planner_fallback_builds_provider_ready_reference_prompt(monkeypatch, tmp_path):
+def test_visual_agent_grok_planner_fallback_builds_provider_ready_reference_prompt(monkeypatch, tmp_path):
     from tools import visual_agent_tool
 
     ref1 = tmp_path / "ref1.png"
@@ -948,7 +937,7 @@ async def test_visual_agent_grok_planner_fallback_builds_provider_ready_referenc
     )
     monkeypatch.setattr("agent.auxiliary_client.call_llm", fail_call_llm)
 
-    raw = await visual_agent_tool._handle_visual_agent_generate(
+    raw = visual_agent_tool._handle_visual_agent_generate(
         {
             "prompt": "把 ref 1 的角色，套用 ref2 的姿勢，產出圖片即可",
             "attachments": [str(ref1), str(ref2)],
@@ -983,7 +972,7 @@ def test_visual_agent_generate_is_registered():
 
     assert "visual_agent_generate" in registry._tools
     entry = registry._tools["visual_agent_generate"]
-    assert entry.is_async is True
+    assert entry.is_async is False
     assert entry.toolset == "image_gen"
     assert "draw/anime/character art" in entry.schema["description"]
     assert "storyboard/multi-shot" in entry.schema["description"]

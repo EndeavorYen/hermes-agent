@@ -206,6 +206,7 @@ def _call_generation_provider(
     _deadline_checkpoint(stage)
     payload = generator(**kwargs)
     _record_completed_provider_call(kind=kind, payload=payload)
+    _deadline_checkpoint(f"{stage}:complete")
     return payload
 INLINE_VISION_JUDGE_PROMPT = """\
 Evaluate this generated visual artifact for automated quality ranking.
