@@ -191,6 +191,28 @@ class TestUnifiedDispatch:
         assert captured["video_budget"] == 1
         assert provider.last_kwargs == {}
 
+    def test_story_video_prompt_blocks_generic_video_generate_before_xai_provider_call(self):
+        provider = _RecordingProvider("xai", default_model="grok-imagine-video")
+        video_gen_registry.register_provider(provider)
+
+        result = self._run(
+            {
+                "prompt": (
+                    "Scene S03 keyframe concept for a 5-minute Traditional Chinese "
+                    "science explainer about dinosaur origins. Photoreal documentary "
+                    "paleoart with subtitle-safe lower area."
+                ),
+                "_disable_visual_package_route": True,
+            },
+            configured="xai",
+        )
+
+        assert result["success"] is False
+        assert result["error_type"] == "story_video_provider_blocked"
+        assert result["provider"] == "xai"
+        assert "story-video renderer" in result["error"]
+        assert provider.last_kwargs == {}
+
     def test_image_to_video_routes_with_image_url(self):
         provider = _RecordingProvider("rec")
         video_gen_registry.register_provider(provider)

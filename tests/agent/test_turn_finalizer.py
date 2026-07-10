@@ -91,6 +91,26 @@ class _FakeRaphaelDecision:
         }
 
 
+class _FakeVisualRaphaelDecision:
+    mode = "visual_agent_generation"
+    evidence = types.SimpleNamespace(
+        required_proofs=(
+            "direct_handoff_metadata",
+            "provider_attempt_evidence",
+            "artifact_quality_evidence",
+            "selected_current_artifact_only",
+        )
+    )
+
+    def to_dict(self):
+        return {
+            "mode": self.mode,
+            "evidence": {
+                "required_proofs": list(self.evidence.required_proofs),
+            },
+        }
+
+
 def test_finalize_turn_applies_raphael_response_governor(monkeypatch):
     import agent.raphael.governor as governor
 
@@ -169,6 +189,93 @@ def test_finalize_turn_preserves_story_video_validation_block_under_proof_gate(
 
     assert result["final_response"] == response
     assert "Raphael proof gate" not in result["final_response"]
+
+
+def test_finalize_turn_preserves_story_video_planning_only_scope_under_proof_gate(
+    monkeypatch,
+):
+    import agent.raphael.control as control
+    import agent.raphael.observer as observer
+    import agent.raphael.proof as proof
+    import agent.visual.agent_mode.handoff as handoff
+
+    monkeypatch.setattr(observer, "should_inject_raphael_observation", lambda: True)
+    monkeypatch.setattr(handoff, "is_visual_prompt_builder_request", lambda _text: False)
+    monkeypatch.setattr(
+        control,
+        "build_raphael_control_decision",
+        lambda *_args, **_kwargs: _FakeVisualRaphaelDecision(),
+    )
+    monkeypatch.setattr(proof, "raphael_has_required_proof", lambda *_args, **_kwargs: False)
+
+    user_message = (
+        "幫我做一部恐龍起源的科普影片（可用之前故事影片的 skill 或流程），"
+        "圖片走真實照片風格，大概 5mins。先不要產圖或產影片，請先建立 "
+        "project contract、storyboard、scene ledger、production checklist，"
+        "確認會走 story-video workflow。"
+    )
+    response = (
+        "已完成規劃文件：PROJECT_CONTRACT.md、storyboard.md、scene_ledger.json、"
+        "production_checklist.json。\n下一步：故事影片下一步"
+    )
+
+    result = finalize_turn(
+        _FakeAgent(),
+        final_response=response,
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=[
+            {"role": "user", "content": user_message},
+            {"role": "assistant", "content": response},
+        ],
+        conversation_history=[],
+        effective_task_id="task-1",
+        turn_id="turn-1",
+        user_message=user_message,
+        original_user_message=user_message,
+        _should_review_memory=False,
+        _turn_exit_reason="text_response",
+    )
+
+    assert result["final_response"] == response
+    assert "Raphael proof gate" not in result["final_response"]
+    assert "visual_agent_generate" not in result["final_response"]
+    assert "artifact_quality_evidence" not in result["final_response"]
+
+
+def test_finalize_turn_adds_story_video_short_next_call_when_missing(
+    monkeypatch,
+):
+    import agent.raphael.observer as observer
+    import agent.visual.agent_mode.handoff as handoff
+
+    monkeypatch.setattr(observer, "should_inject_raphael_observation", lambda: False)
+    monkeypatch.setattr(handoff, "is_visual_prompt_builder_request", lambda _text: False)
+
+    user_message = "故事影片：恐龍起源｜5min｜真實照片"
+    response = "已建立 PROJECT_CONTRACT.md、storyboard.md、scene_ledger.json。"
+
+    result = finalize_turn(
+        _FakeAgent(),
+        final_response=response,
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=[
+            {"role": "user", "content": user_message},
+            {"role": "assistant", "content": response},
+        ],
+        conversation_history=[],
+        effective_task_id="task-1",
+        turn_id="turn-1",
+        user_message=user_message,
+        original_user_message=user_message,
+        _should_review_memory=False,
+        _turn_exit_reason="text_response",
+    )
+
+    assert result["final_response"].endswith("Raphael 提示：下一步可直接說「故事影片下一步」。")
 
 
 def test_finalize_turn_records_visual_prompt_draft_in_prompt_arsenal(monkeypatch, tmp_path):
