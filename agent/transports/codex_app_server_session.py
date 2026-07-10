@@ -151,7 +151,12 @@ _OAUTH_REFRESH_FAILURE_HINTS = (
     "please login",
     "auth profile",
     "no auth profile",
-    "oauth",
+)
+
+_MODEL_CONFIGURATION_FAILURE_HINTS = (
+    "model is not supported",
+    "model not supported",
+    "unknown model",
 )
 
 
@@ -166,6 +171,8 @@ def _classify_oauth_failure(*parts: str) -> Optional[str]:
     """
     haystack = " ".join(p for p in parts if p).lower()
     if not haystack:
+        return None
+    if any(needle in haystack for needle in _MODEL_CONFIGURATION_FAILURE_HINTS):
         return None
     for needle in _OAUTH_REFRESH_FAILURE_HINTS:
         if needle in haystack:

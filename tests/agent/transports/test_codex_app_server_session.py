@@ -1203,6 +1203,16 @@ class TestClassifyOAuthFailure:
         assert _classify_oauth_failure("model returned bad json") is None
         assert _classify_oauth_failure("rate limit exceeded") is None
 
+    def test_unsupported_chatgpt_model_is_not_classified_as_auth_failure(self):
+        from agent.transports.codex_app_server_session import (
+            _classify_oauth_failure,
+        )
+
+        assert _classify_oauth_failure(
+            "The 'gpt-5.6' model is not supported when using Codex with a ChatGPT account.",
+            "codex app-server is using OAuth authentication",
+        ) is None
+
     def test_empty_inputs(self):
         from agent.transports.codex_app_server_session import (
             _classify_oauth_failure,
