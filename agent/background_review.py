@@ -927,6 +927,8 @@ def spawn_background_review_thread(
     messages_snapshot: List[Dict],
     review_memory: bool = False,
     review_skills: bool = False,
+    review_prompt: Optional[str] = None,
+    review_label: Optional[str] = None,
 ):
     """Build the review thread target and prompt for a background review.
 
@@ -937,7 +939,9 @@ def spawn_background_review_thread(
     # Pick the right prompt based on which triggers fired.  Allow per-agent
     # override (the prompts moved to module-level constants but old code paths
     # that set agent._MEMORY_REVIEW_PROMPT etc. directly keep working).
-    if review_memory and review_skills:
+    if review_prompt:
+        prompt = review_prompt
+    elif review_memory and review_skills:
         prompt = getattr(agent, "_COMBINED_REVIEW_PROMPT", _COMBINED_REVIEW_PROMPT)
     elif review_memory:
         prompt = getattr(agent, "_MEMORY_REVIEW_PROMPT", _MEMORY_REVIEW_PROMPT)
