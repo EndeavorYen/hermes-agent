@@ -70,4 +70,3 @@ def guard_tool_call(
             return f"Story-video blocked explicit xAI/Grok use through {name}."
 
     return None
-

@@ -113,4 +113,3 @@ class ProviderAudit:
             encoding="utf-8",
         )
         tmp.replace(self.path)
-

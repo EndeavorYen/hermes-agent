@@ -22,4 +22,3 @@ def register(ctx) -> None:
         ("transform_llm_output", hooks.transform_llm_output),
     ):
         ctx.register_hook(name, callback)
-

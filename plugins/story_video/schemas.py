@@ -20,4 +20,3 @@ STORY_VIDEO_CONTROL_SCHEMA = {
         "required": ["action"],
     },
 }
-
