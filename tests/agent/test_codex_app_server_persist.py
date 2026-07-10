@@ -119,6 +119,42 @@ def test_codex_success_runs_api_and_output_hooks(monkeypatch):
     assert calls[3][1]["assistant_response"] == "TRANSFORMED_CODEX_ASSISTANT"
 
 
+def test_codex_runtime_receives_pre_llm_plugin_context(monkeypatch):
+    import agent.conversation_loop as conversation_loop
+
+    captured = {}
+    agent = SimpleNamespace(api_mode="codex_app_server")
+
+    def fake_build_turn_context(*_args, **_kwargs):
+        return SimpleNamespace(
+            user_message="hello",
+            original_user_message="hello",
+            messages=[{"role": "user", "content": "hello"}],
+            conversation_history=[],
+            active_system_prompt="",
+            effective_task_id="task-1",
+            turn_id="turn-1",
+            current_turn_user_idx=0,
+            should_review_memory=False,
+            plugin_user_context="PLUGIN_CONTEXT",
+            ext_prefetch_cache="",
+        )
+
+    def fake_codex_turn(**kwargs):
+        captured.update(kwargs)
+        return {"final_response": "ok"}
+
+    agent._run_codex_app_server_turn = fake_codex_turn
+    monkeypatch.setattr(conversation_loop, "build_turn_context", fake_build_turn_context)
+
+    result = conversation_loop.run_conversation(agent, "hello")
+
+    assert result["final_response"] == "ok"
+    assert captured["user_message"] == "hello\n\nPLUGIN_CONTEXT"
+    assert captured["original_user_message"] == "hello"
+    assert captured["messages"] == [{"role": "user", "content": "hello"}]
+
+
 def test_codex_turn_persists_each_message_exactly_once():
     """The user turn (flushed at turn start) must not be duplicated; the
     projected assistant message must land once.  Uses a real SessionDB and the

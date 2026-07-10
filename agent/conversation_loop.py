@@ -777,8 +777,18 @@ def run_conversation(
     # See agent/transports/codex_app_server_session.py for the adapter
     # and references/codex-app-server-runtime.md for the rationale.
     if agent.api_mode == "codex_app_server":
+        _codex_injections = []
+        if isinstance(_ext_prefetch_cache, str) and _ext_prefetch_cache:
+            _fenced = build_memory_context_block(_ext_prefetch_cache)
+            if _fenced:
+                _codex_injections.append(_fenced)
+        if _plugin_user_context:
+            _codex_injections.append(_plugin_user_context)
+        _codex_user_message = user_message
+        if _codex_injections and isinstance(_codex_user_message, str):
+            _codex_user_message += "\n\n" + "\n\n".join(_codex_injections)
         return agent._run_codex_app_server_turn(
-            user_message=user_message,
+            user_message=_codex_user_message,
             original_user_message=original_user_message,
             messages=messages,
             effective_task_id=effective_task_id,
