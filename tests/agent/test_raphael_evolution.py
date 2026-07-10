@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import multiprocessing
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,6 +41,65 @@ def _config(**raphael_overrides):
 
 def _home_env(path: Path):
     return patch.dict(os.environ, {"HERMES_HOME": str(path)})
+
+
+def _crossprocess_control_writer(
+    home: str,
+    control_write_started,
+    evolution_read_seen,
+    errors,
+) -> None:
+    os.environ["HERMES_HOME"] = home
+    import agent.raphael.state as state_module
+
+    original_atomic_write = state_module.atomic_json_write
+
+    def delayed_atomic_write(*args, **kwargs):
+        control_write_started.set()
+        evolution_read_seen.wait(timeout=0.5)
+        return original_atomic_write(*args, **kwargs)
+
+    state_module.atomic_json_write = delayed_atomic_write
+    try:
+        state_module.record_control_decision(
+            {
+                "mode": "text_reasoning",
+                "goal": {"target_artifact": "release", "phase": "verify"},
+                "next_action": "run tests",
+                "evidence": {},
+                "confidence": 0.9,
+            },
+            turn_id="turn-crossprocess-control",
+        )
+    except BaseException as exc:  # noqa: BLE001 - child errors must reach parent.
+        errors.put(repr(exc))
+
+
+def _crossprocess_evolution_writer(
+    home: str,
+    proof_record: dict,
+    control_write_started,
+    evolution_read_seen,
+    errors,
+) -> None:
+    os.environ["HERMES_HOME"] = home
+    import agent.raphael.evolution as child_evolution_module
+
+    original_read_state = child_evolution_module.read_state
+
+    def tracked_read_state():
+        evolution_read_seen.set()
+        return original_read_state()
+
+    child_evolution_module.read_state = tracked_read_state
+    try:
+        if not control_write_started.wait(timeout=5):
+            raise TimeoutError("control writer never reached its state write")
+        child_evolution_module.record_evolution_action_proposal(
+            [proof_record, dict(proof_record)]
+        )
+    except BaseException as exc:  # noqa: BLE001 - child errors must reach parent.
+        errors.put(repr(exc))
 
 
 def test_learning_outcome_summary_requires_artifact_and_rollback():
@@ -736,6 +796,91 @@ def test_concurrent_control_and_evolution_rmw_preserve_both_updates(
     assert not evolution_thread.is_alive()
     assert len(stored.status_cards) == 1
     assert len(stored.action_proposals) == 1
+
+
+def test_crossprocess_control_and_evolution_rmw_preserve_state(tmp_path):
+    home = tmp_path / "hermes-home"
+    now = datetime(2026, 7, 10, 10, 0, tzinfo=timezone.utc)
+    mission = create_mission(
+        mission_id="mission-crossprocess",
+        goal="Harden the Hermes upgrade",
+        success_conditions=("focused tests pass",),
+        phase="execute",
+        next_action="run focused tests",
+        selected_strategy="tdd",
+        required_proofs=("focused_tests",),
+        now=now,
+    )
+    proof_record = {
+        "status": "scheduled",
+        "mode": "active_evolution",
+        "should_review": True,
+        "reason_codes": ["failed_proof"],
+        "evidence_summary": "proof gate blocked completion",
+        "metadata": {
+            "affected_capability": "raphael.proof_gate",
+            "proposed_change": "tighten proof checks",
+            "promotion_gate": "focused tests",
+            "rollback_condition": "proof quality regresses",
+        },
+    }
+    with _home_env(home):
+        write_state(
+            RaphaelState(
+                status_cards=(),
+                action_proposals=(),
+                updated_at=now,
+                active_mission=mission,
+            )
+        )
+
+    context = multiprocessing.get_context("spawn")
+    control_write_started = context.Event()
+    evolution_read_seen = context.Event()
+    errors = context.Queue()
+    control_process = context.Process(
+        target=_crossprocess_control_writer,
+        args=(
+            str(home),
+            control_write_started,
+            evolution_read_seen,
+            errors,
+        ),
+    )
+    evolution_process = context.Process(
+        target=_crossprocess_evolution_writer,
+        args=(
+            str(home),
+            proof_record,
+            control_write_started,
+            evolution_read_seen,
+            errors,
+        ),
+    )
+
+    control_process.start()
+    evolution_process.start()
+    control_process.join(timeout=10)
+    evolution_process.join(timeout=10)
+    if control_process.is_alive():
+        control_process.terminate()
+        control_process.join()
+    if evolution_process.is_alive():
+        evolution_process.terminate()
+        evolution_process.join()
+
+    child_errors = []
+    while not errors.empty():
+        child_errors.append(errors.get())
+    with _home_env(home):
+        stored = read_state()
+
+    assert control_process.exitcode == 0
+    assert evolution_process.exitcode == 0
+    assert child_errors == []
+    assert len(stored.status_cards) == 1
+    assert len(stored.action_proposals) == 1
+    assert stored.active_mission == mission
 
 
 def test_append_evolution_record_promotes_repeated_pattern_to_pending_proposal(tmp_path):

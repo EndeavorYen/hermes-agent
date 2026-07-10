@@ -70,6 +70,11 @@ def test_live_generation_runs_only_after_safe_browser_preflight(tmp_path):
                 "safe_to_submit": True,
                 "status": "ready",
                 "message": "composer ready",
+                "prompt_probe": {
+                    "attempted": True,
+                    "prompt_text_present": True,
+                    "submit_enabled": True,
+                },
             }
 
         def generate(self, *_args, **_kwargs):
@@ -90,3 +95,99 @@ def test_live_generation_runs_only_after_safe_browser_preflight(tmp_path):
     assert calls == ["preflight", "generate"]
     assert report["success"] is True
     assert report["browser_preflight"]["safe_to_submit"] is True
+
+
+def test_ready_only_preflight_cannot_generate():
+    calls: list[str] = []
+
+    class ReadyOnlyProvider:
+        def preflight(self, **_kwargs):
+            calls.append("preflight")
+            return {
+                "ready": True,
+                "status": "ready",
+                "message": "composer claims ready",
+            }
+
+        def generate(self, *_args, **_kwargs):
+            calls.append("generate")
+            raise AssertionError("ready-only preflight must not authorize generation")
+
+    report = live_e2e.build_grok_web_imagine_live_e2e_report(
+        provider_factory=ReadyOnlyProvider,
+        env=_live_env(),
+    )
+
+    assert calls == ["preflight"]
+    assert report["success"] is False
+    assert report["status"] == "browser_preflight_blocked"
+
+
+@pytest.mark.parametrize(
+    "missing_field",
+    ("attempted", "prompt_text_present", "submit_enabled"),
+)
+def test_incomplete_prompt_probe_contract_cannot_generate(missing_field):
+    calls: list[str] = []
+    prompt_probe = {
+        "attempted": True,
+        "prompt_text_present": True,
+        "submit_enabled": True,
+    }
+    prompt_probe.pop(missing_field)
+
+    class IncompleteProbeProvider:
+        def preflight(self, **_kwargs):
+            calls.append("preflight")
+            return {
+                "ready": True,
+                "safe_to_submit": True,
+                "status": "ready",
+                "message": "composer claims ready",
+                "prompt_probe": prompt_probe,
+            }
+
+        def generate(self, *_args, **_kwargs):
+            calls.append("generate")
+            raise AssertionError("incomplete prompt probe must not authorize generation")
+
+    report = live_e2e.build_grok_web_imagine_live_e2e_report(
+        provider_factory=IncompleteProbeProvider,
+        env=_live_env(),
+    )
+
+    assert calls == ["preflight"]
+    assert report["success"] is False
+    assert report["status"] == "browser_preflight_blocked"
+
+
+def test_safe_to_submit_requires_literal_true():
+    calls: list[str] = []
+
+    class TruthySafeProvider:
+        def preflight(self, **_kwargs):
+            calls.append("preflight")
+            return {
+                "ready": True,
+                "safe_to_submit": "true",
+                "status": "ready",
+                "message": "composer claims ready",
+                "prompt_probe": {
+                    "attempted": True,
+                    "prompt_text_present": True,
+                    "submit_enabled": True,
+                },
+            }
+
+        def generate(self, *_args, **_kwargs):
+            calls.append("generate")
+            raise AssertionError("truthy strings must not authorize generation")
+
+    report = live_e2e.build_grok_web_imagine_live_e2e_report(
+        provider_factory=TruthySafeProvider,
+        env=_live_env(),
+    )
+
+    assert calls == ["preflight"]
+    assert report["success"] is False
+    assert report["status"] == "browser_preflight_blocked"

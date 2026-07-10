@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from collections.abc import Mapping
 from contextlib import contextmanager
@@ -10,6 +11,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import threading
 from typing import Any
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows only.
+    fcntl = None
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - Unix only.
+    msvcrt = None
 
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
@@ -37,6 +47,7 @@ _DATA_URI_RE = re.compile(r"data:[a-z0-9.+/-]+;base64,[a-z0-9+/=_-]+", re.I)
 _LONG_BASE64ISH_RE = re.compile(r"\b[A-Za-z0-9+/=_-]{80,}\b")
 _RESOLUTION_TEXT_LIMIT = 240
 _STATE_LOCK = threading.RLock()
+_STATE_LOCK_CONTEXT = threading.local()
 
 
 def _utc_now() -> datetime:
@@ -45,9 +56,44 @@ def _utc_now() -> datetime:
 
 @contextmanager
 def raphael_state_lock():
-    """Serialize Raphael state and audit-log writes within this process."""
+    """Serialize Raphael state transactions across threads and processes."""
     with _STATE_LOCK:
-        yield
+        depth = getattr(_STATE_LOCK_CONTEXT, "depth", 0)
+        if depth:
+            _STATE_LOCK_CONTEXT.depth = depth + 1
+            try:
+                yield
+            finally:
+                _STATE_LOCK_CONTEXT.depth -= 1
+            return
+
+        state_dir = get_raphael_state_dir()
+        state_dir.mkdir(parents=True, exist_ok=True)
+        lock_file = (state_dir / ".state.lock").open("a+b")
+        try:
+            if fcntl is not None:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            elif msvcrt is not None:  # pragma: no branch - platform-specific.
+                lock_file.seek(0, os.SEEK_END)
+                if lock_file.tell() == 0:
+                    lock_file.write(b"\0")
+                    lock_file.flush()
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+            else:  # pragma: no cover - supported platforms provide one backend.
+                raise RuntimeError("Raphael cross-process state locking is unavailable")
+            _STATE_LOCK_CONTEXT.depth = 1
+            try:
+                yield
+            finally:
+                _STATE_LOCK_CONTEXT.depth = 0
+                if fcntl is not None:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                else:  # pragma: no branch - platform-specific.
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+        finally:
+            lock_file.close()
 
 
 def get_raphael_state_dir() -> Path:
@@ -71,20 +117,22 @@ def get_raphael_mission_path() -> Path:
 
 
 def read_state() -> RaphaelState:
-    with _STATE_LOCK:
-        path = get_raphael_state_path()
+    path = get_raphael_state_path()
+    if not path.exists():
+        return RaphaelState.empty()
+    with raphael_state_lock():
         if not path.exists():
             return RaphaelState.empty()
         return RaphaelState.from_dict(json.loads(path.read_text(encoding="utf-8")))
 
 
 def write_state(state: RaphaelState) -> None:
-    with _STATE_LOCK:
+    with raphael_state_lock():
         atomic_json_write(get_raphael_state_path(), state.to_dict(), sort_keys=True)
 
 
 def append_event(event: RaphaelEvent) -> None:
-    with _STATE_LOCK:
+    with raphael_state_lock():
         state_dir = get_raphael_state_dir()
         state_dir.mkdir(parents=True, exist_ok=True)
         with get_raphael_events_path().open("a", encoding="utf-8") as events_file:

@@ -162,6 +162,30 @@ def test_from_git_status_fails_closed_on_clean_checkout(monkeypatch, capsys):
     assert "committed diff" in capsys.readouterr().out.lower()
 
 
+def test_bare_boundary_invocation_fails_closed(capsys):
+    from hermes_cli.release_evidence.raphael import (
+        raphael_release_slice_boundary as boundary,
+    )
+
+    exit_code = boundary.main([])
+
+    assert exit_code != 0
+    assert "no paths" in capsys.readouterr().out.lower()
+
+
+def test_explicit_empty_diff_fails_closed(monkeypatch, capsys):
+    from hermes_cli.release_evidence.raphael import (
+        raphael_release_slice_boundary as boundary,
+    )
+
+    monkeypatch.setattr(boundary, "git_diff_paths", lambda _revision: ())
+
+    exit_code = boundary.main(["--diff-base", "HEAD"])
+
+    assert exit_code != 0
+    assert "no paths" in capsys.readouterr().out.lower()
+
+
 def test_clean_checkout_can_use_explicit_committed_diff_base(monkeypatch):
     from hermes_cli.release_evidence.raphael import (
         raphael_release_slice_boundary as boundary,

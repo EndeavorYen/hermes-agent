@@ -402,26 +402,34 @@ def _normalise_provider_preflight(result: Any) -> dict[str, Any]:
             "title": "",
             "quota_used": False,
         }
-    has_safe_to_submit = "safe_to_submit" in result
-    safe_to_submit = (
-        _truthy_value(result.get("safe_to_submit"))
-        if has_safe_to_submit
-        else _truthy_value(result.get("ready"))
+    prompt_probe = _normalise_prompt_probe(result.get("prompt_probe"))
+    prompt_probe_complete = all(
+        prompt_probe[field] is True
+        for field in ("attempted", "prompt_text_present", "submit_enabled")
     )
-    ready = _truthy_value(result.get("ready")) or safe_to_submit
+    declared_safe = result.get("safe_to_submit") is True
+    safe_to_submit = declared_safe and prompt_probe_complete
+    ready = result.get("ready") is True
+    status = str(result.get("status") or ("ready" if ready else "unknown"))
+    message = str(result.get("message") or "")
+    if declared_safe and not prompt_probe_complete:
+        status = "prompt_probe_incomplete"
+        message = (
+            "Browser preflight must prove the prompt probe was attempted, the "
+            "prompt text is present, and submit is enabled."
+        )
+    elif ready and not declared_safe:
+        status = "safe_to_submit_required"
+        message = "Browser preflight must explicitly return safe_to_submit=true."
     return {
-        "status": str(result.get("status") or ("ready" if ready else "unknown")),
+        "status": status,
         "ready": ready,
         "safe_to_submit": safe_to_submit,
-        "message": str(result.get("message") or ""),
+        "message": message,
         "url": str(result.get("url") or ""),
         "title": str(result.get("title") or ""),
         "quota_used": _truthy_value(result.get("quota_used")),
-        **(
-            {"prompt_probe": _normalise_prompt_probe(result.get("prompt_probe"))}
-            if isinstance(result.get("prompt_probe"), dict)
-            else {}
-        ),
+        "prompt_probe": prompt_probe,
     }
 
 

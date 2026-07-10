@@ -247,7 +247,7 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, subprocess.CalledProcessError) as exc:
             print(f"Raphael release slice boundary: committed diff unavailable: {exc}")
             return 2
-    if args.from_git_status and not paths:
+    if not paths:
         print(
             "Raphael release slice boundary: no paths found; provide an explicit "
             "committed diff with --diff-base or --diff-range."
