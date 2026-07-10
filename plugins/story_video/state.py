@@ -6,7 +6,7 @@ import os
 import re
 import threading
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -57,6 +57,37 @@ def _slug(text: str) -> str:
     return f"story-video-{digest}"
 
 
+def _parse_explicit_long_form_start(text: str) -> OperatorCall | None:
+    if not re.search(r"故事影片|story[ -]?video", text, re.I):
+        return None
+    topic_match = re.search(
+        r"(?:幫我|請)?(?:做|製作|產生|生成)(?:一部|一支)?\s*"
+        r"(.+?)(?:的)?(?:科普|故事|介紹|紀錄片)?影片",
+        text,
+        re.I,
+    )
+    if topic_match is None:
+        return None
+    topic = topic_match.group(1).strip(" ，,。:：-–")
+    duration_match = re.search(
+        r"(\d+(?:\.\d+)?\s*(?:mins?|minutes?|分鐘|分))",
+        text,
+        re.I,
+    )
+    style_match = re.search(
+        r"(?:圖片|畫面)(?:走|用|採用|風格(?:是|為)?)\s*"
+        r"([^，。；;\n]+?)(?=，|。|；|;|大概|約|$)",
+        text,
+        re.I,
+    )
+    return OperatorCall(
+        action="start",
+        topic=topic or "未命名故事影片",
+        duration=(duration_match.group(1).replace(" ", "") if duration_match else DEFAULT_DURATION),
+        visual_style=(style_match.group(1).strip() if style_match else DEFAULT_STYLE),
+    )
+
+
 @dataclass(frozen=True)
 class OperatorCall:
     action: str
@@ -91,6 +122,10 @@ def parse_operator_call(
     )
     if repair and has_active_project:
         return OperatorCall(action="repair", repair_request=repair.group(1).strip())
+
+    long_form = _parse_explicit_long_form_start(raw)
+    if long_form is not None:
+        return long_form
 
     if re.match(r"^\s*(?:故事影片|產影片|story\s*video|story-video)", raw, re.I):
         fields = _split_fields(_strip_start_prefix(raw))
@@ -230,6 +265,23 @@ class StoryVideoStateStore:
                     context.project_dir / "story_video_run_context.json"
                 )
             self._write_json(self.session_index_path, session_index)
+
+    def update(
+        self,
+        context: StoryVideoRunContext,
+        **changes: Any,
+    ) -> StoryVideoRunContext:
+        updated = replace(context, updated_at=_utc_now(), **changes)
+        self.save(updated)
+        return updated
+
+    def bind_session(
+        self,
+        context: StoryVideoRunContext,
+        session_id: str,
+    ) -> StoryVideoRunContext:
+        sessions = tuple(dict.fromkeys((*context.session_ids, session_id)))
+        return self.update(context, session_ids=sessions)
 
     def _from_index(
         self,

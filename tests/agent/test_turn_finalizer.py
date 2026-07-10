@@ -191,7 +191,7 @@ def test_finalize_turn_preserves_story_video_validation_block_under_proof_gate(
     assert "Raphael proof gate" not in result["final_response"]
 
 
-def test_finalize_turn_preserves_story_video_planning_only_scope_under_proof_gate(
+def test_finalize_turn_preserves_story_video_planning_only_scope_with_phase_proof(
     monkeypatch,
 ):
     import agent.raphael.control as control
@@ -227,6 +227,14 @@ def test_finalize_turn_preserves_story_video_planning_only_scope_under_proof_gat
         failed=False,
         messages=[
             {"role": "user", "content": user_message},
+            {
+                "role": "tool",
+                "name": "story_video_control",
+                "content": (
+                    '{"success": true, "proof": '
+                    '"STORY_VIDEO_PHASE_PROOF: planning PASS"}'
+                ),
+            },
             {"role": "assistant", "content": response},
         ],
         conversation_history=[],
@@ -244,7 +252,54 @@ def test_finalize_turn_preserves_story_video_planning_only_scope_under_proof_gat
     assert "artifact_quality_evidence" not in result["final_response"]
 
 
-def test_finalize_turn_adds_story_video_short_next_call_when_missing(
+def test_finalize_turn_requires_story_video_planning_phase_proof(
+    monkeypatch,
+):
+    import agent.raphael.control as control
+    import agent.raphael.observer as observer
+    import agent.raphael.proof as proof
+    import agent.visual.agent_mode.handoff as handoff
+
+    monkeypatch.setattr(observer, "should_inject_raphael_observation", lambda: True)
+    monkeypatch.setattr(handoff, "is_visual_prompt_builder_request", lambda _text: False)
+    monkeypatch.setattr(
+        control,
+        "build_raphael_control_decision",
+        lambda *_args, **_kwargs: _FakeVisualRaphaelDecision(),
+    )
+    monkeypatch.setattr(proof, "raphael_has_required_proof", lambda *_args, **_kwargs: False)
+
+    user_message = (
+        "故事影片：恐龍起源｜5min｜真實照片。先不要產圖或影片，先建立 "
+        "project contract、storyboard、scene ledger、production checklist。"
+    )
+    response = "已完成規劃文件。"
+
+    result = finalize_turn(
+        _FakeAgent(),
+        final_response=response,
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=[
+            {"role": "user", "content": user_message},
+            {"role": "assistant", "content": response},
+        ],
+        conversation_history=[],
+        effective_task_id="task-1",
+        turn_id="turn-1",
+        user_message=user_message,
+        original_user_message=user_message,
+        _should_review_memory=False,
+        _turn_exit_reason="text_response",
+    )
+
+    assert "故事影片 planning 尚未通過" in result["final_response"]
+    assert "story_video_control(action=validate)" in result["final_response"]
+    assert "visual_agent_generate" not in result["final_response"]
+
+
+def test_finalize_turn_does_not_add_fixed_story_video_footer(
     monkeypatch,
 ):
     import agent.raphael.observer as observer
@@ -275,7 +330,7 @@ def test_finalize_turn_adds_story_video_short_next_call_when_missing(
         _turn_exit_reason="text_response",
     )
 
-    assert result["final_response"].endswith("Raphael 提示：下一步可直接說「故事影片下一步」。")
+    assert result["final_response"] == response
 
 
 def test_finalize_turn_records_visual_prompt_draft_in_prompt_arsenal(monkeypatch, tmp_path):

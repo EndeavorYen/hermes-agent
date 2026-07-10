@@ -16,6 +16,19 @@ def test_parse_short_start_call_uses_operator_fields() -> None:
     assert call.visual_style == "真實照片"
 
 
+def test_parse_long_form_request_that_explicitly_routes_to_story_video() -> None:
+    call = parse_operator_call(
+        "幫我做一部恐龍起源的科普影片（可用之前故事影片的 skill 或流程），"
+        "圖片走真實照片風格，大概 5mins。先不要產圖或產影片。"
+    )
+
+    assert call is not None
+    assert call.action == "start"
+    assert call.topic == "恐龍起源"
+    assert call.duration == "5mins"
+    assert call.visual_style == "真實照片風格"
+
+
 def test_continue_is_only_story_video_call_when_source_has_active_project() -> None:
     assert parse_operator_call("繼續", has_active_project=False) is None
 
