@@ -290,26 +290,27 @@ def apply_followup_to_active_mission(
     max_candidates: int = 2,
     now: datetime | None = None,
 ) -> FollowupResult:
-    from agent.raphael.state import read_state, write_state
+    from agent.raphael.state import raphael_state_lock, read_state, write_state
 
-    state = read_state()
-    if state.active_mission is None:
-        raise ValueError("No active Raphael mission is available for follow-up.")
-    result = apply_followup(
-        state.active_mission,
-        user_message=user_message,
-        artifact_reference=artifact_reference,
-        allow_multi_candidate=allow_multi_candidate,
-        max_candidates=max_candidates,
-        now=now,
-    )
-    write_state(
-        replace(
-            state,
-            active_mission=result.mission,
-            updated_at=result.mission.updated_at,
+    with raphael_state_lock():
+        state = read_state()
+        if state.active_mission is None:
+            raise ValueError("No active Raphael mission is available for follow-up.")
+        result = apply_followup(
+            state.active_mission,
+            user_message=user_message,
+            artifact_reference=artifact_reference,
+            allow_multi_candidate=allow_multi_candidate,
+            max_candidates=max_candidates,
+            now=now,
         )
-    )
+        write_state(
+            replace(
+                state,
+                active_mission=result.mission,
+                updated_at=result.mission.updated_at,
+            )
+        )
     return result
 
 

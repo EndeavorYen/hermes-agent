@@ -175,6 +175,20 @@ def git_status_paths() -> tuple[str, ...]:
     return tuple(_path_from_status_line(line) for line in result.stdout.splitlines())
 
 
+def git_diff_paths(revision: str) -> tuple[str, ...]:
+    result = subprocess.run(
+        ["git", "diff", "--name-only", str(revision), "--"],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return tuple(
+        path
+        for path in (_normalize_path(line) for line in result.stdout.splitlines())
+        if path
+    )
+
+
 def render_summary(result: BoundaryClassification) -> str:
     lines = [
         f"Raphael release slice boundary: {result.profile}",
@@ -209,10 +223,36 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Read paths from git status --short in the current checkout.",
     )
+    committed = parser.add_mutually_exclusive_group()
+    committed.add_argument(
+        "--diff-base",
+        help="Include committed paths changed from BASE...HEAD.",
+    )
+    committed.add_argument(
+        "--diff-range",
+        help="Include committed paths from an explicit git diff revision range.",
+    )
     parser.add_argument("paths", nargs="*")
     args = parser.parse_args(argv)
 
     paths = git_status_paths() if args.from_git_status else tuple(args.paths)
+    revision = (
+        f"{args.diff_base}...HEAD"
+        if args.diff_base
+        else str(args.diff_range or "").strip()
+    )
+    if revision:
+        try:
+            paths = tuple(dict.fromkeys((*paths, *git_diff_paths(revision))))
+        except (OSError, subprocess.CalledProcessError) as exc:
+            print(f"Raphael release slice boundary: committed diff unavailable: {exc}")
+            return 2
+    if args.from_git_status and not paths:
+        print(
+            "Raphael release slice boundary: no paths found; provide an explicit "
+            "committed diff with --diff-base or --diff-range."
+        )
+        return 2
     result = classify_paths(paths, profile=args.profile)
     print(render_summary(result))
     content = inspect_content_boundaries(result.included, profile=args.profile)

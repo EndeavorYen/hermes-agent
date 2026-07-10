@@ -9,10 +9,16 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from agent.redact import redact_sensitive_text
 from agent.raphael.config import cfg_get, raphael_effective_enabled
 from agent.raphael.models import ActionProposal, RaphaelState, RiskLevel
 from agent.raphael.redaction import REDACTED_VALUE, redact_trace_payload
-from agent.raphael.state import get_raphael_state_dir, read_state, write_state
+from agent.raphael.state import (
+    get_raphael_state_dir,
+    raphael_state_lock,
+    read_state,
+    write_state,
+)
 
 EVOLUTION_RECORD_SCHEMA_VERSION = "raphael.evolution_record.v1"
 REVIEW_LABEL = "Raphael evolution review"
@@ -23,6 +29,7 @@ _ALLOWED_EVOLUTION_METADATA_KEYS = frozenset(
         "affected_capability",
         "proposed_change",
         "confidence",
+        "error",
         "learning_outcome",
         "promotion_gate",
         "rollback_condition",
@@ -174,6 +181,21 @@ def _redacted_single_line(value: Any, *, limit: int = EVOLUTION_METADATA_TEXT_LI
     return text[:limit]
 
 
+def sanitize_persistent_error(
+    error: Any,
+    *,
+    limit: int = EVOLUTION_METADATA_TEXT_LIMIT,
+) -> str:
+    """Return a force-redacted bounded error suitable for durable audit files."""
+    error_class = error.__class__.__name__ if isinstance(error, BaseException) else "Error"
+    try:
+        raw = f"{error_class}: {error}" if isinstance(error, BaseException) else str(error)
+        forced = redact_sensitive_text(raw, force=True)
+    except Exception:
+        forced = f"{error_class}: [redaction-failed]"
+    return _redacted_single_line(forced, limit=max(0, int(limit)))
+
+
 def _clamped_confidence(value: Any) -> float | None:
     if isinstance(value, bool):
         return None
@@ -200,6 +222,8 @@ def sanitize_raphael_evolution_metadata(
         confidence = _clamped_confidence(metadata.get("confidence"))
         if confidence is not None:
             sanitized["confidence"] = confidence
+    if isinstance(metadata, Mapping) and metadata.get("error"):
+        sanitized["error"] = sanitize_persistent_error(metadata.get("error"))
     if isinstance(metadata, Mapping) and isinstance(
         metadata.get("learning_outcome"),
         Mapping,
@@ -654,16 +678,18 @@ def record_evolution_action_proposal(
     )
     if proposal is None:
         return None
-    state = read_state()
-    if any(item.proposal_id == proposal.proposal_id for item in state.action_proposals):
-        return proposal
-    write_state(
-        RaphaelState(
-            status_cards=state.status_cards,
-            action_proposals=(proposal, *state.action_proposals),
-            updated_at=datetime.now(timezone.utc),
+    with raphael_state_lock():
+        state = read_state()
+        if any(item.proposal_id == proposal.proposal_id for item in state.action_proposals):
+            return proposal
+        write_state(
+            RaphaelState(
+                status_cards=state.status_cards,
+                action_proposals=(proposal, *state.action_proposals),
+                updated_at=datetime.now(timezone.utc),
+                active_mission=state.active_mission,
+            )
         )
-    )
     return proposal
 
 
@@ -890,23 +916,24 @@ def append_evolution_record(
     status: str,
     metadata: Mapping[str, Any] | None = None,
 ) -> None:
-    state_dir = get_raphael_state_dir()
-    state_dir.mkdir(parents=True, exist_ok=True)
-    record_metadata = {
-        **sanitize_raphael_evolution_metadata(decision.metadata),
-        **sanitize_raphael_evolution_metadata(metadata),
-    }
-    payload = {
-        "schema_version": EVOLUTION_RECORD_SCHEMA_VERSION,
-        "created_at": _utc_now(),
-        "status": str(status),
-        **decision.to_dict(),
-        "metadata": record_metadata,
-    }
-    redacted = _redact_value(payload)
-    with get_raphael_evolution_records_path().open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(redacted, sort_keys=True, ensure_ascii=False) + "\n")
-    record_evolution_action_proposal(read_evolution_records(limit=50))
+    with raphael_state_lock():
+        state_dir = get_raphael_state_dir()
+        state_dir.mkdir(parents=True, exist_ok=True)
+        record_metadata = {
+            **sanitize_raphael_evolution_metadata(decision.metadata),
+            **sanitize_raphael_evolution_metadata(metadata),
+        }
+        payload = {
+            "schema_version": EVOLUTION_RECORD_SCHEMA_VERSION,
+            "created_at": _utc_now(),
+            "status": str(status),
+            **decision.to_dict(),
+            "metadata": record_metadata,
+        }
+        redacted = _redact_value(payload)
+        with get_raphael_evolution_records_path().open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(redacted, sort_keys=True, ensure_ascii=False) + "\n")
+        record_evolution_action_proposal(read_evolution_records(limit=50))
 
 
 def append_evolution_status_record(
@@ -914,28 +941,29 @@ def append_evolution_status_record(
     status: str,
     metadata: Mapping[str, Any] | None = None,
 ) -> None:
-    state_dir = get_raphael_state_dir()
-    state_dir.mkdir(parents=True, exist_ok=True)
-    record_metadata = sanitize_raphael_evolution_status_metadata(metadata)
-    payload = {
-        "schema_version": EVOLUTION_RECORD_SCHEMA_VERSION,
-        "created_at": _utc_now(),
-        "status": str(status),
-        "should_review": False,
-        "review_skills": False,
-        "review_memory": False,
-        "proposal_only": False,
-        "mode": "background_review",
-        "reason_codes": [],
-        "evidence_summary": "Raphael background review outcome.",
-        "review_label": REVIEW_LABEL,
-        "risk_level": "R0",
-        "user_message_preview": "",
-        "metadata": record_metadata,
-    }
-    redacted = _redact_value(payload)
-    with get_raphael_evolution_records_path().open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(redacted, sort_keys=True, ensure_ascii=False) + "\n")
+    with raphael_state_lock():
+        state_dir = get_raphael_state_dir()
+        state_dir.mkdir(parents=True, exist_ok=True)
+        record_metadata = sanitize_raphael_evolution_status_metadata(metadata)
+        payload = {
+            "schema_version": EVOLUTION_RECORD_SCHEMA_VERSION,
+            "created_at": _utc_now(),
+            "status": str(status),
+            "should_review": False,
+            "review_skills": False,
+            "review_memory": False,
+            "proposal_only": False,
+            "mode": "background_review",
+            "reason_codes": [],
+            "evidence_summary": "Raphael background review outcome.",
+            "review_label": REVIEW_LABEL,
+            "risk_level": "R0",
+            "user_message_preview": "",
+            "metadata": record_metadata,
+        }
+        redacted = _redact_value(payload)
+        with get_raphael_evolution_records_path().open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(redacted, sort_keys=True, ensure_ascii=False) + "\n")
 
 
 def read_evolution_records(limit: int | None = None) -> list[dict[str, Any]]:
@@ -975,6 +1003,7 @@ __all__ = [
     "record_evolution_action_proposal",
     "sanitize_evolution_text",
     "sanitize_raphael_evolution_metadata",
+    "sanitize_persistent_error",
     "sanitize_raphael_evolution_status_metadata",
     "summarize_learning_outcome",
 ]

@@ -4,7 +4,10 @@ import types
 
 import agent.background_review as background_review
 import agent.raphael.evolution as evolution
+import hermes_cli.config as hermes_config
+import hermes_cli.plugins as hermes_plugins
 import run_agent as run_agent_module
+from agent.raphael.skill_trace import read_skill_traces
 from agent.turn_finalizer import finalize_turn
 from run_agent import AIAgent
 
@@ -108,12 +111,34 @@ class _FakeAgent:
         pass
 
 
+def _active_raphael_config():
+    return {
+        "plugins": {"enabled": ["raphael"], "disabled": []},
+        "raphael": {
+            "enabled": True,
+            "mode": "sage_king",
+            "skill_writes_enabled": True,
+            "memory_writes_enabled": False,
+            "evolution": {
+                "enabled": True,
+                "skill_review_enabled": True,
+                "memory_review_enabled": True,
+            },
+        },
+    }
+
+
 def test_temp_home_evolution_forwards_review_contract_without_spawn_failure(
     monkeypatch,
     tmp_path,
 ):
     hermes_home = tmp_path / "hermes-home"
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(
+        hermes_config,
+        "load_config_readonly",
+        lambda: _active_raphael_config(),
+    )
 
     decision = evolution.RaphaelEvolutionDecision(
         should_review=True,
@@ -187,6 +212,120 @@ def test_temp_home_evolution_forwards_review_contract_without_spawn_failure(
     outcomes = [record.get("status") for record in evolution.read_evolution_records()]
     assert "scheduled" in outcomes
     assert "background_spawn_failed" not in outcomes
+
+
+def test_disabled_raphael_uses_readonly_gate_without_loading_evolution_stack(
+    monkeypatch,
+):
+    calls: list[str] = []
+    disabled = {
+        "plugins": {"enabled": [], "disabled": ["raphael"]},
+        "raphael": {"enabled": False},
+    }
+    monkeypatch.setattr(
+        hermes_config,
+        "load_config_readonly",
+        lambda: calls.append("readonly") or disabled,
+    )
+    monkeypatch.setattr(
+        hermes_config,
+        "load_config",
+        lambda: calls.append("deepcopy") or disabled,
+    )
+    monkeypatch.setattr(
+        evolution,
+        "decide_raphael_evolution",
+        lambda **_kwargs: calls.append("evolution"),
+    )
+    monkeypatch.setattr(hermes_plugins, "invoke_hook", lambda *_args, **_kwargs: None)
+
+    result = finalize_turn(
+        _FakeAgent(),
+        final_response="done",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=[{"role": "user", "content": "hello"}],
+        conversation_history=None,
+        effective_task_id="task-disabled",
+        turn_id="turn-disabled",
+        user_message="hello",
+        original_user_message="hello",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response",
+    )
+
+    assert result["final_response"] == "done"
+    assert calls == ["readonly"]
+
+
+def test_background_spawn_error_is_sanitized_before_persistent_records(
+    monkeypatch,
+    tmp_path,
+):
+    hermes_home = tmp_path / "hermes-home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(
+        hermes_config,
+        "load_config_readonly",
+        lambda: _active_raphael_config(),
+    )
+    decision = evolution.RaphaelEvolutionDecision(
+        should_review=True,
+        review_skills=True,
+        review_memory=False,
+        proposal_only=False,
+        mode="active_evolution",
+        reason_codes=("user_correction",),
+        evidence_summary="user corrected behavior",
+    )
+    monkeypatch.setattr(evolution, "decide_raphael_evolution", lambda **_kwargs: decision)
+    secret = "sk-" + "secret1234567890"
+    raw_error = (
+        f"provider failed at /Users/example/private/trace.json with {secret}\n"
+        + "x" * 500
+    )
+    agent = _FakeAgent()
+
+    def fail_spawn(**_kwargs):
+        raise RuntimeError(raw_error)
+
+    agent._spawn_background_review = fail_spawn
+    finalize_turn(
+        agent,
+        final_response="I will correct it",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=[{"role": "user", "content": "不對"}],
+        conversation_history=None,
+        effective_task_id="task-error",
+        turn_id="turn-error",
+        user_message="不對",
+        original_user_message="不對",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response",
+    )
+
+    failed_record = next(
+        record
+        for record in reversed(evolution.read_evolution_records())
+        if record["status"] == "background_spawn_failed"
+    )
+    failed_trace = next(
+        trace
+        for trace in reversed(read_skill_traces())
+        if trace.outcome == "background_spawn_failed"
+    )
+    persisted_errors = (
+        failed_record["metadata"]["error"],
+        failed_trace.metadata["error"],
+    )
+    for persisted_error in persisted_errors:
+        assert secret not in persisted_error
+        assert "/Users/example/private/trace.json" not in persisted_error
+        assert "\n" not in persisted_error
+        assert len(persisted_error) <= 240
 
 
 def test_review_label_is_single_line_redacted_and_bounded():

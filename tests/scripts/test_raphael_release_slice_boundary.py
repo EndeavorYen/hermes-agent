@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 
 def test_raphael_llm_slice_boundary_classifies_changed_paths():
     from scripts import raphael_release_slice_boundary as boundary
@@ -145,3 +147,41 @@ def test_raphael_llm_slice_boundary_parses_git_status_lines():
         boundary._path_from_status_line(" R old/path.py -> agent/raphael/new.py")
         == "agent/raphael/new.py"
     )
+
+
+def test_from_git_status_fails_closed_on_clean_checkout(monkeypatch, capsys):
+    from hermes_cli.release_evidence.raphael import (
+        raphael_release_slice_boundary as boundary,
+    )
+
+    monkeypatch.setattr(boundary, "git_status_paths", lambda: ())
+
+    exit_code = boundary.main(["--from-git-status"])
+
+    assert exit_code != 0
+    assert "committed diff" in capsys.readouterr().out.lower()
+
+
+def test_clean_checkout_can_use_explicit_committed_diff_base(monkeypatch):
+    from hermes_cli.release_evidence.raphael import (
+        raphael_release_slice_boundary as boundary,
+    )
+
+    monkeypatch.setattr(boundary, "git_status_paths", lambda: ())
+    observed: list[str] = []
+    monkeypatch.setattr(
+        boundary,
+        "git_diff_paths",
+        lambda revision: observed.append(revision) or ("agent/raphael/control.py",),
+        raising=False,
+    )
+
+    try:
+        exit_code = boundary.main(
+            ["--from-git-status", "--diff-base", "v2026.7.7.2"]
+        )
+    except SystemExit as exc:
+        pytest.fail(f"explicit committed diff base is unsupported: {exc}")
+
+    assert exit_code == 0
+    assert observed == ["v2026.7.7.2...HEAD"]

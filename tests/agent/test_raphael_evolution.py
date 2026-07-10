@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import os
+import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+import agent.raphael.evolution as evolution_module
 from agent.raphael.evolution import (
     append_evolution_record,
     append_evolution_status_record,
@@ -14,8 +17,9 @@ from agent.raphael.evolution import (
     record_evolution_action_proposal,
     summarize_learning_outcome,
 )
-from agent.raphael.models import RiskLevel
-from agent.raphael.state import read_state
+from agent.raphael.mission import create_mission
+from agent.raphael.models import RaphaelState, RiskLevel
+from agent.raphael.state import read_state, write_state
 
 
 def _config(**raphael_overrides):
@@ -600,6 +604,138 @@ def test_record_evolution_action_proposal_is_deduplicated_and_preserves_state(tm
     assert len(state.action_proposals) == 1
     assert state.action_proposals[0].proposal_id == first.proposal_id
     assert state.action_proposals[0].requires_approval is True
+
+
+def test_record_evolution_action_proposal_preserves_active_mission(tmp_path):
+    home = tmp_path / "hermes-home"
+    now = datetime(2026, 7, 10, 10, 0, tzinfo=timezone.utc)
+    mission = create_mission(
+        mission_id="mission-active",
+        goal="Harden the Hermes upgrade",
+        success_conditions=("focused tests pass",),
+        phase="execute",
+        next_action="run focused tests",
+        selected_strategy="tdd",
+        required_proofs=("focused_tests",),
+        now=now,
+    )
+    proof_record = {
+        "status": "scheduled",
+        "mode": "active_evolution",
+        "should_review": True,
+        "reason_codes": ["failed_proof"],
+        "evidence_summary": "proof gate blocked completion",
+        "metadata": {
+            "affected_capability": "raphael.proof_gate",
+            "proposed_change": "tighten proof checks",
+            "promotion_gate": "focused tests",
+            "rollback_condition": "proof quality regresses",
+        },
+    }
+
+    with _home_env(home):
+        write_state(
+            RaphaelState(
+                status_cards=(),
+                action_proposals=(),
+                updated_at=now,
+                active_mission=mission,
+            )
+        )
+        record_evolution_action_proposal([proof_record, dict(proof_record)])
+        stored = read_state()
+
+    assert stored.active_mission == mission
+    assert len(stored.action_proposals) == 1
+
+
+def test_persistent_error_is_force_redacted_single_line_and_bounded():
+    secret = "sk-" + "secret1234567890"
+    error = RuntimeError(
+        f"provider failed at /Users/example/private/trace.json with {secret}\n"
+        + "x" * 500
+    )
+
+    sanitizer = getattr(evolution_module, "sanitize_persistent_error", None)
+    assert callable(sanitizer), "persistent error sanitizer is required"
+    sanitized = sanitizer(error)
+
+    assert secret not in sanitized
+    assert "/Users/example/private/trace.json" not in sanitized
+    assert "\n" not in sanitized
+    assert len(sanitized) <= 240
+
+
+def test_concurrent_control_and_evolution_rmw_preserve_both_updates(
+    tmp_path,
+    monkeypatch,
+):
+    import agent.raphael.evolution as evolution_module
+    import agent.raphael.state as state_module
+
+    home = tmp_path / "hermes-home"
+    proof_record = {
+        "status": "scheduled",
+        "mode": "active_evolution",
+        "should_review": True,
+        "reason_codes": ["failed_proof"],
+        "evidence_summary": "proof gate blocked completion",
+        "metadata": {
+            "affected_capability": "raphael.proof_gate",
+            "proposed_change": "tighten proof checks",
+            "promotion_gate": "focused tests",
+            "rollback_condition": "proof quality regresses",
+        },
+    }
+    control_write_started = threading.Event()
+    evolution_read_seen = threading.Event()
+    original_atomic_write = state_module.atomic_json_write
+    original_read_state = state_module.read_state
+
+    def delayed_atomic_write(*args, **kwargs):
+        if threading.current_thread().name == "control-writer":
+            control_write_started.set()
+            evolution_read_seen.wait(timeout=0.25)
+        return original_atomic_write(*args, **kwargs)
+
+    def tracked_evolution_read():
+        evolution_read_seen.set()
+        return original_read_state()
+
+    monkeypatch.setattr(state_module, "atomic_json_write", delayed_atomic_write)
+    monkeypatch.setattr(evolution_module, "read_state", tracked_evolution_read)
+
+    def write_control():
+        state_module.record_control_decision(
+            {
+                "mode": "text_reasoning",
+                "goal": {"target_artifact": "release", "phase": "verify"},
+                "next_action": "run tests",
+                "evidence": {},
+                "confidence": 0.9,
+            },
+            turn_id="turn-control",
+        )
+
+    def write_evolution():
+        assert control_write_started.wait(timeout=1)
+        evolution_module.record_evolution_action_proposal(
+            [proof_record, dict(proof_record)]
+        )
+
+    with _home_env(home):
+        control_thread = threading.Thread(target=write_control, name="control-writer")
+        evolution_thread = threading.Thread(target=write_evolution, name="evolution-writer")
+        control_thread.start()
+        evolution_thread.start()
+        control_thread.join(timeout=2)
+        evolution_thread.join(timeout=2)
+        stored = read_state()
+
+    assert not control_thread.is_alive()
+    assert not evolution_thread.is_alive()
+    assert len(stored.status_cards) == 1
+    assert len(stored.action_proposals) == 1
 
 
 def test_append_evolution_record_promotes_repeated_pattern_to_pending_proposal(tmp_path):

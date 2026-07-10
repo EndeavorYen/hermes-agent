@@ -4,9 +4,11 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import threading
 from typing import Any
 
 from hermes_constants import get_hermes_home
@@ -34,10 +36,18 @@ _PRIVATE_PATH_RE = re.compile(
 _DATA_URI_RE = re.compile(r"data:[a-z0-9.+/-]+;base64,[a-z0-9+/=_-]+", re.I)
 _LONG_BASE64ISH_RE = re.compile(r"\b[A-Za-z0-9+/=_-]{80,}\b")
 _RESOLUTION_TEXT_LIMIT = 240
+_STATE_LOCK = threading.RLock()
 
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+@contextmanager
+def raphael_state_lock():
+    """Serialize Raphael state and audit-log writes within this process."""
+    with _STATE_LOCK:
+        yield
 
 
 def get_raphael_state_dir() -> Path:
@@ -61,21 +71,24 @@ def get_raphael_mission_path() -> Path:
 
 
 def read_state() -> RaphaelState:
-    path = get_raphael_state_path()
-    if not path.exists():
-        return RaphaelState.empty()
-    return RaphaelState.from_dict(json.loads(path.read_text(encoding="utf-8")))
+    with _STATE_LOCK:
+        path = get_raphael_state_path()
+        if not path.exists():
+            return RaphaelState.empty()
+        return RaphaelState.from_dict(json.loads(path.read_text(encoding="utf-8")))
 
 
 def write_state(state: RaphaelState) -> None:
-    atomic_json_write(get_raphael_state_path(), state.to_dict(), sort_keys=True)
+    with _STATE_LOCK:
+        atomic_json_write(get_raphael_state_path(), state.to_dict(), sort_keys=True)
 
 
 def append_event(event: RaphaelEvent) -> None:
-    state_dir = get_raphael_state_dir()
-    state_dir.mkdir(parents=True, exist_ok=True)
-    with get_raphael_events_path().open("a", encoding="utf-8") as events_file:
-        events_file.write(json.dumps(event.to_dict(), sort_keys=True) + "\n")
+    with _STATE_LOCK:
+        state_dir = get_raphael_state_dir()
+        state_dir.mkdir(parents=True, exist_ok=True)
+        with get_raphael_events_path().open("a", encoding="utf-8") as events_file:
+            events_file.write(json.dumps(event.to_dict(), sort_keys=True) + "\n")
 
 
 def resolve_action_proposal(
@@ -102,45 +115,46 @@ def resolve_action_proposal(
     if not reason and note:
         reason = note
     resolved_at = now or _utc_now()
-    state = read_state()
-    updated_proposals = []
-    updated_proposal = None
-    previous_status = ""
-    for proposal in state.action_proposals:
-        if (
-            proposal.proposal_id != proposal_key
-            and action_proposal_ref(proposal.proposal_id) != proposal_key.lower()
-        ):
-            updated_proposals.append(proposal)
-            continue
-        previous_status = str(proposal.status or "").strip().lower()
-        if previous_status != "pending":
-            updated_proposals.append(proposal)
-            continue
-        metadata = _proposal_metadata_with_resolution(
-            proposal.metadata,
-            status=normalized_status,
-            reviewer=reviewer,
-            reason=reason,
-            evidence_refs=evidence_refs,
-            resolved_at=resolved_at,
+    with raphael_state_lock():
+        state = read_state()
+        updated_proposals = []
+        updated_proposal = None
+        previous_status = ""
+        for proposal in state.action_proposals:
+            if (
+                proposal.proposal_id != proposal_key
+                and action_proposal_ref(proposal.proposal_id) != proposal_key.lower()
+            ):
+                updated_proposals.append(proposal)
+                continue
+            previous_status = str(proposal.status or "").strip().lower()
+            if previous_status != "pending":
+                updated_proposals.append(proposal)
+                continue
+            metadata = _proposal_metadata_with_resolution(
+                proposal.metadata,
+                status=normalized_status,
+                reviewer=reviewer,
+                reason=reason,
+                evidence_refs=evidence_refs,
+                resolved_at=resolved_at,
+            )
+            updated_proposal = replace(
+                proposal,
+                status=normalized_status,
+                metadata=metadata,
+            )
+            updated_proposals.append(updated_proposal)
+        if updated_proposal is None:
+            return None
+        write_state(
+            RaphaelState(
+                status_cards=state.status_cards,
+                action_proposals=tuple(updated_proposals),
+                updated_at=resolved_at,
+                active_mission=state.active_mission,
+            )
         )
-        updated_proposal = replace(
-            proposal,
-            status=normalized_status,
-            metadata=metadata,
-        )
-        updated_proposals.append(updated_proposal)
-    if updated_proposal is None:
-        return None
-    write_state(
-        RaphaelState(
-            status_cards=state.status_cards,
-            action_proposals=tuple(updated_proposals),
-            updated_at=resolved_at,
-            active_mission=state.active_mission,
-        )
-    )
     append_event(
         RaphaelEvent(
             event_id=_action_proposal_resolution_event_id(
@@ -299,29 +313,30 @@ def record_control_decision(
     evidence_refs = tuple(
         ref for ref in (f"turn:{turn_id}" if turn_id else "", f"task:{task_id}" if task_id else "") if ref
     )
-    state = read_state()
-    existing_cards = tuple(
-        card for card in state.status_cards if card.expires_at > now
-    )[:19]
-    card = StatusCard(
-        card_id=f"card-{event_hash}",
-        severity=severity,
-        title=title,
-        summary=summary,
-        observed_at=now,
-        expires_at=now + timedelta(hours=6),
-        source=source,
-        confidence=float(decision.get("confidence") or 0.0),
-        evidence_refs=evidence_refs,
-    )
-    write_state(
-        RaphaelState(
-            status_cards=(card, *existing_cards),
-            action_proposals=state.action_proposals,
-            updated_at=now,
-            active_mission=state.active_mission,
+    with raphael_state_lock():
+        state = read_state()
+        existing_cards = tuple(
+            card for card in state.status_cards if card.expires_at > now
+        )[:19]
+        card = StatusCard(
+            card_id=f"card-{event_hash}",
+            severity=severity,
+            title=title,
+            summary=summary,
+            observed_at=now,
+            expires_at=now + timedelta(hours=6),
+            source=source,
+            confidence=float(decision.get("confidence") or 0.0),
+            evidence_refs=evidence_refs,
         )
-    )
+        write_state(
+            RaphaelState(
+                status_cards=(card, *existing_cards),
+                action_proposals=state.action_proposals,
+                updated_at=now,
+                active_mission=state.active_mission,
+            )
+        )
     append_event(
         RaphaelEvent(
             event_id=event_id,
@@ -354,6 +369,7 @@ __all__ = [
     "get_raphael_state_path",
     "read_mission_state",
     "read_state",
+    "raphael_state_lock",
     "record_control_decision",
     "resolve_action_proposal",
     "write_mission_state",

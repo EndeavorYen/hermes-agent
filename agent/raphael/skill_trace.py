@@ -7,7 +7,11 @@ from typing import Any
 
 from agent.raphael.models import SkillTrace, SkillTraceSummary
 from agent.raphael.redaction import redact_trace_payload
-from agent.raphael.state import get_raphael_skill_traces_path, get_raphael_state_dir
+from agent.raphael.state import (
+    get_raphael_skill_traces_path,
+    get_raphael_state_dir,
+    raphael_state_lock,
+)
 from tools.skill_usage import latest_activity_at, load_usage
 
 
@@ -56,13 +60,14 @@ def append_skill_trace(
     redact_kwargs = {} if max_string_length is None else {"max_string_length": max_string_length}
     for key in ("metadata", "user_corrections", "risk_incidents"):
         redacted[key] = redact_trace_payload(payload.get(key), **redact_kwargs)
-    state_dir = get_raphael_state_dir()
-    state_dir.mkdir(parents=True, exist_ok=True)
-    with get_raphael_skill_traces_path().open(
-        "a",
-        encoding="utf-8",
-    ) as trace_file:
-        trace_file.write(json.dumps(redacted, sort_keys=True) + "\n")
+    with raphael_state_lock():
+        state_dir = get_raphael_state_dir()
+        state_dir.mkdir(parents=True, exist_ok=True)
+        with get_raphael_skill_traces_path().open(
+            "a",
+            encoding="utf-8",
+        ) as trace_file:
+            trace_file.write(json.dumps(redacted, sort_keys=True) + "\n")
 
 
 def read_skill_traces(limit: int | None = None) -> list[SkillTrace]:

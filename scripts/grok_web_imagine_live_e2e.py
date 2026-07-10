@@ -205,8 +205,59 @@ def build_grok_web_imagine_live_e2e_report(
     if work_dir is not None:
         Path(work_dir).mkdir(parents=True, exist_ok=True)
 
-    provider = provider_factory() if provider_factory is not None else _default_provider()
     refs = list(reference_image_urls or [])
+    try:
+        provider = provider_factory() if provider_factory is not None else _default_provider()
+    except Exception as exc:  # noqa: BLE001 - setup must be reported, not raised.
+        return _setup_required_report(
+            status="setup_required",
+            error=f"Grok Web Imagine provider setup failed: {exc}",
+            error_type=exc.__class__.__name__,
+            prompt=prompt,
+            aspect_ratio=aspect_ratio,
+            image_url=image_url,
+            reference_image_urls=refs,
+            operation=operation,
+        )
+
+    browser_preflight = _run_provider_preflight(
+        provider,
+        probe_prompt=PREFLIGHT_PROBE_PROMPT,
+    )
+    if browser_preflight is None:
+        return _setup_required_report(
+            status="setup_required",
+            error="Grok Web Imagine provider does not expose browser preflight.",
+            error_type="provider_preflight_unavailable",
+            prompt=prompt,
+            aspect_ratio=aspect_ratio,
+            image_url=image_url,
+            reference_image_urls=refs,
+            operation=operation,
+        )
+    if browser_preflight.get("safe_to_submit") is not True:
+        return {
+            "success": False,
+            "status": "browser_preflight_blocked",
+            "provider_mode": "grok-web-imagine-live",
+            "requires_operator_setup": True,
+            "error": str(browser_preflight.get("message") or "Browser preflight blocked submission."),
+            "error_type": str(browser_preflight.get("status") or "browser_preflight_blocked"),
+            "browser_preflight": browser_preflight,
+            "request": {
+                "prompt": prompt,
+                "aspect_ratio": aspect_ratio,
+                "image_url": image_url,
+                "reference_image_urls": refs,
+                "operation": operation,
+            },
+            "self_review": {
+                "provider_called": False,
+                "preflight_called": True,
+                "next_action": "Fix browser preflight before submitting a live generation.",
+            },
+        }
+
     try:
         result = provider.generate(
             prompt,
@@ -263,6 +314,7 @@ def build_grok_web_imagine_live_e2e_report(
         },
         "result_surface_id": result_surface_id,
         "history_entry_id": str(result.get("history_entry_id") or ""),
+        "browser_preflight": browser_preflight,
         "request": {
             "prompt": prompt,
             "aspect_ratio": aspect_ratio,
@@ -558,6 +610,39 @@ def _failure_report(
             "provider_called": True,
             "artifact_verified": False,
             "next_action": "Inspect browser setup and provider error before retrying.",
+        },
+    }
+
+
+def _setup_required_report(
+    *,
+    status: str,
+    error: str,
+    error_type: str,
+    prompt: str,
+    aspect_ratio: str,
+    image_url: str | None,
+    reference_image_urls: list[str],
+    operation: str,
+) -> dict[str, Any]:
+    return {
+        "success": False,
+        "status": status,
+        "provider_mode": "grok-web-imagine-live",
+        "requires_operator_setup": True,
+        "error": error,
+        "error_type": error_type,
+        "request": {
+            "prompt": prompt,
+            "aspect_ratio": aspect_ratio,
+            "image_url": image_url,
+            "reference_image_urls": reference_image_urls,
+            "operation": operation,
+        },
+        "self_review": {
+            "provider_called": False,
+            "preflight_called": False,
+            "next_action": "Complete Grok Web Imagine provider and browser setup before retrying.",
         },
     }
 

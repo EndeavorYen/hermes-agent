@@ -45,6 +45,11 @@ venv/bin/ruff check agent/raphael hermes_cli/raphael_cmd.py hermes_cli/subcomman
 git diff --check
 ```
 
+On a clean committed checkout, the bare boundary `--from-git-status` command
+fails closed. Re-run it with the explicit release base, for example
+`--from-git-status --diff-base <release-base>`, so committed paths from
+`<release-base>...HEAD` are inspected.
+
 Current live evidence:
 
 - `hermes raphael readiness --readiness-profile llm --check` currently passes as `ready_for_llm_only_release` and prints `Release scope: llm_only`.
