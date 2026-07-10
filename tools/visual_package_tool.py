@@ -57,6 +57,7 @@ from agent.visual.video_hardening import build_hardened_video_request
 from agent.visual.vision_evaluator import build_candidate_vision_observation
 from tools.registry import registry
 from tools.registry import tool_error
+from tools.story_video_provider_guard import normalize_visual_provider
 from tools.story_video_provider_guard import resolve_story_video_image_provider
 from tools.story_video_provider_guard import story_video_video_block_payload
 from tools.url_safety import is_safe_url
@@ -418,9 +419,6 @@ def _image_provider_override(args: dict[str, Any], *, prompt: str | None = None)
         provider = _normalise_image_provider(args.get(key))
         if provider:
             return provider
-    provider = _normalise_image_provider(prompt, allow_unknown=False)
-    if provider:
-        return provider
     return None
 
 
@@ -428,24 +426,24 @@ def _normalise_image_provider(value: Any, *, allow_unknown: bool = True) -> str 
     raw = str(value or "").strip()
     if not raw:
         return None
-    lowered = raw.lower()
-    compact = re.sub(r"[\s_\-.]+", "", lowered)
-    if (
-        "grokwebimagine" in compact
-        or "grokweb" in compact
-        or "grok web imagine" in lowered
-    ):
+    lowered = re.sub(r"\s+", " ", raw.lower())
+    if lowered in {
+        "grok-web-imagine",
+        "grok web imagine",
+        "grok_web_imagine",
+        "grokwebimagine",
+        "grok-web",
+        "grok web",
+        "grok_web",
+        "grokweb",
+    }:
         return "grok-web-imagine"
-    if "grok" in lowered or "x.ai" in lowered or re.search(r"\bxai\b", lowered):
-        return "xai"
-    if (
-        "openai" in lowered
-        or "codex" in lowered
-        or "gpt-image" in lowered
-        or "image2" in compact
-    ):
-        return "openai-codex"
-    return raw if allow_unknown else None
+    normalized = normalize_visual_provider(raw)
+    if allow_unknown:
+        return normalized
+    if normalized in {"xai", "openai-codex"}:
+        return normalized
+    return None
 
 
 def _apply_image_provider_override(kwargs: dict[str, Any], provider: str | None) -> None:

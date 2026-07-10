@@ -65,6 +65,18 @@ def test_story_video_attachment_path_does_not_trigger_detection():
     ) is False
 
 
+def test_story_video_visual_metadata_path_does_not_trigger_detection():
+    from tools.story_video_provider_guard import story_video_request_detected
+
+    prompt = (
+        "animate this ordinary still for 6s\n\n"
+        "[Visual Arsenal source images]\n"
+        "/story_video/still.png"
+    )
+
+    assert story_video_request_detected(prompt, {}) is False
+
+
 def test_story_video_explicit_truthy_workflow_flag_triggers_detection():
     from tools.story_video_provider_guard import story_video_request_detected
 

@@ -105,6 +105,31 @@ def test_visual_package_generate_rejects_feedback_only_praise_without_generating
     assert payload["request_type"] == "visual_feedback"
 
 
+def test_visual_package_prompt_negation_and_comparison_do_not_infer_provider():
+    from tools import visual_package_tool
+
+    prompt = "Do not use xai; compare OpenAI with custom-openai before drawing."
+
+    assert visual_package_tool._image_provider_override({}, prompt=prompt) is None
+
+
+def test_visual_package_explicit_provider_preserves_exact_registry_ids():
+    from tools import visual_package_tool
+
+    assert visual_package_tool._image_provider_override(
+        {"image_provider": "openai"},
+        prompt="draw a still",
+    ) == "openai"
+    assert visual_package_tool._image_provider_override(
+        {"image_provider": "custom-openai"},
+        prompt="draw a still",
+    ) == "custom-openai"
+    assert visual_package_tool._image_provider_override(
+        {"image_provider": "openai codex"},
+        prompt="draw a still",
+    ) == "openai-codex"
+
+
 def test_visual_package_blocks_story_video_video_body_before_provider_calls(monkeypatch):
     from tools import visual_package_tool
 
@@ -1827,7 +1852,7 @@ def test_visual_package_records_reference_inputs_in_attempt_ledger(monkeypatch, 
     assert ledger.get_request(payload["visual_request_id"])["status"] == "failed"
 
 
-def test_visual_package_infers_grok_provider_from_prompt(monkeypatch, tmp_path):
+def test_visual_package_uses_grok_provider_from_handoff_metadata(monkeypatch, tmp_path):
     from tools import visual_package_tool
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -1853,6 +1878,8 @@ def test_visual_package_infers_grok_provider_from_prompt(monkeypatch, tmp_path):
                 "include_image": True,
                 "include_video": False,
                 "candidate_budget": 1,
+                "image_provider": "xai",
+                "image_provider_source": "prompt_override",
             }
         )
     )

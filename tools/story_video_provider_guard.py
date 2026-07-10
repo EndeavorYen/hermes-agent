@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from agent.visual.prompt_text import strip_visual_prompt_metadata
+
 
 STORY_VIDEO_IMAGE_PROVIDER = "openai-codex"
 STORY_VIDEO_PROVIDER_ERROR_TYPE = "story_video_provider_blocked"
@@ -94,7 +96,7 @@ def story_video_request_detected(prompt: Any, args: Any = None) -> bool:
         _truthy_story_video_flag(args.get(key)) for key in _STORY_VIDEO_FLAG_KEYS
     ):
         return True
-    text = str(prompt or "").strip() if isinstance(prompt, str) else ""
+    text = strip_visual_prompt_metadata(prompt) if isinstance(prompt, str) else ""
     if not text:
         return False
     lowered = text.lower()
