@@ -1113,47 +1113,26 @@ def _add_tool_media_ref(refs: set, ref: Any) -> None:
         refs.update(_tool_media_ref_lookup_keys(normalised))
 
 
+def _selected_visual_payload_deliverables(
+    payload: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Delegate selection, freshness, request, and identity checks."""
+    from agent.visual.delivery_manifest import (
+        build_visual_delivery_manifest,
+        select_deliverable_artifacts,
+    )
+
+    manifest = build_visual_delivery_manifest(payload)
+    return select_deliverable_artifacts(manifest)
+
+
 def _selected_visual_payload_media_refs(payload: Dict[str, Any]) -> List[str]:
-    """Return only artifacts explicitly selected by the delivery manifest."""
-    delivery_metadata = payload.get("delivery_metadata")
-    if not isinstance(delivery_metadata, dict):
-        return []
-    selected_ids = {
-        str(item)
-        for item in delivery_metadata.get("selected_visual_artifact_ids") or []
-        if str(item).strip()
-    }
-    visual_artifacts = delivery_metadata.get("visual_artifacts")
-    if not selected_ids or not isinstance(visual_artifacts, dict):
-        return []
-
-    selected_refs: List[str] = []
-    for artifact_ref, artifact_meta in visual_artifacts.items():
-        if not isinstance(artifact_meta, dict):
-            continue
-        artifact_id = artifact_meta.get("artifact_id") or artifact_meta.get("id")
-        if str(artifact_id) not in selected_ids:
-            continue
-        normalised = _normalise_tool_media_ref(artifact_ref)
-        if normalised:
-            selected_refs.append(normalised)
-
-    declared_refs: set[str] = set()
-    for field in ("images", "videos"):
-        value = payload.get(field)
-        if isinstance(value, str):
-            value = [value]
-        if isinstance(value, list):
-            for item in value:
-                normalised = _normalise_tool_media_ref(item)
-                if normalised:
-                    declared_refs.update(_tool_media_ref_lookup_keys(normalised))
-
-    return [
-        ref
-        for ref in selected_refs
-        if any(key in declared_refs for key in _tool_media_ref_lookup_keys(ref))
-    ]
+    refs: List[str] = []
+    for deliverable in _selected_visual_payload_deliverables(payload):
+        ref = _normalise_tool_media_ref(deliverable.get("ref"))
+        if ref:
+            refs.append(ref)
+    return refs
 
 
 def _current_turn_messages(
@@ -1183,6 +1162,8 @@ def _collect_current_turn_delivery_media_paths(
     messages: List[Dict[str, Any]],
     history_offset: int = 0,
     history_media_paths: Optional[set] = None,
+    history_media_identities: Optional[set] = None,
+    delivery_destination: Optional[str] = None,
 ) -> set:
     """Return selected deliverables produced by this turn's media tools.
 
@@ -1190,6 +1171,8 @@ def _collect_current_turn_delivery_media_paths(
     to zero; paths that were already delivered must not become current again.
     """
     history_media_paths = history_media_paths or set()
+    identity_history_available = history_media_identities is not None
+    history_media_identities = history_media_identities or set()
     refs: set = set()
     new_messages = _current_turn_messages(messages, history_offset)
     tool_name_by_call_id = _tool_name_by_call_id(new_messages)
@@ -1206,6 +1189,43 @@ def _collect_current_turn_delivery_media_paths(
         except Exception:
             payload = None
 
+        if (
+            tool_name in {"visual_agent_generate", "visual_package_generate"}
+            and isinstance(payload, dict)
+            and payload.get("success")
+        ):
+            for deliverable in _selected_visual_payload_deliverables(payload):
+                path = _normalise_tool_media_ref(deliverable.get("ref"))
+                if not path:
+                    continue
+                identity = str(deliverable.get("identity") or path)
+                request_id = str(deliverable.get("request_id") or "")
+                identity_is_path_fallback = identity in _tool_media_ref_lookup_keys(path)
+                if identity_history_available:
+                    if identity in history_media_identities:
+                        continue
+                    if identity_is_path_fallback and _tool_media_seen(
+                        path,
+                        history_media_paths,
+                        refs,
+                    ):
+                        continue
+                elif _tool_media_seen(path, history_media_paths, refs):
+                    continue
+                if delivery_destination:
+                    from agent.visual.delivery_dedupe import (
+                        get_artifact_delivery_deduper,
+                    )
+
+                    if not get_artifact_delivery_deduper().mark_if_new(
+                        identity,
+                        delivery_destination,
+                        request_id,
+                    ):
+                        continue
+                _add_tool_media_ref(refs, path)
+            continue
+
         candidates: List[str] = []
         if tool_name == "image_generate" and isinstance(payload, dict) and payload.get("success"):
             for field in _JSON_MEDIA_TOOL_PATH_FIELDS:
@@ -1213,14 +1233,10 @@ def _collect_current_turn_delivery_media_paths(
                 if isinstance(path, str) and path:
                     candidates.append(path)
                     break
-        elif (
-            tool_name in {"visual_agent_generate", "visual_package_generate"}
-            and isinstance(payload, dict)
-            and payload.get("success")
+        if (
+            tool_name not in {"visual_agent_generate", "visual_package_generate"}
+            and "MEDIA:" in content
         ):
-            candidates.extend(_selected_visual_payload_media_refs(payload))
-
-        if "MEDIA:" in content:
             candidates.extend(
                 match.group(1).strip().rstrip('\",}')
                 for match in _TOOL_MEDIA_RE.finditer(content)
@@ -1318,7 +1334,7 @@ def _filter_response_media_refs_to_current_turn(
         if _is_current_turn_media_ref(media_path, current_turn_media_paths):
             filtered.append((media_path, bool(is_voice)))
             continue
-        if _is_prior_turn_media_ref(
+        if _is_managed_visual_media_ref(media_path) or _is_prior_turn_media_ref(
             media_path,
             history_media_paths,
         ) or _is_old_managed_visual_media_ref(media_path, turn_started_at):
@@ -1454,10 +1470,7 @@ def _collect_auto_append_media_tags(
                         media_tags.append(f"MEDIA:{path}")
                         break
             continue
-        if (
-            tool_name in {"visual_agent_generate", "visual_package_generate"}
-            and "MEDIA:" not in content
-        ):
+        if tool_name in {"visual_agent_generate", "visual_package_generate"}:
             try:
                 payload = json.loads(content)
             except Exception:
@@ -1516,14 +1529,23 @@ def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
         if msg.get("role") not in {"tool", "function"}:
             continue
         content = str(msg.get("content", "") or "")
+        cid = str(msg.get("tool_call_id") or msg.get("call_id") or "")
+        tool_name = tool_name_by_call_id.get(cid)
+        if tool_name in {"visual_agent_generate", "visual_package_generate"}:
+            try:
+                payload = json.loads(content)
+            except Exception:
+                payload = None
+            if isinstance(payload, dict) and payload.get("success"):
+                for ref in _selected_visual_payload_media_refs(payload):
+                    _add_tool_media_ref(paths, ref)
+            continue
         if "MEDIA:" in content:
             for match in _TOOL_MEDIA_RE.finditer(content):
                 p = match.group(1).strip().rstrip('",}')
                 if p:
                     _add_tool_media_ref(paths, p)
             continue
-        cid = str(msg.get("tool_call_id") or msg.get("call_id") or "")
-        tool_name = tool_name_by_call_id.get(cid)
         if tool_name == "image_generate":
             try:
                 payload = json.loads(content)
@@ -1535,15 +1557,35 @@ def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
                     if isinstance(jp, str) and jp:
                         _add_tool_media_ref(paths, jp)
                         break
-        elif tool_name in {"visual_agent_generate", "visual_package_generate"}:
-            try:
-                payload = json.loads(content)
-            except Exception:
-                payload = None
-            if isinstance(payload, dict) and payload.get("success"):
-                for ref in _selected_visual_payload_media_refs(payload):
-                    _add_tool_media_ref(paths, ref)
     return paths
+
+
+def _collect_history_media_identities(
+    agent_history: List[Dict[str, Any]],
+) -> set[str]:
+    """Collect canonical selected visual identities from prior tool results."""
+    identities: set[str] = set()
+    tool_name_by_call_id = _tool_name_by_call_id(agent_history)
+    for msg in agent_history:
+        if msg.get("role") not in {"tool", "function"}:
+            continue
+        call_id = str(msg.get("tool_call_id") or msg.get("call_id") or "")
+        if tool_name_by_call_id.get(call_id) not in {
+            "visual_agent_generate",
+            "visual_package_generate",
+        }:
+            continue
+        try:
+            payload = json.loads(str(msg.get("content") or ""))
+        except Exception:
+            continue
+        if not isinstance(payload, dict) or not payload.get("success"):
+            continue
+        for deliverable in _selected_visual_payload_deliverables(payload):
+            identity = str(deliverable.get("identity") or "").strip()
+            if identity:
+                identities.add(identity)
+    return identities
 
 
 def _run_conversation_with_visual_reference_context(
@@ -11907,6 +11949,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _history_media_for_delivery = set(
                     agent_result.get("history_media_paths") or []
                 )
+                _history_identities_for_delivery = set(
+                    agent_result.get("history_media_identities") or []
+                )
                 if (
                     not _history_media_for_delivery
                     and agent_messages
@@ -11915,11 +11960,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _history_media_for_delivery = _collect_history_media_paths(
                         agent_messages[:_history_offset_for_media]
                     )
+                if (
+                    not _history_identities_for_delivery
+                    and agent_messages
+                    and _history_offset_for_media
+                ):
+                    _history_identities_for_delivery = (
+                        _collect_history_media_identities(
+                            agent_messages[:_history_offset_for_media]
+                        )
+                    )
+                _delivery_destination = ":".join(
+                    (
+                        source.platform.value if source.platform else "gateway",
+                        str(session_entry.session_id or session_key or ""),
+                        str(getattr(source, "thread_id", None) or ""),
+                    )
+                )
                 _current_turn_media_for_delivery = (
                     _collect_current_turn_delivery_media_paths(
                         agent_messages,
                         history_offset=_history_offset_for_media,
                         history_media_paths=_history_media_for_delivery,
+                        history_media_identities=_history_identities_for_delivery,
+                        delivery_destination=_delivery_destination,
                     )
                 )
                 response = _sanitize_final_response_media_refs(
@@ -18653,6 +18717,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # from the current turn's extraction. This is compression-safe:
             # even if the message list shrinks, we know which paths are old.
             _history_media_paths: set = _collect_history_media_paths(agent_history)
+            _history_media_identities: set[str] = (
+                _collect_history_media_identities(agent_history)
+            )
             
             # Register per-session gateway approval callback so dangerous
             # command approval blocks the agent thread (mirrors CLI input()).
@@ -19148,6 +19215,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "model": _resolved_model,
                     "context_length": _context_length,
                     "history_media_paths": sorted(_history_media_paths),
+                    "history_media_identities": sorted(_history_media_identities),
                 }
             
             # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -19256,6 +19324,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "context_length": _context_length,
                 "session_id": effective_session_id,
                 "history_media_paths": sorted(_history_media_paths),
+                "history_media_identities": sorted(_history_media_identities),
                 "response_previewed": result.get("response_previewed", False),
                 "response_transformed": result.get("response_transformed", False),
                 # Pass through the agent_persisted flag so the persistence block

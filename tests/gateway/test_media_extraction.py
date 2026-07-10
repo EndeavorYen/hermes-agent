@@ -361,6 +361,159 @@ caption
         assert tags == ["MEDIA:/tmp/current.mp4"]
         assert voice is False
 
+    def test_visual_media_tag_cannot_bypass_selected_manifest(self):
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_visual",
+                        "function": {"name": "visual_package_generate"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_visual",
+                "content": (
+                    '{"success": true, "visual_request_id": "vrq_current", '
+                    '"images": ["/tmp/selected.png"], "videos": [], '
+                    '"diagnostic": "MEDIA:/tmp/rejected.png", '
+                    '"delivery_metadata": {'
+                    '"selected_visual_artifact_ids": ["selected"], '
+                    '"visual_artifacts": {'
+                    '"/tmp/selected.png": {'
+                    '"request_id": "vrq_current", "artifact_id": "selected", '
+                    '"kind": "image"}, '
+                    '"/tmp/rejected.png": {'
+                    '"request_id": "vrq_current", "artifact_id": "rejected", '
+                    '"kind": "image"}}}}'
+                ),
+            },
+        ]
+
+        tags, _ = _collect_auto_append_media_tags(messages, history_offset=0)
+
+        assert tags == ["MEDIA:/tmp/selected.png"]
+
+    def test_visual_manifest_rejects_selected_artifact_from_other_request(self):
+        from gateway.run import _collect_current_turn_delivery_media_paths
+
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_visual",
+                        "function": {"name": "visual_package_generate"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_visual",
+                "content": (
+                    '{"success": true, "visual_request_id": "vrq_current", '
+                    '"images": ["/tmp/old.png"], "videos": [], '
+                    '"delivery_metadata": {'
+                    '"selected_visual_artifact_ids": ["old"], '
+                    '"visual_artifacts": {"/tmp/old.png": {'
+                    '"request_id": "vrq_old", "artifact_id": "old", '
+                    '"kind": "image"}}}}'
+                ),
+            },
+        ]
+
+        assert _collect_current_turn_delivery_media_paths(messages) == set()
+
+    def test_visual_delivery_dedupe_scopes_identity_to_session_thread(self):
+        from agent.visual.delivery_dedupe import get_artifact_delivery_deduper
+        from gateway.run import _collect_current_turn_delivery_media_paths
+
+        get_artifact_delivery_deduper()._seen.clear()
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_visual",
+                        "function": {"name": "visual_package_generate"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_visual",
+                "content": (
+                    '{"success": true, "visual_request_id": "vrq_1", '
+                    '"images": ["/tmp/alias-a.png"], "videos": [], '
+                    '"delivery_metadata": {'
+                    '"selected_visual_artifact_ids": ["selected"], '
+                    '"visual_artifacts": {"/tmp/alias-a.png": {'
+                    '"request_id": "vrq_1", "artifact_id": "selected", '
+                    '"content_hash": "sha256:same", "kind": "image"}}}}'
+                ),
+            },
+        ]
+
+        first = _collect_current_turn_delivery_media_paths(
+            messages,
+            delivery_destination="slack:session-1:thread-1",
+        )
+        duplicate = _collect_current_turn_delivery_media_paths(
+            messages,
+            delivery_destination="slack:session-1:thread-1",
+        )
+        other_thread = _collect_current_turn_delivery_media_paths(
+            messages,
+            delivery_destination="slack:session-1:thread-2",
+        )
+
+        assert "/tmp/alias-a.png" in first
+        assert duplicate == set()
+        assert "/tmp/alias-a.png" in other_thread
+
+    def test_reused_path_with_new_artifact_identity_is_current(self):
+        from gateway.run import _collect_current_turn_delivery_media_paths
+
+        path = "/tmp/reused-output.png"
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_visual",
+                        "function": {"name": "visual_package_generate"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_visual",
+                "content": (
+                    '{"success": true, "visual_request_id": "vrq_new", '
+                    '"images": ["'
+                    + path
+                    + '"], "videos": [], "delivery_metadata": {'
+                    '"selected_visual_artifact_ids": ["new"], '
+                    '"visual_artifacts": {"'
+                    + path
+                    + '": {"request_id": "vrq_new", "artifact_id": "new", '
+                    '"content_hash": "sha256:new", "kind": "image"}}}}'
+                ),
+            },
+        ]
+
+        current = _collect_current_turn_delivery_media_paths(
+            messages,
+            history_media_paths={path},
+            history_media_identities={"sha256:old"},
+        )
+
+        assert path in current
+
     def test_collect_history_media_paths_includes_image_generate_json(self):
         """Regression for #46627: the history media-path collector must pick up
         image_generate JSON-payload paths (no MEDIA: tag), not just MEDIA:
@@ -470,6 +623,27 @@ caption
             current_turn_media_paths=set(),
             history_media_paths={stale},
             turn_started_at=None,
+        )
+
+        assert filtered == []
+
+    def test_response_media_filter_drops_fresh_unselected_managed_visual(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        from gateway.run import _filter_response_media_refs_to_current_turn
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        rejected = tmp_path / "media" / "generated" / "rejected.png"
+        rejected.parent.mkdir(parents=True)
+        rejected.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+        filtered = _filter_response_media_refs_to_current_turn(
+            [(str(rejected), False)],
+            current_turn_media_paths=set(),
+            history_media_paths=set(),
+            turn_started_at=0,
         )
 
         assert filtered == []
