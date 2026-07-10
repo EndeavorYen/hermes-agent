@@ -387,8 +387,13 @@ def run_codex_app_server_turn(
             except Exception:
                 logger.debug("codex tool-progress callback raised", exc_info=True)
 
+        codex_bin = os.path.expanduser(
+            os.environ.get("HERMES_CODEX_BIN", "").strip() or "codex"
+        )
+        logger.info("codex app-server executable: %s", codex_bin)
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
+            codex_bin=codex_bin,
             approval_callback=approval_callback,
             request_routing=_ServerRequestRouting(
                 auto_approve_exec=auto_approve_requests,
