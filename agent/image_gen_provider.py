@@ -289,17 +289,59 @@ def save_url_image(
     fall back to returning the bare URL with a clear error message.
     """
     import requests
+    from urllib.parse import urljoin
 
-    response = requests.get(url, timeout=timeout, stream=True)
+    from tools.url_safety import is_safe_url
+
+    current_url = str(url or "").strip()
+    response = None
+    for _redirect_count in range(6):
+        if not is_safe_url(current_url):
+            if response is not None:
+                response.close()
+            raise ValueError("Refusing to cache unsafe image URL")
+        response = requests.get(
+            current_url,
+            timeout=timeout,
+            stream=True,
+            allow_redirects=False,
+        )
+        if not getattr(response, "is_redirect", False):
+            break
+        location = response.headers.get("Location") or response.headers.get("location")
+        response.close()
+        response = None
+        if not location:
+            raise ValueError("Image redirect response omitted Location")
+        current_url = urljoin(current_url, str(location))
+    else:
+        raise ValueError("Image URL exceeded 5 redirect limit")
+
+    if response is None:
+        raise ValueError("Image URL returned no response")
     response.raise_for_status()
 
     # Infer extension from the response content-type, falling back to the
     # URL suffix when xAI / OpenAI omit a precise type (some CDNs return
     # ``application/octet-stream``).  Defaults to ``png``.
     content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+    if content_type and content_type not in _URL_IMAGE_CONTENT_TYPES and content_type != "application/octet-stream":
+        response.close()
+        raise ValueError("Remote image returned a non-image content type")
+    content_length = response.headers.get("Content-Length") or response.headers.get("content-length")
+    if content_length:
+        try:
+            declared_bytes = int(content_length)
+        except (TypeError, ValueError):
+            declared_bytes = 0
+        if declared_bytes > max_bytes:
+            response.close()
+            raise ValueError(
+                f"Remote image exceeds {max_bytes // (1024 * 1024)}MB cap"
+            )
     extension = _URL_IMAGE_CONTENT_TYPES.get(content_type)
     if extension is None:
-        url_path = url.split("?", 1)[0].lower()
+        url_path = current_url.split("?", 1)[0].lower()
         for ext in ("png", "jpg", "jpeg", "webp", "gif"):
             if url_path.endswith(f".{ext}"):
                 extension = "jpg" if ext == "jpeg" else ext
@@ -312,28 +354,32 @@ def save_url_image(
     path = _images_cache_dir() / f"{prefix}_{ts}_{short}.{extension}"
 
     bytes_written = 0
-    with path.open("wb") as fh:
-        for chunk in response.iter_content(chunk_size=64 * 1024):
-            if not chunk:
-                continue
-            bytes_written += len(chunk)
-            if bytes_written > max_bytes:
-                fh.close()
-                try:
-                    path.unlink()
-                except OSError:
-                    pass
-                raise ValueError(
-                    f"Image at {url} exceeds {max_bytes // (1024 * 1024)}MB cap; refusing to cache."
-                )
-            fh.write(chunk)
+    try:
+        with path.open("wb") as fh:
+            for chunk in response.iter_content(chunk_size=64 * 1024):
+                if not chunk:
+                    continue
+                bytes_written += len(chunk)
+                if bytes_written > max_bytes:
+                    raise ValueError(
+                        f"Remote image exceeds {max_bytes // (1024 * 1024)}MB cap"
+                    )
+                fh.write(chunk)
+    except Exception:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        raise
+    finally:
+        response.close()
 
     if bytes_written == 0:
         try:
             path.unlink()
         except OSError:
             pass
-        raise ValueError(f"Image at {url} returned 0 bytes; refusing to cache.")
+        raise ValueError("Remote image returned 0 bytes; refusing to cache")
 
     return path
 

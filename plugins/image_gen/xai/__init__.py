@@ -415,12 +415,20 @@ class XAIImageGenProvider(ImageGenProvider):
                 )
             except Exception as exc:
                 logger.warning(
-                    "xAI stored image URL %s could not be cached (%s); "
-                    "falling back to bare URL.",
-                    public_url,
-                    exc,
+                    "xAI stored image URL could not be cached safely: %s",
+                    type(exc).__name__,
                 )
-                image_ref = public_url
+                return error_response(
+                    error=(
+                        "Could not safely cache xAI image output: "
+                        f"{type(exc).__name__}"
+                    ),
+                    error_type="io_error",
+                    provider=provider_name,
+                    model=model_id,
+                    prompt=prompt,
+                    aspect_ratio=aspect,
+                )
             else:
                 image_ref = str(saved_path)
         elif b64:
@@ -448,11 +456,20 @@ class XAIImageGenProvider(ImageGenProvider):
                 saved_path = save_url_image(url, prefix=f"xai_{model_id}")
             except Exception as exc:
                 logger.warning(
-                    "xAI image URL %s could not be cached (%s); falling back to bare URL.",
-                    url,
-                    exc,
+                    "xAI image URL could not be cached safely: %s",
+                    type(exc).__name__,
                 )
-                image_ref = url
+                return error_response(
+                    error=(
+                        "Could not safely cache xAI image output: "
+                        f"{type(exc).__name__}"
+                    ),
+                    error_type="io_error",
+                    provider=provider_name,
+                    model=model_id,
+                    prompt=prompt,
+                    aspect_ratio=aspect,
+                )
             else:
                 image_ref = str(saved_path)
         else:

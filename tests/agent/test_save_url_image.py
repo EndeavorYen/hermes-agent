@@ -15,6 +15,7 @@ from __future__ import annotations
 import http.server
 import socketserver
 import threading
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -77,6 +78,7 @@ class _TinyImageHandler(http.server.BaseHTTPRequestHandler):
 def http_server(tmp_path, monkeypatch):
     """Spin up a localhost HTTP server and isolate HERMES_HOME under tmp_path."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
     (tmp_path / ".hermes").mkdir()
 
     # Force the constants/image cache helpers to re-read HERMES_HOME.
@@ -94,6 +96,40 @@ def http_server(tmp_path, monkeypatch):
 
 
 class TestSaveUrlImage:
+    def test_blocks_unsafe_initial_url_before_network(self, monkeypatch):
+        from agent.image_gen_provider import save_url_image
+
+        get = MagicMock()
+        monkeypatch.setattr("requests.get", get)
+        monkeypatch.setattr("tools.url_safety.is_safe_url", lambda _url: False)
+
+        with pytest.raises(ValueError, match="unsafe image URL"):
+            save_url_image("http://127.0.0.1/internal.png")
+
+        get.assert_not_called()
+
+    def test_revalidates_every_redirect_target(self, monkeypatch):
+        from agent.image_gen_provider import save_url_image
+
+        redirect = MagicMock()
+        redirect.is_redirect = True
+        redirect.status_code = 302
+        redirect.headers = {"Location": "http://127.0.0.1/internal.png"}
+        redirect.url = "https://cdn.example/start.png"
+        redirect.close = MagicMock()
+        get = MagicMock(return_value=redirect)
+        monkeypatch.setattr("requests.get", get)
+        monkeypatch.setattr(
+            "tools.url_safety.is_safe_url",
+            lambda url: url == "https://cdn.example/start.png",
+        )
+
+        with pytest.raises(ValueError, match="unsafe image URL"):
+            save_url_image("https://cdn.example/start.png")
+
+        get.assert_called_once()
+        redirect.close.assert_called_once()
+
     def test_writes_real_bytes_to_hermes_home_cache(self, http_server):
         base, _ = http_server
         from agent.image_gen_provider import save_url_image

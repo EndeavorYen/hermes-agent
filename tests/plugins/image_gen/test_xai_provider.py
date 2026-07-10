@@ -196,14 +196,8 @@ class TestGenerate:
         assert call_args[0] == "https://imgen.x.ai/xai-tmp-imgen-test.jpeg"
         assert call_kwargs.get("prefix", "").startswith("xai_")
 
-    def test_url_response_falls_back_to_bare_url_when_download_fails(self):
-        """If caching the URL fails (network blip, 404 in-flight), the
-        provider must NOT hard-error — fall through to returning the bare
-        URL so the agent surface at least sees *something*.  The gateway's
-        existing URL-send fallback then has a chance to succeed; if it
-        too 404s, the user gets the original (now legible) error rather
-        than an opaque "image generation failed" tool result.
-        """
+    def test_url_response_fails_closed_when_safe_cache_fails(self):
+        """A provider URL must never bypass the guarded local cache path."""
         import requests as req_lib
         from plugins.image_gen.xai import XAIImageGenProvider
 
@@ -222,10 +216,10 @@ class TestGenerate:
             provider = XAIImageGenProvider()
             result = provider.generate(prompt="A cat playing piano")
 
-        assert result["success"] is True, (
-            "Cache failure must not turn into a tool error — gateway gets a chance to retry"
-        )
-        assert result["image"] == "https://imgen.x.ai/xai-tmp-imgen-already-404.jpeg"
+        assert result["success"] is False
+        assert result["error_type"] == "io_error"
+        assert result["image"] is None
+        assert "imgen.x.ai" not in str(result)
 
     def test_api_error(self):
         import requests as req_lib
@@ -464,6 +458,34 @@ class TestGenerate:
             "https://xai-files.example/stored.png",
             prefix="xai_grok-imagine-image",
         )
+
+    def test_public_url_cache_failure_does_not_return_bare_url(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {
+            "data": [
+                {
+                    "file_output": {
+                        "public_url": "http://127.0.0.1/internal.png",
+                    }
+                }
+            ]
+        }
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp), \
+             patch(
+                 "plugins.image_gen.xai.save_url_image",
+                 side_effect=ValueError("unsafe image URL"),
+             ):
+            result = XAIImageGenProvider().generate(prompt="A cat")
+
+        assert result["success"] is False
+        assert result["error_type"] == "io_error"
+        assert result["image"] is None
+        assert "127.0.0.1" not in str(result)
 
 
 # ---------------------------------------------------------------------------
