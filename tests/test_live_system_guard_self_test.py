@@ -32,12 +32,10 @@ FOREIGN_PID = 1
 def fake_systemctl(tmp_path, monkeypatch):
     """Put a harmless systemctl executable first on PATH for pass-through tests."""
     if os.name == "nt":
-        executable = tmp_path / "systemctl.bat"
-        executable.write_text("@exit /b 0\r\n", encoding="utf-8")
-    else:
-        executable = tmp_path / "systemctl"
-        executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-        executable.chmod(0o755)
+        pytest.skip("systemctl pass-through canary is POSIX-only")
+    executable = tmp_path / "systemctl"
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
     monkeypatch.setenv("PATH", str(tmp_path))
     return executable
 
