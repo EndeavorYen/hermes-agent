@@ -76,6 +76,25 @@ def test_pre_llm_creates_context_and_injects_provider_policy(tmp_path, monkeypat
     assert "story_video_control" in result["context"]
 
 
+def test_pre_llm_creates_context_for_direct_cli_story_video_request(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+
+    result = hooks.pre_llm_call(
+        session_id="cli-session-1",
+        user_message="故事影片：恐龍起源｜5分｜真實照片",
+        model="gpt-5.5",
+    )
+
+    context = store.for_session("cli-session-1")
+    assert context is not None
+    assert context.topic == "恐龍起源"
+    assert context.source_key == "session:cli-session-1"
+    assert "provider=openai-codex" in result["context"]
+
+
 def test_pre_tool_guard_uses_session_context_not_prompt_words(tmp_path, monkeypatch) -> None:
     store = StoryVideoStateStore(tmp_path)
     monkeypatch.setattr(hooks, "_STORE", store)

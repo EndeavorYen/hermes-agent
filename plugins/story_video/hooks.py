@@ -104,7 +104,19 @@ def pre_llm_call(
     if payload is None:
         context = _STORE.for_session(session_id)
         if context is None:
-            return None
+            call = parse_operator_call(str(user_message or ""), has_active_project=False)
+            if call is None:
+                return None
+            context = _STORE.create_or_load(
+                source_key=f"session:{session_id}",
+                session_id=session_id,
+                call=call,
+                original_request=str(user_message or ""),
+            )
+            _write_project_contract(context)
+            action = call.action
+        else:
+            action = "continue"
     else:
         call = OperatorCall(
             action=str(payload.get("action") or "continue"),
@@ -120,11 +132,11 @@ def pre_llm_call(
             original_request=str(payload.get("original_request") or user_message),
         )
         _write_project_contract(context)
+        action = str(payload.get("action") or "continue")
 
     if session_id:
         _SESSION_PHASE_AT_LLM_START[session_id] = context.phase
 
-    action = str(payload.get("action") if payload else "continue")
     instruction = (
         f"STORY_VIDEO_RUN_CONTEXT run_id={context.run_id} phase={context.phase} "
         f"project_dir={context.project_dir}. Operator action={action}. "
