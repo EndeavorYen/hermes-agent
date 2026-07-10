@@ -133,6 +133,24 @@ class TestUnifiedDispatch:
         assert result["success"] is False
         assert result["error_type"] == "provider_exception"
 
+    def test_story_video_prompt_blocks_generic_video_before_provider_call(self):
+        provider = _RecordingProvider("xai")
+        video_gen_registry.register_provider(provider)
+        prompt = (
+            "Scene S03 keyframe concept for a 5-minute Traditional Chinese "
+            "science explainer. Secret privacy-marker-4629. Documentary "
+            "paleoart with narration and subtitle-safe lower area."
+        )
+
+        result = self._run({"prompt": prompt}, configured="xai")
+
+        assert result["success"] is False
+        assert result["error_type"] == "story_video_provider_blocked"
+        assert result["provider"] == "xai"
+        assert "story-video renderer" in result["error"]
+        assert "privacy-marker-4629" not in str(result)
+        assert provider.last_kwargs == {}
+
     def test_edit_extend_fields_not_in_schema(self):
         from tools.video_generation_tool import VIDEO_GENERATE_SCHEMA
         props = VIDEO_GENERATE_SCHEMA["parameters"]["properties"]

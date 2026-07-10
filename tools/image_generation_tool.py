@@ -23,6 +23,7 @@ update when it's noticed.
 import json
 import logging
 import os
+import re
 import datetime
 import threading
 import uuid
@@ -69,6 +70,7 @@ from tools.tool_backend_helpers import (
     nous_tool_gateway_unavailable_message,
     prefers_gateway,
 )
+from tools.story_video_provider_guard import resolve_story_video_image_provider
 
 logger = logging.getLogger(__name__)
 
@@ -835,6 +837,212 @@ def _postprocess_image_generate_result(raw: str, task_id: str | None = None) -> 
     return json.dumps(payload, ensure_ascii=False)
 
 
+def _truthy_arg(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _requested_image_provider(value: Any) -> str | None:
+    lowered = str(value or "").lower()
+    compact = re.sub(r"[\s_\-.]+", "", lowered)
+    if "grok" in lowered or "x.ai" in lowered or re.search(r"\bxai\b", lowered):
+        return "xai"
+    if (
+        "openai" in lowered
+        or "codex" in lowered
+        or "gpt-image" in lowered
+        or "image2" in compact
+    ):
+        return "openai-codex"
+    return None
+
+
+def _image_provider_override_arg(args: Dict[str, Any], prompt: str) -> str | None:
+    for key in ("_provider", "provider", "image_provider"):
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            return _requested_image_provider(value) or value.strip()
+    return _requested_image_provider(prompt)
+
+
+def _agent_mode_requested(args: Dict[str, Any], prompt: str) -> bool:
+    if _truthy_arg(args.get("_disable_visual_agent_route")):
+        return False
+    if _truthy_arg(args.get("agent_mode")) or _truthy_arg(args.get("visual_agent_mode")):
+        return True
+    lowered = str(prompt or "").lower()
+    compact = "".join(lowered.split())
+    return any(
+        marker in lowered
+        for marker in ("visual agent mode", "image agent mode", "agent-mode")
+    ) or any(
+        marker in compact
+        for marker in ("visualagentmode", "imageagentmode", "agent模式", "智能體模式")
+    )
+
+
+def _image_agent_attachments(
+    image_url: Any,
+    reference_image_urls: Optional[list],
+) -> list[str]:
+    attachments: list[str] = []
+    if isinstance(image_url, str) and image_url.strip():
+        attachments.append(image_url.strip())
+    if reference_image_urls is not None:
+        from agent.image_gen_provider import normalize_reference_images
+
+        references = normalize_reference_images(reference_image_urls) or []
+        attachments.extend(item for item in references if item not in attachments)
+    return attachments
+
+
+def _selected_visual_package_image_payload(
+    package_payload: dict[str, Any],
+    image_ref: str | None,
+) -> dict[str, Any]:
+    generation_payloads = package_payload.get("generation_payloads")
+    image_payloads = generation_payloads.get("image") if isinstance(generation_payloads, dict) else None
+    if isinstance(image_payloads, dict):
+        image_payloads = [image_payloads]
+    if not isinstance(image_payloads, list):
+        return {}
+    for payload in image_payloads:
+        if isinstance(payload, dict) and image_ref and payload.get("image") == image_ref:
+            return payload
+    return next((payload for payload in image_payloads if isinstance(payload, dict)), {})
+
+
+def _route_visual_image_to_package(
+    *,
+    prompt: str,
+    aspect_ratio: str,
+    image_url: Any,
+    reference_image_urls: Optional[list],
+    provider_override: Any,
+    candidate_budget: Any,
+) -> Dict[str, Any]:
+    try:
+        budget = max(1, min(8, int(candidate_budget or 2)))
+    except (TypeError, ValueError):
+        budget = 2
+    package_args: Dict[str, Any] = {
+        "prompt": prompt,
+        "include_image": True,
+        "include_video": False,
+        "candidate_budget": budget,
+        "candidate_budget_source": "agent_mode",
+        "aspect_ratio": aspect_ratio,
+    }
+    attachments = _image_agent_attachments(image_url, reference_image_urls)
+    if attachments:
+        package_args["attachments"] = attachments
+    if isinstance(provider_override, str) and provider_override.strip():
+        package_args["image_provider"] = provider_override.strip()
+
+    try:
+        from tools.visual_package_tool import _handle_visual_package_generate
+
+        package_raw = _handle_visual_package_generate(package_args)
+        package_payload = json.loads(package_raw) if isinstance(package_raw, str) else package_raw
+    except Exception as exc:  # noqa: BLE001 - keep a tool-shaped failure
+        return {
+            "success": False,
+            "image": None,
+            "error": f"visual_package_generate agent-mode route failed: {exc}",
+            "error_type": "visual_package_route_failed",
+            "route": "image_visual_package",
+        }
+    if not isinstance(package_payload, dict):
+        return {
+            "success": False,
+            "image": None,
+            "error": "visual_package_generate returned a non-dict payload",
+            "error_type": "visual_package_contract",
+            "route": "image_visual_package",
+        }
+
+    images = [
+        item
+        for item in package_payload.get("images", [])
+        if isinstance(item, str) and item.strip()
+    ]
+    image_ref = images[0] if images else None
+    success = bool(package_payload.get("success")) and bool(image_ref)
+    image_payload = _selected_visual_package_image_payload(package_payload, image_ref)
+    return {
+        "success": success,
+        "image": image_ref,
+        "images": images,
+        "error": None
+        if success
+        else package_payload.get("error") or "visual_package_generate did not return a selected image",
+        "error_type": None
+        if success
+        else package_payload.get("error_type") or "visual_package_no_image",
+        "provider": str(
+            image_payload.get("provider")
+            or package_payload.get("provider")
+            or provider_override
+            or ""
+        ),
+        "model": str(image_payload.get("model") or package_payload.get("model") or ""),
+        "aspect_ratio": aspect_ratio,
+        "route": "image_visual_package",
+        "source_tool": "image_generate",
+        "recommended_tool": "visual_package_generate",
+        "visual_package_request_id": package_payload.get("visual_request_id"),
+        "visual_request_id": package_payload.get("visual_request_id"),
+        "package_status": package_payload.get("package_status"),
+        "delivery_metadata": package_payload.get("delivery_metadata"),
+    }
+
+
+def _track_image_generate_result(
+    raw: str,
+    *,
+    prompt: str,
+    aspect_ratio: str,
+    image_url: Optional[str],
+    reference_image_urls: Optional[list],
+) -> str:
+    try:
+        payload = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        return raw
+    if not isinstance(payload, dict):
+        return raw
+
+    try:
+        from agent.visual.tracking import record_visual_generation_attempt
+
+        has_reference = bool(image_url) or bool(reference_image_urls)
+        provider = str(payload.get("provider") or _read_configured_image_provider() or "fal")
+        model = str(
+            payload.get("model")
+            or _read_configured_image_model()
+            or _resolve_fal_model()[0]
+        )
+        tracked = record_visual_generation_attempt(
+            payload,
+            user_prompt=prompt,
+            prompt_original=prompt,
+            prompt_mediated=prompt,
+            modality="image" if has_reference else "text",
+            operation="reference_image_edit" if has_reference else "text_to_image",
+            artifact_key="image",
+            kind="image",
+            provider=provider,
+            model=model,
+            parameters_requested={"aspect_ratio": aspect_ratio},
+            parameters_effective={"aspect_ratio": payload.get("aspect_ratio") or aspect_ratio},
+        )
+        return json.dumps(tracked, indent=2, ensure_ascii=False)
+    except Exception as exc:  # noqa: BLE001 - generation cannot depend on tracking
+        logger.warning("Image generation tracking skipped: %s", exc)
+        return raw
+
+
 def image_generate_tool(
     prompt: str,
     aspect_ratio: str = DEFAULT_ASPECT_RATIO,
@@ -1276,6 +1484,9 @@ def _dispatch_to_plugin_provider(
     aspect_ratio: str,
     image_url: Optional[str] = None,
     reference_image_urls: Optional[list] = None,
+    *,
+    provider_override: Optional[str] = None,
+    model_override: Optional[str] = None,
 ):
     """Route the call to a plugin-registered provider when one is selected.
 
@@ -1292,12 +1503,17 @@ def _dispatch_to_plugin_provider(
     they are forwarded to the provider's ``generate()`` so the backend can
     route to its edit endpoint.
     """
-    configured = _read_configured_image_provider()
+    configured_from_config = _read_configured_image_provider()
+    configured = provider_override or configured_from_config
     if not configured:
         return None
 
     # Also read configured model so we can pass it to the plugin
-    configured_model = _read_configured_image_model()
+    configured_model = model_override
+    if not configured_model and (
+        not provider_override or provider_override == configured_from_config
+    ):
+        configured_model = _read_configured_image_model()
 
     try:
         # Import locally so plugin discovery isn't triggered just by
@@ -1517,7 +1733,30 @@ def _handle_image_generate(args, **kw):
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
     image_url = args.get("image_url")
     reference_image_urls = args.get("reference_image_urls")
+    provider_override = _image_provider_override_arg(args, prompt)
+    provider_override, story_video_provider_error = resolve_story_video_image_provider(
+        args,
+        prompt=prompt,
+        provider_override=provider_override,
+    )
+    if story_video_provider_error is not None:
+        return json.dumps(story_video_provider_error, ensure_ascii=False)
     task_id = kw.get("task_id")
+
+    disable_visual_tracking = _truthy_arg(args.get("_disable_visual_tracking"))
+    if _agent_mode_requested(args, prompt):
+        routed = json.dumps(
+            _route_visual_image_to_package(
+                prompt=prompt,
+                aspect_ratio=aspect_ratio,
+                image_url=image_url,
+                reference_image_urls=reference_image_urls,
+                provider_override=provider_override,
+                candidate_budget=args.get("candidate_budget"),
+            ),
+            ensure_ascii=False,
+        )
+        return _postprocess_image_generate_result(routed, task_id=task_id)
 
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path). When ``image_gen.provider == "krea"`` this
@@ -1526,9 +1765,20 @@ def _handle_image_generate(args, **kw):
         prompt, aspect_ratio,
         image_url=image_url,
         reference_image_urls=reference_image_urls,
+        provider_override=provider_override,
+        model_override=args.get("_model"),
     )
     if dispatched is not None:
-        return _postprocess_image_generate_result(dispatched, task_id=task_id)
+        postprocessed = _postprocess_image_generate_result(dispatched, task_id=task_id)
+        if disable_visual_tracking:
+            return postprocessed
+        return _track_image_generate_result(
+            postprocessed,
+            prompt=prompt,
+            aspect_ratio=aspect_ratio,
+            image_url=image_url,
+            reference_image_urls=reference_image_urls,
+        )
 
     # Managed-mode Krea routing: when no explicit plugin provider is configured
     # but the selected model is a native ``krea-2-*`` id, a portal user routes to
@@ -1541,7 +1791,16 @@ def _handle_image_generate(args, **kw):
         reference_image_urls=reference_image_urls,
     )
     if krea_routed is not None:
-        return _postprocess_image_generate_result(krea_routed, task_id=task_id)
+        postprocessed = _postprocess_image_generate_result(krea_routed, task_id=task_id)
+        if disable_visual_tracking:
+            return postprocessed
+        return _track_image_generate_result(
+            postprocessed,
+            prompt=prompt,
+            aspect_ratio=aspect_ratio,
+            image_url=image_url,
+            reference_image_urls=reference_image_urls,
+        )
 
     raw = image_generate_tool(
         prompt=prompt,
@@ -1549,7 +1808,16 @@ def _handle_image_generate(args, **kw):
         image_url=image_url,
         reference_image_urls=reference_image_urls,
     )
-    return _postprocess_image_generate_result(raw, task_id=task_id)
+    postprocessed = _postprocess_image_generate_result(raw, task_id=task_id)
+    if disable_visual_tracking:
+        return postprocessed
+    return _track_image_generate_result(
+        postprocessed,
+        prompt=prompt,
+        aspect_ratio=aspect_ratio,
+        image_url=image_url,
+        reference_image_urls=reference_image_urls,
+    )
 
 
 # ---------------------------------------------------------------------------

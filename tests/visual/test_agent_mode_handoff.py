@@ -76,6 +76,23 @@ def test_direct_visual_handoff_skips_long_form_story_video_pipeline_requests():
     assert handoff is None
 
 
+def test_direct_visual_handoff_skips_narrated_multishot_long_form_video():
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.6",
+    )
+
+    handoff = build_direct_visual_agent_handoff(
+        agent,
+        "請把這份故事做成有旁白、字幕與多段鏡頭的長篇影片",
+    )
+
+    assert handoff is None
+
+
 def test_direct_visual_handoff_skips_followup_in_long_form_story_video_thread():
     from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
 

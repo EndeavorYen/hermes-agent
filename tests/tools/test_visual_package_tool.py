@@ -105,6 +105,37 @@ def test_visual_package_generate_rejects_feedback_only_praise_without_generating
     assert payload["request_type"] == "visual_feedback"
 
 
+def test_visual_package_blocks_story_video_video_body_before_provider_calls(monkeypatch):
+    from tools import visual_package_tool
+
+    def fail_generate_image(**_kwargs):
+        raise AssertionError("story-video body must not use visual package image generation")
+
+    def fail_generate_video(**_kwargs):
+        raise AssertionError("story-video body must not use visual package video generation")
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fail_generate_image)
+    monkeypatch.setattr(visual_package_tool, "generate_video", fail_generate_video)
+    prompt = "故事影片：秘密提示詞 privacy-marker-5731，恐龍起源科普影片，大概 5mins。"
+
+    payload = json.loads(
+        visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": prompt,
+                "include_image": True,
+                "include_video": True,
+                "image_provider": "xai",
+            }
+        )
+    )
+
+    assert payload["success"] is False
+    assert payload["package_status"] == "failed"
+    assert payload["error_type"] == "story_video_provider_blocked"
+    assert "story-video renderer" in payload["error"]
+    assert "privacy-marker-5731" not in str(payload)
+
+
 def test_visual_package_generate_returns_selected_image_and_video(monkeypatch, tmp_path):
     from tools import visual_package_tool
 

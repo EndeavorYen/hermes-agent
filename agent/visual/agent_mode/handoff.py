@@ -1511,6 +1511,8 @@ def _is_long_form_story_video_pipeline_request(raw_prompt: Any, prompt: str) -> 
             "介紹影片",
             "介绍影片",
             "整部影片",
+            "長篇影片",
+            "长篇影片",
             "長影片",
             "长影片",
         )

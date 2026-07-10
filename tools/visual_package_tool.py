@@ -57,6 +57,8 @@ from agent.visual.video_hardening import build_hardened_video_request
 from agent.visual.vision_evaluator import build_candidate_vision_observation
 from tools.registry import registry
 from tools.registry import tool_error
+from tools.story_video_provider_guard import resolve_story_video_image_provider
+from tools.story_video_provider_guard import story_video_video_block_payload
 from tools.url_safety import is_safe_url
 
 logger = logging.getLogger(__name__)
@@ -449,6 +451,32 @@ def _normalise_image_provider(value: Any, *, allow_unknown: bool = True) -> str 
 def _apply_image_provider_override(kwargs: dict[str, Any], provider: str | None) -> None:
     if provider:
         kwargs["_provider"] = provider
+
+
+def _story_video_visual_package_block_payload(
+    error_payload: dict[str, Any],
+) -> dict[str, Any]:
+    required_image_provider = error_payload.get("required_image_provider") or error_payload.get(
+        "required_provider"
+    )
+    required_workflow = error_payload.get("required_workflow") or "story-video-production-pipeline"
+    return {
+        "success": False,
+        "package_status": "failed",
+        "error": error_payload.get("error"),
+        "error_type": error_payload.get("error_type"),
+        "images": [],
+        "videos": [],
+        "provider": error_payload.get("provider"),
+        "model": error_payload.get("model"),
+        "required_image_provider": required_image_provider,
+        "required_workflow": required_workflow,
+        "generation_strategy": {
+            "story_video_provider_guard": True,
+            "required_image_provider": required_image_provider,
+            "required_workflow": required_workflow,
+        },
+    }
 
 
 def _image_provider_source(args: dict[str, Any]) -> str | None:
@@ -887,11 +915,6 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
     character_design_ref_only = _coerce_bool(args.get("character_design_ref_only"))
     composition_guide_only = _coerce_bool(args.get("composition_guide_only"))
     hybrid_final_combine = _coerce_bool(args.get("hybrid_final_combine"))
-    grok_web_imagine_policy = _grok_web_imagine_policy(
-        args,
-        image_provider_override=image_provider_override,
-        image_provider_source=image_provider_source,
-    )
     aspect_ratio = _visual_package_aspect_ratio(args, attachments, reference_binding)
     image_aspect_ratio = _image_tool_aspect_ratio(aspect_ratio)
     duration = _coerce_int(args.get("duration")) or 6
@@ -900,6 +923,26 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
     if character_design_ref_only or composition_guide_only or hybrid_final_combine:
         requested_image = True
         wants_video = False
+    story_video_video_error = story_video_video_block_payload(
+        args,
+        prompt=prompt,
+        provider=image_provider_override,
+        model=str(args.get("model") or ""),
+    )
+    if wants_video and story_video_video_error is not None:
+        return _story_video_visual_package_block_payload(story_video_video_error)
+    image_provider_override, story_video_image_error = resolve_story_video_image_provider(
+        args,
+        prompt=prompt,
+        provider_override=image_provider_override,
+    )
+    if story_video_image_error is not None:
+        return _story_video_visual_package_block_payload(story_video_image_error)
+    grok_web_imagine_policy = _grok_web_imagine_policy(
+        args,
+        image_provider_override=image_provider_override,
+        image_provider_source=image_provider_source,
+    )
     explicit_image_url = str(args.get("image_url") or "").strip() or None
     explicit_video_source = explicit_image_url
     needs_generated_video_source = wants_video and not requested_image and not explicit_video_source

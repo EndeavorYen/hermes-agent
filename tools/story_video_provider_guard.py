@@ -137,7 +137,6 @@ def resolve_story_video_image_provider(
         "error_type": STORY_VIDEO_PROVIDER_ERROR_TYPE,
         "provider": provider,
         "required_provider": STORY_VIDEO_IMAGE_PROVIDER,
-        "prompt": prompt,
     }
 
 
@@ -164,5 +163,4 @@ def story_video_video_block_payload(
         "model": str(model or ""),
         "required_image_provider": STORY_VIDEO_IMAGE_PROVIDER,
         "required_workflow": "story-video-production-pipeline",
-        "prompt": prompt,
     }
