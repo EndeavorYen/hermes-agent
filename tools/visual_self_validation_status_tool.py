@@ -48,7 +48,7 @@ def _handle_visual_self_validation_status(args: dict[str, Any], **_kw: Any) -> s
 
 registry.register(
     name="visual_self_validation_status",
-    toolset="image_gen",
+    toolset="hermes-cli",
     schema=VISUAL_SELF_VALIDATION_STATUS_SCHEMA,
     handler=_handle_visual_self_validation_status,
     check_fn=check_visual_self_validation_status_requirements,

@@ -43,7 +43,8 @@ def test_visual_self_validation_status_tool_returns_summary(monkeypatch, tmp_pat
     assert payload["live_e2e_ran"] is True
 
 
-def test_visual_self_validation_status_tool_is_registered():
+def test_visual_self_validation_status_tool_is_operator_only():
+    from toolsets import resolve_toolset
     from tools.registry import discover_builtin_tools, registry
 
     discover_builtin_tools()
@@ -51,4 +52,6 @@ def test_visual_self_validation_status_tool_is_registered():
     assert "visual_self_validation_status" in registry._tools
     entry = registry._tools["visual_self_validation_status"]
     assert entry.is_async is False
-    assert entry.toolset == "image_gen"
+    assert entry.toolset == "hermes-cli"
+    assert "visual_self_validation_status" not in resolve_toolset("image_gen")
+    assert "visual_self_validation_status" in resolve_toolset("hermes-cli")

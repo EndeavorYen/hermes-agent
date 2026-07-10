@@ -81,4 +81,3 @@ def test_controlled_activation_runner_blocks_human_veto(tmp_path):
     assert result["activated_count"] == 0
     assert result["blocked_count"] == 1
     assert "human_veto_detected" in result["decisions"][0]["reasons"]
-

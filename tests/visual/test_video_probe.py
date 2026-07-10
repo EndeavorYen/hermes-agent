@@ -29,4 +29,3 @@ def test_video_probe_fails_soft_when_metadata_missing():
     assert observation["confidence"] < 0.5
     assert "missing_video_dimensions" in observation["artifact_defects"]
     assert "missing_video_duration" in observation["artifact_defects"]
-

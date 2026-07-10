@@ -71,4 +71,3 @@ def _int(value: Any) -> int:
         return max(0, int(value))
     except (TypeError, ValueError):
         return 0
-

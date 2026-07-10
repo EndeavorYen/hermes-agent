@@ -69,4 +69,3 @@ def test_scheduled_self_validation_cli_json_allow_failures(capsys, tmp_path):
     assert payload["success"] is True
     assert payload["mode"] == "fixture"
     assert payload["summary"]["scheduled_self_validation_entrypoint_ready"] is True
-
