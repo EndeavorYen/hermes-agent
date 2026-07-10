@@ -152,8 +152,8 @@ class TestFormatters:
 
 class TestSpawnAsyncDiagnostic:
     @pytest.mark.skipif(
-        sys.platform != "linux",
-        reason="shutdown diagnostic depends on Linux process utilities",
+        sys.platform == "win32",
+        reason="POSIX-only diagnostic",
     )
     def test_spawns_subprocess_and_writes_output(self, tmp_path):
         log_path = tmp_path / "diag.log"
@@ -179,6 +179,41 @@ class TestSpawnAsyncDiagnostic:
         contents = log_path.read_text(encoding="utf-8", errors="replace")
         assert "shutdown diagnostic" in contents
         assert "SIGTERM" in contents
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only diagnostic")
+    def test_timeout_terminates_diagnostic_subprocess(self, tmp_path, monkeypatch):
+        log_path = tmp_path / "timeout.log"
+        monkeypatch.setattr(
+            sf,
+            "_build_diagnostic_script",
+            lambda _signal_name: "sleep 30",
+        )
+
+        started = time.monotonic()
+        pid = sf.spawn_async_diagnostic(
+            log_path, "SIGTERM", timeout_seconds=0.2
+        )
+        assert pid is not None and pid > 0
+
+        deadline = started + 3.0
+        while time.monotonic() < deadline:
+            try:
+                waited_pid, _status = os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                waited_pid = pid
+            if waited_pid == pid:
+                break
+            time.sleep(0.05)
+        else:
+            try:
+                os.kill(pid, signal.SIGKILL)
+                os.waitpid(pid, 0)
+            except (ChildProcessError, ProcessLookupError):
+                pass
+            pytest.fail("diagnostic subprocess exceeded its timeout")
+
+        assert time.monotonic() - started < 3.0
+        assert log_path.read_text(encoding="utf-8") == ""
 
     def test_returns_none_on_windows(self, tmp_path, monkeypatch):
         monkeypatch.setattr(sf, "sys", type("M", (), {"platform": "win32"})())

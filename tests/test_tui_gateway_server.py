@@ -6776,6 +6776,8 @@ def test_browser_manage_connect_defaults_to_loopback(monkeypatch):
 
 
 def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
+    from hermes_cli.browser_connect import ChromeDebugLaunch
+
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
     emitted: list[tuple[str, dict]] = []
     monkeypatch.setattr(
@@ -6789,15 +6791,10 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
     )
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
         _stub_urlopen(monkeypatch, ok=False)
-        with (
-            patch(
-                "hermes_cli.browser_connect.try_launch_chrome_debug", return_value=False
-            ),
-            patch(
-                "hermes_cli.browser_connect.get_chrome_debug_candidates",
-                return_value=[],
-            ),
-        ):
+        with patch(
+            "hermes_cli.browser_connect.launch_chrome_debug",
+            return_value=ChromeDebugLaunch(),
+        ) as mock_launch:
             resp = server.handle_request(
                 {
                     "id": "1",
@@ -6809,6 +6806,8 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
                     },
                 }
             )
+
+    mock_launch.assert_called_once()
 
     assert resp["result"]["connected"] is False
     assert resp["result"]["url"] == "http://127.0.0.1:9222"

@@ -20,13 +20,26 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
-import sys
 
 import pytest
 
 # A guaranteed-foreign PID: PID 1 (init).  Owned by root, not us, and
 # always exists. A sane guard refuses to signal it.
 FOREIGN_PID = 1
+
+
+@pytest.fixture
+def fake_systemctl(tmp_path, monkeypatch):
+    """Put a harmless systemctl executable first on PATH for pass-through tests."""
+    if os.name == "nt":
+        executable = tmp_path / "systemctl.bat"
+        executable.write_text("@exit /b 0\r\n", encoding="utf-8")
+    else:
+        executable = tmp_path / "systemctl"
+        executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        executable.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    return executable
 
 
 # ──────────────────── kill primitives ─────────────────────────
@@ -205,10 +218,7 @@ def test_subprocess_killall_hermes_blocked():
 # ──────────────────── pass-through cases (must NOT raise) ──────
 
 
-@pytest.mark.skipif(
-    sys.platform != "linux", reason="systemctl pass-through requires Linux"
-)
-def test_systemctl_status_passes_through():
+def test_systemctl_status_passes_through(fake_systemctl):
     """Read-only systemctl probes (status/show/list-units) are fine."""
     # Run with check=False so we don't fail on the gateway's exit code.
     r = subprocess.run(
@@ -217,39 +227,33 @@ def test_systemctl_status_passes_through():
         text=True,
         check=False,
     )
-    assert r is not None  # Did not raise — the guard let it through.
+    assert fake_systemctl.exists()
+    assert r.returncode == 0
 
 
-@pytest.mark.skipif(
-    sys.platform != "linux", reason="systemctl pass-through requires Linux"
-)
-def test_systemctl_show_passes_through():
+def test_systemctl_show_passes_through(fake_systemctl):
     r = subprocess.run(
         ["systemctl", "--user", "show", "hermes-gateway", "--no-pager"],
         capture_output=True,
         text=True,
         check=False,
     )
-    assert r is not None
+    assert fake_systemctl.exists()
+    assert r.returncode == 0
 
 
-@pytest.mark.skipif(
-    sys.platform != "linux", reason="systemctl pass-through requires Linux"
-)
-def test_systemctl_list_units_passes_through():
+def test_systemctl_list_units_passes_through(fake_systemctl):
     r = subprocess.run(
         ["systemctl", "--user", "list-units", "fake-not-real-unit*", "--no-pager"],
         capture_output=True,
         text=True,
         check=False,
     )
-    assert r is not None
+    assert fake_systemctl.exists()
+    assert r.returncode == 0
 
 
-@pytest.mark.skipif(
-    sys.platform != "linux", reason="systemctl pass-through requires Linux"
-)
-def test_systemctl_unrelated_unit_passes_through():
+def test_systemctl_unrelated_unit_passes_through(fake_systemctl):
     """systemctl restart of a non-hermes unit is allowed (we only protect hermes)."""
     # Use --dry-run so we don't actually try to restart anything; just
     # verify the guard doesn't block the call. systemctl supports
@@ -261,7 +265,8 @@ def test_systemctl_unrelated_unit_passes_through():
         text=True,
         check=False,
     )
-    assert r is not None
+    assert fake_systemctl.exists()
+    assert r.returncode == 0
 
 
 def test_kill_own_subtree_passes_through():

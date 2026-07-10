@@ -19,7 +19,9 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -194,6 +196,66 @@ def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
     return ctx
 
 
+_DIAGNOSTIC_TIMEOUT_RUNNER = """\
+import os
+import signal
+import subprocess
+import sys
+
+timeout_seconds = max(float(sys.argv[1]), 0.01)
+script = sys.argv[2]
+shell = sys.argv[3]
+child = subprocess.Popen([shell, "-c", script], start_new_session=True)
+try:
+    child.wait(timeout=timeout_seconds)
+except subprocess.TimeoutExpired:
+    try:
+        os.killpg(child.pid, signal.SIGKILL)
+    except (AttributeError, OSError):
+        child.kill()
+    child.wait()
+"""
+
+
+def _build_diagnostic_script(signal_name: str) -> str:
+    """Build a best-effort process snapshot for the current POSIX host."""
+    header = shlex.quote(f"=== shutdown diagnostic @ {signal_name} ===")
+    common_prefix = (
+        f"echo {header}; "
+        "echo '--- date ---'; date -u +%Y-%m-%dT%H:%M:%SZ; "
+    )
+    if sys.platform == "darwin":
+        return common_prefix + (
+            "echo '--- ps aux (top 60 by cpu) ---'; "
+            "ps aux -r 2>/dev/null | head -60; "
+            "echo '--- process table ---'; "
+            "ps -axo pid,ppid,user,%cpu,%mem,command 2>/dev/null | head -80; "
+            "echo '--- load average ---'; "
+            "sysctl -n vm.loadavg 2>/dev/null || true; "
+            "echo '--- recent system log ---'; "
+            "log show --last 1m --style compact 2>/dev/null | tail -20 || true; "
+            "echo '=== end ==='"
+        )
+    if sys.platform.startswith("linux"):
+        return common_prefix + (
+            "echo '--- ps auxf (top 60 by cpu) ---'; "
+            "ps auxf --sort=-pcpu 2>/dev/null | head -60; "
+            "echo '--- pstree of self ---'; "
+            f"pstree -plau {os.getpid()} 2>/dev/null | head -40 || true; "
+            "echo '--- /proc/loadavg ---'; "
+            "cat /proc/loadavg 2>/dev/null || true; "
+            "echo '--- recent dmesg (oom/killed) ---'; "
+            "dmesg -T 2>/dev/null | tail -20 || "
+            "journalctl --user -n 20 --no-pager 2>/dev/null | tail -20 || true; "
+            "echo '=== end ==='"
+        )
+    return common_prefix + (
+        "echo '--- ps aux ---'; ps aux 2>/dev/null | head -60; "
+        "echo '--- load average ---'; uptime 2>/dev/null || true; "
+        "echo '=== end ==='"
+    )
+
+
 def spawn_async_diagnostic(
     log_path: Path,
     signal_name: str,
@@ -220,25 +282,14 @@ def spawn_async_diagnostic(
     except OSError:
         return None
 
-    # Inline shell so we don't have to ship a helper script.  bash -c is
-    # available on every POSIX target we support; on Windows we just skip
-    # the snapshot (the platform doesn't ship ps anyway).
+    # Windows does not ship the POSIX process utilities used by the snapshot.
     if sys.platform == "win32":
         return None
 
-    script = (
-        f"echo '=== shutdown diagnostic @ {signal_name} ==='; "
-        "echo '--- date ---'; date -u +%Y-%m-%dT%H:%M:%SZ; "
-        "echo '--- ps auxf (top 60 by cpu) ---'; "
-        "ps auxf --sort=-pcpu 2>/dev/null | head -60; "
-        "echo '--- pstree of self ---'; "
-        f"pstree -plau {os.getpid()} 2>/dev/null | head -40 || true; "
-        "echo '--- /proc/loadavg ---'; "
-        "cat /proc/loadavg 2>/dev/null || true; "
-        "echo '--- recent dmesg (oom/killed) ---'; "
-        "dmesg -T 2>/dev/null | tail -20 || journalctl --user -n 20 --no-pager 2>/dev/null | tail -20 || true; "
-        "echo '=== end ==='"
-    )
+    shell = shutil.which("sh")
+    if shell is None:
+        return None
+    script = _build_diagnostic_script(signal_name)
 
     try:
         # Open the log file in append mode and let the subprocess inherit.
@@ -249,13 +300,19 @@ def spawn_async_diagnostic(
         return None
 
     try:
-        # Detach from our process group so the subprocess survives even
-        # if systemd kills our cgroup with KillMode=control-group (which
-        # would also reap us anyway, but defense in depth).  Without
-        # start_new_session, a SIGKILL on our cgroup takes the diag down
-        # before it can flush.
+        # A detached Python watchdog owns the shell process and enforces the
+        # timeout without relying on GNU ``timeout`` (not shipped by macOS).
+        # The watchdog kills the shell's process group so pipelines cannot
+        # outlive a wedged diagnostic command.
         proc = subprocess.Popen(
-            ["timeout", f"{timeout_seconds:.0f}", "bash", "-c", script],
+            [
+                sys.executable,
+                "-c",
+                _DIAGNOSTIC_TIMEOUT_RUNNER,
+                str(timeout_seconds),
+                script,
+                shell,
+            ],
             stdout=fd,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
