@@ -17,7 +17,7 @@ async def test_visual_agent_generate_plans_natural_image_plus_video_request(monk
 
     captured = {}
 
-    async def fake_visual_package_generate(args, **kwargs):
+    def fake_visual_package_generate(args, **kwargs):
         captured.update(args)
         return json.dumps(
             {
@@ -61,7 +61,7 @@ async def test_visual_agent_generate_materializes_data_uri_attachment(monkeypatc
     captured = {}
     data_uri = "data:image/png;base64," + base64.b64encode(_ONE_PIXEL_PNG).decode("ascii")
 
-    async def fake_visual_package_generate(args, **kwargs):
+    def fake_visual_package_generate(args, **kwargs):
         captured.update(args)
         return json.dumps({"success": True, "images": ["/tmp/current.png"], "videos": []})
 
@@ -92,7 +92,7 @@ async def test_visual_agent_generate_binds_ref_indices_to_visible_upload_order(m
 
     captured = {}
 
-    async def fake_visual_package_generate(args, **kwargs):
+    def fake_visual_package_generate(args, **kwargs):
         captured.update(args)
         return json.dumps({"success": True, "images": ["/tmp/current.png"], "videos": []})
 
@@ -142,7 +142,7 @@ async def test_visual_agent_generate_derives_roles_from_prompt_not_ref_defaults(
 
     captured = {}
 
-    async def fake_visual_package_generate(args, **kwargs):
+    def fake_visual_package_generate(args, **kwargs):
         captured.update(args)
         return json.dumps({"success": True, "images": ["/tmp/current.png"], "videos": []})
 
@@ -202,7 +202,7 @@ async def test_visual_agent_generate_routes_text_only_video_to_image_first(monke
 
     captured = {}
 
-    async def fake_visual_package_generate(args, **kwargs):
+    def fake_visual_package_generate(args, **kwargs):
         captured.update(args)
         return json.dumps({"success": True, "images": [], "videos": ["/tmp/current.mp4"]})
 
@@ -234,7 +234,7 @@ async def test_visual_agent_generate_passes_storyboard_contract_for_multishot_vi
 
     captured = {}
 
-    async def fake_visual_package_generate(args, **kwargs):
+    def fake_visual_package_generate(args, **kwargs):
         captured.update(args)
         return json.dumps({"success": True, "images": [], "videos": ["/tmp/current.mp4"]})
 
@@ -264,7 +264,7 @@ async def test_visual_agent_generate_accepts_friendly_draw_character_prompt(monk
 
     captured = {}
 
-    async def fake_visual_package_generate(args, **kwargs):
+    def fake_visual_package_generate(args, **kwargs):
         captured.update(args)
         return json.dumps({"success": True, "images": ["/tmp/current.png"], "videos": []})
 
@@ -293,7 +293,7 @@ async def test_visual_agent_generate_routes_grok_imagine_request_to_xai_provider
 
     captured = {}
 
-    async def fake_visual_package_generate(args, **kwargs):
+    def fake_visual_package_generate(args, **kwargs):
         captured.update(args)
         return json.dumps({"success": True, "images": ["/tmp/current.png"], "videos": []})
 
@@ -323,7 +323,7 @@ async def test_visual_agent_generate_passes_default_xai_media_provider_contract(
 
     captured = {}
 
-    async def fake_visual_package_generate(args, **kwargs):
+    def fake_visual_package_generate(args, **kwargs):
         captured.update(args)
         return json.dumps({"success": True, "images": ["/tmp/current.png"], "videos": []})
 
@@ -346,7 +346,7 @@ async def test_visual_agent_generate_passes_default_xai_media_provider_contract(
 async def test_visual_agent_generate_rejects_prompt_disclosure_without_regenerating(monkeypatch):
     from tools import visual_agent_tool
 
-    async def fake_visual_package_generate(args, **kwargs):
+    def fake_visual_package_generate(args, **kwargs):
         raise AssertionError("prompt disclosure must not dispatch visual generation")
 
     monkeypatch.setattr(
@@ -376,7 +376,7 @@ async def test_visual_agent_generate_rejects_prompt_disclosure_without_regenerat
 async def test_visual_agent_generate_rejects_feedback_only_praise_without_regenerating(monkeypatch):
     from tools import visual_agent_tool
 
-    async def fake_visual_package_generate(args, **kwargs):
+    def fake_visual_package_generate(args, **kwargs):
         raise AssertionError("visual feedback praise must not dispatch visual generation")
 
     monkeypatch.setattr(
@@ -395,7 +395,7 @@ async def test_visual_agent_generate_rejects_feedback_only_praise_without_regene
 async def test_visual_agent_generate_rejects_prompt_only_reference_brief_without_regenerating(monkeypatch):
     from tools import visual_agent_tool
 
-    async def fake_visual_package_generate(args, **kwargs):
+    def fake_visual_package_generate(args, **kwargs):
         raise AssertionError("prompt-only visual brief must not dispatch visual generation")
 
     monkeypatch.setattr(
@@ -420,7 +420,7 @@ async def test_visual_agent_generate_rejects_prompt_only_reference_brief_without
 async def test_visual_agent_generate_rejects_suitable_xai_video_prompt_request_without_generating(monkeypatch):
     from tools import visual_agent_tool
 
-    async def fake_visual_package_generate(args, **kwargs):
+    def fake_visual_package_generate(args, **kwargs):
         raise AssertionError("prompt builder request must not dispatch visual generation")
 
     monkeypatch.setattr(
@@ -460,7 +460,7 @@ async def test_visual_agent_generate_uses_grok_planner_for_direct_handoff(monkey
 
     captured = {"llm_calls": []}
 
-    async def fake_visual_package_generate(args, **kwargs):
+    def fake_visual_package_generate(args, **kwargs):
         captured.update(args)
         return json.dumps({"success": True, "images": ["/tmp/current.png"], "videos": []})
 
@@ -530,7 +530,7 @@ async def test_visual_agent_grok_planner_can_run_operator_requested_three_rounds
 
     captured = {"llm_calls": []}
 
-    async def fake_visual_package_generate(args, **kwargs):
+    def fake_visual_package_generate(args, **kwargs):
         captured.update(args)
         return json.dumps({"success": True, "images": ["/tmp/current.png"], "videos": []})
 
@@ -573,6 +573,7 @@ async def test_visual_agent_grok_planner_can_run_operator_requested_three_rounds
             "visual_agent_llm_model": "grok-4.3",
             "visual_agent_handoff_mode": "pre_llm_direct",
             "visual_agent_llm_rounds": 3,
+            "execution_deadline_seconds": 900,
         }
     )
     payload = json.loads(raw)
@@ -580,6 +581,7 @@ async def test_visual_agent_grok_planner_can_run_operator_requested_three_rounds
     assert len(captured["llm_calls"]) == 3
     assert "Pass 3" in captured["llm_calls"][2]["messages"][0]["content"]
     assert captured["prompt"] == "三輪審稿後的 provider-ready prompt"
+    assert captured["execution_deadline_seconds"] == 900
     assert payload["visual_agent_llm_plan"]["refinement_rounds_completed"] == 3
     assert payload["visual_agent_llm_plan"]["refinement_rounds_requested"] == 3
 
@@ -592,7 +594,7 @@ async def test_visual_agent_generate_preserves_direct_handoff_reference_operatio
 
     captured = {}
 
-    async def fake_visual_package_generate(args, **kwargs):
+    def fake_visual_package_generate(args, **kwargs):
         captured.update(args)
         return json.dumps({"success": True, "images": ["/tmp/current.png"], "videos": []})
 
@@ -666,7 +668,7 @@ async def test_visual_agent_grok_planner_receives_reference_images_and_roles(mon
     ref2.write_bytes(_ONE_PIXEL_PNG)
     captured = {"llm_calls": []}
 
-    async def fake_visual_package_generate(args, **kwargs):
+    def fake_visual_package_generate(args, **kwargs):
         captured["package_args"] = dict(args)
         return json.dumps({"success": True, "images": ["/tmp/current.png"], "videos": []})
 
@@ -737,7 +739,7 @@ async def test_visual_agent_grok_planner_rejects_unrequested_reference_role_mapp
     ref3.write_bytes(_ONE_PIXEL_PNG)
     captured = {"llm_calls": []}
 
-    async def fake_visual_package_generate(args, **kwargs):
+    def fake_visual_package_generate(args, **kwargs):
         captured["package_args"] = dict(args)
         return json.dumps({"success": True, "images": ["/tmp/current.png"], "videos": []})
 
@@ -813,7 +815,7 @@ async def test_visual_agent_generate_falls_back_when_grok_planner_fails(monkeypa
 
     captured = {}
 
-    async def fake_visual_package_generate(args, **kwargs):
+    def fake_visual_package_generate(args, **kwargs):
         captured.update(args)
         return json.dumps({"success": True, "images": ["/tmp/current.png"], "videos": []})
 
@@ -851,7 +853,7 @@ async def test_visual_agent_generate_falls_back_when_grok_planner_fails(monkeypa
 async def test_visual_agent_generate_rejects_implicit_anime_brief_before_grok_planner(monkeypatch):
     from tools import visual_agent_tool
 
-    async def fake_visual_package_generate(args, **kwargs):
+    def fake_visual_package_generate(args, **kwargs):
         raise AssertionError("implicit anime prompt brief must not dispatch visual generation")
 
     def fake_call_llm(**kwargs):
@@ -882,7 +884,7 @@ async def test_visual_agent_grok_planner_rejects_feedback_like_prompt(monkeypatc
 
     captured = {}
 
-    async def fake_visual_package_generate(args, **kwargs):
+    def fake_visual_package_generate(args, **kwargs):
         captured.update(args)
         return json.dumps({"success": True, "images": ["/tmp/current.png"], "videos": []})
 
@@ -932,7 +934,7 @@ async def test_visual_agent_grok_planner_fallback_builds_provider_ready_referenc
     ref2.write_bytes(_ONE_PIXEL_PNG)
     captured = {}
 
-    async def fake_visual_package_generate(args, **kwargs):
+    def fake_visual_package_generate(args, **kwargs):
         captured.update(args)
         return json.dumps({"success": True, "images": ["/tmp/current.png"], "videos": []})
 

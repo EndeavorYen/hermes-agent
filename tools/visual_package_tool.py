@@ -4,18 +4,23 @@ import datetime
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import shutil
 import subprocess
 import tempfile
+import time
 import uuid
+from contextvars import ContextVar
+from dataclasses import dataclass
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from urllib.parse import urljoin
 from urllib.parse import urlparse
-from urllib.request import Request
-from urllib.request import urlopen
+from urllib.parse import urlsplit
+from urllib.parse import urlunsplit
 
 from agent.visual.active_learning import decide_visual_action
 from agent.visual.agent_mode.handoff import is_visual_prompt_disclosure_request
@@ -52,10 +57,17 @@ from agent.visual.video_hardening import build_hardened_video_request
 from agent.visual.vision_evaluator import build_candidate_vision_observation
 from tools.registry import registry
 from tools.registry import tool_error
+from tools.url_safety import is_safe_url
 
 logger = logging.getLogger(__name__)
 
 MAX_REMOTE_MEDIA_BYTES = 150 * 1024 * 1024
+MAX_REMOTE_MEDIA_REDIRECTS = 5
+REMOTE_MEDIA_TIMEOUT_SECONDS = 60.0
+MAX_RUNTIME_POLICY_SNAPSHOT_BYTES = 1024 * 1024
+MAX_RUNTIME_POLICY_ACTIONS = 32
+DEFAULT_VISUAL_EXECUTION_DEADLINE_SECONDS = 300.0
+MAX_VISUAL_EXECUTION_DEADLINE_SECONDS = 1800.0
 VISUAL_PROVIDER_REFERENCE_SLOT_BUDGET = 3
 ALWAYS_BLOCKING_QUALITY_ISSUES = {
     "composition_bad",
@@ -74,6 +86,127 @@ PORTRAIT_BLOCKING_QUALITY_ISSUES = {
     "stockings_bad",
 }
 PREFERENCE_DIMENSION_DELIVERY_THRESHOLD = 0.5
+
+
+_monotonic = time.monotonic
+
+
+@dataclass
+class _VisualExecutionDeadline:
+    configured_seconds: float
+    started_at: float
+    expires_at: float
+    completed_provider_calls: list[dict[str, Any]]
+
+
+class _VisualPackageDeadlineExceeded(RuntimeError):
+    def __init__(self, *, stage: str, deadline: _VisualExecutionDeadline, now: float) -> None:
+        super().__init__("visual package execution deadline exceeded")
+        self.stage = stage
+        self.deadline = deadline
+        self.now = now
+
+    def deadline_payload(self) -> dict[str, Any]:
+        return {
+            "expired": True,
+            "stage": self.stage,
+            "configured_seconds": self.deadline.configured_seconds,
+            "elapsed_seconds": max(0.0, self.now - self.deadline.started_at),
+        }
+
+    def partial_evidence(self) -> dict[str, Any]:
+        calls = [dict(item) for item in self.deadline.completed_provider_calls]
+        return {
+            "completed_provider_call_count": len(calls),
+            "completed_provider_calls": calls,
+        }
+
+
+_ACTIVE_EXECUTION_DEADLINE: ContextVar[_VisualExecutionDeadline | None] = ContextVar(
+    "visual_package_execution_deadline",
+    default=None,
+)
+
+
+def _configured_execution_deadline_seconds(args: dict[str, Any]) -> float:
+    value: Any = args.get("execution_deadline_seconds")
+    if value in (None, ""):
+        value = os.getenv("HERMES_VISUAL_EXECUTION_DEADLINE_SECONDS")
+    if value in (None, ""):
+        try:
+            from hermes_cli.config import read_raw_config
+
+            config = read_raw_config()
+            visual = config.get("visual") if isinstance(config, dict) else None
+            if isinstance(visual, dict):
+                value = visual.get("execution_deadline_seconds")
+        except Exception:
+            value = None
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        seconds = DEFAULT_VISUAL_EXECUTION_DEADLINE_SECONDS
+    if not math.isfinite(seconds) or seconds <= 0:
+        seconds = DEFAULT_VISUAL_EXECUTION_DEADLINE_SECONDS
+    return max(1.0, min(seconds, MAX_VISUAL_EXECUTION_DEADLINE_SECONDS))
+
+
+def _new_execution_deadline(args: dict[str, Any]) -> _VisualExecutionDeadline:
+    configured_seconds = _configured_execution_deadline_seconds(args)
+    started_at = _monotonic()
+    return _VisualExecutionDeadline(
+        configured_seconds=configured_seconds,
+        started_at=started_at,
+        expires_at=started_at + configured_seconds,
+        completed_provider_calls=[],
+    )
+
+
+def _deadline_checkpoint(stage: str) -> None:
+    deadline = _ACTIVE_EXECUTION_DEADLINE.get()
+    if deadline is None:
+        return
+    now = _monotonic()
+    if now >= deadline.expires_at:
+        raise _VisualPackageDeadlineExceeded(stage=stage, deadline=deadline, now=now)
+
+
+def _provider_media_count(payload: dict[str, Any], *, kind: str) -> int:
+    singular = payload.get(kind)
+    plural = payload.get(f"{kind}s")
+    if isinstance(singular, str) and singular:
+        return 1
+    if isinstance(plural, list):
+        return len([item for item in plural if isinstance(item, str) and item])
+    return 0
+
+
+def _record_completed_provider_call(*, kind: str, payload: dict[str, Any]) -> None:
+    deadline = _ACTIVE_EXECUTION_DEADLINE.get()
+    if deadline is None:
+        return
+    deadline.completed_provider_calls.append(
+        {
+            "kind": kind,
+            "provider": str(payload.get("provider") or ""),
+            "model": str(payload.get("model") or ""),
+            "success": payload.get("success") is True,
+            "media_count": _provider_media_count(payload, kind=kind),
+        }
+    )
+
+
+def _call_generation_provider(
+    generator,
+    *,
+    kind: str,
+    stage: str,
+    kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    _deadline_checkpoint(stage)
+    payload = generator(**kwargs)
+    _record_completed_provider_call(kind=kind, payload=payload)
+    return payload
 INLINE_VISION_JUDGE_PROMPT = """\
 Evaluate this generated visual artifact for automated quality ranking.
 Return only a JSON object with numeric values from 0.0 to 1.0:
@@ -191,6 +324,15 @@ VISUAL_PACKAGE_SCHEMA: dict[str, Any] = {
             "video_budget": {
                 "type": "integer",
                 "description": "Optional video candidate budget. Defaults to 1.",
+            },
+            "execution_deadline_seconds": {
+                "type": "number",
+                "minimum": 1,
+                "maximum": MAX_VISUAL_EXECUTION_DEADLINE_SECONDS,
+                "description": (
+                    "Operator override for the bounded visual-package execution deadline. "
+                    "Natural requests use the configured 300-second default."
+                ),
             },
             "image_provider": {
                 "type": "string",
@@ -645,7 +787,7 @@ def _write_reference_contact_sheet(panels: list[tuple[str, str]]) -> Path:
     return out_path
 
 
-async def _handle_visual_package_generate(args: dict[str, Any], **_kw: Any) -> str:
+def _handle_visual_package_generate(args: dict[str, Any], **_kw: Any) -> str:
     prompt = strip_visual_prompt_metadata(args.get("prompt"))
     if not prompt:
         return tool_error("prompt is required for visual package generation")
@@ -659,9 +801,23 @@ async def _handle_visual_package_generate(args: dict[str, Any], **_kw: Any) -> s
             "visual_package_generate is for image/video generation, not visual feedback",
             request_type="visual_feedback",
         )
+    deadline_token = _ACTIVE_EXECUTION_DEADLINE.set(_new_execution_deadline(args))
     try:
+        _deadline_checkpoint("request_start")
         payload = _visual_package_generate(args, prompt=prompt)
         return json.dumps(payload, ensure_ascii=False)
+    except _VisualPackageDeadlineExceeded as exc:
+        return json.dumps(
+            {
+                "success": False,
+                "package_status": "partial",
+                "error": "visual package execution deadline exceeded",
+                "error_type": "visual_package_deadline_exceeded",
+                "deadline": exc.deadline_payload(),
+                "partial_evidence": exc.partial_evidence(),
+            },
+            ensure_ascii=False,
+        )
     except Exception as exc:  # noqa: BLE001 - tool should surface structured failure
         logger.warning("visual package generation failed: %s", exc)
         failure = _visual_package_exception_failure(exc)
@@ -675,6 +831,8 @@ async def _handle_visual_package_generate(args: dict[str, Any], **_kw: Any) -> s
             },
             ensure_ascii=False,
         )
+    finally:
+        _ACTIVE_EXECUTION_DEADLINE.reset(deadline_token)
 
 
 def _visual_package_exception_failure(exc: Exception) -> dict[str, str]:
@@ -1057,6 +1215,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             conditioning_policy=primary_reference_policy,
         )
         for candidate_index in range(effective_candidate_budget):
+            _deadline_checkpoint(f"image_candidate:{candidate_index}")
             if direct_polish_mode and direct_polish_source:
                 provider_reference_images = []
                 reference_conditioning = None
@@ -1147,7 +1306,12 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                     "source_artifact_id": "edit_anchor",
                     "mode": "direct_edit_anchor_polish",
                 }
-            image_payload = generate_image(**image_kwargs)
+            image_payload = _call_generation_provider(
+                generate_image,
+                kind="image",
+                stage=f"image_generate:{candidate_index}",
+                kwargs=image_kwargs,
+            )
             if direct_polish_mode and direct_polish_source and polish_pass_metadata:
                 polish_pass_metadata["status"] = "completed" if image_payload.get("success") else "failed"
                 image_payload["polish_pass"] = {
@@ -1223,6 +1387,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                     continue
                 for retry_offset, retry_payload in enumerate(_retry_generation_payloads(
                     generator=generate_image,
+                    modality="image",
                     payload=image_payload,
                     base_kwargs=image_kwargs,
                     request=image_request,
@@ -1324,7 +1489,12 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 "reference_image_urls": None,
             }
             _apply_image_provider_override(polish_kwargs, polish_provider_override)
-            polish_payload = generate_image(**polish_kwargs)
+            polish_payload = _call_generation_provider(
+                generate_image,
+                kind="image",
+                stage="image_polish",
+                kwargs=polish_kwargs,
+            )
             polish_pass_metadata = {
                 "enabled": True,
                 "provider": polish_provider_override,
@@ -1452,7 +1622,12 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 "reference_image_urls": provider_reference_images or None,
             }
             _apply_image_provider_override(escalation_kwargs, image_provider_override)
-            escalation_payload = generate_image(**escalation_kwargs)
+            escalation_payload = _call_generation_provider(
+                generate_image,
+                kind="image",
+                stage="image_candidate_escalation",
+                kwargs=escalation_kwargs,
+            )
             escalation_payload["candidate_escalation"] = {
                 "reason": image_gate.get("reason"),
                 "quality_issues": image_gate.get("quality_issues", []),
@@ -1575,7 +1750,12 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 "reference_image_urls": provider_reference_images or None,
             }
             _apply_image_provider_override(repair_kwargs, image_provider_override)
-            repair_payload = generate_image(**repair_kwargs)
+            repair_payload = _call_generation_provider(
+                generate_image,
+                kind="image",
+                stage="image_quality_repair",
+                kwargs=repair_kwargs,
+            )
             repair_payload["retry_of"] = selected_image.get("attempt_id")
             repair_payload["quality_repair"] = {
                 "reason": image_gate.get("reason"),
@@ -1751,6 +1931,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             video_aspect_ratio = hardened_video["aspect_ratio"]
             video_payloads = []
             for candidate_index in range(video_budget):
+                _deadline_checkpoint(f"video_candidate:{candidate_index}")
                 video_kwargs = {
                     "prompt": video_prompt,
                     "image_url": video_image_url,
@@ -1774,7 +1955,12 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                         prompt=video_prompt,
                     )
                 if video_payload is None:
-                    video_payload = generate_video(**video_kwargs)
+                    video_payload = _call_generation_provider(
+                        generate_video,
+                        kind="video",
+                        stage=f"video_generate:{candidate_index}",
+                        kwargs=video_kwargs,
+                    )
                 if not video_payload.get("success"):
                     _annotate_generation_failure(
                         video_payload,
@@ -1843,6 +2029,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                         continue
                     for retry_offset, retry_payload in enumerate(_retry_generation_payloads(
                         generator=generate_video,
+                        modality="video",
                         payload=video_payload,
                         base_kwargs=video_kwargs,
                         request=video_request,
@@ -1918,7 +2105,12 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 "aspect_ratio": video_aspect_ratio,
                 "source_media": video_source_media,
             }
-            repair_payload = generate_video(**repair_kwargs)
+            repair_payload = _call_generation_provider(
+                generate_video,
+                kind="video",
+                stage="video_quality_repair",
+                kwargs=repair_kwargs,
+            )
             repair_payload["quality_repair"] = {
                 "modality": "video",
                 "reason": video_gate.get("reason"),
@@ -2575,11 +2767,13 @@ def _run_storyboard_execution(
     composed_video_artifact_id: str | None = None
 
     for shot_index, shot in enumerate(_storyboard_shots(storyboard)):
+        _deadline_checkpoint(f"storyboard_shot:{shot_index}")
         shot_id = str(shot.get("shot_id") or f"shot_{shot_index + 1}")
         shot_prompt = _storyboard_shot_prompt(prompt, shot, shot_index=shot_index)
         image_payloads: list[dict[str, Any]] = []
         image_candidates: list[dict[str, Any]] = []
         for candidate_index in range(candidate_budget_per_shot):
+            _deadline_checkpoint(f"storyboard_image_candidate:{shot_index}:{candidate_index}")
             image_generation_prompt = _apply_first_pass_quality_guidance(shot_prompt, quality_guidance["image"])
             provider_image_generation_prompt = build_provider_facing_visual_prompt(
                 image_generation_prompt,
@@ -2592,7 +2786,12 @@ def _run_storyboard_execution(
                 "reference_image_urls": attachments or None,
             }
             _apply_image_provider_override(image_kwargs, image_provider_override)
-            image_payload = generate_image(**image_kwargs)
+            image_payload = _call_generation_provider(
+                generate_image,
+                kind="image",
+                stage=f"storyboard_image_generate:{shot_index}:{candidate_index}",
+                kwargs=image_kwargs,
+            )
             image_payloads.append(image_payload)
             image_candidate = _record_payload_candidate(
                 ledger,
@@ -2687,6 +2886,7 @@ def _run_storyboard_execution(
             video_payloads: list[dict[str, Any]] = []
             video_candidates: list[dict[str, Any]] = []
             for video_index in range(video_budget_per_shot):
+                _deadline_checkpoint(f"storyboard_video_candidate:{shot_index}:{video_index}")
                 video_kwargs = {
                     "prompt": video_prompt,
                     "image_url": selected_image["artifact_path"],
@@ -2694,7 +2894,12 @@ def _run_storyboard_execution(
                     "aspect_ratio": video_aspect_ratio,
                     "source_media": video_source_media,
                 }
-                video_payload = generate_video(**video_kwargs)
+                video_payload = _call_generation_provider(
+                    generate_video,
+                    kind="video",
+                    stage=f"storyboard_video_generate:{shot_index}:{video_index}",
+                    kwargs=video_kwargs,
+                )
                 video_payloads.append(video_payload)
                 video_candidate = _record_payload_candidate(
                     ledger,
@@ -2917,6 +3122,7 @@ def _run_ffmpeg_concat(
     output_path: Path,
     reencode: bool,
 ) -> dict[str, Any]:
+    _deadline_checkpoint("ffmpeg_concat_reencode" if reencode else "ffmpeg_concat_copy")
     command = [
         ffmpeg,
         "-y",
@@ -3978,6 +4184,7 @@ def _delivery_gate_has_reference_role_block(delivery_gate: dict[str, dict[str, A
 def _retry_generation_payloads(
     *,
     generator,
+    modality: str | None = None,
     payload: dict[str, Any],
     base_kwargs: dict[str, Any],
     request: dict[str, Any],
@@ -3989,7 +4196,9 @@ def _retry_generation_payloads(
     current_kwargs = dict(base_kwargs)
     remaining = max(0, _coerce_int(retry_budget_remaining) or 0)
     current_retry_of = retry_of
+    resolved_modality = modality or ("video" if "duration" in base_kwargs else "image")
     while remaining > 0:
+        _deadline_checkpoint(f"{resolved_modality}_retry:{len(retries)}")
         _annotate_generation_failure(
             current_payload,
             base_kwargs=current_kwargs,
@@ -4000,7 +4209,12 @@ def _retry_generation_payloads(
         if recovery.get("decision") != "retry":
             break
         retry_kwargs = _retry_kwargs_from_recovery(current_kwargs, recovery)
-        retry_payload = generator(**retry_kwargs)
+        retry_payload = _call_generation_provider(
+            generator,
+            kind=resolved_modality,
+            stage=f"{resolved_modality}_retry_generate:{len(retries)}",
+            kwargs=retry_kwargs,
+        )
         retry_payload["retry_of"] = current_retry_of
         retries.append(retry_payload)
         if retry_payload.get("success"):
@@ -4039,10 +4253,16 @@ def _provider_fallback_payloads(
     )
     fallbacks: list[dict[str, Any]] = []
     for provider_name in fallback_providers:
+        _deadline_checkpoint(f"{modality}_provider_fallback:{provider_name}")
         if not provider_name or provider_name == failed_provider:
             continue
         fallback_kwargs = {**base_kwargs, "_provider": provider_name}
-        fallback_payload = generator(**fallback_kwargs)
+        fallback_payload = _call_generation_provider(
+            generator,
+            kind=modality,
+            stage=f"{modality}_provider_fallback_generate:{provider_name}",
+            kwargs=fallback_kwargs,
+        )
         fallback_payload["retry_of"] = retry_of
         fallback_payload["provider_fallback"] = {
             "from_provider": failed_provider,
@@ -5634,22 +5854,85 @@ def _materialize_remote_artifact_ref(artifact_ref: str, *, kind: str) -> str:
     try:
         return download_remote_media(artifact_ref, kind=kind)
     except Exception as exc:
-        logger.warning("could not materialize remote %s artifact %s: %s", kind, artifact_ref, exc)
+        logger.warning(
+            "could not materialize remote %s artifact %s: %s",
+            kind,
+            _safe_url_for_log(artifact_ref),
+            type(exc).__name__,
+        )
         return artifact_ref
 
 
 def download_remote_media(url: str, *, kind: str) -> str:
     if kind != "video":
         raise ValueError(f"unsupported remote media kind: {kind}")
-    request = Request(url, headers={"User-Agent": "Hermes visual package"})
-    with urlopen(request, timeout=60) as response:
-        raw = response.read(MAX_REMOTE_MEDIA_BYTES + 1)
-    if len(raw) > MAX_REMOTE_MEDIA_BYTES:
-        raise ValueError("remote media exceeds maximum cache size")
-    extension = _remote_media_extension(url, default="mp4")
+    current_url = str(url or "").strip()
+    for redirect_count in range(MAX_REMOTE_MEDIA_REDIRECTS + 1):
+        if not is_safe_url(current_url):
+            raise ValueError(f"unsafe remote media URL: {_safe_url_for_log(current_url)}")
+        status_code, headers, raw = _remote_media_http_get(current_url)
+        if status_code in {301, 302, 303, 307, 308}:
+            location = str(headers.get("location") or "").strip()
+            if not location:
+                raise ValueError("remote media redirect omitted Location header")
+            if redirect_count >= MAX_REMOTE_MEDIA_REDIRECTS:
+                raise ValueError("remote media redirect limit exceeded")
+            current_url = urljoin(current_url, location)
+            continue
+        if status_code >= 400:
+            raise ValueError(f"remote media HTTP status {status_code}")
+        if len(raw) > MAX_REMOTE_MEDIA_BYTES:
+            raise ValueError("remote media exceeds maximum cache size")
+        break
+    else:  # pragma: no cover - loop terminates via return/break/error
+        raise ValueError("remote media redirect limit exceeded")
+    extension = _remote_media_extension(current_url, default="mp4")
     from agent.video_gen_provider import save_bytes_video
 
     return str(save_bytes_video(raw, prefix="visual-package", extension=extension))
+
+
+def _remote_media_http_get(url: str) -> tuple[int, dict[str, str], bytes]:
+    import httpx
+
+    with httpx.Client(timeout=REMOTE_MEDIA_TIMEOUT_SECONDS, follow_redirects=False) as client:
+        with client.stream(
+            "GET",
+            url,
+            headers={"User-Agent": "Hermes visual package"},
+        ) as response:
+            status_code = int(response.status_code)
+            headers = {str(key).lower(): str(value) for key, value in response.headers.items()}
+            if status_code in {301, 302, 303, 307, 308}:
+                return status_code, headers, b""
+            chunks: list[bytes] = []
+            total = 0
+            for chunk in response.iter_bytes():
+                total += len(chunk)
+                if total > MAX_REMOTE_MEDIA_BYTES:
+                    raise ValueError("remote media exceeds maximum cache size")
+                chunks.append(chunk)
+            return status_code, headers, b"".join(chunks)
+
+
+def _safe_url_for_log(url: str, *, max_len: int = 160) -> str:
+    raw = str(url or "").strip()
+    try:
+        parsed = urlsplit(raw)
+    except ValueError:
+        return "<invalid-url>"
+    host = parsed.hostname or ""
+    if not parsed.scheme or not host:
+        return "<invalid-url>"
+    try:
+        parsed_port = parsed.port
+    except ValueError:
+        parsed_port = None
+    port = f":{parsed_port}" if parsed_port else ""
+    safe = urlunsplit((parsed.scheme, f"{host}{port}", parsed.path, "", ""))
+    if len(safe) <= max_len:
+        return safe
+    return f"{safe[: max(0, max_len - 3)]}..."
 
 
 def _remote_media_extension(url: str, *, default: str) -> str:
@@ -6036,47 +6319,28 @@ def _candidate_budget_policy_inputs(args: dict[str, Any]) -> tuple[int | None, i
 
 
 def _runtime_visual_feedback_report() -> dict[str, Any]:
-    policy_sources = ["feedback_loop"]
-    try:
-        from scripts.visual_feedback_loop_report import build_visual_feedback_loop_report
-
-        report = build_visual_feedback_loop_report(default_visual_ledger_path())
-    except Exception as exc:  # noqa: BLE001 - feedback loop must never block generation
-        logger.debug("visual feedback loop policy unavailable: %s", exc)
-        report = {"next_actions": []}
-    merged_actions = _action_list(report.get("next_actions"))
-    scheduled_actions = _latest_self_validation_next_actions()
-    if scheduled_actions:
-        policy_sources.append("scheduled_self_validation")
-        merged_actions.extend(scheduled_actions)
-    merged_report = dict(report)
-    merged_report["next_actions"] = merged_actions
-    merged_report["policy_sources"] = policy_sources
-    return merged_report
+    actions = _latest_self_validation_next_actions()
+    return {
+        "next_actions": actions,
+        "policy_sources": ["scheduled_self_validation"] if actions else ["runtime_defaults"],
+    }
 
 
 def _latest_self_validation_next_actions() -> list[dict[str, Any]]:
     latest_path = default_visual_ledger_path().parent / "self_validation" / "latest.json"
     try:
-        payload = json.loads(latest_path.read_text(encoding="utf-8"))
+        with latest_path.open("r", encoding="utf-8") as handle:
+            raw = handle.read(MAX_RUNTIME_POLICY_SNAPSHOT_BYTES + 1)
+        if len(raw.encode("utf-8")) > MAX_RUNTIME_POLICY_SNAPSHOT_BYTES:
+            logger.warning("visual runtime policy snapshot exceeds size limit")
+            return []
+        payload = json.loads(raw)
     except Exception as exc:  # noqa: BLE001 - stale/missing reports must not block generation
         logger.debug("visual scheduled self-validation policy unavailable: %s", exc)
         return []
     if not isinstance(payload, dict):
         return []
-    if "runtime_policy" in payload:
-        return _runtime_policy_next_actions(payload.get("runtime_policy"))
-    if payload.get("success") is not True:
-        return []
-    automation = payload.get("automation") if isinstance(payload.get("automation"), dict) else {}
-    self_improvement = (
-        automation.get("self_improvement")
-        if isinstance(automation.get("self_improvement"), dict)
-        else payload.get("self_improvement")
-    )
-    if not isinstance(self_improvement, dict):
-        return []
-    return _action_list(self_improvement.get("next_actions"))
+    return _runtime_policy_next_actions(payload.get("runtime_policy"))
 
 
 def _runtime_policy_next_actions(value: Any) -> list[dict[str, Any]]:
@@ -6091,7 +6355,7 @@ def _runtime_policy_next_actions(value: Any) -> list[dict[str, Any]]:
     now = datetime.datetime.now(datetime.timezone.utc)
     if expires_at <= now:
         return []
-    return _action_list(policy.get("next_actions"))
+    return _action_list(policy.get("next_actions"))[:MAX_RUNTIME_POLICY_ACTIONS]
 
 
 def _parse_policy_datetime(value: Any) -> datetime.datetime | None:
@@ -6172,6 +6436,6 @@ registry.register(
     handler=_handle_visual_package_generate,
     check_fn=check_visual_package_requirements,
     requires_env=[],
-    is_async=True,
+    is_async=False,
     emoji="🎞️",
 )

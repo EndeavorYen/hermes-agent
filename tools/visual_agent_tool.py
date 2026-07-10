@@ -21,6 +21,7 @@ _DIRECT_VISUAL_PACKAGE_OVERRIDE_KEYS = frozenset(
         "candidate_budget",
         "candidate_budget_source",
         "duration",
+        "execution_deadline_seconds",
         "grok_web_operation",
         "image_model",
         "image_operation",
@@ -87,6 +88,13 @@ VISUAL_AGENT_SCHEMA: dict[str, Any] = {
                 "type": "integer",
                 "description": "Optional operator control for visual prompt-planner rounds; defaults to 2 and clamps to 2-3.",
             },
+            "execution_deadline_seconds": {
+                "type": "number",
+                "description": (
+                    "Optional operator override for the visual package execution deadline. "
+                    "Natural requests use the configured default."
+                ),
+            },
         },
         "required": ["prompt"],
     },
@@ -145,7 +153,7 @@ async def _handle_visual_agent_generate(args: dict[str, Any], **_kw: Any) -> str
             package_args[key] = args[key]
     package_args, llm_plan = apply_visual_agent_llm_planner(package_args)
 
-    raw = await _handle_visual_package_generate(package_args)
+    raw = _handle_visual_package_generate(package_args)
     try:
         payload = json.loads(raw)
     except Exception:
