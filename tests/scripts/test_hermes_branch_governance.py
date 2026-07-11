@@ -104,6 +104,58 @@ class PrePushPolicyTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("mirror", result.stderr)
 
+    def test_allows_new_canonical_archive_tag_to_origin(self) -> None:
+        tag_ref = "refs/tags/archive/2026-07-11/runtime/pre-canonical-cutover"
+        result = run_guard(
+            "pre-push",
+            "origin",
+            "https://github.com/EndeavorYen/hermes-agent.git",
+            stdin=f"{LOCAL_SHA} {tag_ref} {ZERO_SHA} {tag_ref}\n",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_rejects_archive_tag_rewrite_or_deletion(self) -> None:
+        tag_ref = "refs/tags/archive/2026-07-11/runtime/pre-canonical-cutover"
+        rewrite = run_guard(
+            "pre-push",
+            "origin",
+            "https://github.com/EndeavorYen/hermes-agent.git",
+            stdin=f"{LOCAL_SHA} {tag_ref} {'b' * 40} {tag_ref}\n",
+        )
+        deletion = run_guard(
+            "pre-push",
+            "origin",
+            "https://github.com/EndeavorYen/hermes-agent.git",
+            stdin=f"{ZERO_SHA} (delete) {LOCAL_SHA} {tag_ref}\n",
+        )
+
+        self.assertNotEqual(rewrite.returncode, 0)
+        self.assertIn("immutable", rewrite.stderr)
+        self.assertNotEqual(deletion.returncode, 0)
+        self.assertIn("delete", deletion.stderr)
+
+    def test_rejects_noncanonical_or_upstream_tag_push(self) -> None:
+        release_tag_ref = "refs/tags/v2026.7.7.2"
+        archive_tag_ref = "refs/tags/archive/2026-07-11/runtime/pre-canonical-cutover"
+        invalid_name = run_guard(
+            "pre-push",
+            "origin",
+            "https://github.com/EndeavorYen/hermes-agent.git",
+            stdin=f"{LOCAL_SHA} {release_tag_ref} {ZERO_SHA} {release_tag_ref}\n",
+        )
+        upstream = run_guard(
+            "pre-push",
+            "upstream",
+            "https://github.com/NousResearch/hermes-agent.git",
+            stdin=f"{LOCAL_SHA} {archive_tag_ref} {ZERO_SHA} {archive_tag_ref}\n",
+        )
+
+        self.assertNotEqual(invalid_name.returncode, 0)
+        self.assertIn("archive", invalid_name.stderr)
+        self.assertNotEqual(upstream.returncode, 0)
+        self.assertIn("upstream", upstream.stderr.lower())
+
     def test_rejects_direct_push_to_upstream(self) -> None:
         result = run_guard(
             "pre-push",
