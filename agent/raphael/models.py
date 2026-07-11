@@ -365,6 +365,8 @@ class RaphaelMission:
     last_evidence: tuple[str, ...]
     updated_at: datetime
     last_user_request: str | None = None
+    proof_status: str = "pending"
+    created_at: datetime | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "mission_id", str(self.mission_id))
@@ -397,6 +399,9 @@ class RaphaelMission:
             self, "last_evidence", tuple(str(evidence) for evidence in self.last_evidence)
         )
         object.__setattr__(self, "updated_at", _ensure_utc(self.updated_at))
+        object.__setattr__(self, "proof_status", str(self.proof_status or "pending"))
+        created_at = self.created_at or self.updated_at
+        object.__setattr__(self, "created_at", _ensure_utc(created_at))
         if self.last_user_request is not None:
             object.__setattr__(self, "last_user_request", str(self.last_user_request))
 
@@ -426,6 +431,8 @@ class RaphaelMission:
             "selected_strategy": self.selected_strategy,
             "required_proofs": list(self.required_proofs),
             "last_evidence": list(self.last_evidence),
+            "proof_status": self.proof_status,
+            "created_at": _datetime_to_iso(self.created_at),
             "updated_at": _datetime_to_iso(self.updated_at),
         }
         if self.last_user_request is not None:
@@ -451,6 +458,12 @@ class RaphaelMission:
             last_evidence=tuple(payload.get("last_evidence", ())),
             updated_at=_datetime_from_iso(payload["updated_at"]),
             last_user_request=payload.get("last_user_request"),
+            proof_status=str(payload.get("proof_status") or "pending"),
+            created_at=(
+                _datetime_from_iso(payload["created_at"])
+                if payload.get("created_at")
+                else None
+            ),
         )
 
 

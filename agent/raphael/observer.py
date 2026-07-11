@@ -430,6 +430,18 @@ def build_raphael_observation_context(
     )
     blocks = [observation]
     try:
+        from agent.raphael.runtime_contract import (
+            RaphaelTurnOrigin,
+            resolve_raphael_turn_origin,
+        )
+
+        foreground_turn = (
+            resolve_raphael_turn_origin(explicit_origin=turn_origin)
+            is RaphaelTurnOrigin.FOREGROUND
+        )
+    except Exception:
+        foreground_turn = False
+    try:
         from agent.raphael.appraisal import appraise_raphael_situation
         from agent.raphael.invocation import (
             is_casual_raphael_summon,
@@ -439,33 +451,34 @@ def build_raphael_observation_context(
         from agent.raphael.state import read_mission_state, write_mission_state
         from agent.raphael.strategy import simulate_raphael_strategies
 
-        appraisal = appraise_raphael_situation(
-            user_message,
-            conversation_history=conversation_history,
-            attachments=attachments,
-        )
-        current_mission = read_mission_state()
-        if not (
-            appraisal.task_type == "general"
-            and (
-                is_casual_raphael_summon(message_text)
+        if foreground_turn:
+            appraisal = appraise_raphael_situation(
+                user_message,
+                conversation_history=conversation_history,
+                attachments=attachments,
+            )
+            current_mission = read_mission_state()
+            if not (
+                appraisal.task_type == "general"
+                and (
+                    is_casual_raphael_summon(message_text)
+                    or (
+                        current_mission is not None
+                        and not is_raphael_invocation(message_text)
+                    )
+                )
                 or (
                     current_mission is not None
-                    and not is_raphael_invocation(message_text)
+                    and _is_vague_current_task_takeover(message_text)
                 )
-            )
-            or (
-                current_mission is not None
-                and _is_vague_current_task_takeover(message_text)
-            )
-        ):
-            strategies = simulate_raphael_strategies(appraisal)
-            mission = update_raphael_mission(
-                current_mission,
-                appraisal,
-                strategies,
-            )
-            write_mission_state(mission)
+            ):
+                strategies = simulate_raphael_strategies(appraisal)
+                mission = update_raphael_mission(
+                    current_mission,
+                    appraisal,
+                    strategies,
+                )
+                write_mission_state(mission)
     except Exception as exc:
         blocks.append(
             _render_raphael_control_degraded(

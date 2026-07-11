@@ -111,6 +111,91 @@ def test_mission_state_round_trips_through_runtime_state(tmp_path, monkeypatch):
     assert loaded == mission
 
 
+def test_mission_state_compatibility_writer_uses_canonical_state(tmp_path, monkeypatch):
+    import agent.raphael.state as state
+
+    monkeypatch.setattr(state, "get_hermes_home", lambda: tmp_path)
+    mission = update_raphael_mission(
+        None,
+        RaphaelAppraisal(
+            "修復 runtime bug",
+            "tool_runtime",
+            "medium",
+            ("focused_tests",),
+        ),
+        _strategies(),
+    )
+
+    state.write_mission_state(mission)
+
+    assert state.read_state().active_mission is not None
+    assert state.read_state().active_mission.goal == "修復 runtime bug"
+    assert not state.get_raphael_mission_path().exists()
+
+
+def test_background_observation_cannot_create_foreground_mission(
+    tmp_path, monkeypatch
+):
+    from agent.raphael.observer import build_raphael_observation_context
+    import agent.raphael.state as state
+
+    monkeypatch.setattr(state, "get_hermes_home", lambda: tmp_path)
+    config = {
+        "plugins": {"enabled": ["raphael"], "disabled": []},
+        "raphael": {
+            "enabled": True,
+            "default_conversation_mode_enabled": True,
+            "mode": "sage_king",
+        },
+    }
+
+    build_raphael_observation_context(
+        "Review the conversation above and update the skill library.",
+        config,
+        turn_origin="background_review",
+    )
+
+    assert state.read_state().active_mission is None
+    assert state.read_mission_state() is None
+    assert not state.get_raphael_mission_path().exists()
+
+
+def test_background_observation_preserves_existing_foreground_mission(
+    tmp_path, monkeypatch
+):
+    from agent.raphael.observer import build_raphael_observation_context
+    import agent.raphael.state as state
+
+    monkeypatch.setattr(state, "get_hermes_home", lambda: tmp_path)
+    config = {
+        "plugins": {"enabled": ["raphael"], "disabled": []},
+        "raphael": {
+            "enabled": True,
+            "default_conversation_mode_enabled": True,
+            "mode": "sage_king",
+        },
+    }
+    foreground = update_raphael_mission(
+        None,
+        RaphaelAppraisal(
+            "使用者真正目標",
+            "tool_runtime",
+            "medium",
+            ("focused_tests",),
+        ),
+        _strategies(),
+    )
+    state.write_mission_state(foreground)
+
+    build_raphael_observation_context(
+        "Review the conversation above and update the skill library.",
+        config,
+        turn_origin="background_review",
+    )
+
+    assert state.read_mission_state() == foreground
+
+
 def test_observation_context_persists_and_updates_current_mission(tmp_path, monkeypatch):
     from agent.raphael.observer import build_raphael_observation_context
     import agent.raphael.state as state
