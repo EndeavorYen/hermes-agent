@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import unittest
@@ -15,7 +16,14 @@ ZERO_SHA = "0" * 40
 LOCAL_SHA = "a" * 40
 
 
-def run_guard(*args: str, stdin: str = "") -> subprocess.CompletedProcess[str]:
+def run_guard(
+    *args: str,
+    stdin: str = "",
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    command_env = os.environ.copy()
+    if env:
+        command_env.update(env)
     return subprocess.run(
         [sys.executable, str(SCRIPT), *args],
         cwd=REPO_ROOT,
@@ -23,6 +31,7 @@ def run_guard(*args: str, stdin: str = "") -> subprocess.CompletedProcess[str]:
         text=True,
         capture_output=True,
         check=False,
+        env=command_env,
     )
 
 
@@ -72,6 +81,28 @@ class PrePushPolicyTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_allows_only_explicit_main_mirror_sync_to_rewrite_origin_main(self) -> None:
+        result = run_guard(
+            "pre-push",
+            "origin",
+            "https://github.com/EndeavorYen/hermes-agent.git",
+            stdin=f"{LOCAL_SHA} refs/heads/main {'b' * 40} refs/heads/main\n",
+            env={"HERMES_GOVERNANCE_ALLOW_MIRROR_SYNC": "1"},
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_rejects_main_rewrite_without_explicit_mirror_sync(self) -> None:
+        result = run_guard(
+            "pre-push",
+            "origin",
+            "https://github.com/EndeavorYen/hermes-agent.git",
+            stdin=f"{LOCAL_SHA} refs/heads/main {'b' * 40} refs/heads/main\n",
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("mirror", result.stderr)
 
     def test_rejects_direct_push_to_upstream(self) -> None:
         result = run_guard(
