@@ -557,6 +557,26 @@ class TestPluginLlmFacade:
         }
         assert result.content_type == "json"
 
+    def test_complete_structured_preserves_provider_response_id_in_audit(self):
+        def fake_caller(**_kwargs):
+            response = _fake_response('{"verdict": "pass"}')
+            response.id = "resp_story_video_quality"
+            return "openai-codex", "gpt-5.6-terra", response
+
+        llm = make_plugin_llm_for_test(
+            plugin_id="my-plugin",
+            policy=_TrustPolicy(plugin_id="my-plugin"),
+            sync_caller=fake_caller,
+        )
+
+        result = llm.complete_structured(
+            instructions="Review candidate",
+            input=[PluginLlmTextInput(text="candidate")],
+            json_mode=True,
+        )
+
+        assert result.audit["response_id"] == "resp_story_video_quality"
+
     def test_complete_structured_returns_text_on_unparseable_response(self):
         def fake_caller(**_kwargs):
             return "openai", "gpt-4o", _fake_response("Sorry, I can't help with that.")

@@ -324,6 +324,23 @@ def test_keyframe_validation_requires_selected_openai_provenance(tmp_path) -> No
     assert passed.ok is True
 
 
+def test_keyframe_accepts_nonempty_openai_chat_completion_response_id(tmp_path) -> None:
+    store, context = _active_context(tmp_path)
+    context = store.update(context, phase="keyframes")
+    ledger = _write_planning_fixture(context)
+    shots = ledger["scenes"][0]["shots"][:3]
+    _write_candidate_manifest(context, shots)
+    manifest_path = context.project_dir / "manifests" / "shot_candidate_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    for output in manifest["outputs"]:
+        output["vision_evidence"]["response_id"] = "chatcmpl_openai_story_judge"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    proof = validate_phase(context)
+
+    assert proof.ok is True
+
+
 def test_batch_validation_accepts_scene_ledger_selected_asset_path(tmp_path) -> None:
     store, context = _active_context(tmp_path)
     context = store.update(context, phase="batch")

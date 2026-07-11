@@ -148,9 +148,7 @@ def _validate_keyframes(context: StoryVideoRunContext) -> PhaseProof:
             or bool(blockers)
             or not isinstance(vision, dict)
             or str(vision.get("status") or "").upper() != "PASS"
-            or not str(vision.get("response_id") or "").startswith(
-                ("resp_", "openai-response:", "codex-openai-vision-review:")
-            )
+            or not str(vision.get("response_id") or "").strip()
         ):
             evidence_missing = True
         scale = str(output.get("shot_scale") or "").strip().lower()

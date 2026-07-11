@@ -266,6 +266,10 @@ def _weighted_score(dimensions: Any) -> float | None:
     return round(total, 3)
 
 
+def candidate_quality_score(dimensions: Any) -> float | None:
+    return _weighted_score(dimensions)
+
+
 def rank_candidate_assessments(
     assessments: list[dict[str, Any]],
     *,
@@ -330,6 +334,7 @@ __all__ = [
     "LedgerQualityReport",
     "QUALITY_THRESHOLD",
     "candidate_budget_for_shot",
+    "candidate_quality_score",
     "compile_shot_prompt",
     "rank_candidate_assessments",
     "validate_quality_ledger",

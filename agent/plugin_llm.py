@@ -540,6 +540,13 @@ def _extract_text(response: Any) -> str:
     return ""
 
 
+def _extract_response_id(response: Any) -> str:
+    value = getattr(response, "id", None)
+    if value is None and isinstance(response, dict):
+        value = response.get("id") or response.get("response_id")
+    return str(value or "").strip()
+
+
 def _resolve_attribution(
     *,
     provider_override: Optional[str],
@@ -670,6 +677,7 @@ class PluginLlm:
                 "plugin_id": self._plugin_id,
                 "purpose": purpose or "",
                 "profile": eff_profile or "",
+                "response_id": _extract_response_id(response),
             },
         )
         logger.info(
@@ -762,6 +770,7 @@ class PluginLlm:
                 "purpose": purpose or "",
                 "profile": eff_profile or "",
                 "schema_name": schema_name or "",
+                "response_id": _extract_response_id(response),
             },
         )
         logger.info(
@@ -817,6 +826,7 @@ class PluginLlm:
                 "plugin_id": self._plugin_id,
                 "purpose": purpose or "",
                 "profile": eff_profile or "",
+                "response_id": _extract_response_id(response),
             },
         )
 
@@ -889,6 +899,7 @@ class PluginLlm:
                 "purpose": purpose or "",
                 "profile": eff_profile or "",
                 "schema_name": schema_name or "",
+                "response_id": _extract_response_id(response),
             },
         )
 
