@@ -243,6 +243,7 @@ _LEARN_SKILL_TARGET_MARKERS = (
 def build_raphael_control_decision(
     user_message: Any,
     *,
+    active_mission: Any | None = None,
     attachments: Sequence[str] | None = None,
     conversation_history: Sequence[Mapping[str, Any]] | None = None,
     visual_plan: Mapping[str, Any] | None = None,
@@ -255,6 +256,52 @@ def build_raphael_control_decision(
         if str(item).strip() and _is_visual_attachment_ref(str(item))
     )
     active_artifact_id = latest_selected_artifact_id(conversation_history)
+
+    if active_mission is not None and _looks_like_mission_followup(prompt):
+        mission_goal = str(getattr(active_mission, "goal", "") or prompt)
+        mission_proofs = tuple(getattr(active_mission, "required_proofs", ()) or ())
+        return RaphaelControlDecision(
+            mode="tool_task",
+            goal=RaphaelGoalDecision(
+                summary=mission_goal,
+                target_artifact="active_mission",
+                active_artifact_id=getattr(active_mission, "active_artifact_id", None),
+                success_conditions=tuple(
+                    getattr(active_mission, "success_conditions", ()) or ()
+                ),
+                phase="continue_active_mission",
+            ),
+            route=RaphaelRouteDecision(),
+            evidence=RaphaelEvidenceDecision(
+                required_proofs=mission_proofs or ("focused_tests", "diff_hygiene")
+            ),
+            next_action=str(
+                getattr(active_mission, "next_action", "") or "continue_active_mission"
+            ),
+            confidence=0.94,
+        )
+
+    if not attachment_list and _looks_like_ambiguous_goal(prompt):
+        question = "請補充要處理的目標、範圍與預期成品。"
+        return RaphaelControlDecision(
+            mode="needs_clarification",
+            goal=RaphaelGoalDecision(
+                summary=_summary(prompt),
+                target_artifact="pending_goal",
+                success_conditions=("goal_scope_confirmed",),
+                phase="clarify_goal",
+                blockers=("ambiguous_goal",),
+            ),
+            route=RaphaelRouteDecision(),
+            evidence=RaphaelEvidenceDecision(
+                required_proofs=("clarification_question_present",),
+                failure_layer="intent_routing",
+                next_repair_action="ask_precise_clarification",
+            ),
+            next_action="ask_precise_clarification",
+            clarification_question=question,
+            confidence=0.91,
+        )
 
     if _looks_like_visual_prompt_edit_task(prompt):
         return RaphaelControlDecision(
@@ -815,6 +862,33 @@ def _fallback_visual_plan(
 
 def _is_visual_feedback_only_text(prompt: str) -> bool:
     return _looks_like_followup_edit(prompt) and not _looks_like_visual_generation(prompt)
+
+
+def _looks_like_mission_followup(prompt: str) -> bool:
+    compact = re.sub(r"\s+", "", str(prompt or "").lower())
+    return any(
+        marker in compact
+        for marker in (
+            "繼續剛剛",
+            "繼續剛才",
+            "接著做",
+            "接下來請繼續",
+            "continueprevious",
+            "continueearlier",
+            "continuethatgoal",
+        )
+    )
+
+
+def _looks_like_ambiguous_goal(prompt: str) -> bool:
+    compact = re.sub(r"[\s，。,.!?！？]+", "", str(prompt or "").lower())
+    return compact in {
+        "請處理這個",
+        "處理這個",
+        "幫我處理",
+        "handlethis",
+        "takecareofthis",
+    }
 
 
 def _is_visual_prompt_disclosure_request(prompt: str) -> bool:

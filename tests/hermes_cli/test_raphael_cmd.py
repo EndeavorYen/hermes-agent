@@ -5558,6 +5558,41 @@ def test_raphael_release_gate_rejects_llm_smoke_with_wrong_log_model(
     assert "LLM live smoke: model_identity_unverified" in result.message
 
 
+def test_raphael_release_gate_accepts_current_openai_gpt5_family_model(
+    monkeypatch,
+    tmp_path,
+):
+    from hermes_cli.raphael_cmd import raphael_release_gate
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        {
+            "plugins": {"enabled": ["raphael"], "disabled": []},
+            "raphael": {"enabled": True, "default_conversation_mode_enabled": True},
+        },
+    )
+    _write_llm_smoke_log(tmp_path, model="gpt-5.6-terra")
+    release_quality_kwargs = _release_quality_gate_kwargs(tmp_path)
+    transcript_path = Path(release_quality_kwargs["llm_transcript_report_path"])
+    transcript = json.loads(transcript_path.read_text(encoding="utf-8"))
+    transcript["model"] = "gpt-5.6-terra"
+    transcript_path.write_text(json.dumps(transcript), encoding="utf-8")
+
+    result = raphael_release_gate(
+        profile="llm",
+        llm_smoke_session_id="20260701_131600_93f518",
+        llm_smoke_command="rtk hermes chat -Q --max-turns 3",
+        llm_tool_call_count=0,
+        llm_summon_sections_verified=True,
+        llm_full_body_preserved=True,
+        llm_no_visual_failure_trace=True,
+        **release_quality_kwargs,
+    )
+
+    assert "llm_live_smoke_model_identity_unverified" not in result.blocking_reasons
+
+
 def test_raphael_readiness_rejects_self_attested_quality_evidence_without_reports(
     monkeypatch,
     tmp_path,

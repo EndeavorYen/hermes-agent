@@ -14,12 +14,9 @@ from agent.raphael.evolution import (
 )
 from agent.raphael.mission import create_mission
 from agent.raphael.models import MissionArtifact
-from agent.raphael.proof import (
-    claim_kind_from_text,
-    evaluate_raphael_proof_gate,
-    render_proof_gate_user_message,
-)
-from agent.raphael.router import route_raphael_message
+from agent.raphael.finalization import enforce_raphael_completion
+from agent.raphael.kernel import replay_raphael_turn
+from agent.raphael.runtime_contract import RaphaelRuntimeContract
 
 
 FORBIDDEN_READY_CLAIM_KEYWORDS = {
@@ -60,6 +57,7 @@ class RaphaelSimulationSuite:
     visual_claim_ready: bool
     grok_claim_ready: bool
     created_at: datetime
+    producer: str
 
 
 @dataclass(frozen=True)
@@ -118,21 +116,38 @@ def run_public_llm_slice_simulation(
         now=created_at,
     )
 
-    summon_route = route_raphael_message(
-        "拉斐爾，請幫我修復 repo 測試、整理 issue、開 PR",
+    runtime_contract = RaphaelRuntimeContract(
+        base_provider="openai-codex",
+        base_model="gpt-5-production-replay",
+        base_api_mode="production_replay",
+        source="production_replay",
     )
-    followup_route = route_raphael_message(
-        "接下來請繼續剛剛的目標",
-        active_mission=mission,
+    summon_decision = replay_raphael_turn(
+        turn_id="replay-summon",
+        runtime_contract=runtime_contract,
+        user_message="拉斐爾，請幫我修復 repo 測試、整理 issue、開 PR",
     )
-    proof_route = route_raphael_message("請修復 repo 裡的測試失敗")
-    proof_result = evaluate_raphael_proof_gate(
-        route=proof_route,
-        evidence=(),
-        claim_kind=claim_kind_from_text("完成了，測試也通過。"),
+    followup_decision = replay_raphael_turn(
+        turn_id="replay-followup",
+        runtime_contract=runtime_contract,
+        user_message="接下來請繼續剛剛的目標",
+        mission=mission,
     )
-    proof_message = render_proof_gate_user_message(proof_result)
-    ambiguous_route = route_raphael_message("請處理這個")
+    proof_decision = replay_raphael_turn(
+        turn_id="replay-proof",
+        runtime_contract=runtime_contract,
+        user_message="請修復 repo 裡的測試失敗",
+    )
+    proof_result = enforce_raphael_completion(
+        decision=proof_decision.to_dict(),
+        final_response="完成了，測試也通過。",
+        messages=(),
+    )
+    ambiguous_decision = replay_raphael_turn(
+        turn_id="replay-clarification",
+        runtime_contract=runtime_contract,
+        user_message="請處理這個",
+    )
     evolution_proposal = build_evolution_action_proposal(
         (
             build_evolution_signal(
@@ -164,74 +179,83 @@ def run_public_llm_slice_simulation(
     cases = (
         RaphaelSimulationCase(
             case_id="summon_tool_task",
-            passed=summon_route.kind == "tool_task",
+            passed=summon_decision.mode == "tool_task",
             summary="Summon request routes to tool-task control layer.",
-            evidence_refs=(f"route:{summon_route.kind}", summon_route.reason),
-            failure_layer=None if summon_route.kind == "tool_task" else "mode_router",
+            evidence_refs=(
+                f"decision:{summon_decision.turn_id}",
+                f"mode:{summon_decision.mode}",
+            ),
+            failure_layer=None if summon_decision.mode == "tool_task" else "mode_router",
             next_action="Fix Raphael mode routing for tool-task summon wording.",
         ),
         RaphaelSimulationCase(
             case_id="mission_followup",
             passed=(
-                followup_route.kind == "followup"
-                and followup_route.active_mission_id == mission.mission_id
+                followup_decision.mode == "tool_task"
+                and followup_decision.mission_id == mission.mission_id
             ),
             summary="Follow-up request remains attached to the active mission.",
             evidence_refs=(
-                f"route:{followup_route.kind}",
-                f"mission:{followup_route.active_mission_id or 'none'}",
+                f"decision:{followup_decision.turn_id}",
+                f"mission:{followup_decision.mission_id or 'none'}",
             ),
             failure_layer=(
                 None
-                if followup_route.kind == "followup"
+                if followup_decision.mission_id == mission.mission_id
                 else "goal_state"
             ),
             next_action="Fix goal-state follow-up continuity.",
         ),
         RaphaelSimulationCase(
             case_id="proof_block",
-            passed=proof_result.status == "blocked",
+            passed=proof_result.status == "blocked_unverified_completion",
             summary="Unsupported success claim is blocked by proof gate.",
             evidence_refs=(
+                f"decision:{proof_decision.turn_id}",
                 f"proof_status:{proof_result.status}",
                 f"missing:{','.join(proof_result.missing_proofs) or 'none'}",
             ),
             failure_layer=(
-                None if proof_result.status == "blocked" else "proof_gate"
+                None
+                if proof_result.status == "blocked_unverified_completion"
+                else "proof_gate"
             ),
             next_action="Fix proof gate before claiming public readiness.",
         ),
         RaphaelSimulationCase(
             case_id="ambiguous_clarification",
             passed=(
-                ambiguous_route.kind == "clarification"
-                and bool(ambiguous_route.clarification_question)
+                ambiguous_decision.mode == "needs_clarification"
+                and bool(ambiguous_decision.clarification_question)
             ),
             summary="Ambiguous target asks one precise clarification.",
             evidence_refs=(
-                f"route:{ambiguous_route.kind}",
+                f"decision:{ambiguous_decision.turn_id}",
                 "clarification:present"
-                if ambiguous_route.clarification_question
+                if ambiguous_decision.clarification_question
                 else "clarification:missing",
             ),
             failure_layer=(
                 None
-                if ambiguous_route.kind == "clarification"
+                if ambiguous_decision.mode == "needs_clarification"
                 else "mode_router"
             ),
             next_action="Fix ambiguous-goal clarification routing.",
         ),
         RaphaelSimulationCase(
-            case_id="finalizer_proof_block_output",
+            case_id="production_finalizer_proof_block",
             passed=(
-                "Raphael proof gate blocked" in proof_message
-                and "Proof command:" in proof_message
+                proof_result.status == "blocked_unverified_completion"
+                and "尚缺驗證" in proof_result.final_response
             ),
-            summary="Rendered proof block output includes actionable command.",
-            evidence_refs=("proof_output:actionable",),
+            summary="Production finalizer blocks unsupported completion output.",
+            evidence_refs=(
+                f"decision:{proof_decision.turn_id}",
+                f"missing:{','.join(proof_result.missing_proofs)}",
+            ),
             failure_layer=(
                 None
-                if "Proof command:" in proof_message
+                if proof_result.status == "blocked_unverified_completion"
                 else "proof_gate"
             ),
             next_action="Fix proof-block user output before public readiness.",
@@ -292,6 +316,7 @@ def run_public_llm_slice_simulation(
         visual_claim_ready=False,
         grok_claim_ready=False,
         created_at=created_at,
+        producer="production_replay",
     )
 
 
@@ -429,6 +454,8 @@ def build_public_llm_slice_readiness(
     llm_reasons: list[str] = []
     if simulation.status != "passed":
         llm_reasons.append("simulation_failed")
+    if simulation.producer != "production_replay":
+        llm_reasons.append("readiness_evidence_invalid")
     if live_smoke is None:
         llm_reasons.append("live_llm_smoke_missing")
     elif live_smoke.status != "passed":
@@ -641,6 +668,7 @@ def _report_to_dict(report: RaphaelPublicReadinessReport) -> dict[str, Any]:
         "blocked_claims": list(report.blocked_claims),
         "simulation": {
             "status": report.simulation.status,
+            "producer": report.simulation.producer,
             "created_at": report.simulation.created_at.isoformat(),
             "media_claim_ready": report.simulation.media_claim_ready,
             "visual_claim_ready": report.simulation.visual_claim_ready,

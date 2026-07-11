@@ -42,9 +42,16 @@ Aligned:
 - The LLM boundary now detects both path drift and `agent/raphael/*` imports of deferred media modules.
 - Raphael summon detection no longer treats file paths or broad topic mentions like `docs/raphael-mode.md` as explicit summons.
 - Negated media language such as `不要產圖` in an LLM-only summon smoke now stays on the text-only route instead of being misclassified as visual generation.
-- Fresh LLM live smoke `20260701_131600_93f518` proves same-session summon continuity with `gpt-5.5`, zero tool calls, and text-only output.
+- Historical LLM live smoke `20260701_131600_93f518` recorded same-session
+  summon continuity with the then-current `gpt-5.5`, zero tool calls, and
+  text-only output. The current gate accepts the effective supported OpenAI
+  GPT-5-family model only when log and transcript identities agree.
 - Fresh hostile-shaped smoke `20260701_130957_137750` proves public Raphael wording with negated media language stays text-only.
-- Fresh LLM readiness evidence now records the quota-free six-case user simulation matrix with required `user_prompt`, `expected_visible_behavior`, `critical_assertions`, `next_action`, `proof_layer`, and `visual_quota_used=false` fields. Stale wow evidence without those fields is rejected as `wow_experience_score_unverified`.
+- Current LLM readiness uses quota-free `production_replay` through the
+  canonical kernel and shared finalizer; detached deterministic-router evidence
+  is rejected. The separate six-case user matrix still requires `user_prompt`,
+  `expected_visible_behavior`, `critical_assertions`, `next_action`,
+  `proof_layer`, and `visual_quota_used=false` fields.
 - Fresh non-visual regression report `non-visual-regression-20260701-openai-quality-attachment-gate` records `1529` passing tests, zero failures, zero visual quota, and broad Raphael/media regression coverage.
 - Fresh package install smoke `package-install-20260701-fresh-home-fail-closed-v1` verifies wheel install, install/disable/enable/uninstall, audit-only default, installed media and LLM readiness fail closed without release evidence in a fresh home, and approval-gated proposal approve/reject lifecycle commands.
 - Hostile review `hostile-review-20260701-fresh-home-fail-closed-v1` allows only the scoped LLM-only and OpenAI image-only media releases while explicitly denying Sage King, wow, big-evolution, Grok, video, full-media, and full-Sage-King claims.
@@ -58,7 +65,9 @@ Aligned:
 
 Current media-profile evidence:
 
-- Fresh media-profile LLM smoke `20260701_163247_d9b87d` proves `gpt-5.5`, zero tool calls, summon sections, same-mission continuity, and no visual failure trace for the media readiness bundle.
+- Historical media-profile LLM smoke `20260701_163247_d9b87d` recorded
+  `gpt-5.5`, zero tool calls, summon sections, same-mission continuity, and no
+  visual failure trace. It is not a version pin for current readiness.
 - Fresh media-profile non-visual regression report `non-visual-regression-20260701-wow-user-simulation-proof-v1` records `1541` passing tests, zero failures, zero visual quota, no OpenAI live generation, and no xAI/Grok live generation.
 - OpenAI image-only visual report `openai-visual-live-20260701-openai-gpt-strict-review.reviewed.json` proves only `openai_image_generation`; it explicitly does not prove Grok, xAI, video, or full media readiness.
 

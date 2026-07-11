@@ -84,7 +84,6 @@ _LLM_READINESS_CHECKS = (
     "release_slice_manifest",
 )
 _READINESS_PRODUCER = "hermes-raphael-release-gate"
-_RAPHAEL_LLM_REQUIRED_MODEL = "gpt-5.5"
 _RAPHAEL_LLM_REQUIRED_PROVIDER_PREFIX = "openai"
 _VISUAL_ARTIFACT_MTIME_SKEW = timedelta(minutes=10)
 _VISUAL_QUALITY_BLOCKED_REVIEWERS = {
@@ -7886,8 +7885,8 @@ def _llm_live_smoke_model_identity_verified(check: dict[str, Any]) -> bool:
         )
     transcript_model, transcript_provider = _llm_transcript_model_identity(check)
     return (
-        log_model == _RAPHAEL_LLM_REQUIRED_MODEL
-        and transcript_model == _RAPHAEL_LLM_REQUIRED_MODEL
+        log_model == transcript_model
+        and _llm_model_supports_raphael(log_model)
         and _llm_provider_is_openai(log_provider)
         and _llm_provider_is_openai(transcript_provider)
     )
@@ -7915,6 +7914,10 @@ def _llm_transcript_model_identity(check: dict[str, Any]) -> tuple[str, str]:
 
 def _llm_provider_is_openai(value: str) -> bool:
     return value.strip().lower().startswith(_RAPHAEL_LLM_REQUIRED_PROVIDER_PREFIX)
+
+
+def _llm_model_supports_raphael(value: str) -> bool:
+    return value.strip().lower().startswith("gpt-5")
 
 
 def _llm_live_smoke_has_followup_log_evidence(check: dict[str, Any]) -> bool:

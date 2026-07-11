@@ -82,17 +82,71 @@ def prepare_raphael_turn(
         if isinstance(runtime_contract, RaphaelRuntimeContract)
         else RaphaelRuntimeContract.from_mapping(runtime_contract)
     )
-    control = build_raphael_control_decision(
-        user_message,
+    mission = read_active_mission()
+    decision = _build_raphael_turn_decision(
+        turn_id=str(turn_id),
+        origin=resolved_origin,
+        runtime_contract=contract,
+        user_message=user_message,
+        mission=mission,
         attachments=attachments,
         conversation_history=conversation_history,
         visual_plan=visual_plan,
     )
-    route = _route_with_runtime_contract(control.route, contract)
-    mission = read_active_mission()
-    decision = RaphaelTurnDecision(
+    record_turn_decision(decision.to_dict())
+    return decision
+
+
+def replay_raphael_turn(
+    *,
+    turn_id: str,
+    runtime_contract: Mapping[str, Any] | RaphaelRuntimeContract,
+    user_message: Any,
+    mission: Any | None = None,
+    attachments: Sequence[str] | None = None,
+    conversation_history: Sequence[Mapping[str, Any]] | None = None,
+    visual_plan: Mapping[str, Any] | None = None,
+) -> RaphaelTurnDecision:
+    """Run the production decision kernel without mutating live runtime state."""
+    contract = (
+        runtime_contract
+        if isinstance(runtime_contract, RaphaelRuntimeContract)
+        else RaphaelRuntimeContract.from_mapping(runtime_contract)
+    )
+    return _build_raphael_turn_decision(
         turn_id=str(turn_id),
-        origin=resolved_origin,
+        origin=RaphaelTurnOrigin.REPLAY,
+        runtime_contract=contract,
+        user_message=user_message,
+        mission=mission,
+        attachments=attachments,
+        conversation_history=conversation_history,
+        visual_plan=visual_plan,
+    )
+
+
+def _build_raphael_turn_decision(
+    *,
+    turn_id: str,
+    origin: RaphaelTurnOrigin,
+    runtime_contract: RaphaelRuntimeContract,
+    user_message: Any,
+    mission: Any | None,
+    attachments: Sequence[str] | None,
+    conversation_history: Sequence[Mapping[str, Any]] | None,
+    visual_plan: Mapping[str, Any] | None,
+) -> RaphaelTurnDecision:
+    control = build_raphael_control_decision(
+        user_message,
+        active_mission=mission,
+        attachments=attachments,
+        conversation_history=conversation_history,
+        visual_plan=visual_plan,
+    )
+    route = _route_with_runtime_contract(control.route, runtime_contract)
+    return RaphaelTurnDecision(
+        turn_id=turn_id,
+        origin=origin,
         mission_id=mission.mission_id if mission is not None else None,
         mode=control.mode,
         goal=control.goal,
@@ -103,10 +157,8 @@ def prepare_raphael_turn(
         clarification_question=control.clarification_question,
         confidence=control.confidence,
         completion_policy=_completion_policy(control.mode),
-        runtime_contract=contract,
+        runtime_contract=runtime_contract,
     )
-    record_turn_decision(decision.to_dict())
-    return decision
 
 
 def render_raphael_turn_decision_context(decision: RaphaelTurnDecision) -> str:
@@ -164,5 +216,6 @@ def _completion_policy(mode: str) -> str:
 __all__ = [
     "RaphaelTurnDecision",
     "prepare_raphael_turn",
+    "replay_raphael_turn",
     "render_raphael_turn_decision_context",
 ]

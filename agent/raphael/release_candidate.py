@@ -23,7 +23,7 @@ REQUIRED_LLM_SIMULATION_CASES = (
     "mission_followup",
     "ambiguous_clarification",
     "proof_block",
-    "finalizer_proof_block_output",
+    "production_finalizer_proof_block",
     "evolution_proposal",
     "proposal_lifecycle_status",
     "public_claim_boundary",
@@ -233,6 +233,8 @@ def _llm_slice(payload: Mapping[str, Any] | None) -> dict[str, Any]:
     simulation = _dict_value(payload, "simulation")
     if simulation.get("status") != "passed":
         reasons.append("llm_simulation_not_passed")
+    if simulation.get("producer") != "production_replay":
+        reasons.append("llm_simulation_producer_invalid")
     if not _simulation_cases_passed(simulation.get("cases")):
         reasons.append("llm_simulation_cases_incomplete")
     live_smoke = _dict_value(payload, "live_smoke")
