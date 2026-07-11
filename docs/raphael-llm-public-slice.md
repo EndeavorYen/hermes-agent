@@ -79,8 +79,8 @@ Historical slice evidence (not a substitute for the current gate):
   It is historical evidence; run the command again for a current verdict.
 - The archived scoped completion audit reported `Raphael completion audit:
   partial`, `Scoped release ready: yes`, and `Ultimate Sage King ready: no`.
-- The archived release-docs audit passed against its matching LLM/media
-  readiness JSON files. Documentation never extends their freshness.
+- The archived release-docs audit returned pass for its matching gate
+  artifacts. Documentation never extends their freshness.
 - Boundary results are run-specific and are not checked-in release evidence. The canonical packaged policy deliberately leaves unrelated CI, old implementation plans, generic release automation, and generic tests/utilities unclassified instead of absorbing them into the Raphael slice.
 - The archived release-slice manifest recorded `split_required`,
   `allowed_public_claims: ["llm_only"]`, one `llm_scoped_release` slice, and one

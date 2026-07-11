@@ -39,6 +39,5 @@ Required blocked claim:
 
 `Grok Web Imagine, video, Slack delivery, and full media remain blocked.`
 
-Do not publish claims that Grok, video, Slack/native delivery, full media, or
-general visual generation are ready until a later issue records separate live
-evidence for those slices.
+Keep Grok, video, Slack/native delivery, full media, and general visual
+generation blocked unless fresh, separate evidence passes for each slice.
