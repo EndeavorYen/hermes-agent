@@ -193,6 +193,8 @@ def test_judge_sends_every_candidate_as_image_input_to_openai_and_selects_best(t
     assert current[0]["quality_score"] == 91
     assert current[0]["judge_provider"] == "openai-codex"
     assert current[0]["vision_evidence"]["response_id"] == "resp_story_video_judge"
+    rejected = [row for row in manifest["outputs"] if not row["selected"]]
+    assert [row["status"] for row in rejected] == ["rejected"]
     assert not (context.project_dir / "manifests" / "shot_candidate_manifest.json.tmp").exists()
 
 

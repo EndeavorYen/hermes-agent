@@ -339,7 +339,13 @@ def _judge_candidates(
                 "shot_scale": str(shot.get("shot_scale") or ""),
                 "candidate_id": candidate_id,
                 "selected": candidate_id == selected_id,
-                "status": "selected_current" if candidate_id == selected_id else terminal_status,
+                "status": (
+                    "selected_current"
+                    if candidate_id == selected_id
+                    else "rejected"
+                    if selected_id
+                    else terminal_status
+                ),
                 "provider": _provider(source.get("provider")),
                 "model": str(source.get("model") or ""),
                 "generation_response_id": str(source.get("response_id") or ""),
