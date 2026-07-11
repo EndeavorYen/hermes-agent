@@ -259,6 +259,52 @@ def test_disabled_raphael_uses_readonly_gate_without_loading_evolution_stack(
     assert calls == ["readonly"]
 
 
+def test_real_turn_finalizer_blocks_unverified_mutation_before_persistence(
+    monkeypatch,
+):
+    monkeypatch.setattr(hermes_plugins, "invoke_hook", lambda *_args, **_kwargs: [])
+    agent = _FakeAgent()
+    persisted = []
+    agent._persist_session = lambda persisted_messages, _history: persisted.append(
+        [dict(message) for message in persisted_messages]
+    )
+    messages = [
+        {"role": "user", "content": "修正問題"},
+        {"role": "assistant", "content": "完成了，測試都通過。"},
+    ]
+
+    result = finalize_turn(
+        agent,
+        final_response="完成了，測試都通過。",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=None,
+        effective_task_id="task-proof-gate",
+        turn_id="turn-proof-gate",
+        user_message="修正問題",
+        original_user_message="修正問題",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response",
+        raphael_decision={
+            "turn_id": "turn-proof-gate",
+            "mode": "tool_task",
+            "completion_policy": "mutation",
+            "evidence": {"required_proofs": ["focused_tests"]},
+            "next_action": "run focused verification",
+        },
+    )
+
+    assert result["raphael_finalization"]["status"] == (
+        "blocked_unverified_completion"
+    )
+    assert "尚缺驗證" in result["final_response"]
+    assert messages[-1]["content"] == result["final_response"]
+    persisted_messages = persisted[-1]
+    assert persisted_messages[-1]["content"] == result["final_response"]
+
+
 def test_background_spawn_error_is_sanitized_before_persistent_records(
     monkeypatch,
     tmp_path,

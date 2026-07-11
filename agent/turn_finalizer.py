@@ -70,6 +70,7 @@ def finalize_turn(
     original_user_message,
     _should_review_memory,
     _turn_exit_reason,
+    raphael_decision=None,
 ):
     """Run the post-loop finalization and return the turn ``result`` dict.
 
@@ -77,6 +78,11 @@ def finalize_turn(
     loop). See module docstring.
     """
     from agent.conversation_loop import logger
+
+    from agent.raphael.finalization import (
+        enforce_raphael_completion,
+        replace_terminal_assistant_response,
+    )
 
     if final_response is None and (
         api_call_count >= agent.max_iterations
@@ -149,11 +155,21 @@ def finalize_turn(
                     exc_info=True,
                 )
 
+    _raphael_finalization = enforce_raphael_completion(
+        decision=raphael_decision,
+        final_response=final_response,
+        messages=messages,
+    )
+    final_response = _raphael_finalization.final_response
+    if final_response and not interrupted:
+        replace_terminal_assistant_response(messages, final_response)
+
     # Determine if conversation completed successfully
     normal_text_response = str(_turn_exit_reason).startswith("text_response(")
     completed = (
         final_response is not None
         and not failed
+        and _raphael_finalization.status != "blocked_unverified_completion"
         and (
             api_call_count < agent.max_iterations
             or normal_text_response
@@ -296,7 +312,11 @@ def finalize_turn(
     # Gate: only applied when a real text response exists for this
     # turn and the user didn't interrupt.  Empty/interrupted turns
     # already have other surface text that shouldn't be augmented.
-    if final_response and not interrupted:
+    if (
+        final_response
+        and not interrupted
+        and _raphael_finalization.status != "blocked_unverified_completion"
+    ):
         try:
             _failed = getattr(agent, "_turn_failed_file_mutations", None) or {}
             if _failed and agent._file_mutation_verifier_enabled():
@@ -368,7 +388,11 @@ def finalize_turn(
     # Fired once per turn after the tool-calling loop completes.
     # Plugins can transform the LLM's output text before it's returned.
     # First hook to return a string wins; None/empty return leaves text unchanged.
-    if final_response and not interrupted:
+    if (
+        final_response
+        and not interrupted
+        and _raphael_finalization.status != "blocked_unverified_completion"
+    ):
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
             _transform_results = _invoke_hook(
@@ -453,6 +477,7 @@ def finalize_turn(
         "cost_status": agent.session_cost_status,
         "cost_source": agent.session_cost_source,
         "session_id": agent.session_id,
+        "raphael_finalization": _raphael_finalization.to_dict(),
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()

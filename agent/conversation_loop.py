@@ -581,6 +581,7 @@ def _try_direct_visual_agent_handoff(
             original_user_message=original_user_message,
             _should_review_memory=should_review_memory,
             _turn_exit_reason="direct_visual_agent_clarification",
+            raphael_decision=raphael_decision,
         )
 
     tool_name = str(handoff.get("tool_name") or "").strip()
@@ -669,6 +670,7 @@ def _try_direct_visual_agent_handoff(
         original_user_message=original_user_message,
         _should_review_memory=should_review_memory,
         _turn_exit_reason="direct_visual_agent_handoff",
+        raphael_decision=raphael_decision,
     )
 
 
@@ -797,6 +799,7 @@ def run_conversation(
             effective_task_id=effective_task_id,
             turn_id=turn_id,
             should_review_memory=_should_review_memory,
+            raphael_decision=_raphael_decision,
         )
 
     _direct_visual_result = _try_direct_visual_agent_handoff(
@@ -5483,6 +5486,7 @@ def run_conversation(
         original_user_message=original_user_message,
         _should_review_memory=_should_review_memory,
         _turn_exit_reason=_turn_exit_reason,
+        raphael_decision=_raphael_decision,
     )
 
 

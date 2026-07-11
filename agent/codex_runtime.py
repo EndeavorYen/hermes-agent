@@ -321,6 +321,7 @@ def run_codex_app_server_turn(
     effective_task_id: str,
     turn_id: str = "",
     should_review_memory: bool = False,
+    raphael_decision: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """Codex app-server runtime path. Hands the entire turn to a `codex
     app-server` subprocess and projects its events back into Hermes'
@@ -511,7 +512,8 @@ def run_codex_app_server_turn(
     if turn.projected_messages:
         messages.extend(turn.projected_messages)
 
-        # Persist the newly-projected assistant/tool messages ourselves.
+        # Persist the newly-projected assistant/tool messages ourselves after
+        # shared Raphael finalization and output transforms below.
         # This path is an early return that bypasses conversation_loop, whose
         # normal per-step _persist_session() calls would otherwise flush them.
         # The inbound user turn was already flushed at turn start
@@ -523,16 +525,6 @@ def run_codex_app_server_turn(
         # we avoid the #860/#42039 duplicate user-message write (append_message
         # is a raw INSERT with no dedup, so a gateway re-write would duplicate
         # the already-flushed user turn). See gateway/run.py agent_persisted.
-        if getattr(agent, "_session_db", None) is not None:
-            try:
-                agent._flush_messages_to_session_db(messages)
-            except Exception:
-                logger.debug(
-                    "codex app-server projected-message flush failed",
-                    exc_info=True,
-                )
-
-
     # Counter ticks for the agent-improvement loop.
     # _turns_since_memory and _user_turn_count are ALREADY incremented
     # in the run_conversation() pre-loop block (lines ~11793-11817) so we
@@ -547,8 +539,25 @@ def run_codex_app_server_turn(
     usage_result = _record_codex_app_server_usage(agent, turn)
     api_calls = 1
     final_text = turn.final_text
+    from agent.raphael.finalization import (
+        enforce_raphael_completion,
+        replace_terminal_assistant_response,
+    )
 
+    raphael_finalization = enforce_raphael_completion(
+        decision=raphael_decision,
+        final_response=final_text,
+        messages=messages,
+    )
+    final_text = raphael_finalization.final_response
     if final_text and not turn.interrupted:
+        replace_terminal_assistant_response(messages, final_text)
+
+    if (
+        final_text
+        and not turn.interrupted
+        and raphael_finalization.status != "blocked_unverified_completion"
+    ):
         for hook_result in _invoke_runtime_hook(
             "transform_llm_output",
             response_text=final_text,
@@ -558,6 +567,7 @@ def run_codex_app_server_turn(
         ):
             if isinstance(hook_result, str) and hook_result:
                 final_text = hook_result
+                replace_terminal_assistant_response(messages, final_text)
                 break
         _invoke_runtime_hook(
             "post_llm_call",
@@ -612,11 +622,24 @@ def run_codex_app_server_turn(
         except Exception:
             logger.debug("background review spawn raised", exc_info=True)
 
+    if getattr(agent, "_session_db", None) is not None:
+        try:
+            agent._flush_messages_to_session_db(messages)
+        except Exception:
+            logger.debug(
+                "codex app-server projected-message flush failed",
+                exc_info=True,
+            )
+
     return {
         "final_response": final_text,
         "messages": messages,
         "api_calls": api_calls,
-        "completed": not turn.interrupted and turn.error is None,
+        "completed": (
+            not turn.interrupted
+            and turn.error is None
+            and raphael_finalization.status != "blocked_unverified_completion"
+        ),
         "partial": turn.interrupted or turn.error is not None,
         "error": turn.error,
         # The codex app-server runtime IS an early-return path that bypasses
@@ -633,6 +656,7 @@ def run_codex_app_server_turn(
         "agent_persisted": True,
         "codex_thread_id": turn.thread_id,
         "codex_turn_id": turn.turn_id,
+        "raphael_finalization": raphael_finalization.to_dict(),
         **usage_result,
     }
 
