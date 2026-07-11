@@ -166,6 +166,7 @@ def format_raphael_proof_text(proofs: tuple[str, ...]) -> str:
 def _proof_item_text(proof: str) -> str:
     return {
         "focused_tests": "聚焦測試通過",
+        "diff_hygiene": "git diff hygiene 通過",
         "runtime_smoke_when_live_wiring": "live runtime smoke 通過",
         "runtime_smoke": "runtime smoke 通過",
         "reference_mapping_confirmed": "參考圖語意對應已確認",

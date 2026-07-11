@@ -10,7 +10,7 @@ from agent.raphael.config import raphael_effective_enabled
 from agent.raphael.evolution import read_evolution_records
 from agent.raphael.observer import build_raphael_observation_context
 from agent.raphael.skill_trace import render_skill_summary, summarize_skill_usage
-from agent.raphael.state import read_mission_state, read_state
+from agent.raphael.state import read_state
 from agent.raphael.status import collect_curator_health, render_status
 
 _DISABLED_MESSAGE = (
@@ -86,9 +86,10 @@ def handle_status(raw_args: str) -> str:
         return "Usage: /raphael-status"
     if not _raphael_enabled():
         return _DISABLED_MESSAGE
-    mission = read_mission_state()
+    state = read_state()
+    mission = state.active_mission
     return render_status(
-        read_state(),
+        state,
         max_cards=_max_status_cards(),
         evolution_records=read_evolution_records(limit=5),
         mission_state=mission.to_dict() if mission is not None else None,

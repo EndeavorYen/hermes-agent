@@ -1,7 +1,7 @@
 # Raphael Release Candidate Gate
 
-Phase 8 is the public release gate for the current Raphael module. It certifies
-the verified LLM control-layer slice and the OpenAI image slice. It still does
+This is the public release gate contract for Raphael. A fresh passing artifact
+can certify the verified LLM control-layer slice and the OpenAI image slice. It does
 not certify Grok Web Imagine, video, Slack/native media delivery, or full media
 readiness.
 
@@ -31,7 +31,7 @@ The command exits `0` only when:
 
 ## Public Claim
 
-Allowed:
+Allowed only when the matching machine-readable gate is fresh and passing:
 
 `Raphael release candidate is ready for verified LLM and OpenAI image slices.`
 
