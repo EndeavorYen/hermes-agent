@@ -143,6 +143,10 @@ def _write_render_fixture(
     output.parent.mkdir(parents=True)
     output.write_bytes(b"rendered video")
     manifest = {
+        "cards": {
+            "opening": {"status": "PASS", "duration_sec": 3.0},
+            "ending": {"status": "PASS", "duration_sec": 4.0},
+        },
         "timeline": {
             "motion_policy": motion_policy,
             "selected_shot_count": 8,
@@ -173,6 +177,11 @@ def _write_render_fixture(
                     "shot_density": {
                         "status": "PASS",
                         "selected_shot_count": 8,
+                    },
+                    "title_cards": {
+                        "status": "PASS",
+                        "opening": True,
+                        "ending": True,
                     },
                 },
             }
@@ -272,6 +281,7 @@ def test_control_status_returns_active_project_and_policy(tmp_path) -> None:
     assert result["project_dir"] == str(context.project_dir)
     assert result["phase"] == "planning"
     assert result["provider_policy"]["image"] == ["openai", "openai-codex"]
+    assert result["provider_policy"]["tts"] == ["azure"]
 
 
 def test_control_without_active_session_fails_closed(tmp_path) -> None:
@@ -388,6 +398,63 @@ def test_batch_validation_rejects_missing_and_duplicate_selected_shots(tmp_path)
     assert "duplicate selected asset files" in proof.violations
 
 
+def test_voice_validation_requires_locked_azure_profile_not_local_draft(tmp_path) -> None:
+    store, context = _active_context(tmp_path)
+    context = store.update(context, phase="voice")
+    audio = context.project_dir / "audio" / "S00.aiff"
+    audio.parent.mkdir(parents=True)
+    audio.write_bytes(b"local draft audio")
+    manifest_path = context.project_dir / "manifests" / "narration_manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "provider": "local",
+                "engine": "macOS say",
+                "voice": "Meijia",
+                "rate": 60,
+                "outputs": [{"scene_id": "S00", "audio": str(audio)}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert "production narration provider is local, expected azure" in proof.violations
+
+
+def test_voice_validation_accepts_locked_azure_narration_manifest(tmp_path) -> None:
+    store, context = _active_context(tmp_path)
+    context = store.update(context, phase="voice")
+    audio = context.project_dir / "audio" / "azure" / "S00.mp3"
+    audio.parent.mkdir(parents=True)
+    audio.write_bytes(b"azure production audio")
+    manifest_path = context.project_dir / "manifests" / "narration_manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "provider": "azure",
+                "engine": "Azure AI Speech",
+                "language": "zh-TW",
+                "voice_role": "narrator",
+                "voice": "zh-TW-HsiaoChenNeural",
+                "rate": "+6%",
+                "profile_status": "locked_by_user",
+                "voice_contract_status": "PASS",
+                "outputs": [{"scene_id": "S00", "audio": str(audio)}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is True
+
+
 def test_render_validation_requires_clean_provider_audit(tmp_path) -> None:
     store, context = _active_context(tmp_path)
     context = store.update(context, phase="render")
@@ -463,3 +530,33 @@ def test_render_validation_requires_shot_density_evidence(tmp_path) -> None:
     assert proof.ok is False
     assert "render manifest lacks selected-shot density evidence" in proof.violations
     assert "render QC lacks selected-shot density evidence" in proof.violations
+
+
+def test_render_validation_requires_opening_and_ending_cards(tmp_path) -> None:
+    store, context = _active_context(tmp_path)
+    context = store.update(context, phase="render")
+    _write_render_fixture(context)
+    for relative in ("render_manifest.json", "manifests/render_manifest.json"):
+        path = context.project_dir / relative
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        manifest["cards"].pop("ending")
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+    qc_path = context.project_dir / "render_qc.json"
+    qc = json.loads(qc_path.read_text(encoding="utf-8"))
+    qc["artifact_quality_evidence"]["title_cards"]["ending"] = False
+    qc_path.write_text(json.dumps(qc), encoding="utf-8")
+    ProviderAudit(context).append_event(
+        ProviderAuditEvent(
+            kind="api",
+            phase="render",
+            provider="openai-codex",
+            model="gpt-5.6-sol",
+            status="ok",
+        )
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert "render manifest lacks opening and ending cards" in proof.violations
+    assert "render QC lacks opening and ending card evidence" in proof.violations

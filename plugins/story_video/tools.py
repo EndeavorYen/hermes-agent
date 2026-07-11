@@ -243,11 +243,59 @@ def _validate_batch(context: StoryVideoRunContext) -> PhaseProof:
 
 
 def _validate_voice(context: StoryVideoRunContext) -> PhaseProof:
-    audio_dir = context.project_dir / "audio"
-    audio = tuple(audio_dir.glob("*.aiff")) + tuple(audio_dir.glob("*.wav")) + tuple(audio_dir.glob("*.mp3"))
-    if not audio:
-        return PhaseProof(phase="voice", ok=False, missing=("audio narration segments",))
-    return PhaseProof(phase="voice", ok=True)
+    manifest_path = context.project_dir / "manifests" / "narration_manifest.json"
+    manifest = _load_json(manifest_path)
+    if not isinstance(manifest, dict):
+        return PhaseProof(
+            phase="voice",
+            ok=False,
+            missing=("manifests/narration_manifest.json",),
+        )
+
+    missing: list[str] = []
+    violations: list[str] = []
+    provider = normalize_provider(str(manifest.get("provider") or ""))
+    if provider != "azure":
+        violations.append(
+            f"production narration provider is {provider or '<missing>'}, expected azure"
+        )
+    if str(manifest.get("engine") or "") != "Azure AI Speech":
+        violations.append("production narration engine is not Azure AI Speech")
+    if str(manifest.get("language") or "") != "zh-TW":
+        violations.append("production narration language is not zh-TW")
+    if str(manifest.get("profile_status") or "") != "locked_by_user":
+        violations.append("production narration profile is not locked_by_user")
+    if str(manifest.get("voice_contract_status") or "").upper() != "PASS":
+        violations.append("production narration voice contract is not PASS")
+    if not str(manifest.get("voice") or "").strip():
+        missing.append("narration voice")
+    if not str(manifest.get("rate") or "").strip():
+        missing.append("narration rate")
+
+    outputs = manifest.get("outputs")
+    if not isinstance(outputs, list) or not outputs:
+        missing.append("audio narration segments")
+    else:
+        for index, output in enumerate(outputs):
+            if not isinstance(output, dict):
+                missing.append(f"audio narration segment[{index}]")
+                continue
+            audio = str(output.get("audio") or "").strip()
+            if not audio:
+                missing.append(f"audio narration segment[{index}].audio")
+                continue
+            audio_path = Path(audio)
+            if not audio_path.is_absolute():
+                audio_path = context.project_dir / audio_path
+            if not _nonempty(audio_path):
+                missing.append(f"audio narration segment[{index}].audio_file")
+
+    return PhaseProof(
+        phase="voice",
+        ok=not missing and not violations,
+        missing=tuple(missing),
+        violations=tuple(violations),
+    )
 
 
 def _render_manifest_path(context: StoryVideoRunContext) -> Path | None:
@@ -292,6 +340,11 @@ def _render_artifact_violations(
         or int(timeline.get("selected_shot_count") or 0) <= 0
     ):
         violations.append("render manifest lacks selected-shot density evidence")
+    cards = manifest.get("cards")
+    if not isinstance(cards, dict) or not isinstance(
+        cards.get("opening"), dict
+    ) or not isinstance(cards.get("ending"), dict):
+        violations.append("render manifest lacks opening and ending cards")
 
     qc_rel = str(manifest.get("qc_report") or "render_qc.json").strip()
     qc = _load_json(context.project_dir / qc_rel)
@@ -319,6 +372,13 @@ def _render_artifact_violations(
         or int(shot_density.get("selected_shot_count") or 0) <= 0
     ):
         violations.append("render QC lacks selected-shot density evidence")
+    title_cards = evidence.get("title_cards") if isinstance(evidence, dict) else None
+    if not isinstance(title_cards, dict) or (
+        str(title_cards.get("status") or "").upper() != "PASS"
+        or title_cards.get("opening") is not True
+        or title_cards.get("ending") is not True
+    ):
+        violations.append("render QC lacks opening and ending card evidence")
     return missing, violations
 
 
