@@ -49,7 +49,7 @@ STORY_VIDEO_QUALITY_CONTROL_SCHEMA = {
             "candidates": {
                 "type": "array",
                 "minItems": 1,
-                "maxItems": 3,
+                "maxItems": 1,
                 "items": {
                     "type": "object",
                     "properties": {

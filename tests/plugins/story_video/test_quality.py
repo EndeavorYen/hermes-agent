@@ -142,9 +142,9 @@ def test_quality_ledger_rejects_three_consecutive_same_scales() -> None:
     assert "repeated_shot_scale_without_reason:wide:3" in report.violations
 
 
-def test_candidate_budget_uses_risk_class() -> None:
-    assert candidate_budget_for_shot(_shot(0, risk="high")) == 3
-    assert candidate_budget_for_shot(_shot(0, risk="normal")) == 2
+def test_initial_candidate_budget_is_one_for_every_risk_class() -> None:
+    assert candidate_budget_for_shot(_shot(0, risk="high")) == 1
+    assert candidate_budget_for_shot(_shot(0, risk="normal")) == 1
     assert candidate_budget_for_shot(_shot(0, risk="low")) == 1
 
 
