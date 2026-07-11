@@ -281,7 +281,7 @@ def test_control_status_returns_active_project_and_policy(tmp_path) -> None:
     assert result["project_dir"] == str(context.project_dir)
     assert result["phase"] == "planning"
     assert result["provider_policy"]["image"] == ["openai", "openai-codex"]
-    assert result["provider_policy"]["tts"] == ["azure"]
+    assert result["provider_policy"]["tts"] == ["local-qwen"]
 
 
 def test_control_without_active_session_fails_closed(tmp_path) -> None:
@@ -398,7 +398,7 @@ def test_batch_validation_rejects_missing_and_duplicate_selected_shots(tmp_path)
     assert "duplicate selected asset files" in proof.violations
 
 
-def test_voice_validation_requires_locked_azure_profile_not_local_draft(tmp_path) -> None:
+def test_voice_validation_rejects_local_macos_timing_draft(tmp_path) -> None:
     store, context = _active_context(tmp_path)
     context = store.update(context, phase="voice")
     audio = context.project_dir / "audio" / "S00.aiff"
@@ -422,12 +422,62 @@ def test_voice_validation_requires_locked_azure_profile_not_local_draft(tmp_path
     proof = validate_phase(context)
 
     assert proof.ok is False
-    assert "production narration provider is local, expected azure" in proof.violations
+    assert "production narration provider is local, expected local-qwen" in proof.violations
+
+
+def test_voice_validation_accepts_locked_local_qwen_narration_manifest(tmp_path) -> None:
+    store, context = _active_context(tmp_path)
+    context = store.update(context, phase="voice")
+    audio = context.project_dir / "audio" / "qwen" / "S00.wav"
+    audio.parent.mkdir(parents=True)
+    audio.write_bytes(b"local qwen production audio")
+    profile = context.project_dir / "voice_profiles" / "simon_primary.json"
+    profile.parent.mkdir(parents=True)
+    profile.write_text(
+        json.dumps(
+            {
+                "profile_id": "simon_primary",
+                "status": "locked_by_user",
+                "provider": "local_qwen",
+            }
+        ),
+        encoding="utf-8",
+    )
+    manifest_path = context.project_dir / "manifests" / "narration_manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "provider": "local_qwen",
+                "engine": "Qwen3-TTS via MLX-Audio",
+                "language": "zh-TW",
+                "voice_role": "narrator",
+                "voice": "simon_primary",
+                "rate": "1.06x",
+                "profile_status": "locked_by_user",
+                "voice_contract_status": "PASS",
+                "voice_profile": str(profile),
+                "model": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit",
+                "inference_mode": "offline",
+                "network_fallback": "forbidden",
+                "outputs": [{"scene_id": "S00", "audio": str(audio)}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is True
 
 
 def test_voice_validation_accepts_locked_azure_narration_manifest(tmp_path) -> None:
     store, context = _active_context(tmp_path)
-    context = store.update(context, phase="voice")
+    context = store.update(
+        context,
+        phase="voice",
+        provider_policy={**context.provider_policy, "tts": ["azure"]},
+    )
     audio = context.project_dir / "audio" / "azure" / "S00.mp3"
     audio.parent.mkdir(parents=True)
     audio.write_bytes(b"azure production audio")
