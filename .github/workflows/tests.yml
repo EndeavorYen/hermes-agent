@@ -129,7 +129,7 @@ jobs:
   # (including PRs) get balanced slicing.
   save-durations:
     needs: test
-    if: needs.test.result == 'success' && github.ref == 'refs/heads/main'
+    if: needs.test.result == 'success' && github.ref == 'refs/heads/local/main'
     runs-on: ubuntu-latest
     steps:
       - name: Download all slice durations
