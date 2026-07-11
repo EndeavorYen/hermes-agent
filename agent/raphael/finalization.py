@@ -56,8 +56,17 @@ def enforce_raphael_completion(
         if str(item).strip()
     )
     available = _available_proofs(messages, decision=decision)
-    missing = tuple(proof for proof in required if proof not in available)
     completion_policy = str(decision.get("completion_policy") or "informational")
+    missing = tuple(proof for proof in required if proof not in available)
+    if completion_policy in {"mutation", "visual"}:
+        missing = missing + tuple(
+            label
+            for label, value in (
+                ("turn_identity", decision.get("turn_id")),
+                ("mission_identity", decision.get("mission_id")),
+            )
+            if not str(value or "").strip()
+        )
     next_action = str(decision.get("next_action") or "collect required proof")
 
     if completion_policy not in {"mutation", "visual"}:

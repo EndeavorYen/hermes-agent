@@ -1,6 +1,6 @@
 # Raphael Production Control Kernel Design
 
-**Status:** Approved architecture, implementation pending
+**Status:** Implemented on `raphael/control-kernel-hardening`; release gates pending
 
 **Date:** 2026-07-11
 

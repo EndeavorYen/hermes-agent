@@ -58,8 +58,8 @@ def test_visual_handoff_preserves_provider_boundaries_without_live_claims():
     assert route.visual_handoff["tool_name"] == "visual_agent_generate"
     assert route.visual_handoff["base_llm_provider"] == "openai-codex"
     assert route.visual_handoff["base_llm_model"] == ""
-    assert route.visual_handoff["visual_agent_llm_provider"] == "xai-oauth"
-    assert route.visual_handoff["visual_agent_llm_model"] == ""
+    assert route.visual_handoff["visual_agent_llm_provider"] is None
+    assert route.visual_handoff["visual_agent_llm_model"] is None
     assert route.visual_handoff["visual_media_provider"] == "openai-codex"
     assert route.visual_handoff["visual_media_provider_source"] == "prompt_override"
     assert route.visual_handoff["live_generation_required"] is False

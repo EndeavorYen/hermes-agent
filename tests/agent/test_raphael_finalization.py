@@ -69,6 +69,30 @@ def test_tool_task_completion_passes_with_real_focused_test_evidence():
     assert result.available_proofs == ("focused_tests",)
 
 
+@pytest.mark.parametrize("missing_field", ("turn_id", "mission_id"))
+def test_completion_claim_fails_closed_when_decision_identity_is_empty(
+    missing_field,
+):
+    decision = _tool_task_decision()
+    decision[missing_field] = ""
+
+    result = enforce_raphael_completion(
+        decision=decision,
+        final_response="完成了，測試已通過。",
+        messages=(
+            {
+                "role": "tool",
+                "name": "exec_command",
+                "exit_code": 0,
+                "content": "pytest tests/foo.py -q\n1 passed",
+            },
+        ),
+    )
+
+    assert result.status == "blocked_unverified_completion"
+    assert f"{missing_field.removesuffix('_id')}_identity" in result.missing_proofs
+
+
 @pytest.mark.parametrize(
     "message",
     (

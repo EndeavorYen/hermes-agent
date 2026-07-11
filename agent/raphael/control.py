@@ -648,28 +648,36 @@ def _route_from_visual_plan(
 ) -> RaphaelRouteDecision:
     contract = plan.get("provider_contract")
     contract = contract if isinstance(contract, Mapping) else {}
+    provider_source = str(
+        arguments.get("image_provider_source") or "visual_agent_default"
+    )
+    prompt_override = provider_source == "prompt_override"
+    planner_model = _optional_route_text(contract.get("visual_agent_llm_model"))
     return RaphaelRouteDecision(
-        visual_agent_llm_provider=str(
-            contract.get("visual_agent_llm_provider") or VISUAL_AGENT_LLM_PROVIDER
+        visual_agent_llm_provider=(
+            _optional_route_text(contract.get("visual_agent_llm_provider"))
+            if planner_model
+            else None
         ),
-        visual_agent_llm_model=str(
-            contract.get("visual_agent_llm_model") or VISUAL_AGENT_LLM_MODEL
+        visual_agent_llm_model=planner_model,
+        visual_media_provider=(
+            _optional_route_text(
+                arguments.get("image_provider")
+                or contract.get("visual_media_provider_override")
+            )
+            if prompt_override
+            else None
         ),
-        visual_media_provider=str(
-            arguments.get("image_provider")
-            or contract.get("visual_media_provider_override")
-            or contract.get("visual_media_provider_default")
-            or VISUAL_MEDIA_PROVIDER_DEFAULT
-        ),
-        visual_media_model=str(
-            contract.get("visual_media_model_default") or VISUAL_MEDIA_MODEL_DEFAULT
-        ),
-        visual_media_provider_source=str(
-            arguments.get("image_provider_source") or "visual_agent_default"
-        ),
+        visual_media_model=None,
+        visual_media_provider_source=provider_source,
         handoff_tool="visual_agent_generate",
         bypass_base_llm=True,
     )
+
+
+def _optional_route_text(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
 
 
 def _video_required_proofs(arguments: Mapping[str, Any]) -> tuple[str, ...]:
