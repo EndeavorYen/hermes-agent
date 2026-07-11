@@ -70,6 +70,25 @@ class TestApiModeAccepted:
         agent = _make_codex_agent()
         assert agent.api_mode == "codex_app_server"
 
+    def test_app_server_agent_does_not_require_an_api_key_or_http_client(self):
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            side_effect=AssertionError("app-server must not build an HTTP client"),
+        ):
+            agent = run_agent.AIAgent(
+                api_key="",
+                base_url="codex-app-server://local",
+                provider="openai-codex",
+                api_mode="codex_app_server",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        assert agent.api_mode == "codex_app_server"
+        assert agent.client is None
+        assert agent._client_kwargs == {}
+
 
 class TestRunConversationCodexPath:
     def test_run_conversation_returns_codex_shape(self, fake_session):
@@ -759,4 +778,3 @@ class TestCodexToolProgressBridge:
 
         assert "on_event" in captured_init and captured_init["on_event"] is not None
         assert ("tool.started", "exec_command", "pytest") in events
-

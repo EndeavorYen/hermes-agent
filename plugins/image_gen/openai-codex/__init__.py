@@ -24,6 +24,7 @@ import base64
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
@@ -157,9 +158,55 @@ def _read_codex_access_token() -> Optional[str]:
         token = _reader()
         if isinstance(token, str) and token.strip():
             return token.strip()
-        return None
     except Exception as exc:
         logger.debug("Could not resolve Codex access token: %s", exc)
+    if not _codex_app_server_enabled():
+        return None
+    return _read_codex_cli_access_token()
+
+
+def _codex_app_server_enabled() -> bool:
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        model = cfg.get("model") if isinstance(cfg, dict) else None
+        return (
+            isinstance(model, dict)
+            and str(model.get("openai_runtime") or "").strip().lower()
+            == "codex_app_server"
+        )
+    except Exception:
+        return False
+
+
+def _read_codex_cli_access_token() -> Optional[str]:
+    """Read Codex CLI access_token without refreshing or mutating auth state."""
+    codex_home = Path(
+        os.environ.get("CODEX_HOME") or (Path.home() / ".codex")
+    ).expanduser()
+    path = codex_home / "auth.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or payload.get("auth_mode") != "chatgpt":
+            return None
+        tokens = payload.get("tokens")
+        token = tokens.get("access_token") if isinstance(tokens, dict) else None
+        if not isinstance(token, str) or not token.strip():
+            return None
+        normalized = token.strip()
+        try:
+            encoded = normalized.split(".")[1]
+            encoded += "=" * (-len(encoded) % 4)
+            claims = json.loads(base64.urlsafe_b64decode(encoded))
+            expires_at = float(claims.get("exp") or 0)
+            if expires_at and time.time() >= expires_at:
+                return None
+        except Exception:
+            pass
+        return normalized
+    except Exception as exc:
+        logger.debug("Could not read Codex CLI access token: %s", exc)
         return None
 
 

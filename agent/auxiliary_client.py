@@ -1147,7 +1147,11 @@ class _CodexCompletionsAdapter:
             message=message,
             finish_reason="stop" if not tool_calls_raw else "tool_calls",
         )
+        response_id = getattr(final, "id", None)
+        if response_id is None and isinstance(final, dict):
+            response_id = final.get("id") or final.get("response_id")
         return SimpleNamespace(
+            id=str(response_id or ""),
             choices=[choice],
             model=model,
             usage=usage,
@@ -1779,25 +1783,67 @@ def _read_codex_access_token() -> Optional[str]:
         tokens = data.get("tokens", {})
         access_token = tokens.get("access_token")
         if not isinstance(access_token, str) or not access_token.strip():
-            return None
+            access_token = None
 
         # Check JWT expiry — expired tokens block the auto chain and
         # prevent fallback to working providers (e.g. Anthropic).
-        try:
-            import base64
-            payload = access_token.split(".")[1]
-            payload += "=" * (-len(payload) % 4)
-            claims = json.loads(base64.urlsafe_b64decode(payload))
-            exp = claims.get("exp", 0)
-            if exp and time.time() > exp:
-                logger.debug("Codex access token expired (exp=%s), skipping", exp)
-                return None
-        except Exception:
-            pass  # Non-JWT token or decode error — use as-is
+        if access_token:
+            try:
+                import base64
+                payload = access_token.split(".")[1]
+                payload += "=" * (-len(payload) % 4)
+                claims = json.loads(base64.urlsafe_b64decode(payload))
+                exp = claims.get("exp", 0)
+                if exp and time.time() > exp:
+                    logger.debug("Codex access token expired (exp=%s), skipping", exp)
+                    access_token = None
+            except Exception:
+                pass  # Non-JWT token or decode error — use as-is
 
-        return access_token.strip()
+        if access_token:
+            return access_token.strip()
     except Exception as exc:
         logger.debug("Could not read Codex auth for auxiliary client: %s", exc)
+    return _read_codex_cli_access_token_for_app_server()
+
+
+def _read_codex_cli_access_token_for_app_server() -> Optional[str]:
+    """Read Codex CLI access_token without refreshing or mutating auth state."""
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config() or {}
+        model = config.get("model") if isinstance(config, dict) else None
+        if not isinstance(model, dict) or (
+            str(model.get("openai_runtime") or "").strip().lower()
+            != "codex_app_server"
+        ):
+            return None
+        codex_home = Path(
+            os.environ.get("CODEX_HOME") or (Path.home() / ".codex")
+        ).expanduser()
+        payload = json.loads((codex_home / "auth.json").read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or payload.get("auth_mode") != "chatgpt":
+            return None
+        tokens = payload.get("tokens")
+        token = tokens.get("access_token") if isinstance(tokens, dict) else None
+        if not isinstance(token, str) or not token.strip():
+            return None
+        normalized = token.strip()
+        try:
+            import base64
+
+            encoded = normalized.split(".")[1]
+            encoded += "=" * (-len(encoded) % 4)
+            claims = json.loads(base64.urlsafe_b64decode(encoded))
+            expires_at = float(claims.get("exp") or 0)
+            if expires_at and time.time() >= expires_at:
+                return None
+        except Exception:
+            pass
+        return normalized
+    except Exception as exc:
+        logger.debug("Could not read Codex CLI auth for auxiliary client: %s", exc)
         return None
 
 

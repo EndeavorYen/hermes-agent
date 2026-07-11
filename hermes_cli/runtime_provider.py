@@ -1655,6 +1655,25 @@ def resolve_runtime_provider(
         explicit_base_url=explicit_base_url,
     )
     model_cfg = _get_model_config()
+    if (
+        _maybe_apply_codex_app_server_runtime(
+            provider=provider,
+            api_mode="codex_responses",
+            model_cfg=model_cfg,
+        )
+        == "codex_app_server"
+    ):
+        # Codex app-server owns its login/session lifecycle. Resolving Hermes'
+        # OAuth store or credential pool here incorrectly blocks users who are
+        # already signed in through Codex.app / the Codex CLI.
+        return {
+            "provider": provider,
+            "api_mode": "codex_app_server",
+            "base_url": "codex-app-server://local",
+            "api_key": "",
+            "source": "codex-app-server",
+            "requested_provider": requested_provider,
+        }
     explicit_runtime = _resolve_explicit_runtime(
         provider=provider,
         requested_provider=requested_provider,

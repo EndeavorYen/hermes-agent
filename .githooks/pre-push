@@ -1,0 +1,6 @@
+#!/bin/sh
+# Use the current worktree so a governance change can validate and push its
+# own updated guard instead of being evaluated by a stale sibling checkout.
+# GitHub branch protection remains the authoritative anti-bypass control.
+REPO_ROOT=$(git rev-parse --show-toplevel) || exit 1
+exec python3 "$REPO_ROOT/scripts/hermes_branch_governance.py" pre-push "$@"

@@ -1,14 +1,21 @@
 from __future__ import annotations
 
-from . import hooks, schemas, tools
+from . import hooks, schemas, tools, visual_judge
 
 
 def register(ctx) -> None:
+    visual_judge.configure_plugin_llm(ctx.llm)
     ctx.register_tool(
         name="story_video_control",
         toolset="story_video",
         schema=schemas.STORY_VIDEO_CONTROL_SCHEMA,
         handler=tools.story_video_control,
+    )
+    ctx.register_tool(
+        name="story_video_quality_control",
+        toolset="story_video",
+        schema=schemas.STORY_VIDEO_QUALITY_CONTROL_SCHEMA,
+        handler=visual_judge.story_video_quality_control,
     )
     for name, callback in (
         ("pre_gateway_dispatch", hooks.pre_gateway_dispatch),

@@ -21,6 +21,66 @@ def _event(text: str):
     )
 
 
+def _write_planning_fixture(context) -> None:
+    (context.project_dir / "script.md").write_text("final narration script", encoding="utf-8")
+    scales = ("close_up", "medium", "wide", "macro", "medium", "insert", "medium", "establishing")
+    shots = [
+        {
+            "shot_id": f"S00_SH{index:02d}",
+            "narration_text": f"第 {index} 個旁白片段",
+            "narrative_role": "evidence",
+            "viewer_takeaway": "觀眾看懂一個具體證據",
+            "subject": "可辨識的主要證據",
+            "action": "主體執行與旁白相符的動作",
+            "evidence_detail": "關鍵細節清楚可見",
+            "shot_scale": scales[index % len(scales)],
+            "camera_angle": "eye level",
+            "focal_point": "primary evidence",
+            "subtitle_safe_area": "bottom 20 percent clear",
+            "acceptance_criteria": ["evidence is immediately readable"],
+            "risk_class": "normal",
+        }
+        for index in range(40)
+    ]
+    ledger = {
+        "schema": "story_video_scene_ledger_v2",
+        "production_type": "science_explainer",
+        "target_duration_sec": 300,
+        "visual_style": "photoreal professional science documentary",
+        "scenes": [
+            {
+                "scene_id": "S00",
+                "narrative_role": "evidence",
+                "viewer_takeaway": "觀眾看懂一個具體證據",
+                "shots": shots,
+            }
+        ],
+    }
+    (context.project_dir / "PROJECT_CONTRACT.md").write_text("contract", encoding="utf-8")
+    (context.project_dir / "storyboard.md").write_text("storyboard", encoding="utf-8")
+    (context.project_dir / "scene_ledger.json").write_text(
+        json.dumps(ledger), encoding="utf-8"
+    )
+    (context.project_dir / "production_checklist.json").write_text(
+        json.dumps({"quality_mode": "quality_first"}), encoding="utf-8"
+    )
+    (context.project_dir / "script_quality_report.json").write_text(
+        json.dumps(
+            {
+                "schema": "story_video_script_quality_v1",
+                "quality_contract_version": 2,
+                "status": "PASS",
+                "checks": {
+                    "visual_evidence": "PASS",
+                    "narrative_roles": "PASS",
+                    "claim_confidence": "PASS",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_gateway_rewrites_short_start_with_structured_context(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(hooks, "_STORE", StoryVideoStateStore(tmp_path))
 
@@ -76,6 +136,9 @@ def test_pre_llm_creates_context_and_injects_provider_policy(tmp_path, monkeypat
     assert "story_video_control" in result["context"]
     assert "Complete the current phase in this turn" in result["context"]
     assert "Do not inspect other story-video projects" in result["context"]
+    assert "story-video-script-director" in result["context"]
+    assert "script_quality_report.json" in result["context"]
+    assert "40-60" in result["context"]
 
 
 def test_pre_llm_creates_context_for_direct_cli_story_video_request(
@@ -159,10 +222,7 @@ def test_transform_output_uses_phase_next_call(tmp_path, monkeypatch) -> None:
     hooks.pre_llm_call(session_id="session-1", user_message=rewritten["text"])
     context = store.for_session("session-1")
     assert context is not None
-    (context.project_dir / "PROJECT_CONTRACT.md").write_text("contract", encoding="utf-8")
-    (context.project_dir / "storyboard.md").write_text("storyboard", encoding="utf-8")
-    (context.project_dir / "scene_ledger.json").write_text("{}", encoding="utf-8")
-    (context.project_dir / "production_checklist.json").write_text("{}", encoding="utf-8")
+    _write_planning_fixture(context)
 
     result = hooks.transform_llm_output(
         response_text="規劃檔案已建立。",
@@ -226,10 +286,7 @@ def test_transform_output_auto_validates_current_phase_once(tmp_path, monkeypatc
     hooks.pre_llm_call(session_id="session-1", user_message=rewritten["text"])
     context = store.for_session("session-1")
     assert context is not None
-    (context.project_dir / "PROJECT_CONTRACT.md").write_text("contract", encoding="utf-8")
-    (context.project_dir / "storyboard.md").write_text("storyboard", encoding="utf-8")
-    (context.project_dir / "scene_ledger.json").write_text("{}", encoding="utf-8")
-    (context.project_dir / "production_checklist.json").write_text("{}", encoding="utf-8")
+    _write_planning_fixture(context)
 
     result = hooks.transform_llm_output(
         response_text="規劃文件已全部完成。",
@@ -254,10 +311,7 @@ def test_transform_output_does_not_validate_new_phase_after_explicit_advance(
     hooks.pre_llm_call(session_id="session-1", user_message=rewritten["text"])
     context = store.for_session("session-1")
     assert context is not None
-    (context.project_dir / "PROJECT_CONTRACT.md").write_text("contract", encoding="utf-8")
-    (context.project_dir / "storyboard.md").write_text("storyboard", encoding="utf-8")
-    (context.project_dir / "scene_ledger.json").write_text("{}", encoding="utf-8")
-    (context.project_dir / "production_checklist.json").write_text("{}", encoding="utf-8")
+    _write_planning_fixture(context)
     proof = json.loads(
         story_video_control(
             {"action": "validate"}, session_id="session-1", store=store

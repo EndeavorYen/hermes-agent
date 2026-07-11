@@ -1,5 +1,6 @@
 name: story-video
-version: 0.2.0
-description: Stateful story-video control, OpenAI-only network provider policy, audit, and phase proof.
+version: 0.3.0
+description: Stateful shot-driven story-video control, OpenAI-only generation and vision selection, audit, and phase proof.
 provides_tools:
   - story_video_control
+  - story_video_quality_control

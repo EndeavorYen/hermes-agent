@@ -532,6 +532,81 @@ class TestReadCodexAccessToken:
         result = _read_codex_access_token()
         assert result == "plain-token-no-jwt"
 
+    def test_app_server_mode_falls_back_to_codex_cli_token_read_only(
+        self, tmp_path, monkeypatch
+    ):
+        import base64
+        import time as _time
+
+        payload = base64.urlsafe_b64encode(
+            json.dumps({"exp": int(_time.time()) + 3600}).encode()
+        ).rstrip(b"=").decode()
+        token = f"header.{payload}.sig"
+        codex_home = tmp_path / "codex-home"
+        codex_home.mkdir()
+        auth_path = codex_home / "auth.json"
+        auth_path.write_text(
+            json.dumps(
+                {
+                    "auth_mode": "chatgpt",
+                    "tokens": {
+                        "access_token": token,
+                        "refresh_token": "must-not-be-used",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        before = auth_path.read_bytes()
+        monkeypatch.setenv("CODEX_HOME", str(codex_home))
+        monkeypatch.setattr(
+            "agent.auxiliary_client._select_pool_entry", lambda _provider: (False, None)
+        )
+        monkeypatch.setattr(
+            "hermes_cli.auth._read_codex_tokens",
+            lambda: (_ for _ in ()).throw(
+                RuntimeError("Hermes OAuth store is empty")
+            ),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"model": {"openai_runtime": "codex_app_server"}},
+        )
+
+        assert _read_codex_access_token() == token
+        assert auth_path.read_bytes() == before
+
+    def test_codex_cli_token_is_not_used_when_app_server_is_disabled(
+        self, tmp_path, monkeypatch
+    ):
+        codex_home = tmp_path / "codex-home"
+        codex_home.mkdir()
+        (codex_home / "auth.json").write_text(
+            json.dumps(
+                {
+                    "auth_mode": "chatgpt",
+                    "tokens": {"access_token": "cli-token"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("CODEX_HOME", str(codex_home))
+        monkeypatch.setattr(
+            "agent.auxiliary_client._select_pool_entry", lambda _provider: (False, None)
+        )
+        monkeypatch.setattr(
+            "hermes_cli.auth._read_codex_tokens",
+            lambda: (_ for _ in ()).throw(
+                RuntimeError("Hermes OAuth store is empty")
+            ),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"model": {"openai_runtime": "auto"}},
+        )
+
+        assert _read_codex_access_token() is None
+
 
 class TestResolveXaiOAuthForAux:
     def test_uses_pool_backed_credentials_without_singleton(self, tmp_path, monkeypatch):
@@ -3837,12 +3912,13 @@ class TestCodexAdapterReasoningTranslation:
 
     def test_reasoning_effort_medium_translated_to_top_level(self):
         adapter, captured = self._build_adapter()
-        adapter.create(
+        response = adapter.create(
             messages=[{"role": "user", "content": "hi"}],
             extra_body={"reasoning": {"effort": "medium"}},
         )
         assert captured.get("reasoning") == {"effort": "medium", "summary": "auto"}
         assert captured.get("include") == ["reasoning.encrypted_content"]
+        assert response.id == "resp_test"
 
     def test_reasoning_effort_minimal_clamped_to_low(self):
         """Codex backend rejects 'minimal'; adapter clamps to 'low' per main transport."""
