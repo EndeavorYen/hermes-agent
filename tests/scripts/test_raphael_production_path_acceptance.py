@@ -36,8 +36,8 @@ def _report(**overrides):
             "isolated_feature_smoke": "passed",
         },
         "reviews": {
-            "codex": {"status": "pass", "head": "abc123"},
-            "grok": {"status": "pass", "head": "abc123"},
+            "codex": {"status": "pass", "head": "abc123", "ready_for_pr": True},
+            "grok": {"status": "pass", "head": "abc123", "ready_for_pr": True},
         },
         "privacy_safe": True,
     }
@@ -63,13 +63,34 @@ def test_acceptance_rejects_review_for_different_head():
     report = _report(
         reviews={
             "codex": {"status": "pass", "head": "older"},
-            "grok": {"status": "pass", "head": "abc123"},
+            "grok": {"status": "pass", "head": "abc123", "ready_for_pr": True},
         }
     )
 
     result = validate_acceptance(report)
 
     assert "codex_review_head_mismatch" in result.blocking_reasons
+
+
+def test_acceptance_rejects_review_that_is_not_ready_for_pr():
+    report = _report(
+        reviews={
+            "codex": {
+                "status": "pass",
+                "head": "abc123",
+                "ready_for_pr": False,
+            },
+            "grok": {
+                "status": "pass",
+                "head": "abc123",
+                "ready_for_pr": True,
+            },
+        }
+    )
+
+    result = validate_acceptance(report)
+
+    assert "codex_review_not_ready_for_pr" in result.blocking_reasons
 
 
 def test_pr_gate_rejects_main_even_when_remote_reports_main_default():

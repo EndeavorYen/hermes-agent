@@ -73,6 +73,8 @@ def evaluate_pr_target(*, default_branch: str) -> PrTargetGate:
 def validate_acceptance(report: Mapping[str, Any]) -> AcceptanceValidation:
     reasons: list[str] = []
     feature_head = str(report.get("feature_head") or "")
+    if not feature_head:
+        reasons.append("feature_head_missing")
     scenarios = report.get("scenarios")
     scenario_status = {
         str(item.get("scenario_id") or ""): str(item.get("status") or "")
@@ -101,6 +103,8 @@ def validate_acceptance(report: Mapping[str, Any]) -> AcceptanceValidation:
             continue
         if str(review.get("status") or "").lower() != "pass":
             reasons.append(f"{reviewer}_review_failed")
+        if review.get("ready_for_pr") is not True:
+            reasons.append(f"{reviewer}_review_not_ready_for_pr")
         if str(review.get("head") or "") != feature_head:
             reasons.append(f"{reviewer}_review_head_mismatch")
         if _has_blocking_findings(review.get("findings")):
