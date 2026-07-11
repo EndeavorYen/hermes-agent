@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .audit import ProviderAudit, normalize_provider
+from .quality import CLOSE_EVIDENCE_SCALES, QUALITY_THRESHOLD, validate_quality_ledger
 from .state import PHASES, StoryVideoRunContext, StoryVideoStateStore
 
 
@@ -42,15 +43,46 @@ def _validate_planning(context: StoryVideoRunContext) -> PhaseProof:
         "storyboard.md",
         "scene_ledger.json",
         "production_checklist.json",
+        "script_quality_report.json",
     )
     missing = tuple(
         name for name in required if not _nonempty(context.project_dir / name)
     )
     violations: list[str] = []
-    for name in ("scene_ledger.json", "production_checklist.json"):
+    parsed: dict[str, Any] = {}
+    for name in (
+        "scene_ledger.json",
+        "production_checklist.json",
+        "script_quality_report.json",
+    ):
         path = context.project_dir / name
-        if name not in missing and _load_json(path) is None:
+        if name in missing:
+            continue
+        payload = _load_json(path)
+        if payload is None:
             violations.append(f"{name} is not valid JSON")
+        else:
+            parsed[name] = payload
+    ledger = parsed.get("scene_ledger.json")
+    if isinstance(ledger, dict):
+        violations.extend(validate_quality_ledger(ledger).violations)
+    report = parsed.get("script_quality_report.json")
+    if isinstance(report, dict):
+        status = str(report.get("status") or "").upper()
+        if status != "PASS":
+            violations.append(f"script_quality_report.status={status or '<missing>'}")
+        try:
+            version = int(report.get("quality_contract_version"))
+        except (TypeError, ValueError):
+            version = 0
+        if version < 2:
+            violations.append("script_quality_report.quality_contract_version<2")
+        checks = report.get("checks")
+        required_checks = ("visual_evidence", "narrative_roles", "claim_confidence")
+        if not isinstance(checks, dict) or any(
+            str(checks.get(name) or "").upper() != "PASS" for name in required_checks
+        ):
+            violations.append("script_quality_report required checks are not PASS")
     return PhaseProof(
         phase="planning",
         ok=not missing and not violations,
@@ -74,17 +106,62 @@ def _selected_outputs(manifest: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _validate_keyframes(context: StoryVideoRunContext) -> PhaseProof:
-    rel = "manifests/scene_generation_manifest.json"
+    rel = "manifests/shot_candidate_manifest.json"
     manifest = _load_json(context.project_dir / rel)
     if not isinstance(manifest, dict):
         return PhaseProof(phase="keyframes", ok=False, missing=(rel,))
     provider = normalize_provider(manifest.get("provider"))
+    judge_provider = normalize_provider(manifest.get("judge_provider"))
     selected = _selected_outputs(manifest)
     violations: list[str] = []
     if provider not in {"openai", "openai-codex"}:
         violations.append(f"source provider is {provider or '<missing>'}, not OpenAI")
     if not selected:
         violations.append("no selected current keyframe output")
+    if judge_provider not in {"openai", "openai-codex"}:
+        violations.append(
+            f"keyframe judge provider is {judge_provider or '<missing>'}, not OpenAI"
+        )
+    evidence_missing = False
+    scales: set[str] = set()
+    close_evidence = False
+    for output in selected:
+        output_provider = normalize_provider(output.get("provider"))
+        output_judge = normalize_provider(output.get("judge_provider"))
+        prompt_path = str(output.get("prompt_path") or "").strip()
+        local_path = str(output.get("local_path") or "").strip()
+        vision = output.get("vision_evidence")
+        blockers = output.get("hard_blockers")
+        try:
+            score = float(output.get("quality_score"))
+        except (TypeError, ValueError):
+            score = 0.0
+        if (
+            output_provider not in {"openai", "openai-codex"}
+            or output_judge not in {"openai", "openai-codex"}
+            or score < QUALITY_THRESHOLD
+            or not prompt_path
+            or not _nonempty(context.project_dir / prompt_path)
+            or not local_path
+            or not _nonempty(context.project_dir / local_path)
+            or not isinstance(blockers, list)
+            or bool(blockers)
+            or not isinstance(vision, dict)
+            or str(vision.get("status") or "").upper() != "PASS"
+            or not str(vision.get("response_id") or "").startswith(
+                ("resp_", "openai-response:", "codex-openai-vision-review:")
+            )
+        ):
+            evidence_missing = True
+        scale = str(output.get("shot_scale") or "").strip().lower()
+        if scale:
+            scales.add(scale)
+        if scale in CLOSE_EVIDENCE_SCALES:
+            close_evidence = True
+    if evidence_missing:
+        violations.append("selected keyframe missing OpenAI vision score evidence")
+    if selected and (len(scales) < 2 or not close_evidence):
+        violations.append("keyframes do not prove representative shot-scale coverage")
     return PhaseProof(
         phase="keyframes",
         ok=not violations,
@@ -104,25 +181,66 @@ def _validate_batch(context: StoryVideoRunContext) -> PhaseProof:
             ok=False,
             violations=("scene ledger has no scenes",),
         )
+    quality = validate_quality_ledger(ledger if isinstance(ledger, dict) else {})
+    violations: list[str] = list(quality.violations)
+    manifest = _load_json(
+        context.project_dir / "manifests" / "shot_candidate_manifest.json"
+    )
+    outputs = (
+        manifest.get("outputs")
+        if isinstance(manifest, dict) and isinstance(manifest.get("outputs"), list)
+        else []
+    )
+    selected_by_shot: dict[str, list[dict[str, Any]]] = {}
+    for output in outputs:
+        if not isinstance(output, dict) or output.get("selected") is not True:
+            continue
+        shot_id = str(output.get("shot_id") or "").strip()
+        if shot_id:
+            selected_by_shot.setdefault(shot_id, []).append(output)
+
     missing: list[str] = []
+    selected_paths: list[Path] = []
     for index, scene in enumerate(scenes):
         if not isinstance(scene, dict):
-            missing.append(f"scene[{index}].selected_asset")
+            missing.append(f"scene[{index}].shots")
             continue
-        asset = (
-            scene.get("selected_asset")
-            or scene.get("selected_asset_path")
-            or scene.get("image")
-        )
-        if not asset:
-            missing.append(f"{scene.get('scene_id') or index}.selected_asset")
+        scene_id = str(scene.get("scene_id") or index)
+        shots = scene.get("shots")
+        if not isinstance(shots, list):
+            missing.append(f"{scene_id}.shots")
             continue
-        path = Path(str(asset))
-        if not path.is_absolute():
-            path = context.project_dir / path
-        if not path.exists():
-            missing.append(f"{scene.get('scene_id') or index}.selected_asset_file")
-    return PhaseProof(phase="batch", ok=not missing, missing=tuple(missing))
+        for shot_index, shot in enumerate(shots):
+            if not isinstance(shot, dict):
+                missing.append(f"{scene_id}.shot[{shot_index}].selected_asset")
+                continue
+            shot_id = str(shot.get("shot_id") or f"{scene_id}_SH{shot_index:02d}")
+            rows = selected_by_shot.get(shot_id, [])
+            if len(rows) > 1:
+                violations.append(f"{shot_id} has multiple selected candidates")
+            asset = shot.get("selected_asset_path") or shot.get("selected_asset")
+            if not asset and len(rows) == 1:
+                asset = rows[0].get("local_path")
+            if not asset:
+                missing.append(f"{shot_id}.selected_asset")
+                continue
+            path = Path(str(asset))
+            if not path.is_absolute():
+                path = context.project_dir / path
+            if not _nonempty(path):
+                missing.append(f"{shot_id}.selected_asset_file")
+                continue
+            selected_paths.append(path.resolve())
+            if len(rows) != 1:
+                violations.append(f"{shot_id} lacks exactly one selected candidate audit row")
+    if len(selected_paths) != len(set(selected_paths)):
+        violations.append("duplicate selected asset files")
+    return PhaseProof(
+        phase="batch",
+        ok=not missing and not violations,
+        missing=tuple(missing),
+        violations=tuple(violations),
+    )
 
 
 def _validate_voice(context: StoryVideoRunContext) -> PhaseProof:
@@ -168,6 +286,13 @@ def _render_artifact_violations(
         token in motion_policy for token in ("zoom", "pan", "motion")
     ):
         violations.append("primary render has no non-static motion policy")
+    timeline = manifest.get("timeline")
+    if not isinstance(timeline, dict) or (
+        str(timeline.get("shot_density_status") or "").upper() != "PASS"
+        or not isinstance(timeline.get("selected_shot_count"), int)
+        or int(timeline.get("selected_shot_count") or 0) <= 0
+    ):
+        violations.append("render manifest lacks selected-shot density evidence")
 
     qc_rel = str(manifest.get("qc_report") or "render_qc.json").strip()
     qc = _load_json(context.project_dir / qc_rel)
@@ -188,6 +313,13 @@ def _render_artifact_violations(
         str(motion.get("status") or "").upper() != "PASS"
     ):
         violations.append("render QC lacks non-static motion evidence")
+    shot_density = evidence.get("shot_density") if isinstance(evidence, dict) else None
+    if not isinstance(shot_density, dict) or (
+        str(shot_density.get("status") or "").upper() != "PASS"
+        or not isinstance(shot_density.get("selected_shot_count"), int)
+        or int(shot_density.get("selected_shot_count") or 0) <= 0
+    ):
+        violations.append("render QC lacks selected-shot density evidence")
     return missing, violations
 
 

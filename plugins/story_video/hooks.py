@@ -64,6 +64,9 @@ def _write_project_contract(context: StoryVideoRunContext) -> None:
                 "- TTS provider: OpenAI when configured, otherwise locked local narration; no Edge/xAI fallback",
                 "- Timeline: narration duration + 0.85s; max unreasoned hold 1.5s",
                 "- Motion: stable center zoom 1.0 -> 1.025",
+                "- Quality mode: quality-first shot-driven production",
+                "- Five-minute shot target: 40-60 purpose-built shots",
+                "- Candidate selection: OpenAI vision, threshold 80/100, no first-success promotion",
                 "",
                 "## Original Request",
                 "",
@@ -147,9 +150,15 @@ def pre_llm_call(
         "narration/render components only; generic text_to_speech is forbidden. "
         "Complete the current phase in this turn; do not stop after announcing "
         "what you will do. During planning, immediately create storyboard.md, "
-        "scene_ledger.json, and production_checklist.json in project_dir from "
-        "the original request; PROJECT_CONTRACT.md already exists. Do not inspect "
-        "other story-video projects, source code, memory, or skills, and do not "
+        "scene_ledger.json, production_checklist.json, and script_quality_report.json "
+        "in project_dir from the original request; PROJECT_CONTRACT.md already exists. "
+        "Apply the story-video-script-director and story-video-production-pipeline "
+        "quality contracts. A scene is a narrative unit and MUST contain purpose-built "
+        "shots with narration spans, viewer takeaway, subject, action, evidence detail, "
+        "shot scale, focal point, acceptance criteria, and risk class. Quality-first "
+        "five-minute productions target 40-60 shots with close-up evidence coverage. "
+        "Do not inspect other story-video projects, source code, memory, or unrelated "
+        "skills, and do not "
         "invoke brainstorming, nested Hermes sessions, web research, or media "
         "generation unless the operator explicitly requests them. The output gate "
         "validates the phase automatically. Use story_video_control only when it "
