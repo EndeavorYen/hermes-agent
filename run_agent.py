@@ -5794,6 +5794,7 @@ class AIAgent:
         effective_task_id: str,
         turn_id: str = "",
         should_review_memory: bool = False,
+        raphael_decision: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.codex_runtime.run_codex_app_server_turn``."""
         from agent.codex_runtime import run_codex_app_server_turn
@@ -5805,6 +5806,7 @@ class AIAgent:
             effective_task_id=effective_task_id,
             turn_id=turn_id,
             should_review_memory=should_review_memory,
+            raphael_decision=raphael_decision,
         )
 
 def main(
