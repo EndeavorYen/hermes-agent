@@ -22,6 +22,7 @@ def _report(**overrides):
                 "same_artifact_followup",
                 "provider_failure_classification",
                 "missing_proof",
+                "terminal_proof_pass",
                 "background_isolation",
                 "codex_transport_parity",
             )
@@ -117,10 +118,16 @@ def test_quota_free_scenarios_use_production_adapters_without_private_payloads()
         "same_artifact_followup",
         "provider_failure_classification",
         "missing_proof",
+        "terminal_proof_pass",
         "background_isolation",
         "codex_transport_parity",
     }
     assert all(scenario["status"] == "passed" for scenario in scenarios)
+    evidence_by_id = {
+        scenario["scenario_id"]: scenario["evidence"] for scenario in scenarios
+    }
+    assert evidence_by_id["terminal_proof_pass"]["finalization_status"] == "passed"
+    assert evidence_by_id["codex_transport_parity"]["finalization_status"] == "passed"
     serialized = json.dumps(scenarios, sort_keys=True)
     assert "/Users/" not in serialized
     assert "/private/" not in serialized

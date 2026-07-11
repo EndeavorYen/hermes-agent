@@ -159,8 +159,17 @@ def _handle_visual_agent_generate(args: dict[str, Any], **_kw: Any) -> str:
     except Exception:
         return raw
     if isinstance(payload, dict):
+        provider_contract = dict(plan.get("provider_contract") or {})
+        for key in (
+            "image_provider",
+            "image_model",
+            "video_provider",
+            "video_model",
+        ):
+            if args.get(key):
+                provider_contract[key] = args[key]
         payload["visual_agent_plan"] = plan
-        payload["visual_agent_provider_contract"] = plan.get("provider_contract")
+        payload["visual_agent_provider_contract"] = provider_contract
         if llm_plan is not None:
             payload["visual_agent_llm_plan"] = llm_plan
         payload["visual_agent_tool"] = "visual_agent_generate"

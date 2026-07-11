@@ -323,9 +323,15 @@ def extract_raphael_proof_events(
         if tool_name not in TRUSTED_PROOF_TOOLS:
             continue
         content = str(message.get("content") or "")
+        parsed_content = _parse_command_tool_content(content)
         success = _looks_like_successful_tool_output(message, content)
-        command = _first_line(content)
-        proof_type = _classify_proof_type(content.lower(), command.lower()) if success else None
+        command = _proof_command(message, parsed_content, content)
+        proof_content = _proof_output(parsed_content, content)
+        proof_type = (
+            _classify_proof_type(proof_content.lower(), command.lower())
+            if success
+            else None
+        )
         if proof_type:
             events.append(
                 RaphaelProofEvent(
@@ -481,15 +487,15 @@ def _classify_proof_type(content: str, command: str) -> str | None:
         return None
     if _command_is_echo_like(command):
         return None
-    if _command_mentions(command, "pytest") and "pytest" in content and any(
+    if _command_mentions(command, "pytest") and any(
         marker in content for marker in (" passed", "1 passed", "exit code 0")
     ):
         return "focused_tests"
-    if _command_mentions(command, "ruff") and "ruff" in content and "all checks passed" in content:
+    if _command_mentions(command, "ruff") and "all checks passed" in content:
         return "static_checks"
-    if _command_mentions(command, "git diff --check") and "git diff --check" in content and "exit code 0" in content:
+    if _command_mentions(command, "git diff --check"):
         return "diff_hygiene"
-    if _command_mentions(command, "gateway status") and "gateway status" in content and any(
+    if _command_mentions(command, "gateway status") and any(
         marker in content for marker in ("pid", "loaded", "running", "service")
     ):
         return "runtime_smoke_when_live_wiring"
@@ -535,6 +541,16 @@ def _extract_exit_code(message: Mapping[str, Any], content: str) -> int | None:
             return value
         if isinstance(value, str) and value.strip().lstrip("-").isdigit():
             return int(value.strip())
+    parsed = _parse_command_tool_content(content)
+    if isinstance(parsed, Mapping):
+        for key in ("exit_code", "returncode", "return_code", "code"):
+            value = parsed.get(key)
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, int):
+                return value
+            if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+                return int(value.strip())
     lowered = content.lower()
     markers = ("process exited with code ", "exit code ", "returncode=")
     for marker in markers:
@@ -546,6 +562,44 @@ def _extract_exit_code(message: Mapping[str, Any], content: str) -> int | None:
         if number.lstrip("-").isdigit():
             return int(number)
     return None
+
+
+def _parse_command_tool_content(content: str) -> Mapping[str, Any] | None:
+    try:
+        parsed = json.loads(content)
+    except (TypeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, Mapping) else None
+
+
+def _proof_command(
+    message: Mapping[str, Any],
+    parsed_content: Mapping[str, Any] | None,
+    content: str,
+) -> str:
+    command = str(message.get("command") or "").strip()
+    if command:
+        return command
+    if isinstance(parsed_content, Mapping):
+        evidence = parsed_content.get("verification_evidence")
+        evidence = evidence if isinstance(evidence, Mapping) else {}
+        command = str(
+            evidence.get("canonical_command")
+            or parsed_content.get("command")
+            or ""
+        ).strip()
+        if command:
+            return command
+    return _first_line(content)
+
+
+def _proof_output(
+    parsed_content: Mapping[str, Any] | None,
+    content: str,
+) -> str:
+    if isinstance(parsed_content, Mapping) and "output" in parsed_content:
+        return str(parsed_content.get("output") or "")
+    return content
 
 
 def _contains_failure_marker(content: str) -> bool:

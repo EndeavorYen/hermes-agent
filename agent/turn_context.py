@@ -158,6 +158,9 @@ def build_turn_context(
     # cache miss. (Issue #45499.)
 
     # Tell auxiliary_client what the live main provider/model are for this turn.
+    _raphael_config: Dict[str, Any] = {}
+    _raphael_origin = "foreground"
+    _raphael_runtime_contract: Dict[str, Any] = {}
     try:
         from agent.auxiliary_client import set_runtime_main
         set_runtime_main(
@@ -479,7 +482,12 @@ def build_turn_context(
             write_origin=getattr(agent, "_memory_write_origin", None),
         ).value
         try:
-            _raphael_config = load_config_readonly()
+            loaded_raphael_config = load_config_readonly()
+            _raphael_config = (
+                loaded_raphael_config
+                if isinstance(loaded_raphael_config, dict)
+                else {}
+            )
         except Exception:
             _raphael_config = {}
         _raphael_runtime_contract = resolve_raphael_runtime_contract(
@@ -491,6 +499,17 @@ def build_turn_context(
     except Exception:
         _raphael_origin = "foreground"
         _raphael_runtime_contract = {}
+
+    _raphael_fail_closed = False
+    try:
+        from agent.raphael.config import raphael_effective_enabled
+
+        _raphael_fail_closed = (
+            _raphael_origin == "foreground"
+            and raphael_effective_enabled(_raphael_config)
+        )
+    except Exception:
+        logger.debug("Raphael fail-closed readiness check failed", exc_info=True)
 
     # Plugin hook: pre_llm_call (context injected into user message, not system prompt).
     plugin_user_context = ""
@@ -570,6 +589,22 @@ def build_turn_context(
             )
     except Exception as exc:
         logger.warning("Raphael turn decision preparation failed: %s", exc)
+        if _raphael_fail_closed:
+            raphael_decision = {
+                "turn_id": turn_id,
+                "origin": _raphael_origin,
+                "mission_id": None,
+                "mode": "control_decision_failed",
+                "completion_policy": "blocked",
+                "control_decision_failed": True,
+                "evidence": {
+                    "required_proofs": ["control_decision"],
+                    "failure_layer": "control_decision",
+                    "next_repair_action": "repair Raphael control decision",
+                },
+                "next_action": "repair Raphael control decision",
+                "runtime_contract": dict(_raphael_runtime_contract),
+            }
 
     # Per-turn file-mutation verifier state.
     agent._turn_failed_file_mutations = {}

@@ -137,6 +137,31 @@ def build_direct_visual_agent_handoff(
     for key in ("visual_agent_llm_provider", "visual_agent_llm_model"):
         if control_route.get(key):
             contract[key] = control_route[key]
+    runtime_contract = (
+        raphael_control.get("runtime_contract")
+        if isinstance(raphael_control, dict)
+        and isinstance(raphael_control.get("runtime_contract"), dict)
+        else {}
+    )
+    if str(control_route.get("visual_media_provider_source") or "") != "prompt_override":
+        media_values = {
+            "image_provider": control_route.get("visual_media_provider")
+            or runtime_contract.get("image_provider"),
+            "image_model": control_route.get("visual_media_model")
+            or runtime_contract.get("image_model"),
+            "video_provider": runtime_contract.get("video_provider"),
+            "video_model": runtime_contract.get("video_model"),
+        }
+        for key, value in media_values.items():
+            if not str(value or "").strip():
+                continue
+            contract[key] = value
+            arguments[key] = value
+        if media_values.get("image_provider"):
+            arguments["image_provider_source"] = "runtime_contract"
+        if media_values.get("video_provider"):
+            arguments["video_provider_source"] = "runtime_contract"
+    plan["provider_contract"] = contract
     if contract.get("visual_agent_llm_provider"):
         arguments["visual_agent_llm_provider"] = contract.get("visual_agent_llm_provider")
     if contract.get("visual_agent_llm_model"):

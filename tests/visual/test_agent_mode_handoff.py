@@ -34,6 +34,45 @@ def test_direct_visual_handoff_accepts_explicit_image_to_video_request():
     assert handoff["visual_agent_llm_provider"] == "xai-oauth"
 
 
+def test_direct_visual_handoff_applies_raphael_runtime_media_contract():
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.5",
+    )
+    decision = {
+        "mode": "visual_agent_generation",
+        "route": {
+            "visual_media_provider": "runtime-image-provider",
+            "visual_media_model": "runtime-image-model",
+            "visual_media_provider_source": "runtime_contract",
+        },
+        "runtime_contract": {
+            "image_provider": "runtime-image-provider",
+            "image_model": "runtime-image-model",
+            "video_provider": "runtime-video-provider",
+            "video_model": "runtime-video-model",
+        },
+    }
+
+    handoff = build_direct_visual_agent_handoff(
+        agent,
+        "請產出一張圖片和一段影片",
+        raphael_decision=decision,
+    )
+
+    assert handoff is not None
+    assert handoff["arguments"]["image_provider"] == "runtime-image-provider"
+    assert handoff["arguments"]["image_model"] == "runtime-image-model"
+    assert handoff["arguments"]["video_provider"] == "runtime-video-provider"
+    assert handoff["arguments"]["video_model"] == "runtime-video-model"
+    assert handoff["plan"]["provider_contract"]["image_provider"] == (
+        "runtime-image-provider"
+    )
+
+
 def test_direct_visual_handoff_preserves_compact_s_suffix_video_duration():
     from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
 

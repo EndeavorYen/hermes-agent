@@ -1,3 +1,5 @@
+import json
+
 from agent.raphael.proof import (
     RaphaelEvidenceEvent,
     extract_raphael_proof_events,
@@ -61,6 +63,47 @@ def test_accepts_exec_command_pytest_success_for_focused_tests():
     ]
 
     assert raphael_has_required_proof(messages, ("focused_tests",))
+
+
+def test_accepts_production_terminal_json_verification_results():
+    cases = (
+        (
+            "python -m pytest tests/foo.py -q",
+            "1 passed in 0.10s",
+            "focused_tests",
+        ),
+        (
+            "git diff --check",
+            "",
+            "diff_hygiene",
+        ),
+        (
+            "python -m ruff check agent tests",
+            "All checks passed!",
+            "static_checks",
+        ),
+        (
+            "hermes gateway status",
+            "service loaded, pid 123, running",
+            "runtime_smoke_when_live_wiring",
+        ),
+    )
+
+    for command, output, proof_type in cases:
+        content = json.dumps(
+            {
+                "output": output,
+                "exit_code": 0,
+                "error": None,
+                "verification_evidence": {
+                    "status": "passed",
+                    "canonical_command": command,
+                },
+            }
+        )
+        messages = [{"role": "tool", "name": "terminal", "content": content}]
+
+        assert raphael_has_required_proof(messages, (proof_type,))
 
 
 def test_rejects_echoed_pytest_success_even_with_exit_code_zero():

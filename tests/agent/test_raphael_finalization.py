@@ -6,6 +6,28 @@ from agent.raphael.finalization import (
     enforce_raphael_completion,
     record_raphael_finalization_outcome,
 )
+
+
+def test_control_decision_failure_blocks_finalization_instead_of_failing_open():
+    result = enforce_raphael_completion(
+        decision={
+            "turn_id": "turn-control-failed",
+            "origin": "foreground",
+            "control_decision_failed": True,
+            "evidence": {
+                "required_proofs": ["control_decision"],
+                "failure_layer": "control_decision",
+            },
+            "next_action": "repair Raphael control decision",
+        },
+        final_response="已完成。",
+        messages=(),
+    )
+
+    assert result.status == "blocked_unverified_completion"
+    assert result.failure_layer == "control_decision"
+    assert result.missing_proofs == ("control_decision",)
+    assert "control_decision" in result.final_response
 from agent.raphael.mission import create_mission
 from agent.raphael.proof import build_raphael_evidence_event
 from agent.raphael.state import read_active_mission, write_active_mission

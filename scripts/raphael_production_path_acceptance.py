@@ -16,11 +16,13 @@ from unittest.mock import patch
 from agent.raphael.control import classify_visual_failure_layer
 from agent.raphael.finalization import enforce_raphael_completion
 from agent.raphael.kernel import prepare_raphael_turn, replay_raphael_turn
+from agent.raphael.mission import create_mission
 from agent.raphael.runtime_contract import (
     RaphaelRuntimeContract,
     RaphaelTurnOrigin,
 )
 from agent.raphael.state import read_state
+from agent.transports.codex_event_projector import CodexEventProjector
 
 
 SCENARIO_IDS = (
@@ -30,6 +32,7 @@ SCENARIO_IDS = (
     "same_artifact_followup",
     "provider_failure_classification",
     "missing_proof",
+    "terminal_proof_pass",
     "background_isolation",
     "codex_transport_parity",
 )
@@ -134,6 +137,15 @@ def build_quota_free_production_scenarios() -> list[dict[str, Any]]:
         turn_id="accept-tool-task",
         runtime_contract=contract,
         user_message="請 patch gateway fallback 並執行 pytest",
+        mission=create_mission(
+            mission_id="mission-accept-tool-task",
+            goal="Patch gateway fallback and verify the production path",
+            success_conditions=("focused tests pass", "runtime smoke passes"),
+            phase="implementation",
+            next_action="run required proof commands",
+            selected_strategy="tool_task",
+            required_proofs=("focused_tests", "runtime_smoke_when_live_wiring"),
+        ),
     )
     visual = replay_raphael_turn(
         turn_id="accept-visual-routing",
@@ -168,6 +180,32 @@ def build_quota_free_production_scenarios() -> list[dict[str, Any]]:
         final_response="完成了，測試都通過。",
         messages=(),
     )
+    terminal_messages = tuple(
+        {
+            "role": "tool",
+            "name": "terminal",
+            "content": json.dumps(
+                {
+                    "output": output,
+                    "exit_code": 0,
+                    "error": None,
+                    "verification_evidence": {
+                        "status": "passed",
+                        "canonical_command": command,
+                    },
+                }
+            ),
+        }
+        for command, output in (
+            ("python -m pytest tests/agent/test_raphael_proof.py -q", "1 passed"),
+            ("hermes gateway status", "service loaded, pid 123, running"),
+        )
+    )
+    terminal_result = enforce_raphael_completion(
+        decision=tool_task.to_dict(),
+        final_response="完成了，測試都通過。",
+        messages=terminal_messages,
+    )
     with tempfile.TemporaryDirectory(prefix="raphael-acceptance-") as temp_home:
         config = {
             "plugins": {"enabled": ["raphael"], "disabled": []},
@@ -185,10 +223,42 @@ def build_quota_free_production_scenarios() -> list[dict[str, Any]]:
                 user_message="Review internal state",
             )
             background_state = read_state()
+    projector = CodexEventProjector()
+    codex_messages: list[dict[str, Any]] = []
+    for item_id, command, output in (
+        (
+            "accept-codex-pytest",
+            "python -m pytest tests/agent/test_raphael_proof.py -q",
+            "1 passed",
+        ),
+        (
+            "accept-codex-gateway",
+            "hermes gateway status",
+            "service loaded, pid 123, running",
+        ),
+    ):
+        codex_messages.extend(
+            projector.project(
+                {
+                    "method": "item/completed",
+                    "params": {
+                        "item": {
+                            "type": "commandExecution",
+                            "id": item_id,
+                            "command": command,
+                            "cwd": "[redacted-path]",
+                            "status": "completed",
+                            "aggregatedOutput": output,
+                            "exitCode": 0,
+                        }
+                    },
+                }
+            ).messages
+        )
     codex_result = enforce_raphael_completion(
         decision=tool_task.to_dict(),
         final_response="完成了，測試都通過。",
-        messages=(),
+        messages=codex_messages,
     )
 
     raw = [
@@ -231,6 +301,13 @@ def build_quota_free_production_scenarios() -> list[dict[str, Any]]:
             missing_proofs=list(missing_proof.missing_proofs),
         ),
         _scenario(
+            "terminal_proof_pass",
+            terminal_result.status == "passed",
+            decision_id=tool_task.turn_id,
+            finalization_status=terminal_result.status,
+            available_proofs=list(terminal_result.available_proofs),
+        ),
+        _scenario(
             "background_isolation",
             background is None
             and background_state.active_mission is None
@@ -239,10 +316,10 @@ def build_quota_free_production_scenarios() -> list[dict[str, Any]]:
         ),
         _scenario(
             "codex_transport_parity",
-            codex_result.status == missing_proof.status
-            and codex_result.final_response == missing_proof.final_response,
+            codex_result.status == "passed",
             decision_id=tool_task.turn_id,
             finalization_status=codex_result.status,
+            available_proofs=list(codex_result.available_proofs),
         ),
     ]
     return raw

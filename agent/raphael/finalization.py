@@ -19,6 +19,7 @@ class RaphaelFinalizationResult:
     available_proofs: tuple[str, ...]
     missing_proofs: tuple[str, ...]
     next_action: str
+    failure_layer: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -28,6 +29,7 @@ class RaphaelFinalizationResult:
             "available_proofs": list(self.available_proofs),
             "missing_proofs": list(self.missing_proofs),
             "next_action": self.next_action,
+            "failure_layer": self.failure_layer,
         }
 
 
@@ -46,6 +48,24 @@ def enforce_raphael_completion(
             available_proofs=(),
             missing_proofs=(),
             next_action="",
+        )
+
+    if decision.get("control_decision_failed") is True:
+        next_action = str(
+            decision.get("next_action") or "repair Raphael control decision"
+        )
+        return RaphaelFinalizationResult(
+            status="blocked_unverified_completion",
+            final_response=(
+                "Raphael 已因控制決策失敗而採取 fail-closed。"
+                "failure_layer: control_decision。"
+                f"下一步：{next_action}。"
+            ),
+            required_proofs=("control_decision",),
+            available_proofs=(),
+            missing_proofs=("control_decision",),
+            next_action=next_action,
+            failure_layer="control_decision",
         )
 
     evidence = decision.get("evidence")
@@ -86,6 +106,7 @@ def enforce_raphael_completion(
         available_proofs=available,
         missing_proofs=missing,
         next_action=next_action,
+        failure_layer=("proof_gate" if status == "blocked_unverified_completion" else None),
     )
 
 
