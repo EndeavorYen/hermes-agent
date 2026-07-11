@@ -964,12 +964,24 @@ def _evaluate_raphael_evidence_gate(
         proof: _raphael_required_proof_present(proof, raphael_control, payload)
         for proof in required
     }
-    missing = [proof for proof, present in proof_results.items() if not present]
     mission_id = str(raphael_control.get("mission_id") or "")
     turn_id = str(raphael_control.get("turn_id") or "legacy-visual-handoff")
     selected_ids = sorted(_selected_visual_artifact_ids(payload))
     artifact_id = selected_ids[0] if selected_ids else ""
-    provider = _raphael_evidence_provider(payload)
+    provider = _raphael_evidence_provider(payload, raphael_control)
+    identity_missing = [
+        label
+        for label, value in (
+            ("mission_identity", mission_id),
+            ("turn_identity", turn_id),
+            ("artifact_identity", artifact_id),
+            ("provider_identity", provider),
+        )
+        if not value
+    ]
+    missing = [
+        proof for proof, present in proof_results.items() if not present
+    ] + identity_missing
     payload_digest = _raphael_evidence_payload_digest(
         proof_results=proof_results,
         selected_ids=selected_ids,
@@ -983,7 +995,7 @@ def _evaluate_raphael_evidence_gate(
             turn_id=turn_id,
             proof_type=proof,
             source="visual_agent_handoff",
-            status="passed" if present else "missing",
+            status="passed" if present and not identity_missing else "missing",
             command="visual_agent_generate",
             artifact_id=artifact_id,
             provider=provider,
@@ -1001,7 +1013,10 @@ def _evaluate_raphael_evidence_gate(
     }
 
 
-def _raphael_evidence_provider(payload: dict[str, Any]) -> str:
+def _raphael_evidence_provider(
+    payload: dict[str, Any],
+    raphael_control: dict[str, Any],
+) -> str:
     contract = payload.get("visual_agent_provider_contract")
     if isinstance(contract, dict) and str(contract.get("provider") or "").strip():
         return str(contract["provider"])
@@ -1010,6 +1025,14 @@ def _raphael_evidence_provider(payload: dict[str, Any]) -> str:
         for candidate in generation_payloads.values():
             if isinstance(candidate, dict) and str(candidate.get("provider") or "").strip():
                 return str(candidate["provider"])
+    route = raphael_control.get("route")
+    if isinstance(route, dict) and str(route.get("visual_media_provider") or "").strip():
+        return str(route["visual_media_provider"])
+    runtime_contract = raphael_control.get("runtime_contract")
+    if isinstance(runtime_contract, dict):
+        provider_key = "video_provider" if payload.get("videos") else "image_provider"
+        if str(runtime_contract.get(provider_key) or "").strip():
+            return str(runtime_contract[provider_key])
     return ""
 
 

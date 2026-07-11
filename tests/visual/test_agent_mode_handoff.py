@@ -302,23 +302,28 @@ def test_direct_visual_handoff_allows_payload_with_raphael_evidence(
     tmp_path, monkeypatch
 ):
     import agent.raphael.state as raphael_state
+    from agent.raphael.finalization import enforce_raphael_completion
+    from agent.raphael.kernel import prepare_raphael_turn
+    from agent.raphael.runtime_contract import (
+        RaphaelRuntimeContract,
+        RaphaelTurnOrigin,
+    )
     from agent.visual.agent_mode.handoff import (
         attach_direct_visual_agent_handoff_metadata,
         build_direct_visual_agent_handoff,
     )
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = {
+        "plugins": {"enabled": ["raphael"], "disabled": []},
+        "raphael": {
+            "enabled": True,
+            "default_conversation_mode_enabled": True,
+            "mode": "sage_king",
+        },
+    }
     (tmp_path / "config.yaml").write_text(
-        yaml.safe_dump(
-            {
-                "plugins": {"enabled": ["raphael"], "disabled": []},
-                "raphael": {
-                    "enabled": True,
-                    "default_conversation_mode_enabled": True,
-                    "mode": "sage_king",
-                },
-            }
-        ),
+        yaml.safe_dump(config),
         encoding="utf-8",
     )
     agent = SimpleNamespace(
@@ -327,15 +332,34 @@ def test_direct_visual_handoff_allows_payload_with_raphael_evidence(
         model="gpt-5.5",
     )
 
-    handoff = build_direct_visual_agent_handoff(agent, "請產出一張圖片")
-    handoff["raphael_control"]["turn_id"] = "turn-structured-evidence"
-    handoff["raphael_control"]["mission_id"] = "mission-structured-evidence"
+    decision = prepare_raphael_turn(
+        turn_id="turn-structured-evidence",
+        origin=RaphaelTurnOrigin.FOREGROUND,
+        runtime_contract=RaphaelRuntimeContract(
+            base_provider="openai-codex",
+            base_model="gpt-5.5",
+            base_api_mode="codex_app_server",
+            image_provider="xai",
+            image_model="grok-imagine-image-quality",
+            source="live_agent",
+        ),
+        config=config,
+        user_message="請產出一張圖片",
+    )
+    assert decision is not None
+    assert decision.mission_id
+    handoff = build_direct_visual_agent_handoff(
+        agent,
+        "請產出一張圖片",
+        raphael_decision=decision.to_dict(),
+    )
+    assert handoff is not None
     raw = attach_direct_visual_agent_handoff_metadata(
         json.dumps(
             {
                 "success": True,
                 "images": ["/tmp/current.png"],
-                "generation_payloads": {"image": {"success": True, "provider": "fixture"}},
+                "generation_payloads": {"image": {"success": True}},
                 "rankings": {"selected_artifact_id": "artifact-1"},
                 "delivery_metadata": {
                     "selected_visual_artifact_ids": ["artifact-1"],
@@ -388,9 +412,10 @@ def test_direct_visual_handoff_allows_payload_with_raphael_evidence(
         for event in gate["evidence_events"]
     )
     assert all(
-        event["mission_id"] == "mission-structured-evidence"
+        event["mission_id"] == decision.mission_id
         for event in gate["evidence_events"]
     )
+    assert all(event["provider"] == "xai" for event in gate["evidence_events"])
     assert all(
         event["payload_digest"].startswith("sha256:")
         for event in gate["evidence_events"]
@@ -400,6 +425,18 @@ def test_direct_visual_handoff_allows_payload_with_raphael_evidence(
     assert mission.active_artifact_id == "artifact-1"
     assert mission.proof_status == "passed"
     assert mission.phase == "proof_passed"
+    finalization = enforce_raphael_completion(
+        decision=decision.to_dict(),
+        final_response="已產出並成功交付。",
+        messages=(
+            {
+                "role": "tool",
+                "name": "visual_agent_generate",
+                "content": raw,
+            },
+        ),
+    )
+    assert finalization.status == "passed"
 
 
 def test_direct_visual_handoff_allows_video_payload_with_image_first_source_evidence(
@@ -432,6 +469,8 @@ def test_direct_visual_handoff_allows_video_payload_with_image_first_source_evid
 
     handoff = build_direct_visual_agent_handoff(agent, "請產出一段 6 秒時尚短片，主體是霧黑鋼筆")
     assert handoff is not None
+    handoff["raphael_control"]["turn_id"] = "turn-video-evidence"
+    handoff["raphael_control"]["mission_id"] = "mission-video-evidence"
     required = handoff["raphael_control"]["evidence"]["required_proofs"]
     assert "image_first_video_source_evidence" in required
     assert "single_ranked_video_source_image" in required

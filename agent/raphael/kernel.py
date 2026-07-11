@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+import hashlib
 from typing import Any
 
 from agent.raphael.config import raphael_effective_enabled
@@ -16,7 +17,12 @@ from agent.raphael.runtime_contract import (
     RaphaelTurnOrigin,
     resolve_raphael_turn_origin,
 )
-from agent.raphael.state import read_active_mission, record_turn_decision
+from agent.raphael.mission import create_mission
+from agent.raphael.state import (
+    read_active_mission,
+    record_turn_decision,
+    write_active_mission,
+)
 
 
 @dataclass(frozen=True)
@@ -93,6 +99,10 @@ def prepare_raphael_turn(
         conversation_history=conversation_history,
         visual_plan=visual_plan,
     )
+    if mission is None and decision.completion_policy in {"mutation", "visual"}:
+        mission = _new_foreground_mission(decision)
+        write_active_mission(mission, origin=resolved_origin)
+        decision = replace(decision, mission_id=mission.mission_id)
     record_turn_decision(decision.to_dict())
     return decision
 
@@ -200,6 +210,22 @@ def _route_with_runtime_contract(
         ),
         visual_media_provider=media_provider,
         visual_media_model=media_model,
+    )
+
+
+def _new_foreground_mission(decision: RaphaelTurnDecision):
+    seed = f"{decision.turn_id}|{decision.goal.summary}|{decision.mode}"
+    mission_id = f"mission-{hashlib.sha256(seed.encode('utf-8')).hexdigest()[:16]}"
+    return create_mission(
+        mission_id=mission_id,
+        goal=decision.goal.summary,
+        success_conditions=decision.goal.success_conditions,
+        phase=decision.goal.phase,
+        next_action=decision.next_action,
+        selected_strategy=decision.mode,
+        required_proofs=decision.required_proofs,
+        active_artifact_id=decision.goal.active_artifact_id,
+        blockers=decision.goal.blockers,
     )
 
 
