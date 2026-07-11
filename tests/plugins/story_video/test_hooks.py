@@ -11,6 +11,7 @@ from plugins.story_video.state import StoryVideoStateStore
 def _event(text: str):
     return SimpleNamespace(
         text=text,
+        reply_to_message_id="thread-1",
         source=SimpleNamespace(
             platform="slack",
             scope_id="workspace-1",
@@ -19,6 +20,18 @@ def _event(text: str):
             user_id="user-1",
         ),
     )
+
+
+def _event_with_identity(
+    text: str,
+    *,
+    scope_id: str,
+    user_id: str,
+):
+    event = _event(text)
+    event.source.scope_id = scope_id
+    event.source.user_id = user_id
+    return event
 
 
 def _write_planning_fixture(context) -> None:
@@ -113,6 +126,71 @@ def test_gateway_only_rewrites_continue_when_source_is_active(tmp_path, monkeypa
 
     assert result["action"] == "rewrite"
     assert '"action": "continue"' in result["text"]
+
+
+def test_gateway_rewrites_polite_continue_for_active_thread(tmp_path, monkeypatch) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    start = hooks.pre_gateway_dispatch(
+        event=_event("故事影片：恐龍起源｜5分｜真實照片")
+    )
+    hooks.pre_llm_call(session_id="session-1", user_message=start["text"])
+
+    result = hooks.pre_gateway_dispatch(event=_event("請繼續"))
+
+    assert result["action"] == "rewrite"
+    assert '"action": "continue"' in result["text"]
+
+
+def test_gateway_source_key_uses_real_slack_reply_thread_id() -> None:
+    first = _event("繼續")
+    second = _event("繼續")
+    first.source.thread_id = ""
+    second.source.thread_id = ""
+    second.reply_to_message_id = "thread-2"
+
+    assert hooks._source_key(first) != hooks._source_key(second)
+
+
+def test_gateway_source_key_is_stable_across_session_identity_changes() -> None:
+    original = _event_with_identity(
+        "繼續",
+        scope_id="workspace-before-restart",
+        user_id="user-before-restart",
+    )
+    resumed = _event_with_identity(
+        "繼續",
+        scope_id="workspace-after-restart",
+        user_id="user-after-restart",
+    )
+
+    assert hooks._source_key(original) == hooks._source_key(resumed)
+
+
+def test_gateway_migrates_legacy_source_binding_for_active_thread(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    start_event = _event("故事影片：恐龍起源｜5分｜真實照片")
+    legacy_key = hooks._legacy_source_key(start_event)
+    store.create_or_load(
+        source_key=legacy_key,
+        session_id="session-before-restart",
+        call=hooks.OperatorCall(
+            action="start",
+            topic="恐龍起源",
+            duration="5分",
+            visual_style="真實照片",
+        ),
+        original_request=start_event.text,
+    )
+
+    result = hooks.pre_gateway_dispatch(event=_event("繼續"))
+
+    assert result["action"] == "rewrite"
+    assert '"action": "continue"' in result["text"]
+    assert store.for_source(hooks._source_key(start_event)) is not None
 
 
 def test_pre_llm_creates_context_and_injects_provider_policy(tmp_path, monkeypatch) -> None:
@@ -327,3 +405,44 @@ def test_transform_output_does_not_validate_new_phase_after_explicit_advance(
     assert "keyframes BLOCKED" not in result
     assert store.for_session("session-1").phase == "keyframes"
     assert result.endswith('Raphael 下一步：回覆「繼續」。')
+
+
+def test_transform_output_blocks_video_not_selected_by_current_render_manifest(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    context = store.create_or_load(
+        source_key="gateway:thread-1",
+        session_id="session-1",
+        call=hooks.OperatorCall(
+            action="start",
+            topic="恐龍起源",
+            duration="5分",
+            visual_style="真實照片",
+        ),
+        original_request="故事影片：恐龍起源｜5分｜真實照片",
+    )
+    selected = context.project_dir / "renders" / "selected.mp4"
+    stale = context.project_dir / "renders" / "stale.mp4"
+    selected.parent.mkdir(parents=True)
+    selected.write_bytes(b"selected")
+    stale.write_bytes(b"stale")
+    (context.project_dir / "render_manifest.json").write_text(
+        json.dumps({"output": {"path": "renders/selected.mp4"}}),
+        encoding="utf-8",
+    )
+    store.update(context, phase="complete", status="complete")
+
+    blocked = hooks.transform_llm_output(
+        response_text=f"新版已完成：MEDIA:{stale}",
+        session_id="session-1",
+    )
+    allowed = hooks.transform_llm_output(
+        response_text=f"新版已完成：MEDIA:{selected}",
+        session_id="session-1",
+    )
+
+    assert str(stale) not in blocked
+    assert "STORY_VIDEO_DELIVERY_BLOCKED" in blocked
+    assert str(selected) in allowed
