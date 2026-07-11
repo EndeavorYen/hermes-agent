@@ -22,6 +22,7 @@ def _event(text: str):
 
 
 def _write_planning_fixture(context) -> None:
+    (context.project_dir / "script.md").write_text("final narration script", encoding="utf-8")
     scales = ("close_up", "medium", "wide", "macro", "medium", "insert", "medium", "establishing")
     shots = [
         {

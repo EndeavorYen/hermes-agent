@@ -40,6 +40,7 @@ def _load_json(path: Path) -> Any:
 def _validate_planning(context: StoryVideoRunContext) -> PhaseProof:
     required = (
         "PROJECT_CONTRACT.md",
+        "script.md",
         "storyboard.md",
         "scene_ledger.json",
         "production_checklist.json",

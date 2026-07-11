@@ -62,6 +62,7 @@ def _write_planning_fixture(context, *, report_status: str = "PASS", shot_count:
         ],
     }
     (context.project_dir / "PROJECT_CONTRACT.md").write_text("contract", encoding="utf-8")
+    (context.project_dir / "script.md").write_text("final narration script", encoding="utf-8")
     (context.project_dir / "storyboard.md").write_text("storyboard", encoding="utf-8")
     (context.project_dir / "scene_ledger.json").write_text(
         json.dumps(ledger), encoding="utf-8"
@@ -225,6 +226,17 @@ def test_planning_validation_rejects_missing_or_failed_script_quality(tmp_path) 
     assert "script_quality_report.json" in missing.missing
 
 
+def test_planning_validation_requires_the_final_script_artifact(tmp_path) -> None:
+    _store, context = _active_context(tmp_path)
+    _write_planning_fixture(context)
+    (context.project_dir / "script.md").unlink()
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert "script.md" in proof.missing
+
+
 def test_planning_validation_rejects_shallow_scene_ledger(tmp_path) -> None:
     _store, context = _active_context(tmp_path)
     _write_planning_fixture(context)
@@ -291,7 +303,7 @@ def test_blocked_validation_sets_repair_next_call(tmp_path) -> None:
 
     assert result["success"] is False
     assert result["next_call"].startswith("修正：")
-    assert "storyboard.md" in result["next_call"]
+    assert "script.md" in result["next_call"]
     assert store.for_session("session-1").repair_request
 
 
