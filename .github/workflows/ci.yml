@@ -13,7 +13,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, local/main]
 
 permissions:
   contents: read
@@ -87,12 +87,18 @@ jobs:
     needs: detect
     if: needs.detect.outputs.event_name == 'pull_request'
     uses: ./.github/workflows/history-check.yml
+    with:
+      base_ref: ${{ github.event.pull_request.base.ref }}
+      base_sha: ${{ github.event.pull_request.base.sha }}
 
   contributor-check:
     name: Check contributors
     needs: detect
     if: needs.detect.outputs.python == 'true'
     uses: ./.github/workflows/contributor-check.yml
+    with:
+      base_ref: ${{ github.event.pull_request.base.ref || github.ref_name }}
+      base_sha: ${{ github.event.pull_request.base.sha || github.event.before }}
 
   uv-lockfile:
     name: Check uv.lock
