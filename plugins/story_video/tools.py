@@ -255,12 +255,36 @@ def _validate_voice(context: StoryVideoRunContext) -> PhaseProof:
     missing: list[str] = []
     violations: list[str] = []
     provider = normalize_provider(str(manifest.get("provider") or ""))
-    if provider != "azure":
+    allowed_providers = tuple(
+        normalize_provider(value)
+        for value in context.provider_policy.get("tts", [])
+        if normalize_provider(value)
+    )
+    expected = ", ".join(allowed_providers) or "<missing-policy>"
+    if provider not in allowed_providers:
         violations.append(
-            f"production narration provider is {provider or '<missing>'}, expected azure"
+            f"production narration provider is {provider or '<missing>'}, expected {expected}"
         )
-    if str(manifest.get("engine") or "") != "Azure AI Speech":
+    if provider == "azure" and str(manifest.get("engine") or "") != "Azure AI Speech":
         violations.append("production narration engine is not Azure AI Speech")
+    if provider == "local-qwen":
+        if str(manifest.get("engine") or "") != "Qwen3-TTS via MLX-Audio":
+            violations.append("production narration engine is not Qwen3-TTS via MLX-Audio")
+        if str(manifest.get("inference_mode") or "") != "offline":
+            violations.append("local Qwen narration inference_mode is not offline")
+        if str(manifest.get("network_fallback") or "") != "forbidden":
+            violations.append("local Qwen narration network fallback is not forbidden")
+        if not str(manifest.get("model") or "").strip():
+            missing.append("local Qwen narration model")
+        profile_value = str(manifest.get("voice_profile") or "").strip()
+        if not profile_value:
+            missing.append("local Qwen narration voice_profile")
+        else:
+            profile_path = Path(profile_value)
+            if not profile_path.is_absolute():
+                profile_path = context.project_dir / profile_path
+            if not _nonempty(profile_path):
+                missing.append("local Qwen narration voice_profile_file")
     if str(manifest.get("language") or "") != "zh-TW":
         violations.append("production narration language is not zh-TW")
     if str(manifest.get("profile_status") or "") != "locked_by_user":

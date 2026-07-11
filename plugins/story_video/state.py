@@ -18,7 +18,7 @@ PHASES = ("planning", "keyframes", "batch", "voice", "render", "complete")
 DEFAULT_PROVIDER_POLICY: dict[str, Any] = {
     "llm": ["openai", "openai-codex"],
     "image": ["openai", "openai-codex"],
-    "tts": ["azure"],
+    "tts": ["local-qwen"],
     "render": ["local"],
     "forbidden": ["xai", "xai-oauth", "grok", "grok_web_imagine"],
     "generic_video_body": "forbidden",
