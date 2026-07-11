@@ -196,7 +196,7 @@ def test_background_observation_preserves_existing_foreground_mission(
     assert state.read_mission_state() == foreground
 
 
-def test_observation_context_persists_and_updates_current_mission(tmp_path, monkeypatch):
+def test_observation_context_is_read_only_across_task_turns(tmp_path, monkeypatch):
     from agent.raphael.observer import build_raphael_observation_context
     import agent.raphael.state as state
 
@@ -223,17 +223,15 @@ def test_observation_context_persists_and_updates_current_mission(tmp_path, monk
 
     assert "Raphael" in first_context
     assert "Raphael" in second_context
-    assert first_mission is not None
-    assert second_mission is not None
-    assert second_mission.mission_id == first_mission.mission_id
-    assert second_mission.goal == "再補 install enable disable lifecycle 驗證"
-    assert "focused_tests" in second_mission.required_proofs
+    assert first_mission is None
+    assert second_mission is None
 
 
 def test_observation_context_does_not_overwrite_mission_on_casual_turn(
     tmp_path, monkeypatch
 ):
     from agent.raphael.observer import build_raphael_observation_context
+    from agent.raphael.mission import create_mission
     import agent.raphael.state as state
 
     monkeypatch.setattr(state, "get_hermes_home", lambda: tmp_path)
@@ -246,7 +244,17 @@ def test_observation_context_does_not_overwrite_mission_on_casual_turn(
         }
     }
 
-    build_raphael_observation_context("請修復 gateway fallback bug 並驗證", config)
+    state.write_active_mission(
+        create_mission(
+            mission_id="mission-existing",
+            goal="請修復 gateway fallback bug 並驗證",
+            success_conditions=("focused tests pass",),
+            phase="implementation",
+            next_action="run focused tests",
+            selected_strategy="tool_task",
+            required_proofs=("focused_tests",),
+        )
+    )
     first_mission = state.read_mission_state()
     build_raphael_observation_context("謝謝，先這樣", config)
     second_mission = state.read_mission_state()

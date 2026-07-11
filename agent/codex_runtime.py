@@ -541,6 +541,7 @@ def run_codex_app_server_turn(
     final_text = turn.final_text
     from agent.raphael.finalization import (
         enforce_raphael_completion,
+        record_raphael_finalization_outcome,
         replace_terminal_assistant_response,
     )
 
@@ -549,6 +550,11 @@ def run_codex_app_server_turn(
         final_response=final_text,
         messages=messages,
     )
+    if not turn.interrupted:
+        record_raphael_finalization_outcome(
+            decision=raphael_decision,
+            result=raphael_finalization,
+        )
     final_text = raphael_finalization.final_response
     if final_text and not turn.interrupted:
         replace_terminal_assistant_response(messages, final_text)

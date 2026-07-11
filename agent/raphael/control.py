@@ -8,9 +8,9 @@ from typing import Any
 from agent.raphael.artifacts import latest_selected_artifact_id
 
 BASE_LLM_PROVIDER = "openai-codex"
-BASE_LLM_MODEL = "gpt-5.5"
+BASE_LLM_MODEL = ""
 VISUAL_AGENT_LLM_PROVIDER = "xai-oauth"
-VISUAL_AGENT_LLM_MODEL = "grok-4.3"
+VISUAL_AGENT_LLM_MODEL = ""
 VISUAL_MEDIA_PROVIDER_DEFAULT = "xai"
 VISUAL_MEDIA_MODEL_DEFAULT = "grok-imagine-image-quality"
 

@@ -128,6 +128,15 @@ def build_direct_visual_agent_handoff(
         arguments["reference_binding"] = _session_reference_binding(session_reference_entries)
         arguments["prompt"] = _prompt_with_session_edit_context(prompt, session_reference_entries)
     contract = dict(plan.get("provider_contract") or {})
+    control_route = (
+        raphael_control.get("route")
+        if isinstance(raphael_control, dict)
+        and isinstance(raphael_control.get("route"), dict)
+        else {}
+    )
+    for key in ("visual_agent_llm_provider", "visual_agent_llm_model"):
+        if control_route.get(key):
+            contract[key] = control_route[key]
     if contract.get("visual_agent_llm_provider"):
         arguments["visual_agent_llm_provider"] = contract.get("visual_agent_llm_provider")
     if contract.get("visual_agent_llm_model"):
@@ -965,7 +974,7 @@ def _evaluate_raphael_evidence_gate(
         for proof in required
     }
     mission_id = str(raphael_control.get("mission_id") or "")
-    turn_id = str(raphael_control.get("turn_id") or "legacy-visual-handoff")
+    turn_id = str(raphael_control.get("turn_id") or "")
     selected_ids = sorted(_selected_visual_artifact_ids(payload))
     artifact_id = selected_ids[0] if selected_ids else ""
     provider = _raphael_evidence_provider(payload, raphael_control)

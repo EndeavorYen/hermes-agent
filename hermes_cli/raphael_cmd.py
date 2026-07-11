@@ -187,7 +187,7 @@ _MODE_ROUTER_CASE_EXPECTATIONS: dict[str, dict[str, Any]] = {
         "handoff_tool": "visual_agent_generate",
         "bypass_base_llm": True,
         "visual_agent_llm_provider": "xai-oauth",
-        "visual_agent_llm_model": "grok-4.3",
+        "visual_agent_llm_model": None,
         "visual_media_provider": "xai",
         "visual_media_model": "grok-imagine-image-quality",
     },
@@ -199,7 +199,7 @@ _MODE_ROUTER_CASE_EXPECTATIONS: dict[str, dict[str, Any]] = {
         "handoff_tool": "visual_agent_generate",
         "bypass_base_llm": True,
         "visual_agent_llm_provider": "xai-oauth",
-        "visual_agent_llm_model": "grok-4.3",
+        "visual_agent_llm_model": None,
         "visual_media_provider": "xai",
         "visual_media_model": "grok-imagine-image-quality",
         "active_artifact_continuity": True,
@@ -242,7 +242,7 @@ _GOAL_STATE_CASE_EVIDENCE_FIELDS = (
 _GOAL_STATE_PROVENANCE = "deterministic_raphael_goal_state_manager"
 _GOAL_STATE_CASE_EXPECTATIONS: dict[str, dict[str, Any]] = {
     "new_tool_mission": {
-        "phase": "strategy_selected",
+        "phase": "plan_execute_verify",
         "next_action": "plan_execute_verify",
         "proof_status": "pending",
         "mission_continuity": False,
@@ -252,7 +252,7 @@ _GOAL_STATE_CASE_EXPECTATIONS: dict[str, dict[str, Any]] = {
         "required_proofs": ["focused_tests", "runtime_smoke_when_live_wiring"],
     },
     "followup_preserves_mission": {
-        "phase": "strategy_selected",
+        "phase": "plan_execute_verify",
         "next_action": "plan_execute_verify",
         "proof_status": "pending",
         "mission_continuity": True,
@@ -262,7 +262,7 @@ _GOAL_STATE_CASE_EXPECTATIONS: dict[str, dict[str, Any]] = {
         "required_proofs": ["focused_tests", "runtime_smoke_when_live_wiring"],
     },
     "casual_summon_preserves_mission": {
-        "phase": "strategy_selected",
+        "phase": "plan_execute_verify",
         "next_action": "plan_execute_verify",
         "proof_status": "pending",
         "mission_continuity": True,
@@ -272,28 +272,31 @@ _GOAL_STATE_CASE_EXPECTATIONS: dict[str, dict[str, Any]] = {
         "required_proofs": ["focused_tests", "runtime_smoke_when_live_wiring"],
     },
     "visual_edit_targets_current_artifact": {
-        "phase": "strategy_selected",
-        "next_action": "multi_pass_review_and_repair",
+        "phase": "route_and_handoff",
+        "next_action": "call_visual_agent_generate",
         "proof_status": "pending",
         "mission_continuity": False,
         "casual_turn_preserved": None,
         "active_artifact_id": "artifact-current",
         "blockers": [],
         "required_proofs": [
-            "artifact_continuity",
-            "quality_gate_passed",
-            "hostile_review",
+            "direct_handoff_metadata",
+            "provider_attempt_evidence",
+            "artifact_quality_evidence",
+            "selected_current_artifact_only",
+            "stale_artifact_guard",
+            "delivery_cleanliness",
         ],
     },
     "missing_reference_blocks": {
-        "phase": "blocked",
+        "phase": "clarify_reference_mapping",
         "next_action": "ask_precise_clarification",
         "proof_status": "blocked",
         "mission_continuity": False,
         "casual_turn_preserved": None,
         "active_artifact_id": None,
-        "blockers": ["missing_ref3"],
-        "required_proofs": ["reference_mapping_confirmed"],
+        "blockers": ["missing_ref1"],
+        "required_proofs": ["reference_mapping_evidence"],
     },
 }
 _EVOLUTION_REQUIRED_CASES = (
@@ -2951,14 +2954,32 @@ def _goal_state_contract_release_gate_check() -> dict[str, Any]:
                 },
             }
             _save_raphael_config(config)
-            first_appraisal = appraise_raphael_situation(
-                "請修復 gateway fallback bug 並驗證"
+            from agent.raphael.kernel import prepare_raphael_turn
+            from agent.raphael.runtime_contract import (
+                RaphaelTurnOrigin,
+                resolve_raphael_runtime_contract,
             )
-            first_mission = update_raphael_mission(
-                None,
-                first_appraisal,
-                simulate_raphael_strategies(first_appraisal),
+            from agent.raphael.state import (
+                read_active_mission,
+                write_active_mission,
             )
+
+            runtime_contract = resolve_raphael_runtime_contract(
+                config,
+                live_provider="release-gate-fixture",
+                live_model="release-gate-fixture",
+                live_api_mode="deterministic",
+            )
+            prepare_raphael_turn(
+                turn_id="goal-state-new-tool",
+                origin=RaphaelTurnOrigin.FOREGROUND,
+                runtime_contract=runtime_contract,
+                config=config,
+                user_message="請修復 gateway fallback bug 並驗證",
+            )
+            first_mission = read_active_mission()
+            if first_mission is None:
+                raise RuntimeError("canonical kernel did not create tool mission")
             cases.append(
                 _goal_state_case_payload(
                     "new_tool_mission",
@@ -2967,14 +2988,16 @@ def _goal_state_contract_release_gate_check() -> dict[str, Any]:
                 )
             )
 
-            followup_appraisal = appraise_raphael_situation(
-                "再補 install enable disable lifecycle 驗證"
+            prepare_raphael_turn(
+                turn_id="goal-state-followup",
+                origin=RaphaelTurnOrigin.FOREGROUND,
+                runtime_contract=runtime_contract,
+                config=config,
+                user_message="再補 install enable disable lifecycle 驗證",
             )
-            followup_mission = update_raphael_mission(
-                first_mission,
-                followup_appraisal,
-                simulate_raphael_strategies(followup_appraisal),
-            )
+            followup_mission = read_active_mission()
+            if followup_mission is None:
+                raise RuntimeError("canonical kernel lost followup mission")
             cases.append(
                 _goal_state_case_payload(
                     "followup_preserves_mission",
@@ -2986,16 +3009,10 @@ def _goal_state_contract_release_gate_check() -> dict[str, Any]:
             )
 
             from agent.raphael.observer import build_raphael_observation_context
-            from agent.raphael.state import read_mission_state, write_mission_state
 
-            write_mission_state(None)
-            build_raphael_observation_context(
-                "請修復 gateway fallback bug 並驗證",
-                config,
-            )
-            mission_before_summon = read_mission_state()
+            mission_before_summon = read_active_mission()
             build_raphael_observation_context("拉斐爾？", config)
-            mission_after_summon = read_mission_state()
+            mission_after_summon = read_active_mission()
             casual_preserved = (
                 mission_before_summon is not None
                 and mission_after_summon is not None
@@ -3026,8 +3043,13 @@ def _goal_state_contract_release_gate_check() -> dict[str, Any]:
                     )
                 )
 
-            visual_edit_appraisal = appraise_raphael_situation(
-                "把剛剛那張圖改亮一點，比例不要變",
+            write_active_mission(None)
+            prepare_raphael_turn(
+                turn_id="goal-state-visual-edit",
+                origin=RaphaelTurnOrigin.FOREGROUND,
+                runtime_contract=runtime_contract,
+                config=config,
+                user_message="把剛剛那張圖改亮一點，比例不要變",
                 conversation_history=[
                     {
                         "role": "assistant",
@@ -3036,11 +3058,9 @@ def _goal_state_contract_release_gate_check() -> dict[str, Any]:
                     }
                 ],
             )
-            visual_edit_mission = update_raphael_mission(
-                None,
-                visual_edit_appraisal,
-                simulate_raphael_strategies(visual_edit_appraisal),
-            )
+            visual_edit_mission = read_active_mission()
+            if visual_edit_mission is None:
+                raise RuntimeError("canonical kernel did not create visual mission")
             cases.append(
                 _goal_state_case_payload(
                     "visual_edit_targets_current_artifact",
@@ -3049,15 +3069,18 @@ def _goal_state_contract_release_gate_check() -> dict[str, Any]:
                 )
             )
 
-            missing_ref_appraisal = appraise_raphael_situation(
-                "用 ref3 的服裝，ref1 的角色，產出圖片",
+            write_active_mission(None)
+            prepare_raphael_turn(
+                turn_id="goal-state-missing-reference",
+                origin=RaphaelTurnOrigin.FOREGROUND,
+                runtime_contract=runtime_contract,
+                config=config,
+                user_message="用 ref3 的服裝，ref1 的角色，產出圖片",
                 attachments=["ref1", "ref2"],
             )
-            missing_ref_mission = update_raphael_mission(
-                None,
-                missing_ref_appraisal,
-                simulate_raphael_strategies(missing_ref_appraisal),
-            )
+            missing_ref_mission = read_active_mission()
+            if missing_ref_mission is None:
+                raise RuntimeError("canonical kernel did not record blocked mission")
             cases.append(
                 _goal_state_case_payload(
                     "missing_reference_blocks",
@@ -3598,8 +3621,13 @@ def _user_simulation_standby_summon_case() -> dict[str, Any]:
 
 
 def _user_simulation_vague_takeover_case() -> dict[str, Any]:
+    from agent.raphael.kernel import prepare_raphael_turn
     from agent.raphael.observer import build_raphael_observation_context
-    from agent.raphael.state import read_mission_state
+    from agent.raphael.runtime_contract import (
+        RaphaelTurnOrigin,
+        resolve_raphael_runtime_contract,
+    )
+    from agent.raphael.state import read_active_mission
 
     config = {
         "plugins": {"enabled": ["raphael"], "disabled": []},
@@ -3614,13 +3642,21 @@ def _user_simulation_vague_takeover_case() -> dict[str, Any]:
         token = set_hermes_home_override(Path(temp_home))
         os.environ["HERMES_HOME"] = temp_home
         try:
-            build_raphael_observation_context(
-                "請修復 gateway fallback bug 並驗證",
-                config,
+            prepare_raphael_turn(
+                turn_id="wow-vague-takeover-seed",
+                origin=RaphaelTurnOrigin.FOREGROUND,
+                runtime_contract=resolve_raphael_runtime_contract(
+                    config,
+                    live_provider="release-gate-fixture",
+                    live_model="release-gate-fixture",
+                    live_api_mode="deterministic",
+                ),
+                config=config,
+                user_message="請修復 gateway fallback bug 並驗證",
             )
-            first_mission = read_mission_state()
+            first_mission = read_active_mission()
             build_raphael_observation_context("拉斐爾，接管這個任務", config)
-            second_mission = read_mission_state()
+            second_mission = read_active_mission()
         finally:
             reset_hermes_home_override(token)
             if previous_home is None:

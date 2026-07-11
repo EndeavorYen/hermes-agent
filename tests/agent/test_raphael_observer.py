@@ -242,11 +242,22 @@ def test_observation_context_does_not_overwrite_mission_for_casual_summon(
     tmp_path,
 ):
     import agent.raphael.state as state
+    from agent.raphael.mission import create_mission
 
     monkeypatch.setattr(state, "get_hermes_home", lambda: tmp_path)
     config = _raphael_config(mode="sage_king")
 
-    build_raphael_observation_context("請修復 gateway fallback bug 並驗證", config)
+    state.write_active_mission(
+        create_mission(
+            mission_id="mission-existing",
+            goal="請修復 gateway fallback bug 並驗證",
+            success_conditions=("focused tests pass",),
+            phase="implementation",
+            next_action="run focused tests",
+            selected_strategy="tool_task",
+            required_proofs=("focused_tests",),
+        )
+    )
     first_mission = state.read_mission_state()
     build_raphael_observation_context("拉斐爾？", config)
     second_mission = state.read_mission_state()
@@ -263,11 +274,22 @@ def test_observation_context_binds_vague_takeover_summon_to_current_mission(
     tmp_path,
 ):
     import agent.raphael.state as state
+    from agent.raphael.mission import create_mission
 
     monkeypatch.setattr(state, "get_hermes_home", lambda: tmp_path)
     config = _raphael_config(mode="sage_king")
 
-    build_raphael_observation_context("請修復 gateway fallback bug 並驗證", config)
+    state.write_active_mission(
+        create_mission(
+            mission_id="mission-existing",
+            goal="請修復 gateway fallback bug 並驗證",
+            success_conditions=("focused tests pass",),
+            phase="implementation",
+            next_action="run focused tests",
+            selected_strategy="tool_task",
+            required_proofs=("focused_tests",),
+        )
+    )
     first_mission = state.read_mission_state()
     build_raphael_observation_context("拉斐爾，接管這個任務", config)
     second_mission = state.read_mission_state()
@@ -296,12 +318,10 @@ def test_observation_context_uses_multimodal_attachments_for_ref_mapping(
     mission = state.read_mission_state()
 
     assert "missing_ref1" not in context
-    assert mission is not None
-    assert "missing_ref1" not in mission.blockers
-    assert "reference_mapping_confirmed" not in mission.required_proofs
+    assert mission is None
 
 
-def test_observation_context_surfaces_mission_state_failure(monkeypatch, tmp_path):
+def test_observation_context_never_calls_mission_state_writer(monkeypatch, tmp_path):
     import agent.raphael.state as state
 
     def fail_write_mission_state(_mission):
@@ -316,11 +336,9 @@ def test_observation_context_surfaces_mission_state_failure(monkeypatch, tmp_pat
         config,
     )
 
-    assert "Raphael Control Layer Degraded (ephemeral, internal):" in context
-    assert "failure_layer: mission_state" in context
-    assert "error_class: RuntimeError" in context
-    assert "inspect Raphael state writer" in context
-    assert "private mission state path leaked" not in context
+    assert "Raphael State Observer" in context
+    assert "failure_layer: mission_state" not in context
+    assert state.read_mission_state() is None
 
 
 def test_observation_context_surfaces_control_decision_failure(monkeypatch):

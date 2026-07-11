@@ -9,6 +9,7 @@ from agent.raphael.runtime_contract import (
     resolve_raphael_runtime_contract,
 )
 from agent.raphael.state import read_state
+from agent.raphael.observer import build_raphael_observation_context
 
 
 def _enabled_config():
@@ -50,6 +51,116 @@ def test_prepare_foreground_turn_records_canonical_decision(tmp_path):
     assert state.last_decision is not None
     assert state.last_decision["turn_id"] == "turn-1"
     assert state.last_decision["mode"] == "tool_task"
+
+
+def test_observer_is_read_only_and_kernel_owns_canonical_mission(tmp_path):
+    runtime_contract = resolve_raphael_runtime_contract(_enabled_config())
+
+    with patch.dict("os.environ", {"HERMES_HOME": str(tmp_path)}):
+        build_raphael_observation_context(
+            "請產出一張圖片",
+            _enabled_config(),
+            include_control_context=False,
+        )
+        assert read_state().active_mission is None
+
+        decision = prepare_raphael_turn(
+            turn_id="turn-visual-owner",
+            origin=RaphaelTurnOrigin.FOREGROUND,
+            runtime_contract=runtime_contract,
+            config=_enabled_config(),
+            user_message="請產出一張圖片",
+        )
+        mission = read_state().active_mission
+
+    assert decision is not None
+    assert mission is not None
+    assert mission.mission_id == decision.mission_id
+    assert mission.goal == decision.goal.summary
+    assert mission.phase == decision.goal.phase
+    assert mission.next_action == decision.next_action
+    assert mission.required_proofs == decision.required_proofs
+    assert mission.blockers == decision.goal.blockers
+
+
+def test_kernel_reconciles_existing_mission_to_latest_decision(tmp_path):
+    runtime_contract = resolve_raphael_runtime_contract(_enabled_config())
+    stale = create_mission(
+        mission_id="mission-existing",
+        goal="stale observer goal",
+        success_conditions=("stale condition",),
+        phase="strategy_selected",
+        next_action="multi_pass_review_and_repair",
+        selected_strategy="old-strategy",
+        required_proofs=("stale_proof",),
+    )
+
+    with patch.dict("os.environ", {"HERMES_HOME": str(tmp_path)}):
+        from agent.raphael.state import write_active_mission
+
+        write_active_mission(stale)
+        decision = prepare_raphael_turn(
+            turn_id="turn-reconcile",
+            origin=RaphaelTurnOrigin.FOREGROUND,
+            runtime_contract=runtime_contract,
+            config=_enabled_config(),
+            user_message="請產出一張圖片",
+        )
+        mission = read_state().active_mission
+
+    assert decision is not None
+    assert mission is not None
+    assert mission.mission_id == "mission-existing"
+    assert mission.goal == decision.goal.summary
+    assert mission.phase == decision.goal.phase
+    assert mission.next_action == decision.next_action
+    assert mission.required_proofs == decision.required_proofs
+    assert mission.selected_strategy == decision.mode
+
+
+def test_kernel_records_blocked_reference_goal_and_visual_artifact_identity(tmp_path):
+    runtime_contract = resolve_raphael_runtime_contract(_enabled_config())
+
+    with patch.dict("os.environ", {"HERMES_HOME": str(tmp_path)}):
+        blocked = prepare_raphael_turn(
+            turn_id="turn-blocked-reference",
+            origin=RaphaelTurnOrigin.FOREGROUND,
+            runtime_contract=runtime_contract,
+            config=_enabled_config(),
+            user_message="用 ref3 的服裝，ref1 的角色，產出圖片",
+            attachments=["ref1", "ref2"],
+        )
+        blocked_mission = read_state().active_mission
+
+        from agent.raphael.state import write_active_mission
+
+        write_active_mission(None)
+        visual = prepare_raphael_turn(
+            turn_id="turn-visual-reference",
+            origin=RaphaelTurnOrigin.FOREGROUND,
+            runtime_contract=runtime_contract,
+            config=_enabled_config(),
+            user_message="把剛剛那張圖改亮一點，比例不要變",
+            conversation_history=[
+                {
+                    "role": "assistant",
+                    "content": "已產出圖片。",
+                    "metadata": {"selected_artifact_id": "artifact-current"},
+                }
+            ],
+        )
+        visual_mission = read_state().active_mission
+
+    assert blocked is not None
+    assert blocked.completion_policy == "blocked"
+    assert blocked_mission is not None
+    assert blocked_mission.proof_status == "blocked"
+    assert blocked_mission.blockers == blocked.goal.blockers
+    assert visual is not None
+    assert visual_mission is not None
+    assert visual_mission.active_artifact_id == "artifact-current"
+    assert visual_mission.active_artifact is not None
+    assert visual_mission.active_artifact.uri == "artifact://artifact-current"
 
 
 def test_background_turn_does_not_create_or_record_foreground_decision(tmp_path):

@@ -308,9 +308,9 @@ def test_agent_mode_planner_records_three_layer_provider_contract():
 
     assert plan["provider_contract"] == {
         "base_llm_provider": "openai-codex",
-        "base_llm_model": "gpt-5.5",
+        "base_llm_model": "",
         "visual_agent_llm_provider": "xai-oauth",
-        "visual_agent_llm_model": "grok-4.3",
+        "visual_agent_llm_model": "",
         "visual_media_provider_default": "xai",
         "visual_media_model_default": "grok-imagine-image-quality",
         "visual_media_provider_override": None,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 import hashlib
 from typing import Any
 
@@ -18,6 +19,7 @@ from agent.raphael.runtime_contract import (
     resolve_raphael_turn_origin,
 )
 from agent.raphael.mission import create_mission
+from agent.raphael.models import MissionArtifact, RaphaelMission
 from agent.raphael.state import (
     read_active_mission,
     record_turn_decision,
@@ -99,8 +101,8 @@ def prepare_raphael_turn(
         conversation_history=conversation_history,
         visual_plan=visual_plan,
     )
-    if mission is None and decision.completion_policy in {"mutation", "visual"}:
-        mission = _new_foreground_mission(decision)
+    if decision.completion_policy in {"mutation", "visual", "blocked"}:
+        mission = _mission_for_decision(mission, decision)
         write_active_mission(mission, origin=resolved_origin)
         decision = replace(decision, mission_id=mission.mission_id)
     record_turn_decision(decision.to_dict())
@@ -213,10 +215,11 @@ def _route_with_runtime_contract(
     )
 
 
-def _new_foreground_mission(decision: RaphaelTurnDecision):
+def _new_foreground_mission(decision: RaphaelTurnDecision) -> RaphaelMission:
     seed = f"{decision.turn_id}|{decision.goal.summary}|{decision.mode}"
     mission_id = f"mission-{hashlib.sha256(seed.encode('utf-8')).hexdigest()[:16]}"
-    return create_mission(
+    active_artifact = _active_artifact_reference(decision)
+    mission = create_mission(
         mission_id=mission_id,
         goal=decision.goal.summary,
         success_conditions=decision.goal.success_conditions,
@@ -224,8 +227,55 @@ def _new_foreground_mission(decision: RaphaelTurnDecision):
         next_action=decision.next_action,
         selected_strategy=decision.mode,
         required_proofs=decision.required_proofs,
-        active_artifact_id=decision.goal.active_artifact_id,
+        active_artifact=active_artifact,
         blockers=decision.goal.blockers,
+    )
+    if decision.goal.blockers:
+        return replace(mission, proof_status="blocked")
+    return mission
+
+
+def _mission_for_decision(
+    mission: RaphaelMission | None,
+    decision: RaphaelTurnDecision,
+) -> RaphaelMission:
+    if mission is None:
+        return _new_foreground_mission(decision)
+    active_artifact = _active_artifact_reference(decision)
+    artifacts = mission.artifacts
+    if active_artifact is not None and all(
+        artifact.artifact_id != active_artifact.artifact_id
+        for artifact in artifacts
+    ):
+        artifacts = artifacts + (active_artifact,)
+    return replace(
+        mission,
+        goal=decision.goal.summary,
+        success_conditions=decision.goal.success_conditions,
+        phase=decision.goal.phase,
+        blockers=decision.goal.blockers,
+        next_action=decision.next_action,
+        selected_strategy=decision.mode,
+        required_proofs=decision.required_proofs,
+        artifacts=artifacts,
+        active_artifact_id=decision.goal.active_artifact_id,
+        proof_status="blocked" if decision.goal.blockers else "pending",
+        updated_at=datetime.now(timezone.utc),
+    )
+
+
+def _active_artifact_reference(
+    decision: RaphaelTurnDecision,
+) -> MissionArtifact | None:
+    artifact_id = str(decision.goal.active_artifact_id or "").strip()
+    if not artifact_id:
+        return None
+    return MissionArtifact(
+        artifact_id=artifact_id,
+        kind="conversation_reference",
+        label=artifact_id,
+        uri=f"artifact://{artifact_id}",
+        created_at=datetime.now(timezone.utc),
     )
 
 

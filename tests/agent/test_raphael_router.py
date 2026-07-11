@@ -35,7 +35,7 @@ def test_router_fixture_matrix_classifies_core_routes():
         assert route.kind == expected_kind
         assert route.source == "raphael_mode_router"
         assert route.provider_contract["base_llm_provider"] == "openai-codex"
-        assert route.provider_contract["base_llm_model"] == "gpt-5.5"
+        assert route.provider_contract["base_llm_model"] == ""
 
 
 def test_prompt_disclosure_overrides_visual_generation_and_blocks_handoff():
@@ -57,9 +57,9 @@ def test_visual_handoff_preserves_provider_boundaries_without_live_claims():
     assert route.visual_handoff["target_mode"] == "visual_agent"
     assert route.visual_handoff["tool_name"] == "visual_agent_generate"
     assert route.visual_handoff["base_llm_provider"] == "openai-codex"
-    assert route.visual_handoff["base_llm_model"] == "gpt-5.5"
+    assert route.visual_handoff["base_llm_model"] == ""
     assert route.visual_handoff["visual_agent_llm_provider"] == "xai-oauth"
-    assert route.visual_handoff["visual_agent_llm_model"] == "grok-4.3"
+    assert route.visual_handoff["visual_agent_llm_model"] == ""
     assert route.visual_handoff["visual_media_provider"] == "openai-codex"
     assert route.visual_handoff["visual_media_provider_source"] == "prompt_override"
     assert route.visual_handoff["live_generation_required"] is False

@@ -430,64 +430,8 @@ def build_raphael_observation_context(
         auto_portrait_decision
     )
     blocks = [observation]
-    try:
-        from agent.raphael.runtime_contract import (
-            RaphaelTurnOrigin,
-            resolve_raphael_turn_origin,
-        )
-
-        foreground_turn = (
-            resolve_raphael_turn_origin(explicit_origin=turn_origin)
-            is RaphaelTurnOrigin.FOREGROUND
-        )
-    except Exception:
-        foreground_turn = False
-    try:
-        from agent.raphael.appraisal import appraise_raphael_situation
-        from agent.raphael.invocation import (
-            is_casual_raphael_summon,
-            is_raphael_invocation,
-        )
-        from agent.raphael.mission import update_raphael_mission
-        from agent.raphael.state import read_mission_state, write_mission_state
-        from agent.raphael.strategy import simulate_raphael_strategies
-
-        if foreground_turn:
-            appraisal = appraise_raphael_situation(
-                user_message,
-                conversation_history=conversation_history,
-                attachments=attachments,
-            )
-            current_mission = read_mission_state()
-            if not (
-                appraisal.task_type == "general"
-                and (
-                    is_casual_raphael_summon(message_text)
-                    or (
-                        current_mission is not None
-                        and not is_raphael_invocation(message_text)
-                    )
-                )
-                or (
-                    current_mission is not None
-                    and _is_vague_current_task_takeover(message_text)
-                )
-            ):
-                strategies = simulate_raphael_strategies(appraisal)
-                mission = update_raphael_mission(
-                    current_mission,
-                    appraisal,
-                    strategies,
-                )
-                write_mission_state(mission)
-    except Exception as exc:
-        blocks.append(
-            _render_raphael_control_degraded(
-                failure_layer="mission_state",
-                error=exc,
-                next_action="inspect Raphael state writer before trusting mission continuity",
-            )
-        )
+    # Observation is deliberately read-only. The canonical turn kernel is the
+    # sole owner of foreground mission creation and reconciliation.
     if invocation_gate:
         blocks.append(invocation_gate)
     if sketch:
@@ -523,21 +467,6 @@ def build_raphael_observation_context(
             )
         )
     return "\n\n".join(blocks)
-
-
-def _is_vague_current_task_takeover(text: str) -> bool:
-    compact = re.sub(r"[\s，,。！？!?:：、]+", "", str(text or "").lower())
-    return compact in {
-        "拉斐爾接管這個任務",
-        "拉斐尔接管这个任务",
-        "請拉斐爾接管這個任務",
-        "请拉斐尔接管这个任务",
-        "大賢者接管這個任務",
-        "大贤者接管这个任务",
-        "賢者之王接管這個任務",
-        "raphaeltakeoverthistask",
-        "pleaseraphaeltakeoverthistask",
-    }
 
 
 def _extract_user_text(value: Any) -> str:

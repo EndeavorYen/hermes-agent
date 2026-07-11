@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from typing import Any
 
 from agent.raphael.proof import (
@@ -92,6 +93,54 @@ def replace_terminal_assistant_response(
     messages.append({"role": "assistant", "content": final_response})
 
 
+def record_raphael_finalization_outcome(
+    *,
+    decision: Mapping[str, Any] | None,
+    result: RaphaelFinalizationResult,
+) -> None:
+    if not isinstance(decision, Mapping):
+        return
+    if str(decision.get("origin") or "foreground") != "foreground":
+        return
+    if result.status not in {"passed", "blocked_unverified_completion"}:
+        return
+
+    from agent.raphael.state import read_active_mission, write_active_mission
+
+    mission = read_active_mission()
+    mission_id = str(decision.get("mission_id") or "")
+    if mission is None or not mission_id or mission.mission_id != mission_id:
+        return
+
+    if result.status == "passed":
+        next_action = (
+            "deliver_selected_visual_artifact"
+            if str(decision.get("completion_policy")) == "visual"
+            else "mission_complete"
+        )
+        updated = replace(
+            mission,
+            phase="proof_passed",
+            proof_status="passed",
+            blockers=(),
+            last_evidence=result.available_proofs,
+            next_action=next_action,
+            updated_at=datetime.now(timezone.utc),
+        )
+    else:
+        updated = replace(
+            mission,
+            phase="blocked",
+            proof_status="blocked",
+            blockers=tuple(
+                f"missing proof: {proof}" for proof in result.missing_proofs
+            ),
+            next_action=result.next_action,
+            updated_at=datetime.now(timezone.utc),
+        )
+    write_active_mission(updated)
+
+
 def _available_proofs(
     messages: Sequence[Mapping[str, Any]] | None,
     *,
@@ -163,5 +212,6 @@ def _blocked_response(missing: tuple[str, ...], next_action: str) -> str:
 __all__ = [
     "RaphaelFinalizationResult",
     "enforce_raphael_completion",
+    "record_raphael_finalization_outcome",
     "replace_terminal_assistant_response",
 ]

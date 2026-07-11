@@ -82,6 +82,7 @@ def finalize_turn(
 
     from agent.raphael.finalization import (
         enforce_raphael_completion,
+        record_raphael_finalization_outcome,
         replace_terminal_assistant_response,
     )
 
@@ -161,6 +162,11 @@ def finalize_turn(
         final_response=final_response,
         messages=messages,
     )
+    if not interrupted:
+        record_raphael_finalization_outcome(
+            decision=raphael_decision,
+            result=_raphael_finalization,
+        )
     final_response = _raphael_finalization.final_response
     if final_response and not interrupted:
         replace_terminal_assistant_response(messages, final_response)

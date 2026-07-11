@@ -302,7 +302,23 @@ def test_disabled_raphael_uses_readonly_gate_without_loading_evolution_stack(
 
 def test_real_turn_finalizer_blocks_unverified_mutation_before_persistence(
     monkeypatch,
+    tmp_path,
 ):
+    from agent.raphael.mission import create_mission
+    from agent.raphael.state import read_active_mission, write_active_mission
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    write_active_mission(
+        create_mission(
+            mission_id="mission-proof-gate",
+            goal="修正問題",
+            success_conditions=("focused tests pass",),
+            phase="verification",
+            next_action="run focused verification",
+            selected_strategy="tool_task",
+            required_proofs=("focused_tests",),
+        )
+    )
     monkeypatch.setattr(hermes_plugins, "invoke_hook", lambda *_args, **_kwargs: [])
     agent = _FakeAgent()
     persisted = []
@@ -330,6 +346,8 @@ def test_real_turn_finalizer_blocks_unverified_mutation_before_persistence(
         _turn_exit_reason="text_response",
         raphael_decision={
             "turn_id": "turn-proof-gate",
+            "mission_id": "mission-proof-gate",
+            "origin": "foreground",
             "mode": "tool_task",
             "completion_policy": "mutation",
             "evidence": {"required_proofs": ["focused_tests"]},
@@ -344,6 +362,10 @@ def test_real_turn_finalizer_blocks_unverified_mutation_before_persistence(
     assert messages[-1]["content"] == result["final_response"]
     persisted_messages = persisted[-1]
     assert persisted_messages[-1]["content"] == result["final_response"]
+    mission = read_active_mission()
+    assert mission is not None
+    assert mission.proof_status == "blocked"
+    assert mission.blockers == ("missing proof: focused_tests",)
 
 
 def test_background_spawn_error_is_sanitized_before_persistent_records(

@@ -2,8 +2,13 @@ import json
 
 import pytest
 
-from agent.raphael.finalization import enforce_raphael_completion
+from agent.raphael.finalization import (
+    enforce_raphael_completion,
+    record_raphael_finalization_outcome,
+)
+from agent.raphael.mission import create_mission
 from agent.raphael.proof import build_raphael_evidence_event
+from agent.raphael.state import read_active_mission, write_active_mission
 
 
 def _tool_task_decision(*, required=("focused_tests",)):
@@ -203,3 +208,77 @@ def test_visual_structured_evidence_must_match_current_turn_and_event_identity()
 
     assert result.status == "blocked_unverified_completion"
     assert result.missing_proofs == ("artifact_quality_evidence",)
+
+
+def test_passed_finalization_advances_active_mission(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    write_active_mission(
+        create_mission(
+            mission_id="mission-finalization",
+            goal="repair runtime",
+            success_conditions=("focused tests pass",),
+            phase="verification",
+            next_action="run focused verification",
+            selected_strategy="tool_task",
+            required_proofs=("focused_tests",),
+        )
+    )
+    result = enforce_raphael_completion(
+        decision=_tool_task_decision(),
+        final_response="完成了，測試已通過。",
+        messages=(
+            {
+                "role": "tool",
+                "name": "exec_command",
+                "exit_code": 0,
+                "content": "pytest tests/foo.py -q\n1 passed",
+            },
+        ),
+    )
+
+    record_raphael_finalization_outcome(
+        decision=_tool_task_decision(),
+        result=result,
+    )
+    mission = read_active_mission()
+
+    assert mission is not None
+    assert mission.phase == "proof_passed"
+    assert mission.proof_status == "passed"
+    assert mission.last_evidence == ("focused_tests",)
+    assert mission.blockers == ()
+    assert mission.next_action == "mission_complete"
+
+
+def test_blocked_finalization_records_missing_proof_and_safe_next_step(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    write_active_mission(
+        create_mission(
+            mission_id="mission-finalization",
+            goal="repair runtime",
+            success_conditions=("focused tests pass",),
+            phase="verification",
+            next_action="run focused verification",
+            selected_strategy="tool_task",
+            required_proofs=("focused_tests",),
+        )
+    )
+    result = enforce_raphael_completion(
+        decision=_tool_task_decision(),
+        final_response="完成了。",
+        messages=(),
+    )
+
+    record_raphael_finalization_outcome(
+        decision=_tool_task_decision(),
+        result=result,
+    )
+    mission = read_active_mission()
+
+    assert mission is not None
+    assert mission.phase == "blocked"
+    assert mission.proof_status == "blocked"
+    assert mission.blockers == ("missing proof: focused_tests",)
+    assert mission.next_action == "run focused verification"

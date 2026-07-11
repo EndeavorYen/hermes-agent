@@ -1395,7 +1395,7 @@ _MODE_ROUTER_CASE_FIXTURES = {
         "handoff_tool": "visual_agent_generate",
         "bypass_base_llm": True,
         "visual_agent_llm_provider": "xai-oauth",
-        "visual_agent_llm_model": "grok-4.3",
+        "visual_agent_llm_model": "",
         "visual_media_provider": "xai",
         "visual_media_model": "grok-imagine-image-quality",
         "reference_resolution": "not_applicable",
@@ -1409,7 +1409,7 @@ _MODE_ROUTER_CASE_FIXTURES = {
         "handoff_tool": "visual_agent_generate",
         "bypass_base_llm": True,
         "visual_agent_llm_provider": "xai-oauth",
-        "visual_agent_llm_model": "grok-4.3",
+        "visual_agent_llm_model": "",
         "visual_media_provider": "xai",
         "visual_media_model": "grok-imagine-image-quality",
         "active_artifact_continuity": True,
@@ -1466,7 +1466,7 @@ _GOAL_STATE_REQUIRED_CASES = (
 )
 _GOAL_STATE_CASE_FIXTURES = {
     "new_tool_mission": {
-        "phase": "strategy_selected",
+        "phase": "plan_execute_verify",
         "next_action": "plan_execute_verify",
         "proof_status": "pending",
         "mission_continuity": False,
@@ -1476,7 +1476,7 @@ _GOAL_STATE_CASE_FIXTURES = {
         "required_proofs": ["focused_tests", "runtime_smoke_when_live_wiring"],
     },
     "followup_preserves_mission": {
-        "phase": "strategy_selected",
+        "phase": "plan_execute_verify",
         "next_action": "plan_execute_verify",
         "proof_status": "pending",
         "mission_continuity": True,
@@ -1486,7 +1486,7 @@ _GOAL_STATE_CASE_FIXTURES = {
         "required_proofs": ["focused_tests", "runtime_smoke_when_live_wiring"],
     },
     "casual_summon_preserves_mission": {
-        "phase": "strategy_selected",
+        "phase": "plan_execute_verify",
         "next_action": "plan_execute_verify",
         "proof_status": "pending",
         "mission_continuity": True,
@@ -1496,24 +1496,31 @@ _GOAL_STATE_CASE_FIXTURES = {
         "required_proofs": ["focused_tests", "runtime_smoke_when_live_wiring"],
     },
     "visual_edit_targets_current_artifact": {
-        "phase": "strategy_selected",
-        "next_action": "multi_pass_review_and_repair",
+        "phase": "route_and_handoff",
+        "next_action": "call_visual_agent_generate",
         "proof_status": "pending",
         "mission_continuity": False,
         "casual_turn_preserved": None,
         "active_artifact_id": "artifact-current",
         "blockers": [],
-        "required_proofs": ["artifact_continuity", "quality_gate_passed", "hostile_review"],
+        "required_proofs": [
+            "direct_handoff_metadata",
+            "provider_attempt_evidence",
+            "artifact_quality_evidence",
+            "selected_current_artifact_only",
+            "stale_artifact_guard",
+            "delivery_cleanliness",
+        ],
     },
     "missing_reference_blocks": {
-        "phase": "blocked",
+        "phase": "clarify_reference_mapping",
         "next_action": "ask_precise_clarification",
         "proof_status": "blocked",
         "mission_continuity": False,
         "casual_turn_preserved": None,
         "active_artifact_id": None,
-        "blockers": ["missing_ref3"],
-        "required_proofs": ["reference_mapping_confirmed"],
+        "blockers": ["missing_ref1"],
+        "required_proofs": ["reference_mapping_evidence"],
     },
 }
 

@@ -341,7 +341,7 @@ def test_visual_agent_generate_passes_default_xai_media_provider_contract(monkey
     assert captured["image_provider"] == "xai"
     assert captured["image_provider_source"] == "visual_agent_default"
     assert payload["visual_agent_provider_contract"]["visual_agent_llm_provider"] == "xai-oauth"
-    assert payload["visual_agent_provider_contract"]["base_llm_model"] == "gpt-5.5"
+    assert payload["visual_agent_provider_contract"]["base_llm_model"] == ""
 
 
 def test_visual_agent_generate_rejects_prompt_disclosure_without_regenerating(monkeypatch):

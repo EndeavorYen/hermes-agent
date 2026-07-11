@@ -234,6 +234,8 @@ def test_direct_visual_handoff_reuses_canonical_decision_without_recomputing(
         "clarification_question": control["clarification_question"],
         "confidence": control["confidence"],
     }
+    canonical["route"]["visual_agent_llm_provider"] = "xai-oauth"
+    canonical["route"]["visual_agent_llm_model"] = "grok-runtime-model"
 
     monkeypatch.setattr(
         "agent.raphael.control.build_raphael_control_decision",
@@ -250,6 +252,8 @@ def test_direct_visual_handoff_reuses_canonical_decision_without_recomputing(
 
     assert handoff is not None
     assert handoff["raphael_control"]["turn_id"] == "turn-canonical"
+    assert handoff["arguments"]["visual_agent_llm_provider"] == "xai-oauth"
+    assert handoff["arguments"]["visual_agent_llm_model"] == "grok-runtime-model"
 
 
 def test_direct_visual_handoff_fails_closed_when_raphael_evidence_is_missing(
@@ -296,6 +300,25 @@ def test_direct_visual_handoff_fails_closed_when_raphael_evidence_is_missing(
     assert "artifact_quality_evidence" in gate["missing_proofs"]
     assert "selected_current_artifact_only" in gate["missing_proofs"]
     assert format_direct_visual_agent_handoff_response(raw).startswith("視覺生成失敗：")
+
+
+def test_raphael_evidence_gate_rejects_empty_turn_identity():
+    from agent.visual.agent_mode.handoff import _evaluate_raphael_evidence_gate
+
+    gate = _evaluate_raphael_evidence_gate(
+        {
+            "mission_id": "mission-current",
+            "turn_id": "",
+            "route": {"visual_media_provider": "xai"},
+            "evidence": {"required_proofs": []},
+        },
+        {
+            "rankings": {"selected_artifact_id": "artifact-current"},
+        },
+    )
+
+    assert gate["passed"] is False
+    assert "turn_identity" in gate["missing_proofs"]
 
 
 def test_direct_visual_handoff_allows_payload_with_raphael_evidence(

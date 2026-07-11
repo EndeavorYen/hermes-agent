@@ -403,8 +403,8 @@ def _visual_edit_handoff_for_uri(
 def _base_provider_contract() -> dict[str, Any]:
     contract = dict(plan_visual_agent_request("").get("provider_contract") or {})
     return {
-        "base_llm_provider": contract.get("base_llm_provider", "openai-codex"),
-        "base_llm_model": contract.get("base_llm_model", "gpt-5.5"),
+        "base_llm_provider": contract.get("base_llm_provider") or "openai-codex",
+        "base_llm_model": contract.get("base_llm_model") or "",
     }
 
 

@@ -18,9 +18,9 @@ def test_control_routes_visual_generation_to_grok_handoff_and_grok_imagine_defau
     assert decision.route.handoff_tool == "visual_agent_generate"
     assert decision.route.bypass_base_llm is True
     assert decision.route.base_llm_provider == "openai-codex"
-    assert decision.route.base_llm_model == "gpt-5.5"
+    assert decision.route.base_llm_model == ""
     assert decision.route.visual_agent_llm_provider == "xai-oauth"
-    assert decision.route.visual_agent_llm_model == "grok-4.3"
+    assert decision.route.visual_agent_llm_model == ""
     assert decision.route.visual_media_provider == "xai"
     assert decision.route.visual_media_model == "grok-imagine-image-quality"
     assert "artifact_quality_evidence" in decision.evidence.required_proofs
@@ -45,7 +45,7 @@ def test_control_allows_openai_image2_media_override_without_losing_grok_planner
 
     assert decision.mode == "visual_agent_generation"
     assert decision.route.visual_agent_llm_provider == "xai-oauth"
-    assert decision.route.visual_agent_llm_model == "grok-4.3"
+    assert decision.route.visual_agent_llm_model == ""
     assert decision.route.visual_media_provider == "openai-codex"
     assert decision.route.visual_media_provider_source == "prompt_override"
 
