@@ -71,10 +71,11 @@ class BranchGrammarTests(unittest.TestCase):
 
 
 class PrePushPolicyTests(unittest.TestCase):
-    def test_hook_resolves_guard_from_the_shared_repository_root(self) -> None:
+    def test_hook_resolves_guard_from_the_current_worktree(self) -> None:
         hook = PRE_PUSH_HOOK.read_text(encoding="utf-8")
 
-        self.assertIn("git rev-parse --git-common-dir", hook)
+        self.assertIn("git rev-parse --show-toplevel", hook)
+        self.assertNotIn("git rev-parse --git-common-dir", hook)
         self.assertIn("hermes_branch_governance.py", hook)
 
     def test_allows_canonical_local_main_checkpoint_to_origin(self) -> None:
