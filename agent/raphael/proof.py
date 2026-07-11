@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timezone
+import hashlib
 from typing import Any
 
 
@@ -95,6 +97,80 @@ class RaphaelProofEvent:
     command: str
     success: bool
     content: str
+
+
+@dataclass(frozen=True)
+class RaphaelEvidenceEvent:
+    """Sanitized, turn-scoped evidence emitted by a production proof surface."""
+
+    evidence_id: str
+    mission_id: str
+    turn_id: str
+    proof_type: str
+    source: str
+    status: str
+    command: str
+    artifact_id: str
+    provider: str
+    observed_at: str
+    payload_digest: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "evidence_id": self.evidence_id,
+            "mission_id": self.mission_id,
+            "turn_id": self.turn_id,
+            "proof_type": self.proof_type,
+            "source": self.source,
+            "status": self.status,
+            "command": self.command,
+            "artifact_id": self.artifact_id,
+            "provider": self.provider,
+            "observed_at": self.observed_at,
+            "payload_digest": self.payload_digest,
+        }
+
+
+def build_raphael_evidence_event(
+    *,
+    mission_id: str,
+    turn_id: str,
+    proof_type: str,
+    source: str,
+    status: str,
+    command: str,
+    artifact_id: str,
+    provider: str,
+    payload_digest: str,
+    observed_at: str | None = None,
+) -> RaphaelEvidenceEvent:
+    observed = observed_at or datetime.now(timezone.utc).isoformat()
+    identity = "|".join(
+        (
+            mission_id,
+            turn_id,
+            proof_type,
+            source,
+            status,
+            artifact_id,
+            provider,
+            payload_digest,
+        )
+    )
+    evidence_id = f"evidence-{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:16]}"
+    return RaphaelEvidenceEvent(
+        evidence_id=evidence_id,
+        mission_id=mission_id,
+        turn_id=turn_id,
+        proof_type=proof_type,
+        source=source,
+        status=status,
+        command=command,
+        artifact_id=artifact_id,
+        provider=provider,
+        observed_at=observed,
+        payload_digest=payload_digest,
+    )
 
 
 @dataclass(frozen=True)

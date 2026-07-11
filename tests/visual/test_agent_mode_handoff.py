@@ -328,6 +328,8 @@ def test_direct_visual_handoff_allows_payload_with_raphael_evidence(
     )
 
     handoff = build_direct_visual_agent_handoff(agent, "請產出一張圖片")
+    handoff["raphael_control"]["turn_id"] = "turn-structured-evidence"
+    handoff["raphael_control"]["mission_id"] = "mission-structured-evidence"
     raw = attach_direct_visual_agent_handoff_metadata(
         json.dumps(
             {
@@ -377,6 +379,22 @@ def test_direct_visual_handoff_allows_payload_with_raphael_evidence(
     gate = payload["direct_visual_agent_handoff"]["raphael_evidence_gate"]
     assert gate["passed"] is True
     assert gate["missing_proofs"] == []
+    assert {event["proof_type"] for event in gate["evidence_events"]} == set(
+        gate["required_proofs"]
+    )
+    assert all(event["status"] == "passed" for event in gate["evidence_events"])
+    assert all(
+        event["turn_id"] == "turn-structured-evidence"
+        for event in gate["evidence_events"]
+    )
+    assert all(
+        event["mission_id"] == "mission-structured-evidence"
+        for event in gate["evidence_events"]
+    )
+    assert all(
+        event["payload_digest"].startswith("sha256:")
+        for event in gate["evidence_events"]
+    )
     mission = raphael_state.read_mission_state()
     assert mission is not None
     assert mission.active_artifact_id == "artifact-1"
@@ -609,6 +627,12 @@ def test_direct_visual_handoff_rejects_stale_or_unmapped_selected_artifact(
     assert "selected_current_artifact_only" in gate["missing_proofs"]
     assert "stale_artifact_guard" in gate["missing_proofs"]
     assert "delivery_cleanliness" in gate["missing_proofs"]
+    stale_event = next(
+        event
+        for event in gate["evidence_events"]
+        if event["proof_type"] == "stale_artifact_guard"
+    )
+    assert stale_event["status"] == "missing"
 
 
 def test_direct_visual_handoff_fails_closed_for_unknown_raphael_proof(

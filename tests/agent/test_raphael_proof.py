@@ -1,4 +1,38 @@
-from agent.raphael.proof import extract_raphael_proof_events, raphael_has_required_proof
+from agent.raphael.proof import (
+    RaphaelEvidenceEvent,
+    extract_raphael_proof_events,
+    raphael_has_required_proof,
+)
+
+
+def test_structured_evidence_event_serializes_without_raw_payload():
+    event = RaphaelEvidenceEvent(
+        evidence_id="evidence-123",
+        mission_id="mission-1",
+        turn_id="turn-1",
+        proof_type="artifact_quality_evidence",
+        source="visual_agent_handoff",
+        status="passed",
+        command="visual_agent_generate",
+        artifact_id="artifact-1",
+        provider="fixture",
+        observed_at="2026-07-11T00:00:00+00:00",
+        payload_digest="sha256:abc123",
+    )
+
+    assert event.to_dict() == {
+        "evidence_id": "evidence-123",
+        "mission_id": "mission-1",
+        "turn_id": "turn-1",
+        "proof_type": "artifact_quality_evidence",
+        "source": "visual_agent_handoff",
+        "status": "passed",
+        "command": "visual_agent_generate",
+        "artifact_id": "artifact-1",
+        "provider": "fixture",
+        "observed_at": "2026-07-11T00:00:00+00:00",
+        "payload_digest": "sha256:abc123",
+    }
 
 
 def test_rejects_assistant_text_that_mentions_pytest_passed():

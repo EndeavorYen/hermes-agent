@@ -948,6 +948,8 @@ def _evaluate_raphael_evidence_gate(
     raphael_control: dict[str, Any],
     payload: dict[str, Any],
 ) -> dict[str, Any]:
+    from agent.raphael.proof import build_raphael_evidence_event
+
     evidence = (
         raphael_control.get("evidence")
         if isinstance(raphael_control.get("evidence"), dict)
@@ -958,17 +960,79 @@ def _evaluate_raphael_evidence_gate(
         for proof in evidence.get("required_proofs", ())
         if str(proof).strip()
     ]
-    missing = [
-        proof
+    proof_results = {
+        proof: _raphael_required_proof_present(proof, raphael_control, payload)
         for proof in required
-        if not _raphael_required_proof_present(proof, raphael_control, payload)
+    }
+    missing = [proof for proof, present in proof_results.items() if not present]
+    mission_id = str(raphael_control.get("mission_id") or "")
+    turn_id = str(raphael_control.get("turn_id") or "legacy-visual-handoff")
+    selected_ids = sorted(_selected_visual_artifact_ids(payload))
+    artifact_id = selected_ids[0] if selected_ids else ""
+    provider = _raphael_evidence_provider(payload)
+    payload_digest = _raphael_evidence_payload_digest(
+        proof_results=proof_results,
+        selected_ids=selected_ids,
+        provider=provider,
+        payload=payload,
+    )
+    observed_at = datetime.now(timezone.utc).isoformat()
+    evidence_events = [
+        build_raphael_evidence_event(
+            mission_id=mission_id,
+            turn_id=turn_id,
+            proof_type=proof,
+            source="visual_agent_handoff",
+            status="passed" if present else "missing",
+            command="visual_agent_generate",
+            artifact_id=artifact_id,
+            provider=provider,
+            payload_digest=payload_digest,
+            observed_at=observed_at,
+        ).to_dict()
+        for proof, present in proof_results.items()
     ]
     return {
         "passed": not missing,
         "required_proofs": required,
         "missing_proofs": missing,
         "failure_layer": "artifact_quality" if missing else None,
+        "evidence_events": evidence_events,
     }
+
+
+def _raphael_evidence_provider(payload: dict[str, Any]) -> str:
+    contract = payload.get("visual_agent_provider_contract")
+    if isinstance(contract, dict) and str(contract.get("provider") or "").strip():
+        return str(contract["provider"])
+    generation_payloads = payload.get("generation_payloads")
+    if isinstance(generation_payloads, dict):
+        for candidate in generation_payloads.values():
+            if isinstance(candidate, dict) and str(candidate.get("provider") or "").strip():
+                return str(candidate["provider"])
+    return ""
+
+
+def _raphael_evidence_payload_digest(
+    *,
+    proof_results: dict[str, bool],
+    selected_ids: list[str],
+    provider: str,
+    payload: dict[str, Any],
+) -> str:
+    quality = payload.get("delivery_metadata")
+    quality = quality.get("visual_quality_run") if isinstance(quality, dict) else None
+    recovery = payload.get("delivery_recovery")
+    safe_summary = {
+        "proof_results": proof_results,
+        "selected_artifact_ids": selected_ids,
+        "provider": provider,
+        "quality_success": quality.get("success") if isinstance(quality, dict) else None,
+        "delivery_status": recovery.get("status") if isinstance(recovery, dict) else None,
+        "success": payload.get("success") is True,
+    }
+    encoded = json.dumps(safe_summary, sort_keys=True, separators=(",", ":"))
+    return f"sha256:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
 
 
 def _raphael_required_proof_present(
