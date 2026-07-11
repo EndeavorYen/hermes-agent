@@ -108,6 +108,11 @@ jobs:
           source .venv/bin/activate
           scripts/run_tests.sh --files '${{ matrix.slice.files }}'
         env:
+          # The Raphael CLI file exercises 195 subprocess-heavy cases. It
+          # passes locally in under three minutes but can exceed the generic
+          # 300s file cap on a loaded hosted runner; keep a bounded CI-only
+          # allowance while preserving the 30-minute job cap and SIGKILL path.
+          HERMES_TEST_FILE_TIMEOUT: "420"
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
