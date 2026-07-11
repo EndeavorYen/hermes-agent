@@ -88,6 +88,17 @@ def _write_planning_fixture(context, *, report_status: str = "PASS", shot_count:
         ),
         encoding="utf-8",
     )
+    (context.project_dir / "pronunciation_lexicon.json").write_text(
+        json.dumps(
+            {
+                "schema": "story_video_pronunciation_lexicon_v1",
+                "language": "zh-TW",
+                "review_status": "PASS",
+                "entries": [],
+            }
+        ),
+        encoding="utf-8",
+    )
     return ledger
 
 
@@ -244,6 +255,32 @@ def test_planning_validation_requires_the_final_script_artifact(tmp_path) -> Non
 
     assert proof.ok is False
     assert "script.md" in proof.missing
+
+
+def test_planning_validation_requires_pronunciation_lexicon(tmp_path) -> None:
+    _store, context = _active_context(tmp_path)
+    _write_planning_fixture(context)
+    (context.project_dir / "pronunciation_lexicon.json").unlink()
+
+    blocked = validate_phase(context)
+
+    assert blocked.ok is False
+    assert "pronunciation_lexicon.json" in blocked.missing
+
+    (context.project_dir / "pronunciation_lexicon.json").write_text(
+        json.dumps(
+            {
+                "schema": "story_video_pronunciation_lexicon_v1",
+                "language": "zh-TW",
+                "review_status": "PASS",
+                "entries": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    passed = validate_phase(context)
+
+    assert passed.ok is True
 
 
 def test_planning_validation_rejects_shallow_scene_ledger(tmp_path) -> None:
@@ -445,6 +482,18 @@ def test_voice_validation_accepts_locked_local_qwen_narration_manifest(tmp_path)
     )
     manifest_path = context.project_dir / "manifests" / "narration_manifest.json"
     manifest_path.parent.mkdir(parents=True)
+    pronunciation_path = context.project_dir / "qc" / "pronunciation_qc_report.json"
+    pronunciation_path.parent.mkdir(parents=True)
+    pronunciation_path.write_text(
+        json.dumps(
+            {
+                "schema": "story_video_pronunciation_qc_v1",
+                "status": "PASS",
+                "language": "zh-TW",
+            }
+        ),
+        encoding="utf-8",
+    )
     manifest_path.write_text(
         json.dumps(
             {
@@ -452,6 +501,60 @@ def test_voice_validation_accepts_locked_local_qwen_narration_manifest(tmp_path)
                 "engine": "Qwen3-TTS via MLX-Audio",
                 "language": "zh-TW",
                 "voice_role": "narrator",
+                "voice": "simon_primary",
+                "rate": "1.06x",
+                "profile_status": "locked_by_user",
+                "voice_contract_status": "PASS",
+                "voice_profile": str(profile),
+                "model": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit",
+                "inference_mode": "offline",
+                "network_fallback": "forbidden",
+                "pronunciation_status": "PASS",
+                "outputs": [
+                    {
+                        "scene_id": "S00",
+                        "audio": str(audio),
+                        "display_text": "三疊紀。",
+                        "spoken_text": "三碟紀。",
+                        "pronunciation_status": "PASS",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is True
+
+
+def test_voice_validation_blocks_local_qwen_without_pronunciation_proof(tmp_path) -> None:
+    store, context = _active_context(tmp_path)
+    context = store.update(context, phase="voice")
+    audio = context.project_dir / "audio" / "qwen" / "S00.wav"
+    audio.parent.mkdir(parents=True)
+    audio.write_bytes(b"local qwen production audio")
+    profile = context.project_dir / "voice_profiles" / "simon_primary.json"
+    profile.parent.mkdir(parents=True)
+    profile.write_text(
+        json.dumps(
+            {
+                "profile_id": "simon_primary",
+                "status": "locked_by_user",
+                "provider": "local_qwen",
+            }
+        ),
+        encoding="utf-8",
+    )
+    manifest_path = context.project_dir / "manifests" / "narration_manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "provider": "local_qwen",
+                "engine": "Qwen3-TTS via MLX-Audio",
+                "language": "zh-TW",
                 "voice": "simon_primary",
                 "rate": "1.06x",
                 "profile_status": "locked_by_user",
@@ -468,7 +571,8 @@ def test_voice_validation_accepts_locked_local_qwen_narration_manifest(tmp_path)
 
     proof = validate_phase(context)
 
-    assert proof.ok is True
+    assert proof.ok is False
+    assert "qc/pronunciation_qc_report.json" in proof.missing
 
 
 def test_voice_validation_accepts_locked_azure_narration_manifest(tmp_path) -> None:
