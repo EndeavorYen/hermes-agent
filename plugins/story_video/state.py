@@ -109,7 +109,16 @@ def parse_operator_call(
 
     if lowered in {"故事影片下一步", "story video next", "story-video next"}:
         return OperatorCall(action="continue")
-    if lowered in {"繼續", "继续", "continue", "下一步", "next"}:
+    if lowered in {
+        "繼續",
+        "继续",
+        "請繼續",
+        "请继续",
+        "continue",
+        "please continue",
+        "下一步",
+        "next",
+    }:
         return OperatorCall(action="continue") if has_active_project else None
     if lowered in {"出片", "渲染", "render", "final cut", "故事影片出片"}:
         return OperatorCall(action="render") if has_active_project else None
@@ -303,6 +312,22 @@ class StoryVideoStateStore:
     ) -> StoryVideoRunContext:
         sessions = tuple(dict.fromkeys((*context.session_ids, session_id)))
         return self.update(context, session_ids=sessions)
+
+    def bind_source(
+        self,
+        context: StoryVideoRunContext,
+        source_key: str,
+    ) -> StoryVideoRunContext:
+        if not source_key:
+            return context
+        with _LOCK:
+            self.state_root.mkdir(parents=True, exist_ok=True)
+            source_index = self._read_json(self.source_index_path, {})
+            source_index[source_key] = str(
+                context.project_dir / "story_video_run_context.json"
+            )
+            self._write_json(self.source_index_path, source_index)
+        return context
 
     def _from_index(
         self,

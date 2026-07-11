@@ -17,7 +17,12 @@ _MARKER_RE = re.compile(rf"{_MARKER}\s+(\{{.*\}})\s*$", re.DOTALL)
 _SESSION_PHASE_AT_LLM_START: dict[str, str] = {}
 
 
-def _source_key(event: Any) -> str:
+def _digest_source(parts: list[str]) -> str:
+    digest = hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
+    return f"gateway:{digest[:24]}"
+
+
+def _legacy_source_key(event: Any) -> str:
     source = getattr(event, "source", None)
     parts = [
         str(getattr(source, "platform", "") or ""),
@@ -26,8 +31,23 @@ def _source_key(event: Any) -> str:
         str(getattr(source, "thread_id", "") or ""),
         str(getattr(source, "user_id", "") or ""),
     ]
-    digest = hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
-    return f"gateway:{digest[:24]}"
+    return _digest_source(parts)
+
+
+def _source_key(event: Any) -> str:
+    source = getattr(event, "source", None)
+    thread_id = str(
+        getattr(source, "thread_id", "")
+        or getattr(event, "reply_to_message_id", "")
+        or ""
+    )
+    return _digest_source(
+        [
+            str(getattr(source, "platform", "") or ""),
+            str(getattr(source, "chat_id", "") or ""),
+            thread_id,
+        ]
+    )
 
 
 def _marker_payload(text: Any) -> dict[str, Any] | None:
@@ -81,7 +101,12 @@ def _write_project_contract(context: StoryVideoRunContext) -> None:
 def pre_gateway_dispatch(*, event: Any, **_: Any) -> dict[str, Any] | None:
     text = str(getattr(event, "text", "") or "")
     source_key = _source_key(event)
-    call = parse_operator_call(text, has_active_project=_STORE.has_source(source_key))
+    context = _STORE.for_source(source_key)
+    if context is None:
+        context = _STORE.for_source(_legacy_source_key(event))
+        if context is not None:
+            _STORE.bind_source(context, source_key)
+    call = parse_operator_call(text, has_active_project=context is not None)
     if call is None:
         return None
     payload = {
@@ -357,6 +382,48 @@ def transform_llm_output(
                     proof,
                 ]
             ).rstrip()
+    text = _guard_render_delivery(text, context)
     if not context.next_call:
         return text
     return f"{text}\n\nRaphael 下一步：回覆「{context.next_call}」。"
+
+
+_VIDEO_PATH_RE = re.compile(
+    r"(?:MEDIA:)?((?:/|~/)[^\s`\"'<>]+\.(?:mp4|mov|m4v|webm))",
+    re.IGNORECASE,
+)
+
+
+def _selected_render_path(context: StoryVideoRunContext) -> Path | None:
+    for relative in ("render_manifest.json", "manifests/render_manifest.json"):
+        manifest_path = context.project_dir / relative
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        output = manifest.get("output") if isinstance(manifest, dict) else None
+        value = output.get("path") if isinstance(output, dict) else None
+        if not str(value or "").strip():
+            continue
+        selected = Path(str(value))
+        if not selected.is_absolute():
+            selected = context.project_dir / selected
+        return selected.expanduser().resolve()
+    return None
+
+
+def _guard_render_delivery(text: str, context: StoryVideoRunContext) -> str:
+    matches = list(_VIDEO_PATH_RE.finditer(text))
+    if not matches:
+        return text
+    selected = _selected_render_path(context) if context.phase == "complete" else None
+    referenced = {Path(match.group(1)).expanduser().resolve() for match in matches}
+    if selected is not None and referenced == {selected} and selected.is_file():
+        return text
+    return "\n".join(
+        [
+            "STORY_VIDEO_DELIVERY_BLOCKED",
+            "狀態：拒絕上傳未經目前 render manifest 選中的影片。",
+            "風險：可能是舊成品、跨專案成品，或尚未通過 render proof。",
+        ]
+    )
