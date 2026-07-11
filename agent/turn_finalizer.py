@@ -23,6 +23,7 @@ keep the exact logger name (``"agent.conversation_loop"``).
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from datetime import datetime, timezone
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
@@ -534,6 +535,20 @@ def finalize_turn(
                     messages=messages,
                     turn_exit_reason=_turn_exit_reason,
                     config=_raphael_config,
+                    metadata={
+                        "origin": str(
+                            raphael_decision.get("origin")
+                            if isinstance(raphael_decision, Mapping)
+                            else getattr(raphael_decision, "origin", "")
+                        ),
+                        "occurrence_id": str(turn_id or ""),
+                        "failure_class": (
+                            "proof_gate"
+                            if _raphael_finalization.status
+                            == "blocked_unverified_completion"
+                            else ""
+                        ),
+                    },
                 )
             _evolution_metadata = {
                 "task_id": effective_task_id,

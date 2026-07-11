@@ -160,6 +160,20 @@ def run_public_llm_slice_simulation(
                 proposed_change="tighten proof-gate next-action summaries",
                 promotion_gate="focused tests plus LLM smoke",
                 rollback_condition="user says proof guidance is still vague",
+                metadata={
+                    "origin": "foreground",
+                    "failure_cluster_id": "proof-gate:missing-proof",
+                    "component": "raphael.proof_gate",
+                    "owner": "raphael-control",
+                    "occurrence_id": "simulation-proof-1",
+                    "signal_kind": "reproduced_failure",
+                    "replay_command": (
+                        "pytest tests/agent/test_raphael_finalization.py -q"
+                    ),
+                    "baseline_metric": "unsupported_completion_rate=1",
+                    "target_metric": "unsupported_completion_rate=0",
+                    "approval_class": "R2",
+                },
             ),
             build_evolution_signal(
                 source="proof_gate",
@@ -171,6 +185,20 @@ def run_public_llm_slice_simulation(
                 proposed_change="tighten proof-gate next-action summaries",
                 promotion_gate="focused tests plus LLM smoke",
                 rollback_condition="user says proof guidance is still vague",
+                metadata={
+                    "origin": "foreground",
+                    "failure_cluster_id": "proof-gate:missing-proof",
+                    "component": "raphael.proof_gate",
+                    "owner": "raphael-control",
+                    "occurrence_id": "simulation-proof-2",
+                    "signal_kind": "reproduced_failure",
+                    "replay_command": (
+                        "pytest tests/agent/test_raphael_finalization.py -q"
+                    ),
+                    "baseline_metric": "unsupported_completion_rate=1",
+                    "target_metric": "unsupported_completion_rate=0",
+                    "approval_class": "R2",
+                },
             ),
         ),
         now=created_at,

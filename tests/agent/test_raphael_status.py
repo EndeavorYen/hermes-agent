@@ -508,6 +508,42 @@ def test_render_status_includes_learning_outcome_summary():
     assert "rollback=archive the skill with hermes curator restore" in output
 
 
+def test_action_proposal_status_renders_outcome_replay_contract():
+    state = _state(
+        proposals=(
+            ActionProposal(
+                proposal_id="proposal-outcome-contract",
+                action_type="skill_patch",
+                risk=RiskLevel.R2,
+                summary="Tighten delivery deduplication",
+                evidence_refs=("cluster:delivery:duplicate",),
+                created_at=NOW,
+                metadata={
+                    "failure_cluster_id": "delivery:duplicate",
+                    "component": "visual.delivery",
+                    "owner": "visual-agent",
+                    "replay_command": "pytest tests/visual/test_delivery.py -q",
+                    "baseline_metric": "duplicate_count=1",
+                    "target_metric": "duplicate_count=0",
+                    "rollout_plan": {
+                        "status": "pending_approval",
+                        "promotion_gate": "duplicate_count reaches zero",
+                        "rollback_condition": "current artifact is omitted",
+                    },
+                },
+            ),
+        )
+    )
+
+    output = render_status(state, now=NOW, evolution_records=[])
+
+    assert "Cluster: delivery:duplicate" in output
+    assert "Owner: visual-agent" in output
+    assert "Replay: pytest tests/visual/test_delivery.py -q" in output
+    assert "Baseline: duplicate_count=1" in output
+    assert "Target: duplicate_count=0" in output
+
+
 def test_render_status_includes_curator_health_without_mutation():
     output = render_status(
         _state(),

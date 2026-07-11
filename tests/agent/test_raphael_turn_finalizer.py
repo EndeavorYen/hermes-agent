@@ -151,10 +151,27 @@ def test_temp_home_evolution_forwards_review_contract_without_spawn_failure(
         review_label="Raphael evolution review",
         risk_level="R1",
         user_message_preview="不對，要主動進化",
+        metadata={
+            "origin": "foreground",
+            "failure_cluster_id": "raphael.skill_evolution:user_correction",
+            "component": "raphael.skill_evolution",
+            "owner": "raphael-control",
+            "occurrence_id": "turn-1",
+            "signal_kind": "user_correction",
+            "replay_command": "pytest tests/agent/test_raphael_evolution.py -q",
+            "baseline_metric": "user_correction_failure_count=1",
+            "target_metric": "user_correction_failure_count=0",
+            "approval_class": "R2",
+        },
     )
     review_prompts: list[str] = []
+    decision_metadata: list[dict] = []
 
-    monkeypatch.setattr(evolution, "decide_raphael_evolution", lambda **_kwargs: decision)
+    def fake_decide(**kwargs):
+        decision_metadata.append(dict(kwargs.get("metadata") or {}))
+        return decision
+
+    monkeypatch.setattr(evolution, "decide_raphael_evolution", fake_decide)
     monkeypatch.setattr(
         evolution,
         "build_raphael_evolution_review_prompt",
@@ -202,9 +219,23 @@ def test_temp_home_evolution_forwards_review_contract_without_spawn_failure(
         original_user_message="不對，要主動進化",
         _should_review_memory=False,
         _turn_exit_reason="text_response",
+        raphael_decision={
+            "turn_id": "turn-1",
+            "origin": "foreground",
+            "mode": "tool_task",
+            "completion_policy": "mutation",
+            "evidence": {"required_proofs": []},
+        },
     )
 
     assert result["final_response"] == "收到，我會修正"
+    assert decision_metadata == [
+        {
+            "origin": "foreground",
+            "occurrence_id": "turn-1",
+            "failure_class": "",
+        }
+    ]
     assert review_prompts
     assert review_prompts[0].startswith("CUSTOM RAPHAEL EVOLUTION PROMPT")
     assert agent.safe_prints == ["  💾 Raphael evolution review: Skill updated"]
@@ -212,6 +243,16 @@ def test_temp_home_evolution_forwards_review_contract_without_spawn_failure(
     outcomes = [record.get("status") for record in evolution.read_evolution_records()]
     assert "scheduled" in outcomes
     assert "background_spawn_failed" not in outcomes
+    scheduled = next(
+        record
+        for record in evolution.read_evolution_records()
+        if record.get("status") == "scheduled"
+    )
+    assert scheduled["metadata"]["origin"] == "foreground"
+    assert scheduled["metadata"]["occurrence_id"] == "turn-1"
+    assert scheduled["metadata"]["replay_command"]
+    assert scheduled["metadata"]["baseline_metric"]
+    assert scheduled["metadata"]["target_metric"]
 
 
 def test_disabled_raphael_uses_readonly_gate_without_loading_evolution_stack(

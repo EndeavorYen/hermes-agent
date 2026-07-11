@@ -328,6 +328,17 @@ def _format_action_proposal_rollout_lines(proposal: Any) -> list[str]:
     metadata = proposal.metadata if isinstance(proposal.metadata, Mapping) else {}
     rollout_plan = metadata.get("rollout_plan")
     lines: list[str] = []
+    for label, key in (
+        ("Cluster", "failure_cluster_id"),
+        ("Component", "component"),
+        ("Owner", "owner"),
+        ("Replay", "replay_command"),
+        ("Baseline", "baseline_metric"),
+        ("Target", "target_metric"),
+    ):
+        value = _redacted_status_text(metadata.get(key))
+        if value:
+            lines.append(f"  {label}: {value}")
     if proposal.status == "pending":
         if isinstance(rollout_plan, Mapping):
             lines.append("  Rollout: pending approval")
