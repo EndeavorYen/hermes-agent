@@ -39,12 +39,19 @@ UPSTREAM_RE = re.compile(
     r"[a-z0-9]+(?:-[a-z0-9]+)*/[a-z0-9]+(?:-[a-z0-9]+)*$"
 )
 UPGRADE_RE = re.compile(r"^upgrade/v\d{4}\.\d{1,2}\.\d{1,2}(?:\.\d+)*$")
+ARCHIVE_TAG_RE = re.compile(r"^archive/\d{4}-\d{2}-\d{2}/[a-z0-9][a-z0-9./-]*$")
 ZERO_SHA = "0" * 40
 
 
 def branch_from_ref(ref: str) -> str | None:
     """Return a branch name from a full heads ref, if it is one."""
     prefix = "refs/heads/"
+    return ref[len(prefix) :] if ref.startswith(prefix) else None
+
+
+def tag_from_ref(ref: str) -> str | None:
+    """Return a tag name from a full tags ref, if it is one."""
+    prefix = "refs/tags/"
     return ref[len(prefix) :] if ref.startswith(prefix) else None
 
 
@@ -60,6 +67,16 @@ def validate_branch_name(branch: str) -> str | None:
         f"{branch!r} is not a canonical role or a permitted scoped branch "
         "(use upgrade/v..., feat|fix|docs|test|refactor|chore|hotfix/<area>/<slug>, "
         "or upstream/<type>/<area>/<slug>)"
+    )
+
+
+def validate_archive_tag_name(tag: str) -> str | None:
+    """Return an error unless ``tag`` is a canonical immutable archive tag."""
+    if ARCHIVE_TAG_RE.fullmatch(tag):
+        return None
+    return (
+        f"tag {tag!r} is not a permitted archive tag "
+        "(use archive/YYYY-MM-DD/<lowercase-slug>)"
     )
 
 
@@ -86,9 +103,31 @@ def validate_push(
     """Return an error for one pre-push update, otherwise ``None``."""
     local_branch = branch_from_ref(local_ref)
     remote_branch = branch_from_ref(remote_ref)
+    local_tag = tag_from_ref(local_ref)
+    remote_tag = tag_from_ref(remote_ref)
+
+    if remote_name == "upstream":
+        return "direct pushes to upstream are forbidden; push an upstream/* branch to origin instead"
+    if remote_name != "origin":
+        return f"push remote {remote_name!r} is not approved; use origin"
+
+    if remote_tag is not None:
+        if local_sha == ZERO_SHA:
+            return f"refusing to delete immutable archive tag {remote_tag!r}"
+        if local_tag != remote_tag:
+            return (
+                f"refusing to publish tag {local_tag!r} as {remote_tag!r}; "
+                "origin tag names must exactly match local tag names"
+            )
+        tag_error = validate_archive_tag_name(local_tag)
+        if tag_error:
+            return tag_error
+        if remote_sha != ZERO_SHA:
+            return f"refusing to rewrite immutable archive tag {local_tag!r}"
+        return None
 
     if remote_branch is None:
-        return f"ref {remote_ref!r} is not a branch ref"
+        return f"ref {remote_ref!r} is not a branch or permitted archive-tag ref"
 
     if local_sha == ZERO_SHA:
         if remote_branch in PROTECTED_BRANCHES:
@@ -102,10 +141,6 @@ def validate_push(
             )
         return None
 
-    if remote_name == "upstream":
-        return "direct pushes to upstream are forbidden; push an upstream/* branch to origin instead"
-    if remote_name != "origin":
-        return f"push remote {remote_name!r} is not approved; use origin"
     if local_branch is None:
         return f"local ref {local_ref!r} is not a branch ref"
 
