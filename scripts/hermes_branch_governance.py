@@ -117,9 +117,18 @@ def validate_push(
             f"refusing to publish {local_branch!r} as {remote_branch!r}; "
             "origin branch names must exactly match local branch names"
         )
-    if local_branch == "main" and not os.getenv("HERMES_GOVERNANCE_ALLOW_MIRROR_SYNC"):
+    explicit_main_mirror_sync = (
+        local_branch == "main"
+        and remote_branch == "main"
+        and os.getenv("HERMES_GOVERNANCE_ALLOW_MIRROR_SYNC") == "1"
+    )
+    if local_branch == "main" and not explicit_main_mirror_sync:
         return "origin/main is an upstream mirror; use the documented mirror command with explicit authorization"
-    if local_branch in PROTECTED_BRANCHES and not is_fast_forward(remote_sha, local_sha):
+    if (
+        local_branch in PROTECTED_BRANCHES
+        and not explicit_main_mirror_sync
+        and not is_fast_forward(remote_sha, local_sha)
+    ):
         return f"refusing non-fast-forward update to protected branch {local_branch!r}"
     return None
 
