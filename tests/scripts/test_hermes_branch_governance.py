@@ -10,6 +10,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hermes_branch_governance.py"
+PRE_PUSH_HOOK = REPO_ROOT / ".githooks" / "pre-push"
 ZERO_SHA = "0" * 40
 LOCAL_SHA = "a" * 40
 
@@ -56,6 +57,12 @@ class BranchGrammarTests(unittest.TestCase):
 
 
 class PrePushPolicyTests(unittest.TestCase):
+    def test_hook_resolves_guard_from_the_shared_repository_root(self) -> None:
+        hook = PRE_PUSH_HOOK.read_text(encoding="utf-8")
+
+        self.assertIn("git rev-parse --git-common-dir", hook)
+        self.assertIn("hermes_branch_governance.py", hook)
+
     def test_allows_canonical_local_main_checkpoint_to_origin(self) -> None:
         result = run_guard(
             "pre-push",
