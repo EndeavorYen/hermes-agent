@@ -7236,13 +7236,19 @@ def test_visual_package_repairs_blocked_image_before_delivery(monkeypatch, tmp_p
 
     payload = json.loads(
         visual_package_tool._handle_visual_package_generate(
-            {"prompt": "請產出一張圖片：時尚寫真。", "include_video": False, "candidate_budget": 1}
+            {
+                "prompt": "請產出一張圖片：時尚寫真。",
+                "include_video": False,
+                "candidate_budget": 1,
+                "image_model": "runtime-image-model",
+            }
         )
     )
 
     assert payload["success"] is True
     assert payload["images"] == [str(good_image)]
     assert len(calls) == 2
+    assert calls[1]["model"] == "runtime-image-model"
     assert "Quality repair pass" in calls[1]["prompt"]
     assert payload["delivery_gate"]["image"]["allowed"] is True
     assert payload["delivery_gate"]["image"]["repair_attempted"] is True
@@ -7413,13 +7419,19 @@ def test_visual_package_adds_candidate_for_low_preference_dimension_before_repai
 
     payload = json.loads(
         visual_package_tool._handle_visual_package_generate(
-            {"prompt": "請產出一張圖片：時尚寫真。", "include_video": False, "candidate_budget": 1}
+            {
+                "prompt": "請產出一張圖片：時尚寫真。",
+                "include_video": False,
+                "candidate_budget": 1,
+                "image_model": "runtime-image-model",
+            }
         )
     )
 
     assert payload["success"] is True
     assert payload["images"] == [str(good_image)]
     assert len(calls) == 2
+    assert calls[1]["model"] == "runtime-image-model"
     assert "Additional candidate pass" in calls[1]["prompt"]
     assert "Quality repair pass" not in calls[1]["prompt"]
     assert payload["delivery_gate"]["image"]["allowed"] is True

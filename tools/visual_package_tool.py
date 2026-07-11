@@ -1665,6 +1665,8 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 "aspect_ratio": image_aspect_ratio,
                 "reference_image_urls": provider_reference_images or None,
             }
+            if str(args.get("image_model") or "").strip():
+                escalation_kwargs["model"] = str(args["image_model"]).strip()
             _apply_image_provider_override(escalation_kwargs, image_provider_override)
             escalation_payload = _call_generation_provider(
                 generate_image,
@@ -1793,6 +1795,8 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 "aspect_ratio": image_aspect_ratio,
                 "reference_image_urls": provider_reference_images or None,
             }
+            if str(args.get("image_model") or "").strip():
+                repair_kwargs["model"] = str(args["image_model"]).strip()
             _apply_image_provider_override(repair_kwargs, image_provider_override)
             repair_payload = _call_generation_provider(
                 generate_image,
