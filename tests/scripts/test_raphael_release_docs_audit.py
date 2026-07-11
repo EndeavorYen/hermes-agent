@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 
 def _llm_readiness() -> dict:
     return {
@@ -86,6 +88,24 @@ def test_raphael_release_docs_audit_accepts_scoped_current_claims():
 
     assert result.ready is True
     assert result.violations == ()
+
+
+def test_repository_release_docs_do_not_describe_historical_evidence_as_current():
+    root = Path(__file__).resolve().parents[2]
+    texts = {
+        path.name: path.read_text(encoding="utf-8")
+        for path in (
+            root / "docs" / "raphael-llm-public-slice.md",
+            root / "docs" / "raphael-release-slice-audit.md",
+        )
+    }
+
+    for name, text in texts.items():
+        lowered = text.lower()
+        assert "current live evidence" not in lowered, name
+        assert "currently passes" not in lowered, name
+        assert "fresh llm live smoke `20260701" not in lowered, name
+        assert "fresh media-profile llm smoke `20260701" not in lowered, name
 
 
 def test_raphael_release_docs_audit_rejects_grok_overclaim_for_openai_scope():

@@ -111,7 +111,92 @@ def test_mission_state_round_trips_through_runtime_state(tmp_path, monkeypatch):
     assert loaded == mission
 
 
-def test_observation_context_persists_and_updates_current_mission(tmp_path, monkeypatch):
+def test_mission_state_compatibility_writer_uses_canonical_state(tmp_path, monkeypatch):
+    import agent.raphael.state as state
+
+    monkeypatch.setattr(state, "get_hermes_home", lambda: tmp_path)
+    mission = update_raphael_mission(
+        None,
+        RaphaelAppraisal(
+            "修復 runtime bug",
+            "tool_runtime",
+            "medium",
+            ("focused_tests",),
+        ),
+        _strategies(),
+    )
+
+    state.write_mission_state(mission)
+
+    assert state.read_state().active_mission is not None
+    assert state.read_state().active_mission.goal == "修復 runtime bug"
+    assert not state.get_raphael_mission_path().exists()
+
+
+def test_background_observation_cannot_create_foreground_mission(
+    tmp_path, monkeypatch
+):
+    from agent.raphael.observer import build_raphael_observation_context
+    import agent.raphael.state as state
+
+    monkeypatch.setattr(state, "get_hermes_home", lambda: tmp_path)
+    config = {
+        "plugins": {"enabled": ["raphael"], "disabled": []},
+        "raphael": {
+            "enabled": True,
+            "default_conversation_mode_enabled": True,
+            "mode": "sage_king",
+        },
+    }
+
+    build_raphael_observation_context(
+        "Review the conversation above and update the skill library.",
+        config,
+        turn_origin="background_review",
+    )
+
+    assert state.read_state().active_mission is None
+    assert state.read_mission_state() is None
+    assert not state.get_raphael_mission_path().exists()
+
+
+def test_background_observation_preserves_existing_foreground_mission(
+    tmp_path, monkeypatch
+):
+    from agent.raphael.observer import build_raphael_observation_context
+    import agent.raphael.state as state
+
+    monkeypatch.setattr(state, "get_hermes_home", lambda: tmp_path)
+    config = {
+        "plugins": {"enabled": ["raphael"], "disabled": []},
+        "raphael": {
+            "enabled": True,
+            "default_conversation_mode_enabled": True,
+            "mode": "sage_king",
+        },
+    }
+    foreground = update_raphael_mission(
+        None,
+        RaphaelAppraisal(
+            "使用者真正目標",
+            "tool_runtime",
+            "medium",
+            ("focused_tests",),
+        ),
+        _strategies(),
+    )
+    state.write_mission_state(foreground)
+
+    build_raphael_observation_context(
+        "Review the conversation above and update the skill library.",
+        config,
+        turn_origin="background_review",
+    )
+
+    assert state.read_mission_state() == foreground
+
+
+def test_observation_context_is_read_only_across_task_turns(tmp_path, monkeypatch):
     from agent.raphael.observer import build_raphael_observation_context
     import agent.raphael.state as state
 
@@ -138,17 +223,15 @@ def test_observation_context_persists_and_updates_current_mission(tmp_path, monk
 
     assert "Raphael" in first_context
     assert "Raphael" in second_context
-    assert first_mission is not None
-    assert second_mission is not None
-    assert second_mission.mission_id == first_mission.mission_id
-    assert second_mission.goal == "再補 install enable disable lifecycle 驗證"
-    assert "focused_tests" in second_mission.required_proofs
+    assert first_mission is None
+    assert second_mission is None
 
 
 def test_observation_context_does_not_overwrite_mission_on_casual_turn(
     tmp_path, monkeypatch
 ):
     from agent.raphael.observer import build_raphael_observation_context
+    from agent.raphael.mission import create_mission
     import agent.raphael.state as state
 
     monkeypatch.setattr(state, "get_hermes_home", lambda: tmp_path)
@@ -161,7 +244,17 @@ def test_observation_context_does_not_overwrite_mission_on_casual_turn(
         }
     }
 
-    build_raphael_observation_context("請修復 gateway fallback bug 並驗證", config)
+    state.write_active_mission(
+        create_mission(
+            mission_id="mission-existing",
+            goal="請修復 gateway fallback bug 並驗證",
+            success_conditions=("focused tests pass",),
+            phase="implementation",
+            next_action="run focused tests",
+            selected_strategy="tool_task",
+            required_proofs=("focused_tests",),
+        )
+    )
     first_mission = state.read_mission_state()
     build_raphael_observation_context("謝謝，先這樣", config)
     second_mission = state.read_mission_state()

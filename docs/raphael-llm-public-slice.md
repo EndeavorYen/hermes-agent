@@ -32,9 +32,13 @@ from the current worktree. Public release additionally requires
 `Release scope: llm_only`; that gate does not cover media, Grok, video, or full
 Sage King claims.
 
-- Deterministic public-user simulations pass for summon routing, mission
-  follow-up continuity, proof-gated success claims, and auditable evolution
-  proposals.
+- Quota-free production replay passes through the canonical turn kernel and
+  shared finalizer for summon routing, mission follow-up continuity,
+  proof-gated success claims, and auditable evolution proposals. Readiness
+  rejects evidence whose producer is not `production_replay`.
+- Live model identity is capability-based: the log and transcript must agree,
+  the provider must be OpenAI-family, and the model must declare the supported
+  GPT-5 family. Readiness does not pin one historical versioned model.
 - At least one LLM-only live smoke is recorded in a JSON evidence file and
   classified as passed after matching the expected session id.
 - Public wording says "Raphael LLM control-layer slice is ready".
@@ -68,17 +72,26 @@ fails closed. Re-run it with the explicit release base, for example
 `--from-git-status --diff-base <release-base>`, so committed paths from
 `<release-base>...HEAD` are inspected.
 
-Current live evidence:
+Historical slice evidence (not a substitute for the current gate):
 
-- `hermes raphael readiness --readiness-profile llm --check` currently passes as `ready_for_llm_only_release` and prints `Release scope: llm_only`.
-- `scripts/raphael_completion_audit.py --target scoped` currently reports `Raphael completion audit: partial`, `Scoped release ready: yes`, and `Ultimate Sage King ready: no`; default `--target ultimate` exits non-zero until full Sage King blockers are resolved.
-- `scripts/raphael_release_docs_audit.py` currently passes against the LLM/media readiness JSON files and the release-facing docs.
+- The archived `hermes raphael readiness --readiness-profile llm --check`
+  record reported `ready_for_llm_only_release` with `Release scope: llm_only`.
+  It is historical evidence; run the command again for a current verdict.
+- The archived scoped completion audit reported `Raphael completion audit:
+  partial`, `Scoped release ready: yes`, and `Ultimate Sage King ready: no`.
+- The archived release-docs audit returned pass for its matching gate
+  artifacts. Documentation never extends their freshness.
 - Boundary results are run-specific and are not checked-in release evidence. The canonical packaged policy deliberately leaves unrelated CI, old implementation plans, generic release automation, and generic tests/utilities unclassified instead of absorbing them into the Raphael slice.
-- `scripts/raphael_release_slice_manifest.py --from-git-status` currently emits a reviewable `split_required` manifest with `allowed_public_claims: ["llm_only"]`, one `llm_scoped_release` slice, and one deferred media slice.
-- LLM-only live summon smoke `20260701_131600_93f518` proves same-session follow-up continuity with `gpt-5.5`, zero tool calls, and text-only output.
+- The archived release-slice manifest recorded `split_required`,
+  `allowed_public_claims: ["llm_only"]`, one `llm_scoped_release` slice, and one
+  deferred media slice.
+- Historical LLM-only live summon smoke `20260701_131600_93f518` recorded
+  same-session follow-up continuity with the then-current `gpt-5.5`, zero tool
+  calls, and text-only output. Current acceptance must use the effective model
+  reported by runtime and matching log/transcript evidence.
 - Hostile-shaped text-only smoke `20260701_130957_137750` proves public Raphael wording with `不要產圖` stays out of visual handoff and ends with zero tool calls.
-- Fresh package install smoke `package-install-20260701-fresh-home-fail-closed-v1.json` builds and installs the wheel, verifies install/disable/enable/uninstall, keeps evolution audit-only by default, proves installed media and LLM readiness fail closed when release evidence is absent in a fresh home, and verifies approval-gated proposal approve/reject lifecycle commands.
-- Fresh non-visual regression evidence `non-visual-regression-20260701-openai-quality-attachment-gate.json` records `1529` passing tests, no failures, no visual quota usage, and broad Raphael/media regression coverage.
+- Archived package install smoke `package-install-20260701-fresh-home-fail-closed-v1.json` recorded wheel install, lifecycle, audit-only default, fail-closed readiness, and approval-gated proposal commands.
+- Archived non-visual regression evidence `non-visual-regression-20260701-openai-quality-attachment-gate.json` recorded `1529` passing tests, no failures, no visual quota usage, and broad Raphael/media regression coverage.
 - Hostile review evidence `hostile-review-20260701-fresh-home-fail-closed-v1` explicitly disallows `sage_king`, `wow`, and `big_evolution` public claims while allowing only the scoped LLM-only slice and the separate OpenAI image-only media scope. The current readiness gate also requires all six quota-free user simulation cases to include `user_prompt`, `expected_visible_behavior`, `critical_assertions`, `next_action`, `proof_layer`, and `visual_quota_used:false`.
 - OpenAI media readiness is separate from this LLM-only slice. The historical
   OpenAI image-only report has been revalidated as a limited
@@ -88,7 +101,7 @@ Current live evidence:
 ## Release Risks
 
 - Public defaults must keep evolution writes audit-only unless `--evolve` is explicit. This host may enable durable writes locally, but fresh install evidence must stay audit-only.
-- The worktree must be split or reviewed by slice; the current full diff is not a single coherent public release.
+- Any publication diff must be reviewed by slice; an older mixed worktree snapshot was not a single coherent public release.
 - A hostile review must judge summon experience, goal continuity, and public-claim wording; schema correctness alone is insufficient.
 - Full media claims are out of scope until Grok live E2E and image-first video evidence pass.
 

@@ -191,7 +191,14 @@ def render_lifecycle_status() -> str:
         )
     lines.extend(["", mission_summary])
     try:
-        status_text = render_raphael_status(state)
+        status_text = render_raphael_status(
+            state,
+            mission_state=(
+                state.active_mission.to_dict()
+                if state.active_mission is not None
+                else None
+            ),
+        )
         status_text = sanitize_public_text(status_text)
         if "Raphael Advisor" not in status_text:
             status_text = "\n".join(["Raphael Advisor", status_text])

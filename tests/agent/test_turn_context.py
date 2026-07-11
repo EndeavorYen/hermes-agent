@@ -197,6 +197,95 @@ def test_task_id_passthrough():
     assert agent._current_task_id == "fixed-task"
 
 
+def test_turn_origin_and_runtime_contract_are_forwarded_to_plugin_hook():
+    agent = _FakeAgent()
+    agent._memory_write_origin = "background_review"
+    agent.model = "gpt-5.6-terra"
+    agent.provider = "openai-codex"
+    agent.api_mode = "codex_app_server"
+    hook_calls = []
+
+    with (
+        patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={
+                "model": {
+                    "default": "gpt-5.5",
+                    "provider": "openai-codex",
+                }
+            },
+        ),
+        patch(
+            "hermes_cli.plugins.invoke_hook",
+            side_effect=lambda *args, **kwargs: hook_calls.append((args, kwargs)) or [],
+        ),
+    ):
+        ctx = _build(agent)
+
+    assert ctx.raphael_origin == "background_review"
+    assert ctx.raphael_runtime_contract["base_model"] == "gpt-5.6-terra"
+    _, hook_kwargs = hook_calls[0]
+    assert hook_kwargs["turn_origin"] == "background_review"
+    assert hook_kwargs["runtime_contract"]["base_model"] == "gpt-5.6-terra"
+
+
+def test_enabled_foreground_turn_exposes_canonical_raphael_decision(tmp_path):
+    agent = _FakeAgent()
+    agent.model = "gpt-5.6-terra"
+    agent.provider = "openai-codex"
+    enabled_config = {
+        "plugins": {"enabled": ["raphael"], "disabled": []},
+        "raphael": {
+            "enabled": True,
+            "default_conversation_mode_enabled": True,
+            "mode": "sage_king",
+        },
+        "model": {"default": "gpt-5.5", "provider": "openai-codex"},
+    }
+
+    with (
+        patch.dict("os.environ", {"HERMES_HOME": str(tmp_path)}),
+        patch("hermes_cli.config.load_config_readonly", return_value=enabled_config),
+        patch("hermes_cli.plugins.invoke_hook", return_value=[]),
+    ):
+        ctx = _build(agent, user_message="請修復 gateway bug 並跑測試")
+
+    assert ctx.raphael_decision["mode"] == "tool_task"
+    assert ctx.raphael_decision["turn_id"] == ctx.turn_id
+    assert ctx.raphael_decision["runtime_contract"]["base_model"] == "gpt-5.6-terra"
+
+
+def test_enabled_foreground_turn_marks_control_decision_failure_for_fail_closed_finalization(
+    tmp_path,
+):
+    agent = _FakeAgent()
+    enabled_config = {
+        "plugins": {"enabled": ["raphael"], "disabled": []},
+        "raphael": {
+            "enabled": True,
+            "default_conversation_mode_enabled": True,
+            "mode": "sage_king",
+        },
+    }
+
+    with (
+        patch.dict("os.environ", {"HERMES_HOME": str(tmp_path)}),
+        patch("hermes_cli.config.load_config_readonly", return_value=enabled_config),
+        patch("hermes_cli.plugins.invoke_hook", return_value=[]),
+        patch(
+            "agent.raphael.kernel.prepare_raphael_turn",
+            side_effect=RuntimeError("synthetic control failure"),
+        ),
+    ):
+        ctx = _build(agent, user_message="請修復 gateway bug 並跑測試")
+
+    assert ctx.raphael_decision["control_decision_failed"] is True
+    assert ctx.raphael_decision["turn_id"] == ctx.turn_id
+    assert ctx.raphael_decision["origin"] == "foreground"
+    assert ctx.raphael_decision["evidence"]["failure_layer"] == "control_decision"
+    assert "synthetic control failure" not in str(ctx.raphael_decision)
+
+
 def test_persist_user_message_becomes_original():
     agent = _FakeAgent()
     ctx = _build(agent, user_message="api-prefixed", persist_user_message="clean")
@@ -363,4 +452,3 @@ def test_expired_cooldown_allows_preflight(tmp_path):
     assert isinstance(ctx, TurnContext)
     agent._emit_status.assert_called_once()
     agent._compress_context.assert_called()
-

@@ -20,11 +20,14 @@ from agent.raphael.state import (
     get_raphael_events_path,
     get_raphael_state_dir,
     get_raphael_state_path,
+    get_raphael_mission_path,
+    read_active_mission,
     read_state,
     record_control_decision,
     resolve_action_proposal,
     write_state,
 )
+from agent.raphael.mission import RaphaelMissionState
 
 
 def _hermes_home_env(path: Path):
@@ -117,6 +120,42 @@ def test_append_event_writes_jsonl_with_event_schema(tmp_path):
     payload = json.loads(lines[0])
     assert payload["schema_version"] == EVENT_SCHEMA_VERSION
     assert payload == event.to_dict()
+
+
+def test_legacy_mission_is_migrated_once_into_canonical_state(tmp_path):
+    home = tmp_path / "hermes-home"
+    legacy = RaphaelMissionState(
+        mission_id="mission-legacy",
+        goal="repair gateway",
+        phase="strategy_selected",
+        selected_strategy_id="safe",
+        active_artifact_id=None,
+        blockers=(),
+        next_action="run tests",
+        proof_status="pending",
+        required_proofs=("focused_tests",),
+        updated_at=datetime(2026, 7, 11, 8, 0, tzinfo=timezone.utc),
+    )
+
+    with _hermes_home_env(home):
+        get_raphael_state_dir().mkdir(parents=True)
+        get_raphael_mission_path().write_text(
+            json.dumps(legacy.to_dict()), encoding="utf-8"
+        )
+        migrated = read_active_mission()
+        stored = read_state()
+        events = [
+            json.loads(line)
+            for line in get_raphael_events_path().read_text(encoding="utf-8").splitlines()
+        ]
+
+    assert migrated is not None
+    assert migrated.goal == "repair gateway"
+    assert migrated.proof_status == "pending"
+    assert stored.active_mission == migrated
+    assert not (home / "raphael" / "mission.json").exists()
+    assert events[-1]["kind"] == "mission_state_migrated"
+    assert events[-1]["details"]["source"] == "raphael_mission_v1"
 
 
 def test_record_control_decision_writes_user_facing_status_card(tmp_path):

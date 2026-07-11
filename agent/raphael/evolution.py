@@ -11,6 +11,7 @@ from typing import Any
 
 from agent.redact import redact_sensitive_text
 from agent.raphael.config import cfg_get, raphael_effective_enabled
+from agent.raphael.learning import normalize_learning_outcome_contract
 from agent.raphael.models import ActionProposal, RaphaelState, RiskLevel
 from agent.raphael.redaction import REDACTED_VALUE, redact_trace_payload
 from agent.raphael.state import (
@@ -41,6 +42,17 @@ _TEXT_EVOLUTION_METADATA_KEYS = (
     "proposed_change",
     "promotion_gate",
     "rollback_condition",
+    "origin",
+    "failure_cluster_id",
+    "component",
+    "owner",
+    "occurrence_id",
+    "signal_kind",
+    "replay_command",
+    "baseline_metric",
+    "target_metric",
+    "approval_class",
+    "failure_class",
 )
 
 _CAPABILITY_BY_REASON_CODE = {
@@ -515,6 +527,73 @@ def _infer_evolution_metadata(
     }
 
 
+def _infer_learning_outcome_contract(
+    reason_codes: Sequence[str],
+    failure_layers: Sequence[str],
+    metadata: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    supplied = metadata if isinstance(metadata, Mapping) else {}
+    origin = _redacted_single_line(supplied.get("origin"), limit=32)
+    occurrence_id = _redacted_single_line(supplied.get("occurrence_id"), limit=96)
+    if origin != "foreground" or not occurrence_id:
+        return {}
+    capability = _infer_affected_capability(reason_codes)
+    failure_class = _redacted_single_line(
+        supplied.get("failure_class")
+        or (failure_layers[0] if failure_layers else "")
+        or (
+            "proof_gate"
+            if "failed_proof" in reason_codes
+            else "execution_loop"
+            if "execution_loop_failure" in reason_codes
+            else "user_correction"
+        ),
+        limit=80,
+    )
+    if failure_class in {"provider_health", "browser_automation", "prompt_moderation"}:
+        component = "visual.provider_health"
+        owner = "visual-provider-runtime"
+        replay_command = "hermes raphael readiness --readiness-profile media --check"
+    elif failure_class in {"artifact_quality", "quality_failure"}:
+        component = "visual.artifact_quality"
+        owner = "visual-agent"
+        replay_command = "pytest tests/visual/test_agent_mode_handoff.py -q"
+    elif failure_class in {"delivery", "duplicate_delivery", "stale_artifact"}:
+        component = "visual.delivery"
+        owner = "visual-delivery"
+        replay_command = "pytest tests/visual/test_agent_mode_handoff.py -q"
+    else:
+        component = capability
+        owner = "raphael-control"
+        replay_command = "pytest tests/agent/test_raphael_finalization.py -q"
+    signal_kind = (
+        "user_correction"
+        if "user_correction" in reason_codes
+        else "reproduced_failure"
+    )
+    inferred = {
+        "origin": origin,
+        "failure_cluster_id": f"{component}:{failure_class}",
+        "component": component,
+        "owner": owner,
+        "occurrence_id": occurrence_id,
+        "signal_kind": signal_kind,
+        "replay_command": replay_command,
+        "baseline_metric": f"{failure_class}_failure_count=1",
+        "target_metric": f"{failure_class}_failure_count=0",
+        "approval_class": "R2",
+        "failure_class": failure_class,
+    }
+    return {
+        **inferred,
+        **{
+            key: value
+            for key, value in sanitize_raphael_evolution_metadata(supplied).items()
+            if key in inferred
+        },
+    }
+
+
 def _evolution_record_group_key(record: Mapping[str, Any]) -> tuple[Any, ...]:
     metadata = record.get("metadata")
     if not isinstance(metadata, Mapping):
@@ -561,7 +640,7 @@ def _selected_evolution_pattern(
     records: Sequence[Mapping[str, Any]],
     *,
     min_count: int,
-) -> tuple[Mapping[str, Any], int] | None:
+) -> tuple[Mapping[str, Any], int, Mapping[str, str]] | None:
     reviewable_records = [
         record
         for record in records
@@ -571,13 +650,42 @@ def _selected_evolution_pattern(
             or str(record.get("mode") or "") == "active_evolution"
         )
     ]
-    grouped = _collapse_evolution_record_patterns(reviewable_records)
-    if not grouped:
+    grouped: dict[tuple[str, str, str], list[tuple[Mapping[str, Any], dict[str, str]]]] = {}
+    for record in reviewable_records:
+        contract = normalize_learning_outcome_contract(record.get("metadata"))
+        if contract is None:
+            continue
+        key = (
+            contract["failure_cluster_id"],
+            contract["component"],
+            contract.get("failure_class", ""),
+        )
+        grouped.setdefault(key, []).append((record, contract))
+    eligible: list[
+        tuple[Mapping[str, Any], int, Mapping[str, str], int]
+    ] = []
+    for index, entries in enumerate(grouped.values()):
+        occurrence_ids = {
+            contract["occurrence_id"] for _record, contract in entries
+        }
+        signal_kinds = {
+            contract.get("signal_kind", "") for _record, contract in entries
+        }
+        correction_plus_repro = {
+            "user_correction",
+            "reproduced_failure",
+        } <= signal_kinds
+        if len(occurrence_ids) < min_count and not correction_plus_repro:
+            continue
+        record, contract = entries[-1]
+        eligible.append((record, len(occurrence_ids), contract, index))
+    if not eligible:
         return None
-    record, count = max(enumerate(grouped), key=lambda item: (item[1][1], item[0]))[1]
-    if count < min_count:
-        return None
-    return record, count
+    record, count, contract, _index = max(
+        eligible,
+        key=lambda item: (item[1], item[3]),
+    )
+    return record, count, contract
 
 
 def _format_capability_for_summary(capability: str) -> str:
@@ -605,7 +713,7 @@ def build_evolution_action_proposal(
     selected = _selected_evolution_pattern(records, min_count=max(2, min_pattern_count))
     if selected is None:
         return None
-    record, count = selected
+    record, count, outcome_contract = selected
     metadata = record.get("metadata")
     if not isinstance(metadata, Mapping):
         metadata = {}
@@ -636,6 +744,10 @@ def build_evolution_action_proposal(
         f"signals: {proposed_change}. Promote after {promotion_gate}; rollback if "
         f"{rollback_condition}."
     )
+    replay_command = outcome_contract["replay_command"]
+    verification_commands = _evolution_proposal_verification_commands(capability)
+    if replay_command not in verification_commands:
+        verification_commands.insert(0, replay_command)
     rollout_plan = {
         "status": "pending_approval",
         "risk": RiskLevel.R2.value,
@@ -644,7 +756,7 @@ def build_evolution_action_proposal(
             "Apply the proposed skill or strategy change only after approval.",
             "Run the promotion gate before enabling the change.",
         ],
-        "verification_commands": _evolution_proposal_verification_commands(capability),
+        "verification_commands": verification_commands,
         "promotion_gate": promotion_gate,
         "rollback_condition": rollback_condition,
     }
@@ -656,12 +768,14 @@ def build_evolution_action_proposal(
         evidence_refs=(
             f"evolution:{capability}",
             f"pattern_count:{count}",
+            f"cluster:{outcome_contract['failure_cluster_id']}",
         ),
         created_at=created_at or now or datetime.now(timezone.utc),
         metadata={
             "affected_capability": capability,
             "recurring_signal_count": count,
             "proposed_change": proposed_change,
+            **dict(outcome_contract),
             "rollout_plan": rollout_plan,
         },
     )
@@ -688,6 +802,7 @@ def record_evolution_action_proposal(
                 action_proposals=(proposal, *state.action_proposals),
                 updated_at=datetime.now(timezone.utc),
                 active_mission=state.active_mission,
+                last_decision=state.last_decision,
             )
         )
     return proposal
@@ -871,6 +986,11 @@ def decide_raphael_evolution(
         user_message_preview=_redacted_single_line(user_text, limit=240),
         metadata={
             **_infer_evolution_metadata(reason_codes, proposal_only=not should_review),
+            **_infer_learning_outcome_contract(
+                reason_codes,
+                failure_layers,
+                metadata,
+            ),
             **sanitize_raphael_evolution_metadata(metadata),
         },
     )

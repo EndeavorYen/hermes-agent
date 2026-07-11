@@ -342,15 +342,21 @@ def _visual_handoff_from_plan(plan: dict[str, Any]) -> dict[str, Any]:
         if contract.get("visual_media_provider_override")
         else "visual_agent_default"
     )
+    planner_model = str(contract.get("visual_agent_llm_model") or "").strip()
+    canonical_media_provider = (
+        media_provider if media_provider_source == "prompt_override" else None
+    )
     return {
         "target_mode": "visual_agent",
         "tool_name": "visual_agent_generate",
         "arguments": arguments,
         "base_llm_provider": contract.get("base_llm_provider"),
         "base_llm_model": contract.get("base_llm_model"),
-        "visual_agent_llm_provider": contract.get("visual_agent_llm_provider"),
-        "visual_agent_llm_model": contract.get("visual_agent_llm_model"),
-        "visual_media_provider": media_provider,
+        "visual_agent_llm_provider": (
+            contract.get("visual_agent_llm_provider") if planner_model else None
+        ),
+        "visual_agent_llm_model": planner_model or None,
+        "visual_media_provider": canonical_media_provider,
         "visual_media_provider_source": media_provider_source,
         "live_generation_required": False,
         "claim_live_media_ready": False,
@@ -403,8 +409,8 @@ def _visual_edit_handoff_for_uri(
 def _base_provider_contract() -> dict[str, Any]:
     contract = dict(plan_visual_agent_request("").get("provider_contract") or {})
     return {
-        "base_llm_provider": contract.get("base_llm_provider", "openai-codex"),
-        "base_llm_model": contract.get("base_llm_model", "gpt-5.5"),
+        "base_llm_provider": contract.get("base_llm_provider") or "openai-codex",
+        "base_llm_model": contract.get("base_llm_model") or "",
     }
 
 

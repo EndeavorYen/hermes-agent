@@ -54,6 +54,7 @@ def render_status(
     evolution_records: Sequence[Mapping[str, Any]] | None = None,
     mission_state: Mapping[str, Any] | None = None,
     curator_health: Mapping[str, Any] | None = None,
+    gateway_truth: Mapping[str, Any] | None = None,
 ) -> str:
     cards = active_cards(state, now=now)
     card_groups = _collapse_status_cards(cards)[: max(0, max_cards)]
@@ -70,6 +71,8 @@ def render_status(
     records = [
         record for record in evolution_records or [] if isinstance(record, Mapping)
     ]
+    ignored_internal_mission = _is_internal_background_mission(mission_state)
+    foreground_mission = None if ignored_internal_mission else mission_state
 
     lines = [
         "Raphael Sage King",
@@ -79,7 +82,7 @@ def render_status(
         *_format_sage_king_brief(
             card_groups,
             pending_proposals,
-            mission_state,
+            foreground_mission,
             records,
         ),
         "",
@@ -124,26 +127,78 @@ def render_status(
         lines.append("No approved manual rollouts.")
 
     lines.extend(["", "Current Mission:"])
-    if isinstance(mission_state, Mapping):
-        required_proofs = mission_state.get("required_proofs") or []
+    if isinstance(foreground_mission, Mapping):
+        required_proofs = foreground_mission.get("required_proofs") or []
         required_proof_text = _format_required_proofs(required_proofs)
         lines.extend(
             [
-                f"- 任務：{_format_mission_goal(mission_state.get('goal'))}",
-                f"- 狀態：{_format_mission_phase(mission_state.get('phase'))}",
+                f"- 任務：{_format_mission_goal(foreground_mission.get('goal'))}",
+                f"- 狀態：{_format_mission_phase(foreground_mission.get('phase'))}",
                 (
                     "- 下一步："
-                    f"{format_raphael_route_text(str(mission_state.get('next_action') or 'unknown'))}"
+                    f"{format_raphael_route_text(str(foreground_mission.get('next_action') or 'unknown'))}"
                 ),
                 (
                     "- 證據狀態："
-                    f"{_format_proof_status(mission_state.get('proof_status'))}"
+                    f"{_format_proof_status(foreground_mission.get('proof_status'))}"
                 ),
                 f"- 必要證據：{required_proof_text}",
             ]
         )
     else:
-        lines.append("No active mission.")
+        lines.append("No active foreground mission.")
+        if ignored_internal_mission:
+            lines.append("Ignored internal/background mission state.")
+
+    decision = state.last_decision if isinstance(state.last_decision, Mapping) else None
+    lines.extend(["", "Current Foreground Decision:"])
+    if isinstance(decision, Mapping) and decision.get("origin") == "foreground":
+        evidence = decision.get("evidence")
+        evidence = evidence if isinstance(evidence, Mapping) else {}
+        lines.extend(
+            [
+                f"- Mode: {_redacted_status_text(decision.get('mode')) or 'unknown'}",
+                "- Completion policy: "
+                f"{_redacted_status_text(decision.get('completion_policy')) or 'unknown'}",
+                "- Required proofs: "
+                f"{_format_required_proofs(evidence.get('required_proofs') or ())}",
+            ]
+        )
+    else:
+        lines.append("No canonical foreground decision snapshot.")
+
+    runtime_contract = (
+        decision.get("runtime_contract")
+        if isinstance(decision, Mapping)
+        and isinstance(decision.get("runtime_contract"), Mapping)
+        else None
+    )
+    lines.extend(["", "Effective Runtime Contract:"])
+    if isinstance(runtime_contract, Mapping):
+        provider = _redacted_status_text(runtime_contract.get("base_provider"))
+        model = _redacted_status_text(runtime_contract.get("base_model"))
+        lines.extend(
+            [
+                f"- Base: {provider or 'unknown'}/{model or 'unknown'}",
+                "- API mode: "
+                f"{_redacted_status_text(runtime_contract.get('base_api_mode')) or 'unknown'}",
+                "- Source: "
+                f"{_redacted_status_text(runtime_contract.get('source')) or 'unknown'}",
+            ]
+        )
+    else:
+        lines.append("Runtime contract unavailable (no foreground decision snapshot).")
+    process_status = (
+        _redacted_status_text(gateway_truth.get("process_status"))
+        if isinstance(gateway_truth, Mapping)
+        else ""
+    )
+    if process_status:
+        lines.append(f"- Gateway process evidence: {process_status}")
+    else:
+        lines.append("- Gateway process evidence: unavailable")
+        lines.append("  Run `hermes gateway status` for live process truth.")
+    lines.append("- Release readiness: not inferred from Markdown; run the readiness gate.")
 
     lines.extend(["", "Skill Library Health:"])
     lines.extend(_format_curator_health_lines(curator_health))
@@ -226,6 +281,23 @@ def render_status(
         ]
     )
     return "\n".join(lines)
+
+
+def _is_internal_background_mission(
+    mission_state: Mapping[str, Any] | None,
+) -> bool:
+    if not isinstance(mission_state, Mapping):
+        return False
+    goal = str(mission_state.get("goal") or "").lower()
+    return any(
+        marker in goal
+        for marker in (
+            "raphael sage king evolution review",
+            "review the conversation above",
+            "proactive skill-evolution loop",
+            "background review",
+        )
+    )
 
 
 def _format_curator_health_lines(
@@ -328,6 +400,17 @@ def _format_action_proposal_rollout_lines(proposal: Any) -> list[str]:
     metadata = proposal.metadata if isinstance(proposal.metadata, Mapping) else {}
     rollout_plan = metadata.get("rollout_plan")
     lines: list[str] = []
+    for label, key in (
+        ("Cluster", "failure_cluster_id"),
+        ("Component", "component"),
+        ("Owner", "owner"),
+        ("Replay", "replay_command"),
+        ("Baseline", "baseline_metric"),
+        ("Target", "target_metric"),
+    ):
+        value = _redacted_status_text(metadata.get(key))
+        if value:
+            lines.append(f"  {label}: {value}")
     if proposal.status == "pending":
         if isinstance(rollout_plan, Mapping):
             lines.append("  Rollout: pending approval")

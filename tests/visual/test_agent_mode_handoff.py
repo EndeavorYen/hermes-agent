@@ -34,6 +34,45 @@ def test_direct_visual_handoff_accepts_explicit_image_to_video_request():
     assert handoff["visual_agent_llm_provider"] == "xai-oauth"
 
 
+def test_direct_visual_handoff_applies_raphael_runtime_media_contract():
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.5",
+    )
+    decision = {
+        "mode": "visual_agent_generation",
+        "route": {
+            "visual_media_provider": "runtime-image-provider",
+            "visual_media_model": "runtime-image-model",
+            "visual_media_provider_source": "runtime_contract",
+        },
+        "runtime_contract": {
+            "image_provider": "runtime-image-provider",
+            "image_model": "runtime-image-model",
+            "video_provider": "runtime-video-provider",
+            "video_model": "runtime-video-model",
+        },
+    }
+
+    handoff = build_direct_visual_agent_handoff(
+        agent,
+        "請產出一張圖片和一段影片",
+        raphael_decision=decision,
+    )
+
+    assert handoff is not None
+    assert handoff["arguments"]["image_provider"] == "runtime-image-provider"
+    assert handoff["arguments"]["image_model"] == "runtime-image-model"
+    assert handoff["arguments"]["video_provider"] == "runtime-video-provider"
+    assert handoff["arguments"]["video_model"] == "runtime-video-model"
+    assert handoff["plan"]["provider_contract"]["image_provider"] == (
+        "runtime-image-provider"
+    )
+
+
 def test_direct_visual_handoff_preserves_compact_s_suffix_video_duration():
     from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
 
@@ -211,6 +250,51 @@ def test_direct_visual_handoff_attaches_raphael_control_metadata(tmp_path, monke
     assert "artifact_quality_evidence" in control["evidence"]["required_proofs"]
 
 
+def test_direct_visual_handoff_reuses_canonical_decision_without_recomputing(
+    monkeypatch,
+):
+    from agent.raphael.control import build_raphael_control_decision
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.6-terra",
+    )
+    control = build_raphael_control_decision("請產出一張圖片").to_dict()
+    canonical = {
+        "turn_id": "turn-canonical",
+        "mode": control["mode"],
+        "goal": control["goal"],
+        "route": control["route"],
+        "evidence": control["evidence"],
+        "next_action": control["next_action"],
+        "reference_resolution": control["reference_resolution"],
+        "clarification_question": control["clarification_question"],
+        "confidence": control["confidence"],
+    }
+    canonical["route"]["visual_agent_llm_provider"] = "xai-oauth"
+    canonical["route"]["visual_agent_llm_model"] = "grok-runtime-model"
+
+    monkeypatch.setattr(
+        "agent.raphael.control.build_raphael_control_decision",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("control decision recomputed")
+        ),
+    )
+
+    handoff = build_direct_visual_agent_handoff(
+        agent,
+        "請產出一張圖片",
+        raphael_decision=canonical,
+    )
+
+    assert handoff is not None
+    assert handoff["raphael_control"]["turn_id"] == "turn-canonical"
+    assert handoff["arguments"]["visual_agent_llm_provider"] == "xai-oauth"
+    assert handoff["arguments"]["visual_agent_llm_model"] == "grok-runtime-model"
+
+
 def test_direct_visual_handoff_fails_closed_when_raphael_evidence_is_missing(
     tmp_path, monkeypatch
 ):
@@ -257,27 +341,51 @@ def test_direct_visual_handoff_fails_closed_when_raphael_evidence_is_missing(
     assert format_direct_visual_agent_handoff_response(raw).startswith("視覺生成失敗：")
 
 
+def test_raphael_evidence_gate_rejects_empty_turn_identity():
+    from agent.visual.agent_mode.handoff import _evaluate_raphael_evidence_gate
+
+    gate = _evaluate_raphael_evidence_gate(
+        {
+            "mission_id": "mission-current",
+            "turn_id": "",
+            "route": {"visual_media_provider": "xai"},
+            "evidence": {"required_proofs": []},
+        },
+        {
+            "rankings": {"selected_artifact_id": "artifact-current"},
+        },
+    )
+
+    assert gate["passed"] is False
+    assert "turn_identity" in gate["missing_proofs"]
+
+
 def test_direct_visual_handoff_allows_payload_with_raphael_evidence(
     tmp_path, monkeypatch
 ):
     import agent.raphael.state as raphael_state
+    from agent.raphael.finalization import enforce_raphael_completion
+    from agent.raphael.kernel import prepare_raphael_turn
+    from agent.raphael.runtime_contract import (
+        RaphaelRuntimeContract,
+        RaphaelTurnOrigin,
+    )
     from agent.visual.agent_mode.handoff import (
         attach_direct_visual_agent_handoff_metadata,
         build_direct_visual_agent_handoff,
     )
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = {
+        "plugins": {"enabled": ["raphael"], "disabled": []},
+        "raphael": {
+            "enabled": True,
+            "default_conversation_mode_enabled": True,
+            "mode": "sage_king",
+        },
+    }
     (tmp_path / "config.yaml").write_text(
-        yaml.safe_dump(
-            {
-                "plugins": {"enabled": ["raphael"], "disabled": []},
-                "raphael": {
-                    "enabled": True,
-                    "default_conversation_mode_enabled": True,
-                    "mode": "sage_king",
-                },
-            }
-        ),
+        yaml.safe_dump(config),
         encoding="utf-8",
     )
     agent = SimpleNamespace(
@@ -286,13 +394,34 @@ def test_direct_visual_handoff_allows_payload_with_raphael_evidence(
         model="gpt-5.5",
     )
 
-    handoff = build_direct_visual_agent_handoff(agent, "請產出一張圖片")
+    decision = prepare_raphael_turn(
+        turn_id="turn-structured-evidence",
+        origin=RaphaelTurnOrigin.FOREGROUND,
+        runtime_contract=RaphaelRuntimeContract(
+            base_provider="openai-codex",
+            base_model="gpt-5.5",
+            base_api_mode="codex_app_server",
+            image_provider="xai",
+            image_model="grok-imagine-image-quality",
+            source="live_agent",
+        ),
+        config=config,
+        user_message="請產出一張圖片",
+    )
+    assert decision is not None
+    assert decision.mission_id
+    handoff = build_direct_visual_agent_handoff(
+        agent,
+        "請產出一張圖片",
+        raphael_decision=decision.to_dict(),
+    )
+    assert handoff is not None
     raw = attach_direct_visual_agent_handoff_metadata(
         json.dumps(
             {
                 "success": True,
                 "images": ["/tmp/current.png"],
-                "generation_payloads": {"image": {"success": True, "provider": "fixture"}},
+                "generation_payloads": {"image": {"success": True}},
                 "rankings": {"selected_artifact_id": "artifact-1"},
                 "delivery_metadata": {
                     "selected_visual_artifact_ids": ["artifact-1"],
@@ -336,11 +465,40 @@ def test_direct_visual_handoff_allows_payload_with_raphael_evidence(
     gate = payload["direct_visual_agent_handoff"]["raphael_evidence_gate"]
     assert gate["passed"] is True
     assert gate["missing_proofs"] == []
+    assert {event["proof_type"] for event in gate["evidence_events"]} == set(
+        gate["required_proofs"]
+    )
+    assert all(event["status"] == "passed" for event in gate["evidence_events"])
+    assert all(
+        event["turn_id"] == "turn-structured-evidence"
+        for event in gate["evidence_events"]
+    )
+    assert all(
+        event["mission_id"] == decision.mission_id
+        for event in gate["evidence_events"]
+    )
+    assert all(event["provider"] == "xai" for event in gate["evidence_events"])
+    assert all(
+        event["payload_digest"].startswith("sha256:")
+        for event in gate["evidence_events"]
+    )
     mission = raphael_state.read_mission_state()
     assert mission is not None
     assert mission.active_artifact_id == "artifact-1"
     assert mission.proof_status == "passed"
     assert mission.phase == "proof_passed"
+    finalization = enforce_raphael_completion(
+        decision=decision.to_dict(),
+        final_response="已產出並成功交付。",
+        messages=(
+            {
+                "role": "tool",
+                "name": "visual_agent_generate",
+                "content": raw,
+            },
+        ),
+    )
+    assert finalization.status == "passed"
 
 
 def test_direct_visual_handoff_allows_video_payload_with_image_first_source_evidence(
@@ -373,6 +531,8 @@ def test_direct_visual_handoff_allows_video_payload_with_image_first_source_evid
 
     handoff = build_direct_visual_agent_handoff(agent, "請產出一段 6 秒時尚短片，主體是霧黑鋼筆")
     assert handoff is not None
+    handoff["raphael_control"]["turn_id"] = "turn-video-evidence"
+    handoff["raphael_control"]["mission_id"] = "mission-video-evidence"
     required = handoff["raphael_control"]["evidence"]["required_proofs"]
     assert "image_first_video_source_evidence" in required
     assert "single_ranked_video_source_image" in required
@@ -568,6 +728,12 @@ def test_direct_visual_handoff_rejects_stale_or_unmapped_selected_artifact(
     assert "selected_current_artifact_only" in gate["missing_proofs"]
     assert "stale_artifact_guard" in gate["missing_proofs"]
     assert "delivery_cleanliness" in gate["missing_proofs"]
+    stale_event = next(
+        event
+        for event in gate["evidence_events"]
+        if event["proof_type"] == "stale_artifact_guard"
+    )
+    assert stale_event["status"] == "missing"
 
 
 def test_direct_visual_handoff_fails_closed_for_unknown_raphael_proof(

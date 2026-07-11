@@ -1318,6 +1318,8 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 "aspect_ratio": image_aspect_ratio,
                 "reference_image_urls": provider_reference_images or None,
             }
+            if str(args.get("image_model") or "").strip():
+                image_kwargs["model"] = str(args["image_model"]).strip()
             grok_web_operation = grok_web_current_operation
             if grok_web_operation:
                 image_kwargs["operation"] = grok_web_operation
@@ -1663,6 +1665,8 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 "aspect_ratio": image_aspect_ratio,
                 "reference_image_urls": provider_reference_images or None,
             }
+            if str(args.get("image_model") or "").strip():
+                escalation_kwargs["model"] = str(args["image_model"]).strip()
             _apply_image_provider_override(escalation_kwargs, image_provider_override)
             escalation_payload = _call_generation_provider(
                 generate_image,
@@ -1791,6 +1795,8 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 "aspect_ratio": image_aspect_ratio,
                 "reference_image_urls": provider_reference_images or None,
             }
+            if str(args.get("image_model") or "").strip():
+                repair_kwargs["model"] = str(args["image_model"]).strip()
             _apply_image_provider_override(repair_kwargs, image_provider_override)
             repair_payload = _call_generation_provider(
                 generate_image,
@@ -1981,6 +1987,10 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                     "aspect_ratio": video_aspect_ratio,
                     "source_media": video_source_media,
                 }
+                if str(args.get("video_provider") or "").strip():
+                    video_kwargs["_provider"] = str(args["video_provider"]).strip()
+                if str(args.get("video_model") or "").strip():
+                    video_kwargs["model"] = str(args["video_model"]).strip()
                 video_request = {
                     "prompt": video_prompt,
                     "arguments": video_kwargs,

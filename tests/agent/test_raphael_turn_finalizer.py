@@ -151,10 +151,27 @@ def test_temp_home_evolution_forwards_review_contract_without_spawn_failure(
         review_label="Raphael evolution review",
         risk_level="R1",
         user_message_preview="不對，要主動進化",
+        metadata={
+            "origin": "foreground",
+            "failure_cluster_id": "raphael.skill_evolution:user_correction",
+            "component": "raphael.skill_evolution",
+            "owner": "raphael-control",
+            "occurrence_id": "turn-1",
+            "signal_kind": "user_correction",
+            "replay_command": "pytest tests/agent/test_raphael_evolution.py -q",
+            "baseline_metric": "user_correction_failure_count=1",
+            "target_metric": "user_correction_failure_count=0",
+            "approval_class": "R2",
+        },
     )
     review_prompts: list[str] = []
+    decision_metadata: list[dict] = []
 
-    monkeypatch.setattr(evolution, "decide_raphael_evolution", lambda **_kwargs: decision)
+    def fake_decide(**kwargs):
+        decision_metadata.append(dict(kwargs.get("metadata") or {}))
+        return decision
+
+    monkeypatch.setattr(evolution, "decide_raphael_evolution", fake_decide)
     monkeypatch.setattr(
         evolution,
         "build_raphael_evolution_review_prompt",
@@ -202,9 +219,23 @@ def test_temp_home_evolution_forwards_review_contract_without_spawn_failure(
         original_user_message="不對，要主動進化",
         _should_review_memory=False,
         _turn_exit_reason="text_response",
+        raphael_decision={
+            "turn_id": "turn-1",
+            "origin": "foreground",
+            "mode": "tool_task",
+            "completion_policy": "mutation",
+            "evidence": {"required_proofs": []},
+        },
     )
 
     assert result["final_response"] == "收到，我會修正"
+    assert decision_metadata == [
+        {
+            "origin": "foreground",
+            "occurrence_id": "turn-1",
+            "failure_class": "",
+        }
+    ]
     assert review_prompts
     assert review_prompts[0].startswith("CUSTOM RAPHAEL EVOLUTION PROMPT")
     assert agent.safe_prints == ["  💾 Raphael evolution review: Skill updated"]
@@ -212,6 +243,16 @@ def test_temp_home_evolution_forwards_review_contract_without_spawn_failure(
     outcomes = [record.get("status") for record in evolution.read_evolution_records()]
     assert "scheduled" in outcomes
     assert "background_spawn_failed" not in outcomes
+    scheduled = next(
+        record
+        for record in evolution.read_evolution_records()
+        if record.get("status") == "scheduled"
+    )
+    assert scheduled["metadata"]["origin"] == "foreground"
+    assert scheduled["metadata"]["occurrence_id"] == "turn-1"
+    assert scheduled["metadata"]["replay_command"]
+    assert scheduled["metadata"]["baseline_metric"]
+    assert scheduled["metadata"]["target_metric"]
 
 
 def test_disabled_raphael_uses_readonly_gate_without_loading_evolution_stack(
@@ -257,6 +298,74 @@ def test_disabled_raphael_uses_readonly_gate_without_loading_evolution_stack(
 
     assert result["final_response"] == "done"
     assert calls == ["readonly"]
+
+
+def test_real_turn_finalizer_blocks_unverified_mutation_before_persistence(
+    monkeypatch,
+    tmp_path,
+):
+    from agent.raphael.mission import create_mission
+    from agent.raphael.state import read_active_mission, write_active_mission
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    write_active_mission(
+        create_mission(
+            mission_id="mission-proof-gate",
+            goal="修正問題",
+            success_conditions=("focused tests pass",),
+            phase="verification",
+            next_action="run focused verification",
+            selected_strategy="tool_task",
+            required_proofs=("focused_tests",),
+        )
+    )
+    monkeypatch.setattr(hermes_plugins, "invoke_hook", lambda *_args, **_kwargs: [])
+    agent = _FakeAgent()
+    persisted = []
+    agent._persist_session = lambda persisted_messages, _history: persisted.append(
+        [dict(message) for message in persisted_messages]
+    )
+    messages = [
+        {"role": "user", "content": "修正問題"},
+        {"role": "assistant", "content": "完成了，測試都通過。"},
+    ]
+
+    result = finalize_turn(
+        agent,
+        final_response="完成了，測試都通過。",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=None,
+        effective_task_id="task-proof-gate",
+        turn_id="turn-proof-gate",
+        user_message="修正問題",
+        original_user_message="修正問題",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response",
+        raphael_decision={
+            "turn_id": "turn-proof-gate",
+            "mission_id": "mission-proof-gate",
+            "origin": "foreground",
+            "mode": "tool_task",
+            "completion_policy": "mutation",
+            "evidence": {"required_proofs": ["focused_tests"]},
+            "next_action": "run focused verification",
+        },
+    )
+
+    assert result["raphael_finalization"]["status"] == (
+        "blocked_unverified_completion"
+    )
+    assert "尚缺驗證" in result["final_response"]
+    assert messages[-1]["content"] == result["final_response"]
+    persisted_messages = persisted[-1]
+    assert persisted_messages[-1]["content"] == result["final_response"]
+    mission = read_active_mission()
+    assert mission is not None
+    assert mission.proof_status == "blocked"
+    assert mission.blockers == ("missing proof: focused_tests",)
 
 
 def test_background_spawn_error_is_sanitized_before_persistent_records(

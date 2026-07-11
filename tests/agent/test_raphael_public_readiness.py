@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from agent.raphael.public_readiness import (
@@ -21,13 +22,14 @@ def test_public_llm_slice_simulation_covers_core_non_visual_journeys():
     simulation = run_public_llm_slice_simulation(now=NOW)
 
     assert simulation.status == "passed"
+    assert simulation.producer == "production_replay"
     case_ids = {case.case_id for case in simulation.cases}
     assert {
         "summon_tool_task",
         "mission_followup",
         "ambiguous_clarification",
         "proof_block",
-        "finalizer_proof_block_output",
+        "production_finalizer_proof_block",
         "evolution_proposal",
         "proposal_lifecycle_status",
         "public_claim_boundary",
@@ -36,6 +38,29 @@ def test_public_llm_slice_simulation_covers_core_non_visual_journeys():
     assert simulation.media_claim_ready is False
     assert simulation.visual_claim_ready is False
     assert simulation.grok_claim_ready is False
+
+
+def test_readiness_rejects_detached_simulator_provenance():
+    simulation = replace(
+        run_public_llm_slice_simulation(now=NOW),
+        producer="deterministic_router",
+    )
+    smoke = classify_llm_smoke(
+        exit_code=0,
+        response_text="Raphael maintained the LLM-only control layer.",
+        provider="openai-codex",
+        model="gpt-5.6-terra",
+        evidence_ref="live-smoke:production-replay",
+    )
+
+    report = build_public_llm_slice_readiness(
+        simulation=simulation,
+        live_smoke=smoke,
+        now=NOW,
+    )
+
+    assert report.status == "blocked"
+    assert "readiness_evidence_invalid" in report.slices["llm"]["blocking_reasons"]
 
 
 def test_readiness_report_blocks_llm_without_live_smoke_and_never_claims_media():
@@ -266,6 +291,7 @@ def test_release_gate_writes_durable_llm_only_report(tmp_path):
     assert payload["slices"]["visual"]["ready"] is False
     assert payload["slices"]["grok"]["ready"] is False
     assert payload["simulation"]["status"] == "passed"
+    assert payload["simulation"]["producer"] == "production_replay"
     assert payload["live_smoke"]["status"] == "passed"
     assert "full release ready" not in json.dumps(payload).lower()
 

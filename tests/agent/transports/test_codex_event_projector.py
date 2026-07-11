@@ -103,6 +103,15 @@ class TestCommandExecutionProjection:
         assert tool["tool_call_id"] == assistant["tool_calls"][0]["id"]
         assert "hello" in tool["content"]
 
+    def test_successful_command_projects_execution_metadata_for_proof_consumers(
+        self,
+    ) -> None:
+        p = CodexEventProjector()
+        tool = p.project(COMMAND_EXEC_COMPLETED).messages[1]
+
+        assert tool["command"] == COMMAND_EXEC_COMPLETED["params"]["item"]["command"]
+        assert tool["exit_code"] == 0
+
     def test_nonzero_exit_code_annotated_in_tool_result(self) -> None:
         item = {**COMMAND_EXEC_COMPLETED["params"]["item"], "exitCode": 2,
                 "aggregatedOutput": "boom"}

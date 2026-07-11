@@ -105,6 +105,8 @@ def test_status_reports_lifecycle_without_creating_runtime_state(
     assert "Installed: no" in out
     assert "Enabled: no" in out
     assert "Next action: hermes raphael install" in out
+    assert "Gateway process evidence: unavailable" in out
+    assert "Run `hermes gateway status` for live process truth." in out
     assert not (hermes_home / "raphael").exists()
 
 
@@ -454,14 +456,18 @@ def test_raphael_release_gate_command_reports_verified_public_boundary(
                     "visual": {"ready": False},
                     "grok": {"ready": False},
                 },
-                "simulation": {
-                    "status": "passed",
-                    "cases": [
+                    "simulation": {
+                        "status": "passed",
+                        "producer": "production_replay",
+                        "cases": [
                         {"case_id": "summon_tool_task", "passed": True},
                         {"case_id": "mission_followup", "passed": True},
                         {"case_id": "ambiguous_clarification", "passed": True},
                         {"case_id": "proof_block", "passed": True},
-                        {"case_id": "finalizer_proof_block_output", "passed": True},
+                            {
+                                "case_id": "production_finalizer_proof_block",
+                                "passed": True,
+                            },
                         {"case_id": "evolution_proposal", "passed": True},
                         {"case_id": "proposal_lifecycle_status", "passed": True},
                         {"case_id": "public_claim_boundary", "passed": True},

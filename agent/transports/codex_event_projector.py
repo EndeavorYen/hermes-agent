@@ -170,7 +170,10 @@ class CodexEventProjector:
             "role": "tool",
             "tool_call_id": call_id,
             "content": output,
+            "command": args["command"],
         }
+        if exit_code is not None:
+            tool_msg["exit_code"] = exit_code
         return ProjectionResult(
             messages=[assistant_msg, tool_msg], is_tool_iteration=True
         )

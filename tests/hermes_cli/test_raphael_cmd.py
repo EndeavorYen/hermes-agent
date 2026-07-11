@@ -1394,10 +1394,10 @@ _MODE_ROUTER_CASE_FIXTURES = {
         "next_action": "call_visual_agent_generate",
         "handoff_tool": "visual_agent_generate",
         "bypass_base_llm": True,
-        "visual_agent_llm_provider": "xai-oauth",
-        "visual_agent_llm_model": "grok-4.3",
-        "visual_media_provider": "xai",
-        "visual_media_model": "grok-imagine-image-quality",
+        "visual_agent_llm_provider": None,
+        "visual_agent_llm_model": None,
+        "visual_media_provider": None,
+        "visual_media_model": None,
         "reference_resolution": "not_applicable",
     },
     "visual_agent_edit": {
@@ -1408,10 +1408,10 @@ _MODE_ROUTER_CASE_FIXTURES = {
         "next_action": "call_visual_agent_generate",
         "handoff_tool": "visual_agent_generate",
         "bypass_base_llm": True,
-        "visual_agent_llm_provider": "xai-oauth",
-        "visual_agent_llm_model": "grok-4.3",
-        "visual_media_provider": "xai",
-        "visual_media_model": "grok-imagine-image-quality",
+        "visual_agent_llm_provider": None,
+        "visual_agent_llm_model": None,
+        "visual_media_provider": None,
+        "visual_media_model": None,
         "active_artifact_continuity": True,
     },
     "prompt_disclosure": {
@@ -1466,7 +1466,7 @@ _GOAL_STATE_REQUIRED_CASES = (
 )
 _GOAL_STATE_CASE_FIXTURES = {
     "new_tool_mission": {
-        "phase": "strategy_selected",
+        "phase": "plan_execute_verify",
         "next_action": "plan_execute_verify",
         "proof_status": "pending",
         "mission_continuity": False,
@@ -1476,7 +1476,7 @@ _GOAL_STATE_CASE_FIXTURES = {
         "required_proofs": ["focused_tests", "runtime_smoke_when_live_wiring"],
     },
     "followup_preserves_mission": {
-        "phase": "strategy_selected",
+        "phase": "plan_execute_verify",
         "next_action": "plan_execute_verify",
         "proof_status": "pending",
         "mission_continuity": True,
@@ -1486,7 +1486,7 @@ _GOAL_STATE_CASE_FIXTURES = {
         "required_proofs": ["focused_tests", "runtime_smoke_when_live_wiring"],
     },
     "casual_summon_preserves_mission": {
-        "phase": "strategy_selected",
+        "phase": "plan_execute_verify",
         "next_action": "plan_execute_verify",
         "proof_status": "pending",
         "mission_continuity": True,
@@ -1496,24 +1496,31 @@ _GOAL_STATE_CASE_FIXTURES = {
         "required_proofs": ["focused_tests", "runtime_smoke_when_live_wiring"],
     },
     "visual_edit_targets_current_artifact": {
-        "phase": "strategy_selected",
-        "next_action": "multi_pass_review_and_repair",
+        "phase": "route_and_handoff",
+        "next_action": "call_visual_agent_generate",
         "proof_status": "pending",
         "mission_continuity": False,
         "casual_turn_preserved": None,
         "active_artifact_id": "artifact-current",
         "blockers": [],
-        "required_proofs": ["artifact_continuity", "quality_gate_passed", "hostile_review"],
+        "required_proofs": [
+            "direct_handoff_metadata",
+            "provider_attempt_evidence",
+            "artifact_quality_evidence",
+            "selected_current_artifact_only",
+            "stale_artifact_guard",
+            "delivery_cleanliness",
+        ],
     },
     "missing_reference_blocks": {
-        "phase": "blocked",
+        "phase": "clarify_reference_mapping",
         "next_action": "ask_precise_clarification",
         "proof_status": "blocked",
         "mission_continuity": False,
         "casual_turn_preserved": None,
         "active_artifact_id": None,
-        "blockers": ["missing_ref3"],
-        "required_proofs": ["reference_mapping_confirmed"],
+        "blockers": ["missing_ref1"],
+        "required_proofs": ["reference_mapping_evidence"],
     },
 }
 
@@ -5556,6 +5563,41 @@ def test_raphael_release_gate_rejects_llm_smoke_with_wrong_log_model(
     assert result.public_release_ready is False
     assert "llm_live_smoke_model_identity_unverified" in result.blocking_reasons
     assert "LLM live smoke: model_identity_unverified" in result.message
+
+
+def test_raphael_release_gate_accepts_current_openai_gpt5_family_model(
+    monkeypatch,
+    tmp_path,
+):
+    from hermes_cli.raphael_cmd import raphael_release_gate
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        {
+            "plugins": {"enabled": ["raphael"], "disabled": []},
+            "raphael": {"enabled": True, "default_conversation_mode_enabled": True},
+        },
+    )
+    _write_llm_smoke_log(tmp_path, model="gpt-5.6-terra")
+    release_quality_kwargs = _release_quality_gate_kwargs(tmp_path)
+    transcript_path = Path(release_quality_kwargs["llm_transcript_report_path"])
+    transcript = json.loads(transcript_path.read_text(encoding="utf-8"))
+    transcript["model"] = "gpt-5.6-terra"
+    transcript_path.write_text(json.dumps(transcript), encoding="utf-8")
+
+    result = raphael_release_gate(
+        profile="llm",
+        llm_smoke_session_id="20260701_131600_93f518",
+        llm_smoke_command="rtk hermes chat -Q --max-turns 3",
+        llm_tool_call_count=0,
+        llm_summon_sections_verified=True,
+        llm_full_body_preserved=True,
+        llm_no_visual_failure_trace=True,
+        **release_quality_kwargs,
+    )
+
+    assert "llm_live_smoke_model_identity_unverified" not in result.blocking_reasons
 
 
 def test_raphael_readiness_rejects_self_attested_quality_evidence_without_reports(

@@ -341,7 +341,54 @@ def test_visual_agent_generate_passes_default_xai_media_provider_contract(monkey
     assert captured["image_provider"] == "xai"
     assert captured["image_provider_source"] == "visual_agent_default"
     assert payload["visual_agent_provider_contract"]["visual_agent_llm_provider"] == "xai-oauth"
-    assert payload["visual_agent_provider_contract"]["base_llm_model"] == "gpt-5.5"
+    assert payload["visual_agent_provider_contract"]["base_llm_model"] == ""
+
+
+def test_visual_agent_provider_contract_records_direct_runtime_media_overrides(
+    monkeypatch,
+):
+    from tools import visual_agent_tool
+
+    captured = {}
+
+    def fake_visual_package_generate(args, **kwargs):
+        captured.update(args)
+        return json.dumps(
+            {"success": True, "images": ["/tmp/current.png"], "videos": []}
+        )
+
+    monkeypatch.setattr(
+        visual_agent_tool,
+        "_handle_visual_package_generate",
+        fake_visual_package_generate,
+    )
+
+    payload = json.loads(
+        visual_agent_tool._handle_visual_agent_generate(
+            {
+                "prompt": "請產出一張圖片和一段影片",
+                "image_provider": "runtime-image-provider",
+                "image_model": "runtime-image-model",
+                "video_provider": "runtime-video-provider",
+                "video_model": "runtime-video-model",
+            }
+        )
+    )
+
+    assert captured["image_provider"] == "runtime-image-provider"
+    assert captured["video_provider"] == "runtime-video-provider"
+    assert payload["visual_agent_provider_contract"]["image_provider"] == (
+        "runtime-image-provider"
+    )
+    assert payload["visual_agent_provider_contract"]["image_model"] == (
+        "runtime-image-model"
+    )
+    assert payload["visual_agent_provider_contract"]["video_provider"] == (
+        "runtime-video-provider"
+    )
+    assert payload["visual_agent_provider_contract"]["video_model"] == (
+        "runtime-video-model"
+    )
 
 
 def test_visual_agent_generate_rejects_prompt_disclosure_without_regenerating(monkeypatch):

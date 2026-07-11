@@ -508,6 +508,42 @@ def test_render_status_includes_learning_outcome_summary():
     assert "rollback=archive the skill with hermes curator restore" in output
 
 
+def test_action_proposal_status_renders_outcome_replay_contract():
+    state = _state(
+        proposals=(
+            ActionProposal(
+                proposal_id="proposal-outcome-contract",
+                action_type="skill_patch",
+                risk=RiskLevel.R2,
+                summary="Tighten delivery deduplication",
+                evidence_refs=("cluster:delivery:duplicate",),
+                created_at=NOW,
+                metadata={
+                    "failure_cluster_id": "delivery:duplicate",
+                    "component": "visual.delivery",
+                    "owner": "visual-agent",
+                    "replay_command": "pytest tests/visual/test_delivery.py -q",
+                    "baseline_metric": "duplicate_count=1",
+                    "target_metric": "duplicate_count=0",
+                    "rollout_plan": {
+                        "status": "pending_approval",
+                        "promotion_gate": "duplicate_count reaches zero",
+                        "rollback_condition": "current artifact is omitted",
+                    },
+                },
+            ),
+        )
+    )
+
+    output = render_status(state, now=NOW, evolution_records=[])
+
+    assert "Cluster: delivery:duplicate" in output
+    assert "Owner: visual-agent" in output
+    assert "Replay: pytest tests/visual/test_delivery.py -q" in output
+    assert "Baseline: duplicate_count=1" in output
+    assert "Target: duplicate_count=0" in output
+
+
 def test_render_status_includes_curator_health_without_mutation():
     output = render_status(
         _state(),
@@ -875,12 +911,48 @@ def test_render_status_hides_internal_evolution_review_prompt_from_current_missi
     )
 
     assert "Current Mission:" in output
-    assert "任務：背景演化審核：整理可審計的技能/記憶改進" in output
+    assert "No active foreground mission." in output
+    assert "Ignored internal/background mission state." in output
     assert "Raphael Sage King Evolution Review" not in output
     assert "proactive skill-evolution loop" not in output
     assert "passive advisor" not in output
     assert "skill_manage" not in output
     assert "mission-internal-review" not in output
+
+
+def test_render_status_shows_canonical_foreground_decision_and_runtime_contract():
+    state = RaphaelState(
+        status_cards=(),
+        action_proposals=(),
+        updated_at=NOW,
+        last_decision={
+            "turn_id": "turn-current",
+            "origin": "foreground",
+            "mode": "tool_task",
+            "completion_policy": "mutation",
+            "evidence": {
+                "required_proofs": ["focused_tests", "diff_hygiene"]
+            },
+            "runtime_contract": {
+                "base_provider": "openai-codex",
+                "base_model": "gpt-5.6-terra",
+                "base_api_mode": "codex_app_server",
+                "source": "live_agent",
+            },
+        },
+    )
+
+    output = render_status(state, now=NOW)
+
+    assert "Current Foreground Decision:" in output
+    assert "Mode: tool_task" in output
+    assert "Completion policy: mutation" in output
+    assert "Required proofs: 聚焦測試通過、git diff hygiene 通過" in output
+    assert "Effective Runtime Contract:" in output
+    assert "Base: openai-codex/gpt-5.6-terra" in output
+    assert "API mode: codex_app_server" in output
+    assert "Source: live_agent" in output
+    assert "Gateway process evidence: unavailable" in output
 
 
 def test_render_status_humanizes_remaining_legacy_status_surface_text():

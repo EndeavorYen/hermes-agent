@@ -18,11 +18,11 @@ def test_control_routes_visual_generation_to_grok_handoff_and_grok_imagine_defau
     assert decision.route.handoff_tool == "visual_agent_generate"
     assert decision.route.bypass_base_llm is True
     assert decision.route.base_llm_provider == "openai-codex"
-    assert decision.route.base_llm_model == "gpt-5.5"
-    assert decision.route.visual_agent_llm_provider == "xai-oauth"
-    assert decision.route.visual_agent_llm_model == "grok-4.3"
-    assert decision.route.visual_media_provider == "xai"
-    assert decision.route.visual_media_model == "grok-imagine-image-quality"
+    assert decision.route.base_llm_model == ""
+    assert decision.route.visual_agent_llm_provider is None
+    assert decision.route.visual_agent_llm_model is None
+    assert decision.route.visual_media_provider is None
+    assert decision.route.visual_media_model is None
     assert "artifact_quality_evidence" in decision.evidence.required_proofs
     assert "selected_current_artifact_only" in decision.evidence.required_proofs
     assert "stale_artifact_guard" in decision.evidence.required_proofs
@@ -40,12 +40,12 @@ def test_control_requires_image_first_video_source_evidence_for_video_requests()
     assert "single_ranked_video_source_image" in decision.evidence.required_proofs
 
 
-def test_control_allows_openai_image2_media_override_without_losing_grok_planner():
+def test_control_allows_openai_image2_media_override_without_inventing_planner():
     decision = build_raphael_control_decision("請用 OpenAI image2 產出一張乾淨產品圖")
 
     assert decision.mode == "visual_agent_generation"
-    assert decision.route.visual_agent_llm_provider == "xai-oauth"
-    assert decision.route.visual_agent_llm_model == "grok-4.3"
+    assert decision.route.visual_agent_llm_provider is None
+    assert decision.route.visual_agent_llm_model is None
     assert decision.route.visual_media_provider == "openai-codex"
     assert decision.route.visual_media_provider_source == "prompt_override"
 

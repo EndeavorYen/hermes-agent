@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timezone
+import hashlib
+import json
+import re
 from typing import Any
 
 
@@ -13,6 +17,24 @@ TRUSTED_PROOF_TOOLS = {
     "run_command",
     "hermes_cli",
 }
+
+_STRUCTURED_EVIDENCE_SOURCES_BY_TOOL = {
+    "visual_agent_generate": frozenset({"visual_agent_handoff"}),
+}
+_STRUCTURED_EVIDENCE_FIELDS = (
+    "evidence_id",
+    "mission_id",
+    "turn_id",
+    "proof_type",
+    "source",
+    "status",
+    "command",
+    "artifact_id",
+    "provider",
+    "observed_at",
+    "payload_digest",
+)
+_SHA256_DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
 
 _CLAIM_PROOFS: dict[str, tuple[str, ...]] = {
     "runtime": ("runtime_smoke_when_live_wiring",),
@@ -95,6 +117,80 @@ class RaphaelProofEvent:
     command: str
     success: bool
     content: str
+
+
+@dataclass(frozen=True)
+class RaphaelEvidenceEvent:
+    """Sanitized, turn-scoped evidence emitted by a production proof surface."""
+
+    evidence_id: str
+    mission_id: str
+    turn_id: str
+    proof_type: str
+    source: str
+    status: str
+    command: str
+    artifact_id: str
+    provider: str
+    observed_at: str
+    payload_digest: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "evidence_id": self.evidence_id,
+            "mission_id": self.mission_id,
+            "turn_id": self.turn_id,
+            "proof_type": self.proof_type,
+            "source": self.source,
+            "status": self.status,
+            "command": self.command,
+            "artifact_id": self.artifact_id,
+            "provider": self.provider,
+            "observed_at": self.observed_at,
+            "payload_digest": self.payload_digest,
+        }
+
+
+def build_raphael_evidence_event(
+    *,
+    mission_id: str,
+    turn_id: str,
+    proof_type: str,
+    source: str,
+    status: str,
+    command: str,
+    artifact_id: str,
+    provider: str,
+    payload_digest: str,
+    observed_at: str | None = None,
+) -> RaphaelEvidenceEvent:
+    observed = observed_at or datetime.now(timezone.utc).isoformat()
+    identity = "|".join(
+        (
+            mission_id,
+            turn_id,
+            proof_type,
+            source,
+            status,
+            artifact_id,
+            provider,
+            payload_digest,
+        )
+    )
+    evidence_id = f"evidence-{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:16]}"
+    return RaphaelEvidenceEvent(
+        evidence_id=evidence_id,
+        mission_id=mission_id,
+        turn_id=turn_id,
+        proof_type=proof_type,
+        source=source,
+        status=status,
+        command=command,
+        artifact_id=artifact_id,
+        provider=provider,
+        observed_at=observed,
+        payload_digest=payload_digest,
+    )
 
 
 @dataclass(frozen=True)
@@ -227,9 +323,15 @@ def extract_raphael_proof_events(
         if tool_name not in TRUSTED_PROOF_TOOLS:
             continue
         content = str(message.get("content") or "")
+        parsed_content = _parse_command_tool_content(content)
         success = _looks_like_successful_tool_output(message, content)
-        command = _first_line(content)
-        proof_type = _classify_proof_type(content.lower(), command.lower()) if success else None
+        command = _proof_command(message, parsed_content, content)
+        proof_content = _proof_output(parsed_content, content)
+        proof_type = (
+            _classify_proof_type(proof_content.lower(), command.lower())
+            if success
+            else None
+        )
         if proof_type:
             events.append(
                 RaphaelProofEvent(
@@ -241,6 +343,113 @@ def extract_raphael_proof_events(
                 )
             )
     return tuple(events)
+
+
+def extract_raphael_evidence_events(
+    messages: Sequence[Mapping[str, Any]] | None,
+    *,
+    turn_id: str = "",
+    mission_id: str = "",
+) -> tuple[RaphaelEvidenceEvent, ...]:
+    """Extract validated structured proof from allowlisted production tools."""
+    tool_call_names = _tool_call_name_map(messages)
+    events: list[RaphaelEvidenceEvent] = []
+    for message in messages or ():
+        if not isinstance(message, Mapping) or message.get("role") != "tool":
+            continue
+        tool_name = str(message.get("name") or message.get("tool_name") or "").lower()
+        if not tool_name:
+            tool_name = tool_call_names.get(str(message.get("tool_call_id") or ""), "")
+        allowed_sources = _STRUCTURED_EVIDENCE_SOURCES_BY_TOOL.get(tool_name)
+        if not allowed_sources:
+            continue
+        parsed = _parse_structured_tool_content(message.get("content"))
+        if parsed is None:
+            continue
+        for candidate in _structured_evidence_candidates(parsed):
+            event = _validated_evidence_event(
+                candidate,
+                tool_name=tool_name,
+                allowed_sources=allowed_sources,
+                turn_id=str(turn_id or ""),
+                mission_id=str(mission_id or ""),
+            )
+            if event is not None:
+                events.append(event)
+    return tuple(events)
+
+
+def _parse_structured_tool_content(value: Any) -> Any | None:
+    if isinstance(value, (Mapping, list)):
+        return value
+    if not isinstance(value, str) or not value.lstrip().startswith(("{", "[")):
+        return None
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _structured_evidence_candidates(value: Any) -> tuple[Mapping[str, Any], ...]:
+    candidates: list[Mapping[str, Any]] = []
+    if isinstance(value, Mapping):
+        raw_events = value.get("evidence_events")
+        if isinstance(raw_events, list):
+            candidates.extend(item for item in raw_events if isinstance(item, Mapping))
+        for key, nested in value.items():
+            if key in {"prompt", "raw_prompt", "content", "evidence_events"}:
+                continue
+            candidates.extend(_structured_evidence_candidates(nested))
+    elif isinstance(value, list):
+        for nested in value:
+            candidates.extend(_structured_evidence_candidates(nested))
+    return tuple(candidates)
+
+
+def _validated_evidence_event(
+    candidate: Mapping[str, Any],
+    *,
+    tool_name: str,
+    allowed_sources: frozenset[str],
+    turn_id: str,
+    mission_id: str,
+) -> RaphaelEvidenceEvent | None:
+    if any(not isinstance(candidate.get(field), str) for field in _STRUCTURED_EVIDENCE_FIELDS):
+        return None
+    values = {field: str(candidate[field]).strip() for field in _STRUCTURED_EVIDENCE_FIELDS}
+    if any(not values[field] for field in _STRUCTURED_EVIDENCE_FIELDS):
+        return None
+    if values["status"] != "passed" or values["source"] not in allowed_sources:
+        return None
+    if values["command"] != tool_name:
+        return None
+    if turn_id and values["turn_id"] != turn_id:
+        return None
+    if mission_id and values["mission_id"] != mission_id:
+        return None
+    if _SHA256_DIGEST_RE.fullmatch(values["payload_digest"]) is None:
+        return None
+    try:
+        observed_at = datetime.fromisoformat(values["observed_at"].replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if observed_at.tzinfo is None:
+        return None
+    rebuilt = build_raphael_evidence_event(
+        mission_id=values["mission_id"],
+        turn_id=values["turn_id"],
+        proof_type=values["proof_type"],
+        source=values["source"],
+        status=values["status"],
+        command=values["command"],
+        artifact_id=values["artifact_id"],
+        provider=values["provider"],
+        payload_digest=values["payload_digest"],
+        observed_at=values["observed_at"],
+    )
+    if values["evidence_id"] != rebuilt.evidence_id:
+        return None
+    return rebuilt
 
 
 def raphael_has_required_proof(
@@ -278,15 +487,15 @@ def _classify_proof_type(content: str, command: str) -> str | None:
         return None
     if _command_is_echo_like(command):
         return None
-    if _command_mentions(command, "pytest") and "pytest" in content and any(
+    if _command_mentions(command, "pytest") and any(
         marker in content for marker in (" passed", "1 passed", "exit code 0")
     ):
         return "focused_tests"
-    if _command_mentions(command, "ruff") and "ruff" in content and "all checks passed" in content:
+    if _command_mentions(command, "ruff") and "all checks passed" in content:
         return "static_checks"
-    if _command_mentions(command, "git diff --check") and "git diff --check" in content and "exit code 0" in content:
+    if _command_mentions(command, "git diff --check"):
         return "diff_hygiene"
-    if _command_mentions(command, "gateway status") and "gateway status" in content and any(
+    if _command_mentions(command, "gateway status") and any(
         marker in content for marker in ("pid", "loaded", "running", "service")
     ):
         return "runtime_smoke_when_live_wiring"
@@ -332,6 +541,16 @@ def _extract_exit_code(message: Mapping[str, Any], content: str) -> int | None:
             return value
         if isinstance(value, str) and value.strip().lstrip("-").isdigit():
             return int(value.strip())
+    parsed = _parse_command_tool_content(content)
+    if isinstance(parsed, Mapping):
+        for key in ("exit_code", "returncode", "return_code", "code"):
+            value = parsed.get(key)
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, int):
+                return value
+            if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+                return int(value.strip())
     lowered = content.lower()
     markers = ("process exited with code ", "exit code ", "returncode=")
     for marker in markers:
@@ -343,6 +562,44 @@ def _extract_exit_code(message: Mapping[str, Any], content: str) -> int | None:
         if number.lstrip("-").isdigit():
             return int(number)
     return None
+
+
+def _parse_command_tool_content(content: str) -> Mapping[str, Any] | None:
+    try:
+        parsed = json.loads(content)
+    except (TypeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, Mapping) else None
+
+
+def _proof_command(
+    message: Mapping[str, Any],
+    parsed_content: Mapping[str, Any] | None,
+    content: str,
+) -> str:
+    command = str(message.get("command") or "").strip()
+    if command:
+        return command
+    if isinstance(parsed_content, Mapping):
+        evidence = parsed_content.get("verification_evidence")
+        evidence = evidence if isinstance(evidence, Mapping) else {}
+        command = str(
+            evidence.get("canonical_command")
+            or parsed_content.get("command")
+            or ""
+        ).strip()
+        if command:
+            return command
+    return _first_line(content)
+
+
+def _proof_output(
+    parsed_content: Mapping[str, Any] | None,
+    content: str,
+) -> str:
+    if isinstance(parsed_content, Mapping) and "output" in parsed_content:
+        return str(parsed_content.get("output") or "")
+    return content
 
 
 def _contains_failure_marker(content: str) -> bool:
@@ -423,11 +680,13 @@ def _first_line(value: str) -> str:
 
 
 __all__ = [
+    "RaphaelEvidenceEvent",
     "RaphaelProofEvent",
     "RaphaelProofGateResult",
     "RaphaelSelfReview",
     "claim_kind_from_text",
     "evaluate_raphael_proof_gate",
+    "extract_raphael_evidence_events",
     "extract_raphael_proof_events",
     "raphael_has_required_proof",
     "render_proof_gate_user_message",

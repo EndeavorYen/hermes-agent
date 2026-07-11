@@ -452,6 +452,60 @@ def test_visual_package_generate_uses_selected_image_for_video(monkeypatch, tmp_
     assert video_calls[0]["image_url"] == str(image)
 
 
+def test_visual_package_forwards_runtime_media_models_and_video_provider(
+    monkeypatch, tmp_path
+):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image = tmp_path / "image.png"
+    video = tmp_path / "video.mp4"
+    image.write_bytes(_ONE_PIXEL_PNG)
+    video.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+    image_calls = []
+    video_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(image),
+            "provider": "runtime-image-provider",
+            "model": "runtime-image-model",
+        }
+
+    def fake_generate_video(**kwargs):
+        video_calls.append(kwargs)
+        return {
+            "success": True,
+            "video": str(video),
+            "provider": "runtime-video-provider",
+            "model": "runtime-video-model",
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+    monkeypatch.setattr(visual_package_tool, "generate_video", fake_generate_video)
+
+    payload = json.loads(
+        visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "image plus short video of a matte black pen",
+                "candidate_budget": 1,
+                "image_provider": "runtime-image-provider",
+                "image_model": "runtime-image-model",
+                "video_provider": "runtime-video-provider",
+                "video_model": "runtime-video-model",
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert image_calls[0]["_provider"] == "runtime-image-provider"
+    assert image_calls[0]["model"] == "runtime-image-model"
+    assert video_calls[0]["_provider"] == "runtime-video-provider"
+    assert video_calls[0]["model"] == "runtime-video-model"
+
+
 def test_visual_package_video_only_uses_single_ranked_source_without_delivering_images(monkeypatch, tmp_path):
     from tools import visual_package_tool
 
@@ -7182,13 +7236,19 @@ def test_visual_package_repairs_blocked_image_before_delivery(monkeypatch, tmp_p
 
     payload = json.loads(
         visual_package_tool._handle_visual_package_generate(
-            {"prompt": "請產出一張圖片：時尚寫真。", "include_video": False, "candidate_budget": 1}
+            {
+                "prompt": "請產出一張圖片：時尚寫真。",
+                "include_video": False,
+                "candidate_budget": 1,
+                "image_model": "runtime-image-model",
+            }
         )
     )
 
     assert payload["success"] is True
     assert payload["images"] == [str(good_image)]
     assert len(calls) == 2
+    assert calls[1]["model"] == "runtime-image-model"
     assert "Quality repair pass" in calls[1]["prompt"]
     assert payload["delivery_gate"]["image"]["allowed"] is True
     assert payload["delivery_gate"]["image"]["repair_attempted"] is True
@@ -7359,13 +7419,19 @@ def test_visual_package_adds_candidate_for_low_preference_dimension_before_repai
 
     payload = json.loads(
         visual_package_tool._handle_visual_package_generate(
-            {"prompt": "請產出一張圖片：時尚寫真。", "include_video": False, "candidate_budget": 1}
+            {
+                "prompt": "請產出一張圖片：時尚寫真。",
+                "include_video": False,
+                "candidate_budget": 1,
+                "image_model": "runtime-image-model",
+            }
         )
     )
 
     assert payload["success"] is True
     assert payload["images"] == [str(good_image)]
     assert len(calls) == 2
+    assert calls[1]["model"] == "runtime-image-model"
     assert "Additional candidate pass" in calls[1]["prompt"]
     assert "Quality repair pass" not in calls[1]["prompt"]
     assert payload["delivery_gate"]["image"]["allowed"] is True

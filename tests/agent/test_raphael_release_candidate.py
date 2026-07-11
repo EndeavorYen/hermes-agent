@@ -41,7 +41,7 @@ def _llm_gate(**overrides):
         {"case_id": "mission_followup", "passed": True},
         {"case_id": "ambiguous_clarification", "passed": True},
         {"case_id": "proof_block", "passed": True},
-        {"case_id": "finalizer_proof_block_output", "passed": True},
+        {"case_id": "production_finalizer_proof_block", "passed": True},
         {"case_id": "evolution_proposal", "passed": True},
         {"case_id": "proposal_lifecycle_status", "passed": True},
         {"case_id": "public_claim_boundary", "passed": True},
@@ -60,7 +60,11 @@ def _llm_gate(**overrides):
             "Media and visual generation are not ready in this phase.",
             "Grok and video readiness require separate live evidence.",
         ],
-        "simulation": {"status": "passed", "cases": cases},
+        "simulation": {
+            "status": "passed",
+            "producer": "production_replay",
+            "cases": cases,
+        },
         "live_smoke": {
             "status": "passed",
             "provider": "openai",
@@ -71,6 +75,24 @@ def _llm_gate(**overrides):
     }
     payload.update(overrides)
     return payload
+
+
+def test_release_candidate_rejects_detached_llm_simulation_producer():
+    llm_gate = _llm_gate()
+    llm_gate["simulation"]["producer"] = "deterministic_router"
+
+    report = build_release_candidate_gate(
+        lifecycle_gate=_lifecycle_gate(),
+        llm_gate=llm_gate,
+        media_gate=_media_gate(),
+        doc_texts=("Verified OpenAI image and LLM slices only.",),
+        now=NOW,
+    )
+
+    assert report.slices["llm"]["ready"] is False
+    assert "llm_simulation_producer_invalid" in report.slices["llm"][
+        "blocking_reasons"
+    ]
 
 
 def _media_gate(**overrides):

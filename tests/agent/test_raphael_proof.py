@@ -1,4 +1,40 @@
-from agent.raphael.proof import extract_raphael_proof_events, raphael_has_required_proof
+import json
+
+from agent.raphael.proof import (
+    RaphaelEvidenceEvent,
+    extract_raphael_proof_events,
+    raphael_has_required_proof,
+)
+
+
+def test_structured_evidence_event_serializes_without_raw_payload():
+    event = RaphaelEvidenceEvent(
+        evidence_id="evidence-123",
+        mission_id="mission-1",
+        turn_id="turn-1",
+        proof_type="artifact_quality_evidence",
+        source="visual_agent_handoff",
+        status="passed",
+        command="visual_agent_generate",
+        artifact_id="artifact-1",
+        provider="fixture",
+        observed_at="2026-07-11T00:00:00+00:00",
+        payload_digest="sha256:abc123",
+    )
+
+    assert event.to_dict() == {
+        "evidence_id": "evidence-123",
+        "mission_id": "mission-1",
+        "turn_id": "turn-1",
+        "proof_type": "artifact_quality_evidence",
+        "source": "visual_agent_handoff",
+        "status": "passed",
+        "command": "visual_agent_generate",
+        "artifact_id": "artifact-1",
+        "provider": "fixture",
+        "observed_at": "2026-07-11T00:00:00+00:00",
+        "payload_digest": "sha256:abc123",
+    }
 
 
 def test_rejects_assistant_text_that_mentions_pytest_passed():
@@ -27,6 +63,47 @@ def test_accepts_exec_command_pytest_success_for_focused_tests():
     ]
 
     assert raphael_has_required_proof(messages, ("focused_tests",))
+
+
+def test_accepts_production_terminal_json_verification_results():
+    cases = (
+        (
+            "python -m pytest tests/foo.py -q",
+            "1 passed in 0.10s",
+            "focused_tests",
+        ),
+        (
+            "git diff --check",
+            "",
+            "diff_hygiene",
+        ),
+        (
+            "python -m ruff check agent tests",
+            "All checks passed!",
+            "static_checks",
+        ),
+        (
+            "hermes gateway status",
+            "service loaded, pid 123, running",
+            "runtime_smoke_when_live_wiring",
+        ),
+    )
+
+    for command, output, proof_type in cases:
+        content = json.dumps(
+            {
+                "output": output,
+                "exit_code": 0,
+                "error": None,
+                "verification_evidence": {
+                    "status": "passed",
+                    "canonical_command": command,
+                },
+            }
+        )
+        messages = [{"role": "tool", "name": "terminal", "content": content}]
+
+        assert raphael_has_required_proof(messages, (proof_type,))
 
 
 def test_rejects_echoed_pytest_success_even_with_exit_code_zero():

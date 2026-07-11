@@ -8,9 +8,9 @@ from typing import Any
 from agent.raphael.artifacts import latest_selected_artifact_id
 
 BASE_LLM_PROVIDER = "openai-codex"
-BASE_LLM_MODEL = "gpt-5.5"
+BASE_LLM_MODEL = ""
 VISUAL_AGENT_LLM_PROVIDER = "xai-oauth"
-VISUAL_AGENT_LLM_MODEL = "grok-4.3"
+VISUAL_AGENT_LLM_MODEL = ""
 VISUAL_MEDIA_PROVIDER_DEFAULT = "xai"
 VISUAL_MEDIA_MODEL_DEFAULT = "grok-imagine-image-quality"
 
@@ -243,6 +243,7 @@ _LEARN_SKILL_TARGET_MARKERS = (
 def build_raphael_control_decision(
     user_message: Any,
     *,
+    active_mission: Any | None = None,
     attachments: Sequence[str] | None = None,
     conversation_history: Sequence[Mapping[str, Any]] | None = None,
     visual_plan: Mapping[str, Any] | None = None,
@@ -255,6 +256,52 @@ def build_raphael_control_decision(
         if str(item).strip() and _is_visual_attachment_ref(str(item))
     )
     active_artifact_id = latest_selected_artifact_id(conversation_history)
+
+    if active_mission is not None and _looks_like_mission_followup(prompt):
+        mission_goal = str(getattr(active_mission, "goal", "") or prompt)
+        mission_proofs = tuple(getattr(active_mission, "required_proofs", ()) or ())
+        return RaphaelControlDecision(
+            mode="tool_task",
+            goal=RaphaelGoalDecision(
+                summary=mission_goal,
+                target_artifact="active_mission",
+                active_artifact_id=getattr(active_mission, "active_artifact_id", None),
+                success_conditions=tuple(
+                    getattr(active_mission, "success_conditions", ()) or ()
+                ),
+                phase="continue_active_mission",
+            ),
+            route=RaphaelRouteDecision(),
+            evidence=RaphaelEvidenceDecision(
+                required_proofs=mission_proofs or ("focused_tests", "diff_hygiene")
+            ),
+            next_action=str(
+                getattr(active_mission, "next_action", "") or "continue_active_mission"
+            ),
+            confidence=0.94,
+        )
+
+    if not attachment_list and _looks_like_ambiguous_goal(prompt):
+        question = "請補充要處理的目標、範圍與預期成品。"
+        return RaphaelControlDecision(
+            mode="needs_clarification",
+            goal=RaphaelGoalDecision(
+                summary=_summary(prompt),
+                target_artifact="pending_goal",
+                success_conditions=("goal_scope_confirmed",),
+                phase="clarify_goal",
+                blockers=("ambiguous_goal",),
+            ),
+            route=RaphaelRouteDecision(),
+            evidence=RaphaelEvidenceDecision(
+                required_proofs=("clarification_question_present",),
+                failure_layer="intent_routing",
+                next_repair_action="ask_precise_clarification",
+            ),
+            next_action="ask_precise_clarification",
+            clarification_question=question,
+            confidence=0.91,
+        )
 
     if _looks_like_visual_prompt_edit_task(prompt):
         return RaphaelControlDecision(
@@ -601,28 +648,36 @@ def _route_from_visual_plan(
 ) -> RaphaelRouteDecision:
     contract = plan.get("provider_contract")
     contract = contract if isinstance(contract, Mapping) else {}
+    provider_source = str(
+        arguments.get("image_provider_source") or "visual_agent_default"
+    )
+    prompt_override = provider_source == "prompt_override"
+    planner_model = _optional_route_text(contract.get("visual_agent_llm_model"))
     return RaphaelRouteDecision(
-        visual_agent_llm_provider=str(
-            contract.get("visual_agent_llm_provider") or VISUAL_AGENT_LLM_PROVIDER
+        visual_agent_llm_provider=(
+            _optional_route_text(contract.get("visual_agent_llm_provider"))
+            if planner_model
+            else None
         ),
-        visual_agent_llm_model=str(
-            contract.get("visual_agent_llm_model") or VISUAL_AGENT_LLM_MODEL
+        visual_agent_llm_model=planner_model,
+        visual_media_provider=(
+            _optional_route_text(
+                arguments.get("image_provider")
+                or contract.get("visual_media_provider_override")
+            )
+            if prompt_override
+            else None
         ),
-        visual_media_provider=str(
-            arguments.get("image_provider")
-            or contract.get("visual_media_provider_override")
-            or contract.get("visual_media_provider_default")
-            or VISUAL_MEDIA_PROVIDER_DEFAULT
-        ),
-        visual_media_model=str(
-            contract.get("visual_media_model_default") or VISUAL_MEDIA_MODEL_DEFAULT
-        ),
-        visual_media_provider_source=str(
-            arguments.get("image_provider_source") or "visual_agent_default"
-        ),
+        visual_media_model=None,
+        visual_media_provider_source=provider_source,
         handoff_tool="visual_agent_generate",
         bypass_base_llm=True,
     )
+
+
+def _optional_route_text(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
 
 
 def _video_required_proofs(arguments: Mapping[str, Any]) -> tuple[str, ...]:
@@ -815,6 +870,33 @@ def _fallback_visual_plan(
 
 def _is_visual_feedback_only_text(prompt: str) -> bool:
     return _looks_like_followup_edit(prompt) and not _looks_like_visual_generation(prompt)
+
+
+def _looks_like_mission_followup(prompt: str) -> bool:
+    compact = re.sub(r"\s+", "", str(prompt or "").lower())
+    return any(
+        marker in compact
+        for marker in (
+            "繼續剛剛",
+            "繼續剛才",
+            "接著做",
+            "接下來請繼續",
+            "continueprevious",
+            "continueearlier",
+            "continuethatgoal",
+        )
+    )
+
+
+def _looks_like_ambiguous_goal(prompt: str) -> bool:
+    compact = re.sub(r"[\s，。,.!?！？]+", "", str(prompt or "").lower())
+    return compact in {
+        "請處理這個",
+        "處理這個",
+        "幫我處理",
+        "handlethis",
+        "takecareofthis",
+    }
 
 
 def _is_visual_prompt_disclosure_request(prompt: str) -> bool:

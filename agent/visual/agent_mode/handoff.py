@@ -39,6 +39,8 @@ def build_direct_visual_agent_handoff(
     agent: Any,
     user_message: Any,
     original_user_message: Any = None,
+    *,
+    raphael_decision: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Return a direct pre-LLM visual-agent handoff plan when it is safe.
 
@@ -88,8 +90,12 @@ def build_direct_visual_agent_handoff(
     )
     if not plan.get("should_use_visual_package"):
         return None
-    raphael_control: dict[str, Any] | None = None
-    if _raphael_handoff_control_enabled():
+    raphael_control = (
+        dict(raphael_decision)
+        if isinstance(raphael_decision, dict) and raphael_decision
+        else None
+    )
+    if raphael_control is None and _raphael_handoff_control_enabled():
         try:
             from agent.raphael.control import build_raphael_control_decision
 
@@ -122,6 +128,40 @@ def build_direct_visual_agent_handoff(
         arguments["reference_binding"] = _session_reference_binding(session_reference_entries)
         arguments["prompt"] = _prompt_with_session_edit_context(prompt, session_reference_entries)
     contract = dict(plan.get("provider_contract") or {})
+    control_route = (
+        raphael_control.get("route")
+        if isinstance(raphael_control, dict)
+        and isinstance(raphael_control.get("route"), dict)
+        else {}
+    )
+    for key in ("visual_agent_llm_provider", "visual_agent_llm_model"):
+        if control_route.get(key):
+            contract[key] = control_route[key]
+    runtime_contract = (
+        raphael_control.get("runtime_contract")
+        if isinstance(raphael_control, dict)
+        and isinstance(raphael_control.get("runtime_contract"), dict)
+        else {}
+    )
+    if str(control_route.get("visual_media_provider_source") or "") != "prompt_override":
+        media_values = {
+            "image_provider": control_route.get("visual_media_provider")
+            or runtime_contract.get("image_provider"),
+            "image_model": control_route.get("visual_media_model")
+            or runtime_contract.get("image_model"),
+            "video_provider": runtime_contract.get("video_provider"),
+            "video_model": runtime_contract.get("video_model"),
+        }
+        for key, value in media_values.items():
+            if not str(value or "").strip():
+                continue
+            contract[key] = value
+            arguments[key] = value
+        if media_values.get("image_provider"):
+            arguments["image_provider_source"] = "runtime_contract"
+        if media_values.get("video_provider"):
+            arguments["video_provider_source"] = "runtime_contract"
+    plan["provider_contract"] = contract
     if contract.get("visual_agent_llm_provider"):
         arguments["visual_agent_llm_provider"] = contract.get("visual_agent_llm_provider")
     if contract.get("visual_agent_llm_model"):
@@ -942,6 +982,8 @@ def _evaluate_raphael_evidence_gate(
     raphael_control: dict[str, Any],
     payload: dict[str, Any],
 ) -> dict[str, Any]:
+    from agent.raphael.proof import build_raphael_evidence_event
+
     evidence = (
         raphael_control.get("evidence")
         if isinstance(raphael_control.get("evidence"), dict)
@@ -952,17 +994,102 @@ def _evaluate_raphael_evidence_gate(
         for proof in evidence.get("required_proofs", ())
         if str(proof).strip()
     ]
-    missing = [
-        proof
+    proof_results = {
+        proof: _raphael_required_proof_present(proof, raphael_control, payload)
         for proof in required
-        if not _raphael_required_proof_present(proof, raphael_control, payload)
+    }
+    mission_id = str(raphael_control.get("mission_id") or "")
+    turn_id = str(raphael_control.get("turn_id") or "")
+    selected_ids = sorted(_selected_visual_artifact_ids(payload))
+    artifact_id = selected_ids[0] if selected_ids else ""
+    provider = _raphael_evidence_provider(payload, raphael_control)
+    identity_missing = [
+        label
+        for label, value in (
+            ("mission_identity", mission_id),
+            ("turn_identity", turn_id),
+            ("artifact_identity", artifact_id),
+            ("provider_identity", provider),
+        )
+        if not value
+    ]
+    missing = [
+        proof for proof, present in proof_results.items() if not present
+    ] + identity_missing
+    payload_digest = _raphael_evidence_payload_digest(
+        proof_results=proof_results,
+        selected_ids=selected_ids,
+        provider=provider,
+        payload=payload,
+    )
+    observed_at = datetime.now(timezone.utc).isoformat()
+    evidence_events = [
+        build_raphael_evidence_event(
+            mission_id=mission_id,
+            turn_id=turn_id,
+            proof_type=proof,
+            source="visual_agent_handoff",
+            status="passed" if present and not identity_missing else "missing",
+            command="visual_agent_generate",
+            artifact_id=artifact_id,
+            provider=provider,
+            payload_digest=payload_digest,
+            observed_at=observed_at,
+        ).to_dict()
+        for proof, present in proof_results.items()
     ]
     return {
         "passed": not missing,
         "required_proofs": required,
         "missing_proofs": missing,
         "failure_layer": "artifact_quality" if missing else None,
+        "evidence_events": evidence_events,
     }
+
+
+def _raphael_evidence_provider(
+    payload: dict[str, Any],
+    raphael_control: dict[str, Any],
+) -> str:
+    contract = payload.get("visual_agent_provider_contract")
+    if isinstance(contract, dict) and str(contract.get("provider") or "").strip():
+        return str(contract["provider"])
+    generation_payloads = payload.get("generation_payloads")
+    if isinstance(generation_payloads, dict):
+        for candidate in generation_payloads.values():
+            if isinstance(candidate, dict) and str(candidate.get("provider") or "").strip():
+                return str(candidate["provider"])
+    route = raphael_control.get("route")
+    if isinstance(route, dict) and str(route.get("visual_media_provider") or "").strip():
+        return str(route["visual_media_provider"])
+    runtime_contract = raphael_control.get("runtime_contract")
+    if isinstance(runtime_contract, dict):
+        provider_key = "video_provider" if payload.get("videos") else "image_provider"
+        if str(runtime_contract.get(provider_key) or "").strip():
+            return str(runtime_contract[provider_key])
+    return ""
+
+
+def _raphael_evidence_payload_digest(
+    *,
+    proof_results: dict[str, bool],
+    selected_ids: list[str],
+    provider: str,
+    payload: dict[str, Any],
+) -> str:
+    quality = payload.get("delivery_metadata")
+    quality = quality.get("visual_quality_run") if isinstance(quality, dict) else None
+    recovery = payload.get("delivery_recovery")
+    safe_summary = {
+        "proof_results": proof_results,
+        "selected_artifact_ids": selected_ids,
+        "provider": provider,
+        "quality_success": quality.get("success") if isinstance(quality, dict) else None,
+        "delivery_status": recovery.get("status") if isinstance(recovery, dict) else None,
+        "success": payload.get("success") is True,
+    }
+    encoded = json.dumps(safe_summary, sort_keys=True, separators=(",", ":"))
+    return f"sha256:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
 
 
 def _raphael_required_proof_present(

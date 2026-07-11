@@ -86,7 +86,8 @@ Minimum successful OpenAI image evidence:
 
 ## Public Boundary
 
-The public claim allowed by this phase is:
+The public claim allowed only while the matching machine-readable gate is fresh
+and passing is:
 
 `OpenAI image slice is ready.`
 

@@ -27,12 +27,18 @@ from utils import atomic_json_write
 from agent.raphael.labels import format_control_decision_summary
 from agent.raphael.mission import RaphaelMissionState
 from agent.raphael.models import (
+    MissionArtifact,
     RaphaelEvent,
+    RaphaelMission,
     RaphaelState,
     StatusCard,
     action_proposal_ref,
 )
 from agent.raphael.redaction import REDACTED_VALUE, redact_trace_payload
+from agent.raphael.runtime_contract import (
+    RaphaelTurnOrigin,
+    resolve_raphael_turn_origin,
+)
 
 _ACTION_PROPOSAL_RESOLUTION_STATUSES = frozenset({"approved", "rejected"})
 _SECRET_VALUE_RE = re.compile(
@@ -201,6 +207,7 @@ def resolve_action_proposal(
                 action_proposals=tuple(updated_proposals),
                 updated_at=resolved_at,
                 active_mission=state.active_mission,
+                last_decision=state.last_decision,
             )
         )
     append_event(
@@ -285,20 +292,164 @@ def _redacted_resolution_text(
     return text[: max(0, limit)]
 
 
-def read_mission_state() -> RaphaelMissionState | None:
+def read_active_mission() -> RaphaelMission | None:
+    if not get_raphael_state_path().exists() and not get_raphael_mission_path().exists():
+        return None
+    with raphael_state_lock():
+        state = read_state()
+        if state.active_mission is not None:
+            return state.active_mission
+
+        legacy = _read_legacy_mission_state()
+        if legacy is None:
+            return None
+        mission = _mission_from_legacy_state(legacy)
+        write_state(
+            RaphaelState(
+                status_cards=state.status_cards,
+                action_proposals=state.action_proposals,
+                updated_at=mission.updated_at,
+                active_mission=mission,
+                last_decision=state.last_decision,
+            )
+        )
+        path = get_raphael_mission_path()
+        if path.exists():
+            path.unlink()
+        append_event(
+            RaphaelEvent(
+                event_id=f"mission-migrated-{legacy.mission_id}",
+                kind="mission_state_migrated",
+                created_at=_utc_now(),
+                details={
+                    "source": "raphael_mission_v1",
+                    "target": "raphael_state_active_mission",
+                    "mission_id": legacy.mission_id,
+                },
+            )
+        )
+        return mission
+
+
+def write_active_mission(
+    mission: RaphaelMission | None,
+    *,
+    origin: str | RaphaelTurnOrigin = RaphaelTurnOrigin.FOREGROUND,
+) -> RaphaelMission | None:
+    resolved_origin = resolve_raphael_turn_origin(explicit_origin=origin)
+    with raphael_state_lock():
+        state = read_state()
+        if resolved_origin is not RaphaelTurnOrigin.FOREGROUND:
+            return state.active_mission
+        updated_at = mission.updated_at if mission is not None else _utc_now()
+        write_state(
+            RaphaelState(
+                status_cards=state.status_cards,
+                action_proposals=state.action_proposals,
+                updated_at=updated_at,
+                active_mission=mission,
+                last_decision=state.last_decision,
+            )
+        )
+        legacy_path = get_raphael_mission_path()
+        if legacy_path.exists():
+            legacy_path.unlink()
+        return mission
+
+
+def _read_legacy_mission_state() -> RaphaelMissionState | None:
     path = get_raphael_mission_path()
     if not path.exists():
         return None
     return RaphaelMissionState.from_dict(json.loads(path.read_text(encoding="utf-8")))
 
 
+def _mission_from_legacy_state(legacy: RaphaelMissionState) -> RaphaelMission:
+    artifacts: tuple[MissionArtifact, ...] = ()
+    if legacy.active_artifact_id:
+        artifact_id = str(legacy.active_artifact_id)
+        artifacts = (
+            MissionArtifact(
+                artifact_id=artifact_id,
+                kind="legacy_reference",
+                label=artifact_id,
+                uri=f"artifact://{artifact_id}",
+                created_at=legacy.updated_at,
+            ),
+        )
+    return RaphaelMission(
+        mission_id=legacy.mission_id,
+        goal=legacy.goal,
+        active_artifact_id=legacy.active_artifact_id,
+        artifacts=artifacts,
+        success_conditions=legacy.required_proofs,
+        phase=legacy.phase,
+        blockers=legacy.blockers,
+        next_action=legacy.next_action,
+        selected_strategy=legacy.selected_strategy_id,
+        required_proofs=legacy.required_proofs,
+        last_evidence=(),
+        updated_at=legacy.updated_at,
+        proof_status=legacy.proof_status,
+        created_at=legacy.updated_at,
+    )
+
+
+def _legacy_state_from_mission(mission: RaphaelMission) -> RaphaelMissionState:
+    return RaphaelMissionState(
+        mission_id=mission.mission_id,
+        goal=mission.goal,
+        phase=mission.phase,
+        selected_strategy_id=mission.selected_strategy,
+        active_artifact_id=mission.active_artifact_id,
+        blockers=mission.blockers,
+        next_action=mission.next_action,
+        proof_status=mission.proof_status,
+        required_proofs=mission.required_proofs,
+        updated_at=mission.updated_at,
+    )
+
+
+def read_mission_state() -> RaphaelMissionState | None:
+    mission = read_active_mission()
+    return None if mission is None else _legacy_state_from_mission(mission)
+
+
 def write_mission_state(mission: RaphaelMissionState | None) -> None:
-    path = get_raphael_mission_path()
-    if mission is None:
-        if path.exists():
-            path.unlink()
-        return
-    atomic_json_write(path, mission.to_dict(), sort_keys=True)
+    active = None if mission is None else _mission_from_legacy_state(mission)
+    write_active_mission(active)
+
+
+def record_turn_decision(decision: Mapping[str, Any]) -> None:
+    now = _utc_now()
+    sanitized = redact_trace_payload(dict(decision), max_string_length=500)
+    if not isinstance(sanitized, Mapping):
+        raise ValueError("Raphael turn decision must serialize to a mapping")
+    safe_decision = dict(sanitized)
+    with raphael_state_lock():
+        state = read_state()
+        write_state(
+            RaphaelState(
+                status_cards=state.status_cards,
+                action_proposals=state.action_proposals,
+                updated_at=now,
+                active_mission=state.active_mission,
+                last_decision=safe_decision,
+            )
+        )
+    append_event(
+        RaphaelEvent(
+            event_id=f"turn-decision-{str(safe_decision.get('turn_id') or 'unknown')}",
+            kind="turn_decision",
+            created_at=now,
+            details={
+                "turn_id": safe_decision.get("turn_id"),
+                "mission_id": safe_decision.get("mission_id"),
+                "mode": safe_decision.get("mode"),
+                "completion_policy": safe_decision.get("completion_policy"),
+            },
+        )
+    )
 
 
 def record_control_decision(
@@ -383,6 +534,7 @@ def record_control_decision(
                 action_proposals=state.action_proposals,
                 updated_at=now,
                 active_mission=state.active_mission,
+                last_decision=state.last_decision,
             )
         )
     append_event(
@@ -415,11 +567,14 @@ __all__ = [
     "get_raphael_skill_traces_path",
     "get_raphael_state_dir",
     "get_raphael_state_path",
+    "read_active_mission",
     "read_mission_state",
     "read_state",
     "raphael_state_lock",
     "record_control_decision",
+    "record_turn_decision",
     "resolve_action_proposal",
     "write_mission_state",
+    "write_active_mission",
     "write_state",
 ]

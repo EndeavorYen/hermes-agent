@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import multiprocessing
 import threading
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -96,10 +97,43 @@ def _crossprocess_evolution_writer(
         if not control_write_started.wait(timeout=5):
             raise TimeoutError("control writer never reached its state write")
         child_evolution_module.record_evolution_action_proposal(
-            [proof_record, dict(proof_record)]
+            _independent_pair(proof_record)
         )
     except BaseException as exc:  # noqa: BLE001 - child errors must reach parent.
         errors.put(repr(exc))
+
+
+def _outcome_metadata(
+    occurrence_id: str,
+    *,
+    cluster: str = "proof-gate:missing-proof",
+    component: str = "raphael.proof_gate",
+    replay_command: str = "pytest tests/agent/test_raphael_finalization.py -q",
+) -> dict[str, str]:
+    return {
+        "origin": "foreground",
+        "failure_cluster_id": cluster,
+        "component": component,
+        "owner": "raphael-control",
+        "occurrence_id": occurrence_id,
+        "signal_kind": "reproduced_failure",
+        "replay_command": replay_command,
+        "baseline_metric": "failure_count=1",
+        "target_metric": "failure_count=0",
+        "approval_class": "R2",
+    }
+
+
+def _independent_pair(record: dict) -> list[dict]:
+    first = {**record, "metadata": dict(record.get("metadata") or {})}
+    second = {
+        **record,
+        "metadata": {
+            **dict(record.get("metadata") or {}),
+            "occurrence_id": "turn-outcome-2",
+        },
+    }
+    return [first, second]
 
 
 def test_learning_outcome_summary_requires_artifact_and_rollback():
@@ -561,6 +595,7 @@ def test_repeated_evolution_pattern_builds_approval_gated_skill_patch_proposal()
         "reason_codes": ["failed_proof"],
         "evidence_summary": "Raphael proof gate blocked an unverified completion claim",
         "metadata": {
+            **_outcome_metadata("turn-proof-1"),
             "affected_capability": "raphael.proof_gate",
             "proposed_change": "tighten proof-gate next-action summaries",
             "promotion_gate": "focused tests plus LLM smoke",
@@ -574,6 +609,12 @@ def test_repeated_evolution_pattern_builds_approval_gated_skill_patch_proposal()
         "reason_codes": ["visual_or_provider_failure"],
         "evidence_summary": "single visual lesson",
         "metadata": {
+            **_outcome_metadata(
+                "turn-visual-1",
+                cluster="artifact-quality:weak-candidate",
+                component="visual.artifact_quality",
+                replay_command="pytest tests/visual/test_agent_mode_handoff.py -q",
+            ),
             "affected_capability": "visual.agent_mode",
             "proposed_change": "prefer image-first video repair loop",
             "promotion_gate": "visual E2E evidence",
@@ -582,7 +623,7 @@ def test_repeated_evolution_pattern_builds_approval_gated_skill_patch_proposal()
     }
 
     proposal = build_evolution_action_proposal(
-        [proof_record, dict(proof_record), visual_record]
+        [*_independent_pair(proof_record), visual_record]
     )
 
     assert proposal is not None
@@ -600,6 +641,79 @@ def test_repeated_evolution_pattern_builds_approval_gated_skill_patch_proposal()
     assert "pattern_count:2" in proposal.evidence_refs
 
 
+def test_repeated_signal_without_replay_does_not_create_patch_proposal():
+    signal = {
+        "status": "scheduled",
+        "mode": "active_evolution",
+        "should_review": True,
+        "reason_codes": ["failed_proof"],
+        "evidence_summary": "proof failed",
+        "metadata": {
+            "origin": "foreground",
+            "occurrence_id": "turn-1",
+            "failure_cluster_id": "proof-gate:missing-focused-tests",
+            "component": "raphael.proof_gate",
+            "owner": "raphael-control",
+            "baseline_metric": "unsupported_completion_rate=1",
+            "target_metric": "unsupported_completion_rate=0",
+            "approval_class": "R2",
+        },
+    }
+    second = {**signal, "metadata": {**signal["metadata"], "occurrence_id": "turn-2"}}
+
+    assert build_evolution_action_proposal((signal, second)) is None
+
+
+def test_user_correction_plus_repro_creates_outcome_contract():
+    shared = {
+        "status": "scheduled",
+        "mode": "active_evolution",
+        "should_review": True,
+        "evidence_summary": "proof gate completion mismatch",
+        "metadata": {
+            "origin": "foreground",
+            "failure_cluster_id": "proof-gate:missing-focused-tests",
+            "component": "raphael.proof_gate",
+            "owner": "raphael-control",
+            "replay_command": "pytest tests/agent/test_raphael_finalization.py -q",
+            "baseline_metric": "unsupported_completion_rate=1",
+            "target_metric": "unsupported_completion_rate=0",
+            "approval_class": "R2",
+            "proposed_change": "tighten finalizer proof enforcement",
+            "promotion_gate": "focused finalizer tests pass",
+            "rollback_condition": "verified completions become blocked",
+        },
+    }
+    correction = {
+        **shared,
+        "reason_codes": ["user_correction"],
+        "metadata": {
+            **shared["metadata"],
+            "occurrence_id": "turn-correction",
+            "signal_kind": "user_correction",
+        },
+    }
+    reproduced = {
+        **shared,
+        "reason_codes": ["failed_proof"],
+        "metadata": {
+            **shared["metadata"],
+            "occurrence_id": "turn-repro",
+            "signal_kind": "reproduced_failure",
+        },
+    }
+
+    proposal = build_evolution_action_proposal((correction, reproduced))
+
+    assert proposal is not None
+    assert proposal.metadata["replay_command"]
+    assert proposal.metadata["baseline_metric"]
+    assert proposal.metadata["target_metric"]
+    assert proposal.metadata["failure_cluster_id"] == (
+        "proof-gate:missing-focused-tests"
+    )
+
+
 def test_repeated_evolution_skill_patch_proposal_includes_rollout_plan():
     proof_record = {
         "status": "scheduled",
@@ -608,6 +722,7 @@ def test_repeated_evolution_skill_patch_proposal_includes_rollout_plan():
         "reason_codes": ["failed_proof"],
         "evidence_summary": "Raphael proof gate blocked an unverified completion claim",
         "metadata": {
+            **_outcome_metadata("turn-proof-1"),
             "affected_capability": "raphael.proof_gate",
             "proposed_change": "tighten proof-gate next-action summaries",
             "promotion_gate": "focused tests plus LLM smoke",
@@ -615,7 +730,7 @@ def test_repeated_evolution_skill_patch_proposal_includes_rollout_plan():
         },
     }
 
-    proposal = build_evolution_action_proposal([proof_record, dict(proof_record)])
+    proposal = build_evolution_action_proposal(_independent_pair(proof_record))
 
     assert proposal is not None
     assert proposal.metadata["affected_capability"] == "raphael.proof_gate"
@@ -629,6 +744,7 @@ def test_repeated_evolution_skill_patch_proposal_includes_rollout_plan():
             "Run the promotion gate before enabling the change.",
         ],
         "verification_commands": [
+            "pytest tests/agent/test_raphael_finalization.py -q",
             "pytest tests/agent/test_raphael_evolution.py -q",
             "hermes raphael readiness --readiness-profile llm --check",
         ],
@@ -646,6 +762,7 @@ def test_record_evolution_action_proposal_is_deduplicated_and_preserves_state(tm
         "reason_codes": ["failed_proof"],
         "evidence_summary": "Raphael proof gate blocked an unverified completion claim",
         "metadata": {
+            **_outcome_metadata("turn-proof-1"),
             "affected_capability": "raphael.proof_gate",
             "proposed_change": "tighten proof-gate next-action summaries",
             "promotion_gate": "focused tests plus LLM smoke",
@@ -654,8 +771,8 @@ def test_record_evolution_action_proposal_is_deduplicated_and_preserves_state(tm
     }
 
     with _home_env(home):
-        first = record_evolution_action_proposal([proof_record, dict(proof_record)])
-        second = record_evolution_action_proposal([proof_record, dict(proof_record)])
+        first = record_evolution_action_proposal(_independent_pair(proof_record))
+        second = record_evolution_action_proposal(_independent_pair(proof_record))
         state = read_state()
 
     assert first is not None
@@ -686,6 +803,7 @@ def test_record_evolution_action_proposal_preserves_active_mission(tmp_path):
         "reason_codes": ["failed_proof"],
         "evidence_summary": "proof gate blocked completion",
         "metadata": {
+            **_outcome_metadata("turn-proof-1"),
             "affected_capability": "raphael.proof_gate",
             "proposed_change": "tighten proof checks",
             "promotion_gate": "focused tests",
@@ -702,7 +820,7 @@ def test_record_evolution_action_proposal_preserves_active_mission(tmp_path):
                 active_mission=mission,
             )
         )
-        record_evolution_action_proposal([proof_record, dict(proof_record)])
+        record_evolution_action_proposal(_independent_pair(proof_record))
         stored = read_state()
 
     assert stored.active_mission == mission
@@ -741,6 +859,7 @@ def test_concurrent_control_and_evolution_rmw_preserve_both_updates(
         "reason_codes": ["failed_proof"],
         "evidence_summary": "proof gate blocked completion",
         "metadata": {
+            **_outcome_metadata("turn-proof-1"),
             "affected_capability": "raphael.proof_gate",
             "proposed_change": "tighten proof checks",
             "promotion_gate": "focused tests",
@@ -780,8 +899,8 @@ def test_concurrent_control_and_evolution_rmw_preserve_both_updates(
     def write_evolution():
         assert control_write_started.wait(timeout=1)
         evolution_module.record_evolution_action_proposal(
-            [proof_record, dict(proof_record)]
-        )
+                _independent_pair(proof_record)
+            )
 
     with _home_env(home):
         control_thread = threading.Thread(target=write_control, name="control-writer")
@@ -818,6 +937,7 @@ def test_crossprocess_control_and_evolution_rmw_preserve_state(tmp_path):
         "reason_codes": ["failed_proof"],
         "evidence_summary": "proof gate blocked completion",
         "metadata": {
+            **_outcome_metadata("turn-proof-1"),
             "affected_capability": "raphael.proof_gate",
             "proposed_change": "tighten proof checks",
             "promotion_gate": "focused tests",
@@ -896,14 +1016,19 @@ def test_append_evolution_record_promotes_repeated_pattern_to_pending_proposal(t
         turn_exit_reason="text_response",
         config=_config(),
         metadata={
+            **_outcome_metadata("turn-proof-1"),
             "proposed_change": "tighten proof-gate next-action summaries",
             "promotion_gate": "focused tests plus LLM smoke",
             "rollback_condition": "user says 不對 again",
         },
     )
+    second_decision = replace(
+        decision,
+        metadata={**dict(decision.metadata or {}), "occurrence_id": "turn-proof-2"},
+    )
 
     with _home_env(home):
-        append_evolution_record(decision, status="scheduled")
+        append_evolution_record(second_decision, status="scheduled")
         assert read_state().action_proposals == ()
         append_evolution_record(decision, status="scheduled")
         state = read_state()

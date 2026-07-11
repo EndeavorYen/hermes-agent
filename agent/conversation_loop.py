@@ -530,6 +530,7 @@ def _try_direct_visual_agent_handoff(
     effective_task_id: str,
     turn_id: str,
     should_review_memory: bool,
+    raphael_decision: Dict[str, Any] | None = None,
 ) -> Dict[str, Any] | None:
     """Execute a deterministic visual handoff before the base model call."""
     try:
@@ -546,6 +547,7 @@ def _try_direct_visual_agent_handoff(
         agent,
         user_message,
         original_user_message,
+        raphael_decision=raphael_decision,
     )
     if not handoff:
         return None
@@ -579,6 +581,7 @@ def _try_direct_visual_agent_handoff(
             original_user_message=original_user_message,
             _should_review_memory=should_review_memory,
             _turn_exit_reason="direct_visual_agent_clarification",
+            raphael_decision=raphael_decision,
         )
 
     tool_name = str(handoff.get("tool_name") or "").strip()
@@ -667,6 +670,7 @@ def _try_direct_visual_agent_handoff(
         original_user_message=original_user_message,
         _should_review_memory=should_review_memory,
         _turn_exit_reason="direct_visual_agent_handoff",
+        raphael_decision=raphael_decision,
     )
 
 
@@ -751,6 +755,7 @@ def run_conversation(
     _should_review_memory = _ctx.should_review_memory
     _plugin_user_context = _ctx.plugin_user_context
     _ext_prefetch_cache = _ctx.ext_prefetch_cache
+    _raphael_decision = getattr(_ctx, "raphael_decision", {})
 
     # Main conversation loop counters (pure locals consumed by the loop below).
     api_call_count = 0
@@ -794,6 +799,7 @@ def run_conversation(
             effective_task_id=effective_task_id,
             turn_id=turn_id,
             should_review_memory=_should_review_memory,
+            raphael_decision=_raphael_decision,
         )
 
     _direct_visual_result = _try_direct_visual_agent_handoff(
@@ -805,6 +811,7 @@ def run_conversation(
         effective_task_id=effective_task_id,
         turn_id=turn_id,
         should_review_memory=_should_review_memory,
+        raphael_decision=_raphael_decision,
     )
     if _direct_visual_result is not None:
         return _direct_visual_result
@@ -5479,6 +5486,7 @@ def run_conversation(
         original_user_message=original_user_message,
         _should_review_memory=_should_review_memory,
         _turn_exit_reason=_turn_exit_reason,
+        raphael_decision=_raphael_decision,
     )
 
 
