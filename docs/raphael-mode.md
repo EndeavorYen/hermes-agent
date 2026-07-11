@@ -64,6 +64,12 @@ An unreviewed feature worktree must never become the supervised service.
 Rollback repoints the runtime worktree to the last accepted commit and restarts
 the gateway; it does not rewrite the development branch.
 
+If launchd cannot keep the installed service loaded, Hermes may use its explicit
+detached gateway fallback. That state is degraded, not supervised production:
+automatic start and automatic restart are unavailable until launchd management
+is restored. `hermes gateway status` must report the fallback and the missing
+restart guarantee instead of presenting the process as service-managed.
+
 ## Operator Commands
 
 - `/raphael-status` or `hermes raphael status`: canonical mission, decision,
