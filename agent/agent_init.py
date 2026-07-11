@@ -888,6 +888,12 @@ def init_agent(
         if not agent.quiet_mode:
             _gr_label = " + Guardrails" if agent._bedrock_guardrail_config else ""
             print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock, {agent._bedrock_region}{_gr_label})")
+    elif agent.api_mode == "codex_app_server":
+        # The Codex subprocess owns transport and authentication. Building an
+        # OpenAI HTTP client here would wrongly require a Hermes OAuth token
+        # before the app-server can use Codex.app / CLI login state.
+        agent.client = None
+        agent._client_kwargs = {}
     else:
         if api_key and base_url:
             # Explicit credentials from CLI/gateway — construct directly.
