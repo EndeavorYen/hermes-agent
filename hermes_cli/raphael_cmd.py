@@ -3267,21 +3267,38 @@ def _evolution_contract_release_gate_check() -> dict[str, Any]:
                 "狀態：還不能判定完成，Raphael proof gate 沒看到足夠證據。\n"
                 "下一步：先執行必要測試或 runtime smoke，再回報具體證據。"
             )
-            proof_decision = decide_raphael_evolution(
-                user_message="請修復 Hermes runtime bug 並驗證到能上線",
-                final_response=proof_response,
-                messages=[{"role": "assistant", "content": proof_response}],
-                turn_exit_reason="text_response",
-                config=active_config,
-                metadata={
-                    "promotion_gate": (
-                        "focused tests plus runtime, replay, or LLM smoke"
-                    ),
-                    "rollback_condition": (
-                        "next evidence or user feedback shows worse behavior"
-                    ),
-                },
-            )
+            proof_metadata = {
+                "origin": "foreground",
+                "failure_cluster_id": "proof-gate:missing-proof",
+                "component": "raphael.proof_gate",
+                "owner": "raphael-control",
+                "signal_kind": "reproduced_failure",
+                "replay_command": "pytest tests/agent/test_raphael_evolution.py -q",
+                "baseline_metric": "unsupported_completion_rate=1",
+                "target_metric": "unsupported_completion_rate=0",
+                "approval_class": "R2",
+                "promotion_gate": (
+                    "focused tests plus runtime, replay, or LLM smoke"
+                ),
+                "rollback_condition": (
+                    "next evidence or user feedback shows worse behavior"
+                ),
+            }
+            proof_decisions = [
+                decide_raphael_evolution(
+                    user_message="請修復 Hermes runtime bug 並驗證到能上線",
+                    final_response=proof_response,
+                    messages=[{"role": "assistant", "content": proof_response}],
+                    turn_exit_reason="text_response",
+                    config=active_config,
+                    metadata={
+                        **proof_metadata,
+                        "occurrence_id": f"release-gate-proof-{occurrence}",
+                    },
+                )
+                for occurrence in (1, 2)
+            ]
+            proof_decision = proof_decisions[0]
             visual_decision = decide_raphael_evolution(
                 user_message="幫我做 image + video",
                 final_response="候選圖未通過。",
@@ -3298,8 +3315,8 @@ def _evolution_contract_release_gate_check() -> dict[str, Any]:
                 turn_exit_reason="direct_visual_agent_handoff",
                 config=active_config,
             )
-            append_evolution_record(proof_decision, status="scheduled")
-            append_evolution_record(proof_decision, status="scheduled")
+            for independent_proof_decision in proof_decisions:
+                append_evolution_record(independent_proof_decision, status="scheduled")
             append_evolution_record(visual_decision, status="scheduled")
             priority_records = read_evolution_records(limit=3)
             proposal_state = read_raphael_state()
