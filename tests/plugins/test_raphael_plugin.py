@@ -177,6 +177,29 @@ def test_enabled_plugin_injects_ephemeral_raphael_context(monkeypatch, tmp_path)
     assert "task_state: mutation_or_delivery_request" in results[0]["context"]
 
 
+def test_pre_llm_hook_forwards_turn_origin_and_runtime_contract(monkeypatch):
+    plugin = _load_plugin_init()
+    captured = {}
+
+    def fake_context(user_message, **kwargs):
+        captured["user_message"] = user_message
+        captured.update(kwargs)
+        return "raphael-context"
+
+    monkeypatch.setattr(plugin, "build_raphael_observation_context", fake_context)
+
+    result = plugin.handle_pre_llm_call(
+        user_message="review internal state",
+        conversation_history=[],
+        turn_origin="background_review",
+        runtime_contract={"base_model": "gpt-5.6-terra"},
+    )
+
+    assert result == {"context": "raphael-context"}
+    assert captured["turn_origin"] == "background_review"
+    assert captured["runtime_contract"]["base_model"] == "gpt-5.6-terra"
+
+
 def test_raphael_manifest_declares_public_slash_commands(monkeypatch, tmp_path):
     import hermes_cli.plugins as plugins_mod
 

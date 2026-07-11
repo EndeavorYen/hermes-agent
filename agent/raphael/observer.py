@@ -403,6 +403,8 @@ def build_raphael_observation_context(
     config: Mapping[str, Any] | None = None,
     *,
     conversation_history: Sequence[Mapping[str, Any]] | None = None,
+    turn_origin: str = "foreground",
+    runtime_contract: Mapping[str, Any] | None = None,
 ) -> str:
     if not should_inject_raphael_observation(config):
         return ""

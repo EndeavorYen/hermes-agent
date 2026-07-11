@@ -197,6 +197,38 @@ def test_task_id_passthrough():
     assert agent._current_task_id == "fixed-task"
 
 
+def test_turn_origin_and_runtime_contract_are_forwarded_to_plugin_hook():
+    agent = _FakeAgent()
+    agent._memory_write_origin = "background_review"
+    agent.model = "gpt-5.6-terra"
+    agent.provider = "openai-codex"
+    agent.api_mode = "codex_app_server"
+    hook_calls = []
+
+    with (
+        patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={
+                "model": {
+                    "default": "gpt-5.5",
+                    "provider": "openai-codex",
+                }
+            },
+        ),
+        patch(
+            "hermes_cli.plugins.invoke_hook",
+            side_effect=lambda *args, **kwargs: hook_calls.append((args, kwargs)) or [],
+        ),
+    ):
+        ctx = _build(agent)
+
+    assert ctx.raphael_origin == "background_review"
+    assert ctx.raphael_runtime_contract["base_model"] == "gpt-5.6-terra"
+    _, hook_kwargs = hook_calls[0]
+    assert hook_kwargs["turn_origin"] == "background_review"
+    assert hook_kwargs["runtime_contract"]["base_model"] == "gpt-5.6-terra"
+
+
 def test_persist_user_message_becomes_original():
     agent = _FakeAgent()
     ctx = _build(agent, user_message="api-prefixed", persist_user_message="clean")
@@ -363,4 +395,3 @@ def test_expired_cooldown_allows_preflight(tmp_path):
     assert isinstance(ctx, TurnContext)
     agent._emit_status.assert_called_once()
     agent._compress_context.assert_called()
-

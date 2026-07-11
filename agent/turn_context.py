@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 import threading
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from agent.conversation_compression import conversation_history_after_compression
@@ -114,6 +114,10 @@ class TurnContext:
     plugin_user_context: str = ""
     # External-memory prefetch result, reused across loop iterations.
     ext_prefetch_cache: str = ""
+    # Stable origin used to keep internal/background work out of foreground state.
+    raphael_origin: str = "foreground"
+    # Privacy-safe snapshot of the provider/model contract effective for this turn.
+    raphael_runtime_contract: Dict[str, Any] = field(default_factory=dict)
 
 
 def build_turn_context(
@@ -461,6 +465,31 @@ def build_turn_context(
                 if not _compressor.should_compress(_preflight_tokens):
                     break
 
+    try:
+        from agent.raphael.runtime_contract import (
+            resolve_raphael_runtime_contract,
+            resolve_raphael_turn_origin,
+        )
+        from hermes_cli.config import load_config_readonly
+
+        _raphael_origin = resolve_raphael_turn_origin(
+            explicit_origin=getattr(agent, "_raphael_turn_origin", None),
+            write_origin=getattr(agent, "_memory_write_origin", None),
+        ).value
+        try:
+            _raphael_config = load_config_readonly()
+        except Exception:
+            _raphael_config = {}
+        _raphael_runtime_contract = resolve_raphael_runtime_contract(
+            _raphael_config,
+            live_provider=getattr(agent, "provider", None),
+            live_model=getattr(agent, "model", None),
+            live_api_mode=getattr(agent, "api_mode", None),
+        ).to_dict()
+    except Exception:
+        _raphael_origin = "foreground"
+        _raphael_runtime_contract = {}
+
     # Plugin hook: pre_llm_call (context injected into user message, not system prompt).
     plugin_user_context = ""
     try:
@@ -476,6 +505,8 @@ def build_turn_context(
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
+            turn_origin=_raphael_origin,
+            runtime_contract=_raphael_runtime_contract,
         )
         _ctx_parts: list[str] = []
         # Spill oversized per-hook context to disk so a runaway plugin
@@ -562,4 +593,6 @@ def build_turn_context(
         should_review_memory=should_review_memory,
         plugin_user_context=plugin_user_context,
         ext_prefetch_cache=ext_prefetch_cache,
+        raphael_origin=_raphael_origin,
+        raphael_runtime_contract=_raphael_runtime_contract,
     )

@@ -130,11 +130,15 @@ def handle_pre_llm_call(
     *,
     user_message="",
     conversation_history=None,
+    turn_origin="foreground",
+    runtime_contract=None,
     **_kwargs,
 ):
     context = build_raphael_observation_context(
         user_message,
         conversation_history=conversation_history,
+        turn_origin=turn_origin,
+        runtime_contract=runtime_contract,
     )
     if not context:
         return None
