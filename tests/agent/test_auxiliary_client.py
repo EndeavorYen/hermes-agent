@@ -3912,12 +3912,13 @@ class TestCodexAdapterReasoningTranslation:
 
     def test_reasoning_effort_medium_translated_to_top_level(self):
         adapter, captured = self._build_adapter()
-        adapter.create(
+        response = adapter.create(
             messages=[{"role": "user", "content": "hi"}],
             extra_body={"reasoning": {"effort": "medium"}},
         )
         assert captured.get("reasoning") == {"effort": "medium", "summary": "auto"}
         assert captured.get("include") == ["reasoning.encrypted_content"]
+        assert response.id == "resp_test"
 
     def test_reasoning_effort_minimal_clamped_to_low(self):
         """Codex backend rejects 'minimal'; adapter clamps to 'low' per main transport."""

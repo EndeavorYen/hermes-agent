@@ -1147,7 +1147,11 @@ class _CodexCompletionsAdapter:
             message=message,
             finish_reason="stop" if not tool_calls_raw else "tool_calls",
         )
+        response_id = getattr(final, "id", None)
+        if response_id is None and isinstance(final, dict):
+            response_id = final.get("id") or final.get("response_id")
         return SimpleNamespace(
+            id=str(response_id or ""),
             choices=[choice],
             model=model,
             usage=usage,
