@@ -135,24 +135,20 @@ def test_compile_prompt_writes_traceable_prompt_and_budget(tmp_path) -> None:
     )
 
     assert payload["success"] is True
-    assert payload["candidate_budget"] == 3
+    assert payload["candidate_budget"] == 1
+    assert payload["generation_policy"] == "qc_driven_selective_regeneration"
+    assert payload["max_repair_rounds"] == 3
     assert "Evidence that must be readable" in payload["prompt"]
     assert (context.project_dir / payload["prompt_path"]).is_file()
 
 
-def test_judge_sends_every_candidate_as_image_input_to_openai_and_selects_best(tmp_path) -> None:
+def test_judge_sends_one_candidate_to_openai_and_selects_it_when_it_passes(tmp_path) -> None:
     store, context, _shot = _context(tmp_path)
-    candidates = [_candidate(context, "C01"), _candidate(context, "C02")]
+    candidates = [_candidate(context, "C01")]
     llm = FakeLlm(
         [
             {
                 "candidate_id": "C01",
-                "hard_blockers": [],
-                "dimensions": _dimensions(83),
-                "evidence": ["clear foot contact"],
-            },
-            {
-                "candidate_id": "C02",
                 "hard_blockers": [],
                 "dimensions": _dimensions(91),
                 "evidence": ["upright limb and track are immediately readable"],
@@ -176,12 +172,12 @@ def test_judge_sends_every_candidate_as_image_input_to_openai_and_selects_best(t
 
     assert payload["success"] is True
     assert payload["status"] == "selected"
-    assert payload["selected_candidate_id"] == "C02"
+    assert payload["selected_candidate_id"] == "C01"
     assert llm.calls[0]["provider"] == "openai-codex"
     image_inputs = [item for item in llm.calls[0]["input"] if item["type"] == "image"]
-    assert len(image_inputs) == 2
+    assert len(image_inputs) == 1
     selected = context.project_dir / "images" / "S00_SH00.png"
-    assert selected.read_bytes() == b"image-C02"
+    assert selected.read_bytes() == b"image-C01"
     manifest = json.loads(
         (context.project_dir / "manifests" / "shot_candidate_manifest.json").read_text(
             encoding="utf-8"
@@ -189,13 +185,36 @@ def test_judge_sends_every_candidate_as_image_input_to_openai_and_selects_best(t
     )
     current = [row for row in manifest["outputs"] if row["selected"]]
     assert len(current) == 1
-    assert current[0]["candidate_id"] == "C02"
+    assert current[0]["candidate_id"] == "C01"
     assert current[0]["quality_score"] == 91
     assert current[0]["judge_provider"] == "openai-codex"
     assert current[0]["vision_evidence"]["response_id"] == "resp_story_video_judge"
     rejected = [row for row in manifest["outputs"] if not row["selected"]]
-    assert [row["status"] for row in rejected] == ["rejected"]
+    assert rejected == []
     assert not (context.project_dir / "manifests" / "shot_candidate_manifest.json.tmp").exists()
+
+
+def test_judge_rejects_multiple_candidates_in_one_round_to_protect_quota(tmp_path) -> None:
+    store, context, _shot = _context(tmp_path)
+    llm = FakeLlm([])
+
+    payload = json.loads(
+        story_video_quality_control(
+            {
+                "action": "judge_candidates",
+                "shot_id": "S00_SH00",
+                "candidates": [_candidate(context, "C01"), _candidate(context, "C02")],
+                "repair_round": 1,
+            },
+            session_id="session-1",
+            store=store,
+            llm=llm,
+        )
+    )
+
+    assert payload["success"] is False
+    assert payload["error_type"] == "story_video_single_candidate_required"
+    assert llm.calls == []
 
 
 def test_judge_blocks_below_threshold_without_promoting_least_bad_candidate(tmp_path) -> None:

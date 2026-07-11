@@ -149,6 +149,8 @@ def _compile_prompt(
         "prompt": prompt,
         "prompt_path": _relative(context, prompt_path),
         "candidate_budget": candidate_budget_for_shot(shot),
+        "generation_policy": "qc_driven_selective_regeneration",
+        "max_repair_rounds": MAX_REPAIR_ROUNDS,
         "quality_threshold": QUALITY_THRESHOLD,
     }
 
@@ -196,6 +198,15 @@ def _judge_candidates(
             "success": False,
             "error_type": "story_video_candidates_missing",
             "error": "judge_candidates requires at least one candidate",
+        }
+    if len(candidates) != 1:
+        return {
+            "success": False,
+            "error_type": "story_video_single_candidate_required",
+            "error": (
+                "Submit exactly one image per QC round; regenerate only after "
+                "a shot is marked repair_required."
+            ),
         }
     ledger, scene, shot = _find_shot(context, shot_id)
     candidate_rows: list[dict[str, Any]] = []

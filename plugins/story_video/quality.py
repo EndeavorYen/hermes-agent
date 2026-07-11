@@ -182,12 +182,8 @@ def validate_quality_ledger(ledger: dict[str, Any]) -> LedgerQualityReport:
 
 
 def candidate_budget_for_shot(shot: dict[str, Any]) -> int:
-    risk = _text(shot.get("risk_class")).lower()
-    if risk in {"high", "hero", "key_evidence", "character", "anatomy"}:
-        return 3
-    if risk in {"low", "transition", "background"}:
-        return 1
-    return 2
+    # Prompt precision and QC-driven repair replace speculative candidate batches.
+    return 1
 
 
 def _scale_instruction(scale: str) -> str:
