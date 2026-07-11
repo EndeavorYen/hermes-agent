@@ -16,6 +16,11 @@ ZERO_SHA = "0" * 40
 LOCAL_SHA = "a" * 40
 
 
+def pre_push_line(local_ref: str, local_sha: str, remote_ref: str, remote_sha: str) -> str:
+    """Build Git's documented pre-push protocol line."""
+    return f"{local_ref} {local_sha} {remote_ref} {remote_sha}\n"
+
+
 def run_guard(
     *args: str,
     stdin: str = "",
@@ -77,7 +82,9 @@ class PrePushPolicyTests(unittest.TestCase):
             "pre-push",
             "origin",
             "https://github.com/EndeavorYen/hermes-agent.git",
-            stdin=f"{LOCAL_SHA} refs/heads/local/main {ZERO_SHA} refs/heads/local/main\n",
+            stdin=pre_push_line(
+                "refs/heads/local/main", LOCAL_SHA, "refs/heads/local/main", ZERO_SHA
+            ),
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -87,7 +94,7 @@ class PrePushPolicyTests(unittest.TestCase):
             "pre-push",
             "origin",
             "https://github.com/EndeavorYen/hermes-agent.git",
-            stdin=f"{LOCAL_SHA} refs/heads/main {'b' * 40} refs/heads/main\n",
+            stdin=pre_push_line("refs/heads/main", LOCAL_SHA, "refs/heads/main", "b" * 40),
             env={"HERMES_GOVERNANCE_ALLOW_MIRROR_SYNC": "1"},
         )
 
@@ -98,7 +105,7 @@ class PrePushPolicyTests(unittest.TestCase):
             "pre-push",
             "origin",
             "https://github.com/EndeavorYen/hermes-agent.git",
-            stdin=f"{LOCAL_SHA} refs/heads/main {'b' * 40} refs/heads/main\n",
+            stdin=pre_push_line("refs/heads/main", LOCAL_SHA, "refs/heads/main", "b" * 40),
         )
 
         self.assertNotEqual(result.returncode, 0)
@@ -110,7 +117,7 @@ class PrePushPolicyTests(unittest.TestCase):
             "pre-push",
             "origin",
             "https://github.com/EndeavorYen/hermes-agent.git",
-            stdin=f"{LOCAL_SHA} {tag_ref} {ZERO_SHA} {tag_ref}\n",
+            stdin=pre_push_line(tag_ref, LOCAL_SHA, tag_ref, ZERO_SHA),
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -121,13 +128,13 @@ class PrePushPolicyTests(unittest.TestCase):
             "pre-push",
             "origin",
             "https://github.com/EndeavorYen/hermes-agent.git",
-            stdin=f"{LOCAL_SHA} {tag_ref} {'b' * 40} {tag_ref}\n",
+            stdin=pre_push_line(tag_ref, LOCAL_SHA, tag_ref, "b" * 40),
         )
         deletion = run_guard(
             "pre-push",
             "origin",
             "https://github.com/EndeavorYen/hermes-agent.git",
-            stdin=f"{ZERO_SHA} (delete) {LOCAL_SHA} {tag_ref}\n",
+            stdin=pre_push_line("(delete)", ZERO_SHA, tag_ref, LOCAL_SHA),
         )
 
         self.assertNotEqual(rewrite.returncode, 0)
@@ -142,13 +149,13 @@ class PrePushPolicyTests(unittest.TestCase):
             "pre-push",
             "origin",
             "https://github.com/EndeavorYen/hermes-agent.git",
-            stdin=f"{LOCAL_SHA} {release_tag_ref} {ZERO_SHA} {release_tag_ref}\n",
+            stdin=pre_push_line(release_tag_ref, LOCAL_SHA, release_tag_ref, ZERO_SHA),
         )
         upstream = run_guard(
             "pre-push",
             "upstream",
             "https://github.com/NousResearch/hermes-agent.git",
-            stdin=f"{LOCAL_SHA} {archive_tag_ref} {ZERO_SHA} {archive_tag_ref}\n",
+            stdin=pre_push_line(archive_tag_ref, LOCAL_SHA, archive_tag_ref, ZERO_SHA),
         )
 
         self.assertNotEqual(invalid_name.returncode, 0)
@@ -161,7 +168,12 @@ class PrePushPolicyTests(unittest.TestCase):
             "pre-push",
             "upstream",
             "https://github.com/NousResearch/hermes-agent.git",
-            stdin=f"{LOCAL_SHA} refs/heads/upstream/fix/xai/error-classification {ZERO_SHA} refs/heads/main\n",
+            stdin=pre_push_line(
+                "refs/heads/upstream/fix/xai/error-classification",
+                LOCAL_SHA,
+                "refs/heads/main",
+                ZERO_SHA,
+            ),
         )
 
         self.assertNotEqual(result.returncode, 0)
@@ -172,7 +184,9 @@ class PrePushPolicyTests(unittest.TestCase):
             "pre-push",
             "origin",
             "https://github.com/EndeavorYen/hermes-agent.git",
-            stdin=f"{LOCAL_SHA} refs/heads/wip/story-video {ZERO_SHA} refs/heads/wip/story-video\n",
+            stdin=pre_push_line(
+                "refs/heads/wip/story-video", LOCAL_SHA, "refs/heads/wip/story-video", ZERO_SHA
+            ),
         )
 
         self.assertNotEqual(result.returncode, 0)
