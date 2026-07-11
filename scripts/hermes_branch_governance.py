@@ -95,12 +95,12 @@ def is_fast_forward(remote_sha: str, local_sha: str) -> bool:
 
 def validate_push(
     remote_name: str,
-    local_sha: str,
     local_ref: str,
-    remote_sha: str,
+    local_sha: str,
     remote_ref: str,
+    remote_sha: str,
 ) -> str | None:
-    """Return an error for one pre-push update, otherwise ``None``."""
+    """Return an error for one Git pre-push protocol update, otherwise ``None``."""
     local_branch = branch_from_ref(local_ref)
     remote_branch = branch_from_ref(remote_ref)
     local_tag = tag_from_ref(local_ref)
