@@ -1,3 +1,6 @@
 #!/bin/sh
-# Repository-local guard.  Enable with: git config core.hooksPath .githooks
-exec python3 scripts/hermes_branch_governance.py pre-push "$@"
+# Shared-repository guard.  Resolve through the common Git directory so a
+# linked worktree cannot bypass policy merely because it lacks the script.
+COMMON_DIR=$(git rev-parse --git-common-dir) || exit 1
+REPO_ROOT=$(cd "$COMMON_DIR/.." && pwd -P) || exit 1
+exec python3 "$REPO_ROOT/scripts/hermes_branch_governance.py" pre-push "$@"
