@@ -4,6 +4,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
+import json
+import re
 from typing import Any
 
 
@@ -15,6 +17,24 @@ TRUSTED_PROOF_TOOLS = {
     "run_command",
     "hermes_cli",
 }
+
+_STRUCTURED_EVIDENCE_SOURCES_BY_TOOL = {
+    "visual_agent_generate": frozenset({"visual_agent_handoff"}),
+}
+_STRUCTURED_EVIDENCE_FIELDS = (
+    "evidence_id",
+    "mission_id",
+    "turn_id",
+    "proof_type",
+    "source",
+    "status",
+    "command",
+    "artifact_id",
+    "provider",
+    "observed_at",
+    "payload_digest",
+)
+_SHA256_DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
 
 _CLAIM_PROOFS: dict[str, tuple[str, ...]] = {
     "runtime": ("runtime_smoke_when_live_wiring",),
@@ -319,6 +339,113 @@ def extract_raphael_proof_events(
     return tuple(events)
 
 
+def extract_raphael_evidence_events(
+    messages: Sequence[Mapping[str, Any]] | None,
+    *,
+    turn_id: str = "",
+    mission_id: str = "",
+) -> tuple[RaphaelEvidenceEvent, ...]:
+    """Extract validated structured proof from allowlisted production tools."""
+    tool_call_names = _tool_call_name_map(messages)
+    events: list[RaphaelEvidenceEvent] = []
+    for message in messages or ():
+        if not isinstance(message, Mapping) or message.get("role") != "tool":
+            continue
+        tool_name = str(message.get("name") or message.get("tool_name") or "").lower()
+        if not tool_name:
+            tool_name = tool_call_names.get(str(message.get("tool_call_id") or ""), "")
+        allowed_sources = _STRUCTURED_EVIDENCE_SOURCES_BY_TOOL.get(tool_name)
+        if not allowed_sources:
+            continue
+        parsed = _parse_structured_tool_content(message.get("content"))
+        if parsed is None:
+            continue
+        for candidate in _structured_evidence_candidates(parsed):
+            event = _validated_evidence_event(
+                candidate,
+                tool_name=tool_name,
+                allowed_sources=allowed_sources,
+                turn_id=str(turn_id or ""),
+                mission_id=str(mission_id or ""),
+            )
+            if event is not None:
+                events.append(event)
+    return tuple(events)
+
+
+def _parse_structured_tool_content(value: Any) -> Any | None:
+    if isinstance(value, (Mapping, list)):
+        return value
+    if not isinstance(value, str) or not value.lstrip().startswith(("{", "[")):
+        return None
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _structured_evidence_candidates(value: Any) -> tuple[Mapping[str, Any], ...]:
+    candidates: list[Mapping[str, Any]] = []
+    if isinstance(value, Mapping):
+        raw_events = value.get("evidence_events")
+        if isinstance(raw_events, list):
+            candidates.extend(item for item in raw_events if isinstance(item, Mapping))
+        for key, nested in value.items():
+            if key in {"prompt", "raw_prompt", "content", "evidence_events"}:
+                continue
+            candidates.extend(_structured_evidence_candidates(nested))
+    elif isinstance(value, list):
+        for nested in value:
+            candidates.extend(_structured_evidence_candidates(nested))
+    return tuple(candidates)
+
+
+def _validated_evidence_event(
+    candidate: Mapping[str, Any],
+    *,
+    tool_name: str,
+    allowed_sources: frozenset[str],
+    turn_id: str,
+    mission_id: str,
+) -> RaphaelEvidenceEvent | None:
+    if any(not isinstance(candidate.get(field), str) for field in _STRUCTURED_EVIDENCE_FIELDS):
+        return None
+    values = {field: str(candidate[field]).strip() for field in _STRUCTURED_EVIDENCE_FIELDS}
+    if any(not values[field] for field in _STRUCTURED_EVIDENCE_FIELDS):
+        return None
+    if values["status"] != "passed" or values["source"] not in allowed_sources:
+        return None
+    if values["command"] != tool_name:
+        return None
+    if turn_id and values["turn_id"] != turn_id:
+        return None
+    if mission_id and values["mission_id"] != mission_id:
+        return None
+    if _SHA256_DIGEST_RE.fullmatch(values["payload_digest"]) is None:
+        return None
+    try:
+        observed_at = datetime.fromisoformat(values["observed_at"].replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if observed_at.tzinfo is None:
+        return None
+    rebuilt = build_raphael_evidence_event(
+        mission_id=values["mission_id"],
+        turn_id=values["turn_id"],
+        proof_type=values["proof_type"],
+        source=values["source"],
+        status=values["status"],
+        command=values["command"],
+        artifact_id=values["artifact_id"],
+        provider=values["provider"],
+        payload_digest=values["payload_digest"],
+        observed_at=values["observed_at"],
+    )
+    if values["evidence_id"] != rebuilt.evidence_id:
+        return None
+    return rebuilt
+
+
 def raphael_has_required_proof(
     messages: Sequence[Mapping[str, Any]] | None,
     required_proofs: Sequence[str],
@@ -499,11 +626,13 @@ def _first_line(value: str) -> str:
 
 
 __all__ = [
+    "RaphaelEvidenceEvent",
     "RaphaelProofEvent",
     "RaphaelProofGateResult",
     "RaphaelSelfReview",
     "claim_kind_from_text",
     "evaluate_raphael_proof_gate",
+    "extract_raphael_evidence_events",
     "extract_raphael_proof_events",
     "raphael_has_required_proof",
     "render_proof_gate_user_message",

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-import json
 from typing import Any
 
-from agent.raphael.proof import extract_raphael_proof_events
+from agent.raphael.proof import (
+    extract_raphael_evidence_events,
+    extract_raphael_proof_events,
+)
 
 
 @dataclass(frozen=True)
@@ -52,7 +54,7 @@ def enforce_raphael_completion(
         for item in evidence.get("required_proofs", ())
         if str(item).strip()
     )
-    available = _available_proofs(messages)
+    available = _available_proofs(messages, decision=decision)
     missing = tuple(proof for proof in required if proof not in available)
     completion_policy = str(decision.get("completion_policy") or "informational")
     next_action = str(decision.get("next_action") or "collect required proof")
@@ -92,39 +94,24 @@ def replace_terminal_assistant_response(
 
 def _available_proofs(
     messages: Sequence[Mapping[str, Any]] | None,
+    *,
+    decision: Mapping[str, Any],
 ) -> tuple[str, ...]:
     available = {
         event.proof_type
         for event in extract_raphael_proof_events(messages)
         if event.success
     }
-    for message in messages or ():
-        if not isinstance(message, Mapping):
-            continue
-        _collect_structured_proofs(message, available)
-        content = message.get("content")
-        if not isinstance(content, str) or not content.lstrip().startswith(("{", "[")):
-            continue
-        try:
-            parsed = json.loads(content)
-        except (TypeError, ValueError):
-            continue
-        _collect_structured_proofs(parsed, available)
+    available.update(
+        event.proof_type
+        for event in extract_raphael_evidence_events(
+            messages,
+            turn_id=str(decision.get("turn_id") or ""),
+            mission_id=str(decision.get("mission_id") or ""),
+        )
+        if event.status == "passed"
+    )
     return tuple(sorted(available))
-
-
-def _collect_structured_proofs(value: Any, available: set[str]) -> None:
-    if isinstance(value, Mapping):
-        proof_type = str(value.get("proof_type") or "")
-        if proof_type and str(value.get("status") or "") == "passed":
-            available.add(proof_type)
-        for key, nested in value.items():
-            if key in {"prompt", "raw_prompt", "content"}:
-                continue
-            _collect_structured_proofs(nested, available)
-    elif isinstance(value, list):
-        for nested in value:
-            _collect_structured_proofs(nested, available)
 
 
 def _claims_completion(response: str) -> bool:
