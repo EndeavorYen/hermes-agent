@@ -688,6 +688,7 @@ def record_evolution_action_proposal(
                 action_proposals=(proposal, *state.action_proposals),
                 updated_at=datetime.now(timezone.utc),
                 active_mission=state.active_mission,
+                last_decision=state.last_decision,
             )
         )
     return proposal

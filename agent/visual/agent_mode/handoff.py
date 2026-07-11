@@ -39,6 +39,8 @@ def build_direct_visual_agent_handoff(
     agent: Any,
     user_message: Any,
     original_user_message: Any = None,
+    *,
+    raphael_decision: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Return a direct pre-LLM visual-agent handoff plan when it is safe.
 
@@ -88,8 +90,12 @@ def build_direct_visual_agent_handoff(
     )
     if not plan.get("should_use_visual_package"):
         return None
-    raphael_control: dict[str, Any] | None = None
-    if _raphael_handoff_control_enabled():
+    raphael_control = (
+        dict(raphael_decision)
+        if isinstance(raphael_decision, dict) and raphael_decision
+        else None
+    )
+    if raphael_control is None and _raphael_handoff_control_enabled():
         try:
             from agent.raphael.control import build_raphael_control_decision
 

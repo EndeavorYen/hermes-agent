@@ -473,11 +473,14 @@ class RaphaelState:
     action_proposals: tuple[ActionProposal, ...]
     updated_at: datetime
     active_mission: RaphaelMission | None = None
+    last_decision: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "status_cards", tuple(self.status_cards))
         object.__setattr__(self, "action_proposals", tuple(self.action_proposals))
         object.__setattr__(self, "updated_at", _ensure_utc(self.updated_at))
+        if self.last_decision is not None:
+            object.__setattr__(self, "last_decision", dict(self.last_decision))
 
     @classmethod
     def empty(cls) -> RaphaelState:
@@ -494,6 +497,8 @@ class RaphaelState:
         }
         if self.active_mission is not None:
             payload["active_mission"] = self.active_mission.to_dict()
+        if self.last_decision is not None:
+            payload["last_decision"] = dict(self.last_decision)
         return payload
 
     @classmethod
@@ -514,6 +519,11 @@ class RaphaelState:
                 None
                 if active_mission is None
                 else RaphaelMission.from_dict(active_mission)
+            ),
+            last_decision=(
+                dict(payload["last_decision"])
+                if isinstance(payload.get("last_decision"), Mapping)
+                else None
             ),
         )
 

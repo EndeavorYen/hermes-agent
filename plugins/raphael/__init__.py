@@ -139,6 +139,7 @@ def handle_pre_llm_call(
         conversation_history=conversation_history,
         turn_origin=turn_origin,
         runtime_contract=runtime_contract,
+        include_control_context=False,
     )
     if not context:
         return None

@@ -207,6 +207,7 @@ def resolve_action_proposal(
                 action_proposals=tuple(updated_proposals),
                 updated_at=resolved_at,
                 active_mission=state.active_mission,
+                last_decision=state.last_decision,
             )
         )
     append_event(
@@ -309,6 +310,7 @@ def read_active_mission() -> RaphaelMission | None:
                 action_proposals=state.action_proposals,
                 updated_at=mission.updated_at,
                 active_mission=mission,
+                last_decision=state.last_decision,
             )
         )
         path = get_raphael_mission_path()
@@ -346,6 +348,7 @@ def write_active_mission(
                 action_proposals=state.action_proposals,
                 updated_at=updated_at,
                 active_mission=mission,
+                last_decision=state.last_decision,
             )
         )
         legacy_path = get_raphael_mission_path()
@@ -415,6 +418,38 @@ def read_mission_state() -> RaphaelMissionState | None:
 def write_mission_state(mission: RaphaelMissionState | None) -> None:
     active = None if mission is None else _mission_from_legacy_state(mission)
     write_active_mission(active)
+
+
+def record_turn_decision(decision: Mapping[str, Any]) -> None:
+    now = _utc_now()
+    sanitized = redact_trace_payload(dict(decision), max_string_length=500)
+    if not isinstance(sanitized, Mapping):
+        raise ValueError("Raphael turn decision must serialize to a mapping")
+    safe_decision = dict(sanitized)
+    with raphael_state_lock():
+        state = read_state()
+        write_state(
+            RaphaelState(
+                status_cards=state.status_cards,
+                action_proposals=state.action_proposals,
+                updated_at=now,
+                active_mission=state.active_mission,
+                last_decision=safe_decision,
+            )
+        )
+    append_event(
+        RaphaelEvent(
+            event_id=f"turn-decision-{str(safe_decision.get('turn_id') or 'unknown')}",
+            kind="turn_decision",
+            created_at=now,
+            details={
+                "turn_id": safe_decision.get("turn_id"),
+                "mission_id": safe_decision.get("mission_id"),
+                "mode": safe_decision.get("mode"),
+                "completion_policy": safe_decision.get("completion_policy"),
+            },
+        )
+    )
 
 
 def record_control_decision(
@@ -499,6 +534,7 @@ def record_control_decision(
                 action_proposals=state.action_proposals,
                 updated_at=now,
                 active_mission=state.active_mission,
+                last_decision=state.last_decision,
             )
         )
     append_event(
@@ -536,6 +572,7 @@ __all__ = [
     "read_state",
     "raphael_state_lock",
     "record_control_decision",
+    "record_turn_decision",
     "resolve_action_proposal",
     "write_mission_state",
     "write_active_mission",

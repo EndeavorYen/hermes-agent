@@ -211,6 +211,47 @@ def test_direct_visual_handoff_attaches_raphael_control_metadata(tmp_path, monke
     assert "artifact_quality_evidence" in control["evidence"]["required_proofs"]
 
 
+def test_direct_visual_handoff_reuses_canonical_decision_without_recomputing(
+    monkeypatch,
+):
+    from agent.raphael.control import build_raphael_control_decision
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.6-terra",
+    )
+    control = build_raphael_control_decision("請產出一張圖片").to_dict()
+    canonical = {
+        "turn_id": "turn-canonical",
+        "mode": control["mode"],
+        "goal": control["goal"],
+        "route": control["route"],
+        "evidence": control["evidence"],
+        "next_action": control["next_action"],
+        "reference_resolution": control["reference_resolution"],
+        "clarification_question": control["clarification_question"],
+        "confidence": control["confidence"],
+    }
+
+    monkeypatch.setattr(
+        "agent.raphael.control.build_raphael_control_decision",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("control decision recomputed")
+        ),
+    )
+
+    handoff = build_direct_visual_agent_handoff(
+        agent,
+        "請產出一張圖片",
+        raphael_decision=canonical,
+    )
+
+    assert handoff is not None
+    assert handoff["raphael_control"]["turn_id"] == "turn-canonical"
+
+
 def test_direct_visual_handoff_fails_closed_when_raphael_evidence_is_missing(
     tmp_path, monkeypatch
 ):

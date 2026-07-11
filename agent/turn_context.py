@@ -118,6 +118,8 @@ class TurnContext:
     raphael_origin: str = "foreground"
     # Privacy-safe snapshot of the provider/model contract effective for this turn.
     raphael_runtime_contract: Dict[str, Any] = field(default_factory=dict)
+    # Canonical foreground decision consumed by execution and finalization.
+    raphael_decision: Dict[str, Any] = field(default_factory=dict)
 
 
 def build_turn_context(
@@ -545,6 +547,30 @@ def build_turn_context(
     except Exception as exc:
         logger.warning("pre_llm_call hook failed: %s", exc)
 
+    raphael_decision: Dict[str, Any] = {}
+    try:
+        from agent.raphael.kernel import (
+            prepare_raphael_turn,
+            render_raphael_turn_decision_context,
+        )
+
+        _decision = prepare_raphael_turn(
+            turn_id=turn_id,
+            origin=_raphael_origin,
+            runtime_contract=_raphael_runtime_contract,
+            config=_raphael_config,
+            user_message=original_user_message,
+            conversation_history=list(messages),
+        )
+        if _decision is not None:
+            raphael_decision = _decision.to_dict()
+            _decision_context = render_raphael_turn_decision_context(_decision)
+            plugin_user_context = "\n\n".join(
+                part for part in (plugin_user_context, _decision_context) if part
+            )
+    except Exception as exc:
+        logger.warning("Raphael turn decision preparation failed: %s", exc)
+
     # Per-turn file-mutation verifier state.
     agent._turn_failed_file_mutations = {}
     agent._turn_file_mutation_paths = set()
@@ -595,4 +621,5 @@ def build_turn_context(
         ext_prefetch_cache=ext_prefetch_cache,
         raphael_origin=_raphael_origin,
         raphael_runtime_contract=_raphael_runtime_contract,
+        raphael_decision=raphael_decision,
     )

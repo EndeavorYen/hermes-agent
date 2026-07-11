@@ -405,6 +405,7 @@ def build_raphael_observation_context(
     conversation_history: Sequence[Mapping[str, Any]] | None = None,
     turn_origin: str = "foreground",
     runtime_contract: Mapping[str, Any] | None = None,
+    include_control_context: bool = True,
 ) -> str:
     if not should_inject_raphael_observation(config):
         return ""
@@ -497,6 +498,8 @@ def build_raphael_observation_context(
         blocks.append(auto_portrait_gate)
     if status_portrait_tool_call:
         blocks.append(status_portrait_tool_call)
+    if not include_control_context:
+        return "\n\n".join(blocks)
     try:
         from agent.raphael.control import (
             build_raphael_control_decision,

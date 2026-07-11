@@ -198,6 +198,7 @@ def test_pre_llm_hook_forwards_turn_origin_and_runtime_contract(monkeypatch):
     assert result == {"context": "raphael-context"}
     assert captured["turn_origin"] == "background_review"
     assert captured["runtime_contract"]["base_model"] == "gpt-5.6-terra"
+    assert captured["include_control_context"] is False
 
 
 def test_raphael_manifest_declares_public_slash_commands(monkeypatch, tmp_path):
