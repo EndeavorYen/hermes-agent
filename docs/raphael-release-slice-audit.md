@@ -102,3 +102,14 @@ OpenAI image-only media slice: `ready_for_limited_media_public_release` with sco
 Full media Raphael was not ready in the archived snapshot; recorded gaps were `xai_grok_generation` and `video_generation`.
 
 Public wording must stay limited to the fresh gate state, scope, and explicit exclusions; do not use percentage estimates or this Markdown as release evidence.
+
+## Production Acceptance Gate
+
+`scripts/raphael_production_path_acceptance.py` is the final machine-readable
+gate. Its quota-free production replay covers conversation, tool task, visual
+routing, same-artifact follow-up, provider failure classification, missing
+proof, background isolation, and Codex transport parity. A passing report also
+requires tests, static checks, diff hygiene, truthful runtime routing, an
+isolated feature smoke, and Codex plus independent Grok reviews for the exact
+feature head. The PR target gate rejects `main` even when the remote reports it
+as default; publication waits for a verified non-`main` remote default branch.
