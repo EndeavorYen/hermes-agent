@@ -90,6 +90,85 @@ class TestAvailability:
         assert codex_plugin.OpenAICodexImageGenProvider().is_available() is False
 
 
+class TestCodexAppServerTokenFallback:
+    @staticmethod
+    def _write_cli_auth(tmp_path, token: str) -> None:
+        import json
+
+        codex_home = tmp_path / "codex-home"
+        codex_home.mkdir()
+        (codex_home / "auth.json").write_text(
+            json.dumps(
+                {
+                    "auth_mode": "chatgpt",
+                    "tokens": {
+                        "access_token": token,
+                        "refresh_token": "must-not-be-read-or-mutated",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_app_server_mode_can_read_codex_cli_access_token_read_only(
+        self, tmp_path, monkeypatch
+    ):
+        import base64
+        import json
+        import time
+
+        payload = base64.urlsafe_b64encode(
+            json.dumps({"exp": int(time.time()) + 3600}).encode()
+        ).decode().rstrip("=")
+        token = f"header.{payload}.sig"
+        self._write_cli_auth(tmp_path, token)
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_codex_access_token", lambda: None
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"model": {"openai_runtime": "codex_app_server"}},
+        )
+
+        assert codex_plugin._read_codex_access_token() == token
+
+    def test_cli_token_fallback_is_disabled_outside_app_server_mode(
+        self, tmp_path, monkeypatch
+    ):
+        self._write_cli_auth(tmp_path, "cli-token")
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_codex_access_token", lambda: None
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"model": {"openai_runtime": "auto"}},
+        )
+
+        assert codex_plugin._read_codex_access_token() is None
+
+    def test_expired_cli_token_is_rejected(self, tmp_path, monkeypatch):
+        import base64
+        import json
+        import time
+
+        payload = base64.urlsafe_b64encode(
+            json.dumps({"exp": int(time.time()) - 60}).encode()
+        ).decode().rstrip("=")
+        self._write_cli_auth(tmp_path, f"header.{payload}.sig")
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_codex_access_token", lambda: None
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"model": {"openai_runtime": "codex_app_server"}},
+        )
+
+        assert codex_plugin._read_codex_access_token() is None
+
+
 # ── Generate ────────────────────────────────────────────────────────────────
 
 
