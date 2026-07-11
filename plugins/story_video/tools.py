@@ -45,6 +45,7 @@ def _validate_planning(context: StoryVideoRunContext) -> PhaseProof:
         "scene_ledger.json",
         "production_checklist.json",
         "script_quality_report.json",
+        "pronunciation_lexicon.json",
     )
     missing = tuple(
         name for name in required if not _nonempty(context.project_dir / name)
@@ -55,6 +56,7 @@ def _validate_planning(context: StoryVideoRunContext) -> PhaseProof:
         "scene_ledger.json",
         "production_checklist.json",
         "script_quality_report.json",
+        "pronunciation_lexicon.json",
     ):
         path = context.project_dir / name
         if name in missing:
@@ -84,6 +86,19 @@ def _validate_planning(context: StoryVideoRunContext) -> PhaseProof:
             str(checks.get(name) or "").upper() != "PASS" for name in required_checks
         ):
             violations.append("script_quality_report required checks are not PASS")
+    pronunciation = parsed.get("pronunciation_lexicon.json")
+    if isinstance(pronunciation, dict):
+        if (
+            str(pronunciation.get("schema") or "")
+            != "story_video_pronunciation_lexicon_v1"
+        ):
+            violations.append("pronunciation_lexicon schema is invalid")
+        if str(pronunciation.get("language") or "") != "zh-TW":
+            violations.append("pronunciation_lexicon language is not zh-TW")
+        if str(pronunciation.get("review_status") or "").upper() != "PASS":
+            violations.append("pronunciation_lexicon review_status is not PASS")
+        if not isinstance(pronunciation.get("entries"), list):
+            violations.append("pronunciation_lexicon entries are not a list")
     return PhaseProof(
         phase="planning",
         ok=not missing and not violations,
@@ -285,6 +300,20 @@ def _validate_voice(context: StoryVideoRunContext) -> PhaseProof:
                 profile_path = context.project_dir / profile_path
             if not _nonempty(profile_path):
                 missing.append("local Qwen narration voice_profile_file")
+        pronunciation_path = context.project_dir / "qc" / "pronunciation_qc_report.json"
+        pronunciation_report = _load_json(pronunciation_path)
+        if not isinstance(pronunciation_report, dict):
+            missing.append("qc/pronunciation_qc_report.json")
+        else:
+            if (
+                str(pronunciation_report.get("schema") or "")
+                != "story_video_pronunciation_qc_v1"
+            ):
+                violations.append("local Qwen pronunciation QC schema is invalid")
+            if str(pronunciation_report.get("status") or "").upper() != "PASS":
+                violations.append("local Qwen pronunciation QC is not PASS")
+        if str(manifest.get("pronunciation_status") or "").upper() != "PASS":
+            violations.append("local Qwen narration pronunciation status is not PASS")
     if str(manifest.get("language") or "") != "zh-TW":
         violations.append("production narration language is not zh-TW")
     if str(manifest.get("profile_status") or "") != "locked_by_user":
@@ -304,6 +333,15 @@ def _validate_voice(context: StoryVideoRunContext) -> PhaseProof:
             if not isinstance(output, dict):
                 missing.append(f"audio narration segment[{index}]")
                 continue
+            if provider == "local-qwen":
+                if not str(output.get("display_text") or "").strip():
+                    missing.append(f"audio narration segment[{index}].display_text")
+                if not str(output.get("spoken_text") or "").strip():
+                    missing.append(f"audio narration segment[{index}].spoken_text")
+                if str(output.get("pronunciation_status") or "").upper() != "PASS":
+                    violations.append(
+                        f"audio narration segment[{index}] pronunciation is not PASS"
+                    )
             audio = str(output.get("audio") or "").strip()
             if not audio:
                 missing.append(f"audio narration segment[{index}].audio")
