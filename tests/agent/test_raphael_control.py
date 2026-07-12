@@ -55,6 +55,27 @@ def test_control_recognizes_structured_story_video_runtime_context():
     assert decision.next_action == "continue_story_video_workflow"
 
 
+def test_control_preserves_story_video_ownership_for_phase_repair_followup():
+    decision = build_raphael_control_decision(
+        "修正：補齊 planning：acceptance_criteria；仍然不要產生圖片、語音或影片。",
+        conversation_history=[
+            {
+                "role": "user",
+                "content": "故事影片：三疊紀發音測試｜30秒｜真實照片。只規劃。",
+            },
+            {
+                "role": "assistant",
+                "content": "STORY_VIDEO_PHASE_PROOF: planning BLOCKED",
+            },
+        ],
+    )
+
+    assert decision.mode == "general_conversation"
+    assert decision.goal.target_artifact == "story_video_workflow"
+    assert decision.route.handoff_tool is None
+    assert decision.next_action == "continue_story_video_workflow"
+
+
 def test_control_keeps_story_video_plugin_bug_report_as_tool_task():
     decision = build_raphael_control_decision(
         "請修復 story-video plugin 的 routing bug 並執行測試。"

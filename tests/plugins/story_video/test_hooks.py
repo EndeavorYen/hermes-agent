@@ -246,6 +246,7 @@ def test_pre_llm_creates_context_and_injects_provider_policy(tmp_path, monkeypat
     assert "scene.shots array" in result["context"]
     assert "### S00" in result["context"]
     assert "never write spoken aliases into script.md" in result["context"]
+    assert "acceptance_criteria MUST be a non-empty JSON array of strings" in result["context"]
     assert "40-60" in result["context"]
 
 
