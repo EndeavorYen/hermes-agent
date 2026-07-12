@@ -26,15 +26,20 @@ STORY_VIDEO_QUALITY_CONTROL_SCHEMA = {
     "name": "story_video_quality_control",
     "description": (
         "Compile shot-specific source-art prompts, judge OpenAI image candidates "
-        "with the OpenAI vision quality gate, or inspect shot selection status "
-        "for the active story-video project."
+        "with the OpenAI vision quality gate, prepare deterministic renderer input, "
+        "or inspect shot selection status for the active story-video project."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["compile_prompt", "judge_candidates", "status"],
+                "enum": [
+                    "compile_prompt",
+                    "judge_candidates",
+                    "prepare_render",
+                    "status",
+                ],
             },
             "shot_id": {
                 "type": "string",
