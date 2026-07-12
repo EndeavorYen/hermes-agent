@@ -446,6 +446,9 @@ def run_codex_app_server_turn(
                 auto_approve_exec=auto_approve_requests,
                 auto_approve_apply_patch=auto_approve_requests,
             ),
+            subprocess_env={
+                "HERMES_SESSION_ID": str(agent.session_id or ""),
+            },
             on_event=_on_codex_event,
         )
 

@@ -112,6 +112,7 @@ def test_codex_runtime_honors_explicit_binary(monkeypatch):
 
     assert result["completed"] is True
     assert captured["codex_bin"] == "/opt/codex/current/bin/codex"
+    assert captured["subprocess_env"] == {"HERMES_SESSION_ID": "sess-codex"}
 
 
 def test_codex_runtime_makes_cron_threads_ephemeral(monkeypatch):

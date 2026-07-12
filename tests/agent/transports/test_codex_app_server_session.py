@@ -149,6 +149,24 @@ class TestLifecycle:
         method_calls = [m for (m, _) in client.requests if m == "thread/start"]
         assert len(method_calls) == 1
 
+    def test_forwards_explicit_subprocess_env_to_client(self):
+        captured = {}
+        client = FakeClient()
+
+        def factory(**kwargs):
+            captured.update(kwargs)
+            return client
+
+        session = CodexAppServerSession(
+            cwd="/tmp",
+            subprocess_env={"HERMES_SESSION_ID": "story-session-1"},
+            client_factory=factory,
+        )
+
+        session.ensure_started()
+
+        assert captured["env"] == {"HERMES_SESSION_ID": "story-session-1"}
+
     def test_thread_start_passes_cwd_only(self):
         """thread/start carries cwd. We intentionally do NOT pass `permissions`
         on this codex version (experimentalApi-gated + requires matching
