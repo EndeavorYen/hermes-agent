@@ -20,6 +20,8 @@ Scope (what we expose):
   - image_generate                       — image generation
   - skill_view, skills_list              — Hermes' skill library
   - text_to_speech                       — TTS
+  - story_video_control /                — stateful story-video phase proof
+    story_video_quality_control             and OpenAI vision selection
   - kanban_* (complete/block/comment/    — kanban worker + orchestrator
     heartbeat/show/list/create/            handoff (stateless: read env var,
     unblock/link)                          write ~/.hermes/kanban.db)
@@ -83,6 +85,8 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "skill_view",
     "skills_list",
     "text_to_speech",
+    "story_video_control",
+    "story_video_quality_control",
     # Kanban worker handoff tools — gated on HERMES_KANBAN_TASK env var
     # (set by the kanban dispatcher when spawning a worker). Without these
     # in the callback, a worker spawned with openai_runtime=codex_app_server
@@ -103,6 +107,23 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "kanban_unblock",
     "kanban_link",
 )
+
+
+def _dispatch_tool(
+    tool_name: str,
+    kwargs: dict[str, Any],
+    *,
+    handle_function_call: Any = None,
+) -> str:
+    if handle_function_call is None:
+        from model_tools import handle_function_call as dispatch
+    else:
+        dispatch = handle_function_call
+    return dispatch(
+        tool_name,
+        kwargs or {},
+        session_id=os.environ.get("HERMES_SESSION_ID") or None,
+    )
 
 
 def _build_server() -> Any:
@@ -162,7 +183,11 @@ def _build_server() -> Any:
         def _make_handler(tool_name: str):
             def _dispatch(**kwargs: Any) -> str:
                 try:
-                    return handle_function_call(tool_name, kwargs or {})
+                    return _dispatch_tool(
+                        tool_name,
+                        kwargs,
+                        handle_function_call=handle_function_call,
+                    )
                 except Exception as exc:
                     logger.exception("tool %s raised", tool_name)
                     return json.dumps({"error": str(exc), "tool": tool_name})
