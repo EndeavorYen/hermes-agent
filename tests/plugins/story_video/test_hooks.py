@@ -232,6 +232,15 @@ def test_pre_llm_creates_context_and_injects_provider_policy(tmp_path, monkeypat
     assert '"review_status": "PASS"' in result["context"]
     assert "high-risk spoken aliases MUST differ from display text" in result["context"]
     assert "三疊紀 -> 三碟紀" in result["context"]
+    assert "target_duration_sec" in result["context"]
+    assert "narration_text" in result["context"]
+    assert "camera_angle" in result["context"]
+    assert "subtitle_safe_area" in result["context"]
+    assert "establishing|wide|medium|close_up|macro|insert" in result["context"]
+    assert "8-12 shots per minute" in result["context"]
+    assert "story_video_script_quality_v1" in result["context"]
+    assert "quality_contract_version=2" in result["context"]
+    assert "checks MUST be an object" in result["context"]
     assert "40-60" in result["context"]
 
 
