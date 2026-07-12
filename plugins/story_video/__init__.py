@@ -27,5 +27,6 @@ def register(ctx) -> None:
         ("api_request_error", hooks.api_request_error),
         ("subagent_start", hooks.subagent_start),
         ("transform_llm_output", hooks.transform_llm_output),
+        ("auto_continue_llm_output", hooks.auto_continue_llm_output),
     ):
         ctx.register_hook(name, callback)

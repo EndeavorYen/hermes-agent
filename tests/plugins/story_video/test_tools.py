@@ -491,6 +491,38 @@ def test_keyframe_validation_requires_selected_openai_provenance(tmp_path) -> No
     assert passed.ok is True
 
 
+def test_keyframe_validation_rejects_noncanonical_nested_candidate_manifest(tmp_path) -> None:
+    store, context = _active_context(tmp_path)
+    context = store.update(context, phase="keyframes")
+    ledger = _write_planning_fixture(context)
+    shot = ledger["scenes"][0]["shots"][0]
+    manifest_path = context.project_dir / "manifests" / "shot_candidate_manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "provider": "openai-codex",
+                "judge_provider": "openai-codex",
+                "shots": [
+                    {
+                        "shot_id": shot["shot_id"],
+                        "candidates": [{"selected": True, "judge_score": 80}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert (
+        "shot candidate manifest must contain canonical outputs[] from "
+        "story_video_quality_control"
+    ) in proof.violations
+
+
 def test_keyframe_accepts_nonempty_openai_chat_completion_response_id(tmp_path) -> None:
     store, context = _active_context(tmp_path)
     context = store.update(context, phase="keyframes")

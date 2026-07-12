@@ -16,6 +16,24 @@ def test_parse_short_start_call_uses_operator_fields() -> None:
     assert call.topic == "恐龍起源"
     assert call.duration == "5分"
     assert call.visual_style == "真實照片"
+    assert call.auto_mode is False
+
+
+def test_planning_only_start_does_not_enable_autopilot() -> None:
+    call = parse_operator_call(
+        "故事影片：恐龍起源｜5分鐘｜真實照片。只規劃。"
+    )
+
+    assert call is not None
+    assert call.auto_mode is False
+
+
+def test_active_story_video_can_enable_autopilot_with_natural_command() -> None:
+    call = parse_operator_call("你幫我一直推進", has_active_project=True)
+
+    assert call is not None
+    assert call.action == "auto"
+    assert call.auto_mode is True
 
 
 def test_parse_short_start_ignores_planning_only_media_prohibition() -> None:
@@ -79,8 +97,36 @@ def test_state_store_persists_source_and_session_bindings(tmp_path) -> None:
     assert context.phase == "planning"
     assert context.next_call == "繼續"
     assert context.provider_policy["image"] == ["openai", "openai-codex"]
+    assert context.auto_mode is False
     assert "xai" in context.provider_policy["forbidden"]
     assert (context.project_dir / "story_video_run_context.json").exists()
+
+
+def test_existing_project_persists_autopilot_activation(tmp_path) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    start = parse_operator_call(
+        "故事影片：恐龍起源｜5分鐘｜真實照片。只規劃。"
+    )
+    assert start is not None
+    context = store.create_or_load(
+        source_key="source-1",
+        session_id="session-1",
+        call=start,
+        original_request="start",
+    )
+    assert context.auto_mode is False
+
+    auto = parse_operator_call("全自動", has_active_project=True)
+    assert auto is not None
+    context = store.create_or_load(
+        source_key="source-1",
+        session_id="session-1",
+        call=auto,
+        original_request="全自動",
+    )
+
+    assert context.auto_mode is True
+    assert store.for_session("session-1").auto_mode is True
 
 
 def test_existing_source_reloads_project_and_binds_new_session(tmp_path) -> None:

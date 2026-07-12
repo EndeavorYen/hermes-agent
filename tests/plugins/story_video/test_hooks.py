@@ -250,6 +250,63 @@ def test_pre_llm_creates_context_and_injects_provider_policy(tmp_path, monkeypat
     assert "40-60" in result["context"]
 
 
+def test_autopilot_context_requires_canonical_quality_tool_and_phase_loop(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    rewritten = hooks.pre_gateway_dispatch(
+        event=_event("故事影片：恐龍起源｜5分鐘｜真實照片。完整製作並出片。")
+    )
+
+    result = hooks.pre_llm_call(
+        session_id="session-auto",
+        user_message=rewritten["text"],
+    )
+
+    context = store.for_session("session-auto")
+    assert context is not None
+    assert context.auto_mode is True
+    assert "AUTOPILOT is enabled" in result["context"]
+    assert "story_video_quality_control" in result["context"]
+    assert "never edit shot_candidate_manifest.json manually" in result["context"]
+
+
+def test_autopilot_requests_internal_continuation_until_complete(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    start = hooks.pre_gateway_dispatch(
+        event=_event("故事影片：恐龍起源｜5分鐘｜真實照片。完整製作並出片。")
+    )
+    hooks.pre_llm_call(session_id="session-auto", user_message=start["text"])
+
+    continuation = hooks.auto_continue_llm_output(
+        session_id="session-auto",
+        response_text="STORY_VIDEO_PHASE_PROOF: planning PASS",
+    )
+
+    assert continuation["action"] == "continue"
+    assert "STORY_VIDEO_AUTOPILOT" in continuation["message"]
+
+
+def test_autopilot_stops_for_operator_setup_blocker(tmp_path, monkeypatch) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    start = hooks.pre_gateway_dispatch(
+        event=_event("故事影片：恐龍起源｜5分鐘｜真實照片。完整製作並出片。")
+    )
+    hooks.pre_llm_call(session_id="session-auto", user_message=start["text"])
+
+    continuation = hooks.auto_continue_llm_output(
+        session_id="session-auto",
+        response_text="OpenAI quota exhausted; setup required.",
+    )
+
+    assert continuation is None
+
+
 def test_pre_llm_creates_context_for_direct_cli_story_video_request(
     tmp_path, monkeypatch
 ) -> None:

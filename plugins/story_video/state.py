@@ -36,6 +36,44 @@ def _compact(text: str) -> str:
     return re.sub(r"\s+", " ", str(text or "").strip())
 
 
+def _planning_only_requested(text: str) -> bool:
+    compact = re.sub(r"\s+", "", str(text or "").casefold())
+    return any(
+        marker in compact
+        for marker in (
+            "只規劃",
+            "只规划",
+            "先不要產圖",
+            "先不要产图",
+            "先不要產生圖片",
+            "先不要生成图片",
+            "不要產生任何圖片",
+            "不要生成任何图片",
+            "不要產圖或產影片",
+            "不要产图或产影片",
+        )
+    )
+
+
+def _autopilot_command(text: str) -> bool:
+    compact = re.sub(r"\s+", "", str(text or "").casefold())
+    return any(
+        marker in compact
+        for marker in (
+            "全自動",
+            "全自动",
+            "自動完成",
+            "自动完成",
+            "一直推進",
+            "一直推进",
+            "直接做到結束",
+            "直接做到结束",
+            "完整製作並出片",
+            "完整制作并出片",
+        )
+    )
+
+
 def _split_fields(text: str) -> list[str]:
     return [part.strip() for part in re.split(r"[｜|，,]+", text) if part.strip()]
 
@@ -85,6 +123,9 @@ def _parse_explicit_long_form_start(text: str) -> OperatorCall | None:
         topic=topic or "未命名故事影片",
         duration=(duration_match.group(1).replace(" ", "") if duration_match else DEFAULT_DURATION),
         visual_style=(style_match.group(1).strip() if style_match else DEFAULT_STYLE),
+        auto_mode=(
+            _autopilot_command(text) and not _planning_only_requested(text)
+        ),
     )
 
 
@@ -95,6 +136,7 @@ class OperatorCall:
     duration: str = ""
     visual_style: str = ""
     repair_request: str = ""
+    auto_mode: bool = False
 
 
 def parse_operator_call(
@@ -106,6 +148,9 @@ def parse_operator_call(
     lowered = raw.lower()
     if not raw:
         return None
+
+    if has_active_project and _autopilot_command(raw):
+        return OperatorCall(action="auto", auto_mode=True)
 
     if lowered in {"故事影片下一步", "story video next", "story-video next"}:
         return OperatorCall(action="continue")
@@ -145,6 +190,9 @@ def parse_operator_call(
             topic=fields[0] if fields else "未命名故事影片",
             duration=fields[1] if len(fields) > 1 else DEFAULT_DURATION,
             visual_style=fields[2] if len(fields) > 2 else DEFAULT_STYLE,
+            auto_mode=(
+                _autopilot_command(raw) and not _planning_only_requested(raw)
+            ),
         )
 
     long_form = _parse_explicit_long_form_start(raw)
@@ -164,6 +212,7 @@ class StoryVideoRunContext:
     topic: str
     duration: str
     visual_style: str
+    auto_mode: bool = False
     phase: str = "planning"
     last_validated_phase: str = ""
     status: str = "active"
@@ -258,6 +307,7 @@ class StoryVideoStateStore:
                     topic=call.topic,
                     duration=call.duration,
                     visual_style=call.visual_style,
+                    auto_mode=call.auto_mode,
                 )
 
             sessions = tuple(dict.fromkeys((*context.session_ids, session_id)))
@@ -269,6 +319,9 @@ class StoryVideoStateStore:
                 {
                     **context.to_dict(),
                     "session_ids": list(sessions),
+                    "auto_mode": (
+                        True if call.action == "auto" else context.auto_mode
+                    ),
                     "repair_request": repair_request,
                     "repair_phase": repair_phase,
                     "updated_at": _utc_now(),

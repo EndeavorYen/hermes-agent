@@ -15,6 +15,14 @@ _STORE = StoryVideoStateStore()
 _MARKER = "STORY_VIDEO_OPERATOR_CONTEXT"
 _MARKER_RE = re.compile(rf"{_MARKER}\s+(\{{.*\}})\s*$", re.DOTALL)
 _SESSION_PHASE_AT_LLM_START: dict[str, str] = {}
+_SETUP_BLOCKER_RE = re.compile(
+    r"(?:(?:quota|rate.?limit|配額|額度).{0,32}"
+    r"(?:exhausted|exceeded|blocked|required|耗盡|用完|不足)|"
+    r"(?:missing|invalid|expired|缺少|失效|過期).{0,32}"
+    r"(?:credential|authentication|authorization|subscription|"
+    r"憑證|认证|認證|授權|订阅|訂閱)|setup.?required)",
+    re.IGNORECASE,
+)
 
 
 def _digest_source(parts: list[str]) -> str:
@@ -115,6 +123,7 @@ def pre_gateway_dispatch(*, event: Any, **_: Any) -> dict[str, Any] | None:
         "duration": call.duration,
         "visual_style": call.visual_style,
         "repair_request": call.repair_request,
+        "auto_mode": call.auto_mode,
         "source_key": source_key,
         "original_request": text,
     }
@@ -152,6 +161,7 @@ def pre_llm_call(
             duration=str(payload.get("duration") or ""),
             visual_style=str(payload.get("visual_style") or ""),
             repair_request=str(payload.get("repair_request") or ""),
+            auto_mode=payload.get("auto_mode") is True,
         )
         context = _STORE.create_or_load(
             source_key=str(payload.get("source_key") or f"session:{session_id}"),
@@ -206,6 +216,12 @@ def pre_llm_call(
         "### S01, and so on for the local voice parser. Preserve correct display "
         "spelling in all narration and never write spoken aliases into script.md; "
         "aliases belong only in pronunciation_lexicon.json and are compiled at voice time. "
+        "During keyframes and batch, generate exactly one candidate per shot at a time, "
+        "then call story_video_quality_control action=judge_candidates. That tool is the "
+        "only writer of the canonical shot_candidate_manifest.json outputs[] contract; "
+        "never edit shot_candidate_manifest.json manually and never invent judge scores "
+        "or vision evidence. Complete every required shot in the current phase before "
+        "stopping. "
         "During voice, compile display text to low-ambiguity spoken text with the "
         "project pronunciation lexicon and require qc/pronunciation_qc_report.json. "
         "Do not inspect other story-video projects, source code, memory, or unrelated "
@@ -215,7 +231,39 @@ def pre_llm_call(
         "validates the phase automatically. Use story_video_control only when it "
         "is exposed as a direct tool; never invoke it through terminal."
     )
+    if context.auto_mode:
+        instruction += (
+            " STORY_VIDEO AUTOPILOT is enabled. Continue autonomously through planning, "
+            "keyframes, batch, voice, render, and complete. Call story_video_control "
+            "action=validate after finishing each phase. If validation is BLOCKED, "
+            "execute the exact repair_request immediately and validate again. Do not ask "
+            "the operator to reply with continue or repair. Stop only for an operator "
+            "setup blocker such as missing credentials, exhausted quota, or unavailable "
+            "required provider; otherwise finish the production and delivery."
+        )
     return {"context": instruction}
+
+
+def auto_continue_llm_output(
+    *,
+    session_id: str = "",
+    response_text: str = "",
+    **_: Any,
+) -> dict[str, str] | None:
+    context = _STORE.for_session(session_id)
+    if context is None or not context.auto_mode or not context.next_call:
+        return None
+    if _SETUP_BLOCKER_RE.search(str(response_text or "")):
+        return None
+    return {
+        "action": "continue",
+        "message": (
+            f"STORY_VIDEO_AUTOPILOT run_id={context.run_id} phase={context.phase}. "
+            f"Execute the next action now: {context.next_call}. Do not merely report "
+            "status; complete the phase, repair every gate failure that is locally "
+            "actionable, validate it, and continue toward final delivery."
+        ),
+    }
 
 
 def _provider_from_args(args: dict[str, Any]) -> str:
@@ -409,7 +457,7 @@ def transform_llm_output(
                 ]
             ).rstrip()
     text = _guard_render_delivery(text, context)
-    if not context.next_call:
+    if not context.next_call or context.auto_mode:
         return text
     return f"{text}\n\nRaphael 下一步：回覆「{context.next_call}」。"
 

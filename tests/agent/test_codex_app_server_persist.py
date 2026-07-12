@@ -219,6 +219,41 @@ def test_codex_runtime_keeps_interactive_cli_thread_visible(monkeypatch):
     assert captured["ephemeral"] is False
 
 
+def test_codex_runtime_keeps_story_video_slack_worker_out_of_codex_task_list(
+    monkeypatch,
+):
+    import agent.transports.codex_app_server_session as session_module
+
+    captured = {}
+
+    class FakeSession:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def run_turn(self, **_kwargs):
+            return _make_turn()
+
+    monkeypatch.setattr(session_module, "CodexAppServerSession", FakeSession)
+    agent = _make_agent(session_db=None)
+    agent._codex_session = None
+    agent.session_cwd = "/tmp"
+    agent.model = "gpt-5.6-sol"
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.platform = "slack"
+
+    run_codex_app_server_turn(
+        agent,
+        user_message="故事影片：恐龍起源",
+        original_user_message="故事影片：恐龍起源",
+        messages=[{"role": "user", "content": "故事影片：恐龍起源"}],
+        effective_task_id="story-video-1",
+        raphael_decision={"goal": {"target_artifact": "story_video_workflow"}},
+    )
+
+    assert captured["ephemeral"] is True
+
+
 def test_codex_runtime_honors_explicit_ephemeral_override(monkeypatch):
     """CLI one-shot/background callers can opt out of Remote task materialization."""
     import agent.transports.codex_app_server_session as session_module
@@ -286,6 +321,7 @@ def test_codex_success_runs_api_and_output_hooks(monkeypatch):
         "post_api_request",
         "transform_llm_output",
         "post_llm_call",
+        "auto_continue_llm_output",
     ]
     assert result["final_response"] == "TRANSFORMED_CODEX_ASSISTANT"
     pre_api = calls[0][1]
@@ -293,6 +329,87 @@ def test_codex_success_runs_api_and_output_hooks(monkeypatch):
     assert pre_api["api_request_id"] == post_api["api_request_id"]
     assert post_api["response_model"] == "gpt-5.5"
     assert calls[3][1]["assistant_response"] == "TRANSFORMED_CODEX_ASSISTANT"
+
+
+def test_codex_runtime_runs_bounded_plugin_auto_continuation(monkeypatch):
+    calls = []
+    continuation_calls = {"count": 0}
+
+    def invoke_hook(name, **kwargs):
+        calls.append((name, kwargs))
+        if name == "auto_continue_llm_output":
+            continuation_calls["count"] += 1
+            if continuation_calls["count"] == 1:
+                return [{"action": "continue", "message": "AUTO NEXT"}]
+        if name == "pre_llm_call" and kwargs.get("auto_continuation") is True:
+            return [{"context": "AUTO CONTEXT"}]
+        return []
+
+    monkeypatch.setattr(hermes_cli.plugins, "has_hook", lambda _name: True)
+    monkeypatch.setattr(hermes_cli.plugins, "invoke_hook", invoke_hook)
+    agent = _make_agent(session_db=None)
+    second_turn = _make_turn()
+    second_turn.final_text = "AUTO COMPLETE"
+    second_turn.projected_messages = [
+        {"role": "assistant", "content": "AUTO COMPLETE"}
+    ]
+    agent._codex_session.run_turn.side_effect = [_make_turn(), second_turn]
+    agent.model = "gpt-5.6-sol"
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.platform = "slack"
+
+    result = run_codex_app_server_turn(
+        agent,
+        user_message="start",
+        original_user_message="start",
+        messages=[{"role": "user", "content": "start"}],
+        effective_task_id="story-auto",
+        turn_id="turn-1",
+    )
+
+    assert agent._codex_session.run_turn.call_count == 2
+    assert agent._codex_session.run_turn.call_args_list[1].kwargs["user_input"] == (
+        "AUTO NEXT\n\nAUTO CONTEXT"
+    )
+    assert result["final_response"] == "AUTO COMPLETE"
+    assert result["api_calls"] == 2
+
+
+def test_codex_runtime_stops_plugin_auto_continuation_at_bound(monkeypatch):
+    import agent.codex_runtime as codex_runtime
+
+    def invoke_hook(name, **_kwargs):
+        if name == "auto_continue_llm_output":
+            return [{"action": "continue", "message": "KEEP GOING"}]
+        return []
+
+    monkeypatch.setattr(hermes_cli.plugins, "has_hook", lambda _name: True)
+    monkeypatch.setattr(hermes_cli.plugins, "invoke_hook", invoke_hook)
+    monkeypatch.setattr(codex_runtime, "_MAX_PLUGIN_AUTO_CONTINUATIONS", 2)
+    agent = _make_agent(session_db=None)
+    agent._codex_session.run_turn.side_effect = [
+        _make_turn(),
+        _make_turn(),
+        _make_turn(),
+    ]
+    agent.model = "gpt-5.6-sol"
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.platform = "slack"
+
+    result = run_codex_app_server_turn(
+        agent,
+        user_message="start",
+        original_user_message="start",
+        messages=[{"role": "user", "content": "start"}],
+        effective_task_id="story-auto-bound",
+        turn_id="turn-1",
+    )
+
+    assert agent._codex_session.run_turn.call_count == 3
+    assert result["api_calls"] == 3
+    assert agent._plugin_auto_continue_count == 0
 
 
 def test_codex_runtime_receives_pre_llm_plugin_context(monkeypatch):
