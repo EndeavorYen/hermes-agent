@@ -62,7 +62,9 @@ def _write_planning_fixture(context, *, report_status: str = "PASS", shot_count:
         ],
     }
     (context.project_dir / "PROJECT_CONTRACT.md").write_text("contract", encoding="utf-8")
-    (context.project_dir / "script.md").write_text("final narration script", encoding="utf-8")
+    (context.project_dir / "script.md").write_text(
+        "### S00\nfinal narration script", encoding="utf-8"
+    )
     (context.project_dir / "storyboard.md").write_text("storyboard", encoding="utf-8")
     (context.project_dir / "scene_ledger.json").write_text(
         json.dumps(ledger), encoding="utf-8"
@@ -255,6 +257,52 @@ def test_planning_validation_requires_the_final_script_artifact(tmp_path) -> Non
 
     assert proof.ok is False
     assert "script.md" in proof.missing
+
+
+def test_planning_validation_requires_voice_compatible_script_headings(tmp_path) -> None:
+    _store, context = _active_context(tmp_path)
+    _write_planning_fixture(context)
+    (context.project_dir / "script.md").write_text(
+        "### Shot 01\n三疊紀。", encoding="utf-8"
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert "script.md requires ### S00-style narration headings" in proof.violations
+
+
+def test_planning_validation_rejects_spoken_alias_leakage_into_script(tmp_path) -> None:
+    _store, context = _active_context(tmp_path)
+    _write_planning_fixture(context)
+    (context.project_dir / "script.md").write_text(
+        "### S00\n恐龍最早出現在三碟紀。", encoding="utf-8"
+    )
+    (context.project_dir / "pronunciation_lexicon.json").write_text(
+        json.dumps(
+            {
+                "schema": "story_video_pronunciation_lexicon_v1",
+                "language": "zh-TW",
+                "review_status": "PASS",
+                "entries": [
+                    {
+                        "display": "三疊紀",
+                        "spoken": "三碟紀",
+                        "expected_pinyin": "san1 die2 ji4",
+                        "source": "taiwan_mandarin_review",
+                        "risk": "high",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert "script.md contains spoken alias for high-risk term: 三疊紀" in proof.violations
 
 
 def test_planning_validation_requires_pronunciation_lexicon(tmp_path) -> None:

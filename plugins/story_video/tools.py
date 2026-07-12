@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -51,6 +52,16 @@ def _validate_planning(context: StoryVideoRunContext) -> PhaseProof:
         name for name in required if not _nonempty(context.project_dir / name)
     )
     violations: list[str] = []
+    script_text = ""
+    if "script.md" not in missing:
+        try:
+            script_text = (context.project_dir / "script.md").read_text(
+                encoding="utf-8"
+            )
+        except OSError:
+            script_text = ""
+        if not re.search(r"(?m)^###\s+S\d+\s*$", script_text):
+            violations.append("script.md requires ### S00-style narration headings")
     parsed: dict[str, Any] = {}
     for name in (
         "scene_ledger.json",
@@ -130,6 +141,16 @@ def _validate_planning(context: StoryVideoRunContext) -> PhaseProof:
                 ):
                     violations.append(
                         f"pronunciation_lexicon entry[{index}] high-risk spoken alias is unchanged"
+                    )
+                if (
+                    str(entry.get("risk") or "").strip().lower() == "high"
+                    and display
+                    and spoken
+                    and spoken != display
+                    and spoken in script_text
+                ):
+                    violations.append(
+                        f"script.md contains spoken alias for high-risk term: {display}"
                     )
     return PhaseProof(
         phase="planning",
