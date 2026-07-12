@@ -29,6 +29,42 @@ def test_control_routes_visual_generation_to_grok_handoff_and_grok_imagine_defau
     assert decision.next_action == "call_visual_agent_generate"
 
 
+def test_control_leaves_story_video_orchestration_to_story_video_phase_gates():
+    decision = build_raphael_control_decision(
+        "故事影片：恐龍起源｜5分｜真實照片。只規劃，不要產圖、語音或影片。"
+    )
+
+    assert decision.mode == "general_conversation"
+    assert decision.goal.target_artifact == "story_video_workflow"
+    assert decision.goal.phase == "story_video_orchestration"
+    assert decision.route.handoff_tool is None
+    assert decision.route.visual_media_provider is None
+    assert decision.evidence.required_proofs == ("story_video_phase_proof",)
+    assert decision.next_action == "continue_story_video_workflow"
+
+
+def test_control_recognizes_structured_story_video_runtime_context():
+    decision = build_raphael_control_decision(
+        "STORY_VIDEO_RUN_CONTEXT run_id=run-1 phase=planning "
+        "project_dir=/tmp/story. 真實照片，請完成目前階段。"
+    )
+
+    assert decision.mode == "general_conversation"
+    assert decision.goal.target_artifact == "story_video_workflow"
+    assert decision.route.handoff_tool is None
+    assert decision.next_action == "continue_story_video_workflow"
+
+
+def test_control_keeps_story_video_plugin_bug_report_as_tool_task():
+    decision = build_raphael_control_decision(
+        "請修復 story-video plugin 的 routing bug 並執行測試。"
+    )
+
+    assert decision.mode == "tool_task"
+    assert decision.goal.target_artifact == "runtime_or_repo_state"
+    assert decision.next_action == "plan_execute_verify"
+
+
 def test_control_requires_image_first_video_source_evidence_for_video_requests():
     decision = build_raphael_control_decision(
         "請產出一段 6 秒時尚短片，主體是霧黑鋼筆。"

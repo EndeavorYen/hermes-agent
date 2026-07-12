@@ -303,6 +303,40 @@ def build_raphael_control_decision(
             confidence=0.91,
         )
 
+    if _looks_like_story_video_implementation_task(prompt):
+        return RaphaelControlDecision(
+            mode="tool_task",
+            goal=RaphaelGoalDecision(
+                summary=_summary(prompt),
+                target_artifact="runtime_or_repo_state",
+                success_conditions=("focused_tests", "runtime_smoke_when_live_wiring"),
+                phase="plan_execute_verify",
+            ),
+            route=RaphaelRouteDecision(),
+            evidence=RaphaelEvidenceDecision(
+                required_proofs=("focused_tests", "runtime_smoke_when_live_wiring"),
+            ),
+            next_action="plan_execute_verify",
+            confidence=0.9,
+        )
+
+    if _looks_like_story_video_orchestration(prompt):
+        return RaphaelControlDecision(
+            mode="general_conversation",
+            goal=RaphaelGoalDecision(
+                summary=_summary(prompt),
+                target_artifact="story_video_workflow",
+                success_conditions=("story_video_phase_proof",),
+                phase="story_video_orchestration",
+            ),
+            route=RaphaelRouteDecision(),
+            evidence=RaphaelEvidenceDecision(
+                required_proofs=("story_video_phase_proof",),
+            ),
+            next_action="continue_story_video_workflow",
+            confidence=0.98,
+        )
+
     if _looks_like_visual_prompt_edit_task(prompt):
         return RaphaelControlDecision(
             mode="general_conversation",
@@ -885,6 +919,38 @@ def _looks_like_mission_followup(prompt: str) -> bool:
             "continueearlier",
             "continuethatgoal",
         )
+    )
+
+
+def _looks_like_story_video_orchestration(prompt: str) -> bool:
+    lowered = str(prompt or "").casefold()
+    return any(
+        marker in lowered
+        for marker in (
+            "story_video_operator_context",
+            "story_video_run_context",
+            "故事影片：",
+            "故事影片:",
+            "story-video:",
+            "story video:",
+        )
+    )
+
+
+def _looks_like_story_video_implementation_task(prompt: str) -> bool:
+    lowered = str(prompt or "").casefold()
+    story_video_markers = ("story-video", "story_video", "story video", "故事影片")
+    implementation_markers = (
+        "plugin",
+        "runtime",
+        "routing",
+        "route bug",
+        "程式",
+        "代碼",
+        "代码",
+    )
+    return any(marker in lowered for marker in story_video_markers) and any(
+        marker in lowered for marker in implementation_markers
     )
 
 
