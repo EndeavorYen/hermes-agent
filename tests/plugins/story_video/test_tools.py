@@ -283,6 +283,66 @@ def test_planning_validation_requires_pronunciation_lexicon(tmp_path) -> None:
     assert passed.ok is True
 
 
+def test_planning_validation_rejects_unchanged_high_risk_pronunciation_alias(
+    tmp_path,
+) -> None:
+    _store, context = _active_context(tmp_path)
+    _write_planning_fixture(context)
+    lexicon = {
+        "schema": "story_video_pronunciation_lexicon_v1",
+        "language": "zh-TW",
+        "review_status": "PASS",
+        "entries": [
+            {
+                "display": "三疊紀",
+                "spoken": "三疊紀",
+                "expected_pinyin": "san1 die2 ji4",
+                "source": "taiwan_mandarin_review",
+                "risk": "high",
+            }
+        ],
+    }
+    (context.project_dir / "pronunciation_lexicon.json").write_text(
+        json.dumps(lexicon, ensure_ascii=False), encoding="utf-8"
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert (
+        "pronunciation_lexicon entry[0] high-risk spoken alias is unchanged"
+        in proof.violations
+    )
+
+
+def test_planning_validation_accepts_corrected_high_risk_pronunciation_alias(
+    tmp_path,
+) -> None:
+    _store, context = _active_context(tmp_path)
+    _write_planning_fixture(context)
+    lexicon = {
+        "schema": "story_video_pronunciation_lexicon_v1",
+        "language": "zh-TW",
+        "review_status": "PASS",
+        "entries": [
+            {
+                "display": "三疊紀",
+                "spoken": "三碟紀",
+                "expected_pinyin": "san1 die2 ji4",
+                "source": "taiwan_mandarin_review",
+                "risk": "high",
+            }
+        ],
+    }
+    (context.project_dir / "pronunciation_lexicon.json").write_text(
+        json.dumps(lexicon, ensure_ascii=False), encoding="utf-8"
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is True
+
+
 def test_planning_validation_rejects_shallow_scene_ledger(tmp_path) -> None:
     _store, context = _active_context(tmp_path)
     _write_planning_fixture(context)

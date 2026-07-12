@@ -226,7 +226,12 @@ def test_pre_llm_creates_context_and_injects_provider_policy(tmp_path, monkeypat
     assert "Complete the current phase in this turn" in result["context"]
     assert "Do not inspect other story-video projects" in result["context"]
     assert "story-video-script-director" in result["context"]
+    assert "script.md" in result["context"]
     assert "script_quality_report.json" in result["context"]
+    assert '"language": "zh-TW"' in result["context"]
+    assert '"review_status": "PASS"' in result["context"]
+    assert "high-risk spoken aliases MUST differ from display text" in result["context"]
+    assert "三疊紀 -> 三碟紀" in result["context"]
     assert "40-60" in result["context"]
 
 

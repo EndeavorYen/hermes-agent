@@ -97,8 +97,40 @@ def _validate_planning(context: StoryVideoRunContext) -> PhaseProof:
             violations.append("pronunciation_lexicon language is not zh-TW")
         if str(pronunciation.get("review_status") or "").upper() != "PASS":
             violations.append("pronunciation_lexicon review_status is not PASS")
-        if not isinstance(pronunciation.get("entries"), list):
+        entries = pronunciation.get("entries")
+        if not isinstance(entries, list):
             violations.append("pronunciation_lexicon entries are not a list")
+        else:
+            for index, entry in enumerate(entries):
+                if not isinstance(entry, dict):
+                    violations.append(
+                        f"pronunciation_lexicon entry[{index}] is not an object"
+                    )
+                    continue
+                display = str(entry.get("display") or "").strip()
+                spoken = str(entry.get("spoken") or "").strip()
+                expected_pinyin = str(entry.get("expected_pinyin") or "").strip()
+                source = str(entry.get("source") or "").strip()
+                if not display or not spoken:
+                    violations.append(
+                        f"pronunciation_lexicon entry[{index}] requires display and spoken"
+                    )
+                if not expected_pinyin:
+                    violations.append(
+                        f"pronunciation_lexicon entry[{index}] expected_pinyin is missing"
+                    )
+                if not source:
+                    violations.append(
+                        f"pronunciation_lexicon entry[{index}] source is missing"
+                    )
+                if (
+                    str(entry.get("risk") or "").strip().lower() == "high"
+                    and display
+                    and spoken == display
+                ):
+                    violations.append(
+                        f"pronunciation_lexicon entry[{index}] high-risk spoken alias is unchanged"
+                    )
     return PhaseProof(
         phase="planning",
         ok=not missing and not violations,
