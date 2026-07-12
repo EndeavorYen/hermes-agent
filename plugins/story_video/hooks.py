@@ -265,6 +265,49 @@ def pre_llm_call(
     return {"context": instruction}
 
 
+def _autopilot_progress_token(context: StoryVideoRunContext) -> str:
+    evidence: dict[str, Any] = {"phase": context.phase}
+    if context.phase in {"keyframes", "batch"}:
+        path = context.project_dir / "manifests" / "shot_candidate_manifest.json"
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            payload = {}
+        evidence["outputs"] = [
+            (
+                str(row.get("shot_id") or ""),
+                str(row.get("candidate_id") or ""),
+                str(row.get("status") or ""),
+                row.get("selected") is True,
+            )
+            for row in payload.get("outputs") or []
+            if isinstance(row, dict)
+        ]
+    elif context.phase == "voice":
+        path = context.project_dir / "manifests" / "narration_manifest.json"
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            payload = {}
+        evidence["outputs"] = [
+            str(row.get("scene_id") or "")
+            for row in payload.get("outputs") or []
+            if isinstance(row, dict)
+        ]
+    elif context.phase == "render":
+        evidence["artifacts"] = [
+            (name, (context.project_dir / name).is_file())
+            for name in (
+                "render_input.json",
+                "manifests/render_manifest.json",
+                "render_qc.json",
+                "video/final.mp4",
+            )
+        ]
+    encoded = json.dumps(evidence, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
+
+
 def auto_continue_llm_output(
     *,
     session_id: str = "",
@@ -277,7 +320,10 @@ def auto_continue_llm_output(
     if _SETUP_BLOCKER_RE.search(str(response_text or "")):
         return None
     if _PHASE_BLOCKED_RE.search(str(response_text or "")):
-        signature = f"{context.phase}:blocked:{context.next_call}"
+        signature = (
+            f"{context.phase}:blocked:{context.next_call}:"
+            f"{_autopilot_progress_token(context)}"
+        )
         stall_count = (
             context.autopilot_stall_count + 1
             if context.autopilot_last_signature == signature

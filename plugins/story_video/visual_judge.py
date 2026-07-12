@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -187,6 +188,16 @@ def _judge_candidates(
     repair_round: int,
     llm: Any,
 ) -> dict[str, Any]:
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        match = re.search(
+            r"(?:^|_)C(\d+)$",
+            str(candidate.get("candidate_id") or ""),
+            re.IGNORECASE,
+        )
+        if match is not None:
+            repair_round = max(repair_round, int(match.group(1)))
     if not 1 <= repair_round <= MAX_REPAIR_ROUNDS:
         return {
             "success": False,

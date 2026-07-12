@@ -336,6 +336,51 @@ def test_autopilot_stops_after_three_identical_blocked_phase_reports(
     assert context.autopilot_stall_count == 3
 
 
+def test_autopilot_does_not_stall_when_candidate_manifest_advances(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    start = hooks.pre_gateway_dispatch(
+        event=_event("故事影片：恐龍起源｜5分鐘｜真實照片。完整製作並出片。")
+    )
+    hooks.pre_llm_call(session_id="session-auto", user_message=start["text"])
+    context = store.for_session("session-auto")
+    assert context is not None
+    store.update(context, phase="batch")
+    blocked = "STORY_VIDEO_PHASE_PROOF: batch BLOCKED"
+
+    assert hooks.auto_continue_llm_output(
+        session_id="session-auto", response_text=blocked
+    ) is not None
+    context = store.for_session("session-auto")
+    assert context is not None
+    manifest = context.project_dir / "manifests" / "shot_candidate_manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps(
+            {
+                "outputs": [
+                    {
+                        "shot_id": "S00_SH01",
+                        "candidate_id": "S00_SH01_C01",
+                        "selected": True,
+                        "status": "selected_current",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert hooks.auto_continue_llm_output(
+        session_id="session-auto", response_text=blocked
+    ) is not None
+    advanced = store.for_session("session-auto")
+    assert advanced is not None
+    assert advanced.autopilot_stall_count == 1
+
+
 def test_direct_full_auto_resets_existing_stall_guard(tmp_path, monkeypatch) -> None:
     store = StoryVideoStateStore(tmp_path)
     monkeypatch.setattr(hooks, "_STORE", store)
