@@ -35,7 +35,9 @@ def _event_with_identity(
 
 
 def _write_planning_fixture(context) -> None:
-    (context.project_dir / "script.md").write_text("final narration script", encoding="utf-8")
+    (context.project_dir / "script.md").write_text(
+        "### S00\nfinal narration script", encoding="utf-8"
+    )
     scales = ("close_up", "medium", "wide", "macro", "medium", "insert", "medium", "establishing")
     shots = [
         {
@@ -241,6 +243,9 @@ def test_pre_llm_creates_context_and_injects_provider_policy(tmp_path, monkeypat
     assert "story_video_script_quality_v1" in result["context"]
     assert "quality_contract_version=2" in result["context"]
     assert "checks MUST be an object" in result["context"]
+    assert "scene.shots array" in result["context"]
+    assert "### S00" in result["context"]
+    assert "never write spoken aliases into script.md" in result["context"]
     assert "40-60" in result["context"]
 
 
