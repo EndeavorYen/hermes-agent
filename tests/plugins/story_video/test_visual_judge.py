@@ -145,6 +145,89 @@ def test_compile_prompt_writes_traceable_prompt_and_budget(tmp_path) -> None:
     assert (context.project_dir / payload["prompt_path"]).is_file()
 
 
+def test_compile_prompt_includes_latest_qc_blocker_in_repair_directive(tmp_path) -> None:
+    store, context, _shot = _context(tmp_path)
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps({"outputs": [{
+            "shot_id": "S00_SH00",
+            "status": "repair_required",
+            "repair_round": 2,
+            "hard_blockers": ["subtitle-safe area is occupied by the fossil"],
+        }]}),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(story_video_quality_control(
+        {"action": "compile_prompt", "shot_id": "S00_SH00"},
+        session_id="session-1",
+        store=store,
+    ))
+
+    assert payload["success"] is True
+    assert payload["repair_feedback_applied"] is True
+    assert payload["strategy_reset"] is False
+    assert payload["candidate_id_hint"] == "S00_SH00_C03"
+    assert "Prior QC blocker" in payload["prompt"]
+    assert "subtitle-safe area is occupied by the fossil" in payload["prompt"]
+    assert "materially change the composition" in payload["prompt"]
+
+
+def test_exhausted_prompt_allows_one_layout_strategy_reset(tmp_path) -> None:
+    store, context, _shot = _context(tmp_path)
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps({"outputs": [{
+            "shot_id": "S00_SH00",
+            "status": "quality_budget_exhausted",
+            "repair_round": 5,
+            "strategy_reset": False,
+            "hard_blockers": ["subtitle collision on the right third"],
+        }]}),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(story_video_quality_control(
+        {"action": "compile_prompt", "shot_id": "S00_SH00"},
+        session_id="session-1",
+        store=store,
+    ))
+
+    assert payload["success"] is True
+    assert payload["strategy_reset"] is True
+    assert payload["candidate_id_hint"] == "S00_SH00_LAYOUT_C01"
+    assert payload["remaining_strategy_reset_candidates"] == 1
+    assert "one-time composition strategy reset" in payload["prompt"]
+
+
+def test_compile_prompt_refuses_a_second_layout_strategy_reset(tmp_path) -> None:
+    store, context, _shot = _context(tmp_path)
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps({"outputs": [{
+            "shot_id": "S00_SH00",
+            "status": "quality_budget_exhausted",
+            "repair_round": 1,
+            "strategy_reset": True,
+            "hard_blockers": ["subtitle collision remains"],
+        }]}),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(story_video_quality_control(
+        {"action": "compile_prompt", "shot_id": "S00_SH00"},
+        session_id="session-1",
+        store=store,
+    ))
+
+    assert payload["success"] is False
+    assert payload["status"] == "human_review_required"
+    assert payload["hard_blockers"] == ["subtitle collision remains"]
+
+
 def test_judge_sends_one_candidate_to_openai_and_selects_it_when_it_passes(tmp_path) -> None:
     store, context, _shot = _context(tmp_path)
     candidates = [_candidate(context, "C01")]
@@ -315,6 +398,41 @@ def test_candidate_suffix_prevents_repair_round_from_resetting(tmp_path) -> None
     assert payload["success"] is False
     assert payload["status"] == "quality_budget_exhausted"
     assert payload["repair_round"] == 5
+
+
+def test_failed_layout_strategy_reset_exhausts_after_one_candidate(tmp_path) -> None:
+    store, context, _shot = _context(tmp_path)
+    candidate = _candidate(context, "S00_SH00_LAYOUT_C01")
+    candidate["strategy_reset"] = True
+    llm = FakeLlm(
+        [
+            {
+                "candidate_id": "S00_SH00_LAYOUT_C01",
+                "hard_blockers": ["subtitle-safe area remains occupied"],
+                "dimensions": _dimensions(90),
+                "evidence": ["focal fossil still crosses the reserved band"],
+            }
+        ]
+    )
+
+    payload = json.loads(story_video_quality_control(
+        {
+            "action": "judge_candidates",
+            "shot_id": "S00_SH00",
+            "candidates": [candidate],
+            "repair_round": 1,
+        },
+        session_id="session-1",
+        store=store,
+        llm=llm,
+    ))
+
+    assert payload["success"] is False
+    assert payload["status"] == "quality_budget_exhausted"
+    manifest = json.loads(
+        (context.project_dir / "manifests" / "shot_candidate_manifest.json").read_text()
+    )
+    assert manifest["outputs"][0]["strategy_reset"] is True
 
 
 def test_judge_fails_closed_before_calling_llm_for_non_openai_candidate(tmp_path) -> None:
