@@ -213,6 +213,8 @@ class StoryVideoRunContext:
     duration: str
     visual_style: str
     auto_mode: bool = False
+    autopilot_last_signature: str = ""
+    autopilot_stall_count: int = 0
     phase: str = "planning"
     last_validated_phase: str = ""
     status: str = "active"
@@ -322,6 +324,12 @@ class StoryVideoStateStore:
                     "auto_mode": (
                         True if call.action == "auto" else context.auto_mode
                     ),
+                    "autopilot_last_signature": (
+                        "" if call.action == "auto" else context.autopilot_last_signature
+                    ),
+                    "autopilot_stall_count": (
+                        0 if call.action == "auto" else context.autopilot_stall_count
+                    ),
                     "repair_request": repair_request,
                     "repair_phase": repair_phase,
                     "updated_at": _utc_now(),
@@ -358,6 +366,8 @@ class StoryVideoStateStore:
         if changes.get("phase", context.phase) != context.phase:
             changes.setdefault("repair_request", "")
             changes.setdefault("repair_phase", "")
+            changes.setdefault("autopilot_last_signature", "")
+            changes.setdefault("autopilot_stall_count", 0)
         elif changes.get("repair_request") == "":
             changes.setdefault("repair_phase", "")
         updated = replace(context, updated_at=_utc_now(), **changes)

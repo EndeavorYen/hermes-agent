@@ -23,6 +23,11 @@ _SETUP_BLOCKER_RE = re.compile(
     r"憑證|认证|認證|授權|订阅|訂閱)|setup.?required)",
     re.IGNORECASE,
 )
+_PHASE_BLOCKED_RE = re.compile(
+    r"STORY_VIDEO_PHASE_PROOF:\s+[a-z]+\s+BLOCKED",
+    re.IGNORECASE,
+)
+_AUTOPILOT_STALL_LIMIT = 3
 
 
 def _digest_source(parts: list[str]) -> str:
@@ -255,6 +260,26 @@ def auto_continue_llm_output(
         return None
     if _SETUP_BLOCKER_RE.search(str(response_text or "")):
         return None
+    if _PHASE_BLOCKED_RE.search(str(response_text or "")):
+        signature = f"{context.phase}:blocked:{context.next_call}"
+        stall_count = (
+            context.autopilot_stall_count + 1
+            if context.autopilot_last_signature == signature
+            else 1
+        )
+        context = _STORE.update(
+            context,
+            autopilot_last_signature=signature,
+            autopilot_stall_count=stall_count,
+        )
+        if stall_count >= _AUTOPILOT_STALL_LIMIT:
+            return None
+    elif context.autopilot_stall_count:
+        context = _STORE.update(
+            context,
+            autopilot_last_signature="",
+            autopilot_stall_count=0,
+        )
     return {
         "action": "continue",
         "message": (
