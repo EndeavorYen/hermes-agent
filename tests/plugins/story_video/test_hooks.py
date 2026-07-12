@@ -92,6 +92,17 @@ def _write_planning_fixture(context) -> None:
         ),
         encoding="utf-8",
     )
+    (context.project_dir / "pronunciation_lexicon.json").write_text(
+        json.dumps(
+            {
+                "schema": "story_video_pronunciation_lexicon_v1",
+                "language": "zh-TW",
+                "review_status": "PASS",
+                "entries": [],
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def test_gateway_rewrites_short_start_with_structured_context(tmp_path, monkeypatch) -> None:
