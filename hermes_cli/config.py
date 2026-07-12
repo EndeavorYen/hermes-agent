@@ -2642,6 +2642,21 @@ DEFAULT_CONFIG = {
         # recent .md files and prunes older ones. 0 or negative disables
         # pruning (for operators who manage cleanup externally). Default 50.
         "output_retention": 50,
+        # Internal cron agent sessions have a shorter lifecycle than user
+        # conversations. This bounds state.db + FTS growth per job while job
+        # output files retain their own independently configured history.
+        "session_retention": {
+            "enabled": True,
+            "days": 14,
+            "per_job": 50,
+            "min_interval_hours": 24,
+            "vacuum_after_prune": True,
+        },
+        # Infinite LLM-backed schedules below this interval are rejected by
+        # every creation/update surface. Finite repeats and no-agent scripts
+        # remain available for intentional short bursts and watchdogs.
+        "min_agent_interval_minutes": 30,
+        "allow_high_frequency_agent_jobs": False,
     },
 
     # Kanban multi-agent coordination — controls the dispatcher loop that

@@ -95,6 +95,9 @@ MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversation
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+_INTERNAL_SESSION_SOURCES = frozenset({
+    "cron", "subagent", "tool", "curator", "background_review",
+})
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -1706,6 +1709,9 @@ class APIServerAdapter(BasePlatformAdapter):
         include_children = _coerce_request_bool(request.query.get("include_children"), default=False)
         sessions = db.list_sessions_rich(
             source=source,
+            exclude_sources=(
+                sorted(_INTERNAL_SESSION_SOURCES) if source is None else None
+            ),
             limit=limit,
             offset=offset,
             include_children=include_children,

@@ -1,5 +1,7 @@
 """Focused tests for API server session-control endpoints."""
 
+import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -167,6 +169,27 @@ async def test_session_crud_and_message_history(adapter, session_db):
         deleted = await delete_resp.json()
         assert deleted == {"object": "hermes.session.deleted", "id": session_id, "deleted": True}
         assert session_db.get_session(session_id) is None
+
+
+@pytest.mark.asyncio
+async def test_session_list_hides_internal_sources_unless_explicit(adapter, session_db):
+    for source in ("cli", "cron", "subagent", "tool", "curator", "background_review"):
+        sid = f"session-{source}"
+        session_db.create_session(sid, source)
+        session_db.append_message(sid, "user", source)
+
+    adapter._check_auth = lambda _request: None
+    default_response = await adapter._handle_list_sessions(
+        SimpleNamespace(query={})
+    )
+    default_payload = json.loads(default_response.text)
+    assert [row["source"] for row in default_payload["data"]] == ["cli"]
+
+    cron_response = await adapter._handle_list_sessions(
+        SimpleNamespace(query={"source": "cron"})
+    )
+    cron_payload = json.loads(cron_response.text)
+    assert [row["source"] for row in cron_payload["data"]] == ["cron"]
 
 
 @pytest.mark.asyncio

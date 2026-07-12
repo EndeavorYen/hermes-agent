@@ -18,4 +18,8 @@ import pytest
 def _default_cron_test_model(monkeypatch):
     """Pin a default HERMES_MODEL so cron run_job tests have a resolvable model."""
     monkeypatch.setenv("HERMES_MODEL", "test-cron-default-model")
+    # Historical cron tests intentionally use 2m/5m infinite schedules as
+    # compact fixtures. Keep those fixtures valid; the focused safety tests
+    # explicitly remove this operator override before asserting fail-closed.
+    monkeypatch.setenv("HERMES_CRON_ALLOW_HIGH_FREQUENCY_AGENT_JOBS", "1")
     yield
