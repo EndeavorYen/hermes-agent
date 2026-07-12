@@ -109,6 +109,31 @@ EXPOSED_TOOLS: tuple[str, ...] = (
 )
 
 
+def _dispatch_session_id(kwargs: dict[str, Any]) -> str | None:
+    inherited = os.environ.get("HERMES_SESSION_ID") or None
+    run_id = str(kwargs.get("run_id") or "").strip()
+    project_dir = str(kwargs.get("project_dir") or "").strip()
+    if not run_id or not project_dir:
+        return inherited
+    try:
+        from plugins.story_video.state import StoryVideoStateStore
+
+        store = StoryVideoStateStore()
+        context = store.for_run(run_id=run_id, project_dir=project_dir)
+    except Exception:
+        logger.debug("could not resolve story-video run context", exc_info=True)
+        return inherited
+    if context is None:
+        return inherited
+    if inherited and inherited in context.session_ids:
+        return inherited
+    for session_id in reversed(context.session_ids):
+        indexed = store.for_session(session_id)
+        if indexed is not None and indexed.run_id == context.run_id:
+            return session_id
+    return inherited
+
+
 def _dispatch_tool(
     tool_name: str,
     kwargs: dict[str, Any],
@@ -132,7 +157,7 @@ def _dispatch_tool(
     return dispatch(
         tool_name,
         normalized_kwargs,
-        session_id=os.environ.get("HERMES_SESSION_ID") or None,
+        session_id=_dispatch_session_id(normalized_kwargs),
     )
 
 

@@ -160,6 +160,18 @@ def test_existing_source_reloads_project_and_binds_new_session(tmp_path) -> None
     assert store.for_session("session-2") == resumed
 
 
+def test_for_run_rejects_project_outside_story_video_root(tmp_path) -> None:
+    store = StoryVideoStateStore(tmp_path / "story-videos")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "story_video_run_context.json").write_text(
+        '{"run_id":"run-1","project_dir":"%s"}' % outside,
+        encoding="utf-8",
+    )
+
+    assert store.for_run(run_id="run-1", project_dir=outside) is None
+
+
 def test_repair_call_records_issue_and_returns_repair_next_call(tmp_path) -> None:
     store = StoryVideoStateStore(tmp_path)
     start = parse_operator_call("故事影片：恐龍起源｜5分｜真實照片")

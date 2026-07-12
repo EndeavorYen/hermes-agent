@@ -117,6 +117,75 @@ class TestModuleSurface:
             "phase": "keyframes",
         }
 
+    def test_mcp_dispatch_recovers_story_session_from_verified_run_context(
+        self, tmp_path, monkeypatch
+    ):
+        import agent.transports.hermes_tools_mcp_server as m
+        from plugins.story_video.state import OperatorCall, StoryVideoStateStore
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+        store = StoryVideoStateStore()
+        context = store.create_or_load(
+            source_key="source-1",
+            session_id="story-session-1",
+            call=OperatorCall(action="start", topic="Triassic"),
+            original_request="story video",
+        )
+        observed = {}
+
+        def fake_handle(name, args, **kwargs):
+            observed.update({"name": name, "args": args, **kwargs})
+            return "ok"
+
+        result = m._dispatch_tool(
+            "story_video_control",
+            {
+                "kwargs": {
+                    "action": "status",
+                    "run_id": context.run_id,
+                    "project_dir": str(context.project_dir),
+                }
+            },
+            handle_function_call=fake_handle,
+        )
+
+        assert result == "ok"
+        assert observed["session_id"] == "story-session-1"
+
+    def test_mcp_dispatch_rejects_mismatched_story_run_context(
+        self, tmp_path, monkeypatch
+    ):
+        import agent.transports.hermes_tools_mcp_server as m
+        from plugins.story_video.state import OperatorCall, StoryVideoStateStore
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+        store = StoryVideoStateStore()
+        context = store.create_or_load(
+            source_key="source-1",
+            session_id="story-session-1",
+            call=OperatorCall(action="start", topic="Triassic"),
+            original_request="story video",
+        )
+        observed = {}
+
+        def fake_handle(name, args, **kwargs):
+            observed.update({"name": name, "args": args, **kwargs})
+            return "ok"
+
+        m._dispatch_tool(
+            "story_video_control",
+            {
+                "action": "status",
+                "run_id": "wrong-run-id",
+                "project_dir": str(context.project_dir),
+            },
+            handle_function_call=fake_handle,
+        )
+
+        assert observed["session_id"] is None
+
     def test_agent_loop_tools_not_exposed(self):
         """delegate_task / memory / session_search / todo require the
         running AIAgent context to dispatch, so a stateless MCP callback
