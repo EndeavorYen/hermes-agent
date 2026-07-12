@@ -63,6 +63,13 @@ STORY_VIDEO_QUALITY_CONTROL_SCHEMA = {
                         "provider": {"type": "string"},
                         "model": {"type": "string"},
                         "response_id": {"type": "string"},
+                        "strategy_reset": {
+                            "type": "boolean",
+                            "description": (
+                                "True only for the single layout reset returned by "
+                                "compile_prompt after normal repairs are exhausted."
+                            ),
+                        },
                     },
                     "required": ["candidate_id", "path", "provider"],
                 },

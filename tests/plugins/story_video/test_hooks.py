@@ -296,6 +296,8 @@ def test_autopilot_context_requires_canonical_quality_tool_and_phase_loop(
     assert "AUTOPILOT is enabled" in result["context"]
     assert "story_video_quality_control" in result["context"]
     assert "never edit shot_candidate_manifest.json manually" in result["context"]
+    assert "candidate_id_hint" in result["context"]
+    assert "strategy_reset=true" in result["context"]
 
 
 def test_autopilot_requests_internal_continuation_until_complete(

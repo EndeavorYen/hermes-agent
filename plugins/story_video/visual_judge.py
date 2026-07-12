@@ -140,6 +140,62 @@ def _compile_prompt(
 ) -> dict[str, Any]:
     ledger, scene, shot = _find_shot(context, shot_id)
     prompt = compile_shot_prompt(ledger=ledger, scene=scene, shot=shot)
+    manifest = _load_json(
+        context.project_dir / "manifests" / "shot_candidate_manifest.json"
+    ) or {}
+    previous_rows = [
+        row
+        for row in manifest.get("outputs") or []
+        if isinstance(row, dict) and str(row.get("shot_id") or "") == shot_id
+    ]
+    previous = max(
+        previous_rows,
+        key=lambda row: (
+            int(row.get("repair_round") or 0),
+            str(row.get("reviewed_at") or ""),
+        ),
+        default=None,
+    )
+    blockers = [
+        str(item).strip()
+        for item in (previous or {}).get("hard_blockers") or []
+        if str(item).strip()
+    ]
+    previous_round = int((previous or {}).get("repair_round") or 0)
+    previous_status = str((previous or {}).get("status") or "")
+    previous_strategy_reset = (previous or {}).get("strategy_reset") is True
+    strategy_reset = (
+        previous_status == "quality_budget_exhausted"
+        and not previous_strategy_reset
+    )
+    if previous_status == "quality_budget_exhausted" and previous_strategy_reset:
+        return {
+            "success": False,
+            "action": "compile_prompt",
+            "shot_id": shot_id,
+            "status": "human_review_required",
+            "hard_blockers": blockers,
+            "error": "The one-time composition strategy reset also failed.",
+        }
+    if blockers:
+        prompt += (
+            " Prior QC blocker(s): "
+            + "; ".join(blockers)
+            + ". Repair directive: materially change the composition instead of "
+            "repeating the prior framing. Keep the declared subtitle-safe area "
+            "completely free of the focal subject, hands, supports, and evidence."
+        )
+    if strategy_reset:
+        prompt += (
+            " This is the one-time composition strategy reset after the normal repair "
+            "budget was exhausted. Use a wider or offset framing with all focal evidence "
+            "grouped away from the subtitle-safe area; do not imitate the previous crop."
+        )
+    candidate_id_hint = (
+        f"{shot_id}_LAYOUT_C01"
+        if strategy_reset
+        else f"{shot_id}_C{min(previous_round + 1, MAX_REPAIR_ROUNDS):02d}"
+    )
     prompt_path = context.project_dir / "prompts" / f"{shot_id}.txt"
     prompt_path.parent.mkdir(parents=True, exist_ok=True)
     prompt_path.write_text(prompt + "\n", encoding="utf-8")
@@ -153,6 +209,10 @@ def _compile_prompt(
         "generation_policy": "qc_driven_selective_regeneration",
         "max_repair_rounds": MAX_REPAIR_ROUNDS,
         "quality_threshold": QUALITY_THRESHOLD,
+        "repair_feedback_applied": bool(blockers),
+        "strategy_reset": strategy_reset,
+        "remaining_strategy_reset_candidates": 1 if strategy_reset else 0,
+        "candidate_id_hint": candidate_id_hint,
     }
 
 
@@ -198,6 +258,7 @@ def _judge_candidates(
         )
         if match is not None:
             repair_round = max(repair_round, int(match.group(1)))
+    strategy_reset = any(row.get("strategy_reset") is True for row in candidates)
     if not 1 <= repair_round <= MAX_REPAIR_ROUNDS:
         return {
             "success": False,
@@ -347,7 +408,7 @@ def _judge_candidates(
         "selected_current"
         if selected_id
         else "quality_budget_exhausted"
-        if repair_round >= MAX_REPAIR_ROUNDS
+        if repair_round >= MAX_REPAIR_ROUNDS or strategy_reset
         else "repair_required"
     )
     for assessment in assessments:
@@ -389,6 +450,7 @@ def _judge_candidates(
                     "evidence": assessment.get("evidence") or [],
                 },
                 "repair_round": repair_round,
+                "strategy_reset": strategy_reset,
                 "reviewed_at": _utc_now(),
             }
         )
@@ -409,7 +471,7 @@ def _judge_candidates(
         "selected"
         if selected_id
         else "quality_budget_exhausted"
-        if repair_round >= MAX_REPAIR_ROUNDS
+        if repair_round >= MAX_REPAIR_ROUNDS or strategy_reset
         else "repair_required"
     )
     return {
@@ -423,6 +485,7 @@ def _judge_candidates(
         "ranked_candidate_ids": list(decision.ranked_candidate_ids),
         "best_score": decision.best_score,
         "quality_threshold": QUALITY_THRESHOLD,
+        "strategy_reset": strategy_reset,
         "manifest": _relative(context, manifest_path),
         "judge_provider": judge_provider,
         "judge_model": str(getattr(result, "model", "") or ""),
