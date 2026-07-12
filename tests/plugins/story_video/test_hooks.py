@@ -307,6 +307,35 @@ def test_autopilot_stops_for_operator_setup_blocker(tmp_path, monkeypatch) -> No
     assert continuation is None
 
 
+def test_autopilot_stops_after_three_identical_blocked_phase_reports(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    start = hooks.pre_gateway_dispatch(
+        event=_event("故事影片：恐龍起源｜5分鐘｜真實照片。完整製作並出片。")
+    )
+    hooks.pre_llm_call(session_id="session-auto", user_message=start["text"])
+    blocked = "STORY_VIDEO_PHASE_PROOF: keyframes BLOCKED"
+
+    first = hooks.auto_continue_llm_output(
+        session_id="session-auto", response_text=blocked
+    )
+    second = hooks.auto_continue_llm_output(
+        session_id="session-auto", response_text=blocked
+    )
+    third = hooks.auto_continue_llm_output(
+        session_id="session-auto", response_text=blocked
+    )
+
+    assert first is not None
+    assert second is not None
+    assert third is None
+    context = store.for_session("session-auto")
+    assert context is not None
+    assert context.autopilot_stall_count == 3
+
+
 def test_pre_llm_creates_context_for_direct_cli_story_video_request(
     tmp_path, monkeypatch
 ) -> None:

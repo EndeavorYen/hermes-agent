@@ -119,9 +119,19 @@ def _dispatch_tool(
         from model_tools import handle_function_call as dispatch
     else:
         dispatch = handle_function_call
+    normalized_kwargs = kwargs or {}
+    if set(normalized_kwargs) == {"kwargs"}:
+        envelope = normalized_kwargs["kwargs"]
+        if isinstance(envelope, str):
+            try:
+                envelope = json.loads(envelope)
+            except (TypeError, ValueError):
+                envelope = None
+        if isinstance(envelope, dict):
+            normalized_kwargs = envelope
     return dispatch(
         tool_name,
-        kwargs or {},
+        normalized_kwargs,
         session_id=os.environ.get("HERMES_SESSION_ID") or None,
     )
 

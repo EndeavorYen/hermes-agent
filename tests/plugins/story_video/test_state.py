@@ -115,6 +115,11 @@ def test_existing_project_persists_autopilot_activation(tmp_path) -> None:
         original_request="start",
     )
     assert context.auto_mode is False
+    context = store.update(
+        context,
+        autopilot_last_signature="planning:blocked:continue",
+        autopilot_stall_count=3,
+    )
 
     auto = parse_operator_call("全自動", has_active_project=True)
     assert auto is not None
@@ -126,6 +131,8 @@ def test_existing_project_persists_autopilot_activation(tmp_path) -> None:
     )
 
     assert context.auto_mode is True
+    assert context.autopilot_last_signature == ""
+    assert context.autopilot_stall_count == 0
     assert store.for_session("session-1").auto_mode is True
 
 

@@ -75,6 +75,48 @@ class TestModuleSurface:
         assert result == "ok"
         assert observed["session_id"] == "story-session-1"
 
+    def test_mcp_dispatch_unwraps_fastmcp_kwargs_envelope(self):
+        import agent.transports.hermes_tools_mcp_server as m
+
+        observed = {}
+
+        def fake_handle(name, args, **kwargs):
+            observed.update({"name": name, "args": args, **kwargs})
+            return "ok"
+
+        result = m._dispatch_tool(
+            "image_generate",
+            {"kwargs": {"prompt": "Triassic river", "provider": "openai-codex"}},
+            handle_function_call=fake_handle,
+        )
+
+        assert result == "ok"
+        assert observed["args"] == {
+            "prompt": "Triassic river",
+            "provider": "openai-codex",
+        }
+
+    def test_mcp_dispatch_decodes_string_fastmcp_kwargs_envelope(self):
+        import agent.transports.hermes_tools_mcp_server as m
+
+        observed = {}
+
+        def fake_handle(name, args, **kwargs):
+            observed.update({"name": name, "args": args, **kwargs})
+            return "ok"
+
+        result = m._dispatch_tool(
+            "story_video_control",
+            {"kwargs": '{"action":"validate","phase":"keyframes"}'},
+            handle_function_call=fake_handle,
+        )
+
+        assert result == "ok"
+        assert observed["args"] == {
+            "action": "validate",
+            "phase": "keyframes",
+        }
+
     def test_agent_loop_tools_not_exposed(self):
         """delegate_task / memory / session_search / todo require the
         running AIAgent context to dispatch, so a stateless MCP callback
