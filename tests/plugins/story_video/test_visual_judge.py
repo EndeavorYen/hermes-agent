@@ -364,3 +364,78 @@ def test_status_summarizes_selected_and_blocked_shots(tmp_path) -> None:
     assert payload["success"] is True
     assert payload["selected_shot_count"] == 1
     assert payload["blocked_shot_ids"] == ["S00_SH01"]
+
+
+def test_prepare_render_writes_exact_renderer_v2_contract(tmp_path) -> None:
+    store, context, _shot = _context(tmp_path)
+    image = context.project_dir / "images" / "S00_SH00.png"
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b"selected-image")
+    audio = context.project_dir / "audio" / "qwen" / "S00.wav"
+    audio.parent.mkdir(parents=True)
+    audio.write_bytes(b"narration")
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps(
+            {
+                "provider": "openai-codex",
+                "judge_provider": "openai-codex",
+                "outputs": [
+                    {
+                        "shot_id": "S00_SH00",
+                        "selected": True,
+                        "status": "selected_current",
+                        "local_path": "images/S00_SH00.png",
+                        "provider": "openai-codex",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (manifests / "narration_manifest.json").write_text(
+        json.dumps(
+            {
+                "provider": "local_qwen",
+                "outputs": [
+                    {
+                        "scene_id": "S00",
+                        "audio": str(audio),
+                        "display_text": "直立腿讓早期恐龍移動得更有效率。",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        story_video_quality_control(
+            {"action": "prepare_render"},
+            session_id="session-1",
+            store=store,
+        )
+    )
+
+    assert payload["success"] is True
+    render_input = json.loads(
+        (context.project_dir / "render_input.json").read_text(encoding="utf-8")
+    )
+    assert render_input["schema"] == "story_video_render_input_v2"
+    assert render_input["resolution"] == {"width": 1920, "height": 1080}
+    assert render_input["post_speech_hold_sec"] == 0.85
+    assert render_input["max_post_speech_hold_sec"] == 1.5
+    assert render_input["zoom_max"] == 1.025
+    scene = render_input["scenes"][0]
+    assert scene["selected"] is True
+    assert scene["audio"] == "audio/qwen/S00.wav"
+    assert scene["narration"] == "直立腿讓早期恐龍移動得更有效率。"
+    assert scene["shots"][0] == {
+        "shot_id": "S00_SH00",
+        "selected": True,
+        "image": "images/S00_SH00.png",
+        "narration": "直立腿讓早期恐龍移動得更有效率。",
+    }
+    assert render_input["opening_card"]["image"] == "images/S00_SH00.png"
+    assert render_input["ending_card"]["image"] == "images/S00_SH00.png"

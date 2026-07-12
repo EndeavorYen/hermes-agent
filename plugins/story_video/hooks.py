@@ -158,7 +158,19 @@ def pre_llm_call(
             _write_project_contract(context)
             action = call.action
         else:
-            action = "continue"
+            call = parse_operator_call(
+                str(user_message or ""), has_active_project=True
+            )
+            if call is None:
+                action = "continue"
+            else:
+                context = _STORE.create_or_load(
+                    source_key=context.source_key,
+                    session_id=session_id,
+                    call=call,
+                    original_request=str(user_message or ""),
+                )
+                action = call.action
     else:
         call = OperatorCall(
             action=str(payload.get("action") or "continue"),
@@ -229,6 +241,10 @@ def pre_llm_call(
         "stopping. "
         "During voice, compile display text to low-ambiguity spoken text with the "
         "project pronunciation lexicon and require qc/pronunciation_qc_report.json. "
+        "During render, call story_video_quality_control action=prepare_render; it is "
+        "the only writer of render_input.json. Never hand-edit render_input.json or "
+        "invent renderer aliases. Then run the story-video production pipeline's "
+        "render_story_video.py for project_dir and validate render. "
         "Do not inspect other story-video projects, source code, memory, or unrelated "
         "skills, and do not "
         "invoke brainstorming, nested Hermes sessions, web research, or media "

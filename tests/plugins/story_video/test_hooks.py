@@ -336,6 +336,29 @@ def test_autopilot_stops_after_three_identical_blocked_phase_reports(
     assert context.autopilot_stall_count == 3
 
 
+def test_direct_full_auto_resets_existing_stall_guard(tmp_path, monkeypatch) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    hooks.pre_llm_call(
+        session_id="session-auto",
+        user_message="故事影片：恐龍起源｜5分鐘｜真實照片。完整製作並出片。",
+    )
+    context = store.for_session("session-auto")
+    assert context is not None
+    store.update(
+        context,
+        autopilot_last_signature="keyframes:blocked:repair",
+        autopilot_stall_count=3,
+    )
+
+    hooks.pre_llm_call(session_id="session-auto", user_message="全自動")
+
+    reset = store.for_session("session-auto")
+    assert reset is not None
+    assert reset.autopilot_last_signature == ""
+    assert reset.autopilot_stall_count == 0
+
+
 def test_pre_llm_creates_context_for_direct_cli_story_video_request(
     tmp_path, monkeypatch
 ) -> None:

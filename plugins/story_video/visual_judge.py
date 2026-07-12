@@ -446,6 +446,150 @@ def _status(context: StoryVideoRunContext) -> dict[str, Any]:
     }
 
 
+def _required_project_file(
+    context: StoryVideoRunContext,
+    value: Any,
+    *,
+    label: str,
+) -> tuple[Path, str]:
+    path = _project_path(context, value)
+    try:
+        relative = str(path.relative_to(context.project_dir.resolve()))
+    except ValueError as exc:
+        raise ValueError(f"{label} is outside the story-video project") from exc
+    if not path.is_file():
+        raise ValueError(f"missing {label}: {relative}")
+    return path, relative
+
+
+def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
+    ledger = _load_json(context.project_dir / "scene_ledger.json")
+    candidate_manifest = _load_json(
+        context.project_dir / "manifests" / "shot_candidate_manifest.json"
+    )
+    narration_manifest = _load_json(
+        context.project_dir / "manifests" / "narration_manifest.json"
+    )
+    if not isinstance(ledger, dict):
+        raise ValueError("scene_ledger.json is missing or invalid")
+    if not isinstance(candidate_manifest, dict):
+        raise ValueError("shot_candidate_manifest.json is missing or invalid")
+    if not isinstance(narration_manifest, dict):
+        raise ValueError("narration_manifest.json is missing or invalid")
+
+    selected_by_shot: dict[str, dict[str, Any]] = {}
+    for output in candidate_manifest.get("outputs") or []:
+        if not isinstance(output, dict) or output.get("selected") is not True:
+            continue
+        shot_id = str(output.get("shot_id") or "").strip()
+        if not shot_id:
+            continue
+        if _provider(output.get("provider")) not in {"openai", "openai-codex"}:
+            raise ValueError(f"selected shot {shot_id} is not from OpenAI")
+        selected_by_shot[shot_id] = output
+
+    narration_by_scene = {
+        str(output.get("scene_id") or "").strip(): output
+        for output in narration_manifest.get("outputs") or []
+        if isinstance(output, dict) and str(output.get("scene_id") or "").strip()
+    }
+    raw_scenes = ledger.get("scenes")
+    if not isinstance(raw_scenes, list) or not raw_scenes:
+        raise ValueError("scene_ledger.json has no scenes")
+
+    scenes: list[dict[str, Any]] = []
+    selected_images: list[str] = []
+    for scene in raw_scenes:
+        if not isinstance(scene, dict):
+            continue
+        scene_id = str(scene.get("scene_id") or "").strip()
+        narration = narration_by_scene.get(scene_id)
+        if not scene_id or narration is None:
+            raise ValueError(f"missing narration output for scene {scene_id or '<unknown>'}")
+        _audio_path, audio_relative = _required_project_file(
+            context,
+            narration.get("audio"),
+            label=f"audio for {scene_id}",
+        )
+        display_text = str(narration.get("display_text") or "").strip()
+        if not display_text:
+            raise ValueError(f"missing display_text for scene {scene_id}")
+        shots: list[dict[str, Any]] = []
+        raw_shots = scene.get("shots")
+        if not isinstance(raw_shots, list) or not raw_shots:
+            raise ValueError(f"scene {scene_id} has no shots")
+        for shot in raw_shots:
+            if not isinstance(shot, dict):
+                continue
+            shot_id = str(shot.get("shot_id") or "").strip()
+            selected = selected_by_shot.get(shot_id)
+            if selected is None:
+                raise ValueError(f"missing selected image for shot {shot_id}")
+            _image_path, image_relative = _required_project_file(
+                context,
+                selected.get("local_path"),
+                label=f"image for {shot_id}",
+            )
+            selected_images.append(image_relative)
+            shots.append(
+                {
+                    "shot_id": shot_id,
+                    "selected": True,
+                    "image": image_relative,
+                    "narration": str(shot.get("narration_text") or display_text),
+                }
+            )
+        scenes.append(
+            {
+                "scene_id": scene_id,
+                "selected": True,
+                "audio": audio_relative,
+                "narration": display_text,
+                "shots": shots,
+            }
+        )
+    if not selected_images:
+        raise ValueError("render requires selected shot images")
+
+    render_input = {
+        "schema": "story_video_render_input_v2",
+        "project_title": context.topic,
+        "title": context.topic,
+        "resolution": {"width": 1920, "height": 1080},
+        "fps": 30,
+        "post_speech_hold_sec": 0.85,
+        "max_post_speech_hold_sec": 1.5,
+        "motion_policy": "stable_center_zoom",
+        "zoom_max": 1.025,
+        "subtitle": {"max_lines": 2, "max_chars_per_line": 29},
+        "opening_card": {
+            "title": context.topic,
+            "image": selected_images[0],
+            "duration_sec": 1.0,
+        },
+        "ending_card": {
+            "title": "探索仍在繼續",
+            "image": selected_images[-1],
+            "duration_sec": 1.0,
+        },
+        "scenes": scenes,
+        "output": "video/final.mp4",
+    }
+    path = context.project_dir / "render_input.json"
+    _write_json_atomic(path, render_input)
+    return {
+        "success": True,
+        "action": "prepare_render",
+        "render_input": _relative(context, path),
+        "renderer": (
+            "skills/creative/story-video-production-pipeline/scripts/"
+            "render_story_video.py"
+        ),
+        "scene_count": len(scenes),
+        "selected_shot_count": len(selected_images),
+    }
+
+
 def story_video_quality_control(
     args: dict[str, Any],
     *,
@@ -482,6 +626,8 @@ def story_video_quality_control(
                 repair_round=int(args.get("repair_round") or 1),
                 llm=llm or _PLUGIN_LLM,
             )
+        elif action == "prepare_render":
+            payload = _prepare_render(context)
         elif action == "status":
             payload = _status(context)
         else:
