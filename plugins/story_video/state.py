@@ -280,6 +280,35 @@ class StoryVideoStateStore:
     def for_session(self, session_id: str) -> StoryVideoRunContext | None:
         return self._from_index(self.session_index_path, session_id)
 
+    def for_run(
+        self,
+        *,
+        run_id: str,
+        project_dir: str | Path,
+    ) -> StoryVideoRunContext | None:
+        if not run_id or not project_dir:
+            return None
+        try:
+            root = self.root.expanduser().resolve()
+            candidate = Path(project_dir).expanduser().resolve()
+            candidate.relative_to(root)
+        except (OSError, RuntimeError, ValueError):
+            return None
+        payload = self._read_json(candidate / "story_video_run_context.json", None)
+        if not isinstance(payload, dict):
+            return None
+        try:
+            context = StoryVideoRunContext.from_dict(payload)
+        except (KeyError, TypeError, ValueError):
+            return None
+        try:
+            context_dir = context.project_dir.expanduser().resolve()
+        except (OSError, RuntimeError):
+            return None
+        if context.run_id != run_id or context_dir != candidate:
+            return None
+        return context
+
     def create_or_load(
         self,
         *,
