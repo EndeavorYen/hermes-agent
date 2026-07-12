@@ -737,6 +737,96 @@ class TestCodexToolProgressBridge:
             "type": "dynamicToolCall", "tool": "web_search", "arguments": {"q": "x"}}}}
         assert _codex_note_to_tool_progress(dyn)[0] == "web_search"
 
+    def test_mapper_image_generation(self):
+        from agent.codex_runtime import _codex_note_to_tool_progress
+
+        note = {"method": "item/started", "params": {"item": {
+            "type": "imageGeneration", "id": "img-1"}}}
+
+        assert _codex_note_to_tool_progress(note) == (
+            "image_generate",
+            "generating image",
+            {"item_id": "img-1"},
+        )
+
+    def test_image_generation_completion_reports_counts(self, monkeypatch):
+        captured_init = {}
+        statuses = []
+
+        def fake_init(self, **kwargs):
+            captured_init.update(kwargs)
+            self._client = None
+
+        def fake_run_turn(self, user_input, **kwargs):
+            on_event = captured_init["on_event"]
+            on_event({"method": "item/completed", "params": {"item": {
+                "type": "imageGeneration", "id": "img-1", "status": "completed"}}})
+            on_event({"method": "item/completed", "params": {"item": {
+                "type": "imageGeneration", "id": "img-2", "status": "failed"}}})
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                turn_id="t1",
+                thread_id="th1",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(CodexAppServerSession, "ensure_started", lambda self: "th1")
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+
+        agent = _make_codex_agent()
+        agent.status_callback = lambda kind, message: statuses.append((kind, message))
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("Please generate 4 images")
+
+        assert statuses == [
+            ("lifecycle", "Image progress: target 4, succeeded 1, failed attempts 0, remaining 3."),
+            ("lifecycle", "Image progress: target 4, succeeded 1, failed attempts 1, remaining 3."),
+        ]
+        activity = agent.get_activity_summary()
+        assert activity["last_activity_desc"] == statuses[-1][1]
+        assert activity["seconds_since_activity"] < 1
+
+    def test_incomplete_codex_turn_replaces_stale_image_status(self, monkeypatch):
+        captured_init = {}
+
+        def fake_init(self, **kwargs):
+            captured_init.update(kwargs)
+            self._client = None
+
+        def fake_run_turn(self, user_input, **kwargs):
+            on_event = captured_init["on_event"]
+            on_event({"method": "item/completed", "params": {"item": {
+                "type": "imageGeneration", "id": "img-1", "status": "completed"}}})
+            on_event({"method": "item/completed", "params": {"item": {
+                "type": "imageGeneration", "id": "img-2", "status": "failed"}}})
+            return TurnResult(
+                final_text="All 4 images are still generating.",
+                projected_messages=[{
+                    "role": "assistant",
+                    "content": "All 4 images are still generating.",
+                }],
+                turn_id="t1",
+                thread_id="th1",
+                should_retire=True,
+                incomplete_turn_recovered=True,
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(CodexAppServerSession, "ensure_started", lambda self: "th1")
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+
+        agent = _make_codex_agent()
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("Please generate 4 images")
+
+        assert result["final_response"] == (
+            "Image progress: target 4, succeeded 1, failed attempts 1, remaining 3. "
+            "The Codex turn reached its time limit. Completed outputs were preserved, "
+            "and the session was reset so the next message can continue safely."
+        )
+        assert agent._codex_session is None
+
     def test_mapper_ignores_non_tool_items_and_other_methods(self):
         from agent.codex_runtime import _codex_note_to_tool_progress
         # agentMessage / reasoning items are not tool-shaped

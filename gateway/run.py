@@ -3219,6 +3219,37 @@ async def _dispose_unused_adapter(adapter: "BasePlatformAdapter | None") -> None
         )
 
 
+def _format_long_running_activity_detail(
+    agent: Any,
+    want_iteration_detail: bool,
+) -> str:
+    """Format heartbeat detail from the agent's current activity snapshot.
+
+    Codex app-server owns its internal tool loop, so Hermes' iteration counter
+    remains unrelated to actual image or tool progress. Hide that counter on
+    this route and surface the latest concrete activity instead.
+    """
+    if not hasattr(agent, "get_activity_summary"):
+        return ""
+    try:
+        activity = agent.get_activity_summary()
+        parts = []
+        if (
+            want_iteration_detail
+            and getattr(agent, "api_mode", "") != "codex_app_server"
+        ):
+            parts.append(
+                f"iteration {activity['api_call_count']}/"
+                f"{activity['max_iterations']}"
+            )
+        action = activity.get("current_tool") or activity.get("last_activity_desc")
+        if action:
+            parts.append(str(action))
+        return " — " + ", ".join(parts) if parts else ""
+    except Exception:
+        return ""
+
+
 class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
     """
     Main gateway controller.
@@ -19599,21 +19630,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         True,
                     )
                 )
-                if _agent_ref and hasattr(_agent_ref, "get_activity_summary"):
-                    try:
-                        _a = _agent_ref.get_activity_summary()
-                        _parts = []
-                        if _want_iteration_detail:
-                            _parts.append(
-                                f"iteration {_a['api_call_count']}/{_a['max_iterations']}"
-                            )
-                        _action = _a.get("current_tool") or _a.get("last_activity_desc")
-                        if _action:
-                            _parts.append(str(_action))
-                        if _parts:
-                            _status_detail = " — " + ", ".join(_parts)
-                    except Exception:
-                        pass
+                if _agent_ref:
+                    _status_detail = _format_long_running_activity_detail(
+                        _agent_ref,
+                        _want_iteration_detail,
+                    )
                 _heartbeat_text = (
                     _generic_status_phrase("status")
                     if _long_running_mode == "generic"

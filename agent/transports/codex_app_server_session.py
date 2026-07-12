@@ -76,6 +76,7 @@ class TurnResult:
     token_usage_total: Optional[dict[str, Any]] = None
     model_context_window: Optional[int] = None
     compacted: bool = False
+    incomplete_turn_recovered: bool = False
     # Hint to the caller that the underlying codex subprocess is likely
     # wedged (turn-level timeout fired, post-tool watchdog tripped, or
     # token-refresh failure killed the child). The caller should retire
@@ -637,6 +638,13 @@ class CodexAppServerSession:
                 "assistant message but before turn/completed; accepting "
                 "the assistant text as the terminal response"
             )
+            # The text is usable, but the underlying Codex turn is not in a
+            # reusable terminal state. Interrupt any remaining provider work
+            # and retire the session so the next user message starts from a
+            # clean app-server thread instead of inheriting a dangling turn.
+            self._issue_interrupt(result.turn_id)
+            result.should_retire = True
+            result.incomplete_turn_recovered = True
             turn_complete = True
 
         if not turn_complete and not result.interrupted:
