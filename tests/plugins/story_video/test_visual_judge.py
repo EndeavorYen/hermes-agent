@@ -471,3 +471,48 @@ def test_prepare_render_writes_exact_renderer_v2_contract(tmp_path) -> None:
     }
     assert render_input["opening_card"]["image"] == "images/S00_SH00.png"
     assert render_input["ending_card"]["image"] == "images/S00_SH00.png"
+
+
+def test_prepare_render_prefers_branded_release_cards(tmp_path) -> None:
+    store, context, _shot = _context(tmp_path)
+    image = context.project_dir / "images" / "S00_SH00.png"
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b"selected-image")
+    audio = context.project_dir / "audio" / "qwen" / "S00.wav"
+    audio.parent.mkdir(parents=True)
+    audio.write_bytes(b"narration")
+    release_art = context.project_dir / "release_art"
+    release_art.mkdir(parents=True)
+    (release_art / "opening_card.png").write_bytes(b"opening")
+    (release_art / "ending_card.png").write_bytes(b"ending")
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps({"outputs": [{
+            "shot_id": "S00_SH00", "selected": True,
+            "local_path": "images/S00_SH00.png", "provider": "openai-codex"
+        }]}), encoding="utf-8"
+    )
+    (manifests / "narration_manifest.json").write_text(
+        json.dumps({"outputs": [{
+            "scene_id": "S00", "audio": "audio/qwen/S00.wav",
+            "display_text": "旁白"
+        }]}), encoding="utf-8"
+    )
+
+    payload = json.loads(story_video_quality_control(
+        {"action": "prepare_render"}, session_id="session-1", store=store
+    ))
+
+    assert payload["success"] is True
+    render_input = json.loads((context.project_dir / "render_input.json").read_text())
+    assert render_input["opening_card"] == {
+        "title": context.topic,
+        "image": "release_art/opening_card.png",
+        "duration_sec": 2.0,
+    }
+    assert render_input["ending_card"] == {
+        "title": "探索仍在繼續",
+        "image": "release_art/ending_card.png",
+        "duration_sec": 5.0,
+    }

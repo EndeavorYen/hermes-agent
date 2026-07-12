@@ -257,3 +257,17 @@ def test_new_cross_phase_repair_is_not_treated_as_stale(tmp_path) -> None:
 
     assert repaired.repair_phase == "render"
     assert repaired.next_call == "修正：補齊 voice：重新錄製 S03"
+
+
+def test_parse_operator_call_supports_youtube_review_package() -> None:
+    call = parse_operator_call("準備上架", has_active_project=True)
+
+    assert call is not None
+    assert call.action == "package"
+
+
+def test_parse_operator_call_requires_explicit_youtube_upload_approval() -> None:
+    call = parse_operator_call("核准上傳 YouTube", has_active_project=True)
+
+    assert call is not None
+    assert call.action == "approve_upload"

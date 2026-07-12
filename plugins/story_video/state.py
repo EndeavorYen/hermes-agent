@@ -167,6 +167,22 @@ def parse_operator_call(
         return OperatorCall(action="continue") if has_active_project else None
     if lowered in {"出片", "渲染", "render", "final cut", "故事影片出片"}:
         return OperatorCall(action="render") if has_active_project else None
+    if lowered in {
+        "準備上架",
+        "准备上架",
+        "youtube 審核包",
+        "youtube 审核包",
+        "準備 youtube 審核包",
+        "准备 youtube 审核包",
+    }:
+        return OperatorCall(action="package") if has_active_project else None
+    if lowered in {
+        "核准上傳 youtube",
+        "核准上传 youtube",
+        "批准上傳 youtube",
+        "批准上传 youtube",
+    }:
+        return OperatorCall(action="approve_upload") if has_active_project else None
 
     repair = re.match(
         r"^\s*(?:(?:故事影片|產影片|story\s*video|story-video)\s*)?"
