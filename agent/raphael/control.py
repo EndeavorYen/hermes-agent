@@ -320,7 +320,9 @@ def build_raphael_control_decision(
             confidence=0.9,
         )
 
-    if _looks_like_story_video_orchestration(prompt):
+    if _looks_like_story_video_orchestration(prompt) or _looks_like_story_video_followup(
+        prompt, conversation_history
+    ):
         return RaphaelControlDecision(
             mode="general_conversation",
             goal=RaphaelGoalDecision(
@@ -935,6 +937,42 @@ def _looks_like_story_video_orchestration(prompt: str) -> bool:
             "story video:",
         )
     )
+
+
+def _looks_like_story_video_followup(
+    prompt: str,
+    conversation_history: Sequence[Mapping[str, Any]] | None,
+) -> bool:
+    compact = re.sub(r"\s+", "", str(prompt or "").casefold())
+    if not any(
+        marker in compact
+        for marker in (
+            "繼續",
+            "继续",
+            "修正",
+            "補齊",
+            "补齐",
+            "planning",
+            "keyframes",
+            "voice",
+            "render",
+        )
+    ):
+        return False
+    for item in reversed(tuple(conversation_history or ())[-8:]):
+        history_text = _extract_text(item).casefold()
+        if any(
+            marker in history_text
+            for marker in (
+                "story_video_operator_context",
+                "story_video_run_context",
+                "story_video_phase_proof",
+                "故事影片：",
+                "故事影片:",
+            )
+        ):
+            return True
+    return False
 
 
 def _looks_like_story_video_implementation_task(prompt: str) -> bool:
