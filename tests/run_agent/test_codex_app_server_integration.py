@@ -827,6 +827,89 @@ class TestCodexToolProgressBridge:
         )
         assert agent._codex_session is None
 
+    def test_multi_image_request_extends_codex_turn_timeout(self, monkeypatch):
+        captured_timeout = []
+
+        def fake_run_turn(self, user_input, **kwargs):
+            captured_timeout.append(kwargs.get("turn_timeout"))
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                turn_id="t1",
+                thread_id="th1",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(CodexAppServerSession, "ensure_started", lambda self: "th1")
+
+        agent = _make_codex_agent()
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("Continue and generate the remaining 3 images")
+
+        assert captured_timeout == [1200.0]
+
+    def test_completed_image_emits_generated_artifact_event(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        captured_init = {}
+        artifact_events = []
+        thread_id = "thread-image-1"
+        item_id = "exec-image-1"
+        image_path = (
+            tmp_path / "generated_images" / thread_id / f"{item_id}.png"
+        )
+        image_path.parent.mkdir(parents=True)
+        image_path.write_bytes(b"png")
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+
+        def fake_init(self, **kwargs):
+            captured_init.update(kwargs)
+            self._client = None
+
+        def fake_run_turn(self, user_input, **kwargs):
+            captured_init["on_event"]({
+                "method": "item/completed",
+                "params": {
+                    "threadId": thread_id,
+                    "item": {
+                        "type": "imageGeneration",
+                        "id": item_id,
+                        "status": "completed",
+                    },
+                },
+            })
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                turn_id="t1",
+                thread_id=thread_id,
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(CodexAppServerSession, "ensure_started", lambda self: thread_id)
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+
+        agent = _make_codex_agent()
+        agent.event_callback = lambda kind, context: artifact_events.append(
+            (kind, context)
+        )
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("Generate 2 images")
+
+        assert artifact_events == [
+            (
+                "artifact:generated",
+                {
+                    "path": str(image_path),
+                    "media_type": "image/png",
+                    "artifact_index": 1,
+                    "target": 2,
+                },
+            )
+        ]
+
     def test_mapper_ignores_non_tool_items_and_other_methods(self):
         from agent.codex_runtime import _codex_note_to_tool_progress
         # agentMessage / reasoning items are not tool-shaped

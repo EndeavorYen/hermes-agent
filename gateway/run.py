@@ -3250,6 +3250,45 @@ def _format_long_running_activity_detail(
         return ""
 
 
+async def _deliver_generated_artifact_event(
+    adapter: Any,
+    chat_id: str,
+    context: Dict[str, Any],
+    metadata: Optional[Dict[str, Any]],
+) -> bool:
+    """Upload a trusted local image emitted by the Codex runtime."""
+    path = Path(str(context.get("path") or "")).expanduser().resolve()
+    codex_home = Path(os.environ.get("CODEX_HOME") or "~/.codex").expanduser()
+    generated_root = (codex_home / "generated_images").resolve()
+    try:
+        path.relative_to(generated_root)
+    except ValueError:
+        return False
+    if (
+        str(context.get("media_type") or "") != "image/png"
+        or not path.is_file()
+    ):
+        return False
+    index = context.get("artifact_index")
+    target = context.get("target")
+    caption = "Image completed"
+    if isinstance(index, int) and index > 0:
+        caption = f"Image {index} completed"
+        if isinstance(target, int) and target > 0:
+            caption = f"Image {index}/{target} completed"
+    try:
+        result = await adapter.send_image_file(
+            chat_id=chat_id,
+            image_path=str(path),
+            caption=caption,
+            metadata=metadata,
+        )
+        return bool(getattr(result, "success", False))
+    except Exception:
+        logger.warning("Generated artifact delivery failed", exc_info=True)
+        return False
+
+
 class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
     """
     Main gateway controller.
@@ -18135,6 +18174,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Bridge sync event_callback → async hooks.emit for lifecycle events
         # (e.g. session:compress fires after context compression splits a session)
         def _event_callback_sync(event_type: str, context: dict) -> None:
+            if event_type == "artifact:generated" and _status_adapter:
+                safe_schedule_threadsafe(
+                    _deliver_generated_artifact_event(
+                        _status_adapter,
+                        _status_chat_id,
+                        context,
+                        _status_thread_metadata,
+                    ),
+                    _loop_for_step,
+                    logger=logger,
+                    log_message="generated artifact delivery scheduling error",
+                )
             try:
                 asyncio.run_coroutine_threadsafe(
                     _hooks_ref.emit(event_type, context),
