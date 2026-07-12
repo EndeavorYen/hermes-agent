@@ -707,6 +707,7 @@ def run_codex_app_server_turn(
     if auto_request is not None and auto_count < _MAX_PLUGIN_AUTO_CONTINUATIONS:
         agent._plugin_auto_continue_count = auto_count + 1
         auto_message = auto_request["message"]
+        auto_contexts: list[str] = []
         for hook_result in _invoke_runtime_hook(
             "pre_llm_call",
             session_id=agent.session_id or "",
@@ -720,8 +721,9 @@ def run_codex_app_server_turn(
             if isinstance(hook_result, dict):
                 context = str(hook_result.get("context") or "").strip()
                 if context:
-                    auto_message = f"{auto_message}\n\n{context}"
-                    break
+                    auto_contexts.append(context)
+        if auto_contexts:
+            auto_message = f"{auto_message}\n\n" + "\n\n".join(auto_contexts)
         continued = run_codex_app_server_turn(
             agent,
             user_message=auto_message,

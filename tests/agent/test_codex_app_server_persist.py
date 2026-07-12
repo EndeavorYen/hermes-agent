@@ -342,7 +342,10 @@ def test_codex_runtime_runs_bounded_plugin_auto_continuation(monkeypatch):
             if continuation_calls["count"] == 1:
                 return [{"action": "continue", "message": "AUTO NEXT"}]
         if name == "pre_llm_call" and kwargs.get("auto_continuation") is True:
-            return [{"context": "AUTO CONTEXT"}]
+            return [
+                {"context": "RAPHAEL CONTEXT"},
+                {"context": "STORY VIDEO CONTEXT"},
+            ]
         return []
 
     monkeypatch.setattr(hermes_cli.plugins, "has_hook", lambda _name: True)
@@ -370,7 +373,7 @@ def test_codex_runtime_runs_bounded_plugin_auto_continuation(monkeypatch):
 
     assert agent._codex_session.run_turn.call_count == 2
     assert agent._codex_session.run_turn.call_args_list[1].kwargs["user_input"] == (
-        "AUTO NEXT\n\nAUTO CONTEXT"
+        "AUTO NEXT\n\nRAPHAEL CONTEXT\n\nSTORY VIDEO CONTEXT"
     )
     assert result["final_response"] == "AUTO COMPLETE"
     assert result["api_calls"] == 2

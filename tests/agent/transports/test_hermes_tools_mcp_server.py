@@ -49,6 +49,32 @@ class TestModuleSurface:
         ):
             assert required in EXPOSED_TOOLS, f"missing {required!r}"
 
+    def test_story_video_control_tools_are_exposed(self):
+        from agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
+
+        assert "story_video_control" in EXPOSED_TOOLS
+        assert "story_video_quality_control" in EXPOSED_TOOLS
+
+    def test_mcp_dispatch_forwards_hermes_session_id(self, monkeypatch):
+        import agent.transports.hermes_tools_mcp_server as m
+
+        observed = {}
+
+        def fake_handle(name, args, **kwargs):
+            observed.update({"name": name, "args": args, **kwargs})
+            return "ok"
+
+        monkeypatch.setenv("HERMES_SESSION_ID", "story-session-1")
+
+        result = m._dispatch_tool(
+            "story_video_control",
+            {"action": "validate"},
+            handle_function_call=fake_handle,
+        )
+
+        assert result == "ok"
+        assert observed["session_id"] == "story-session-1"
+
     def test_agent_loop_tools_not_exposed(self):
         """delegate_task / memory / session_search / todo require the
         running AIAgent context to dispatch, so a stateless MCP callback
