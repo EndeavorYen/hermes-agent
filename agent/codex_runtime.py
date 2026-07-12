@@ -21,6 +21,7 @@ import os
 import re
 import time
 import uuid
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Mapping
 
@@ -171,6 +172,34 @@ def _format_image_progress(progress: Mapping[str, Any]) -> str:
         f"Image progress: succeeded {succeeded}, "
         f"failed attempts {failed}."
     )
+
+
+def _codex_turn_timeout_for_image_target(target: int | None) -> float:
+    """Give multi-image turns enough time while keeping a bounded deadline."""
+    if not isinstance(target, int) or target <= 1:
+        return 600.0
+    return float(min(1800, 600 + ((target - 1) * 300)))
+
+
+def _completed_codex_image_path(note: Mapping[str, Any]) -> Path | None:
+    params = note.get("params") or {}
+    item = params.get("item") or {}
+    if str(item.get("status") or "").strip().lower() not in {
+        "completed", "succeeded", "success",
+    }:
+        return None
+    thread_id = str(params.get("threadId") or "").strip()
+    item_id = str(item.get("id") or "").strip()
+    if not thread_id or not item_id:
+        return None
+    codex_home = Path(os.environ.get("CODEX_HOME") or "~/.codex").expanduser()
+    generated_root = (codex_home / "generated_images").resolve()
+    candidate = (generated_root / thread_id / f"{item_id}.png").resolve()
+    try:
+        candidate.relative_to(generated_root)
+    except ValueError:
+        return None
+    return candidate if candidate.is_file() else None
 
 
 def _coerce_usage_int(value: Any) -> int:
@@ -478,6 +507,24 @@ def run_codex_app_server_turn(
                 summary = _format_image_progress(state)
                 agent._current_tool = None
                 agent._touch_activity(summary)
+                generated_path = _completed_codex_image_path(note)
+                event_callback = getattr(agent, "event_callback", None)
+                if generated_path is not None and event_callback is not None:
+                    try:
+                        event_callback(
+                            "artifact:generated",
+                            {
+                                "path": str(generated_path),
+                                "media_type": "image/png",
+                                "artifact_index": int(state.get("succeeded") or 0),
+                                "target": state.get("target"),
+                            },
+                        )
+                    except Exception:
+                        logger.debug(
+                            "codex generated artifact callback raised",
+                            exc_info=True,
+                        )
                 status_callback = getattr(agent, "status_callback", None)
                 if status_callback is not None:
                     try:
@@ -554,15 +601,19 @@ def run_codex_app_server_turn(
         request={"transport": "codex_app_server"},
     )
 
+    image_target = _infer_requested_image_count(user_message)
     agent._codex_image_progress = {
-        "target": _infer_requested_image_count(user_message),
+        "target": image_target,
         "succeeded": 0,
         "failed": 0,
     }
     agent._touch_activity("starting Codex turn")
 
     try:
-        turn = agent._codex_session.run_turn(user_input=user_message)
+        turn = agent._codex_session.run_turn(
+            user_input=user_message,
+            turn_timeout=_codex_turn_timeout_for_image_target(image_target),
+        )
     except Exception as exc:
         logger.exception("codex app-server turn failed")
         _invoke_runtime_hook(
