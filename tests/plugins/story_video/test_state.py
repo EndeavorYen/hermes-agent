@@ -18,6 +18,20 @@ def test_parse_short_start_call_uses_operator_fields() -> None:
     assert call.visual_style == "真實照片"
 
 
+def test_parse_short_start_ignores_planning_only_media_prohibition() -> None:
+    call = parse_operator_call(
+        "故事影片：三疊紀發音與恐龍起源測試｜30秒｜真實照片風格。"
+        "只規劃：建立 project contract、storyboard 與 scene ledger；"
+        "不要產生任何圖片、語音或影片。"
+    )
+
+    assert call is not None
+    assert call.action == "start"
+    assert call.topic == "三疊紀發音與恐龍起源測試"
+    assert call.duration == "30秒"
+    assert call.visual_style == "真實照片風格"
+
+
 def test_parse_long_form_request_that_explicitly_routes_to_story_video() -> None:
     call = parse_operator_call(
         "幫我做一部恐龍起源的科普影片（可用之前故事影片的 skill 或流程），"

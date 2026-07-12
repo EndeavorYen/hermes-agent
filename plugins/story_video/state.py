@@ -61,7 +61,7 @@ def _parse_explicit_long_form_start(text: str) -> OperatorCall | None:
     if not re.search(r"故事影片|story[ -]?video", text, re.I):
         return None
     topic_match = re.search(
-        r"(?:幫我|請)?(?:做|製作|產生|生成)(?:一部|一支)?\s*"
+        r"^\s*(?:幫我|請)?(?:做|製作|產生|生成)(?:一部|一支)?\s*"
         r"(.+?)(?:的)?(?:科普|故事|介紹|紀錄片)?影片",
         text,
         re.I,
@@ -70,7 +70,7 @@ def _parse_explicit_long_form_start(text: str) -> OperatorCall | None:
         return None
     topic = topic_match.group(1).strip(" ，,。:：-–")
     duration_match = re.search(
-        r"(\d+(?:\.\d+)?\s*(?:mins?|minutes?|分鐘|分))",
+        r"(\d+(?:\.\d+)?\s*(?:mins?|minutes?|secs?|seconds?|分鐘|秒|分))",
         text,
         re.I,
     )
@@ -132,18 +132,24 @@ def parse_operator_call(
     if repair and has_active_project:
         return OperatorCall(action="repair", repair_request=repair.group(1).strip())
 
-    long_form = _parse_explicit_long_form_start(raw)
-    if long_form is not None:
-        return long_form
-
     if re.match(r"^\s*(?:故事影片|產影片|story\s*video|story-video)", raw, re.I):
-        fields = _split_fields(_strip_start_prefix(raw))
+        body = _strip_start_prefix(raw)
+        if re.search(r"[｜|]", body):
+            fields = [part.strip() for part in re.split(r"[｜|]", body, maxsplit=2)]
+            if len(fields) > 2:
+                fields[2] = re.split(r"[。；;\n]", fields[2], maxsplit=1)[0].strip()
+        else:
+            fields = _split_fields(body)
         return OperatorCall(
             action="start",
             topic=fields[0] if fields else "未命名故事影片",
             duration=fields[1] if len(fields) > 1 else DEFAULT_DURATION,
             visual_style=fields[2] if len(fields) > 2 else DEFAULT_STYLE,
         )
+
+    long_form = _parse_explicit_long_form_start(raw)
+    if long_form is not None:
+        return long_form
     return None
 
 
