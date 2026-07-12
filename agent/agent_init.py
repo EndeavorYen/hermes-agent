@@ -308,6 +308,7 @@ def init_agent(
     request_overrides: Dict[str, Any] = None,
     prefill_messages: List[Dict[str, Any]] = None,
     platform: str = None,
+    codex_thread_ephemeral: Optional[bool] = None,
     user_id: str = None,
     user_id_alt: str = None,
     user_name: str = None,
@@ -371,6 +372,9 @@ def init_agent(
             output_config.format instead of a trailing-assistant prefill.
         platform (str): The interface platform the user is on (e.g. "cli", "telegram", "discord", "whatsapp").
             Used to inject platform-specific formatting hints into the system prompt.
+        codex_thread_ephemeral (bool): Explicit Codex app-server visibility
+            override. Background/one-shot callers set True; interactive callers
+            normally leave this unset and use the centralized platform policy.
         skip_context_files (bool): If True, skip auto-injection of project context files
             (SOUL.md, .hermes.md, AGENTS.md, CLAUDE.md, .cursorrules) from the cwd / HERMES_HOME
             into the system prompt. Use this for batch processing and data generation to avoid
@@ -393,6 +397,7 @@ def init_agent(
     agent.tool_progress_mode = tool_progress_mode
     agent.ephemeral_system_prompt = ephemeral_system_prompt
     agent.platform = platform  # "cli", "telegram", "discord", "whatsapp", etc.
+    agent.codex_thread_ephemeral = codex_thread_ephemeral
     agent._user_id = user_id  # Platform user identifier (gateway sessions)
     agent._user_id_alt = user_id_alt  # Optional stable alternate platform identifier
     agent._user_name = user_name

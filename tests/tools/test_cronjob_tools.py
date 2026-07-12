@@ -605,7 +605,7 @@ class TestLocalDeliveryNotice:
 
     def test_omitted_deliver_no_origin_emits_notice(self):
         created = json.loads(
-            cronjob(action="create", prompt="Output the time", schedule="every 2m")
+            cronjob(action="create", prompt="Output the time", schedule="every 2m", repeat=3)
         )
         assert created["success"] is True
         # Omitted deliver from a session with no origin downgrades to local.
@@ -616,7 +616,7 @@ class TestLocalDeliveryNotice:
     def test_explicit_origin_no_origin_emits_notice(self):
         created = json.loads(
             cronjob(
-                action="create", prompt="x", schedule="every 2m", deliver="origin"
+                action="create", prompt="x", schedule="every 2m", deliver="origin", repeat=3
             )
         )
         assert created["deliver"] == "origin"
@@ -626,7 +626,7 @@ class TestLocalDeliveryNotice:
         # The user explicitly asked for local — no surprise to flag.
         created = json.loads(
             cronjob(
-                action="create", prompt="x", schedule="every 2m", deliver="local"
+                action="create", prompt="x", schedule="every 2m", deliver="local", repeat=3
             )
         )
         assert created["deliver"] == "local"
@@ -640,6 +640,7 @@ class TestLocalDeliveryNotice:
                 prompt="x",
                 schedule="every 2m",
                 deliver="telegram:123",
+                repeat=3,
             )
         )
         assert created["deliver"] == "telegram:123"
@@ -652,7 +653,7 @@ class TestLocalDeliveryNotice:
 
         set_session_vars(platform="telegram", chat_id="999")
         created = json.loads(
-            cronjob(action="create", prompt="x", schedule="every 2m")
+            cronjob(action="create", prompt="x", schedule="every 2m", repeat=3)
         )
         assert created["deliver"] == "origin"
         assert "local-only cron job" not in created["message"]

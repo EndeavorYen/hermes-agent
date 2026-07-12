@@ -628,13 +628,22 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
 
         # run_one_job records last_run_at/last_status via mark_job_run (which
         # also clears the fire claim) and returns True iff it processed the job.
-        processed = run_one_job(job)
-        refreshed = get_job(job_id) or {}
-        ok = refreshed.get("last_status") == "ok"
+        outcome: Dict[str, Any] = {}
+        processed = run_one_job(job, outcome=outcome)
+        refreshed = get_job(job_id)
+        if refreshed is not None:
+            ok = refreshed.get("last_status") == "ok"
+            error = refreshed.get("last_error")
+        else:
+            # Finite one-shots are removed by mark_job_run after their final
+            # execution. Use the direct execution contract rather than
+            # treating the intentionally missing row as a failed run.
+            ok = outcome.get("success") is True
+            error = outcome.get("error")
         return {
             "claimed": True,
             "success": bool(processed and ok),
-            "error": refreshed.get("last_error"),
+            "error": error,
         }
 
     except Exception as e:

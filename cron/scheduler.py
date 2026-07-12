@@ -3250,7 +3250,14 @@ def _teardown_cron_agent(agent, job_id: str) -> None:
         logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
 
 
-def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -> bool:
+def run_one_job(
+    job: dict,
+    *,
+    adapters=None,
+    loop=None,
+    verbose: bool = False,
+    outcome: Optional[dict] = None,
+) -> bool:
     """Run ONE due job end-to-end: execute → save output → deliver → mark.
 
     This is the shared firing body extracted from ``tick``'s per-job closure so
@@ -3278,6 +3285,8 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
                 "Job '%s': one-shot dispatch limit reached — skipping",
                 job.get("name", job["id"]),
             )
+            if outcome is not None:
+                outcome.update(success=True, error=None)
             return True  # not an error — already handled/removed
 
         # Run the job under the profile's secret scope. get_secret() fails
@@ -3371,11 +3380,15 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
         mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+        if outcome is not None:
+            outcome.update(success=bool(success), error=error)
         return True
 
     except Exception as e:
         logger.error("Error processing job %s: %s", job['id'], e)
         mark_job_run(job["id"], False, str(e))
+        if outcome is not None:
+            outcome.update(success=False, error=str(e))
         return False
 
 

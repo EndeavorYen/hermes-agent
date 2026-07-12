@@ -224,7 +224,7 @@ class TestExternalCronProviderStatus:
     def test_status_reports_provider_not_ticker_for_chronos(
         self, tmp_cron_dir, capsys, monkeypatch
     ):
-        create_job(prompt="Ping", schedule="every 2m")
+        create_job(prompt="Ping", schedule="every 2m", repeat=3)
         monkeypatch.setattr(
             "hermes_cli.cron._active_cron_provider_name", lambda: "chronos"
         )
@@ -242,7 +242,7 @@ class TestExternalCronProviderStatus:
         assert "active job(s)" in out
 
     def test_status_unchanged_for_builtin(self, tmp_cron_dir, capsys, monkeypatch):
-        create_job(prompt="Ping", schedule="every 2m")
+        create_job(prompt="Ping", schedule="every 2m", repeat=3)
         monkeypatch.setattr(
             "hermes_cli.cron._active_cron_provider_name", lambda: "builtin"
         )
@@ -269,7 +269,7 @@ class TestExternalCronProviderStatus:
                 prompt="Ping",
                 name="Ping",
                 deliver=None,
-                repeat=None,
+                repeat=3,
                 skill=None,
                 skills=None,
                 script=None,

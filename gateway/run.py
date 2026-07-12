@@ -3502,13 +3502,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if self._session_db is not None:
             try:
                 from hermes_cli.config import load_config as _load_full_config
-                _sess_cfg = (_load_full_config().get("sessions") or {})
+                _maintenance_cfg = _load_full_config()
+                _sess_cfg = (_maintenance_cfg.get("sessions") or {})
+                # Gateway construction happens before the event loop serves
+                # traffic. Keep the reviewed sync escape confined to this one
+                # binding even when multiple maintenance policies run.
+                _sync_session_db = self._session_db._db
                 if _sess_cfg.get("auto_prune", False):
-                    # Construction-time, before the loop serves traffic; sync DB is fine.
-                    self._session_db._db.maybe_auto_prune_and_vacuum(
+                    _sync_session_db.maybe_auto_prune_and_vacuum(
                         retention_days=int(_sess_cfg.get("retention_days", 90)),
                         min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)),
                         vacuum=bool(_sess_cfg.get("vacuum_after_prune", True)),
+                        sessions_dir=self.config.sessions_dir,
+                    )
+                _cron_retention = (
+                    (_maintenance_cfg.get("cron") or {}).get("session_retention") or {}
+                )
+                if _cron_retention.get("enabled", True):
+                    _sync_session_db.maybe_auto_prune_cron_sessions(
+                        retention_days=float(_cron_retention.get("days", 14)),
+                        keep_per_job=int(_cron_retention.get("per_job", 50)),
+                        min_interval_hours=int(
+                            _cron_retention.get("min_interval_hours", 24)
+                        ),
+                        vacuum=bool(
+                            _cron_retention.get("vacuum_after_prune", True)
+                        ),
                         sessions_dir=self.config.sessions_dir,
                     )
             except Exception as exc:

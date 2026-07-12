@@ -26,6 +26,36 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 
+# Codex app-server threads become first-class Codex Remote tasks unless
+# ``thread/start.ephemeral`` is true.  Only direct, user-facing interaction
+# surfaces are allowed to materialize there. Internal workers and newly added
+# platform labels fail closed so a new background path cannot silently spam the
+# user's task list.
+_CODEX_USER_VISIBLE_PLATFORMS = frozenset({
+    "cli", "tui", "acp", "api_server",
+    "telegram", "discord", "whatsapp", "whatsapp_cloud", "slack",
+    "signal", "mattermost", "matrix", "homeassistant", "email", "sms",
+    "dingtalk", "webhook", "msgraph_webhook", "feishu", "wecom",
+    "wecom_callback", "weixin", "bluebubbles", "qqbot", "yuanbao",
+    "relay",
+})
+
+
+def resolve_codex_thread_ephemeral(agent) -> bool:
+    """Return whether this Hermes-owned Codex thread stays out of Remote UI.
+
+    An explicit boolean wins so callers sharing a platform label (interactive
+    CLI vs. CLI one-shot/background) can state their lifecycle. Otherwise only
+    known user-facing entrypoints materialize; internal and unknown paths are
+    ephemeral by default.
+    """
+    explicit = getattr(agent, "codex_thread_ephemeral", None)
+    if isinstance(explicit, bool):
+        return explicit
+    platform = str(getattr(agent, "platform", "") or "").strip().lower()
+    return platform not in _CODEX_USER_VISIBLE_PLATFORMS
+
+
 def _invoke_runtime_hook(name: str, **kwargs: Any) -> list[Any]:
     """Invoke a plugin hook without letting plugin failures break the turn."""
     try:
@@ -395,7 +425,7 @@ def run_codex_app_server_turn(
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
             codex_bin=codex_bin,
-            ephemeral=(getattr(agent, "platform", "") == "cron"),
+            ephemeral=resolve_codex_thread_ephemeral(agent),
             approval_callback=approval_callback,
             request_routing=_ServerRequestRouting(
                 auto_approve_exec=auto_approve_requests,

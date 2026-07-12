@@ -29,6 +29,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import hermes_cli.plugins
+import pytest
 
 from agent.codex_runtime import run_codex_app_server_turn
 from hermes_state import SessionDB
@@ -145,6 +146,111 @@ def test_codex_runtime_makes_cron_threads_ephemeral(monkeypatch):
     )
 
     assert result["completed"] is True
+    assert captured["ephemeral"] is True
+
+
+@pytest.mark.parametrize("platform", ["curator", "subagent", "background_review", "unknown-worker"])
+def test_codex_runtime_makes_internal_or_unknown_threads_ephemeral(monkeypatch, platform):
+    """Internal and newly introduced worker paths must fail closed."""
+    import agent.transports.codex_app_server_session as session_module
+
+    captured = {}
+
+    class FakeSession:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def run_turn(self, **_kwargs):
+            return _make_turn()
+
+    monkeypatch.setattr(session_module, "CodexAppServerSession", FakeSession)
+
+    agent = _make_agent(session_db=None)
+    agent._codex_session = None
+    agent.session_cwd = "/tmp"
+    agent.model = "gpt-5.6-sol"
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.platform = platform
+
+    result = run_codex_app_server_turn(
+        agent,
+        user_message="internal work",
+        original_user_message="internal work",
+        messages=[{"role": "user", "content": "internal work"}],
+        effective_task_id="internal-1",
+    )
+
+    assert result["completed"] is True
+    assert captured["ephemeral"] is True
+
+
+def test_codex_runtime_keeps_interactive_cli_thread_visible(monkeypatch):
+    """The central policy must preserve the existing interactive CLI surface."""
+    import agent.transports.codex_app_server_session as session_module
+
+    captured = {}
+
+    class FakeSession:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def run_turn(self, **_kwargs):
+            return _make_turn()
+
+    monkeypatch.setattr(session_module, "CodexAppServerSession", FakeSession)
+
+    agent = _make_agent(session_db=None)
+    agent._codex_session = None
+    agent.session_cwd = "/tmp"
+    agent.model = "gpt-5.6-sol"
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.platform = "cli"
+
+    run_codex_app_server_turn(
+        agent,
+        user_message="interactive work",
+        original_user_message="interactive work",
+        messages=[{"role": "user", "content": "interactive work"}],
+        effective_task_id="interactive-1",
+    )
+
+    assert captured["ephemeral"] is False
+
+
+def test_codex_runtime_honors_explicit_ephemeral_override(monkeypatch):
+    """CLI one-shot/background callers can opt out of Remote task materialization."""
+    import agent.transports.codex_app_server_session as session_module
+
+    captured = {}
+
+    class FakeSession:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def run_turn(self, **_kwargs):
+            return _make_turn()
+
+    monkeypatch.setattr(session_module, "CodexAppServerSession", FakeSession)
+
+    agent = _make_agent(session_db=None)
+    agent._codex_session = None
+    agent.session_cwd = "/tmp"
+    agent.model = "gpt-5.6-sol"
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.platform = "cli"
+    agent.codex_thread_ephemeral = True
+
+    run_codex_app_server_turn(
+        agent,
+        user_message="one shot",
+        original_user_message="one shot",
+        messages=[{"role": "user", "content": "one shot"}],
+        effective_task_id="oneshot-1",
+    )
+
     assert captured["ephemeral"] is True
 
 

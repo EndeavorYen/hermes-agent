@@ -5600,6 +5600,109 @@ class SessionDB:
             self._remove_session_files(sessions_dir, sid)
         return count
 
+    _CRON_SESSION_ID_RE = re.compile(r"^cron_(.+)_\d{8}_\d{6}$")
+
+    def prune_cron_sessions(
+        self,
+        retention_days: float = 14,
+        keep_per_job: int = 50,
+        sessions_dir: Optional[Path] = None,
+    ) -> int:
+        """Delete bounded history for ended cron runs only.
+
+        Cron sessions are internal execution records, not user conversations.
+        A high-frequency job can create thousands of message/FTS rows inside
+        the generic 90-day session window, so cron uses two simultaneous
+        bounds: a run must be recent *and* within the newest ``keep_per_job``
+        executions for its job id. Active cron runs and every non-cron source
+        are always preserved.
+        """
+        retention_days = max(1.0, float(retention_days))
+        keep_per_job = max(1, int(keep_per_job))
+        cutoff = time.time() - retention_days * 86400
+        removed_ids: list[str] = []
+
+        def _do(conn):
+            rows = conn.execute(
+                "SELECT id, started_at FROM sessions "
+                "WHERE source = 'cron' AND ended_at IS NOT NULL "
+                "ORDER BY started_at DESC, id DESC"
+            ).fetchall()
+            seen_by_job: Dict[str, int] = {}
+            for row in rows:
+                sid = str(row["id"])
+                match = self._CRON_SESSION_ID_RE.match(sid)
+                job_key = match.group(1) if match else sid
+                rank = seen_by_job.get(job_key, 0) + 1
+                seen_by_job[job_key] = rank
+                if float(row["started_at"]) < cutoff or rank > keep_per_job:
+                    removed_ids.append(sid)
+
+            if not removed_ids:
+                return 0
+            # Keep the sweep portable to SQLite builds with the historical
+            # 999 host-parameter limit. High-frequency cron histories can
+            # exceed that in a single maintenance pass.
+            for sid in removed_ids:
+                conn.execute(
+                    "UPDATE sessions SET parent_session_id = NULL "
+                    "WHERE parent_session_id = ?",
+                    (sid,),
+                )
+                conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
+                conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
+            return len(removed_ids)
+
+        count = self._execute_write(_do)
+        for sid in removed_ids:
+            self._remove_session_files(sessions_dir, sid)
+        return count
+
+    def maybe_auto_prune_cron_sessions(
+        self,
+        retention_days: float = 14,
+        keep_per_job: int = 50,
+        min_interval_hours: int = 24,
+        vacuum: bool = True,
+        sessions_dir: Optional[Path] = None,
+    ) -> Dict[str, Any]:
+        """Run cron-specific maintenance on an independent cadence."""
+        result: Dict[str, Any] = {"skipped": False, "pruned": 0, "vacuumed": False}
+        try:
+            last_raw = self.get_meta("last_auto_prune_cron")
+            now = time.time()
+            if last_raw:
+                try:
+                    if now - float(last_raw) < max(0, int(min_interval_hours)) * 3600:
+                        result["skipped"] = True
+                        return result
+                except (TypeError, ValueError):
+                    pass
+
+            result["pruned"] = self.prune_cron_sessions(
+                retention_days=retention_days,
+                keep_per_job=keep_per_job,
+                sessions_dir=sessions_dir,
+            )
+            if vacuum and result["pruned"] > 0:
+                try:
+                    self.vacuum()
+                    result["vacuumed"] = True
+                except Exception as exc:
+                    logger.warning("state.db cron VACUUM failed: %s", exc)
+            self.set_meta("last_auto_prune_cron", str(now))
+            if result["pruned"]:
+                logger.info(
+                    "state.db cron maintenance: pruned %d session(s), "
+                    "retention=%s days, keep_per_job=%d%s",
+                    result["pruned"], retention_days, keep_per_job,
+                    " + VACUUM" if result["vacuumed"] else "",
+                )
+        except Exception as exc:
+            logger.warning("state.db cron maintenance failed: %s", exc)
+            result["error"] = str(exc)
+        return result
+
     # ── Meta key/value (for scheduler bookkeeping) ──
 
     def get_meta(self, key: str) -> Optional[str]:
