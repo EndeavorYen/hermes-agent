@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from plugins import story_video
+from plugins.story_video import hooks
 from plugins.story_video.state import StoryVideoStateStore, parse_operator_call
 from plugins.story_video.visual_judge import (
     configure_plugin_llm,
@@ -99,6 +100,7 @@ class FakeLlm:
 
 def test_plugin_registers_internal_quality_tool_and_binds_host_llm() -> None:
     registered_tools = {}
+    registered_hooks = {}
 
     class FakeContext:
         llm = FakeLlm([])
@@ -110,8 +112,8 @@ def test_plugin_registers_internal_quality_tool_and_binds_host_llm() -> None:
                 "handler": handler,
             }
 
-        def register_hook(self, _name, _callback):
-            return None
+        def register_hook(self, name, callback):
+            registered_hooks[name] = callback
 
     story_video.register(FakeContext())
 
@@ -121,6 +123,7 @@ def test_plugin_registers_internal_quality_tool_and_binds_host_llm() -> None:
     }
     assert registered_tools["story_video_quality_control"]["toolset"] == "story_video"
     assert registered_tools["story_video_quality_control"]["schema"]["name"] == "story_video_quality_control"
+    assert registered_hooks["auto_continue_llm_output"] is hooks.auto_continue_llm_output
 
 
 def test_compile_prompt_writes_traceable_prompt_and_budget(tmp_path) -> None:

@@ -21,7 +21,7 @@ import os
 import time
 import uuid
 from types import SimpleNamespace
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +39,22 @@ _CODEX_USER_VISIBLE_PLATFORMS = frozenset({
     "wecom_callback", "weixin", "bluebubbles", "qqbot", "yuanbao",
     "relay",
 })
+_MAX_PLUGIN_AUTO_CONTINUATIONS = 64
 
 
-def resolve_codex_thread_ephemeral(agent) -> bool:
+def _is_story_video_workflow(decision: Mapping[str, Any] | None) -> bool:
+    if not isinstance(decision, Mapping):
+        return False
+    goal = decision.get("goal")
+    if isinstance(goal, Mapping):
+        return str(goal.get("target_artifact") or "") == "story_video_workflow"
+    return False
+
+
+def resolve_codex_thread_ephemeral(
+    agent,
+    raphael_decision: Mapping[str, Any] | None = None,
+) -> bool:
     """Return whether this Hermes-owned Codex thread stays out of Remote UI.
 
     An explicit boolean wins so callers sharing a platform label (interactive
@@ -52,6 +65,8 @@ def resolve_codex_thread_ephemeral(agent) -> bool:
     explicit = getattr(agent, "codex_thread_ephemeral", None)
     if isinstance(explicit, bool):
         return explicit
+    if _is_story_video_workflow(raphael_decision):
+        return True
     platform = str(getattr(agent, "platform", "") or "").strip().lower()
     return platform not in _CODEX_USER_VISIBLE_PLATFORMS
 
@@ -425,7 +440,7 @@ def run_codex_app_server_turn(
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
             codex_bin=codex_bin,
-            ephemeral=resolve_codex_thread_ephemeral(agent),
+            ephemeral=resolve_codex_thread_ephemeral(agent, raphael_decision),
             approval_callback=approval_callback,
             request_routing=_ServerRequestRouting(
                 auto_approve_exec=auto_approve_requests,
@@ -667,6 +682,59 @@ def run_codex_app_server_turn(
                 "codex app-server projected-message flush failed",
                 exc_info=True,
             )
+
+    auto_request: dict[str, str] | None = None
+    if not turn.interrupted and turn.error is None:
+        for hook_result in _invoke_runtime_hook(
+            "auto_continue_llm_output",
+            response_text=final_text,
+            session_id=agent.session_id or "",
+            task_id=effective_task_id,
+            turn_id=turn_id,
+            model=agent.model,
+            platform=agent.platform or "",
+        ):
+            if not isinstance(hook_result, dict):
+                continue
+            message = str(hook_result.get("message") or "").strip()
+            if hook_result.get("action") == "continue" and message:
+                auto_request = {"action": "continue", "message": message}
+                break
+
+    auto_count = getattr(agent, "_plugin_auto_continue_count", 0)
+    if not isinstance(auto_count, int):
+        auto_count = 0
+    if auto_request is not None and auto_count < _MAX_PLUGIN_AUTO_CONTINUATIONS:
+        agent._plugin_auto_continue_count = auto_count + 1
+        auto_message = auto_request["message"]
+        for hook_result in _invoke_runtime_hook(
+            "pre_llm_call",
+            session_id=agent.session_id or "",
+            turn_id=f"{turn_id}:auto:{auto_count + 1}",
+            user_message=auto_message,
+            conversation_history=list(messages),
+            model=agent.model,
+            platform=agent.platform or "",
+            auto_continuation=True,
+        ):
+            if isinstance(hook_result, dict):
+                context = str(hook_result.get("context") or "").strip()
+                if context:
+                    auto_message = f"{auto_message}\n\n{context}"
+                    break
+        continued = run_codex_app_server_turn(
+            agent,
+            user_message=auto_message,
+            original_user_message=auto_request["message"],
+            messages=messages,
+            effective_task_id=effective_task_id,
+            turn_id=f"{turn_id}:auto:{auto_count + 1}",
+            should_review_memory=False,
+            raphael_decision=raphael_decision,
+        )
+        continued["api_calls"] = api_calls + int(continued.get("api_calls") or 0)
+        return continued
+    agent._plugin_auto_continue_count = 0
 
     return {
         "final_response": final_text,

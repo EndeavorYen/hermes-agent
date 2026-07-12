@@ -181,11 +181,17 @@ def _validate_keyframes(context: StoryVideoRunContext) -> PhaseProof:
         return PhaseProof(phase="keyframes", ok=False, missing=(rel,))
     provider = normalize_provider(manifest.get("provider"))
     judge_provider = normalize_provider(manifest.get("judge_provider"))
-    selected = _selected_outputs(manifest)
+    canonical_outputs = isinstance(manifest.get("outputs"), list)
+    selected = _selected_outputs(manifest) if canonical_outputs else []
     violations: list[str] = []
     if provider not in {"openai", "openai-codex"}:
         violations.append(f"source provider is {provider or '<missing>'}, not OpenAI")
-    if not selected:
+    if not canonical_outputs:
+        violations.append(
+            "shot candidate manifest must contain canonical outputs[] from "
+            "story_video_quality_control"
+        )
+    elif not selected:
         violations.append("no selected current keyframe output")
     if judge_provider not in {"openai", "openai-codex"}:
         violations.append(
@@ -562,6 +568,7 @@ def _context_payload(context: StoryVideoRunContext) -> dict[str, Any]:
         "project_dir": str(context.project_dir),
         "phase": context.phase,
         "status": context.status,
+        "auto_mode": context.auto_mode,
         "next_call": context.next_call,
         "provider_policy": context.provider_policy,
     }
