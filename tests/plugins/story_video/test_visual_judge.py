@@ -140,7 +140,7 @@ def test_compile_prompt_writes_traceable_prompt_and_budget(tmp_path) -> None:
     assert payload["success"] is True
     assert payload["candidate_budget"] == 1
     assert payload["generation_policy"] == "qc_driven_selective_regeneration"
-    assert payload["max_repair_rounds"] == 3
+    assert payload["max_repair_rounds"] == 5
     assert "Evidence that must be readable" in payload["prompt"]
     assert (context.project_dir / payload["prompt_path"]).is_file()
 
@@ -253,12 +253,12 @@ def test_judge_blocks_below_threshold_without_promoting_least_bad_candidate(tmp_
     assert not (context.project_dir / "images" / "S00_SH00.png").exists()
 
 
-def test_third_failed_round_reports_quality_budget_exhausted(tmp_path) -> None:
+def test_fifth_failed_round_reports_quality_budget_exhausted(tmp_path) -> None:
     store, context, _shot = _context(tmp_path)
     llm = FakeLlm(
         [
             {
-                "candidate_id": "C01",
+                "candidate_id": "S00_SH00_C05",
                 "hard_blockers": ["scientifically incorrect anatomy"],
                 "dimensions": _dimensions(94),
                 "evidence": ["limb joint is malformed"],
@@ -272,8 +272,8 @@ def test_third_failed_round_reports_quality_budget_exhausted(tmp_path) -> None:
             {
                 "action": "judge_candidates",
                 "shot_id": "S00_SH00",
-                "candidates": [_candidate(context, "C01")],
-                "repair_round": 3,
+                "candidates": [_candidate(context, "S00_SH00_C05")],
+                "repair_round": 5,
             },
             session_id="session-1",
             store=store,
@@ -282,7 +282,7 @@ def test_third_failed_round_reports_quality_budget_exhausted(tmp_path) -> None:
 
     assert payload["success"] is False
     assert payload["status"] == "quality_budget_exhausted"
-    assert payload["repair_round"] == 3
+    assert payload["repair_round"] == 5
 
 
 def test_candidate_suffix_prevents_repair_round_from_resetting(tmp_path) -> None:
@@ -290,7 +290,7 @@ def test_candidate_suffix_prevents_repair_round_from_resetting(tmp_path) -> None
     llm = FakeLlm(
         [
             {
-                "candidate_id": "S00_SH00_C03",
+                "candidate_id": "S00_SH00_C05",
                 "hard_blockers": ["subtitle collision"],
                 "dimensions": _dimensions(90),
                 "evidence": ["subtitle-safe area is occupied"],
@@ -303,7 +303,7 @@ def test_candidate_suffix_prevents_repair_round_from_resetting(tmp_path) -> None
             {
                 "action": "judge_candidates",
                 "shot_id": "S00_SH00",
-                "candidates": [_candidate(context, "S00_SH00_C03")],
+                "candidates": [_candidate(context, "S00_SH00_C05")],
                 "repair_round": 1,
             },
             session_id="session-1",
@@ -314,7 +314,7 @@ def test_candidate_suffix_prevents_repair_round_from_resetting(tmp_path) -> None
 
     assert payload["success"] is False
     assert payload["status"] == "quality_budget_exhausted"
-    assert payload["repair_round"] == 3
+    assert payload["repair_round"] == 5
 
 
 def test_judge_fails_closed_before_calling_llm_for_non_openai_candidate(tmp_path) -> None:
