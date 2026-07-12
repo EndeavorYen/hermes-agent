@@ -160,6 +160,15 @@ class TestLifecycle:
         method, params = next(r for r in client.requests if r[0] == "thread/start")
         assert params["cwd"] == "/tmp"
         assert "permissions" not in params  # see session.ensure_started() comment
+        assert "ephemeral" not in params
+
+    def test_thread_start_marks_internal_run_ephemeral(self):
+        """Scheduled/internal runs must not create visible Codex Remote tasks."""
+        client = FakeClient()
+        s = make_session(client, ephemeral=True)
+        s.ensure_started()
+        _, params = next(r for r in client.requests if r[0] == "thread/start")
+        assert params["ephemeral"] is True
 
     def test_close_idempotent(self):
         client = FakeClient()

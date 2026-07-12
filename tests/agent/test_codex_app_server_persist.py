@@ -113,6 +113,41 @@ def test_codex_runtime_honors_explicit_binary(monkeypatch):
     assert captured["codex_bin"] == "/opt/codex/current/bin/codex"
 
 
+def test_codex_runtime_makes_cron_threads_ephemeral(monkeypatch):
+    """Cron turns are implementation details, not user-visible Codex tasks."""
+    import agent.transports.codex_app_server_session as session_module
+
+    captured = {}
+
+    class FakeSession:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def run_turn(self, **_kwargs):
+            return _make_turn()
+
+    monkeypatch.setattr(session_module, "CodexAppServerSession", FakeSession)
+
+    agent = _make_agent(session_db=None)
+    agent._codex_session = None
+    agent.session_cwd = "/tmp"
+    agent.model = "gpt-5.6-sol"
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.platform = "cron"
+
+    result = run_codex_app_server_turn(
+        agent,
+        user_message="say hello",
+        original_user_message="say hello",
+        messages=[{"role": "user", "content": "say hello"}],
+        effective_task_id="cron-job-1",
+    )
+
+    assert result["completed"] is True
+    assert captured["ephemeral"] is True
+
+
 def test_codex_success_runs_api_and_output_hooks(monkeypatch):
     calls = []
 
