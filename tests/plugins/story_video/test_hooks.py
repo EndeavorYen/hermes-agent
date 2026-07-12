@@ -141,6 +141,32 @@ def test_gateway_only_rewrites_continue_when_source_is_active(tmp_path, monkeypa
     assert '"action": "continue"' in result["text"]
 
 
+def test_youtube_package_and_upload_approval_are_distinct_active_project_actions(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    start = hooks.pre_gateway_dispatch(
+        event=_event("故事影片：恐龍起源｜5分｜真實照片")
+    )
+    hooks.pre_llm_call(session_id="session-1", user_message=start["text"])
+
+    package = hooks.pre_gateway_dispatch(event=_event("準備上架"))
+    package_context = hooks.pre_llm_call(
+        session_id="session-1", user_message=package["text"]
+    )
+    approval = hooks.pre_gateway_dispatch(event=_event("核准上傳 YouTube"))
+    approval_context = hooks.pre_llm_call(
+        session_id="session-1", user_message=approval["text"]
+    )
+
+    assert '"action": "package"' in package["text"]
+    assert "Do not upload" in package_context["context"]
+    assert '"action": "approve_upload"' in approval["text"]
+    assert "privacy=private" in approval_context["context"]
+    assert "public release requires a separate" in approval_context["context"]
+
+
 def test_gateway_rewrites_polite_continue_for_active_thread(tmp_path, monkeypatch) -> None:
     store = StoryVideoStateStore(tmp_path)
     monkeypatch.setattr(hooks, "_STORE", store)

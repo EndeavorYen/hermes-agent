@@ -562,6 +562,13 @@ def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
     if not selected_images:
         raise ValueError("render requires selected shot images")
 
+    opening_image = "release_art/opening_card.png"
+    if not (context.project_dir / opening_image).is_file():
+        opening_image = selected_images[0]
+    ending_image = "release_art/ending_card.png"
+    if not (context.project_dir / ending_image).is_file():
+        ending_image = selected_images[-1]
+
     render_input = {
         "schema": "story_video_render_input_v2",
         "project_title": context.topic,
@@ -575,13 +582,13 @@ def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
         "subtitle": {"max_lines": 2, "max_chars_per_line": 29},
         "opening_card": {
             "title": context.topic,
-            "image": selected_images[0],
-            "duration_sec": 1.0,
+            "image": opening_image,
+            "duration_sec": 2.0 if opening_image.startswith("release_art/") else 1.0,
         },
         "ending_card": {
             "title": "探索仍在繼續",
-            "image": selected_images[-1],
-            "duration_sec": 1.0,
+            "image": ending_image,
+            "duration_sec": 5.0 if ending_image.startswith("release_art/") else 1.0,
         },
         "scenes": scenes,
         "output": "video/final.mp4",

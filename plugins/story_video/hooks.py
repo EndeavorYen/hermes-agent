@@ -252,6 +252,24 @@ def pre_llm_call(
         "validates the phase automatically. Use story_video_control only when it "
         "is exposed as a direct tool; never invoke it through terminal."
     )
+    if action == "package":
+        instruction += (
+            " The operator requested a YouTube review package. Do not upload. Use the "
+            "story-video-production-pipeline release packaging scripts to create one "
+            "dedicated OpenAI/openai-codex release-art source with no baked-in text, "
+            "then compose exact Traditional Chinese thumbnail/opening/ending typography "
+            "locally. Produce polished title, description, tags, pinned comment, and a "
+            "REVIEW_REQUIRED manifest bound to artifact hashes. If release cards changed, "
+            "rerender and rerun render QC before reporting the review package."
+        )
+    elif action == "approve_upload":
+        instruction += (
+            " The operator explicitly approved YouTube upload, but not public release. "
+            "Verify the current review package hashes, create the approval record, upload "
+            "with privacy=private, and verify the persisted YouTube record. Never infer "
+            "public visibility from this command; public release requires a separate "
+            "explicit approval."
+        )
     if context.auto_mode:
         instruction += (
             " STORY_VIDEO AUTOPILOT is enabled. Continue autonomously through planning, "
