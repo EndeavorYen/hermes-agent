@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 import uuid
 from types import SimpleNamespace
@@ -136,7 +137,40 @@ def _codex_note_to_tool_progress(note: dict) -> tuple[str, str, dict] | None:
             args = {"arguments": args}
         return tool, tool, args
 
+    if item_type in {"imageGeneration", "imageGenerationCall"}:
+        return "image_generate", "generating image", {
+            "item_id": item.get("id") or "",
+        }
+
     return None
+
+
+_IMAGE_COUNT_PATTERN = re.compile(
+    r"(?:remaining|剩下)?\s*([1-9]\d*)\s*(?:張|images?)",
+    re.IGNORECASE,
+)
+
+
+def _infer_requested_image_count(user_message: str) -> int | None:
+    """Return the last explicit image count from a prompt or thread replay."""
+    matches = _IMAGE_COUNT_PATTERN.findall(str(user_message or ""))
+    return int(matches[-1]) if matches else None
+
+
+def _format_image_progress(progress: Mapping[str, Any]) -> str:
+    target = progress.get("target")
+    succeeded = int(progress.get("succeeded") or 0)
+    failed = int(progress.get("failed") or 0)
+    if isinstance(target, int) and target > 0:
+        remaining = max(target - succeeded, 0)
+        return (
+            f"Image progress: target {target}, succeeded {succeeded}, "
+            f"failed attempts {failed}, remaining {remaining}."
+        )
+    return (
+        f"Image progress: succeeded {succeeded}, "
+        f"failed attempts {failed}."
+    )
 
 
 def _coerce_usage_int(value: Any) -> int:
@@ -421,6 +455,39 @@ def run_codex_app_server_turn(
             # Bridge Codex app-server item/started notifications to Hermes
             # tool-progress so gateways show verbose "running X" breadcrumbs
             # on this route too (#38835).
+            method = str(note.get("method") or "")
+            item = (note.get("params") or {}).get("item") or {}
+            item_type = str(item.get("type") or "")
+            is_image_generation = item_type in {
+                "imageGeneration", "imageGenerationCall",
+            }
+
+            if method == "item/started" and is_image_generation:
+                agent._current_tool = "image_generate"
+                agent._touch_activity("generating image")
+            elif method == "item/completed" and is_image_generation:
+                state = getattr(agent, "_codex_image_progress", None)
+                if not isinstance(state, dict):
+                    state = {"target": None, "succeeded": 0, "failed": 0}
+                    agent._codex_image_progress = state
+                status = str(item.get("status") or "").strip().lower()
+                if status in {"completed", "succeeded", "success"}:
+                    state["succeeded"] = int(state.get("succeeded") or 0) + 1
+                elif status in {"failed", "error", "cancelled", "canceled"}:
+                    state["failed"] = int(state.get("failed") or 0) + 1
+                summary = _format_image_progress(state)
+                agent._current_tool = None
+                agent._touch_activity(summary)
+                status_callback = getattr(agent, "status_callback", None)
+                if status_callback is not None:
+                    try:
+                        status_callback("lifecycle", summary)
+                    except Exception:
+                        logger.debug(
+                            "codex image progress status callback raised",
+                            exc_info=True,
+                        )
+
             progress_callback = getattr(agent, "tool_progress_callback", None)
             if progress_callback is None:
                 return
@@ -428,6 +495,8 @@ def run_codex_app_server_turn(
             if mapped is None:
                 return
             tool_name, preview, args = mapped
+            agent._current_tool = tool_name
+            agent._touch_activity(f"executing tool: {tool_name}")
             try:
                 progress_callback("tool.started", tool_name, preview, args)
             except Exception:
@@ -485,6 +554,13 @@ def run_codex_app_server_turn(
         request={"transport": "codex_app_server"},
     )
 
+    agent._codex_image_progress = {
+        "target": _infer_requested_image_count(user_message),
+        "succeeded": 0,
+        "failed": 0,
+    }
+    agent._touch_activity("starting Codex turn")
+
     try:
         turn = agent._codex_session.run_turn(user_input=user_message)
     except Exception as exc:
@@ -516,6 +592,31 @@ def run_codex_app_server_turn(
         }
 
     api_duration = time.time() - api_started_at
+
+    if (
+        getattr(turn, "incomplete_turn_recovered", False)
+        and turn.error is None
+    ):
+        progress = getattr(agent, "_codex_image_progress", None)
+        if isinstance(progress, dict) and (
+            int(progress.get("succeeded") or 0)
+            or int(progress.get("failed") or 0)
+        ):
+            stale_text = turn.final_text
+            turn.final_text = (
+                f"{_format_image_progress(progress)} "
+                "The Codex turn reached its time limit. Completed outputs "
+                "were preserved, and the session was reset so the next "
+                "message can continue safely."
+            )
+            for message in reversed(turn.projected_messages):
+                if (
+                    message.get("role") == "assistant"
+                    and message.get("content") == stale_text
+                ):
+                    message["content"] = turn.final_text
+                    break
+
     if turn.error is None:
         _invoke_runtime_hook(
             "post_api_request",
