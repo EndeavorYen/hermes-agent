@@ -19,7 +19,7 @@ from .quality import (
 from .state import StoryVideoRunContext, StoryVideoStateStore
 
 
-MAX_REPAIR_ROUNDS = 3
+MAX_REPAIR_ROUNDS = 5
 _PLUGIN_LLM: Any = None
 
 

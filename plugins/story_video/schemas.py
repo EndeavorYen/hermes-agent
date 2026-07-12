@@ -48,7 +48,7 @@ STORY_VIDEO_QUALITY_CONTROL_SCHEMA = {
             "repair_round": {
                 "type": "integer",
                 "minimum": 1,
-                "maximum": 3,
+                "maximum": 5,
                 "description": "Current bounded quality repair round.",
             },
             "candidates": {
