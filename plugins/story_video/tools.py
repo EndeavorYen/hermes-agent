@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .audit import ProviderAudit, normalize_provider
+from .engagement import engagement_contract_enabled
 from .quality import CLOSE_EVIDENCE_SCALES, QUALITY_THRESHOLD, validate_quality_ledger
 from .state import PHASES, StoryVideoRunContext, StoryVideoStateStore
 
@@ -92,7 +93,11 @@ def _validate_planning(context: StoryVideoRunContext) -> PhaseProof:
         if version < 2:
             violations.append("script_quality_report.quality_contract_version<2")
         checks = report.get("checks")
-        required_checks = ("visual_evidence", "narrative_roles", "claim_confidence")
+        required_checks = ["visual_evidence", "narrative_roles", "claim_confidence"]
+        if isinstance(ledger, dict) and engagement_contract_enabled(ledger):
+            if version < 3:
+                violations.append("script_quality_report.quality_contract_version<3")
+            required_checks.extend(("audience_engagement", "visual_truth"))
         if not isinstance(checks, dict) or any(
             str(checks.get(name) or "").upper() != "PASS" for name in required_checks
         ):
