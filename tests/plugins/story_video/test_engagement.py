@@ -97,6 +97,23 @@ def test_v3_ledger_requires_universal_engagement_fields() -> None:
     assert "S00_SH00.visual_truth_mode" in report.violations
 
 
+def test_v3_ledger_rejects_unknown_engagement_energy_and_humor() -> None:
+    report = validate_engagement_ledger(
+        _ledger(
+            [_shot(0)],
+            engagement_profile={
+                "mode": "discovery_documentary",
+                "energy": "maximum_everywhere",
+                "humor": "random_gags",
+                "sensationalism_forbidden": True,
+            },
+        )
+    )
+
+    assert "engagement_profile.energy:maximum_everywhere" in report.violations
+    assert "engagement_profile.humor:random_gags" in report.violations
+
+
 def test_intentional_breathe_requires_calm_reason() -> None:
     report = validate_engagement_ledger(
         _ledger([_shot(0, engagement_role="breathe", composition_energy="calm")])

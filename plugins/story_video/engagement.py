@@ -22,6 +22,8 @@ ENGAGEMENT_MODES = frozenset(
         "calm_wonder",
     }
 )
+ENGAGEMENT_ENERGIES = frozenset({"gentle", "balanced", "high"})
+HUMOR_LEVELS = frozenset({"none", "light", "playful"})
 ENGAGEMENT_ROLES = frozenset({"hook", "build", "reveal", "reaction", "payoff", "breathe"})
 COMPOSITION_ENERGIES = frozenset({"calm", "curious", "tense", "kinetic", "awe"})
 VISUAL_TRUTH_MODES = frozenset(
@@ -63,6 +65,7 @@ _TOPIC_METHODS = {
     "science_explainer": "mechanism, discovery, or scale",
     "science_documentary": "mechanism, discovery, or scale",
     "documentary": "human process, consequence, or discovery",
+    "natural_history_documentary": "mechanism, discovery, or scale",
     "history": "decision, consequence, or turning point",
     "historical_documentary": "decision, consequence, or turning point",
     "cooking": "transformation, texture, or reveal",
@@ -261,6 +264,20 @@ def validate_engagement_ledger(ledger: dict[str, Any]) -> EngagementReport:
         ENGAGEMENT_MODES,
         "engagement_profile",
     )
+    _profile_violation(
+        violations,
+        engagement,
+        "energy",
+        ENGAGEMENT_ENERGIES,
+        "engagement_profile",
+    )
+    _profile_violation(
+        violations,
+        engagement,
+        "humor",
+        HUMOR_LEVELS,
+        "engagement_profile",
+    )
     if engagement.get("sensationalism_forbidden") is not True:
         violations.append("engagement_profile.sensationalism_forbidden")
 
@@ -331,9 +348,11 @@ __all__ = [
     "ATTENTION_STYLES",
     "COMPOSITION_ENERGIES",
     "ENGAGEMENT_MODES",
+    "ENGAGEMENT_ENERGIES",
     "ENGAGEMENT_ROLES",
     "EngagementReport",
     "KNOWLEDGE_LEVELS",
+    "HUMOR_LEVELS",
     "SAFETY_INTENSITIES",
     "VISUAL_TRUTH_MODES",
     "compile_engagement_directives",

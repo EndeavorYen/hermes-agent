@@ -825,10 +825,18 @@ def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
                 stale_reviews.append((shot_id, row))
     if stale_reviews:
         shot_id, previous = stale_reviews[0]
-        candidate_path = str(
-            previous.get("candidate_path") or previous.get("local_path") or ""
-        ).strip()
-        if candidate_path and _project_path(context, candidate_path).is_file():
+        candidate_path = next(
+            (
+                value
+                for value in (
+                    str(previous.get("candidate_path") or "").strip(),
+                    str(previous.get("local_path") or "").strip(),
+                )
+                if value and _project_path(context, value).is_file()
+            ),
+            "",
+        )
+        if candidate_path:
             prompt_info = _compile_prompt(context, shot_id=shot_id)
             if not prompt_info.get("success"):
                 return {
@@ -858,6 +866,16 @@ def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
                 "remaining_review_count": len(stale_reviews),
                 "remaining_shot_count": len(unresolved),
             }
+        return {
+            "success": False,
+            "action": "next_batch_work",
+            "work_status": "human_review_required",
+            "shot_id": shot_id,
+            "error_type": "story_video_selected_artifact_missing",
+            "error": "Selected legacy art is missing from both candidate_path and local_path.",
+            "remaining_review_count": len(stale_reviews),
+            "remaining_shot_count": len(unresolved),
+        }
 
     if not unresolved:
         return {
