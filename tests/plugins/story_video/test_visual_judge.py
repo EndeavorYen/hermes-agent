@@ -712,6 +712,170 @@ def test_next_batch_work_promotes_stored_clean_candidate_after_strategy_exhausti
     assert manifest["selection_events"][0]["candidate_id"] == "S00_SH00_DOC_C01"
 
 
+def test_next_batch_work_promotes_subtitle_collision_to_packaging_fallback(
+    tmp_path,
+) -> None:
+    store, context, _shot = _context(tmp_path)
+    candidate = _candidate(context, "S00_SH00_DOC_C01")
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    attempts = [
+        {
+            "shot_id": "S00_SH00",
+            "candidate_id": "S00_SH00_LAYOUT_C01",
+            "status": "quality_budget_exhausted",
+            "repair_strategy": "layout_reset",
+            "hard_blockers": ["bottom subtitle band is occupied"],
+            "blocker_codes": ["subtitle_collision"],
+        },
+        {
+            "shot_id": "S00_SH00",
+            "candidate_id": "S00_SH00_CONTEXT_C01",
+            "status": "quality_budget_exhausted",
+            "repair_strategy": "contextual_replan",
+            "hard_blockers": ["bottom subtitle band is occupied"],
+            "blocker_codes": ["subtitle_collision"],
+        },
+        {
+            "shot_id": "S00_SH00",
+            "candidate_id": "S00_SH00_DOC_C01",
+            "status": "quality_budget_exhausted",
+            "repair_strategy": "documentary_context",
+            "provider": "openai-codex",
+            "candidate_path": candidate["path"],
+            "local_path": candidate["path"],
+            "quality_score": 82.0,
+            "hard_blockers": ["bottom subtitle band is occupied"],
+            "blocker_codes": ["subtitle_collision"],
+            "vision_evidence": {"status": "PASS", "response_id": "resp_qc"},
+        },
+    ]
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps({"outputs": [attempts[-1]], "attempt_history": attempts}),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(story_video_quality_control(
+        {"action": "next_batch_work"}, session_id="session-1", store=store
+    ))
+
+    assert payload["work_status"] == "complete"
+    manifest = json.loads(
+        (manifests / "shot_candidate_manifest.json").read_text(encoding="utf-8")
+    )
+    selected = manifest["outputs"][0]
+    assert selected["selected"] is True
+    assert selected["packaging_fallback"] == {
+        "type": "adaptive_subtitle_band",
+        "subtitle_position": "top",
+        "resolved_blocker_codes": ["subtitle_collision"],
+    }
+    assert selected["hard_blockers"] == []
+    assert selected["image_qc_blockers"] == ["bottom subtitle band is occupied"]
+    assert selected["best_effort_quality_floor"] == 80.0
+    assert manifest["selection_events"][0]["quality_floor"] == 80.0
+
+
+def test_judge_uses_candidate_prompt_after_repair_plan_is_exhausted(tmp_path) -> None:
+    store, context, _shot = _context(tmp_path)
+    candidate = _candidate(context, "S00_SH00_MANUAL_C01")
+    candidate["prompt"] = "Bound compiled prompt used to generate this exact candidate."
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    attempts = [
+        {
+            "shot_id": "S00_SH00",
+            "candidate_id": f"S00_SH00_{strategy}",
+            "status": "quality_budget_exhausted",
+            "repair_strategy": strategy,
+            "hard_blockers": ["subtitle collision"],
+            "blocker_codes": ["subtitle_collision"],
+        }
+        for strategy in ("layout_reset", "contextual_replan", "documentary_context")
+    ]
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps({"outputs": [attempts[-1]], "attempt_history": attempts}),
+        encoding="utf-8",
+    )
+    llm = FakeLlm([
+        {
+            "candidate_id": candidate["candidate_id"],
+            "dimensions": _dimensions(90),
+            "hard_blockers": [],
+            "evidence": ["The focal evidence is clear and the frame is usable."],
+        }
+    ])
+
+    payload = json.loads(story_video_quality_control(
+        {
+            "action": "judge_candidates",
+            "shot_id": "S00_SH00",
+            "repair_round": 1,
+            "candidates": [candidate],
+        },
+        session_id="session-1",
+        store=store,
+        llm=llm,
+    ))
+
+    assert payload["success"] is True
+    assert payload["selected_candidate_id"] == candidate["candidate_id"]
+    assert "Bound compiled prompt" in llm.calls[0]["input"][0]["text"]
+
+
+def test_judge_selects_packaging_recoverable_subtitle_collision(tmp_path) -> None:
+    store, context, _shot = _context(tmp_path)
+    candidate = _candidate(context, "S00_SH00_MANUAL_C01")
+    candidate["prompt"] = "Bound compiled prompt for a subtitle-layout retry."
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    attempts = [
+        {
+            "shot_id": "S00_SH00",
+            "candidate_id": f"S00_SH00_{strategy}",
+            "status": "quality_budget_exhausted",
+            "repair_strategy": strategy,
+            "hard_blockers": ["bottom subtitle band is occupied"],
+            "blocker_codes": ["subtitle_collision"],
+        }
+        for strategy in ("layout_reset", "contextual_replan", "documentary_context")
+    ]
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps({"outputs": [attempts[-1]], "attempt_history": attempts}),
+        encoding="utf-8",
+    )
+    llm = FakeLlm([
+        {
+            "candidate_id": candidate["candidate_id"],
+            "dimensions": _dimensions(88),
+            "hard_blockers": ["bottom subtitle band is occupied"],
+            "blocker_codes": ["subtitle_collision"],
+            "evidence": ["The image is strong except for the declared subtitle band."],
+        }
+    ])
+
+    payload = json.loads(story_video_quality_control(
+        {
+            "action": "judge_candidates",
+            "shot_id": "S00_SH00",
+            "repair_round": 1,
+            "candidates": [candidate],
+        },
+        session_id="session-1",
+        store=store,
+        llm=llm,
+    ))
+
+    assert payload["success"] is True
+    assert payload["packaging_fallback_selected"] is True
+    manifest = json.loads(
+        (manifests / "shot_candidate_manifest.json").read_text(encoding="utf-8")
+    )
+    selected = manifest["outputs"][0]
+    assert selected["packaging_fallback"]["subtitle_position"] == "top"
+    assert selected["hard_blockers"] == []
+
+
 def test_next_batch_work_carries_adaptive_repair_strategy(tmp_path) -> None:
     store, context, _shot = _context(tmp_path)
     manifests = context.project_dir / "manifests"
@@ -1098,6 +1262,11 @@ def test_prepare_render_writes_exact_renderer_v2_contract(tmp_path) -> None:
                         "status": "selected_current",
                         "local_path": "images/S00_SH00.png",
                         "provider": "openai-codex",
+                        "packaging_fallback": {
+                            "type": "adaptive_subtitle_band",
+                            "subtitle_position": "top",
+                            "resolved_blocker_codes": ["subtitle_collision"],
+                        },
                     }
                 ],
             }
@@ -1146,6 +1315,7 @@ def test_prepare_render_writes_exact_renderer_v2_contract(tmp_path) -> None:
         "selected": True,
         "image": "images/S00_SH00.png",
         "narration": "直立腿讓早期恐龍移動得更有效率。",
+        "subtitle_position": "top",
     }
     assert render_input["opening_card"]["image"] == "images/S00_SH00.png"
     assert render_input["ending_card"]["image"] == "images/S00_SH00.png"
