@@ -31,7 +31,10 @@ from unittest.mock import MagicMock
 import hermes_cli.plugins
 import pytest
 
-from agent.codex_runtime import run_codex_app_server_turn
+from agent.codex_runtime import (
+    _rotate_plugin_auto_continuation_session,
+    run_codex_app_server_turn,
+)
 from hermes_state import SessionDB
 from run_agent import AIAgent
 
@@ -378,6 +381,192 @@ def test_codex_runtime_runs_bounded_plugin_auto_continuation(monkeypatch):
     )
     assert result["final_response"] == "AUTO COMPLETE"
     assert result["api_calls"] == 2
+
+
+def test_codex_runtime_rotates_plugin_continuation_into_fresh_session(monkeypatch):
+    import agent.transports.codex_app_server_session as session_module
+
+    hook_calls = []
+    continuation_calls = 0
+    replacement_session_kwargs = {}
+
+    def invoke_hook(name, **kwargs):
+        nonlocal continuation_calls
+        hook_calls.append((name, kwargs))
+        if name == "auto_continue_llm_output":
+            continuation_calls += 1
+            if continuation_calls == 1:
+                return [{
+                    "action": "rotate",
+                    "message": "AUTO NEXT",
+                    "reason": "story_video_context_budget",
+                }]
+        if name == "pre_llm_call" and kwargs.get("auto_continuation") is True:
+            return [{"context": "FRESH STORY CONTEXT"}]
+        return []
+
+    second_turn = _make_turn()
+    second_turn.final_text = "AUTO COMPLETE"
+    second_turn.projected_messages = [
+        {"role": "assistant", "content": "AUTO COMPLETE"}
+    ]
+
+    class ReplacementSession:
+        def __init__(self, **kwargs):
+            replacement_session_kwargs.update(kwargs)
+
+        def run_turn(self, **_kwargs):
+            return second_turn
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(hermes_cli.plugins, "has_hook", lambda _name: True)
+    monkeypatch.setattr(hermes_cli.plugins, "invoke_hook", invoke_hook)
+    monkeypatch.setattr(session_module, "CodexAppServerSession", ReplacementSession)
+    db = MagicMock()
+    db.get_session_title.return_value = None
+    agent = _make_agent(session_db=db, session_id="session-parent")
+    old_codex_session = agent._codex_session
+    agent._session_init_model_config = "{}"
+    agent.model = "gpt-5.6-sol"
+    agent.provider = "openai-codex"
+    agent.base_url = "codex-app-server://local"
+    agent.platform = "slack"
+    agent.session_cwd = "/tmp"
+    messages = [
+        {"role": "user", "content": "OLD HISTORY"},
+        {"role": "assistant", "content": "OLD RESPONSE"},
+    ]
+
+    result = run_codex_app_server_turn(
+        agent,
+        user_message="start",
+        original_user_message="start",
+        messages=messages,
+        effective_task_id="story-auto-rotate",
+        turn_id="turn-1",
+        raphael_decision={"goal": {"target_artifact": "story_video_workflow"}},
+    )
+
+    assert agent.session_id != "session-parent"
+    old_codex_session.close.assert_called_once()
+    db.end_session.assert_called_once_with(
+        "session-parent", "plugin_auto_continue"
+    )
+    create_kwargs = db.create_session.call_args.kwargs
+    assert create_kwargs["session_id"] == agent.session_id
+    assert create_kwargs["parent_session_id"] == "session-parent"
+    pre_llm = next(
+        kwargs
+        for name, kwargs in hook_calls
+        if name == "pre_llm_call" and kwargs.get("auto_continuation") is True
+    )
+    assert pre_llm["session_id"] == agent.session_id
+    assert pre_llm["parent_session_id"] == "session-parent"
+    assert "OLD HISTORY" not in [message.get("content") for message in messages]
+    assert replacement_session_kwargs["ephemeral"] is True
+    assert result["final_response"] == "AUTO COMPLETE"
+
+
+def test_plugin_rotation_preserves_parent_when_end_session_fails():
+    db = MagicMock()
+    db.get_session_title.return_value = None
+    db.end_session.side_effect = RuntimeError("session database unavailable")
+    agent = _make_agent(session_db=db, session_id="session-parent")
+    old_codex_session = agent._codex_session
+    messages = [
+        {"role": "user", "content": "KEEP THIS HISTORY"},
+        {"role": "assistant", "content": "KEEP THIS RESPONSE"},
+    ]
+
+    result = _rotate_plugin_auto_continuation_session(agent, messages)
+
+    assert result == ""
+    assert agent.session_id == "session-parent"
+    assert messages[0]["content"] == "KEEP THIS HISTORY"
+    db.create_session.assert_not_called()
+    old_codex_session.close.assert_not_called()
+
+
+def test_plugin_rotation_reopens_parent_when_child_create_fails():
+    db = MagicMock()
+    db.get_session_title.return_value = None
+    db.create_session.side_effect = RuntimeError("child create failed")
+    agent = _make_agent(session_db=db, session_id="session-parent")
+    old_codex_session = agent._codex_session
+    messages = [{"role": "user", "content": "KEEP THIS HISTORY"}]
+
+    result = _rotate_plugin_auto_continuation_session(agent, messages)
+
+    assert result == ""
+    assert agent.session_id == "session-parent"
+    assert messages[0]["content"] == "KEEP THIS HISTORY"
+    db.reopen_session.assert_called_once_with("session-parent")
+    old_codex_session.close.assert_not_called()
+
+
+def test_codex_runtime_rotates_story_continuation_after_broken_pipe(monkeypatch):
+    import agent.transports.codex_app_server_session as session_module
+
+    continuation_calls = 0
+
+    def invoke_hook(name, **_kwargs):
+        nonlocal continuation_calls
+        if name == "auto_continue_llm_output":
+            continuation_calls += 1
+            if continuation_calls == 1:
+                return [{
+                    "action": "rotate",
+                    "message": "RECOVER CANONICAL NEXT WORK",
+                    "reason": "story_video_transport_recovery",
+                }]
+        return []
+
+    replacement_turn = _make_turn()
+    replacement_turn.final_text = "RECOVERED"
+    replacement_turn.projected_messages = [
+        {"role": "assistant", "content": "RECOVERED"}
+    ]
+
+    class ReplacementSession:
+        def __init__(self, **_kwargs):
+            pass
+
+        def run_turn(self, **_kwargs):
+            return replacement_turn
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(hermes_cli.plugins, "has_hook", lambda _name: True)
+    monkeypatch.setattr(hermes_cli.plugins, "invoke_hook", invoke_hook)
+    monkeypatch.setattr(session_module, "CodexAppServerSession", ReplacementSession)
+    db = MagicMock()
+    db.get_session_title.return_value = None
+    agent = _make_agent(session_db=db, session_id="session-parent")
+    agent._codex_session.run_turn.side_effect = BrokenPipeError(
+        "codex app-server stdin closed unexpectedly"
+    )
+    agent._session_init_model_config = "{}"
+    agent.model = "gpt-5.6-sol"
+    agent.provider = "openai-codex"
+    agent.base_url = "codex-app-server://local"
+    agent.platform = "slack"
+    agent.session_cwd = "/tmp"
+
+    result = run_codex_app_server_turn(
+        agent,
+        user_message="continue story batch",
+        original_user_message="continue story batch",
+        messages=[{"role": "user", "content": "continue story batch"}],
+        effective_task_id="story-transport-rotate",
+        turn_id="turn-broken-pipe",
+    )
+
+    assert agent.session_id != "session-parent"
+    assert result["final_response"] == "RECOVERED"
+    assert result["completed"] is True
 
 
 def test_codex_runtime_auto_continues_after_post_tool_transport_error(monkeypatch):

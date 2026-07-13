@@ -39,6 +39,20 @@ def _load_json(path: Path) -> Any:
         return None
 
 
+def _sync_candidate_manifest_phase(context: StoryVideoRunContext) -> None:
+    path = context.project_dir / "manifests" / "shot_candidate_manifest.json"
+    payload = _load_json(path)
+    if not isinstance(payload, dict) or payload.get("phase") == context.phase:
+        return
+    payload["phase"] = context.phase
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    tmp.replace(path)
+
+
 def _validate_planning(context: StoryVideoRunContext) -> PhaseProof:
     required = (
         "PROJECT_CONTRACT.md",
@@ -613,6 +627,8 @@ def story_video_control(
             ensure_ascii=False,
         )
 
+    _sync_candidate_manifest_phase(context)
+
     action = str(args.get("action") or "status").lower()
     if action == "repair":
         issue = str(args.get("repair_request") or "目前問題").strip()
@@ -654,6 +670,7 @@ def story_video_control(
                 repair_phase="",
                 status="complete" if _next_phase(context.phase) == "complete" else "active",
             )
+            _sync_candidate_manifest_phase(context)
             payload.update(_context_payload(context))
             payload["proof"] = proof.marker
         return json.dumps(payload, ensure_ascii=False)

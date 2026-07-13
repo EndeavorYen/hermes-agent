@@ -1097,6 +1097,7 @@ def _judge_candidates(
             history_keys.add(key)
     manifest.update(
         {
+            "phase": context.phase,
             "provider": "openai-codex",
             "judge_provider": "openai-codex",
             "quality_threshold": QUALITY_THRESHOLD,
