@@ -180,3 +180,19 @@ def test_topic_adapter_changes_method_without_forcing_spectacle() -> None:
     assert "mechanism, discovery, or scale" in science
     assert "transformation, texture, or reveal" in cooking
     assert "spectacle" not in cooking.lower()
+
+
+def test_camera_reveal_establishing_shot_is_judged_as_a_source_frame() -> None:
+    shot = _shot(
+        0,
+        shot_scale="establishing",
+        action="低空緩慢推進",
+        story_moment="低空緩慢推進後揭示整座荒涼河谷",
+        action_consequence="灰層、枯木與稀疏水道依序可辨識",
+    )
+
+    directives = " ".join(compile_engagement_directives(_ledger([shot]), shot))
+
+    assert "source frame for a camera reveal" in directives
+    assert "do not require camera motion inside the still" in directives
+    assert "capture one decisive visible instant" not in directives

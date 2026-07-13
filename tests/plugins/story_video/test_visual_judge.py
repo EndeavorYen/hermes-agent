@@ -10,6 +10,7 @@ from plugins.story_video.state import StoryVideoStateStore, parse_operator_call
 from plugins.story_video.visual_judge import (
     CANDIDATE_REVIEW_SCHEMA,
     _review_instructions,
+    _shot_contract_hash,
     configure_plugin_llm,
     story_video_quality_control,
 )
@@ -63,12 +64,15 @@ def _candidate(context, candidate_id: str, provider: str = "openai-codex") -> di
     path = context.project_dir / "images_candidates" / "S00_SH00" / f"{candidate_id}.png"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(f"image-{candidate_id}".encode())
+    ledger = json.loads((context.project_dir / "scene_ledger.json").read_text())
+    shot = ledger["scenes"][0]["shots"][0]
     return {
         "candidate_id": candidate_id,
         "path": str(path),
         "provider": provider,
         "model": "gpt-image-2-high",
         "response_id": f"img_{candidate_id}",
+        "shot_contract_hash": _shot_contract_hash(shot),
     }
 
 
@@ -102,6 +106,21 @@ def test_visual_judge_scores_story_engagement_from_artifact_evidence() -> None:
     assert "story_moment_clarity" in dimensions["required"]
     assert "Intentional calm" in instructions
     assert "static_catalog" in instructions
+
+
+def test_visual_judge_does_not_require_camera_motion_inside_reveal_source_frame() -> None:
+    instructions = _review_instructions(
+        {
+            "shot_scale": "establishing",
+            "action": "slow low-altitude push-in",
+            "story_moment": "the camera pushes in to reveal the aftermath valley",
+            "visual_truth_mode": "reconstruction",
+        },
+        ["C01"],
+    )
+
+    assert "Do not require camera motion to be visible inside the still" in instructions
+    assert "A coherent reconstruction may contain the declared environmental evidence" in instructions
 
 
 class FakeLlm:
@@ -479,6 +498,102 @@ def test_next_batch_work_advances_in_ledger_order_after_selection(tmp_path) -> N
     assert payload["remaining_shot_count"] == 1
 
 
+def test_next_batch_work_resets_output_when_scene_ledger_contract_changed(
+    tmp_path,
+) -> None:
+    store, context, shot = _context(tmp_path)
+    stale = _candidate(context, "S00_SH00_C01")
+    stale_row = {
+        "shot_id": "S00_SH00",
+        "shot_scale": "establishing",
+        "candidate_id": "S00_SH00_C01",
+        "selected": False,
+        "status": "quality_budget_exhausted",
+        "provider": "openai-codex",
+        "candidate_path": stale["path"],
+        "quality_score": 70.0,
+        "hard_blockers": ["no visible action"],
+        "blocker_codes": ["missing_story_moment"],
+        "generation_prompt": (
+            "Primary subject: an old ash valley. Observable action: slow camera push."
+        ),
+    }
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    manifest_path = manifests / "shot_candidate_manifest.json"
+    manifest_path.write_text(
+        json.dumps({"outputs": [stale_row], "attempt_history": [stale_row]}),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(story_video_quality_control(
+        {"action": "next_batch_work"}, session_id="session-1", store=store
+    ))
+
+    current_hash = _shot_contract_hash(shot)
+    assert payload["work_status"] == "ready"
+    assert payload["operation"] == "generate"
+    assert payload["repair_strategy"] == "initial"
+    assert payload["shot_contract_hash"] == current_hash
+    assert current_hash[:8].upper() in payload["candidate_id_hint"]
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["outputs"] == []
+    assert manifest["attempt_history"] == [stale_row]
+    assert manifest["contract_events"][0]["event"] == "shot_contract_superseded"
+    assert manifest["contract_events"][0]["shot_id"] == "S00_SH00"
+
+
+def test_contract_reset_takes_priority_over_stale_selected_rejudges(tmp_path) -> None:
+    store, context, shot = _context(tmp_path)
+    ledger_path = context.project_dir / "scene_ledger.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    ledger.update({
+        "quality_contract_version": 3,
+        "audience_profile": {"age_band": "general"},
+        "engagement_profile": {"mode": "discovery_documentary"},
+    })
+    second = {**shot, "shot_id": "S00_SH01", "subject": "second subject"}
+    ledger["scenes"][0]["shots"].append(second)
+    ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+    stale_changed = {
+        "shot_id": "S00_SH00",
+        "shot_scale": "establishing",
+        "candidate_id": "S00_SH00_OLD_C01",
+        "selected": False,
+        "status": "quality_budget_exhausted",
+        "provider": "openai-codex",
+    }
+    selected_stale_review = {
+        "shot_id": "S00_SH01",
+        "candidate_id": "S00_SH01_C01",
+        "selected": True,
+        "status": "selected_current",
+        "provider": "openai-codex",
+        "local_path": "images/S00_SH01.png",
+        "quality_dimensions": {"text_alignment": 90},
+    }
+    selected_path = context.project_dir / "images" / "S00_SH01.png"
+    selected_path.parent.mkdir(parents=True, exist_ok=True)
+    selected_path.write_bytes(b"selected")
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps({
+            "outputs": [stale_changed, selected_stale_review],
+            "attempt_history": [stale_changed, selected_stale_review],
+        }),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(story_video_quality_control(
+        {"action": "next_batch_work"}, session_id="session-1", store=store
+    ))
+
+    assert payload["shot_id"] == "S00_SH00"
+    assert payload["operation"] == "generate"
+    assert payload["contract_reset"] is True
+
+
 def test_next_batch_work_returns_complete_when_every_shot_is_selected(tmp_path) -> None:
     store, context, _shot = _context(tmp_path)
     manifests = context.project_dir / "manifests"
@@ -719,6 +834,83 @@ def test_next_batch_work_promotes_stored_clean_candidate_after_strategy_exhausti
     assert manifest["outputs"][0]["status"] == "selected_current"
     assert manifest["outputs"][0]["best_effort_selected"] is True
     assert manifest["selection_events"][0]["candidate_id"] == "S00_SH00_DOC_C01"
+
+
+def test_next_batch_work_rejudges_prior_clean_camera_reveal_after_bad_repair_loop(
+    tmp_path,
+) -> None:
+    store, context, shot = _context(tmp_path)
+    shot.update({
+        "shot_scale": "establishing",
+        "action": "低空緩慢推進",
+        "story_moment": "鏡頭低空推進後揭示整座荒涼河谷",
+        "visual_truth_mode": "reconstruction",
+    })
+    ledger_path = context.project_dir / "scene_ledger.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    ledger["scenes"][0]["shots"][0] = shot
+    ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+    prior = _candidate(context, "S00_SH00_C01")
+    attempts = [
+        {
+            "shot_id": "S00_SH00",
+            "candidate_id": "S00_SH00_C01",
+            "selected": True,
+            "status": "selected_current",
+            "provider": "openai-codex",
+            "candidate_path": prior["path"],
+            "local_path": prior["path"],
+            "quality_score": 88.0,
+            "hard_blockers": [],
+            "vision_evidence": {"status": "PASS", "response_id": "resp_original"},
+            "generation_prompt": "original camera reveal prompt",
+            "quality_dimensions": _dimensions(88),
+        },
+        {
+            "shot_id": "S00_SH00",
+            "candidate_id": "S00_SH00_TRUTH_C01",
+            "status": "quality_budget_exhausted",
+            "repair_strategy": "truth_reframe",
+            "hard_blockers": ["mixed evidence and reconstruction"],
+            "blocker_codes": ["mixed_evidence_reconstruction"],
+        },
+        {
+            "shot_id": "S00_SH00",
+            "candidate_id": "S00_SH00_STORY_C01",
+            "status": "quality_budget_exhausted",
+            "repair_strategy": "story_reframe",
+            "hard_blockers": ["no visible action"],
+            "blocker_codes": ["missing_story_moment"],
+        },
+        {
+            "shot_id": "S00_SH00",
+            "candidate_id": "S00_SH00_AUDIENCE_C01",
+            "status": "quality_budget_exhausted",
+            "repair_strategy": "audience_reframe",
+            "hard_blockers": ["no visible action"],
+            "blocker_codes": ["missing_story_moment"],
+        },
+    ]
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps({"outputs": [attempts[-1]], "attempt_history": attempts}),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(story_video_quality_control(
+        {"action": "next_batch_work"}, session_id="session-1", store=store
+    ))
+
+    assert payload["work_status"] == "ready"
+    assert payload["operation"] == "rejudge_existing"
+    assert payload["candidate_budget"] == 0
+    assert payload["candidate"]["candidate_id"] == "S00_SH00_C01_CAMERA_REVEAL_REVIEW"
+    candidate_path = Path(payload["candidate"]["path"])
+    if not candidate_path.is_absolute():
+        candidate_path = context.project_dir / candidate_path
+    assert candidate_path.resolve() == Path(prior["path"]).resolve()
+    assert payload["candidate"]["generation_prompt"] == "original camera reveal prompt"
 
 
 def test_next_batch_work_promotes_subtitle_collision_to_packaging_fallback(

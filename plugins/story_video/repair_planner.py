@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable
 
+from .engagement import is_camera_reveal_shot
+
 
 BLOCKER_CODES = frozenset({
     "subtitle_collision",
@@ -206,49 +208,84 @@ def apply_repair_strategy(
             "risk_class": "high",
         })
     elif strategy == "story_reframe":
-        story_moment = str(
-            shot.get("story_moment") or shot.get("action") or "the declared action"
-        ).strip()
-        consequence = str(
-            shot.get("action_consequence") or "its immediate visible consequence"
-        ).strip()
-        effective.update({
-            "action": f"{story_moment}; {consequence}",
-            "focal_point": (
-                str(shot.get("focal_point") or shot.get("subject") or "primary subject").strip()
-                + " at the cause-and-consequence instant"
-            ),
-            "acceptance_criteria": [
-                *acceptance,
-                "the decisive instant and its visible consequence read in one glance",
-                "foreground, primary subject, and context form a clear depth hierarchy",
-            ],
-        })
+        if is_camera_reveal_shot(shot):
+            effective.update({
+                "action": str(shot.get("action") or "camera reveal").strip(),
+                "acceptance_criteria": [
+                    *acceptance,
+                    "the source frame supports the declared renderer motion",
+                    "the environmental reveal and its visual consequence read in one glance",
+                    "foreground, primary subject, and context form a clear depth hierarchy",
+                ],
+            })
+        else:
+            story_moment = str(
+                shot.get("story_moment") or shot.get("action") or "the declared action"
+            ).strip()
+            consequence = str(
+                shot.get("action_consequence") or "its immediate visible consequence"
+            ).strip()
+            effective.update({
+                "action": f"{story_moment}; {consequence}",
+                "focal_point": (
+                    str(
+                        shot.get("focal_point")
+                        or shot.get("subject")
+                        or "primary subject"
+                    ).strip()
+                    + " at the cause-and-consequence instant"
+                ),
+                "acceptance_criteria": [
+                    *acceptance,
+                    "the decisive instant and its visible consequence read in one glance",
+                    "foreground, primary subject, and context form a clear depth hierarchy",
+                ],
+            })
     elif strategy == "audience_reframe":
         hook = str(
             shot.get("attention_hook") or "the question created by the visible result"
         ).strip()
+        audience_acceptance = (
+            "one immediately readable environmental reveal and one visible consequence "
+            "dominate the frame"
+            if is_camera_reveal_shot(shot)
+            else "one concrete action and one visible consequence dominate the frame"
+        )
         effective.update({
             "focal_point": f"one immediately readable subject that answers: {hook}",
             "acceptance_criteria": [
                 *acceptance,
-                "one concrete action and one visible consequence dominate the frame",
+                audience_acceptance,
                 "the main idea is understandable without labels or background knowledge",
             ],
         })
     elif strategy == "truth_reframe":
-        effective.update({
-            "visual_truth_mode": "direct_evidence",
-            "subject": str(shot.get("evidence_detail") or evidence).strip(),
-            "action": "presented as the direct evidence without reconstructed behavior",
-            "focal_point": str(shot.get("evidence_detail") or evidence).strip(),
-            "acceptance_criteria": [
-                *acceptance,
-                "no unsupported danger, conflict, behavior, emotion, or certainty",
-                "reconstruction is reserved for a separate explicitly marked shot",
-            ],
-            "risk_class": "high",
-        })
+        if is_camera_reveal_shot(shot) and str(
+            shot.get("visual_truth_mode") or ""
+        ).strip() == "reconstruction":
+            effective.update({
+                "visual_truth_mode": "reconstruction",
+                "acceptance_criteria": [
+                    *acceptance,
+                    "one coherent grounded reconstruction supports the declared reveal",
+                    "no element is presented as a preserved specimen or direct observation",
+                    "no unsupported danger, behavior, emotion, or certainty",
+                ],
+                "risk_class": "high",
+            })
+        else:
+            effective.update({
+                "visual_truth_mode": "direct_evidence",
+                "subject": str(shot.get("evidence_detail") or evidence).strip(),
+                "action": "presented as the direct evidence without reconstructed behavior",
+                "focal_point": str(shot.get("evidence_detail") or evidence).strip(),
+                "acceptance_criteria": [
+                    *acceptance,
+                    "no unsupported danger, conflict, behavior, emotion, or certainty",
+                    "reconstruction is reserved for a separate explicitly marked shot",
+                ],
+                "risk_class": "high",
+            })
     codes = {str(code).strip() for code in blocker_codes}
     safe_area = str(shot.get("subtitle_safe_area") or "").strip().lower()
     if "subtitle_collision" in codes:

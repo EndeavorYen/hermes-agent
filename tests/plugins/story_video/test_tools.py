@@ -604,6 +604,28 @@ def test_batch_validation_accepts_scene_ledger_selected_asset_path(tmp_path) -> 
     assert proof.ok is True
 
 
+def test_batch_validation_rejects_selected_asset_from_superseded_shot_contract(
+    tmp_path,
+) -> None:
+    store, context = _active_context(tmp_path)
+    context = store.update(context, phase="batch")
+    ledger = _write_planning_fixture(context, shot_count=8)
+    shots = ledger["scenes"][0]["shots"]
+    _write_candidate_manifest(context, shots)
+    shots[0]["shot_scale"] = "macro"
+    (context.project_dir / "scene_ledger.json").write_text(
+        json.dumps(ledger),
+        encoding="utf-8",
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert f"{shots[0]['shot_id']} selected candidate uses superseded shot contract" in (
+        proof.violations
+    )
+
+
 def test_batch_validation_rejects_missing_and_duplicate_selected_shots(tmp_path) -> None:
     store, context = _active_context(tmp_path)
     context = store.update(context, phase="batch")

@@ -248,6 +248,8 @@ def _validate_keyframes(context: StoryVideoRunContext) -> PhaseProof:
 
 
 def _validate_batch(context: StoryVideoRunContext) -> PhaseProof:
+    from .shot_contract import manifest_row_matches_shot_contract
+
     ledger_path = context.project_dir / "scene_ledger.json"
     ledger = _load_json(ledger_path)
     if ledger is None:
@@ -269,6 +271,11 @@ def _validate_batch(context: StoryVideoRunContext) -> PhaseProof:
         if isinstance(manifest, dict) and isinstance(manifest.get("outputs"), list)
         else []
     )
+    legacy_prompts = {
+        str(row.get("shot_id") or ""): str(row.get("prompt") or "").strip()
+        for row in (manifest.get("shots") if isinstance(manifest, dict) else []) or []
+        if isinstance(row, dict) and str(row.get("shot_id") or "").strip()
+    }
     selected_by_shot: dict[str, list[dict[str, Any]]] = {}
     for output in outputs:
         if not isinstance(output, dict) or output.get("selected") is not True:
@@ -296,6 +303,14 @@ def _validate_batch(context: StoryVideoRunContext) -> PhaseProof:
             rows = selected_by_shot.get(shot_id, [])
             if len(rows) > 1:
                 violations.append(f"{shot_id} has multiple selected candidates")
+            if len(rows) == 1 and not manifest_row_matches_shot_contract(
+                rows[0],
+                shot,
+                legacy_prompts.get(shot_id, ""),
+            ):
+                violations.append(
+                    f"{shot_id} selected candidate uses superseded shot contract"
+                )
             asset = shot.get("selected_asset_path") or shot.get("selected_asset")
             if not asset and len(rows) == 1:
                 asset = rows[0].get("local_path")

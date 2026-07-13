@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .engagement import engagement_contract_enabled
+from .engagement import engagement_contract_enabled, is_camera_reveal_shot
 from .repair_planner import (
     BLOCKER_CODES,
     apply_repair_strategy,
@@ -23,6 +23,10 @@ from .quality import (
     compile_shot_prompt,
     rank_candidate_assessments,
 )
+from .shot_contract import (
+    manifest_row_matches_shot_contract as _manifest_row_matches_shot_contract,
+)
+from .shot_contract import shot_contract_hash as _shot_contract_hash
 from .state import StoryVideoRunContext, StoryVideoStateStore
 
 
@@ -156,6 +160,80 @@ def _find_shot(
     raise ValueError(f"unknown shot_id: {shot_id}")
 
 
+def _reconcile_manifest_contracts(
+    context: StoryVideoRunContext,
+    ledger: dict[str, Any],
+    manifest: dict[str, Any],
+) -> tuple[dict[str, Any], set[str]]:
+    shots = {
+        str(shot.get("shot_id") or ""): shot
+        for scene in ledger.get("scenes") or []
+        if isinstance(scene, dict)
+        for shot in scene.get("shots") or []
+        if isinstance(shot, dict) and str(shot.get("shot_id") or "").strip()
+    }
+    legacy_prompts = {
+        str(row.get("shot_id") or ""): str(row.get("prompt") or "").strip()
+        for row in manifest.get("shots") or []
+        if isinstance(row, dict) and str(row.get("shot_id") or "").strip()
+    }
+    retained: list[dict[str, Any]] = []
+    superseded: set[str] = set()
+    events = [
+        dict(row) for row in manifest.get("contract_events") or [] if isinstance(row, dict)
+    ]
+    event_keys = {
+        (
+            str(row.get("shot_id") or ""),
+            str(row.get("candidate_id") or ""),
+            str(row.get("new_shot_contract_hash") or ""),
+        )
+        for row in events
+    }
+    for row in manifest.get("outputs") or []:
+        if not isinstance(row, dict):
+            continue
+        shot_id = str(row.get("shot_id") or "").strip()
+        shot = shots.get(shot_id)
+        if shot is None or _manifest_row_matches_shot_contract(
+            row,
+            shot,
+            legacy_prompts.get(shot_id, ""),
+        ):
+            retained.append(row)
+            continue
+        superseded.add(shot_id)
+        new_hash = _shot_contract_hash(shot)
+        key = (shot_id, str(row.get("candidate_id") or ""), new_hash)
+        if key not in event_keys:
+            events.append(
+                {
+                    "event": "shot_contract_superseded",
+                    "shot_id": shot_id,
+                    "candidate_id": str(row.get("candidate_id") or ""),
+                    "old_shot_contract_hash": str(
+                        row.get("shot_contract_hash") or "legacy_unversioned"
+                    ),
+                    "new_shot_contract_hash": new_hash,
+                    "detected_at": _utc_now(),
+                }
+            )
+            event_keys.add(key)
+    if not superseded:
+        return manifest, superseded
+    updated = {
+        **manifest,
+        "outputs": retained,
+        "contract_events": events,
+        "updated_at": _utc_now(),
+    }
+    _write_json_atomic(
+        context.project_dir / "manifests" / "shot_candidate_manifest.json",
+        updated,
+    )
+    return updated, superseded
+
+
 def _compile_prompt(
     context: StoryVideoRunContext,
     *,
@@ -165,16 +243,38 @@ def _compile_prompt(
     manifest = _load_json(
         context.project_dir / "manifests" / "shot_candidate_manifest.json"
     ) or {}
-    history_rows = [
+    contract_hash = _shot_contract_hash(shot)
+    legacy_prompt = next(
+        (
+            str(row.get("prompt") or "").strip()
+            for row in manifest.get("shots") or []
+            if isinstance(row, dict) and str(row.get("shot_id") or "") == shot_id
+        ),
+        "",
+    )
+    all_history_rows = [
         row
         for row in manifest.get("attempt_history") or []
         if isinstance(row, dict) and str(row.get("shot_id") or "") == shot_id
     ]
-    current_rows = [
+    all_current_rows = [
         row
         for row in manifest.get("outputs") or []
         if isinstance(row, dict) and str(row.get("shot_id") or "") == shot_id
     ]
+    history_rows = [
+        row
+        for row in all_history_rows
+        if _manifest_row_matches_shot_contract(row, shot, legacy_prompt)
+    ]
+    current_rows = [
+        row
+        for row in all_current_rows
+        if _manifest_row_matches_shot_contract(row, shot, legacy_prompt)
+    ]
+    contract_reset = len(history_rows) != len(all_history_rows) or len(current_rows) != len(
+        all_current_rows
+    )
     known_candidates = {
         str(row.get("candidate_id") or "") for row in history_rows
     }
@@ -219,7 +319,8 @@ def _compile_prompt(
             + "."
         )
     prompt += f" Adaptive repair strategy: {repair_plan.strategy}. {repair_plan.directive}"
-    candidate_id_hint = f"{shot_id}_{repair_plan.candidate_suffix}"
+    revision = f"{contract_hash[:8].upper()}_" if contract_reset else ""
+    candidate_id_hint = f"{shot_id}_{revision}{repair_plan.candidate_suffix}"
     prompt_path = context.project_dir / "prompts" / f"{shot_id}.txt"
     prompt_path.parent.mkdir(parents=True, exist_ok=True)
     prompt_path.write_text(prompt + "\n", encoding="utf-8")
@@ -242,11 +343,27 @@ def _compile_prompt(
             1 if repair_plan.strategy == "layout_reset" else 0
         ),
         "candidate_id_hint": candidate_id_hint,
+        "shot_contract_hash": contract_hash,
+        "contract_reset": contract_reset,
         "effective_shot_contract": effective_shot,
     }
 
 
 def _review_instructions(shot: dict[str, Any], candidate_ids: list[str]) -> str:
+    shot_specific: list[str] = []
+    if is_camera_reveal_shot(shot):
+        shot_specific.append(
+            "This is a source frame for a camera reveal. Do not require camera motion "
+            "to be visible inside the still; judge the environmental reveal, attention "
+            "path, depth hierarchy, and readable aftermath state that the renderer will animate."
+        )
+    if str(shot.get("visual_truth_mode") or "").strip() == "reconstruction":
+        shot_specific.append(
+            "A coherent reconstruction may contain the declared environmental evidence. "
+            "Use mixed_evidence_reconstruction only when the frame falsely presents a "
+            "reconstruction as a preserved specimen or direct observation, not merely "
+            "because grounded evidence appears within the reconstructed environment."
+        )
     return "\n".join(
         (
             "You are the independent visual quality judge for a professional story video.",
@@ -258,12 +375,104 @@ def _review_instructions(shot: dict[str, Any], candidate_ids: list[str]) -> str:
             "Score narrative_engagement from the artifact's attention path, purposeful visual progression, and audience fit. High energy is not inherently better.",
             "Score story_moment_clarity from whether one decisive instant and its immediate consequence are visibly understandable.",
             "Intentional calm or breathe shots may score highly when the declared calm_reason is supported by a strong focal hierarchy and useful pause; calm alone is not static_catalog.",
+            *shot_specific,
             "For every hard blocker, return one or more blocker_codes from: "
             + ", ".join(sorted(BLOCKER_CODES))
             + ".",
             "Return one row for every candidate id. Scores use 0-100. Evidence must cite concrete visible observations, not metadata or prompt intent.",
         )
     )
+
+
+def _camera_reveal_rejudge_work(
+    context: StoryVideoRunContext,
+    *,
+    shot_id: str,
+    manifest: dict[str, Any],
+    remaining_shot_count: int,
+    legacy_prompt: str,
+) -> dict[str, Any] | None:
+    _ledger, _scene, shot = _find_shot(context, shot_id)
+    if not is_camera_reveal_shot(shot):
+        return None
+    history = [
+        row
+        for row in manifest.get("attempt_history") or []
+        if isinstance(row, dict)
+        and str(row.get("shot_id") or "") == shot_id
+        and _manifest_row_matches_shot_contract(row, shot, legacy_prompt)
+    ]
+    if not history or not plan_repair(history).exhausted:
+        return None
+    review_suffix = "_CAMERA_REVEAL_REVIEW"
+    if any(str(row.get("candidate_id") or "").endswith(review_suffix) for row in history):
+        return None
+    latest_codes = classify_blockers(
+        history[-1].get("hard_blockers") or (),
+        history[-1].get("blocker_codes") or (),
+    )
+    recoverable_codes = {
+        "missing_story_moment",
+        "audience_mismatch",
+        "flat_composition",
+        "static_catalog",
+    }
+    if str(shot.get("visual_truth_mode") or "").strip() == "reconstruction":
+        recoverable_codes.add("mixed_evidence_reconstruction")
+    if not latest_codes or not latest_codes.issubset(recoverable_codes):
+        return None
+    eligible: list[tuple[float, dict[str, Any], Path]] = []
+    for row in history:
+        blockers = [str(item).strip() for item in row.get("hard_blockers") or [] if str(item).strip()]
+        evidence = row.get("vision_evidence")
+        score = float(row.get("quality_score") or 0.0)
+        if (
+            row.get("selected") is not True
+            or blockers
+            or score < QUALITY_THRESHOLD
+            or _provider(row.get("provider")) not in {"openai", "openai-codex"}
+            or not isinstance(evidence, dict)
+            or evidence.get("status") != "PASS"
+            or not str(evidence.get("response_id") or "").strip()
+        ):
+            continue
+        candidate_path = _project_path(
+            context,
+            row.get("candidate_path") or row.get("local_path"),
+        )
+        if candidate_path.is_file():
+            eligible.append((score, row, candidate_path))
+    if not eligible:
+        return None
+    _score, previous, candidate_path = max(eligible, key=lambda item: item[0])
+    previous_id = str(previous.get("candidate_id") or shot_id).strip()
+    return {
+        "success": True,
+        "action": "next_batch_work",
+        "work_status": "ready",
+        "operation": "rejudge_existing",
+        "shot_id": shot_id,
+        "candidate_budget": 0,
+        "quality_threshold": QUALITY_THRESHOLD,
+        "candidate": {
+            "candidate_id": f"{previous_id}{review_suffix}",
+            "path": _relative(context, candidate_path),
+            "provider": _provider(previous.get("provider")),
+            "model": str(previous.get("model") or ""),
+            "response_id": str(previous.get("generation_response_id") or ""),
+            "shot_contract_hash": _shot_contract_hash(shot),
+            "repair_strategy": "camera_reveal_policy_review",
+            "generation_prompt": str(
+                previous.get("generation_prompt")
+                or previous.get("prompt")
+                or legacy_prompt
+                or ""
+            ).strip(),
+        },
+        "repair_round": int(previous.get("repair_round") or 1),
+        "remaining_shot_count": remaining_shot_count,
+        "recovery_reason": "camera_reveal_source_frame_policy_review",
+    }
 
 
 def _image_input(path: Path) -> dict[str, Any]:
@@ -350,6 +559,7 @@ def _judge_candidates(
             ),
         }
     ledger, scene, shot = _find_shot(context, shot_id)
+    contract_hash = _shot_contract_hash(shot)
     candidate_rows: list[dict[str, Any]] = []
     candidate_paths: dict[str, Path] = {}
     seen: set[str] = set()
@@ -368,6 +578,21 @@ def _judge_candidates(
                 "error": f"candidate[{index}] has missing or duplicate candidate_id",
             }
         seen.add(candidate_id)
+        candidate_contract_hash = str(candidate.get("shot_contract_hash") or "").strip()
+        if not candidate_contract_hash:
+            return {
+                "success": False,
+                "error_type": "story_video_candidate_contract_hash_missing",
+                "error": f"candidate {candidate_id} has no shot_contract_hash",
+            }
+        if candidate_contract_hash != contract_hash:
+            return {
+                "success": False,
+                "error_type": "story_video_candidate_contract_superseded",
+                "error": f"candidate {candidate_id} belongs to an older shot contract",
+                "expected_shot_contract_hash": contract_hash,
+                "candidate_shot_contract_hash": candidate_contract_hash,
+            }
         if _provider(candidate.get("provider")) not in {"openai", "openai-codex"}:
             return {
                 "success": False,
@@ -515,6 +740,8 @@ def _judge_candidates(
         row
         for row in (manifest.get("attempt_history") or manifest.get("outputs") or [])
         if isinstance(row, dict)
+        and str(row.get("shot_id") or "") == shot_id
+        and _manifest_row_matches_shot_contract(row, shot)
     ]
     previous = [
         row
@@ -604,6 +831,7 @@ def _judge_candidates(
             {
                 "shot_id": shot_id,
                 "shot_scale": str(shot.get("shot_scale") or ""),
+                "shot_contract_hash": contract_hash,
                 "candidate_id": candidate_id,
                 "selected": candidate_id == selected_id,
                 "status": (
@@ -777,10 +1005,28 @@ def _promote_bounded_best_effort(
     for row in outputs:
         shot_id = str(row.get("shot_id") or "").strip()
         candidate_id = str(row.get("candidate_id") or "").strip()
+        try:
+            _ledger, _scene, current_shot = _find_shot(context, shot_id)
+        except ValueError:
+            continue
+        legacy_prompt = next(
+            (
+                str(item.get("prompt") or "").strip()
+                for item in manifest.get("shots") or []
+                if isinstance(item, dict)
+                and str(item.get("shot_id") or "") == shot_id
+            ),
+            "",
+        )
         shot_history = [
             attempt
             for attempt in history
             if str(attempt.get("shot_id") or "") == shot_id
+            and _manifest_row_matches_shot_contract(
+                attempt,
+                current_shot,
+                legacy_prompt,
+            )
         ]
         blockers = [str(item) for item in row.get("hard_blockers") or []]
         blocker_codes = classify_blockers(
@@ -867,9 +1113,15 @@ def _promote_bounded_best_effort(
 def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
     """Return one deterministic image/QC cycle, prioritizing repairs."""
     shot_ids = _ordered_shot_ids(context)
+    ledger = _load_json(context.project_dir / "scene_ledger.json") or {}
     manifest = _load_json(
         context.project_dir / "manifests" / "shot_candidate_manifest.json"
     ) or {}
+    manifest, superseded_contracts = _reconcile_manifest_contracts(
+        context,
+        ledger,
+        manifest,
+    )
     manifest = _promote_bounded_best_effort(context, manifest)
     legacy_prompts = {
         str(row.get("shot_id") or ""): str(row.get("prompt") or "").strip()
@@ -886,6 +1138,20 @@ def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
         for shot_id in shot_ids
         if by_shot.get(shot_id, {}).get("selected") is not True
     ]
+    contract_resets = [
+        shot_id for shot_id in shot_ids if shot_id in superseded_contracts
+    ]
+    if contract_resets:
+        shot_id = contract_resets[0]
+        prompt_info = _compile_prompt(context, shot_id=shot_id)
+        return {
+            **prompt_info,
+            "action": "next_batch_work",
+            "work_status": "ready" if prompt_info.get("success") else "human_review_required",
+            "operation": "generate",
+            "contract_reset": True,
+            "remaining_shot_count": len(unresolved),
+        }
     blocked_statuses = {"repair_required", "quality_budget_exhausted"}
     blocked = [
         shot_id
@@ -894,6 +1160,15 @@ def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
     ]
     if blocked:
         shot_id = blocked[0]
+        recovery = _camera_reveal_rejudge_work(
+            context,
+            shot_id=shot_id,
+            manifest=manifest,
+            remaining_shot_count=len(unresolved),
+            legacy_prompt=legacy_prompts.get(shot_id, ""),
+        )
+        if recovery is not None:
+            return recovery
         prompt_info = _compile_prompt(context, shot_id=shot_id)
         if not prompt_info.get("success"):
             return {
@@ -910,7 +1185,6 @@ def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
             "remaining_shot_count": len(unresolved),
         }
 
-    ledger = _load_json(context.project_dir / "scene_ledger.json") or {}
     stale_reviews: list[tuple[str, dict[str, Any]]] = []
     if engagement_contract_enabled(ledger):
         for shot_id in shot_ids:
@@ -949,6 +1223,10 @@ def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
                     "remaining_shot_count": len(unresolved),
                 }
             old_candidate_id = str(previous.get("candidate_id") or shot_id).strip()
+            _current_ledger, _current_scene, current_shot = _find_shot(
+                context,
+                shot_id,
+            )
             return {
                 **prompt_info,
                 "action": "next_batch_work",
@@ -963,6 +1241,7 @@ def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
                     "response_id": str(
                         previous.get("generation_response_id") or ""
                     ),
+                    "shot_contract_hash": _shot_contract_hash(current_shot),
                     "repair_strategy": "initial",
                     "generation_prompt": str(
                         previous.get("generation_prompt")
@@ -1009,6 +1288,7 @@ def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
         "action": "next_batch_work",
         "work_status": "ready",
         "operation": "repair" if previous else "generate",
+        "contract_reset": shot_id in superseded_contracts or prompt_info.get("contract_reset", False),
         "remaining_shot_count": len(unresolved),
     }
 
@@ -1045,6 +1325,11 @@ def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
         raise ValueError("narration_manifest.json is missing or invalid")
 
     selected_by_shot: dict[str, dict[str, Any]] = {}
+    legacy_prompts = {
+        str(row.get("shot_id") or ""): str(row.get("prompt") or "").strip()
+        for row in candidate_manifest.get("shots") or []
+        if isinstance(row, dict) and str(row.get("shot_id") or "").strip()
+    }
     for output in candidate_manifest.get("outputs") or []:
         if not isinstance(output, dict) or output.get("selected") is not True:
             continue
@@ -1092,6 +1377,14 @@ def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
             selected = selected_by_shot.get(shot_id)
             if selected is None:
                 raise ValueError(f"missing selected image for shot {shot_id}")
+            if not _manifest_row_matches_shot_contract(
+                selected,
+                shot,
+                legacy_prompts.get(shot_id, ""),
+            ):
+                raise ValueError(
+                    f"selected image for {shot_id} uses superseded shot contract"
+                )
             _image_path, image_relative = _required_project_file(
                 context,
                 selected.get("local_path"),
