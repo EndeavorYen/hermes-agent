@@ -4,6 +4,12 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
+from .engagement import (
+    compile_engagement_directives,
+    engagement_contract_enabled,
+    validate_engagement_ledger,
+)
+
 
 OPENAI_PROVIDERS = frozenset({"openai", "openai-codex"})
 QUALITY_THRESHOLD = 80.0
@@ -26,12 +32,14 @@ REQUIRED_SHOT_FIELDS = (
     "risk_class",
 )
 DIMENSION_WEIGHTS = {
-    "text_alignment": 25.0,
-    "focal_clarity": 20.0,
-    "evidence_specificity": 15.0,
-    "professional_quality": 15.0,
-    "scientific_credibility": 15.0,
-    "continuity_and_diversity": 10.0,
+    "text_alignment": 20.0,
+    "focal_clarity": 15.0,
+    "evidence_specificity": 12.0,
+    "professional_quality": 12.0,
+    "scientific_credibility": 10.0,
+    "continuity_and_diversity": 9.0,
+    "narrative_engagement": 11.0,
+    "story_moment_clarity": 11.0,
 }
 
 
@@ -170,6 +178,8 @@ def validate_quality_ledger(ledger: dict[str, Any]) -> LedgerQualityReport:
         if run_length == 3 and not _text(shot.get("intentional_scale_repeat_reason")):
             violations.append(f"repeated_shot_scale_without_reason:{scale}:3")
 
+    engagement_report = validate_engagement_ledger(ledger)
+    violations.extend(engagement_report.violations)
     metrics = {
         "duration_sec": duration_sec,
         "shot_count": shot_count,
@@ -177,6 +187,7 @@ def validate_quality_ledger(ledger: dict[str, Any]) -> LedgerQualityReport:
         "maximum_shots": maximum_shots,
         "close_evidence_count": close_evidence_count,
         "close_evidence_ratio": round(close_ratio, 4),
+        "engagement": engagement_report.metrics,
     }
     return LedgerQualityReport(not violations, tuple(violations), metrics)
 
@@ -223,11 +234,17 @@ def compile_shot_prompt(
             "One coherent camera-real scene, not a collage, panel grid, infographic, "
             "or montage."
         )
+    engagement_parts = (
+        compile_engagement_directives(ledger, shot)
+        if engagement_contract_enabled(ledger)
+        else ()
+    )
     parts = (
         f"Viewer takeaway: {_text(shot.get('viewer_takeaway'))}.",
         f"Primary subject: {_text(shot.get('subject'))}.",
         f"Observable action: {_text(shot.get('action'))}.",
         f"Evidence that must be readable: {_text(shot.get('evidence_detail'))}.",
+        *engagement_parts,
         f"Shot design: {_scale_instruction(scale)}; camera angle: {_text(shot.get('camera_angle'))}; focal point: {_text(shot.get('focal_point'))}.",
         composition,
         f"Subordinate setting: {setting}.",

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .engagement import engagement_contract_enabled
 from .repair_planner import (
     BLOCKER_CODES,
     apply_repair_strategy,
@@ -243,7 +244,10 @@ def _review_instructions(shot: dict[str, Any], candidate_ids: list[str]) -> str:
             "The generation provider and the judging provider are both required to be OpenAI.",
             f"Shot contract: {json.dumps(shot, ensure_ascii=False, sort_keys=True)}",
             f"Candidate image order: {json.dumps(candidate_ids, ensure_ascii=False)}",
-            "Hard blockers include wrong spoken-claim content, scientific contradiction, malformed anatomy or geometry, generated text/watermark, unclear focus, subtitle collision, and an image that adds no information beyond adjacent shots.",
+            "Hard blockers include wrong spoken-claim content, scientific contradiction, malformed anatomy or geometry, generated text/watermark, unclear focus, subtitle collision, an image that adds no information beyond adjacent shots, static_catalog, missing_story_moment, flat_composition, audience_mismatch, sensationalized_claim, and mixed_evidence_reconstruction.",
+            "Score narrative_engagement from the artifact's attention path, purposeful visual progression, and audience fit. High energy is not inherently better.",
+            "Score story_moment_clarity from whether one decisive instant and its immediate consequence are visibly understandable.",
+            "Intentional calm or breathe shots may score highly when the declared calm_reason is supported by a strong focal hierarchy and useful pause; calm alone is not static_catalog.",
             "For every hard blocker, return one or more blocker_codes from: "
             + ", ".join(sorted(BLOCKER_CODES))
             + ".",
@@ -479,6 +483,9 @@ def _judge_candidates(
         "evidence_reframe",
         "contextual_replan",
         "documentary_context",
+        "story_reframe",
+        "audience_reframe",
+        "truth_reframe",
     }
     best_assessment = max(
         assessments,
@@ -776,6 +783,100 @@ def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
         for shot_id in shot_ids
         if by_shot.get(shot_id, {}).get("selected") is not True
     ]
+    blocked_statuses = {"repair_required", "quality_budget_exhausted"}
+    blocked = [
+        shot_id
+        for shot_id in unresolved
+        if str(by_shot.get(shot_id, {}).get("status") or "") in blocked_statuses
+    ]
+    if blocked:
+        shot_id = blocked[0]
+        prompt_info = _compile_prompt(context, shot_id=shot_id)
+        if not prompt_info.get("success"):
+            return {
+                **prompt_info,
+                "action": "next_batch_work",
+                "work_status": "human_review_required",
+                "remaining_shot_count": len(unresolved),
+            }
+        return {
+            **prompt_info,
+            "action": "next_batch_work",
+            "work_status": "ready",
+            "operation": "repair",
+            "remaining_shot_count": len(unresolved),
+        }
+
+    ledger = _load_json(context.project_dir / "scene_ledger.json") or {}
+    stale_reviews: list[tuple[str, dict[str, Any]]] = []
+    if engagement_contract_enabled(ledger):
+        for shot_id in shot_ids:
+            row = by_shot.get(shot_id, {})
+            dimensions = row.get("quality_dimensions")
+            if (
+                row.get("selected") is True
+                and _provider(row.get("provider")) in {"openai", "openai-codex"}
+                and (
+                    not isinstance(dimensions, dict)
+                    or "narrative_engagement" not in dimensions
+                    or "story_moment_clarity" not in dimensions
+                )
+            ):
+                stale_reviews.append((shot_id, row))
+    if stale_reviews:
+        shot_id, previous = stale_reviews[0]
+        candidate_path = next(
+            (
+                value
+                for value in (
+                    str(previous.get("candidate_path") or "").strip(),
+                    str(previous.get("local_path") or "").strip(),
+                )
+                if value and _project_path(context, value).is_file()
+            ),
+            "",
+        )
+        if candidate_path:
+            prompt_info = _compile_prompt(context, shot_id=shot_id)
+            if not prompt_info.get("success"):
+                return {
+                    **prompt_info,
+                    "action": "next_batch_work",
+                    "work_status": "human_review_required",
+                    "remaining_shot_count": len(unresolved),
+                }
+            old_candidate_id = str(previous.get("candidate_id") or shot_id).strip()
+            return {
+                **prompt_info,
+                "action": "next_batch_work",
+                "work_status": "ready",
+                "operation": "rejudge_existing",
+                "candidate_budget": 0,
+                "candidate": {
+                    "candidate_id": f"{old_candidate_id}_V3_REVIEW",
+                    "path": candidate_path,
+                    "provider": _provider(previous.get("provider")),
+                    "model": str(previous.get("model") or ""),
+                    "response_id": str(
+                        previous.get("generation_response_id") or ""
+                    ),
+                    "repair_strategy": "initial",
+                },
+                "repair_round": int(previous.get("repair_round") or 1),
+                "remaining_review_count": len(stale_reviews),
+                "remaining_shot_count": len(unresolved),
+            }
+        return {
+            "success": False,
+            "action": "next_batch_work",
+            "work_status": "human_review_required",
+            "shot_id": shot_id,
+            "error_type": "story_video_selected_artifact_missing",
+            "error": "Selected legacy art is missing from both candidate_path and local_path.",
+            "remaining_review_count": len(stale_reviews),
+            "remaining_shot_count": len(unresolved),
+        }
+
     if not unresolved:
         return {
             "success": True,
@@ -784,13 +885,7 @@ def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
             "remaining_shot_count": 0,
         }
 
-    blocked_statuses = {"repair_required", "quality_budget_exhausted"}
-    blocked = [
-        shot_id
-        for shot_id in unresolved
-        if str(by_shot.get(shot_id, {}).get("status") or "") in blocked_statuses
-    ]
-    shot_id = (blocked or unresolved)[0]
+    shot_id = unresolved[0]
     previous = by_shot.get(shot_id, {})
     prompt_info = _compile_prompt(context, shot_id=shot_id)
     if not prompt_info.get("success"):
@@ -800,12 +895,11 @@ def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
             "work_status": "human_review_required",
             "remaining_shot_count": len(unresolved),
         }
-    operation = "repair" if previous else "generate"
     return {
         **prompt_info,
         "action": "next_batch_work",
         "work_status": "ready",
-        "operation": operation,
+        "operation": "repair" if previous else "generate",
         "remaining_shot_count": len(unresolved),
     }
 

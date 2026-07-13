@@ -55,6 +55,8 @@ def _assessment(candidate_id: str, score: float, **overrides) -> dict:
         "professional_quality": score,
         "scientific_credibility": score,
         "continuity_and_diversity": score,
+        "narrative_engagement": score,
+        "story_moment_clarity": score,
     }
     payload = {
         "candidate_id": candidate_id,
@@ -166,6 +168,77 @@ def test_prompt_compiler_puts_takeaway_subject_action_and_evidence_first() -> No
     assert "close-up" in prompt.lower()
     assert "primary subject occupies" in prompt.lower()
     assert "generated text" in prompt.lower()
+
+
+def test_prompt_compiler_puts_audience_story_moment_and_truth_before_style() -> None:
+    shot = _shot(0, scale="close_up", risk="high")
+    shot.update(
+        {
+            "engagement_role": "reveal",
+            "attention_hook": "先看見足跡，再找出留下足跡的身體機制",
+            "story_moment": "腳掌剛離地，清楚足跡留在泥面",
+            "action_consequence": "泥面保留可比較的足跡輪廓",
+            "composition_energy": "curious",
+            "viewer_emotion": "discovery",
+            "engagement_criteria": ["foot and resulting track read as one causal instant"],
+            "visual_truth_mode": "reconstruction",
+        }
+    )
+    ledger = _ledger([shot], duration=8)
+    ledger.update(
+        {
+            "quality_contract_version": 3,
+            "audience_profile": {
+                "age_band": "school_age",
+                "knowledge_level": "newcomer",
+                "attention_style": "curious_explorer",
+                "safety_intensity": "gentle",
+            },
+            "engagement_profile": {
+                "mode": "discovery_documentary",
+                "energy": "balanced",
+                "humor": "light",
+                "sensationalism_forbidden": True,
+            },
+        }
+    )
+
+    prompt = compile_shot_prompt(
+        ledger=ledger,
+        scene={"scene_id": "S00", "setting": "乾燥的晚三疊世林地"},
+        shot=shot,
+    )
+
+    assert prompt.index("Audience contract") < prompt.index("Visual style")
+    assert "Story moment: capture one decisive visible instant" in prompt
+    assert "Visual truth mode: reconstruction" in prompt
+
+
+def test_quality_ledger_enforces_engagement_contract_for_v3() -> None:
+    shot = _shot(0)
+    ledger = _ledger([shot], duration=8)
+    ledger.update(
+        {
+            "quality_contract_version": 3,
+            "audience_profile": {
+                "age_band": "general",
+                "knowledge_level": "newcomer",
+                "attention_style": "curious_explorer",
+                "safety_intensity": "standard",
+            },
+            "engagement_profile": {
+                "mode": "discovery_documentary",
+                "energy": "balanced",
+                "humor": "none",
+                "sensationalism_forbidden": True,
+            },
+        }
+    )
+
+    report = validate_quality_ledger(ledger)
+
+    assert report.ok is False
+    assert "S00_SH00.story_moment" in report.violations
 
 
 def test_prompt_compiler_uses_comparison_recipe_without_global_conflict() -> None:

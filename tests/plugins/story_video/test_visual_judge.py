@@ -8,6 +8,8 @@ from plugins import story_video
 from plugins.story_video import hooks
 from plugins.story_video.state import StoryVideoStateStore, parse_operator_call
 from plugins.story_video.visual_judge import (
+    CANDIDATE_REVIEW_SCHEMA,
+    _review_instructions,
     configure_plugin_llm,
     story_video_quality_control,
 )
@@ -78,7 +80,28 @@ def _dimensions(score: int) -> dict:
         "professional_quality": score,
         "scientific_credibility": score,
         "continuity_and_diversity": score,
+        "narrative_engagement": score,
+        "story_moment_clarity": score,
     }
+
+
+def test_visual_judge_scores_story_engagement_from_artifact_evidence() -> None:
+    dimensions = CANDIDATE_REVIEW_SCHEMA["properties"]["candidates"]["items"][
+        "properties"
+    ]["dimensions"]
+    instructions = _review_instructions(
+        {
+            "engagement_role": "breathe",
+            "composition_energy": "calm",
+            "calm_reason": "讓觀眾消化剛揭示的結果",
+        },
+        ["C01"],
+    )
+
+    assert "narrative_engagement" in dimensions["required"]
+    assert "story_moment_clarity" in dimensions["required"]
+    assert "Intentional calm" in instructions
+    assert "static_catalog" in instructions
 
 
 class FakeLlm:
@@ -444,6 +467,158 @@ def test_next_batch_work_returns_complete_when_every_shot_is_selected(tmp_path) 
         "work_status": "complete",
         "remaining_shot_count": 0,
     }
+
+
+def test_next_batch_work_rejudges_legacy_selection_before_new_generation(
+    tmp_path,
+) -> None:
+    store, context, shot = _context(tmp_path)
+    ledger_path = context.project_dir / "scene_ledger.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    ledger.update(
+        {
+            "quality_contract_version": 3,
+            "audience_profile": {
+                "age_band": "general",
+                "knowledge_level": "newcomer",
+                "attention_style": "curious_explorer",
+                "safety_intensity": "standard",
+            },
+            "engagement_profile": {
+                "mode": "discovery_documentary",
+                "energy": "balanced",
+                "humor": "none",
+                "sensationalism_forbidden": True,
+            },
+        }
+    )
+    shot.update(
+        {
+            "engagement_role": "reveal",
+            "attention_hook": "足跡如何留下",
+            "story_moment": "腳掌剛離開泥面",
+            "action_consequence": "清楚足跡留在地面",
+            "composition_energy": "curious",
+            "viewer_emotion": "discovery",
+            "engagement_criteria": ["foot and track form a readable causal instant"],
+            "visual_truth_mode": "reconstruction",
+        }
+    )
+    ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+    candidate = _candidate(context, "S00_SH00_C01")
+    legacy_dimensions = _dimensions(88)
+    legacy_dimensions.pop("narrative_engagement")
+    legacy_dimensions.pop("story_moment_clarity")
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps(
+            {
+                "outputs": [
+                    {
+                        "shot_id": "S00_SH00",
+                        "candidate_id": "S00_SH00_C01",
+                        "selected": True,
+                        "status": "selected_current",
+                        "provider": "openai-codex",
+                        "model": "gpt-image-2-high",
+                        "generation_response_id": "img_old",
+                        "candidate_path": candidate["path"],
+                        "local_path": candidate["path"],
+                        "repair_round": 1,
+                        "quality_dimensions": legacy_dimensions,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        story_video_quality_control(
+            {"action": "next_batch_work"},
+            session_id="session-1",
+            store=store,
+        )
+    )
+
+    assert payload["work_status"] == "ready"
+    assert payload["operation"] == "rejudge_existing"
+    assert payload["shot_id"] == "S00_SH00"
+    assert payload["candidate"]["candidate_id"] == "S00_SH00_C01_V3_REVIEW"
+    assert payload["candidate"]["path"] == candidate["path"]
+    assert payload["candidate_budget"] == 0
+
+
+def test_legacy_rejudge_falls_back_to_existing_project_local_asset(tmp_path) -> None:
+    store, context, shot = _context(tmp_path)
+    ledger_path = context.project_dir / "scene_ledger.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    ledger.update(
+        {
+            "quality_contract_version": 3,
+            "audience_profile": {
+                "age_band": "general",
+                "knowledge_level": "newcomer",
+                "attention_style": "curious_explorer",
+                "safety_intensity": "standard",
+            },
+            "engagement_profile": {
+                "mode": "discovery_documentary",
+                "energy": "balanced",
+                "humor": "none",
+                "sensationalism_forbidden": True,
+            },
+        }
+    )
+    shot.update(
+        {
+            "engagement_role": "reveal",
+            "attention_hook": "看見結果",
+            "story_moment": "結果剛形成",
+            "action_consequence": "證據清楚可見",
+            "composition_energy": "curious",
+            "viewer_emotion": "discovery",
+            "engagement_criteria": ["result is readable"],
+            "visual_truth_mode": "direct_evidence",
+        }
+    )
+    ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+    local_asset = context.project_dir / "images" / "S00_SH00.png"
+    local_asset.parent.mkdir(parents=True, exist_ok=True)
+    local_asset.write_bytes(b"selected")
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps(
+            {
+                "outputs": [
+                    {
+                        "shot_id": "S00_SH00",
+                        "candidate_id": "S00_SH00_C01",
+                        "selected": True,
+                        "status": "selected_current",
+                        "provider": "openai-codex",
+                        "candidate_path": "cache/removed.png",
+                        "local_path": "images/S00_SH00.png",
+                        "quality_dimensions": {"text_alignment": 90},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        story_video_quality_control(
+            {"action": "next_batch_work"},
+            session_id="session-1",
+            store=store,
+        )
+    )
+
+    assert payload["operation"] == "rejudge_existing"
+    assert payload["candidate"]["path"] == "images/S00_SH00.png"
 
 
 def test_next_batch_work_promotes_stored_clean_candidate_after_strategy_exhaustion(

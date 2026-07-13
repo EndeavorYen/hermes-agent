@@ -411,6 +411,54 @@ def test_planning_validation_rejects_shallow_scene_ledger(tmp_path) -> None:
     assert "S00.shots" in proof.violations
 
 
+def test_planning_validation_enforces_v3_engagement_fields(tmp_path) -> None:
+    _store, context = _active_context(tmp_path)
+    ledger = _write_planning_fixture(context)
+    roles = ("hook", "build", "reveal", "reaction", "payoff", "breathe")
+    energies = ("curious", "tense", "awe", "kinetic", "curious", "calm")
+    ledger.update(
+        {
+            "quality_contract_version": 3,
+            "audience_profile": {
+                "age_band": "general",
+                "knowledge_level": "newcomer",
+                "attention_style": "curious_explorer",
+                "safety_intensity": "standard",
+            },
+            "engagement_profile": {
+                "mode": "discovery_documentary",
+                "energy": "balanced",
+                "humor": "none",
+                "sensationalism_forbidden": True,
+            },
+        }
+    )
+    for index, shot in enumerate(ledger["scenes"][0]["shots"]):
+        shot.update(
+            {
+                "engagement_role": roles[index % len(roles)],
+                "attention_hook": "先看見結果，再追問原因",
+                "story_moment": "主體完成一個可見動作",
+                "action_consequence": "動作留下可辨識結果",
+                "composition_energy": energies[index % len(energies)],
+                "viewer_emotion": "curiosity",
+                "engagement_criteria": ["the decisive instant is readable"],
+                "visual_truth_mode": "direct_evidence",
+            }
+        )
+        if shot["engagement_role"] == "breathe":
+            shot["calm_reason"] = "讓觀眾消化剛揭示的內容"
+    del ledger["scenes"][0]["shots"][0]["story_moment"]
+    (context.project_dir / "scene_ledger.json").write_text(
+        json.dumps(ledger), encoding="utf-8"
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert "S00_SH00.story_moment" in proof.violations
+
+
 def test_control_status_returns_active_project_and_policy(tmp_path) -> None:
     store, context = _active_context(tmp_path)
 

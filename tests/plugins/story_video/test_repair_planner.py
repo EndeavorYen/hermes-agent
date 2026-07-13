@@ -108,3 +108,83 @@ def test_evidence_reframe_replaces_risky_macro_contract() -> None:
     )
     assert "阿希利龍" not in effective["subject"]
     assert "no invented complete specimen" in effective["acceptance_criteria"]
+
+
+def test_static_catalog_routes_directly_to_story_reframe() -> None:
+    plan = plan_repair(
+        [
+            {
+                "status": "repair_required",
+                "repair_round": 1,
+                "blocker_codes": ["static_catalog"],
+                "hard_blockers": ["The image reads as a static catalog record."],
+            }
+        ]
+    )
+
+    assert plan.strategy == "story_reframe"
+    assert plan.candidate_suffix == "STORY_C01"
+
+    effective = apply_repair_strategy(
+        {
+            "subject": "a component on a workbench",
+            "action": "resting on the workbench",
+            "story_moment": "a technician seats the component into its final position",
+            "action_consequence": "the alignment marks visibly meet",
+            "attention_hook": "whether the two marks will align",
+            "acceptance_criteria": ["component remains identifiable"],
+        },
+        plan.strategy,
+        blocker_codes=plan.blocker_codes,
+    )
+    assert "technician seats" in effective["action"]
+    assert "alignment marks visibly meet" in effective["action"]
+    assert any(
+        "decisive instant" in criterion
+        for criterion in effective["acceptance_criteria"]
+    )
+
+
+def test_audience_mismatch_routes_to_audience_reframe() -> None:
+    plan = plan_repair(
+        [
+            {
+                "status": "repair_required",
+                "repair_round": 1,
+                "blocker_codes": ["audience_mismatch"],
+                "hard_blockers": ["The focal hierarchy is too abstract for the audience."],
+            }
+        ]
+    )
+
+    assert plan.strategy == "audience_reframe"
+    assert "audience" in plan.directive.lower()
+
+
+def test_sensationalized_or_mixed_truth_routes_to_truth_reframe() -> None:
+    plan = plan_repair(
+        [
+            {
+                "status": "repair_required",
+                "repair_round": 1,
+                "blocker_codes": ["sensationalized_claim"],
+                "hard_blockers": ["The image depicts danger not supported by the narration."],
+            }
+        ]
+    )
+
+    assert plan.strategy == "truth_reframe"
+
+    effective = apply_repair_strategy(
+        {
+            "subject": "historical evidence and a reconstructed event",
+            "action": "showing both as one seamless event",
+            "evidence_detail": "the surviving document",
+            "visual_truth_mode": "mixed_evidence_reconstruction",
+            "acceptance_criteria": ["document is readable as the evidence object"],
+        },
+        plan.strategy,
+        blocker_codes=("mixed_evidence_reconstruction",),
+    )
+    assert effective["visual_truth_mode"] == "direct_evidence"
+    assert "surviving document" in effective["focal_point"]
