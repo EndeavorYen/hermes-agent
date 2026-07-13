@@ -130,6 +130,7 @@ def pre_gateway_dispatch(*, event: Any, **_: Any) -> dict[str, Any] | None:
         "visual_style": call.visual_style,
         "repair_request": call.repair_request,
         "auto_mode": call.auto_mode,
+        "new_project": call.new_project,
         "source_key": source_key,
         "original_request": text,
     }
@@ -180,6 +181,7 @@ def pre_llm_call(
             visual_style=str(payload.get("visual_style") or ""),
             repair_request=str(payload.get("repair_request") or ""),
             auto_mode=payload.get("auto_mode") is True,
+            new_project=payload.get("new_project") is True,
         )
         context = _STORE.create_or_load(
             source_key=str(payload.get("source_key") or f"session:{session_id}"),
@@ -245,6 +247,8 @@ def pre_llm_call(
         "repair directive into generation. If compile_prompt returns strategy_reset=true, "
         "pass strategy_reset=true with that single candidate; this is a one-candidate "
         "layout reset and must never restart the normal five-round budget. "
+        "Always pass the returned repair_strategy with the candidate so QC history can "
+        "advance anatomy, scientific, layout, and contextual repair independently. "
         "then call story_video_quality_control action=judge_candidates. That tool is the "
         "only writer of the canonical shot_candidate_manifest.json outputs[] contract; "
         "never edit shot_candidate_manifest.json manually and never invent judge scores "
@@ -393,7 +397,9 @@ def auto_continue_llm_output(
             )
             next_work_instruction = (
                 f" Use candidate_id_hint={next_work['candidate_id_hint']} to perform "
-                f"the {next_work['operation']} image/QC cycle. Do not generate another "
+                f"the {next_work['operation']} image/QC cycle with "
+                f"repair_strategy={next_work['repair_strategy']}. "
+                "Do not generate another "
                 "shot first."
             )
     return {

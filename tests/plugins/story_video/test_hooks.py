@@ -498,6 +498,43 @@ def test_batch_transport_recovery_is_bounded_and_uses_current_next_work(
     assert third is None
 
 
+def test_batch_autopilot_names_adaptive_repair_strategy(tmp_path, monkeypatch) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    hooks.pre_llm_call(
+        session_id="session-auto",
+        user_message="故事影片：恐龍起源｜5分鐘｜真實照片。完整製作並出片。",
+    )
+    context = store.for_session("session-auto")
+    assert context is not None
+    shot = {
+        "shot_id": "S03_SH03", "narration_text": "旁白", "subject": "顎骨",
+        "action": "展示", "evidence_detail": "牙齒", "shot_scale": "macro",
+        "camera_angle": "eye_level", "focal_point": "牙列",
+        "subtitle_safe_area": "right_third", "acceptance_criteria": ["partial"],
+    }
+    (context.project_dir / "scene_ledger.json").write_text(json.dumps({
+        "scenes": [{"scene_id": "S03", "shots": [shot]}]
+    }), encoding="utf-8")
+    manifest = context.project_dir / "manifests" / "shot_candidate_manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(json.dumps({"outputs": [{
+        "shot_id": "S03_SH03", "status": "quality_budget_exhausted",
+        "selected": False, "repair_round": 1, "strategy_reset": True,
+        "hard_blockers": ["科學與解剖辨識不足", "牙齒幾何疑似失真"],
+    }]}), encoding="utf-8")
+    store.update(context, phase="batch")
+
+    continuation = hooks.auto_continue_llm_output(
+        session_id="session-auto",
+        response_text="STORY_VIDEO_PHASE_PROOF: batch BLOCKED",
+    )
+
+    assert continuation is not None
+    assert "candidate_id_hint=S03_SH03_EVIDENCE_C01" in continuation["message"]
+    assert "repair_strategy=evidence_reframe" in continuation["message"]
+
+
 def test_direct_full_auto_resets_existing_stall_guard(tmp_path, monkeypatch) -> None:
     store = StoryVideoStateStore(tmp_path)
     monkeypatch.setattr(hooks, "_STORE", store)
@@ -538,6 +575,31 @@ def test_pre_llm_creates_context_for_direct_cli_story_video_request(
     assert context.topic == "恐龍起源"
     assert context.source_key == "session:cli-session-1"
     assert "provider=openai-codex" in result["context"]
+
+
+def test_detailed_next_instruction_keeps_active_project_binding(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    hooks.pre_llm_call(
+        session_id="session-1",
+        user_message="故事影片：恐龍起源｜5分｜真實照片",
+    )
+    original = store.for_session("session-1")
+    assert original is not None
+    store.update(original, phase="batch")
+
+    result = hooks.pre_llm_call(
+        session_id="session-1",
+        user_message="故事影片下一步。只執行一個 QC cycle：處理 S03_SH03。",
+    )
+
+    current = store.for_session("session-1")
+    assert current is not None
+    assert current.run_id == original.run_id
+    assert current.phase == "batch"
+    assert "Operator action=continue" in result["context"]
 
 
 def test_pre_tool_guard_uses_session_context_not_prompt_words(tmp_path, monkeypatch) -> None:

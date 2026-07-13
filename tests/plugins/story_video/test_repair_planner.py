@@ -1,0 +1,110 @@
+from plugins.story_video.repair_planner import (
+    apply_repair_strategy,
+    classify_blockers,
+    plan_repair,
+)
+
+
+def test_legacy_chinese_anatomy_and_science_blockers_are_typed() -> None:
+    codes = classify_blockers([
+        "科學與解剖辨識不足：無法可信辨識為纖細的阿希利龍顎部化石。",
+        "牙齒幾何疑似失真，齒冠彼此黏連或不規則分叉。",
+    ])
+
+    assert codes == {"anatomy_geometry", "scientific_identity"}
+
+
+def test_failed_legacy_layout_reset_pivots_to_evidence_reframe() -> None:
+    plan = plan_repair([{
+        "status": "quality_budget_exhausted",
+        "strategy_reset": True,
+        "hard_blockers": [
+            "科學與解剖辨識不足：無法可信辨識為阿希利龍顎部化石。",
+            "牙齒幾何疑似失真。",
+        ],
+    }])
+
+    assert plan.strategy == "evidence_reframe"
+    assert plan.candidate_suffix == "EVIDENCE_C01"
+    assert "fragmentary evidence" in plan.directive
+    assert plan.exhausted is False
+
+
+def test_failed_evidence_reframe_advances_to_contextual_replan() -> None:
+    plan = plan_repair([
+        {
+            "status": "quality_budget_exhausted",
+            "strategy_reset": True,
+            "hard_blockers": ["字幕安全區衝突"],
+        },
+        {
+            "status": "quality_budget_exhausted",
+            "repair_strategy": "evidence_reframe",
+            "blocker_codes": ["anatomy_geometry"],
+            "hard_blockers": ["malformed tooth geometry"],
+        },
+    ])
+
+    assert plan.strategy == "contextual_replan"
+    assert plan.candidate_suffix == "CONTEXT_C01"
+    assert plan.exhausted is False
+
+
+def test_all_semantic_strategies_must_fail_before_exhaustion() -> None:
+    plan = plan_repair([
+        {"status": "quality_budget_exhausted", "repair_strategy": strategy,
+         "blocker_codes": ["scientific_identity"], "hard_blockers": ["wrong"]}
+        for strategy in (
+            "evidence_reframe", "contextual_replan", "documentary_context"
+        )
+    ])
+
+    assert plan.exhausted is True
+    assert plan.strategy == "human_review_required"
+
+
+def test_subtitle_collision_repair_reserves_a_concrete_empty_region() -> None:
+    plan = plan_repair([
+        {
+            "status": "quality_budget_exhausted",
+            "repair_strategy": "layout_reset",
+            "blocker_codes": ["subtitle_collision"],
+        },
+        {
+            "status": "quality_budget_exhausted",
+            "repair_strategy": "contextual_replan",
+            "blocker_codes": ["subtitle_collision"],
+        },
+    ])
+
+    assert plan.strategy == "documentary_context"
+    effective = apply_repair_strategy(
+        {
+            "action": "examining a specimen",
+            "subtitle_safe_area": "right_third",
+            "acceptance_criteria": ["credible research context"],
+        },
+        plan.strategy,
+        blocker_codes=plan.blocker_codes,
+    )
+    assert "left 60 percent" in effective["action"]
+    assert "right 35 percent" in effective["acceptance_criteria"][-1]
+    assert "people, hands, tools, and specimens" in effective["acceptance_criteria"][-1]
+
+
+def test_evidence_reframe_replaces_risky_macro_contract() -> None:
+    effective = apply_repair_strategy({
+        "subject": "阿希利龍顎部化石",
+        "action": "在均勻側光下展示",
+        "evidence_detail": "牙齒與下顎保存區",
+        "shot_scale": "macro",
+        "focal_point": "牙列",
+        "acceptance_criteria": ["只展示保存部分"],
+    }, "evidence_reframe")
+
+    assert effective["shot_scale"] == "close_up"
+    assert effective["subject"] == (
+        "fragmentary research specimen showing 牙齒與下顎保存區"
+    )
+    assert "阿希利龍" not in effective["subject"]
+    assert "no invented complete specimen" in effective["acceptance_criteria"]

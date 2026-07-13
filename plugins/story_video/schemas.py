@@ -72,6 +72,20 @@ STORY_VIDEO_QUALITY_CONTROL_SCHEMA = {
                                 "compile_prompt after normal repairs are exhausted."
                             ),
                         },
+                        "repair_strategy": {
+                            "type": "string",
+                            "enum": [
+                                "initial",
+                                "targeted_repair",
+                                "layout_reset",
+                                "evidence_reframe",
+                                "contextual_replan",
+                                "documentary_context",
+                            ],
+                            "description": (
+                                "Exact adaptive repair strategy returned by compile_prompt."
+                            ),
+                        },
                     },
                     "required": ["candidate_id", "path", "provider"],
                 },
