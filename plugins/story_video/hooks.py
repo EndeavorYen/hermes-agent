@@ -29,6 +29,8 @@ _PHASE_BLOCKED_RE = re.compile(
     re.IGNORECASE,
 )
 _AUTOPILOT_STALL_LIMIT = 3
+_AUTOPILOT_ROTATE_AFTER_CONTINUATIONS = 8
+_AUTOPILOT_ROTATE_AFTER_MESSAGES = 240
 
 
 def _digest_source(parts: list[str]) -> str:
@@ -141,12 +143,30 @@ def pre_gateway_dispatch(*, event: Any, **_: Any) -> dict[str, Any] | None:
 def pre_llm_call(
     *,
     session_id: str = "",
+    parent_session_id: str = "",
     user_message: Any = "",
     **_: Any,
 ) -> dict[str, str] | None:
     payload = _marker_payload(user_message)
     if payload is None:
         context = _STORE.for_session(session_id)
+        if context is None and parent_session_id:
+            parent_context = _STORE.for_session(parent_session_id)
+            if parent_context is not None:
+                new_binding = session_id not in parent_context.session_ids
+                context = _STORE.bind_session(parent_context, session_id)
+                if new_binding:
+                    ProviderAudit(context).append_event(
+                        ProviderAuditEvent(
+                            kind="session_rotation",
+                            phase=context.phase,
+                            provider="",
+                            model="",
+                            status="ok",
+                            session_id=session_id,
+                            detail={"parent_session_id": parent_session_id},
+                        )
+                    )
         if context is None:
             call = parse_operator_call(str(user_message or ""), has_active_project=False)
             if call is None:
@@ -366,6 +386,8 @@ def auto_continue_llm_output(
     response_text: str = "",
     recoverable_transport_error: bool = False,
     turn_error: str = "",
+    message_count: int = 0,
+    auto_continuation_count: int = 0,
     **_: Any,
 ) -> dict[str, str] | None:
     context = _STORE.for_session(session_id)
@@ -469,8 +491,21 @@ def auto_continue_llm_output(
                 )
         elif next_work.get("work_status") == "human_review_required":
             return None
+    rotate_for_budget = (
+        int(message_count or 0) >= _AUTOPILOT_ROTATE_AFTER_MESSAGES
+        or int(auto_continuation_count or 0)
+        >= _AUTOPILOT_ROTATE_AFTER_CONTINUATIONS
+    )
+    rotate = recoverable_transport_error or rotate_for_budget
     return {
-        "action": "continue",
+        "action": "rotate" if rotate else "continue",
+        "reason": (
+            "story_video_transport_recovery"
+            if recoverable_transport_error
+            else "story_video_context_budget"
+            if rotate_for_budget
+            else "story_video_autopilot"
+        ),
         "message": (
             f"STORY_VIDEO_AUTOPILOT run_id={context.run_id} phase={context.phase}. "
             f"Execute the next action now: {next_action}.{next_work_instruction} "

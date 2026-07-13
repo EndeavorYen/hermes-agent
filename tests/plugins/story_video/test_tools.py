@@ -539,6 +539,26 @@ def test_keyframe_validation_requires_selected_openai_provenance(tmp_path) -> No
     assert passed.ok is True
 
 
+def test_story_video_control_synchronizes_candidate_manifest_phase(tmp_path) -> None:
+    store, context = _active_context(tmp_path)
+    context = store.update(context, phase="batch")
+    manifest_path = context.project_dir / "manifests" / "shot_candidate_manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(
+        json.dumps({"phase": "keyframes", "outputs": []}),
+        encoding="utf-8",
+    )
+
+    story_video_control(
+        {"action": "status"},
+        session_id="session-1",
+        store=store,
+    )
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["phase"] == "batch"
+
+
 def test_keyframe_validation_rejects_noncanonical_nested_candidate_manifest(tmp_path) -> None:
     store, context = _active_context(tmp_path)
     context = store.update(context, phase="keyframes")

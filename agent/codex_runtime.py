@@ -86,6 +86,262 @@ def _invoke_runtime_hook(name: str, **kwargs: Any) -> list[Any]:
         return []
 
 
+def _plugin_auto_continue_request(
+    agent,
+    *,
+    response_text: str,
+    effective_task_id: str,
+    turn_id: str,
+    messages: List[Dict[str, Any]],
+    recoverable_transport_error: bool = False,
+    turn_error: str = "",
+) -> dict[str, str] | None:
+    auto_count = getattr(agent, "_plugin_auto_continue_count", 0)
+    if not isinstance(auto_count, int):
+        auto_count = 0
+    for hook_result in _invoke_runtime_hook(
+        "auto_continue_llm_output",
+        response_text=response_text,
+        session_id=agent.session_id or "",
+        task_id=effective_task_id,
+        turn_id=turn_id,
+        model=agent.model,
+        platform=agent.platform or "",
+        recoverable_transport_error=recoverable_transport_error,
+        turn_error=turn_error,
+        message_count=len(messages),
+        auto_continuation_count=auto_count,
+    ):
+        if not isinstance(hook_result, dict):
+            continue
+        action = str(hook_result.get("action") or "").strip().lower()
+        message = str(hook_result.get("message") or "").strip()
+        if action in {"continue", "rotate"} and message:
+            return {
+                "action": action,
+                "message": message,
+                "reason": str(hook_result.get("reason") or "").strip(),
+            }
+    return None
+
+
+def _reset_rotated_session_usage(agent) -> None:
+    for name in (
+        "session_prompt_tokens",
+        "session_completion_tokens",
+        "session_total_tokens",
+        "session_api_calls",
+        "session_input_tokens",
+        "session_output_tokens",
+        "session_cache_read_tokens",
+        "session_cache_write_tokens",
+        "session_reasoning_tokens",
+        "session_estimated_cost_usd",
+    ):
+        setattr(agent, name, 0)
+    agent.session_cost_status = "unknown"
+    agent.session_cost_source = "none"
+
+
+def _rotate_plugin_auto_continuation_session(
+    agent,
+    messages: List[Dict[str, Any]],
+) -> str:
+    session_db = getattr(agent, "_session_db", None)
+    old_session_id = str(getattr(agent, "session_id", "") or "")
+    if session_db is None or not old_session_id:
+        return ""
+    try:
+        agent._flush_messages_to_session_db(messages)
+    except Exception:
+        logger.debug("plugin continuation pre-rotation flush failed", exc_info=True)
+    try:
+        old_title = session_db.get_session_title(old_session_id)
+    except Exception:
+        old_title = None
+    new_session_id = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    try:
+        session_db.end_session(old_session_id, "plugin_auto_continue")
+    except Exception:
+        logger.warning(
+            "plugin continuation rotation aborted; parent end failed for %s",
+            old_session_id,
+            exc_info=True,
+        )
+        return ""
+    try:
+        session_db.create_session(
+            session_id=new_session_id,
+            source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+            model=agent.model,
+            model_config=getattr(agent, "_session_init_model_config", None),
+            parent_session_id=old_session_id,
+        )
+    except Exception:
+        try:
+            session_db.reopen_session(old_session_id)
+        except Exception:
+            pass
+        logger.warning(
+            "plugin continuation rotation aborted; child create failed for %s",
+            old_session_id,
+            exc_info=True,
+        )
+        return ""
+
+    agent.session_id = new_session_id
+    try:
+        from gateway.session_context import set_current_session_id
+
+        set_current_session_id(new_session_id)
+    except Exception:
+        os.environ["HERMES_SESSION_ID"] = new_session_id
+    try:
+        from hermes_logging import set_session_context
+
+        set_session_context(new_session_id)
+    except Exception:
+        pass
+    agent._session_db_created = True
+    agent._flushed_db_message_ids = set()
+    agent._last_flushed_db_idx = 0
+    agent._last_compaction_in_place = False
+    agent._plugin_auto_continue_count = 0
+    _reset_rotated_session_usage(agent)
+
+    cached_prompt = getattr(agent, "_cached_system_prompt", None)
+    if cached_prompt:
+        try:
+            session_db.update_system_prompt(new_session_id, cached_prompt)
+        except Exception:
+            logger.debug("plugin continuation system-prompt copy failed", exc_info=True)
+    if old_title:
+        try:
+            new_title = session_db.get_next_title_in_lineage(old_title)
+            session_db.set_session_title(new_session_id, new_title)
+        except Exception:
+            logger.debug("plugin continuation title copy failed", exc_info=True)
+    try:
+        from hermes_cli.goals import migrate_goal_to_session
+
+        migrate_goal_to_session(
+            old_session_id,
+            new_session_id,
+            reason="plugin_auto_continue",
+        )
+    except Exception:
+        logger.debug("plugin continuation goal migration failed", exc_info=True)
+    try:
+        if getattr(agent, "_memory_manager", None):
+            agent._memory_manager.on_session_switch(
+                new_session_id,
+                parent_session_id=old_session_id,
+                reset=False,
+                reason="plugin_auto_continue",
+            )
+    except Exception:
+        logger.debug("plugin continuation memory switch failed", exc_info=True)
+    try:
+        compressor = getattr(agent, "context_compressor", None)
+        if compressor is not None and hasattr(compressor, "on_session_start"):
+            compressor.on_session_start(
+                new_session_id,
+                boundary_reason="plugin_auto_continue",
+                old_session_id=old_session_id,
+                platform=agent.platform or "cli",
+                conversation_id=getattr(agent, "_gateway_session_key", None),
+            )
+    except Exception:
+        logger.debug("plugin continuation context switch failed", exc_info=True)
+    try:
+        if getattr(agent, "event_callback", None):
+            agent.event_callback(
+                "session:compress",
+                {
+                    "platform": agent.platform or "",
+                    "session_id": new_session_id,
+                    "old_session_id": old_session_id,
+                    "in_place": False,
+                    "boundary_reason": "plugin_auto_continue",
+                },
+            )
+    except Exception:
+        logger.debug("plugin continuation event callback failed", exc_info=True)
+    try:
+        codex_session = getattr(agent, "_codex_session", None)
+        if codex_session is not None:
+            codex_session.close()
+    except Exception:
+        logger.debug("plugin continuation Codex close failed", exc_info=True)
+    agent._codex_session = None
+    messages.clear()
+    return old_session_id
+
+
+def _run_plugin_auto_continuation(
+    agent,
+    *,
+    auto_request: dict[str, str] | None,
+    messages: List[Dict[str, Any]],
+    effective_task_id: str,
+    turn_id: str,
+    should_review_memory: bool,
+    raphael_decision: Dict[str, Any] | None,
+    prior_api_calls: int,
+) -> Dict[str, Any] | None:
+    if auto_request is None:
+        return None
+    auto_count = getattr(agent, "_plugin_auto_continue_count", 0)
+    if not isinstance(auto_count, int):
+        auto_count = 0
+    if auto_count >= _MAX_PLUGIN_AUTO_CONTINUATIONS:
+        return None
+
+    parent_session_id = ""
+    if auto_request["action"] == "rotate":
+        parent_session_id = _rotate_plugin_auto_continuation_session(agent, messages)
+        if not parent_session_id:
+            return None
+        auto_count = 0
+
+    agent._plugin_auto_continue_count = auto_count + 1
+    base_message = auto_request["message"]
+    auto_message = base_message
+    auto_contexts: list[str] = []
+    for hook_result in _invoke_runtime_hook(
+        "pre_llm_call",
+        session_id=agent.session_id or "",
+        parent_session_id=parent_session_id,
+        turn_id=f"{turn_id}:auto:{auto_count + 1}",
+        user_message=base_message,
+        conversation_history=list(messages),
+        model=agent.model,
+        platform=agent.platform or "",
+        auto_continuation=True,
+    ):
+        if isinstance(hook_result, dict):
+            context = str(hook_result.get("context") or "").strip()
+            if context:
+                auto_contexts.append(context)
+    if auto_contexts:
+        auto_message = f"{base_message}\n\n" + "\n\n".join(auto_contexts)
+    if parent_session_id:
+        messages.append({"role": "user", "content": base_message})
+
+    continued = run_codex_app_server_turn(
+        agent,
+        user_message=auto_message,
+        original_user_message=base_message,
+        messages=messages,
+        effective_task_id=effective_task_id,
+        turn_id=f"{turn_id}:auto:{auto_count + 1}",
+        should_review_memory=should_review_memory,
+        raphael_decision=raphael_decision,
+    )
+    continued["api_calls"] = prior_api_calls + int(continued.get("api_calls") or 0)
+    return continued
+
+
 def _codex_note_to_tool_progress(note: dict) -> tuple[str, str, dict] | None:
     """Map a Codex app-server ``item/started`` notification to a Hermes
     tool-progress event ``(tool_name, preview, args)``.
@@ -630,6 +886,27 @@ def run_codex_app_server_turn(
         except Exception:
             pass
         agent._codex_session = None
+        auto_request = _plugin_auto_continue_request(
+            agent,
+            response_text="",
+            effective_task_id=effective_task_id,
+            turn_id=turn_id,
+            messages=messages,
+            recoverable_transport_error=True,
+            turn_error=str(exc),
+        )
+        continued = _run_plugin_auto_continuation(
+            agent,
+            auto_request=auto_request,
+            messages=messages,
+            effective_task_id=effective_task_id,
+            turn_id=turn_id,
+            should_review_memory=False,
+            raphael_decision=raphael_decision,
+            prior_api_calls=1,
+        )
+        if continued is not None:
+            return continued
         return {
             "final_response": (
                 f"Codex app-server turn failed: {exc}. "
@@ -849,58 +1126,26 @@ def run_codex_app_server_turn(
     )
     auto_request: dict[str, str] | None = None
     if (not turn.interrupted and turn.error is None) or recoverable_transport_error:
-        for hook_result in _invoke_runtime_hook(
-            "auto_continue_llm_output",
+        auto_request = _plugin_auto_continue_request(
+            agent,
             response_text=final_text,
-            session_id=agent.session_id or "",
-            task_id=effective_task_id,
+            effective_task_id=effective_task_id,
             turn_id=turn_id,
-            model=agent.model,
-            platform=agent.platform or "",
+            messages=messages,
             recoverable_transport_error=recoverable_transport_error,
             turn_error=str(turn.error or ""),
-        ):
-            if not isinstance(hook_result, dict):
-                continue
-            message = str(hook_result.get("message") or "").strip()
-            if hook_result.get("action") == "continue" and message:
-                auto_request = {"action": "continue", "message": message}
-                break
-
-    auto_count = getattr(agent, "_plugin_auto_continue_count", 0)
-    if not isinstance(auto_count, int):
-        auto_count = 0
-    if auto_request is not None and auto_count < _MAX_PLUGIN_AUTO_CONTINUATIONS:
-        agent._plugin_auto_continue_count = auto_count + 1
-        auto_message = auto_request["message"]
-        auto_contexts: list[str] = []
-        for hook_result in _invoke_runtime_hook(
-            "pre_llm_call",
-            session_id=agent.session_id or "",
-            turn_id=f"{turn_id}:auto:{auto_count + 1}",
-            user_message=auto_message,
-            conversation_history=list(messages),
-            model=agent.model,
-            platform=agent.platform or "",
-            auto_continuation=True,
-        ):
-            if isinstance(hook_result, dict):
-                context = str(hook_result.get("context") or "").strip()
-                if context:
-                    auto_contexts.append(context)
-        if auto_contexts:
-            auto_message = f"{auto_message}\n\n" + "\n\n".join(auto_contexts)
-        continued = run_codex_app_server_turn(
-            agent,
-            user_message=auto_message,
-            original_user_message=auto_request["message"],
-            messages=messages,
-            effective_task_id=effective_task_id,
-            turn_id=f"{turn_id}:auto:{auto_count + 1}",
-            should_review_memory=False,
-            raphael_decision=raphael_decision,
         )
-        continued["api_calls"] = api_calls + int(continued.get("api_calls") or 0)
+    continued = _run_plugin_auto_continuation(
+        agent,
+        auto_request=auto_request,
+        messages=messages,
+        effective_task_id=effective_task_id,
+        turn_id=turn_id,
+        should_review_memory=False,
+        raphael_decision=raphael_decision,
+        prior_api_calls=api_calls,
+    )
+    if continued is not None:
         return continued
     agent._plugin_auto_continue_count = 0
 

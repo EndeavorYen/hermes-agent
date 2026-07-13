@@ -325,6 +325,60 @@ def test_autopilot_requests_internal_continuation_until_complete(
     assert "STORY_VIDEO_AUTOPILOT" in continuation["message"]
 
 
+def test_autopilot_rotates_before_continuation_history_bloats(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    start = hooks.pre_gateway_dispatch(
+        event=_event("故事影片：恐龍起源｜5分鐘｜真實照片。完整製作並出片。")
+    )
+    hooks.pre_llm_call(session_id="session-auto", user_message=start["text"])
+
+    continuation = hooks.auto_continue_llm_output(
+        session_id="session-auto",
+        response_text="STORY_VIDEO_PHASE_PROGRESS: planning IN_PROGRESS",
+        message_count=hooks._AUTOPILOT_ROTATE_AFTER_MESSAGES,
+        auto_continuation_count=1,
+    )
+
+    assert continuation is not None
+    assert continuation["action"] == "rotate"
+    assert continuation["reason"] == "story_video_context_budget"
+
+
+def test_pre_llm_binds_rotated_child_to_parent_story_context(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    start = hooks.pre_gateway_dispatch(
+        event=_event("故事影片：恐龍起源｜5分鐘｜真實照片。完整製作並出片。")
+    )
+    hooks.pre_llm_call(session_id="session-parent", user_message=start["text"])
+
+    result = hooks.pre_llm_call(
+        session_id="session-child",
+        parent_session_id="session-parent",
+        user_message="STORY_VIDEO_AUTOPILOT continue canonical next work",
+    )
+
+    child = store.for_session("session-child")
+    assert child is not None
+    assert child.run_id == store.for_session("session-parent").run_id
+    assert child.auto_mode is True
+    assert "STORY_VIDEO_RUN_CONTEXT" in result["context"]
+    audit = json.loads(
+        (child.project_dir / "manifests" / "provider_audit.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    rotation = audit["events"][-1]
+    assert rotation["kind"] == "session_rotation"
+    assert rotation["session_id"] == "session-child"
+    assert rotation["detail"]["parent_session_id"] == "session-parent"
+
+
 def test_autopilot_stops_for_operator_setup_blocker(tmp_path, monkeypatch) -> None:
     store = StoryVideoStateStore(tmp_path)
     monkeypatch.setattr(hooks, "_STORE", store)
@@ -690,9 +744,11 @@ def test_batch_transport_recovery_is_bounded_and_uses_current_next_work(
     third = hooks.auto_continue_llm_output(**kwargs)
 
     assert first is not None
+    assert first["action"] == "rotate"
     assert "shot_id=S03_SH02" in first["message"]
     assert "S03_SH01.selected_asset" not in first["message"]
     assert second is not None
+    assert second["action"] == "rotate"
     assert third is None
 
 
