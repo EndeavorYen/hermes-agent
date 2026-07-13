@@ -915,6 +915,78 @@ def test_next_batch_work_rejudges_legacy_selection_before_new_generation(
     assert payload["candidate_budget"] == 0
 
 
+def test_legacy_rejudge_ignores_exhausted_generation_strategies(tmp_path) -> None:
+    store, context, shot = _context(tmp_path)
+    ledger_path = context.project_dir / "scene_ledger.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    ledger["quality_contract_version"] = 3
+    ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+    contract_hash = _shot_contract_hash(shot)
+    candidate = _candidate(context, "S00_SH00_DOC_C01")
+    legacy_dimensions = _dimensions(76)
+    legacy_dimensions.pop("narrative_engagement")
+    legacy_dimensions.pop("story_moment_clarity")
+    strategies = (
+        "layout_reset",
+        "evidence_reframe",
+        "contextual_replan",
+        "documentary_context",
+    )
+    attempts = [
+        {
+            "shot_id": "S00_SH00",
+            "candidate_id": f"S00_SH00_{strategy.upper()}_C01",
+            "status": "quality_budget_exhausted",
+            "selected": False,
+            "repair_strategy": strategy,
+            "hard_blockers": ["the generated evidence is not credible"],
+            "blocker_codes": ["other"],
+            "shot_contract_hash": contract_hash,
+        }
+        for strategy in strategies
+    ]
+    selected = {
+        **attempts[-1],
+        "candidate_id": "S00_SH00_DOC_C01",
+        "selected": True,
+        "status": "selected_current",
+        "provider": "openai-codex",
+        "model": "gpt-image-2-high",
+        "generation_response_id": "img_selected",
+        "candidate_path": candidate["path"],
+        "local_path": candidate["path"],
+        "quality_dimensions": legacy_dimensions,
+        "quality_score": 76.0,
+        "hard_blockers": [],
+    }
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps(
+            {
+                "outputs": [selected],
+                "attempt_history": attempts,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        story_video_quality_control(
+            {"action": "next_batch_work"},
+            session_id="session-1",
+            store=store,
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["work_status"] == "ready"
+    assert payload["operation"] == "rejudge_existing"
+    assert payload["shot_id"] == "S00_SH00"
+    assert payload["candidate_budget"] == 0
+    assert payload["candidate"]["path"] == candidate["path"]
+
+
 def test_legacy_rejudge_falls_back_to_existing_project_local_asset(tmp_path) -> None:
     store, context, shot = _context(tmp_path)
     ledger_path = context.project_dir / "scene_ledger.json"
