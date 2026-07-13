@@ -31,8 +31,40 @@ from .state import StoryVideoRunContext, StoryVideoStateStore
 
 
 MAX_REPAIR_ROUNDS = 5
+MAX_CONTRACT_REPLANS = 2
 BEST_EFFORT_QUALITY_FLOOR = 75.0
 _PLUGIN_LLM: Any = None
+
+_REPLAN_REQUIRED_FIELDS = (
+    "subject",
+    "action",
+    "evidence_detail",
+    "shot_scale",
+    "camera_angle",
+    "focal_point",
+    "subtitle_safe_area",
+    "acceptance_criteria",
+)
+_REPLAN_MUTABLE_FIELDS = (
+    *_REPLAN_REQUIRED_FIELDS,
+    "attention_hook",
+    "story_moment",
+    "action_consequence",
+    "composition_energy",
+    "viewer_emotion",
+    "engagement_criteria",
+    "calm_reason",
+    "evidence_bridge",
+)
+_REPLAN_IMMUTABLE_FIELDS = (
+    "shot_id",
+    "narration_text",
+    "narrative_role",
+    "viewer_takeaway",
+    "visual_truth_mode",
+    "risk_class",
+)
+_SHOT_SCALES = {"establishing", "wide", "medium", "close_up", "macro", "insert"}
 
 
 CANDIDATE_REVIEW_SCHEMA = {
@@ -158,6 +190,170 @@ def _find_shot(
             if isinstance(shot, dict) and str(shot.get("shot_id") or "") == shot_id:
                 return ledger, scene, shot
     raise ValueError(f"unknown shot_id: {shot_id}")
+
+
+def _contract_replan_count(manifest: dict[str, Any], shot_id: str) -> int:
+    return sum(
+        1
+        for row in manifest.get("contract_replans") or []
+        if isinstance(row, dict) and str(row.get("shot_id") or "") == shot_id
+    )
+
+
+def _contract_replan_work(
+    context: StoryVideoRunContext,
+    *,
+    shot_id: str,
+    manifest: dict[str, Any],
+    output: dict[str, Any],
+    remaining_shot_count: int,
+) -> dict[str, Any]:
+    _ledger, _scene, shot = _find_shot(context, shot_id)
+    revision = _contract_replan_count(manifest, shot_id)
+    blockers = [str(value) for value in output.get("hard_blockers") or [] if value]
+    blocker_codes = [str(value) for value in output.get("blocker_codes") or [] if value]
+    if revision >= MAX_CONTRACT_REPLANS:
+        return {
+            "success": False,
+            "action": "next_batch_work",
+            "shot_id": shot_id,
+            "work_status": "human_review_required",
+            "status": "human_review_required",
+            "error": "Automatic shot-contract replanning exhausted.",
+            "replan_revision": revision,
+            "max_replan_revisions": MAX_CONTRACT_REPLANS,
+            "hard_blockers": blockers,
+            "blocker_codes": blocker_codes,
+            "remaining_shot_count": remaining_shot_count,
+        }
+    return {
+        "success": True,
+        "action": "next_batch_work",
+        "shot_id": shot_id,
+        "work_status": "ready",
+        "operation": "replan_shot_contract",
+        "replan_revision": revision + 1,
+        "max_replan_revisions": MAX_CONTRACT_REPLANS,
+        "immutable_contract": {
+            field: shot.get(field) for field in _REPLAN_IMMUTABLE_FIELDS
+        },
+        "current_mutable_contract": {
+            field: shot.get(field) for field in _REPLAN_MUTABLE_FIELDS if field in shot
+        },
+        "mutable_fields": list(_REPLAN_MUTABLE_FIELDS),
+        "hard_blockers": blockers,
+        "blocker_codes": blocker_codes,
+        "replan_directive": (
+            "Preserve the approved narration, takeaway, truth mode, and risk. "
+            "Replace the visual design with one coherent, directly readable moment "
+            "whose visible evidence supports the same takeaway, avoids every listed "
+            "blocker, and leaves the declared subtitle-safe area clear."
+        ),
+        "remaining_shot_count": remaining_shot_count,
+    }
+
+
+def _apply_shot_contract_replan(
+    context: StoryVideoRunContext,
+    *,
+    shot_id: str,
+    redesigned_shot: dict[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(redesigned_shot, dict):
+        raise ValueError("redesigned_shot must be an object")
+    ledger, _scene, shot = _find_shot(context, shot_id)
+    manifest_path = context.project_dir / "manifests" / "shot_candidate_manifest.json"
+    manifest = _load_json(manifest_path) or {}
+    current_output = next(
+        (
+            row
+            for row in manifest.get("outputs") or []
+            if isinstance(row, dict) and str(row.get("shot_id") or "") == shot_id
+        ),
+        {},
+    )
+    prompt_info = _compile_prompt(context, shot_id=shot_id)
+    if (
+        str(current_output.get("status") or "") != "quality_budget_exhausted"
+        or prompt_info.get("success") is True
+    ):
+        raise ValueError(
+            "shot-contract replanning is only allowed after visual repair "
+            "strategies are exhausted"
+        )
+    revision = _contract_replan_count(manifest, shot_id) + 1
+    if revision > MAX_CONTRACT_REPLANS:
+        raise ValueError("automatic shot-contract replanning is exhausted")
+
+    missing = [
+        field
+        for field in _REPLAN_REQUIRED_FIELDS
+        if field not in redesigned_shot
+        or redesigned_shot.get(field) in (None, "", [])
+    ]
+    if missing:
+        raise ValueError(
+            "redesigned_shot is missing required fields: " + ", ".join(missing)
+        )
+    scale = str(redesigned_shot.get("shot_scale") or "").strip()
+    if scale not in _SHOT_SCALES:
+        raise ValueError("redesigned_shot.shot_scale is invalid")
+    criteria = redesigned_shot.get("acceptance_criteria")
+    if not isinstance(criteria, list) or not all(
+        isinstance(value, str) and value.strip() for value in criteria
+    ):
+        raise ValueError("redesigned_shot.acceptance_criteria must be non-empty strings")
+    if "engagement_criteria" in redesigned_shot:
+        engagement = redesigned_shot.get("engagement_criteria")
+        if not isinstance(engagement, list) or not all(
+            isinstance(value, str) and value.strip() for value in engagement
+        ):
+            raise ValueError("redesigned_shot.engagement_criteria must be strings")
+
+    old_hash = _shot_contract_hash(shot)
+    replanned = dict(shot)
+    for field in _REPLAN_MUTABLE_FIELDS:
+        if field in redesigned_shot:
+            value = redesigned_shot[field]
+            if isinstance(value, str):
+                value = value.strip()
+            elif isinstance(value, list):
+                value = [item.strip() for item in value]
+            replanned[field] = value
+    new_hash = _shot_contract_hash(replanned)
+    if new_hash == old_hash:
+        raise ValueError("redesigned_shot does not change the shot contract")
+
+    shot.clear()
+    shot.update(replanned)
+    _write_json_atomic(context.project_dir / "scene_ledger.json", ledger)
+
+    replans = [
+        dict(row) for row in manifest.get("contract_replans") or [] if isinstance(row, dict)
+    ]
+    replans.append(
+        {
+            "event": "shot_contract_replanned",
+            "shot_id": shot_id,
+            "revision": revision,
+            "old_shot_contract_hash": old_hash,
+            "new_shot_contract_hash": new_hash,
+            "superseded_candidate_id": str(current_output.get("candidate_id") or ""),
+            "hard_blockers": [
+                str(value) for value in current_output.get("hard_blockers") or [] if value
+            ],
+            "blocker_codes": [
+                str(value) for value in current_output.get("blocker_codes") or [] if value
+            ],
+            "replanned_at": _utc_now(),
+        }
+    )
+    _write_json_atomic(
+        manifest_path,
+        {**manifest, "contract_replans": replans, "updated_at": _utc_now()},
+    )
+    next_work = _next_batch_work(context)
+    return {**next_work, "replan_revision": revision}
 
 
 def _reconcile_manifest_contracts(
@@ -1171,12 +1367,13 @@ def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
             return recovery
         prompt_info = _compile_prompt(context, shot_id=shot_id)
         if not prompt_info.get("success"):
-            return {
-                **prompt_info,
-                "action": "next_batch_work",
-                "work_status": "human_review_required",
-                "remaining_shot_count": len(unresolved),
-            }
+            return _contract_replan_work(
+                context,
+                shot_id=shot_id,
+                manifest=manifest,
+                output=by_shot.get(shot_id, {}),
+                remaining_shot_count=len(unresolved),
+            )
         return {
             **prompt_info,
             "action": "next_batch_work",
@@ -1503,6 +1700,12 @@ def story_video_quality_control(
             payload = _prepare_render(context)
         elif action == "next_batch_work":
             payload = _next_batch_work(context)
+        elif action == "replan_shot_contract":
+            payload = _apply_shot_contract_replan(
+                context,
+                shot_id=str(args.get("shot_id") or "").strip(),
+                redesigned_shot=args.get("redesigned_shot") or {},
+            )
         elif action == "status":
             payload = _status(context)
         else:

@@ -491,6 +491,60 @@ def test_batch_autopilot_does_not_repeat_human_review_required_work(
     assert continuation is None
 
 
+def test_batch_autopilot_executes_bounded_shot_contract_replan(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    hooks.pre_llm_call(
+        session_id="session-auto",
+        user_message="故事影片：恐龍起源｜5分鐘｜真實照片。完整製作並出片。",
+    )
+    context = store.for_session("session-auto")
+    assert context is not None
+    store.update(context, phase="batch", auto_mode=True)
+    monkeypatch.setattr(
+        hooks,
+        "_next_batch_work",
+        lambda _context: {
+            "success": True,
+            "work_status": "ready",
+            "operation": "replan_shot_contract",
+            "shot_id": "S00_SH02",
+            "replan_revision": 1,
+            "max_replan_revisions": 2,
+            "immutable_contract": {
+                "narration_text": "海洋與陸地上的生命大量消失，",
+                "viewer_takeaway": "生態崩潰留下空缺",
+                "visual_truth_mode": "reconstruction",
+            },
+            "mutable_fields": [
+                "subject",
+                "action",
+                "evidence_detail",
+                "shot_scale",
+                "camera_angle",
+                "focal_point",
+                "subtitle_safe_area",
+                "acceptance_criteria",
+            ],
+            "hard_blockers": ["the prior image did not show the declared evidence"],
+        },
+    )
+
+    continuation = hooks.auto_continue_llm_output(
+        session_id="session-auto",
+        response_text="STORY_VIDEO_PHASE_PROGRESS: batch IN_PROGRESS",
+    )
+
+    assert continuation is not None
+    message = continuation["message"]
+    assert "operation=replan_shot_contract" in message
+    assert "story_video_quality_control action=replan_shot_contract" in message
+    assert "Preserve immutable_contract exactly" in message
+    assert "Do not generate an image before the replan action succeeds" in message
+
+
 def test_batch_autopilot_rejudges_existing_candidate_without_image_generation(
     tmp_path, monkeypatch
 ) -> None:

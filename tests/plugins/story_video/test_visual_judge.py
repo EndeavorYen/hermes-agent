@@ -467,6 +467,214 @@ def test_next_batch_work_repairs_first_blocked_shot_before_new_shots(tmp_path) -
     assert payload["remaining_shot_count"] == 2
 
 
+def test_next_batch_work_replans_contract_after_visual_strategies_exhausted(
+    tmp_path,
+) -> None:
+    store, context, shot = _context(tmp_path)
+    contract_hash = _shot_contract_hash(shot)
+    attempts = [
+        {
+            "shot_id": "S00_SH00",
+            "candidate_id": "S00_SH00_LAYOUT_C01",
+            "status": "quality_budget_exhausted",
+            "selected": False,
+            "repair_strategy": "layout_reset",
+            "hard_blockers": ["the subtitle safe area covers the focal subject"],
+            "blocker_codes": ["subtitle_collision"],
+            "shot_contract_hash": contract_hash,
+        },
+        {
+            "shot_id": "S00_SH00",
+            "candidate_id": "S00_SH00_CONTEXT_C01",
+            "status": "quality_budget_exhausted",
+            "selected": False,
+            "repair_strategy": "contextual_replan",
+            "hard_blockers": ["the visible evidence does not support the narration"],
+            "blocker_codes": ["other"],
+            "shot_contract_hash": contract_hash,
+        },
+        {
+            "shot_id": "S00_SH00",
+            "candidate_id": "S00_SH00_DOC_C01",
+            "status": "quality_budget_exhausted",
+            "selected": False,
+            "repair_strategy": "documentary_context",
+            "hard_blockers": ["the subtitle safe area covers the focal subject"],
+            "blocker_codes": ["subtitle_collision"],
+            "shot_contract_hash": contract_hash,
+        },
+    ]
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps({"outputs": [attempts[-1]], "attempt_history": attempts}),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(story_video_quality_control(
+        {"action": "next_batch_work"}, session_id="session-1", store=store
+    ))
+
+    assert payload["success"] is True
+    assert payload["work_status"] == "ready"
+    assert payload["operation"] == "replan_shot_contract"
+    assert payload["shot_id"] == "S00_SH00"
+    assert payload["replan_revision"] == 1
+    assert payload["max_replan_revisions"] == 2
+    assert payload["immutable_contract"]["narration_text"] == shot["narration_text"]
+    assert "subject" in payload["mutable_fields"]
+    assert payload["hard_blockers"] == attempts[-1]["hard_blockers"]
+
+
+def test_replan_shot_contract_preserves_truth_fields_and_resets_generation(
+    tmp_path,
+) -> None:
+    store, context, shot = _context(tmp_path)
+    old_hash = _shot_contract_hash(shot)
+    exhausted = {
+        "shot_id": "S00_SH00",
+        "candidate_id": "S00_SH00_DOC_C01",
+        "status": "quality_budget_exhausted",
+        "selected": False,
+        "repair_strategy": "documentary_context",
+        "hard_blockers": ["the evidence is not visible"],
+        "blocker_codes": ["other"],
+        "shot_contract_hash": old_hash,
+    }
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    manifest_path = manifests / "shot_candidate_manifest.json"
+    prior = {
+        **exhausted,
+        "candidate_id": "S00_SH00_CONTEXT_C01",
+        "repair_strategy": "contextual_replan",
+    }
+    manifest_path.write_text(
+        json.dumps({"outputs": [exhausted], "attempt_history": [prior, exhausted]}),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(story_video_quality_control(
+        {
+            "action": "replan_shot_contract",
+            "shot_id": "S00_SH00",
+            "redesigned_shot": {
+                "narration_text": "must not replace the approved narration",
+                "viewer_takeaway": "must not change the approved meaning",
+                "subject": "one fossil footprint pressed into a dry mud layer",
+                "action": "a loose edge flakes away and reveals the complete footprint",
+                "evidence_detail": "toe impressions and displaced mud rim are readable",
+                "shot_scale": "close_up",
+                "camera_angle": "low side angle",
+                "focal_point": "the newly revealed footprint",
+                "subtitle_safe_area": "bottom 20 percent clear",
+                "acceptance_criteria": [
+                    "one footprint is the only focal subject",
+                    "the evidence is readable without labels",
+                ],
+            },
+        },
+        session_id="session-1",
+        store=store,
+    ))
+
+    assert payload["success"] is True
+    assert payload["work_status"] == "ready"
+    assert payload["operation"] == "generate"
+    assert payload["contract_reset"] is True
+    assert payload["replan_revision"] == 1
+    assert payload["shot_contract_hash"] != old_hash
+    ledger = json.loads(
+        (context.project_dir / "scene_ledger.json").read_text(encoding="utf-8")
+    )
+    replanned = ledger["scenes"][0]["shots"][0]
+    assert replanned["narration_text"] == shot["narration_text"]
+    assert replanned["viewer_takeaway"] == shot["viewer_takeaway"]
+    assert replanned["subject"] == "one fossil footprint pressed into a dry mud layer"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["outputs"] == []
+    assert manifest["contract_replans"][0]["old_shot_contract_hash"] == old_hash
+    assert manifest["contract_replans"][0]["new_shot_contract_hash"] == payload[
+        "shot_contract_hash"
+    ]
+
+
+def test_replan_shot_contract_rejects_premature_redesign(tmp_path) -> None:
+    store, _context_value, _shot = _context(tmp_path)
+
+    payload = json.loads(story_video_quality_control(
+        {
+            "action": "replan_shot_contract",
+            "shot_id": "S00_SH00",
+            "redesigned_shot": {
+                "subject": "a different subject",
+                "action": "a different action",
+                "evidence_detail": "different evidence",
+                "shot_scale": "medium",
+                "camera_angle": "eye level",
+                "focal_point": "new focal point",
+                "subtitle_safe_area": "lower third clear",
+                "acceptance_criteria": ["new evidence is visible"],
+            },
+        },
+        session_id="session-1",
+        store=store,
+    ))
+
+    assert payload["success"] is False
+    assert payload["error_type"] == "story_video_quality_contract_error"
+    assert "only allowed after visual repair strategies are exhausted" in payload[
+        "error"
+    ]
+
+
+def test_next_batch_work_stops_after_bounded_contract_replans(tmp_path) -> None:
+    store, context, shot = _context(tmp_path)
+    contract_hash = _shot_contract_hash(shot)
+    exhausted = {
+        "shot_id": "S00_SH00",
+        "candidate_id": "S00_SH00_DOC_C01",
+        "status": "quality_budget_exhausted",
+        "selected": False,
+        "repair_strategy": "documentary_context",
+        "hard_blockers": ["the evidence is still not visible"],
+        "blocker_codes": ["other"],
+        "shot_contract_hash": contract_hash,
+    }
+    attempts = [
+        {
+            **exhausted,
+            "candidate_id": "S00_SH00_CONTEXT_C01",
+            "repair_strategy": "contextual_replan",
+        },
+        exhausted,
+    ]
+    replans = [
+        {"shot_id": "S00_SH00", "revision": 1},
+        {"shot_id": "S00_SH00", "revision": 2},
+    ]
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps({
+            "outputs": [exhausted],
+            "attempt_history": attempts,
+            "contract_replans": replans,
+        }),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(story_video_quality_control(
+        {"action": "next_batch_work"}, session_id="session-1", store=store
+    ))
+
+    assert payload["success"] is False
+    assert payload["work_status"] == "human_review_required"
+    assert payload["shot_id"] == "S00_SH00"
+    assert payload["replan_revision"] == 2
+    assert payload["error"] == "Automatic shot-contract replanning exhausted."
+
+
 def test_next_batch_work_advances_in_ledger_order_after_selection(tmp_path) -> None:
     store, context, shot = _context(tmp_path)
     ledger_path = context.project_dir / "scene_ledger.json"

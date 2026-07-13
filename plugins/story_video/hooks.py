@@ -247,6 +247,12 @@ def pre_llm_call(
         "During batch, first call story_video_quality_control "
         "action=next_batch_work and execute only the returned shot. Existing "
         "repair_required work always takes priority over generating a new shot. After "
+        "an operation=replan_shot_contract response, design a replacement using only "
+        "the returned mutable_fields, preserve immutable_contract exactly, and call "
+        "story_video_quality_control action=replan_shot_contract with the complete "
+        "redesigned_shot object. Do not edit scene_ledger.json directly or generate an "
+        "image before the replan action succeeds. This bounded path is for a visual "
+        "contract whose semantically equivalent image repairs are exhausted. After "
         "an operation=rejudge_existing response, do not generate an image; pass the "
         "returned candidate and repair_round directly to judge_candidates so legacy "
         "selected art receives the current engagement QC without image quota burn. After "
@@ -420,6 +426,35 @@ def auto_continue_llm_output(
                     " This is operation=rejudge_existing with candidate_budget=0. "
                     "Judge that exact existing candidate; do not call compile_prompt, "
                     "invoke image generation, or contact any image provider."
+                )
+            elif next_work.get("operation") == "replan_shot_contract":
+                replan_spec = json.dumps(
+                    {
+                        key: next_work.get(key)
+                        for key in (
+                            "replan_revision",
+                            "max_replan_revisions",
+                            "immutable_contract",
+                            "current_mutable_contract",
+                            "mutable_fields",
+                            "hard_blockers",
+                            "blocker_codes",
+                            "replan_directive",
+                        )
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+                next_action = (
+                    "story_video_quality_control action=replan_shot_contract "
+                    f"shot_id={next_work['shot_id']} redesigned_shot=<complete JSON>"
+                )
+                next_work_instruction = (
+                    " This is operation=replan_shot_contract. "
+                    f"Replan spec={replan_spec}. Preserve immutable_contract exactly; "
+                    "replace only mutable_fields with a coherent visual design that "
+                    "resolves every blocker. Do not edit the ledger directly. Do not "
+                    "generate an image before the replan action succeeds."
                 )
             else:
                 next_action = (
