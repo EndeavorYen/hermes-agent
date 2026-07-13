@@ -384,14 +384,33 @@ def _judge_candidates(
         candidate_paths[candidate_id] = path
         candidate_rows.append(candidate)
 
-    prompt_info = _compile_prompt(context, shot_id=shot_id)
-    if not prompt_info.get("success"):
-        bound_prompts = {
-            str(row.get("prompt") or row.get("generation_prompt") or "").strip()
-            for row in candidate_rows
-            if str(row.get("prompt") or row.get("generation_prompt") or "").strip()
+    bound_prompts = {
+        str(row.get("prompt") or row.get("generation_prompt") or "").strip()
+        for row in candidate_rows
+        if str(row.get("prompt") or row.get("generation_prompt") or "").strip()
+    }
+    if len(bound_prompts) > 1:
+        return {
+            "success": False,
+            "error_type": "story_video_candidate_prompt_ambiguous",
+            "error": "Candidates must share one bound compiled generation prompt.",
         }
-        if len(bound_prompts) != 1:
+    if bound_prompts:
+        bound_prompt = bound_prompts.pop()
+        prompt_path = context.project_dir / "prompts" / f"{shot_id}.txt"
+        prompt_path.parent.mkdir(parents=True, exist_ok=True)
+        prompt_path.write_text(bound_prompt + "\n", encoding="utf-8")
+        prompt_info = {
+            "success": True,
+            "prompt": bound_prompt,
+            "prompt_path": _relative(context, prompt_path),
+            "effective_shot_contract": shot,
+            "repair_strategy": candidate_strategy or "initial",
+            "bound_candidate_prompt": True,
+        }
+    else:
+        prompt_info = _compile_prompt(context, shot_id=shot_id)
+        if not prompt_info.get("success"):
             return {
                 **prompt_info,
                 "success": False,
@@ -401,19 +420,6 @@ def _judge_candidates(
                     "single bound compiled prompt. Regenerate through compile_prompt."
                 ),
             }
-        bound_prompt = bound_prompts.pop()
-        prompt_path = context.project_dir / "prompts" / f"{shot_id}.txt"
-        prompt_path.parent.mkdir(parents=True, exist_ok=True)
-        prompt_path.write_text(bound_prompt + "\n", encoding="utf-8")
-        prompt_info = {
-            **prompt_info,
-            "success": True,
-            "prompt": bound_prompt,
-            "prompt_path": _relative(context, prompt_path),
-            "effective_shot_contract": shot,
-            "repair_strategy": candidate_strategy or "targeted_repair",
-            "bound_candidate_prompt": True,
-        }
     repair_strategy = candidate_strategy or str(
         prompt_info.get("repair_strategy") or "targeted_repair"
     )
@@ -613,6 +619,7 @@ def _judge_candidates(
                 "judge_provider": judge_provider,
                 "judge_model": str(getattr(result, "model", "") or ""),
                 "prompt_path": str(prompt_info["prompt_path"]),
+                "generation_prompt": str(prompt_info["prompt"]),
                 "candidate_path": _relative(context, candidate_paths[candidate_id]),
                 "local_path": (
                     _relative(context, selected_path)
@@ -864,6 +871,11 @@ def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
         context.project_dir / "manifests" / "shot_candidate_manifest.json"
     ) or {}
     manifest = _promote_bounded_best_effort(context, manifest)
+    legacy_prompts = {
+        str(row.get("shot_id") or ""): str(row.get("prompt") or "").strip()
+        for row in manifest.get("shots") or []
+        if isinstance(row, dict) and str(row.get("shot_id") or "").strip()
+    }
     by_shot = {
         str(row.get("shot_id") or ""): row
         for row in manifest.get("outputs") or []
@@ -952,6 +964,12 @@ def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
                         previous.get("generation_response_id") or ""
                     ),
                     "repair_strategy": "initial",
+                    "generation_prompt": str(
+                        previous.get("generation_prompt")
+                        or previous.get("prompt")
+                        or legacy_prompts.get(shot_id)
+                        or ""
+                    ).strip(),
                 },
                 "repair_round": int(previous.get("repair_round") or 1),
                 "remaining_review_count": len(stale_reviews),

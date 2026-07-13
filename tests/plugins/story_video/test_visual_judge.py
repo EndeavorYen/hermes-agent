@@ -547,6 +547,12 @@ def test_next_batch_work_rejudges_legacy_selection_before_new_generation(
     (manifests / "shot_candidate_manifest.json").write_text(
         json.dumps(
             {
+                "shots": [
+                    {
+                        "shot_id": "S00_SH00",
+                        "prompt": "Legacy prompt bound to the selected image.",
+                    }
+                ],
                 "outputs": [
                     {
                         "shot_id": "S00_SH00",
@@ -580,6 +586,9 @@ def test_next_batch_work_rejudges_legacy_selection_before_new_generation(
     assert payload["shot_id"] == "S00_SH00"
     assert payload["candidate"]["candidate_id"] == "S00_SH00_C01_V3_REVIEW"
     assert payload["candidate"]["path"] == candidate["path"]
+    assert payload["candidate"]["generation_prompt"] == (
+        "Legacy prompt bound to the selected image."
+    )
     assert payload["candidate_budget"] == 0
 
 
@@ -821,6 +830,49 @@ def test_judge_uses_candidate_prompt_after_repair_plan_is_exhausted(tmp_path) ->
     assert payload["success"] is True
     assert payload["selected_candidate_id"] == candidate["candidate_id"]
     assert "Bound compiled prompt" in llm.calls[0]["input"][0]["text"]
+
+
+def test_judge_prefers_candidate_bound_prompt_over_mutable_repair_prompt(
+    tmp_path,
+) -> None:
+    store, context, _shot = _context(tmp_path)
+    candidate = _candidate(context, "S00_SH00_C01_V3_REVIEW")
+    candidate["generation_prompt"] = (
+        "Original environment prompt bound to this exact selected image."
+    )
+    llm = FakeLlm([
+        {
+            "candidate_id": candidate["candidate_id"],
+            "dimensions": _dimensions(90),
+            "hard_blockers": [],
+            "evidence": ["The original contracted environment is clearly visible."],
+        }
+    ])
+
+    payload = json.loads(story_video_quality_control(
+        {
+            "action": "judge_candidates",
+            "shot_id": "S00_SH00",
+            "repair_round": 1,
+            "candidates": [candidate],
+        },
+        session_id="session-1",
+        store=store,
+        llm=llm,
+    ))
+
+    assert payload["success"] is True
+    review_text = llm.calls[0]["input"][0]["text"]
+    assert "Original environment prompt" in review_text
+    assert "Viewer takeaway:" not in review_text
+    manifest = json.loads(
+        (context.project_dir / "manifests" / "shot_candidate_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["outputs"][0]["generation_prompt"] == (
+        candidate["generation_prompt"]
+    )
 
 
 def test_judge_selects_packaging_recoverable_subtitle_collision(tmp_path) -> None:
