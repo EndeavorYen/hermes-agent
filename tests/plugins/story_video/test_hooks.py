@@ -409,6 +409,45 @@ def test_autopilot_does_not_stall_when_candidate_manifest_advances(
     assert advanced.autopilot_stall_count == 1
 
 
+def test_batch_autopilot_continuation_names_exact_next_quality_tool_call(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    start = hooks.pre_gateway_dispatch(
+        event=_event("故事影片：恐龍起源｜5分鐘｜真實照片。完整製作並出片。")
+    )
+    hooks.pre_llm_call(session_id="session-auto", user_message=start["text"])
+    context = store.for_session("session-auto")
+    assert context is not None
+    shot = {
+        "shot_id": "S03_SH01", "narration_text": "旁白", "subject": "恐龍",
+        "action": "行走", "evidence_detail": "腿部", "shot_scale": "wide",
+        "camera_angle": "side", "focal_point": "body",
+        "subtitle_safe_area": "right top", "acceptance_criteria": ["clear"],
+    }
+    (context.project_dir / "scene_ledger.json").write_text(json.dumps({
+        "scenes": [{"scene_id": "S03", "shots": [shot]}]
+    }), encoding="utf-8")
+    manifest = context.project_dir / "manifests" / "shot_candidate_manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(json.dumps({"outputs": [{
+        "shot_id": "S03_SH01", "status": "repair_required", "selected": False,
+        "repair_round": 1, "hard_blockers": ["subtitle collision"],
+    }]}), encoding="utf-8")
+    context = store.update(context, phase="batch")
+
+    continuation = hooks.auto_continue_llm_output(
+        session_id="session-auto",
+        response_text="STORY_VIDEO_PHASE_PROOF: batch BLOCKED",
+    )
+
+    assert continuation is not None
+    assert "action=compile_prompt shot_id=S03_SH01" in continuation["message"]
+    assert "candidate_id_hint=S03_SH01_C02" in continuation["message"]
+    assert "Do not generate another shot first" in continuation["message"]
+
+
 def test_direct_full_auto_resets_existing_stall_guard(tmp_path, monkeypatch) -> None:
     store = StoryVideoStateStore(tmp_path)
     monkeypatch.setattr(hooks, "_STORE", store)
