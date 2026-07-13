@@ -838,8 +838,17 @@ def run_codex_app_server_turn(
                 exc_info=True,
             )
 
+    recoverable_transport_error = (
+        bool(turn.interrupted)
+        and bool(turn.error)
+        and bool(getattr(turn, "should_retire", False))
+        and int(getattr(turn, "tool_iterations", 0) or 0) > 0
+        and bool(final_text)
+        and "went silent" in str(turn.error).lower()
+        and "after a tool result" in str(turn.error).lower()
+    )
     auto_request: dict[str, str] | None = None
-    if not turn.interrupted and turn.error is None:
+    if (not turn.interrupted and turn.error is None) or recoverable_transport_error:
         for hook_result in _invoke_runtime_hook(
             "auto_continue_llm_output",
             response_text=final_text,
@@ -848,6 +857,8 @@ def run_codex_app_server_turn(
             turn_id=turn_id,
             model=agent.model,
             platform=agent.platform or "",
+            recoverable_transport_error=recoverable_transport_error,
+            turn_error=str(turn.error or ""),
         ):
             if not isinstance(hook_result, dict):
                 continue
