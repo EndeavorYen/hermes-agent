@@ -228,6 +228,92 @@ def test_compile_prompt_refuses_a_second_layout_strategy_reset(tmp_path) -> None
     assert payload["hard_blockers"] == ["subtitle collision remains"]
 
 
+def test_next_batch_work_repairs_first_blocked_shot_before_new_shots(tmp_path) -> None:
+    store, context, shot = _context(tmp_path)
+    ledger_path = context.project_dir / "scene_ledger.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    second = {**shot, "shot_id": "S00_SH01", "subject": "second subject"}
+    ledger["scenes"][0]["shots"].append(second)
+    ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps({"outputs": [{
+            "shot_id": "S00_SH00",
+            "status": "repair_required",
+            "selected": False,
+            "repair_round": 1,
+            "hard_blockers": ["subtitle collision"],
+        }]}),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(story_video_quality_control(
+        {"action": "next_batch_work"}, session_id="session-1", store=store
+    ))
+
+    assert payload["success"] is True
+    assert payload["work_status"] == "ready"
+    assert payload["operation"] == "repair"
+    assert payload["shot_id"] == "S00_SH00"
+    assert payload["candidate_id_hint"] == "S00_SH00_C02"
+    assert payload["remaining_shot_count"] == 2
+
+
+def test_next_batch_work_advances_in_ledger_order_after_selection(tmp_path) -> None:
+    store, context, shot = _context(tmp_path)
+    ledger_path = context.project_dir / "scene_ledger.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    ledger["scenes"][0]["shots"].append(
+        {**shot, "shot_id": "S00_SH01", "subject": "second subject"}
+    )
+    ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps({"outputs": [{
+            "shot_id": "S00_SH00",
+            "status": "selected_current",
+            "selected": True,
+            "repair_round": 1,
+        }]}),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(story_video_quality_control(
+        {"action": "next_batch_work"}, session_id="session-1", store=store
+    ))
+
+    assert payload["work_status"] == "ready"
+    assert payload["operation"] == "generate"
+    assert payload["shot_id"] == "S00_SH01"
+    assert payload["candidate_id_hint"] == "S00_SH01_C01"
+    assert payload["remaining_shot_count"] == 1
+
+
+def test_next_batch_work_returns_complete_when_every_shot_is_selected(tmp_path) -> None:
+    store, context, _shot = _context(tmp_path)
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps({"outputs": [{
+            "shot_id": "S00_SH00", "status": "selected_current", "selected": True
+        }]}),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(story_video_quality_control(
+        {"action": "next_batch_work"}, session_id="session-1", store=store
+    ))
+
+    assert payload == {
+        "success": True,
+        "action": "next_batch_work",
+        "work_status": "complete",
+        "remaining_shot_count": 0,
+    }
+
+
 def test_judge_sends_one_candidate_to_openai_and_selects_it_when_it_passes(tmp_path) -> None:
     store, context, _shot = _context(tmp_path)
     candidates = [_candidate(context, "C01")]

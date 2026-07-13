@@ -520,6 +520,82 @@ def _status(context: StoryVideoRunContext) -> dict[str, Any]:
     }
 
 
+def _ordered_shot_ids(context: StoryVideoRunContext) -> list[str]:
+    ledger = _load_json(context.project_dir / "scene_ledger.json")
+    if not isinstance(ledger, dict):
+        raise ValueError("scene_ledger.json is missing or invalid")
+    shot_ids: list[str] = []
+    for scene in ledger.get("scenes") or []:
+        if not isinstance(scene, dict):
+            continue
+        for shot in scene.get("shots") or []:
+            if not isinstance(shot, dict):
+                continue
+            shot_id = str(shot.get("shot_id") or "").strip()
+            if shot_id:
+                shot_ids.append(shot_id)
+    if not shot_ids:
+        raise ValueError("scene_ledger.json has no shots")
+    return shot_ids
+
+
+def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
+    """Return one deterministic image/QC cycle, prioritizing repairs."""
+    shot_ids = _ordered_shot_ids(context)
+    manifest = _load_json(
+        context.project_dir / "manifests" / "shot_candidate_manifest.json"
+    ) or {}
+    by_shot = {
+        str(row.get("shot_id") or ""): row
+        for row in manifest.get("outputs") or []
+        if isinstance(row, dict) and str(row.get("shot_id") or "").strip()
+    }
+    unresolved = [
+        shot_id
+        for shot_id in shot_ids
+        if by_shot.get(shot_id, {}).get("selected") is not True
+    ]
+    if not unresolved:
+        return {
+            "success": True,
+            "action": "next_batch_work",
+            "work_status": "complete",
+            "remaining_shot_count": 0,
+        }
+
+    blocked_statuses = {"repair_required", "quality_budget_exhausted"}
+    blocked = [
+        shot_id
+        for shot_id in unresolved
+        if str(by_shot.get(shot_id, {}).get("status") or "") in blocked_statuses
+    ]
+    shot_id = (blocked or unresolved)[0]
+    previous = by_shot.get(shot_id, {})
+    previous_status = str(previous.get("status") or "")
+    prompt_info = _compile_prompt(context, shot_id=shot_id)
+    if not prompt_info.get("success"):
+        return {
+            **prompt_info,
+            "action": "next_batch_work",
+            "work_status": "human_review_required",
+            "remaining_shot_count": len(unresolved),
+        }
+    operation = (
+        "strategy_reset"
+        if prompt_info.get("strategy_reset") is True
+        else "repair"
+        if previous_status == "repair_required"
+        else "generate"
+    )
+    return {
+        **prompt_info,
+        "action": "next_batch_work",
+        "work_status": "ready",
+        "operation": operation,
+        "remaining_shot_count": len(unresolved),
+    }
+
+
 def _required_project_file(
     context: StoryVideoRunContext,
     value: Any,
@@ -709,6 +785,8 @@ def story_video_quality_control(
             )
         elif action == "prepare_render":
             payload = _prepare_render(context)
+        elif action == "next_batch_work":
+            payload = _next_batch_work(context)
         elif action == "status":
             payload = _status(context)
         else:

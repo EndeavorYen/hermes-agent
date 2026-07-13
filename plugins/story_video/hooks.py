@@ -9,6 +9,7 @@ from typing import Any
 from .audit import ProviderAudit, ProviderAuditEvent
 from .policy import guard_tool_call
 from .state import OperatorCall, StoryVideoRunContext, StoryVideoStateStore, parse_operator_call
+from .visual_judge import _next_batch_work
 
 
 _STORE = StoryVideoStateStore()
@@ -233,7 +234,13 @@ def pre_llm_call(
         "### S01, and so on for the local voice parser. Preserve correct display "
         "spelling in all narration and never write spoken aliases into script.md; "
         "aliases belong only in pronunciation_lexicon.json and are compiled at voice time. "
-        "During keyframes and batch, generate exactly one candidate per shot at a time, "
+        "During batch, first call story_video_quality_control "
+        "action=next_batch_work and execute only the returned shot. Existing "
+        "repair_required work always takes priority over generating a new shot. After "
+        "judging that candidate, call next_batch_work again and repeat until it reports "
+        "work_status=complete. During keyframes, choose representative ledger shots "
+        "until the keyframe scale-coverage gate passes. In both phases, generate "
+        "exactly one candidate per shot at a time, "
         "always use the candidate_id_hint returned by compile_prompt, and carry its "
         "repair directive into generation. If compile_prompt returns strategy_reset=true, "
         "pass strategy_reset=true with that single candidate; this is a one-candidate "
@@ -364,11 +371,26 @@ def auto_continue_llm_output(
             autopilot_last_signature="",
             autopilot_stall_count=0,
         )
+    next_work_instruction = ""
+    if context.phase == "batch":
+        try:
+            next_work = _next_batch_work(context)
+        except (OSError, TypeError, ValueError):
+            next_work = {}
+        if next_work.get("work_status") == "ready":
+            next_work_instruction = (
+                " First call story_video_quality_control "
+                f"action=compile_prompt shot_id={next_work['shot_id']}; "
+                f"use candidate_id_hint={next_work['candidate_id_hint']} to perform "
+                f"the {next_work['operation']} image/QC cycle. Do not generate another "
+                "shot first."
+            )
     return {
         "action": "continue",
         "message": (
             f"STORY_VIDEO_AUTOPILOT run_id={context.run_id} phase={context.phase}. "
-            f"Execute the next action now: {context.next_call}. Do not merely report "
+            f"Execute the next action now: {context.next_call}.{next_work_instruction} "
+            "Do not merely report "
             "status; complete the phase, repair every gate failure that is locally "
             "actionable, validate it, and continue toward final delivery."
         ),
