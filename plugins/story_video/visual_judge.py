@@ -1412,25 +1412,19 @@ def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
             "",
         )
         if candidate_path:
-            prompt_info = _compile_prompt(context, shot_id=shot_id)
-            if not prompt_info.get("success"):
-                return {
-                    **prompt_info,
-                    "action": "next_batch_work",
-                    "work_status": "human_review_required",
-                    "remaining_shot_count": len(unresolved),
-                }
             old_candidate_id = str(previous.get("candidate_id") or shot_id).strip()
             _current_ledger, _current_scene, current_shot = _find_shot(
                 context,
                 shot_id,
             )
             return {
-                **prompt_info,
+                "success": True,
                 "action": "next_batch_work",
                 "work_status": "ready",
                 "operation": "rejudge_existing",
+                "shot_id": shot_id,
                 "candidate_budget": 0,
+                "quality_threshold": QUALITY_THRESHOLD,
                 "candidate": {
                     "candidate_id": f"{old_candidate_id}_V3_REVIEW",
                     "path": candidate_path,
