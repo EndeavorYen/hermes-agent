@@ -332,7 +332,14 @@ def pre_llm_call(
             "execute the exact repair_request immediately and validate again. Do not ask "
             "the operator to reply with continue or repair. Stop only for an operator "
             "setup blocker such as missing credentials, exhausted quota, or unavailable "
-            "required provider; otherwise finish the production and delivery."
+            "required provider; otherwise finish the production and delivery. During "
+            "batch, execute exactly one canonical batch work unit per LLM turn: one "
+            "rejudge_existing action, one replan_shot_contract action, or one "
+            "compile/generate/judge cycle. After that unit writes its QC result, return "
+            "a brief progress response immediately so the internal autopilot continuation "
+            "can schedule the canonical next action. Do not start the next batch work unit "
+            "in the same turn. This turn boundary is not an operator pause and must not "
+            "request input."
         )
     return {"context": instruction}
 
