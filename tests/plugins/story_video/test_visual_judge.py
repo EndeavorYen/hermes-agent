@@ -171,7 +171,7 @@ def test_compile_prompt_includes_latest_qc_blocker_in_repair_directive(tmp_path)
     assert payload["candidate_id_hint"] == "S00_SH00_C03"
     assert "Prior QC blocker" in payload["prompt"]
     assert "subtitle-safe area is occupied by the fossil" in payload["prompt"]
-    assert "materially change the composition" in payload["prompt"]
+    assert "Change the failing visual evidence" in payload["prompt"]
 
 
 def test_exhausted_prompt_allows_one_layout_strategy_reset(tmp_path) -> None:
@@ -199,10 +199,10 @@ def test_exhausted_prompt_allows_one_layout_strategy_reset(tmp_path) -> None:
     assert payload["strategy_reset"] is True
     assert payload["candidate_id_hint"] == "S00_SH00_LAYOUT_C01"
     assert payload["remaining_strategy_reset_candidates"] == 1
-    assert "one-time composition strategy reset" in payload["prompt"]
+    assert "Adaptive repair strategy: layout_reset" in payload["prompt"]
 
 
-def test_compile_prompt_refuses_a_second_layout_strategy_reset(tmp_path) -> None:
+def test_compile_prompt_replans_context_after_failed_layout_reset(tmp_path) -> None:
     store, context, _shot = _context(tmp_path)
     manifests = context.project_dir / "manifests"
     manifests.mkdir(parents=True, exist_ok=True)
@@ -223,9 +223,141 @@ def test_compile_prompt_refuses_a_second_layout_strategy_reset(tmp_path) -> None
         store=store,
     ))
 
-    assert payload["success"] is False
-    assert payload["status"] == "human_review_required"
+    assert payload["success"] is True
+    assert payload["repair_strategy"] == "contextual_replan"
+    assert payload["candidate_id_hint"] == "S00_SH00_CONTEXT_C01"
     assert payload["hard_blockers"] == ["subtitle collision remains"]
+
+
+def test_compile_prompt_reframes_scientific_evidence_after_layout_reset(
+    tmp_path,
+) -> None:
+    store, context, _shot = _context(tmp_path)
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps({"outputs": [{
+            "shot_id": "S00_SH00",
+            "status": "quality_budget_exhausted",
+            "repair_round": 1,
+            "strategy_reset": True,
+            "hard_blockers": [
+                "科學與解剖辨識不足：無法可信辨識為纖細的顎部化石。",
+                "牙齒幾何疑似失真。",
+            ],
+        }]}),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(story_video_quality_control(
+        {"action": "compile_prompt", "shot_id": "S00_SH00"},
+        session_id="session-1",
+        store=store,
+    ))
+
+    assert payload["success"] is True
+    assert payload["repair_strategy"] == "evidence_reframe"
+    assert payload["candidate_id_hint"] == "S00_SH00_EVIDENCE_C01"
+    assert "fragmentary evidence" in payload["prompt"]
+    assert "one-time composition strategy reset" not in payload["prompt"]
+    assert "macro evidence shot" not in payload["prompt"]
+    assert "close-up shot" in payload["prompt"]
+    assert payload["effective_shot_contract"]["shot_scale"] == "close_up"
+
+
+def test_judge_preserves_append_only_attempt_history(tmp_path) -> None:
+    store, context, _shot = _context(tmp_path)
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    old_attempt = {
+        "shot_id": "S00_SH00", "candidate_id": "S00_SH00_C01",
+        "status": "repair_required", "repair_strategy": "targeted_repair",
+        "repair_round": 1, "hard_blockers": ["subtitle collision"],
+    }
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps({"outputs": [old_attempt], "attempt_history": [old_attempt]}),
+        encoding="utf-8",
+    )
+    candidate = _candidate(context, "S00_SH00_C02")
+    candidate["repair_strategy"] = "targeted_repair"
+    llm = FakeLlm([{
+        "candidate_id": "S00_SH00_C02",
+        "hard_blockers": ["malformed ankle geometry"],
+        "blocker_codes": ["anatomy_geometry"],
+        "dimensions": _dimensions(70),
+        "evidence": ["ankle geometry is visibly malformed"],
+    }])
+
+    story_video_quality_control(
+        {
+            "action": "judge_candidates", "shot_id": "S00_SH00",
+            "repair_round": 2, "candidates": [candidate],
+        },
+        session_id="session-1",
+        store=store,
+        llm=llm,
+    )
+
+    manifest = json.loads(
+        (manifests / "shot_candidate_manifest.json").read_text(encoding="utf-8")
+    )
+    assert [row["candidate_id"] for row in manifest["attempt_history"]] == [
+        "S00_SH00_C01", "S00_SH00_C02"
+    ]
+    assert len(manifest["outputs"]) == 1
+    assert manifest["outputs"][0]["candidate_id"] == "S00_SH00_C02"
+    assert manifest["outputs"][0]["blocker_codes"] == ["anatomy_geometry"]
+
+
+def test_repeated_blocker_without_score_gain_pivots_before_fifth_round(tmp_path) -> None:
+    store, context, _shot = _context(tmp_path)
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    old_attempt = {
+        "shot_id": "S00_SH00",
+        "candidate_id": "S00_SH00_C01",
+        "status": "repair_required",
+        "repair_strategy": "targeted_repair",
+        "repair_round": 1,
+        "quality_score": 70.0,
+        "hard_blockers": ["malformed ankle geometry"],
+        "blocker_codes": ["anatomy_geometry"],
+    }
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps({"outputs": [old_attempt], "attempt_history": [old_attempt]}),
+        encoding="utf-8",
+    )
+    candidate = _candidate(context, "S00_SH00_C02")
+    candidate["repair_strategy"] = "targeted_repair"
+    llm = FakeLlm([{
+        "candidate_id": "S00_SH00_C02",
+        "hard_blockers": ["ankle geometry remains malformed"],
+        "blocker_codes": ["anatomy_geometry"],
+        "dimensions": _dimensions(71),
+        "evidence": ["the same ankle defect remains visible"],
+    }])
+
+    judged = json.loads(story_video_quality_control(
+        {
+            "action": "judge_candidates",
+            "shot_id": "S00_SH00",
+            "repair_round": 2,
+            "candidates": [candidate],
+        },
+        session_id="session-1",
+        store=store,
+        llm=llm,
+    ))
+    compiled = json.loads(story_video_quality_control(
+        {"action": "compile_prompt", "shot_id": "S00_SH00"},
+        session_id="session-1",
+        store=store,
+    ))
+
+    assert judged["status"] == "quality_budget_exhausted"
+    assert judged["convergence_stalled"] is True
+    assert compiled["repair_strategy"] == "evidence_reframe"
+    assert compiled["candidate_id_hint"] == "S00_SH00_EVIDENCE_C01"
 
 
 def test_next_batch_work_repairs_first_blocked_shot_before_new_shots(tmp_path) -> None:
@@ -312,6 +444,86 @@ def test_next_batch_work_returns_complete_when_every_shot_is_selected(tmp_path) 
         "work_status": "complete",
         "remaining_shot_count": 0,
     }
+
+
+def test_next_batch_work_promotes_stored_clean_candidate_after_strategy_exhaustion(
+    tmp_path,
+) -> None:
+    store, context, _shot = _context(tmp_path)
+    candidate = _candidate(context, "S00_SH00_DOC_C01")
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    attempts = [
+        {
+            "shot_id": "S00_SH00",
+            "candidate_id": "S00_SH00_EVIDENCE_C01",
+            "status": "quality_budget_exhausted",
+            "repair_strategy": "evidence_reframe",
+            "hard_blockers": ["malformed anatomy"],
+            "blocker_codes": ["anatomy_geometry"],
+        },
+        {
+            "shot_id": "S00_SH00",
+            "candidate_id": "S00_SH00_CONTEXT_C01",
+            "status": "quality_budget_exhausted",
+            "repair_strategy": "contextual_replan",
+            "hard_blockers": ["subtitle collision"],
+            "blocker_codes": ["subtitle_collision"],
+        },
+        {
+            "shot_id": "S00_SH00",
+            "candidate_id": "S00_SH00_DOC_C01",
+            "status": "quality_budget_exhausted",
+            "repair_strategy": "documentary_context",
+            "provider": "openai-codex",
+            "candidate_path": candidate["path"],
+            "local_path": candidate["path"],
+            "quality_score": 76.0,
+            "hard_blockers": [],
+            "blocker_codes": ["other"],
+            "vision_evidence": {"status": "PASS", "response_id": "resp_qc"},
+        },
+    ]
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps({"outputs": [attempts[-1]], "attempt_history": attempts}),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(story_video_quality_control(
+        {"action": "next_batch_work"}, session_id="session-1", store=store
+    ))
+
+    assert payload["work_status"] == "complete"
+    assert (context.project_dir / "images" / "S00_SH00.png").is_file()
+    manifest = json.loads(
+        (manifests / "shot_candidate_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["outputs"][0]["selected"] is True
+    assert manifest["outputs"][0]["status"] == "selected_current"
+    assert manifest["outputs"][0]["best_effort_selected"] is True
+    assert manifest["selection_events"][0]["candidate_id"] == "S00_SH00_DOC_C01"
+
+
+def test_next_batch_work_carries_adaptive_repair_strategy(tmp_path) -> None:
+    store, context, _shot = _context(tmp_path)
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    (manifests / "shot_candidate_manifest.json").write_text(json.dumps({
+        "outputs": [{
+            "shot_id": "S00_SH00", "status": "quality_budget_exhausted",
+            "selected": False, "repair_round": 1, "strategy_reset": True,
+            "hard_blockers": ["科學與解剖辨識不足", "牙齒幾何疑似失真"],
+        }]
+    }), encoding="utf-8")
+
+    payload = json.loads(story_video_quality_control(
+        {"action": "next_batch_work"}, session_id="session-1", store=store
+    ))
+
+    assert payload["work_status"] == "ready"
+    assert payload["operation"] == "repair"
+    assert payload["repair_strategy"] == "evidence_reframe"
+    assert payload["candidate_id_hint"] == "S00_SH00_EVIDENCE_C01"
 
 
 def test_judge_sends_one_candidate_to_openai_and_selects_it_when_it_passes(tmp_path) -> None:
@@ -519,6 +731,60 @@ def test_failed_layout_strategy_reset_exhausts_after_one_candidate(tmp_path) -> 
         (context.project_dir / "manifests" / "shot_candidate_manifest.json").read_text()
     )
     assert manifest["outputs"][0]["strategy_reset"] is True
+
+
+def test_clean_final_semantic_candidate_is_selected_at_bounded_floor(tmp_path) -> None:
+    store, context, _shot = _context(tmp_path)
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    attempts = [
+        {
+            "shot_id": "S00_SH00",
+            "candidate_id": "S00_SH00_EVIDENCE_C01",
+            "status": "quality_budget_exhausted",
+            "repair_strategy": "evidence_reframe",
+            "hard_blockers": ["malformed anatomy"],
+            "blocker_codes": ["anatomy_geometry"],
+        },
+        {
+            "shot_id": "S00_SH00",
+            "candidate_id": "S00_SH00_CONTEXT_C01",
+            "status": "quality_budget_exhausted",
+            "repair_strategy": "contextual_replan",
+            "hard_blockers": ["subtitle collision"],
+            "blocker_codes": ["subtitle_collision"],
+        },
+    ]
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps({"outputs": [attempts[-1]], "attempt_history": attempts}),
+        encoding="utf-8",
+    )
+    candidate = _candidate(context, "S00_SH00_DOC_C01")
+    candidate["repair_strategy"] = "documentary_context"
+    llm = FakeLlm([{
+        "candidate_id": "S00_SH00_DOC_C01",
+        "hard_blockers": [],
+        "blocker_codes": [],
+        "dimensions": _dimensions(76),
+        "evidence": ["clean documentary context with reserved subtitle region"],
+    }])
+
+    payload = json.loads(story_video_quality_control(
+        {
+            "action": "judge_candidates",
+            "shot_id": "S00_SH00",
+            "repair_round": 1,
+            "candidates": [candidate],
+        },
+        session_id="session-1",
+        store=store,
+        llm=llm,
+    ))
+
+    assert payload["success"] is True
+    assert payload["status"] == "selected"
+    assert payload["best_effort_selected"] is True
+    assert payload["selected_candidate_id"] == "S00_SH00_DOC_C01"
 
 
 def test_judge_fails_closed_before_calling_llm_for_non_openai_candidate(tmp_path) -> None:

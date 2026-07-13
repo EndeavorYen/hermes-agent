@@ -8,6 +8,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .repair_planner import (
+    BLOCKER_CODES,
+    apply_repair_strategy,
+    classify_blockers,
+    plan_repair,
+)
 from .quality import (
     DIMENSION_WEIGHTS,
     QUALITY_THRESHOLD,
@@ -20,6 +26,7 @@ from .state import StoryVideoRunContext, StoryVideoStateStore
 
 
 MAX_REPAIR_ROUNDS = 5
+BEST_EFFORT_QUALITY_FLOOR = 75.0
 _PLUGIN_LLM: Any = None
 
 
@@ -36,6 +43,7 @@ CANDIDATE_REVIEW_SCHEMA = {
                 "required": [
                     "candidate_id",
                     "hard_blockers",
+                    "blocker_codes",
                     "dimensions",
                     "evidence",
                 ],
@@ -44,6 +52,10 @@ CANDIDATE_REVIEW_SCHEMA = {
                     "hard_blockers": {
                         "type": "array",
                         "items": {"type": "string"},
+                    },
+                    "blocker_codes": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": sorted(BLOCKER_CODES)},
                     },
                     "dimensions": {
                         "type": "object",
@@ -139,63 +151,64 @@ def _compile_prompt(
     shot_id: str,
 ) -> dict[str, Any]:
     ledger, scene, shot = _find_shot(context, shot_id)
-    prompt = compile_shot_prompt(ledger=ledger, scene=scene, shot=shot)
     manifest = _load_json(
         context.project_dir / "manifests" / "shot_candidate_manifest.json"
     ) or {}
-    previous_rows = [
+    history_rows = [
+        row
+        for row in manifest.get("attempt_history") or []
+        if isinstance(row, dict) and str(row.get("shot_id") or "") == shot_id
+    ]
+    current_rows = [
         row
         for row in manifest.get("outputs") or []
         if isinstance(row, dict) and str(row.get("shot_id") or "") == shot_id
     ]
-    previous = max(
-        previous_rows,
-        key=lambda row: (
-            int(row.get("repair_round") or 0),
-            str(row.get("reviewed_at") or ""),
-        ),
-        default=None,
+    known_candidates = {
+        str(row.get("candidate_id") or "") for row in history_rows
+    }
+    attempts = [*history_rows]
+    attempts.extend(
+        row
+        for row in current_rows
+        if str(row.get("candidate_id") or "") not in known_candidates
     )
+    attempts.sort(key=lambda row: str(row.get("reviewed_at") or ""))
+    previous = attempts[-1] if attempts else None
     blockers = [
         str(item).strip()
         for item in (previous or {}).get("hard_blockers") or []
         if str(item).strip()
     ]
-    previous_round = int((previous or {}).get("repair_round") or 0)
-    previous_status = str((previous or {}).get("status") or "")
-    previous_strategy_reset = (previous or {}).get("strategy_reset") is True
-    strategy_reset = (
-        previous_status == "quality_budget_exhausted"
-        and not previous_strategy_reset
-    )
-    if previous_status == "quality_budget_exhausted" and previous_strategy_reset:
+    repair_plan = plan_repair(attempts)
+    if repair_plan.exhausted:
         return {
             "success": False,
             "action": "compile_prompt",
             "shot_id": shot_id,
             "status": "human_review_required",
             "hard_blockers": blockers,
-            "error": "The one-time composition strategy reset also failed.",
+            "blocker_codes": list(repair_plan.blocker_codes),
+            "error": repair_plan.directive,
         }
+    effective_shot = apply_repair_strategy(
+        shot,
+        repair_plan.strategy,
+        blocker_codes=repair_plan.blocker_codes,
+    )
+    prompt = compile_shot_prompt(
+        ledger=ledger,
+        scene=scene,
+        shot=effective_shot,
+    )
     if blockers:
         prompt += (
             " Prior QC blocker(s): "
             + "; ".join(blockers)
-            + ". Repair directive: materially change the composition instead of "
-            "repeating the prior framing. Keep the declared subtitle-safe area "
-            "completely free of the focal subject, hands, supports, and evidence."
+            + "."
         )
-    if strategy_reset:
-        prompt += (
-            " This is the one-time composition strategy reset after the normal repair "
-            "budget was exhausted. Use a wider or offset framing with all focal evidence "
-            "grouped away from the subtitle-safe area; do not imitate the previous crop."
-        )
-    candidate_id_hint = (
-        f"{shot_id}_LAYOUT_C01"
-        if strategy_reset
-        else f"{shot_id}_C{min(previous_round + 1, MAX_REPAIR_ROUNDS):02d}"
-    )
+    prompt += f" Adaptive repair strategy: {repair_plan.strategy}. {repair_plan.directive}"
+    candidate_id_hint = f"{shot_id}_{repair_plan.candidate_suffix}"
     prompt_path = context.project_dir / "prompts" / f"{shot_id}.txt"
     prompt_path.parent.mkdir(parents=True, exist_ok=True)
     prompt_path.write_text(prompt + "\n", encoding="utf-8")
@@ -210,9 +223,15 @@ def _compile_prompt(
         "max_repair_rounds": MAX_REPAIR_ROUNDS,
         "quality_threshold": QUALITY_THRESHOLD,
         "repair_feedback_applied": bool(blockers),
-        "strategy_reset": strategy_reset,
-        "remaining_strategy_reset_candidates": 1 if strategy_reset else 0,
+        "hard_blockers": blockers,
+        "repair_strategy": repair_plan.strategy,
+        "blocker_codes": list(repair_plan.blocker_codes),
+        "strategy_reset": repair_plan.strategy == "layout_reset",
+        "remaining_strategy_reset_candidates": (
+            1 if repair_plan.strategy == "layout_reset" else 0
+        ),
         "candidate_id_hint": candidate_id_hint,
+        "effective_shot_contract": effective_shot,
     }
 
 
@@ -225,6 +244,9 @@ def _review_instructions(shot: dict[str, Any], candidate_ids: list[str]) -> str:
             f"Shot contract: {json.dumps(shot, ensure_ascii=False, sort_keys=True)}",
             f"Candidate image order: {json.dumps(candidate_ids, ensure_ascii=False)}",
             "Hard blockers include wrong spoken-claim content, scientific contradiction, malformed anatomy or geometry, generated text/watermark, unclear focus, subtitle collision, and an image that adds no information beyond adjacent shots.",
+            "For every hard blocker, return one or more blocker_codes from: "
+            + ", ".join(sorted(BLOCKER_CODES))
+            + ".",
             "Return one row for every candidate id. Scores use 0-100. Evidence must cite concrete visible observations, not metadata or prompt intent.",
         )
     )
@@ -238,6 +260,31 @@ def _image_input(path: Path) -> dict[str, Any]:
         "mime_type": mime,
         "file_name": path.name,
     }
+
+
+def _repair_convergence_stalled(
+    attempts: list[dict[str, Any]],
+    *,
+    shot_id: str,
+    repair_strategy: str,
+    score: float,
+    blocker_codes: set[str],
+) -> bool:
+    if repair_strategy not in {"initial", "targeted_repair"} or not blocker_codes:
+        return False
+    for row in reversed(attempts):
+        if str(row.get("shot_id") or "") != shot_id:
+            continue
+        previous_score = row.get("quality_score")
+        if not isinstance(previous_score, (int, float)):
+            continue
+        previous_codes = classify_blockers(
+            row.get("hard_blockers") or (),
+            row.get("blocker_codes") or (),
+        )
+        if blocker_codes & previous_codes:
+            return score < float(previous_score) + 2.0
+    return False
 
 
 def _judge_candidates(
@@ -258,6 +305,14 @@ def _judge_candidates(
         )
         if match is not None:
             repair_round = max(repair_round, int(match.group(1)))
+    candidate_strategy = next(
+        (
+            str(row.get("repair_strategy") or "").strip()
+            for row in candidates
+            if str(row.get("repair_strategy") or "").strip()
+        ),
+        "",
+    )
     strategy_reset = any(row.get("strategy_reset") is True for row in candidates)
     if not 1 <= repair_round <= MAX_REPAIR_ROUNDS:
         return {
@@ -316,6 +371,11 @@ def _judge_candidates(
         candidate_rows.append(candidate)
 
     prompt_info = _compile_prompt(context, shot_id=shot_id)
+    repair_strategy = candidate_strategy or str(
+        prompt_info.get("repair_strategy") or "targeted_repair"
+    )
+    if strategy_reset and not candidate_strategy:
+        repair_strategy = "layout_reset"
     candidate_ids = [str(row["candidate_id"]) for row in candidate_rows]
     inputs: list[dict[str, Any]] = [
         {
@@ -335,7 +395,10 @@ def _judge_candidates(
         }
     try:
         result = llm.complete_structured(
-            instructions=_review_instructions(shot, candidate_ids),
+            instructions=_review_instructions(
+                prompt_info.get("effective_shot_contract") or shot,
+                candidate_ids,
+            ),
             input=inputs,
             json_schema=CANDIDATE_REVIEW_SCHEMA,
             json_mode=True,
@@ -376,19 +439,20 @@ def _judge_candidates(
     for row in rows:
         candidate_id = str(row.get("candidate_id") or "")
         source = next(item for item in candidate_rows if item["candidate_id"] == candidate_id)
+        blocker_codes = classify_blockers(
+            row.get("hard_blockers") or (),
+            row.get("blocker_codes") or (),
+        )
         assessments.append(
             {
                 **row,
+                "blocker_codes": sorted(blocker_codes),
                 "provider": source.get("provider"),
                 "judge_provider": judge_provider,
             }
         )
     decision = rank_candidate_assessments(assessments, threshold=QUALITY_THRESHOLD)
     selected_path = context.project_dir / "images" / f"{shot_id}.png"
-    if decision.selected_candidate_id:
-        selected_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(candidate_paths[decision.selected_candidate_id], selected_path)
-
     manifest_path = context.project_dir / "manifests" / "shot_candidate_manifest.json"
     manifest = _load_json(manifest_path) or {
         "schema": "story_video_shot_candidate_manifest_v1",
@@ -396,7 +460,13 @@ def _judge_candidates(
         "judge_provider": "openai-codex",
         "quality_threshold": QUALITY_THRESHOLD,
         "outputs": [],
+        "attempt_history": [],
     }
+    prior_attempts = [
+        row
+        for row in (manifest.get("attempt_history") or manifest.get("outputs") or [])
+        if isinstance(row, dict)
+    ]
     previous = [
         row
         for row in manifest.get("outputs") or []
@@ -404,11 +474,55 @@ def _judge_candidates(
     ]
     current_rows: list[dict[str, Any]] = []
     selected_id = decision.selected_candidate_id
+    pivot_strategy = repair_strategy in {
+        "layout_reset",
+        "evidence_reframe",
+        "contextual_replan",
+        "documentary_context",
+    }
+    best_assessment = max(
+        assessments,
+        key=lambda row: candidate_quality_score(row.get("dimensions")) or 0.0,
+    )
+    best_assessment_score = (
+        candidate_quality_score(best_assessment.get("dimensions")) or 0.0
+    )
+    exhausted_after_current = plan_repair([
+        *prior_attempts,
+        {
+            "shot_id": shot_id,
+            "status": "quality_budget_exhausted",
+            "repair_strategy": repair_strategy,
+            "hard_blockers": best_assessment.get("hard_blockers") or [],
+            "blocker_codes": best_assessment.get("blocker_codes") or [],
+        },
+    ]).exhausted
+    best_effort_selected = bool(
+        not selected_id
+        and not (best_assessment.get("hard_blockers") or [])
+        and best_assessment_score >= BEST_EFFORT_QUALITY_FLOOR
+        and exhausted_after_current
+    )
+    if best_effort_selected:
+        selected_id = str(best_assessment.get("candidate_id") or "")
+    if selected_id:
+        selected_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(candidate_paths[selected_id], selected_path)
+    convergence_stalled = not selected_id and _repair_convergence_stalled(
+        prior_attempts,
+        shot_id=shot_id,
+        repair_strategy=repair_strategy,
+        score=best_assessment_score,
+        blocker_codes=classify_blockers(
+            best_assessment.get("hard_blockers") or (),
+            best_assessment.get("blocker_codes") or (),
+        ),
+    )
     terminal_status = (
         "selected_current"
         if selected_id
         else "quality_budget_exhausted"
-        if repair_round >= MAX_REPAIR_ROUNDS or strategy_reset
+        if repair_round >= MAX_REPAIR_ROUNDS or pivot_strategy or convergence_stalled
         else "repair_required"
     )
     for assessment in assessments:
@@ -416,6 +530,9 @@ def _judge_candidates(
         source = next(item for item in candidate_rows if item["candidate_id"] == candidate_id)
         score = candidate_quality_score(assessment.get("dimensions")) or 0.0
         blockers = [str(item) for item in assessment.get("hard_blockers") or []]
+        blocker_codes = sorted(
+            classify_blockers(blockers, assessment.get("blocker_codes") or ())
+        )
         current_rows.append(
             {
                 "shot_id": shot_id,
@@ -443,6 +560,7 @@ def _judge_candidates(
                 ),
                 "quality_score": score,
                 "hard_blockers": blockers,
+                "blocker_codes": blocker_codes,
                 "quality_dimensions": assessment.get("dimensions"),
                 "vision_evidence": {
                     "status": "PASS",
@@ -450,10 +568,32 @@ def _judge_candidates(
                     "evidence": assessment.get("evidence") or [],
                 },
                 "repair_round": repair_round,
-                "strategy_reset": strategy_reset,
+                "repair_strategy": repair_strategy,
+                "strategy_reset": repair_strategy == "layout_reset",
+                "convergence_stalled": convergence_stalled,
+                "best_effort_selected": best_effort_selected,
                 "reviewed_at": _utc_now(),
             }
         )
+    history = [
+        row for row in manifest.get("attempt_history") or [] if isinstance(row, dict)
+    ]
+    history_keys = {
+        (str(row.get("shot_id") or ""), str(row.get("candidate_id") or ""))
+        for row in history
+    }
+    for row in manifest.get("outputs") or []:
+        if not isinstance(row, dict):
+            continue
+        key = (str(row.get("shot_id") or ""), str(row.get("candidate_id") or ""))
+        if key not in history_keys:
+            history.append(row)
+            history_keys.add(key)
+    for row in current_rows:
+        key = (str(row.get("shot_id") or ""), str(row.get("candidate_id") or ""))
+        if key not in history_keys:
+            history.append(row)
+            history_keys.add(key)
     manifest.update(
         {
             "provider": "openai-codex",
@@ -463,6 +603,7 @@ def _judge_candidates(
                 [*previous, *current_rows],
                 key=lambda row: (str(row.get("shot_id") or ""), str(row.get("candidate_id") or "")),
             ),
+            "attempt_history": history,
             "updated_at": _utc_now(),
         }
     )
@@ -471,7 +612,7 @@ def _judge_candidates(
         "selected"
         if selected_id
         else "quality_budget_exhausted"
-        if repair_round >= MAX_REPAIR_ROUNDS or strategy_reset
+        if repair_round >= MAX_REPAIR_ROUNDS or pivot_strategy or convergence_stalled
         else "repair_required"
     )
     return {
@@ -485,7 +626,11 @@ def _judge_candidates(
         "ranked_candidate_ids": list(decision.ranked_candidate_ids),
         "best_score": decision.best_score,
         "quality_threshold": QUALITY_THRESHOLD,
-        "strategy_reset": strategy_reset,
+        "repair_strategy": repair_strategy,
+        "strategy_reset": repair_strategy == "layout_reset",
+        "convergence_stalled": convergence_stalled,
+        "best_effort_selected": best_effort_selected,
+        "best_effort_quality_floor": BEST_EFFORT_QUALITY_FLOOR,
         "manifest": _relative(context, manifest_path),
         "judge_provider": judge_provider,
         "judge_model": str(getattr(result, "model", "") or ""),
@@ -539,12 +684,88 @@ def _ordered_shot_ids(context: StoryVideoRunContext) -> list[str]:
     return shot_ids
 
 
+def _promote_bounded_best_effort(
+    context: StoryVideoRunContext,
+    manifest: dict[str, Any],
+) -> dict[str, Any]:
+    outputs = [dict(row) for row in manifest.get("outputs") or [] if isinstance(row, dict)]
+    history = [row for row in manifest.get("attempt_history") or [] if isinstance(row, dict)]
+    events = [dict(row) for row in manifest.get("selection_events") or [] if isinstance(row, dict)]
+    event_keys = {
+        (str(row.get("shot_id") or ""), str(row.get("candidate_id") or ""))
+        for row in events
+    }
+    changed = False
+    for row in outputs:
+        shot_id = str(row.get("shot_id") or "").strip()
+        candidate_id = str(row.get("candidate_id") or "").strip()
+        shot_history = [
+            attempt
+            for attempt in history
+            if str(attempt.get("shot_id") or "") == shot_id
+        ]
+        if (
+            not shot_id
+            or not candidate_id
+            or row.get("selected") is True
+            or str(row.get("status") or "") != "quality_budget_exhausted"
+            or _provider(row.get("provider")) not in {"openai", "openai-codex"}
+            or (row.get("hard_blockers") or [])
+            or float(row.get("quality_score") or 0.0) < BEST_EFFORT_QUALITY_FLOOR
+            or (row.get("vision_evidence") or {}).get("status") != "PASS"
+            or not plan_repair(shot_history).exhausted
+        ):
+            continue
+        candidate_path = _project_path(
+            context,
+            row.get("candidate_path") or row.get("local_path"),
+        )
+        if not candidate_path.is_file():
+            continue
+        selected_path = context.project_dir / "images" / f"{shot_id}.png"
+        selected_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(candidate_path, selected_path)
+        row.update({
+            "selected": True,
+            "status": "selected_current",
+            "local_path": _relative(context, selected_path),
+            "best_effort_selected": True,
+            "best_effort_quality_floor": BEST_EFFORT_QUALITY_FLOOR,
+        })
+        key = (shot_id, candidate_id)
+        if key not in event_keys:
+            events.append({
+                "shot_id": shot_id,
+                "candidate_id": candidate_id,
+                "event": "bounded_best_effort_selected",
+                "quality_score": float(row.get("quality_score") or 0.0),
+                "quality_floor": BEST_EFFORT_QUALITY_FLOOR,
+                "selected_at": _utc_now(),
+            })
+            event_keys.add(key)
+        changed = True
+    if not changed:
+        return manifest
+    updated = {
+        **manifest,
+        "outputs": outputs,
+        "selection_events": events,
+        "updated_at": _utc_now(),
+    }
+    _write_json_atomic(
+        context.project_dir / "manifests" / "shot_candidate_manifest.json",
+        updated,
+    )
+    return updated
+
+
 def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
     """Return one deterministic image/QC cycle, prioritizing repairs."""
     shot_ids = _ordered_shot_ids(context)
     manifest = _load_json(
         context.project_dir / "manifests" / "shot_candidate_manifest.json"
     ) or {}
+    manifest = _promote_bounded_best_effort(context, manifest)
     by_shot = {
         str(row.get("shot_id") or ""): row
         for row in manifest.get("outputs") or []
@@ -571,7 +792,6 @@ def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
     ]
     shot_id = (blocked or unresolved)[0]
     previous = by_shot.get(shot_id, {})
-    previous_status = str(previous.get("status") or "")
     prompt_info = _compile_prompt(context, shot_id=shot_id)
     if not prompt_info.get("success"):
         return {
@@ -580,13 +800,7 @@ def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
             "work_status": "human_review_required",
             "remaining_shot_count": len(unresolved),
         }
-    operation = (
-        "strategy_reset"
-        if prompt_info.get("strategy_reset") is True
-        else "repair"
-        if previous_status == "repair_required"
-        else "generate"
-    )
+    operation = "repair" if previous else "generate"
     return {
         **prompt_info,
         "action": "next_batch_work",

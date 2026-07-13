@@ -80,7 +80,8 @@ def _split_fields(text: str) -> list[str]:
 
 def _strip_start_prefix(text: str) -> str:
     return re.sub(
-        r"^\s*(?:故事影片|產影片|story\s*video|story-video)\s*[:：\-]?\s*",
+        r"^\s*(?:新(?:的)?\s*)?(?:故事影片|產影片|story\s*video|story-video)"
+        r"\s*[:：\-]?\s*",
         "",
         text,
         flags=re.I,
@@ -137,6 +138,7 @@ class OperatorCall:
     visual_style: str = ""
     repair_request: str = ""
     auto_mode: bool = False
+    new_project: bool = False
 
 
 def parse_operator_call(
@@ -149,10 +151,21 @@ def parse_operator_call(
     if not raw:
         return None
 
-    if has_active_project and _autopilot_command(raw):
+    explicit_new_project = bool(re.match(
+        r"^\s*(?:新(?:的)?\s*(?:故事影片|story[ -]?video)|"
+        r"重新開始(?:一個|一部|一支)?\s*故事影片|start\s+new\s+story[ -]?video)",
+        raw,
+        re.I,
+    ))
+
+    if has_active_project and _autopilot_command(raw) and not explicit_new_project:
         return OperatorCall(action="auto", auto_mode=True)
 
-    if lowered in {"故事影片下一步", "story video next", "story-video next"}:
+    if (
+        lowered in {"故事影片下一步", "story video next", "story-video next"}
+        or has_active_project
+        and re.match(r"^\s*(?:故事影片下一步|story[ -]?video\s+next)", raw, re.I)
+    ):
         return OperatorCall(action="continue")
     if lowered in {
         "繼續",
@@ -193,7 +206,21 @@ def parse_operator_call(
     if repair and has_active_project:
         return OperatorCall(action="repair", repair_request=repair.group(1).strip())
 
-    if re.match(r"^\s*(?:故事影片|產影片|story\s*video|story-video)", raw, re.I):
+    if (
+        has_active_project
+        and not explicit_new_project
+        and (
+            re.match(r"^\s*(?:故事影片|產影片|story\s*video|story-video)", raw, re.I)
+            or _parse_explicit_long_form_start(raw) is not None
+        )
+    ):
+        return OperatorCall(action="continue")
+
+    if re.match(
+        r"^\s*(?:新(?:的)?\s*)?(?:故事影片|產影片|story\s*video|story-video)",
+        raw,
+        re.I,
+    ):
         body = _strip_start_prefix(raw)
         if re.search(r"[｜|]", body):
             fields = [part.strip() for part in re.split(r"[｜|]", body, maxsplit=2)]
@@ -209,6 +236,7 @@ def parse_operator_call(
             auto_mode=(
                 _autopilot_command(raw) and not _planning_only_requested(raw)
             ),
+            new_project=explicit_new_project,
         )
 
     long_form = _parse_explicit_long_form_start(raw)
@@ -336,7 +364,9 @@ class StoryVideoStateStore:
         with _LOCK:
             existing = self.for_source(source_key)
             if existing is not None and (
-                call.action != "start" or call.topic == existing.topic
+                call.action != "start"
+                or call.topic == existing.topic
+                or not call.new_project
             ):
                 context = existing
             else:

@@ -79,6 +79,54 @@ def test_backward_compatible_next_call_maps_to_continue() -> None:
     assert call.action == "continue"
 
 
+def test_active_project_treats_detailed_next_instruction_as_continue() -> None:
+    call = parse_operator_call(
+        "故事影片下一步。只執行一個 QC cycle：處理 S03_SH03。",
+        has_active_project=True,
+    )
+
+    assert call is not None
+    assert call.action == "continue"
+
+
+def test_active_project_requires_explicit_new_project_intent_to_replace() -> None:
+    protected = parse_operator_call(
+        "故事影片：另一個主題｜30秒｜真實照片",
+        has_active_project=True,
+    )
+    explicit = parse_operator_call(
+        "新故事影片：另一個主題｜30秒｜真實照片",
+        has_active_project=True,
+    )
+
+    assert protected is not None
+    assert protected.action == "continue"
+    assert explicit is not None
+    assert explicit.action == "start"
+    assert explicit.new_project is True
+    assert explicit.topic == "另一個主題"
+
+
+def test_state_store_refuses_implicit_active_project_replacement(tmp_path) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    original = parse_operator_call("故事影片：恐龍起源｜5分｜真實照片")
+    assert original is not None
+    context = store.create_or_load(
+        source_key="source-1", session_id="session-1", call=original,
+        original_request="start",
+    )
+    accidental = parse_operator_call("故事影片：QC cycle｜30秒｜真實照片")
+    assert accidental is not None
+
+    preserved = store.create_or_load(
+        source_key="source-1", session_id="session-1", call=accidental,
+        original_request="accidental start-shaped follow-up",
+    )
+
+    assert preserved.run_id == context.run_id
+    assert preserved.topic == "恐龍起源"
+
+
 def test_state_store_persists_source_and_session_bindings(tmp_path) -> None:
     store = StoryVideoStateStore(tmp_path)
     call = parse_operator_call("故事影片：恐龍起源｜5分｜真實照片")
