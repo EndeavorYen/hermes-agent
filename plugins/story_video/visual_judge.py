@@ -124,6 +124,16 @@ def _relative(context: StoryVideoRunContext, path: Path) -> str:
         return str(path.resolve())
 
 
+def _subtitle_packaging_fallback(shot: dict[str, Any]) -> dict[str, Any]:
+    safe_area = str(shot.get("subtitle_safe_area") or "").strip().lower()
+    position = "top" if "bottom" in safe_area or "lower" in safe_area else "bottom"
+    return {
+        "type": "adaptive_subtitle_band",
+        "subtitle_position": position,
+        "resolved_blocker_codes": ["subtitle_collision"],
+    }
+
+
 def _find_shot(
     context: StoryVideoRunContext,
     shot_id: str,
@@ -375,6 +385,35 @@ def _judge_candidates(
         candidate_rows.append(candidate)
 
     prompt_info = _compile_prompt(context, shot_id=shot_id)
+    if not prompt_info.get("success"):
+        bound_prompts = {
+            str(row.get("prompt") or row.get("generation_prompt") or "").strip()
+            for row in candidate_rows
+            if str(row.get("prompt") or row.get("generation_prompt") or "").strip()
+        }
+        if len(bound_prompts) != 1:
+            return {
+                **prompt_info,
+                "success": False,
+                "error_type": "story_video_candidate_prompt_unavailable",
+                "error": (
+                    "The repair plan changed after generation and the candidate has no "
+                    "single bound compiled prompt. Regenerate through compile_prompt."
+                ),
+            }
+        bound_prompt = bound_prompts.pop()
+        prompt_path = context.project_dir / "prompts" / f"{shot_id}.txt"
+        prompt_path.parent.mkdir(parents=True, exist_ok=True)
+        prompt_path.write_text(bound_prompt + "\n", encoding="utf-8")
+        prompt_info = {
+            **prompt_info,
+            "success": True,
+            "prompt": bound_prompt,
+            "prompt_path": _relative(context, prompt_path),
+            "effective_shot_contract": shot,
+            "repair_strategy": candidate_strategy or "targeted_repair",
+            "bound_candidate_prompt": True,
+        }
     repair_strategy = candidate_strategy or str(
         prompt_info.get("repair_strategy") or "targeted_repair"
     )
@@ -504,6 +543,18 @@ def _judge_candidates(
             "blocker_codes": best_assessment.get("blocker_codes") or [],
         },
     ]).exhausted
+    best_blocker_codes = classify_blockers(
+        best_assessment.get("hard_blockers") or (),
+        best_assessment.get("blocker_codes") or (),
+    )
+    packaging_fallback_selected = bool(
+        not selected_id
+        and best_assessment_score >= QUALITY_THRESHOLD
+        and best_blocker_codes == {"subtitle_collision"}
+        and exhausted_after_current
+    )
+    if packaging_fallback_selected:
+        selected_id = str(best_assessment.get("candidate_id") or "")
     best_effort_selected = bool(
         not selected_id
         and not (best_assessment.get("hard_blockers") or [])
@@ -540,6 +591,9 @@ def _judge_candidates(
         blocker_codes = sorted(
             classify_blockers(blockers, assessment.get("blocker_codes") or ())
         )
+        selected_with_packaging = bool(
+            candidate_id == selected_id and packaging_fallback_selected
+        )
         current_rows.append(
             {
                 "shot_id": shot_id,
@@ -566,8 +620,17 @@ def _judge_candidates(
                     else _relative(context, candidate_paths[candidate_id])
                 ),
                 "quality_score": score,
-                "hard_blockers": blockers,
-                "blocker_codes": blocker_codes,
+                "hard_blockers": [] if selected_with_packaging else blockers,
+                "blocker_codes": [] if selected_with_packaging else blocker_codes,
+                "image_qc_blockers": blockers if selected_with_packaging else [],
+                "image_qc_blocker_codes": (
+                    blocker_codes if selected_with_packaging else []
+                ),
+                "packaging_fallback": (
+                    _subtitle_packaging_fallback(shot)
+                    if selected_with_packaging
+                    else None
+                ),
                 "quality_dimensions": assessment.get("dimensions"),
                 "vision_evidence": {
                     "status": "PASS",
@@ -637,6 +700,7 @@ def _judge_candidates(
         "strategy_reset": repair_strategy == "layout_reset",
         "convergence_stalled": convergence_stalled,
         "best_effort_selected": best_effort_selected,
+        "packaging_fallback_selected": packaging_fallback_selected,
         "best_effort_quality_floor": BEST_EFFORT_QUALITY_FLOOR,
         "manifest": _relative(context, manifest_path),
         "judge_provider": judge_provider,
@@ -711,14 +775,28 @@ def _promote_bounded_best_effort(
             for attempt in history
             if str(attempt.get("shot_id") or "") == shot_id
         ]
+        blockers = [str(item) for item in row.get("hard_blockers") or []]
+        blocker_codes = classify_blockers(
+            blockers,
+            row.get("blocker_codes") or (),
+        )
+        score = float(row.get("quality_score") or 0.0)
+        clean_best_effort = not blockers and score >= BEST_EFFORT_QUALITY_FLOOR
+        packaging_best_effort = bool(
+            blockers
+            and blocker_codes == {"subtitle_collision"}
+            and score >= QUALITY_THRESHOLD
+        )
+        selection_floor = (
+            QUALITY_THRESHOLD if packaging_best_effort else BEST_EFFORT_QUALITY_FLOOR
+        )
         if (
             not shot_id
             or not candidate_id
             or row.get("selected") is True
             or str(row.get("status") or "") != "quality_budget_exhausted"
             or _provider(row.get("provider")) not in {"openai", "openai-codex"}
-            or (row.get("hard_blockers") or [])
-            or float(row.get("quality_score") or 0.0) < BEST_EFFORT_QUALITY_FLOOR
+            or not (clean_best_effort or packaging_best_effort)
             or (row.get("vision_evidence") or {}).get("status") != "PASS"
             or not plan_repair(shot_history).exhausted
         ):
@@ -737,16 +815,29 @@ def _promote_bounded_best_effort(
             "status": "selected_current",
             "local_path": _relative(context, selected_path),
             "best_effort_selected": True,
-            "best_effort_quality_floor": BEST_EFFORT_QUALITY_FLOOR,
+            "best_effort_quality_floor": selection_floor,
         })
+        if packaging_best_effort:
+            _ledger, _scene, shot = _find_shot(context, shot_id)
+            row.update({
+                "hard_blockers": [],
+                "blocker_codes": [],
+                "image_qc_blockers": blockers,
+                "image_qc_blocker_codes": sorted(blocker_codes),
+                "packaging_fallback": _subtitle_packaging_fallback(shot),
+            })
         key = (shot_id, candidate_id)
         if key not in event_keys:
             events.append({
                 "shot_id": shot_id,
                 "candidate_id": candidate_id,
-                "event": "bounded_best_effort_selected",
-                "quality_score": float(row.get("quality_score") or 0.0),
-                "quality_floor": BEST_EFFORT_QUALITY_FLOOR,
+                "event": (
+                    "packaging_fallback_selected"
+                    if packaging_best_effort
+                    else "bounded_best_effort_selected"
+                ),
+                "quality_score": score,
+                "quality_floor": selection_floor,
                 "selected_at": _utc_now(),
             })
             event_keys.add(key)
@@ -989,14 +1080,20 @@ def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
                 label=f"image for {shot_id}",
             )
             selected_images.append(image_relative)
-            shots.append(
-                {
-                    "shot_id": shot_id,
-                    "selected": True,
-                    "image": image_relative,
-                    "narration": str(shot.get("narration_text") or display_text),
-                }
-            )
+            shot_input = {
+                "shot_id": shot_id,
+                "selected": True,
+                "image": image_relative,
+                "narration": str(shot.get("narration_text") or display_text),
+            }
+            packaging_fallback = selected.get("packaging_fallback")
+            if isinstance(packaging_fallback, dict):
+                subtitle_position = str(
+                    packaging_fallback.get("subtitle_position") or ""
+                ).strip()
+                if subtitle_position in {"top", "bottom"}:
+                    shot_input["subtitle_position"] = subtitle_position
+            shots.append(shot_input)
         scenes.append(
             {
                 "scene_id": scene_id,
