@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .engagement import engagement_contract_enabled
 from .repair_planner import (
     BLOCKER_CODES,
     apply_repair_strategy,
@@ -782,6 +783,82 @@ def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
         for shot_id in shot_ids
         if by_shot.get(shot_id, {}).get("selected") is not True
     ]
+    blocked_statuses = {"repair_required", "quality_budget_exhausted"}
+    blocked = [
+        shot_id
+        for shot_id in unresolved
+        if str(by_shot.get(shot_id, {}).get("status") or "") in blocked_statuses
+    ]
+    if blocked:
+        shot_id = blocked[0]
+        prompt_info = _compile_prompt(context, shot_id=shot_id)
+        if not prompt_info.get("success"):
+            return {
+                **prompt_info,
+                "action": "next_batch_work",
+                "work_status": "human_review_required",
+                "remaining_shot_count": len(unresolved),
+            }
+        return {
+            **prompt_info,
+            "action": "next_batch_work",
+            "work_status": "ready",
+            "operation": "repair",
+            "remaining_shot_count": len(unresolved),
+        }
+
+    ledger = _load_json(context.project_dir / "scene_ledger.json") or {}
+    stale_reviews: list[tuple[str, dict[str, Any]]] = []
+    if engagement_contract_enabled(ledger):
+        for shot_id in shot_ids:
+            row = by_shot.get(shot_id, {})
+            dimensions = row.get("quality_dimensions")
+            if (
+                row.get("selected") is True
+                and _provider(row.get("provider")) in {"openai", "openai-codex"}
+                and (
+                    not isinstance(dimensions, dict)
+                    or "narrative_engagement" not in dimensions
+                    or "story_moment_clarity" not in dimensions
+                )
+            ):
+                stale_reviews.append((shot_id, row))
+    if stale_reviews:
+        shot_id, previous = stale_reviews[0]
+        candidate_path = str(
+            previous.get("candidate_path") or previous.get("local_path") or ""
+        ).strip()
+        if candidate_path and _project_path(context, candidate_path).is_file():
+            prompt_info = _compile_prompt(context, shot_id=shot_id)
+            if not prompt_info.get("success"):
+                return {
+                    **prompt_info,
+                    "action": "next_batch_work",
+                    "work_status": "human_review_required",
+                    "remaining_shot_count": len(unresolved),
+                }
+            old_candidate_id = str(previous.get("candidate_id") or shot_id).strip()
+            return {
+                **prompt_info,
+                "action": "next_batch_work",
+                "work_status": "ready",
+                "operation": "rejudge_existing",
+                "candidate_budget": 0,
+                "candidate": {
+                    "candidate_id": f"{old_candidate_id}_V3_REVIEW",
+                    "path": candidate_path,
+                    "provider": _provider(previous.get("provider")),
+                    "model": str(previous.get("model") or ""),
+                    "response_id": str(
+                        previous.get("generation_response_id") or ""
+                    ),
+                    "repair_strategy": "initial",
+                },
+                "repair_round": int(previous.get("repair_round") or 1),
+                "remaining_review_count": len(stale_reviews),
+                "remaining_shot_count": len(unresolved),
+            }
+
     if not unresolved:
         return {
             "success": True,
@@ -790,13 +867,7 @@ def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
             "remaining_shot_count": 0,
         }
 
-    blocked_statuses = {"repair_required", "quality_budget_exhausted"}
-    blocked = [
-        shot_id
-        for shot_id in unresolved
-        if str(by_shot.get(shot_id, {}).get("status") or "") in blocked_statuses
-    ]
-    shot_id = (blocked or unresolved)[0]
+    shot_id = unresolved[0]
     previous = by_shot.get(shot_id, {})
     prompt_info = _compile_prompt(context, shot_id=shot_id)
     if not prompt_info.get("success"):
@@ -806,12 +877,11 @@ def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
             "work_status": "human_review_required",
             "remaining_shot_count": len(unresolved),
         }
-    operation = "repair" if previous else "generate"
     return {
         **prompt_info,
         "action": "next_batch_work",
         "work_status": "ready",
-        "operation": operation,
+        "operation": "repair" if previous else "generate",
         "remaining_shot_count": len(unresolved),
     }
 

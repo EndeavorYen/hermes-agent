@@ -469,6 +469,87 @@ def test_next_batch_work_returns_complete_when_every_shot_is_selected(tmp_path) 
     }
 
 
+def test_next_batch_work_rejudges_legacy_selection_before_new_generation(
+    tmp_path,
+) -> None:
+    store, context, shot = _context(tmp_path)
+    ledger_path = context.project_dir / "scene_ledger.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    ledger.update(
+        {
+            "quality_contract_version": 3,
+            "audience_profile": {
+                "age_band": "general",
+                "knowledge_level": "newcomer",
+                "attention_style": "curious_explorer",
+                "safety_intensity": "standard",
+            },
+            "engagement_profile": {
+                "mode": "discovery_documentary",
+                "energy": "balanced",
+                "humor": "none",
+                "sensationalism_forbidden": True,
+            },
+        }
+    )
+    shot.update(
+        {
+            "engagement_role": "reveal",
+            "attention_hook": "足跡如何留下",
+            "story_moment": "腳掌剛離開泥面",
+            "action_consequence": "清楚足跡留在地面",
+            "composition_energy": "curious",
+            "viewer_emotion": "discovery",
+            "engagement_criteria": ["foot and track form a readable causal instant"],
+            "visual_truth_mode": "reconstruction",
+        }
+    )
+    ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+    candidate = _candidate(context, "S00_SH00_C01")
+    legacy_dimensions = _dimensions(88)
+    legacy_dimensions.pop("narrative_engagement")
+    legacy_dimensions.pop("story_moment_clarity")
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps(
+            {
+                "outputs": [
+                    {
+                        "shot_id": "S00_SH00",
+                        "candidate_id": "S00_SH00_C01",
+                        "selected": True,
+                        "status": "selected_current",
+                        "provider": "openai-codex",
+                        "model": "gpt-image-2-high",
+                        "generation_response_id": "img_old",
+                        "candidate_path": candidate["path"],
+                        "local_path": candidate["path"],
+                        "repair_round": 1,
+                        "quality_dimensions": legacy_dimensions,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        story_video_quality_control(
+            {"action": "next_batch_work"},
+            session_id="session-1",
+            store=store,
+        )
+    )
+
+    assert payload["work_status"] == "ready"
+    assert payload["operation"] == "rejudge_existing"
+    assert payload["shot_id"] == "S00_SH00"
+    assert payload["candidate"]["candidate_id"] == "S00_SH00_C01_V3_REVIEW"
+    assert payload["candidate"]["path"] == candidate["path"]
+    assert payload["candidate_budget"] == 0
+
+
 def test_next_batch_work_promotes_stored_clean_candidate_after_strategy_exhaustion(
     tmp_path,
 ) -> None:
