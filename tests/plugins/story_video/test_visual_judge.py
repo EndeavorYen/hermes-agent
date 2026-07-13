@@ -8,6 +8,8 @@ from plugins import story_video
 from plugins.story_video import hooks
 from plugins.story_video.state import StoryVideoStateStore, parse_operator_call
 from plugins.story_video.visual_judge import (
+    CANDIDATE_REVIEW_SCHEMA,
+    _review_instructions,
     configure_plugin_llm,
     story_video_quality_control,
 )
@@ -78,7 +80,28 @@ def _dimensions(score: int) -> dict:
         "professional_quality": score,
         "scientific_credibility": score,
         "continuity_and_diversity": score,
+        "narrative_engagement": score,
+        "story_moment_clarity": score,
     }
+
+
+def test_visual_judge_scores_story_engagement_from_artifact_evidence() -> None:
+    dimensions = CANDIDATE_REVIEW_SCHEMA["properties"]["candidates"]["items"][
+        "properties"
+    ]["dimensions"]
+    instructions = _review_instructions(
+        {
+            "engagement_role": "breathe",
+            "composition_energy": "calm",
+            "calm_reason": "讓觀眾消化剛揭示的結果",
+        },
+        ["C01"],
+    )
+
+    assert "narrative_engagement" in dimensions["required"]
+    assert "story_moment_clarity" in dimensions["required"]
+    assert "Intentional calm" in instructions
+    assert "static_catalog" in instructions
 
 
 class FakeLlm:

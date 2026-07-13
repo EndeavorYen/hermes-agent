@@ -81,6 +81,9 @@ STORY_VIDEO_QUALITY_CONTROL_SCHEMA = {
                                 "evidence_reframe",
                                 "contextual_replan",
                                 "documentary_context",
+                                "story_reframe",
+                                "audience_reframe",
+                                "truth_reframe",
                             ],
                             "description": (
                                 "Exact adaptive repair strategy returned by compile_prompt."

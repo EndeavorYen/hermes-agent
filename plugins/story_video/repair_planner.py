@@ -11,6 +11,12 @@ BLOCKER_CODES = frozenset({
     "text_artifact",
     "focus_clarity",
     "continuity_redundancy",
+    "static_catalog",
+    "missing_story_moment",
+    "flat_composition",
+    "audience_mismatch",
+    "sensationalized_claim",
+    "mixed_evidence_reconstruction",
     "other",
 })
 
@@ -45,6 +51,24 @@ _KEYWORDS = {
     "continuity_redundancy": (
         "continuity", "redundan", "adjacent", "連續性", "重複", "相鄰",
     ),
+    "static_catalog": (
+        "static catalog", "catalog record", "specimen record", "目錄照", "陳列照",
+    ),
+    "missing_story_moment": (
+        "story moment", "decisive instant", "no visible action", "敘事瞬間", "沒有動作",
+    ),
+    "flat_composition": (
+        "flat composition", "no depth", "weak hierarchy", "平淡構圖", "沒有景深層次",
+    ),
+    "audience_mismatch": (
+        "audience mismatch", "too abstract for", "受眾不符", "太抽象",
+    ),
+    "sensationalized_claim": (
+        "sensational", "unsupported danger", "unsupported conflict", "誇大", "未支持的危險",
+    ),
+    "mixed_evidence_reconstruction": (
+        "mixed evidence", "evidence and reconstruction", "證據與重建混用", "證據重建混淆",
+    ),
 }
 
 
@@ -76,6 +100,21 @@ _DIRECTIVES = {
         "fragmentary specimen's research setting or discovery context. Avoid fabricated "
         "diagnostic anatomy and make uncertainty visually explicit through partial, "
         "non-complete evidence. Do not add text, labels, diagrams, or a complete skull."
+    ),
+    "story_reframe": (
+        "Replace the static record with one decisive visible instant from the declared "
+        "story moment. Show a concrete cause and its immediate consequence with clear "
+        "foreground, subject, and context separation. Preserve the factual claim."
+    ),
+    "audience_reframe": (
+        "Rebuild the focal hierarchy for the declared audience: one immediately readable "
+        "subject, one concrete action, and one visible consequence. Reduce abstraction and "
+        "clutter without inventing extra drama or changing the claim."
+    ),
+    "truth_reframe": (
+        "Remove unsupported danger, behavior, emotion, and certainty. If evidence and "
+        "reconstruction cannot be distinguished in one image, show the direct evidence "
+        "only and reserve reconstruction for a separate shot."
     ),
 }
 
@@ -166,6 +205,50 @@ def apply_repair_strategy(
             ],
             "risk_class": "high",
         })
+    elif strategy == "story_reframe":
+        story_moment = str(
+            shot.get("story_moment") or shot.get("action") or "the declared action"
+        ).strip()
+        consequence = str(
+            shot.get("action_consequence") or "its immediate visible consequence"
+        ).strip()
+        effective.update({
+            "action": f"{story_moment}; {consequence}",
+            "focal_point": (
+                str(shot.get("focal_point") or shot.get("subject") or "primary subject").strip()
+                + " at the cause-and-consequence instant"
+            ),
+            "acceptance_criteria": [
+                *acceptance,
+                "the decisive instant and its visible consequence read in one glance",
+                "foreground, primary subject, and context form a clear depth hierarchy",
+            ],
+        })
+    elif strategy == "audience_reframe":
+        hook = str(
+            shot.get("attention_hook") or "the question created by the visible result"
+        ).strip()
+        effective.update({
+            "focal_point": f"one immediately readable subject that answers: {hook}",
+            "acceptance_criteria": [
+                *acceptance,
+                "one concrete action and one visible consequence dominate the frame",
+                "the main idea is understandable without labels or background knowledge",
+            ],
+        })
+    elif strategy == "truth_reframe":
+        effective.update({
+            "visual_truth_mode": "direct_evidence",
+            "subject": str(shot.get("evidence_detail") or evidence).strip(),
+            "action": "presented as the direct evidence without reconstructed behavior",
+            "focal_point": str(shot.get("evidence_detail") or evidence).strip(),
+            "acceptance_criteria": [
+                *acceptance,
+                "no unsupported danger, conflict, behavior, emotion, or certainty",
+                "reconstruction is reserved for a separate explicitly marked shot",
+            ],
+            "risk_class": "high",
+        })
     codes = {str(code).strip() for code in blocker_codes}
     safe_area = str(shot.get("subtitle_safe_area") or "").strip().lower()
     if "subtitle_collision" in codes:
@@ -216,7 +299,15 @@ def plan_repair(attempts: Iterable[dict[str, Any]]) -> RepairPlan:
     used = {_strategy(row) for row in rows}
     status = str(latest.get("status") or "")
 
-    if status == "repair_required":
+    preferred: list[str] | None = None
+    if codes & {"sensationalized_claim", "mixed_evidence_reconstruction"}:
+        preferred = ["truth_reframe", "story_reframe", "audience_reframe"]
+    elif "audience_mismatch" in codes:
+        preferred = ["audience_reframe", "story_reframe", "truth_reframe"]
+    elif codes & {"static_catalog", "missing_story_moment", "flat_composition"}:
+        preferred = ["story_reframe", "audience_reframe", "truth_reframe"]
+
+    if status == "repair_required" and preferred is None:
         normal_round = max(
             (int(row.get("repair_round") or 0) for row in rows),
             default=0,
@@ -228,7 +319,9 @@ def plan_repair(attempts: Iterable[dict[str, Any]]) -> RepairPlan:
             tuple(sorted(codes)),
         )
 
-    if codes & {"anatomy_geometry", "scientific_identity"}:
+    if preferred is not None:
+        pass
+    elif codes & {"anatomy_geometry", "scientific_identity"}:
         preferred = ["evidence_reframe", "contextual_replan", "documentary_context"]
     elif "subtitle_collision" in codes:
         preferred = ["layout_reset", "contextual_replan", "documentary_context"]
@@ -240,6 +333,9 @@ def plan_repair(attempts: Iterable[dict[str, Any]]) -> RepairPlan:
         "evidence_reframe": "EVIDENCE_C01",
         "contextual_replan": "CONTEXT_C01",
         "documentary_context": "DOC_C01",
+        "story_reframe": "STORY_C01",
+        "audience_reframe": "AUDIENCE_C01",
+        "truth_reframe": "TRUTH_C01",
     }
     for strategy in preferred:
         if strategy not in used:

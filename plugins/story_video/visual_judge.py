@@ -243,7 +243,10 @@ def _review_instructions(shot: dict[str, Any], candidate_ids: list[str]) -> str:
             "The generation provider and the judging provider are both required to be OpenAI.",
             f"Shot contract: {json.dumps(shot, ensure_ascii=False, sort_keys=True)}",
             f"Candidate image order: {json.dumps(candidate_ids, ensure_ascii=False)}",
-            "Hard blockers include wrong spoken-claim content, scientific contradiction, malformed anatomy or geometry, generated text/watermark, unclear focus, subtitle collision, and an image that adds no information beyond adjacent shots.",
+            "Hard blockers include wrong spoken-claim content, scientific contradiction, malformed anatomy or geometry, generated text/watermark, unclear focus, subtitle collision, an image that adds no information beyond adjacent shots, static_catalog, missing_story_moment, flat_composition, audience_mismatch, sensationalized_claim, and mixed_evidence_reconstruction.",
+            "Score narrative_engagement from the artifact's attention path, purposeful visual progression, and audience fit. High energy is not inherently better.",
+            "Score story_moment_clarity from whether one decisive instant and its immediate consequence are visibly understandable.",
+            "Intentional calm or breathe shots may score highly when the declared calm_reason is supported by a strong focal hierarchy and useful pause; calm alone is not static_catalog.",
             "For every hard blocker, return one or more blocker_codes from: "
             + ", ".join(sorted(BLOCKER_CODES))
             + ".",
@@ -479,6 +482,9 @@ def _judge_candidates(
         "evidence_reframe",
         "contextual_replan",
         "documentary_context",
+        "story_reframe",
+        "audience_reframe",
+        "truth_reframe",
     }
     best_assessment = max(
         assessments,

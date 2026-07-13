@@ -32,12 +32,14 @@ REQUIRED_SHOT_FIELDS = (
     "risk_class",
 )
 DIMENSION_WEIGHTS = {
-    "text_alignment": 25.0,
-    "focal_clarity": 20.0,
-    "evidence_specificity": 15.0,
-    "professional_quality": 15.0,
-    "scientific_credibility": 15.0,
-    "continuity_and_diversity": 10.0,
+    "text_alignment": 20.0,
+    "focal_clarity": 15.0,
+    "evidence_specificity": 12.0,
+    "professional_quality": 12.0,
+    "scientific_credibility": 10.0,
+    "continuity_and_diversity": 9.0,
+    "narrative_engagement": 11.0,
+    "story_moment_clarity": 11.0,
 }
 
 

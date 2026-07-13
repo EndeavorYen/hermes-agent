@@ -55,6 +55,8 @@ def _assessment(candidate_id: str, score: float, **overrides) -> dict:
         "professional_quality": score,
         "scientific_credibility": score,
         "continuity_and_diversity": score,
+        "narrative_engagement": score,
+        "story_moment_clarity": score,
     }
     payload = {
         "candidate_id": candidate_id,

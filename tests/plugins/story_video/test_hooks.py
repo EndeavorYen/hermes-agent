@@ -272,6 +272,8 @@ def test_pre_llm_creates_context_and_injects_provider_policy(tmp_path, monkeypat
     assert "engagement_profile" in result["context"]
     assert "story_moment" in result["context"]
     assert "visual_truth_mode" in result["context"]
+    assert "audience_engagement" in result["context"]
+    assert "visual_truth" in result["context"]
     assert "checks MUST be an object" in result["context"]
     assert "scene.shots array" in result["context"]
     assert "### S00" in result["context"]
