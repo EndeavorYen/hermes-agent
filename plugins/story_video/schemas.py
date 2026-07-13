@@ -65,6 +65,14 @@ STORY_VIDEO_QUALITY_CONTROL_SCHEMA = {
                         "provider": {"type": "string"},
                         "model": {"type": "string"},
                         "response_id": {"type": "string"},
+                        "generation_prompt": {"type": "string"},
+                        "shot_contract_hash": {
+                            "type": "string",
+                            "description": (
+                                "Exact shot_contract_hash returned by compile_prompt or "
+                                "next_batch_work for this generated source image."
+                            ),
+                        },
                         "strategy_reset": {
                             "type": "boolean",
                             "description": (
@@ -84,13 +92,19 @@ STORY_VIDEO_QUALITY_CONTROL_SCHEMA = {
                                 "story_reframe",
                                 "audience_reframe",
                                 "truth_reframe",
+                                "camera_reveal_policy_review",
                             ],
                             "description": (
                                 "Exact adaptive repair strategy returned by compile_prompt."
                             ),
                         },
                     },
-                    "required": ["candidate_id", "path", "provider"],
+                    "required": [
+                        "candidate_id",
+                        "path",
+                        "provider",
+                        "shot_contract_hash",
+                    ],
                 },
             },
         },

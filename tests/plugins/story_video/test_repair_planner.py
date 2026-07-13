@@ -145,6 +145,34 @@ def test_static_catalog_routes_directly_to_story_reframe() -> None:
     )
 
 
+def test_story_reframe_preserves_camera_reveal_as_renderer_motion() -> None:
+    shot = {
+        "subject": "an aftermath valley",
+        "action": "低空緩慢推進",
+        "story_moment": "低空緩慢推進後揭示整座河谷",
+        "action_consequence": "灰層與水道依序可辨識",
+        "shot_scale": "establishing",
+        "focal_point": "layered valley",
+        "acceptance_criteria": ["aftermath is readable"],
+    }
+
+    effective = apply_repair_strategy(
+        shot,
+        "story_reframe",
+        blocker_codes=["missing_story_moment"],
+    )
+
+    assert effective["action"] == shot["action"]
+    assert any(
+        "source frame supports the declared renderer motion" in criterion
+        for criterion in effective["acceptance_criteria"]
+    )
+    assert not any(
+        "decisive instant" in criterion
+        for criterion in effective["acceptance_criteria"]
+    )
+
+
 def test_audience_mismatch_routes_to_audience_reframe() -> None:
     plan = plan_repair(
         [

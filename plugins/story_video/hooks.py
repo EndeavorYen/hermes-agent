@@ -259,7 +259,9 @@ def pre_llm_call(
         "pass strategy_reset=true with that single candidate; this is a one-candidate "
         "layout reset and must never restart the normal five-round budget. "
         "Always pass the returned repair_strategy with the candidate so QC history can "
-        "advance anatomy, scientific, layout, and contextual repair independently. "
+        "advance anatomy, scientific, layout, and contextual repair independently. Always "
+        "pass the exact returned shot_contract_hash with the generated candidate; never "
+        "judge a candidate against a changed scene-ledger contract. "
         "then call story_video_quality_control action=judge_candidates. That tool is the "
         "only writer of the canonical shot_candidate_manifest.json outputs[] contract; "
         "never edit shot_candidate_manifest.json manually and never invent judge scores "
@@ -430,6 +432,8 @@ def auto_continue_llm_output(
                     f"repair_strategy={next_work['repair_strategy']}. "
                     "Do not generate another shot first."
                 )
+        elif next_work.get("work_status") == "human_review_required":
+            return None
     return {
         "action": "continue",
         "message": (
@@ -463,8 +467,16 @@ def pre_tool_call(
     context = _STORE.for_session(session_id)
     if context is None:
         return None
-    payload = dict(args or {})
-    message = guard_tool_call(context, tool_name, payload)
+    payload = args if isinstance(args, dict) else {}
+    message: str | None = None
+    if str(tool_name or "").strip().lower() == "image_generate":
+        explicit_provider = payload.get("provider") or payload.get("_provider")
+        if explicit_provider:
+            message = guard_tool_call(context, tool_name, payload)
+        if message is None:
+            payload["_provider"] = "openai-codex"
+    if message is None:
+        message = guard_tool_call(context, tool_name, payload)
     if message is None:
         return None
     ProviderAudit(context).append_event(
@@ -605,7 +617,47 @@ def transform_llm_output(
         str(response_text or "").rstrip(),
     )
     phase_at_start = _SESSION_PHASE_AT_LLM_START.pop(session_id, None)
-    if phase_at_start == context.phase and context.phase != "complete":
+    if _SETUP_BLOCKER_RE.search(text):
+        pass
+    elif phase_at_start == context.phase == "batch":
+        try:
+            next_work = _next_batch_work(context)
+        except (OSError, TypeError, ValueError):
+            next_work = {}
+        work_status = str(next_work.get("work_status") or "")
+        if work_status == "ready":
+            shot_id = str(next_work.get("shot_id") or "unknown")
+            operation = str(next_work.get("operation") or "work")
+            remaining = int(next_work.get("remaining_shot_count") or 0)
+            text = "\n".join(
+                (
+                    f"故事影片 batch 自動製作中：目前處理 {shot_id}（{operation}）。",
+                    f"STORY_VIDEO_PHASE_PROGRESS: batch IN_PROGRESS shot_id={shot_id} remaining={remaining}",
+                )
+            )
+        elif work_status == "human_review_required":
+            shot_id = str(next_work.get("shot_id") or "unknown")
+            error = str(next_work.get("error") or "目前鏡頭需要人工判斷")
+            text = "\n".join(
+                (
+                    f"故事影片 batch 需要處理目前鏡頭 {shot_id}：{error}",
+                    f"STORY_VIDEO_PHASE_ATTENTION: batch REVIEW_REQUIRED shot_id={shot_id}",
+                )
+            )
+        elif work_status == "complete":
+            from .tools import story_video_control
+
+            validation = json.loads(
+                story_video_control(
+                    {"action": "validate"},
+                    session_id=session_id,
+                    store=_STORE,
+                )
+            )
+            context = _STORE.for_session(session_id) or context
+            proof = str(validation.get("proof") or "")
+            text = f"{text}\n\n{proof}" if proof else text
+    elif phase_at_start == context.phase and context.phase != "complete":
         from .tools import story_video_control
 
         validation = json.loads(

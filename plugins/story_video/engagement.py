@@ -143,6 +143,40 @@ def normalize_engagement_profile(ledger: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def is_camera_reveal_shot(shot: dict[str, Any]) -> bool:
+    """Return whether renderer motion, rather than subject motion, reveals the shot."""
+    scale = _text(shot.get("shot_scale")).lower()
+    if scale not in {"establishing", "wide"}:
+        return False
+    description = " ".join(
+        _text(shot.get(field)).lower()
+        for field in ("action", "story_moment", "camera_movement")
+    )
+    explicit_camera_move = any(
+        marker in description
+        for marker in (
+            "鏡頭",
+            "運鏡",
+            "camera",
+            "push-in",
+            "push in",
+            "pull-back",
+            "pull back",
+            "dolly",
+            "tracking shot",
+            "pan across",
+            "pan over",
+            "zoom",
+            "crane shot",
+            "orbit shot",
+        )
+    )
+    implied_low_camera_move = "低空" in description and any(
+        marker in description for marker in ("推進", "掠過", "橫移", "平移")
+    )
+    return explicit_camera_move or implied_low_camera_move
+
+
 def compile_engagement_directives(
     ledger: dict[str, Any],
     shot: dict[str, Any],
@@ -158,6 +192,17 @@ def compile_engagement_directives(
     criteria = "; ".join(
         _text(item) for item in shot.get("engagement_criteria") or [] if _text(item)
     )
+    if is_camera_reveal_shot(shot):
+        story_moment = (
+            "Story moment: compose the source frame for a camera reveal: "
+            f"{_text(shot.get('story_moment'))}; do not require camera motion inside "
+            "the still. The renderer supplies the declared pan, push, or zoom."
+        )
+    else:
+        story_moment = (
+            "Story moment: capture one decisive visible instant: "
+            f"{_text(shot.get('story_moment'))}."
+        )
     parts = [
         (
             "Audience contract: "
@@ -172,10 +217,7 @@ def compile_engagement_directives(
             f"humor={engagement['humor']}; use {topic_method}."
         ),
         f"Attention hook: {_text(shot.get('attention_hook'))}.",
-        (
-            "Story moment: capture one decisive visible instant: "
-            f"{_text(shot.get('story_moment'))}."
-        ),
+        story_moment,
         f"Visible consequence: {_text(shot.get('action_consequence'))}.",
         (
             "Composition intent: "
@@ -357,6 +399,7 @@ __all__ = [
     "VISUAL_TRUTH_MODES",
     "compile_engagement_directives",
     "engagement_contract_enabled",
+    "is_camera_reveal_shot",
     "normalize_audience_profile",
     "normalize_engagement_profile",
     "validate_engagement_ledger",

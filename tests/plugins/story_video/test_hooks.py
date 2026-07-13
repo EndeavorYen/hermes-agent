@@ -454,6 +454,43 @@ def test_batch_autopilot_continuation_names_exact_next_quality_tool_call(
     assert "Do not generate another shot first" in continuation["message"]
 
 
+def test_batch_autopilot_does_not_repeat_human_review_required_work(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    start = hooks.pre_gateway_dispatch(
+        event=_event("故事影片：恐龍起源｜5分鐘｜真實照片。完整製作並出片。")
+    )
+    hooks.pre_llm_call(session_id="session-auto", user_message=start["text"])
+    context = store.for_session("session-auto")
+    assert context is not None
+    store.update(
+        context,
+        phase="batch",
+        auto_mode=True,
+        repair_request="補齊 batch：S00_SH01.selected_asset",
+    )
+    monkeypatch.setattr(
+        hooks,
+        "_next_batch_work",
+        lambda _context: {
+            "work_status": "human_review_required",
+            "shot_id": "S00_SH01",
+            "error": "all evidence-backed repairs exhausted",
+        },
+    )
+
+    continuation = hooks.auto_continue_llm_output(
+        session_id="session-auto",
+        response_text=(
+            "STORY_VIDEO_PHASE_ATTENTION: batch REVIEW_REQUIRED shot_id=S00_SH01"
+        ),
+    )
+
+    assert continuation is None
+
+
 def test_batch_autopilot_rejudges_existing_candidate_without_image_generation(
     tmp_path, monkeypatch
 ) -> None:
@@ -709,7 +746,9 @@ def test_detailed_next_instruction_keeps_active_project_binding(
     assert "Operator action=continue" in result["context"]
 
 
-def test_pre_tool_guard_uses_session_context_not_prompt_words(tmp_path, monkeypatch) -> None:
+def test_pre_tool_guard_locks_story_session_to_openai_without_prompt_markers(
+    tmp_path, monkeypatch
+) -> None:
     store = StoryVideoStateStore(tmp_path)
     monkeypatch.setattr(hooks, "_STORE", store)
     rewritten = hooks.pre_gateway_dispatch(
@@ -717,24 +756,102 @@ def test_pre_tool_guard_uses_session_context_not_prompt_words(tmp_path, monkeypa
     )
     hooks.pre_llm_call(session_id="session-1", user_message=rewritten["text"])
 
-    blocked = hooks.pre_tool_call(
+    implicit_args = {"prompt": "A dinosaur beside a river"}
+    implicit = hooks.pre_tool_call(
         session_id="session-1",
         turn_id="turn-1",
         tool_name="image_generate",
-        args={"prompt": "A dinosaur beside a river"},
+        args=implicit_args,
     )
-    allowed = hooks.pre_tool_call(
+    explicit_xai = hooks.pre_tool_call(
         session_id="session-1",
         turn_id="turn-1",
         tool_name="image_generate",
         args={
             "prompt": "A dinosaur beside a river",
-            "provider": "openai-codex",
+            "provider": "xai",
         },
     )
 
-    assert blocked["action"] == "block"
-    assert allowed is None
+    assert implicit is None
+    assert implicit_args["_provider"] == "openai-codex"
+    assert explicit_xai["action"] == "block"
+    assert "xai" in explicit_xai["message"]
+
+
+def test_transform_output_reports_ready_batch_as_progress_not_phase_failure(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    rewritten = hooks.pre_gateway_dispatch(
+        event=_event("故事影片：恐龍起源｜5分｜真實照片。完整製作並出片。")
+    )
+    hooks.pre_llm_call(session_id="session-auto", user_message=rewritten["text"])
+    context = store.for_session("session-auto")
+    assert context is not None
+    shot = {
+        "shot_id": "S05_SH01",
+        "narration_text": "新的生態空缺出現了。",
+        "subject": "河谷",
+        "action": "薄霧散開",
+        "evidence_detail": "河道與植被",
+        "shot_scale": "wide",
+        "camera_angle": "eye_level",
+        "focal_point": "river",
+        "subtitle_safe_area": "lower_third",
+        "acceptance_criteria": ["river is readable"],
+    }
+    (context.project_dir / "scene_ledger.json").write_text(
+        json.dumps({"scenes": [{"scene_id": "S05", "shots": [shot]}]}),
+        encoding="utf-8",
+    )
+    store.update(context, phase="batch", auto_mode=True)
+    hooks.pre_llm_call(session_id="session-auto", user_message="繼續")
+
+    result = hooks.transform_llm_output(
+        response_text="已完成目前的工具呼叫。",
+        session_id="session-auto",
+    )
+
+    assert "STORY_VIDEO_PHASE_PROGRESS: batch IN_PROGRESS" in result
+    assert "shot_id=S05_SH01" in result
+    assert "STORY_VIDEO_PHASE_PROOF: batch BLOCKED" not in result
+    assert ".selected_asset" not in result
+
+
+def test_transform_output_preserves_real_batch_setup_blocker(tmp_path, monkeypatch) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    rewritten = hooks.pre_gateway_dispatch(
+        event=_event("故事影片：恐龍起源｜5分｜真實照片。完整製作並出片。")
+    )
+    hooks.pre_llm_call(session_id="session-auto", user_message=rewritten["text"])
+    context = store.for_session("session-auto")
+    assert context is not None
+    store.update(context, phase="batch", auto_mode=True)
+    monkeypatch.setattr(
+        hooks,
+        "_next_batch_work",
+        lambda _context: {
+            "work_status": "ready",
+            "operation": "generate",
+            "shot_id": "S00_SH01",
+            "remaining_shot_count": 1,
+        },
+    )
+    hooks.pre_llm_call(session_id="session-auto", user_message="繼續")
+
+    result = hooks.transform_llm_output(
+        response_text="OpenAI quota exhausted; setup required.",
+        session_id="session-auto",
+    )
+
+    assert result == "OpenAI quota exhausted; setup required."
+    assert hooks.auto_continue_llm_output(
+        session_id="session-auto",
+        response_text=result,
+    ) is None
 
 
 def test_api_hooks_record_provider_and_subagent_inherits_context(tmp_path, monkeypatch) -> None:
