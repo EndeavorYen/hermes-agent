@@ -341,16 +341,24 @@ def auto_continue_llm_output(
     *,
     session_id: str = "",
     response_text: str = "",
+    recoverable_transport_error: bool = False,
+    turn_error: str = "",
     **_: Any,
 ) -> dict[str, str] | None:
     context = _STORE.for_session(session_id)
     if context is None or not context.auto_mode or not context.next_call:
         return None
-    if _SETUP_BLOCKER_RE.search(str(response_text or "")):
+    if _SETUP_BLOCKER_RE.search(
+        f"{response_text or ''}\n{turn_error or ''}"
+    ):
         return None
-    if _PHASE_BLOCKED_RE.search(str(response_text or "")):
+    if (
+        _PHASE_BLOCKED_RE.search(str(response_text or ""))
+        or recoverable_transport_error
+    ):
+        reason = "transport" if recoverable_transport_error else "blocked"
         signature = (
-            f"{context.phase}:blocked:{context.next_call}:"
+            f"{context.phase}:{reason}:{context.next_call}:"
             f"{_autopilot_progress_token(context)}"
         )
         stall_count = (
@@ -371,6 +379,7 @@ def auto_continue_llm_output(
             autopilot_last_signature="",
             autopilot_stall_count=0,
         )
+    next_action = context.next_call
     next_work_instruction = ""
     if context.phase == "batch":
         try:
@@ -378,10 +387,12 @@ def auto_continue_llm_output(
         except (OSError, TypeError, ValueError):
             next_work = {}
         if next_work.get("work_status") == "ready":
+            next_action = (
+                "story_video_quality_control action=compile_prompt "
+                f"shot_id={next_work['shot_id']}"
+            )
             next_work_instruction = (
-                " First call story_video_quality_control "
-                f"action=compile_prompt shot_id={next_work['shot_id']}; "
-                f"use candidate_id_hint={next_work['candidate_id_hint']} to perform "
+                f" Use candidate_id_hint={next_work['candidate_id_hint']} to perform "
                 f"the {next_work['operation']} image/QC cycle. Do not generate another "
                 "shot first."
             )
@@ -389,7 +400,7 @@ def auto_continue_llm_output(
         "action": "continue",
         "message": (
             f"STORY_VIDEO_AUTOPILOT run_id={context.run_id} phase={context.phase}. "
-            f"Execute the next action now: {context.next_call}.{next_work_instruction} "
+            f"Execute the next action now: {next_action}.{next_work_instruction} "
             "Do not merely report "
             "status; complete the phase, repair every gate failure that is locally "
             "actionable, validate it, and continue toward final delivery."

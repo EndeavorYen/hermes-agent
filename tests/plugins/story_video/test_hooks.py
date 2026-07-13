@@ -448,6 +448,56 @@ def test_batch_autopilot_continuation_names_exact_next_quality_tool_call(
     assert "Do not generate another shot first" in continuation["message"]
 
 
+def test_batch_transport_recovery_is_bounded_and_uses_current_next_work(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    hooks.pre_llm_call(
+        session_id="session-auto",
+        user_message="故事影片：恐龍起源｜5分鐘｜真實照片。完整製作並出片。",
+    )
+    context = store.for_session("session-auto")
+    assert context is not None
+    shot = {
+        "shot_id": "S03_SH02", "narration_text": "旁白", "subject": "兔蜥",
+        "action": "警戒", "evidence_detail": "長後肢", "shot_scale": "medium",
+        "camera_angle": "eye_level", "focal_point": "body",
+        "subtitle_safe_area": "upper_left", "acceptance_criteria": ["clear"],
+    }
+    (context.project_dir / "scene_ledger.json").write_text(
+        json.dumps({"scenes": [{"scene_id": "S03", "shots": [shot]}]}),
+        encoding="utf-8",
+    )
+    manifest = context.project_dir / "manifests" / "shot_candidate_manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(json.dumps({"outputs": [{
+        "shot_id": "S03_SH02", "status": "repair_required", "selected": False,
+        "repair_round": 1, "hard_blockers": ["subtitle collision"],
+    }]}), encoding="utf-8")
+    store.update(
+        context,
+        phase="batch",
+        repair_request="補齊 batch：S03_SH01.selected_asset",
+    )
+
+    kwargs = {
+        "session_id": "session-auto",
+        "response_text": "completed image output was preserved",
+        "recoverable_transport_error": True,
+        "turn_error": "codex went silent for 90s after a tool result",
+    }
+    first = hooks.auto_continue_llm_output(**kwargs)
+    second = hooks.auto_continue_llm_output(**kwargs)
+    third = hooks.auto_continue_llm_output(**kwargs)
+
+    assert first is not None
+    assert "shot_id=S03_SH02" in first["message"]
+    assert "S03_SH01.selected_asset" not in first["message"]
+    assert second is not None
+    assert third is None
+
+
 def test_direct_full_auto_resets_existing_stall_guard(tmp_path, monkeypatch) -> None:
     store = StoryVideoStateStore(tmp_path)
     monkeypatch.setattr(hooks, "_STORE", store)

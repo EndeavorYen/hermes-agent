@@ -380,6 +380,78 @@ def test_codex_runtime_runs_bounded_plugin_auto_continuation(monkeypatch):
     assert result["api_calls"] == 2
 
 
+def test_codex_runtime_auto_continues_after_post_tool_transport_error(monkeypatch):
+    import agent.transports.codex_app_server_session as session_module
+
+    hook_calls = []
+    continuation_count = 0
+
+    def invoke_hook(name, **kwargs):
+        nonlocal continuation_count
+        hook_calls.append((name, kwargs))
+        if name == "auto_continue_llm_output":
+            continuation_count += 1
+            if continuation_count == 1:
+                return [{"action": "continue", "message": "RECOVER NEXT"}]
+        return []
+
+    first_turn = _make_turn()
+    first_turn.interrupted = True
+    first_turn.error = "codex went silent for 90s after a tool result"
+    first_turn.should_retire = True
+    first_turn.tool_iterations = 1
+    first_turn.final_text = "completed image output was preserved"
+    first_turn.projected_messages = [
+        {"role": "assistant", "content": first_turn.final_text}
+    ]
+    second_turn = _make_turn()
+    second_turn.final_text = "RECOVERED"
+    second_turn.projected_messages = [
+        {"role": "assistant", "content": "RECOVERED"}
+    ]
+
+    initial_session = MagicMock()
+    initial_session.run_turn.return_value = first_turn
+
+    class ReplacementSession:
+        def __init__(self, **_kwargs):
+            pass
+
+        def run_turn(self, **_kwargs):
+            return second_turn
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(hermes_cli.plugins, "has_hook", lambda _name: True)
+    monkeypatch.setattr(hermes_cli.plugins, "invoke_hook", invoke_hook)
+    monkeypatch.setattr(session_module, "CodexAppServerSession", ReplacementSession)
+    agent = _make_agent(session_db=None)
+    agent._codex_session = initial_session
+    agent.model = "gpt-5.6-sol"
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.platform = "slack"
+
+    result = run_codex_app_server_turn(
+        agent,
+        user_message="continue story batch",
+        original_user_message="continue story batch",
+        messages=[{"role": "user", "content": "continue story batch"}],
+        effective_task_id="story-transport-recovery",
+        turn_id="turn-transport-error",
+    )
+
+    recovery_hook = next(
+        kwargs for name, kwargs in hook_calls
+        if name == "auto_continue_llm_output"
+    )
+    assert recovery_hook["recoverable_transport_error"] is True
+    assert "went silent" in recovery_hook["turn_error"]
+    assert result["final_response"] == "RECOVERED"
+    assert result["api_calls"] == 2
+
+
 def test_codex_runtime_stops_plugin_auto_continuation_at_bound(monkeypatch):
     import agent.codex_runtime as codex_runtime
 
