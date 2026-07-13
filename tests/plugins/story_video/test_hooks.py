@@ -454,6 +454,107 @@ def test_batch_autopilot_continuation_names_exact_next_quality_tool_call(
     assert "Do not generate another shot first" in continuation["message"]
 
 
+def test_batch_autopilot_rejudges_existing_candidate_without_image_generation(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    hooks.pre_llm_call(
+        session_id="session-auto",
+        user_message="故事影片：恐龍起源｜5分鐘｜真實照片。完整製作並出片。",
+    )
+    context = store.for_session("session-auto")
+    assert context is not None
+    shot = {
+        "shot_id": "S03_SH04",
+        "narration_text": "旁白",
+        "narrative_role": "evidence",
+        "viewer_takeaway": "看懂足跡如何形成",
+        "subject": "恐龍腳掌",
+        "action": "離開泥面",
+        "evidence_detail": "清楚足跡",
+        "shot_scale": "close_up",
+        "camera_angle": "eye_level",
+        "focal_point": "腳掌與足跡",
+        "subtitle_safe_area": "lower_third",
+        "acceptance_criteria": ["foot and track are readable"],
+        "risk_class": "standard",
+        "engagement_role": "reveal",
+        "attention_hook": "泥地留下什麼",
+        "story_moment": "腳掌剛離開泥面",
+        "action_consequence": "足跡留在泥面",
+        "composition_energy": "curious",
+        "viewer_emotion": "discovery",
+        "engagement_criteria": ["cause and effect are readable"],
+        "visual_truth_mode": "reconstruction",
+    }
+    (context.project_dir / "scene_ledger.json").write_text(
+        json.dumps(
+            {
+                "quality_contract_version": 3,
+                "audience_profile": {
+                    "age_band": "general",
+                    "knowledge_level": "newcomer",
+                    "attention_style": "curious_explorer",
+                    "safety_intensity": "standard",
+                },
+                "engagement_profile": {
+                    "mode": "discovery_documentary",
+                    "energy": "balanced",
+                    "humor": "none",
+                    "sensationalism_forbidden": True,
+                },
+                "scenes": [{"scene_id": "S03", "shots": [shot]}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    candidate_path = context.project_dir / "images" / "S03_SH04.png"
+    candidate_path.parent.mkdir(parents=True, exist_ok=True)
+    candidate_path.write_bytes(b"candidate")
+    manifest = context.project_dir / "manifests" / "shot_candidate_manifest.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(
+        json.dumps(
+            {
+                "outputs": [
+                    {
+                        "shot_id": "S03_SH04",
+                        "candidate_id": "S03_SH04_C01",
+                        "selected": True,
+                        "status": "selected_current",
+                        "provider": "openai-codex",
+                        "model": "gpt-image-2-high",
+                        "candidate_path": str(candidate_path),
+                        "local_path": str(candidate_path),
+                        "repair_round": 1,
+                        "quality_dimensions": {
+                            "text_alignment": 88,
+                            "focal_clarity": 88,
+                        },
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    store.update(context, phase="batch")
+
+    continuation = hooks.auto_continue_llm_output(
+        session_id="session-auto",
+        response_text="STORY_VIDEO_PHASE_PROOF: batch BLOCKED",
+    )
+
+    assert continuation is not None
+    message = continuation["message"]
+    assert "action=judge_candidates" in message
+    assert "S03_SH04_C01_V3_REVIEW" in message
+    assert str(candidate_path) in message
+    assert "candidate_budget=0" in message
+    assert "action=compile_prompt" not in message
+    assert "image_generate" not in message
+
+
 def test_batch_transport_recovery_is_bounded_and_uses_current_next_work(
     tmp_path, monkeypatch
 ) -> None:

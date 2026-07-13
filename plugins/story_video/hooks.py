@@ -402,17 +402,34 @@ def auto_continue_llm_output(
         except (OSError, TypeError, ValueError):
             next_work = {}
         if next_work.get("work_status") == "ready":
-            next_action = (
-                "story_video_quality_control action=compile_prompt "
-                f"shot_id={next_work['shot_id']}"
-            )
-            next_work_instruction = (
-                f" Use candidate_id_hint={next_work['candidate_id_hint']} to perform "
-                f"the {next_work['operation']} image/QC cycle with "
-                f"repair_strategy={next_work['repair_strategy']}. "
-                "Do not generate another "
-                "shot first."
-            )
+            if next_work.get("operation") == "rejudge_existing":
+                candidate = json.dumps(
+                    next_work["candidate"],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+                next_action = (
+                    "story_video_quality_control action=judge_candidates "
+                    f"shot_id={next_work['shot_id']} "
+                    f"repair_round={next_work['repair_round']} "
+                    f"candidates=[{candidate}]"
+                )
+                next_work_instruction = (
+                    " This is operation=rejudge_existing with candidate_budget=0. "
+                    "Judge that exact existing candidate; do not call compile_prompt, "
+                    "invoke image generation, or contact any image provider."
+                )
+            else:
+                next_action = (
+                    "story_video_quality_control action=compile_prompt "
+                    f"shot_id={next_work['shot_id']}"
+                )
+                next_work_instruction = (
+                    f" Use candidate_id_hint={next_work['candidate_id_hint']} to "
+                    f"perform the {next_work['operation']} image/QC cycle with "
+                    f"repair_strategy={next_work['repair_strategy']}. "
+                    "Do not generate another shot first."
+                )
     return {
         "action": "continue",
         "message": (
