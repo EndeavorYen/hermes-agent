@@ -167,6 +167,10 @@ def test_plugin_registers_internal_quality_tool_and_binds_host_llm() -> None:
     assert registered_tools["story_video_quality_control"]["toolset"] == "story_video"
     assert registered_tools["story_video_quality_control"]["schema"]["name"] == "story_video_quality_control"
     assert registered_hooks["auto_continue_llm_output"] is hooks.auto_continue_llm_output
+    provider = registered_tools["story_video_quality_control"]["schema"][
+        "parameters"
+    ]["properties"]["provider"]
+    assert provider["enum"] == ["openai-codex"]
 
 
 def test_candidate_judge_forces_openai_provider_before_inference(tmp_path) -> None:

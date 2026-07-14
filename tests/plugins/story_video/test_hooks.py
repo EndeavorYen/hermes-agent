@@ -609,6 +609,7 @@ def test_batch_autopilot_continuation_names_exact_next_quality_tool_call(
     assert continuation is not None
     assert "action=compile_prompt shot_id=S03_SH01" in continuation["message"]
     assert "candidate_id_hint=S03_SH01_C02" in continuation["message"]
+    assert "provider=openai-codex" in continuation["message"]
     assert "Do not generate another shot first" in continuation["message"]
 
 
@@ -656,6 +657,7 @@ def test_batch_autopilot_continuation_batches_fresh_generation(
     assert "S00_SH01_C01" in message
     assert "S00_SH02_C01" in message
     assert "one parallel image_generate tool batch" in message
+    assert "provider=openai-codex" in message
     assert "judge each successful result sequentially" in message
     assert "Do not generate another shot first" not in message
 

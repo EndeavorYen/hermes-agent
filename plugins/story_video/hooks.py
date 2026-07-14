@@ -359,6 +359,8 @@ def pre_llm_call(
         "advance anatomy, scientific, layout, and contextual repair independently. Always "
         "pass the exact returned shot_contract_hash with the generated candidate; never "
         "judge a candidate against a changed scene-ledger contract. "
+        "Every image_generate and vision judge call MUST pass provider=openai-codex "
+        "explicitly; do not rely on an implicit provider or a post-dispatch hook. "
         "then call story_video_quality_control action=judge_candidates. That tool is the "
         "only writer of the canonical shot_candidate_manifest.json outputs[] contract; "
         "never edit shot_candidate_manifest.json manually and never invent judge scores "
@@ -535,9 +537,11 @@ def auto_continue_llm_output(
                 )
                 next_work_instruction = (
                     " Call compile_prompt for each listed shot in order. Then issue exactly "
-                    "one image_generate call per shot together in one parallel image_generate "
+                    "one image_generate call per shot with provider=openai-codex together in "
+                    "one parallel image_generate "
                     "tool batch. Do not create alternate candidates. After the batch returns, "
-                    "judge each successful result sequentially with its exact candidate_id_hint, "
+                    "judge each successful result sequentially with provider=openai-codex and "
+                    "its exact candidate_id_hint, "
                     "repair_strategy, generation prompt, and shot_contract_hash. If one provider "
                     "call fails, preserve the successful results and leave only that shot for the "
                     "next canonical retry."
@@ -596,7 +600,8 @@ def auto_continue_llm_output(
                 next_work_instruction = (
                     f" Use candidate_id_hint={next_work['candidate_id_hint']} to "
                     f"perform the {next_work['operation']} image/QC cycle with "
-                    f"repair_strategy={next_work['repair_strategy']}. "
+                    f"repair_strategy={next_work['repair_strategy']} and "
+                    "provider=openai-codex on both image_generate and judge_candidates. "
                     "Do not generate another shot first."
                 )
         elif next_work.get("work_status") == "human_review_required":
