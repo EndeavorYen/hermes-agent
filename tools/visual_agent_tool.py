@@ -186,6 +186,12 @@ def _handle_visual_agent_generate(args: dict[str, Any], **_kw: Any) -> str:
             package_args.get("provider_decision") or {}
         ).get("reason")
         for key in (
+            "visual_agent_llm_provider",
+            "visual_agent_llm_model",
+        ):
+            if package_args.get(key):
+                provider_contract[key] = package_args[key]
+        for key in (
             "image_provider",
             "image_model",
             "video_provider",
