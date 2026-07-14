@@ -38,6 +38,8 @@ from agent.visual.judges.deterministic import judge_artifact
 from agent.visual.judges.quality import judge_visual_quality
 from agent.visual.media_probe import probe_media_reference
 from agent.visual.preference_profile import build_preference_profile
+from agent.visual.production_kernel.quality import evaluate_visual_quality
+from agent.visual.production_kernel.repair import plan_visual_repair
 from agent.visual.prompt_arsenal import approved_prompt_arsenal_entries
 from agent.visual.prompt_text import build_provider_facing_visual_prompt
 from agent.visual.prompt_text import strip_visual_prompt_metadata
@@ -73,11 +75,17 @@ DEFAULT_VISUAL_EXECUTION_DEADLINE_SECONDS = 300.0
 MAX_VISUAL_EXECUTION_DEADLINE_SECONDS = 1800.0
 VISUAL_PROVIDER_REFERENCE_SLOT_BUDGET = 3
 ALWAYS_BLOCKING_QUALITY_ISSUES = {
+    "action_or_moment_missing",
     "composition_bad",
+    "forbidden_detail_present",
     "reference_identity_drift",
     "reference_overcopy",
     "reference_role_evidence_missing",
+    "required_detail_missing",
     "source_frame_grid",
+    "style_mismatch",
+    "subject_mismatch",
+    "truth_or_evidence_risk",
 }
 VIDEO_BLOCKING_QUALITY_ISSUES = {
     "aspect_integrity_bad",
@@ -127,6 +135,10 @@ class _VisualPackageDeadlineExceeded(RuntimeError):
 
 _ACTIVE_EXECUTION_DEADLINE: ContextVar[_VisualExecutionDeadline | None] = ContextVar(
     "visual_package_execution_deadline",
+    default=None,
+)
+_ACTIVE_VISUAL_KERNEL_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar(
+    "visual_kernel_context",
     default=None,
 )
 
@@ -312,7 +324,10 @@ VISUAL_PACKAGE_SCHEMA: dict[str, Any] = {
             },
             "candidate_budget": {
                 "type": "integer",
-                "description": "Optional image candidate budget. Defaults to 2.",
+                "description": (
+                    "Optional image candidate budget. Visual Agent defaults to 1; "
+                    "direct package calls retain their existing default."
+                ),
             },
             "include_image": {
                 "type": "boolean",
@@ -479,7 +494,12 @@ def _story_video_visual_package_block_payload(
 
 def _image_provider_source(args: dict[str, Any]) -> str | None:
     raw = str(args.get("image_provider_source") or "").strip()
-    if raw in {"visual_agent_default", "prompt_override", "explicit_override"}:
+    if raw in {
+        "visual_agent_default",
+        "visual_kernel_quality_profile",
+        "prompt_override",
+        "explicit_override",
+    }:
         return raw
     return None
 
@@ -725,6 +745,7 @@ def analyze_candidate_with_vision_tool(candidate: dict[str, Any]) -> dict[str, A
     if reference_source:
         source = reference_source
         prompt = _reference_aware_inline_vision_prompt(candidate)
+    prompt = _contract_aware_inline_vision_prompt(candidate, prompt)
     from model_tools import _run_async
     from tools.vision_tools import vision_analyze_tool
 
@@ -745,6 +766,51 @@ def _reference_aware_inline_vision_prompt(candidate: dict[str, Any]) -> str:
         if index is not None:
             lines.append(f"- ref {index} role: {role_hint}")
     lines.append("- candidate output: generated image to evaluate")
+    return "\n".join(lines)
+
+
+def _contract_aware_inline_vision_prompt(
+    candidate: dict[str, Any],
+    base_prompt: str,
+) -> str:
+    contract = candidate.get("visual_intent_contract")
+    if not isinstance(contract, dict) or not contract:
+        return base_prompt
+    lines = [
+        base_prompt.rstrip(),
+        "",
+        "Visual intent contract for this candidate:",
+    ]
+    for key in (
+        "primary_subject",
+        "observable_action",
+        "decisive_moment",
+        "focal_point",
+        "composition",
+        "style",
+        "audience_effect",
+        "truth_mode",
+    ):
+        value = str(contract.get(key) or "").strip()
+        if value:
+            lines.append(f"- {key}: {value}")
+    for key in ("required_details", "forbidden_details", "acceptance_criteria"):
+        values = _string_list(contract.get(key))
+        if values:
+            lines.append(f"- {key}: {'; '.join(values)}")
+    lines.extend(
+        (
+            "Judge the visible candidate against every applicable contract item.",
+            "When violated, add these exact artifact_defects codes:",
+            "- subject_mismatch: the primary subject is wrong, missing, or not immediately readable",
+            "- action_or_moment_missing: the requested action or decisive moment is not visible",
+            "- composition_weak: focal point or requested composition is not achieved",
+            "- style_mismatch: the requested visual style is not achieved",
+            "- truth_or_evidence_risk: the image invents unsupported evidence or violates truth mode",
+            "- required_detail_missing: a listed required detail is not visibly present",
+            "- forbidden_detail_present: a listed forbidden detail is visibly present",
+        )
+    )
     return "\n".join(lines)
 
 
@@ -829,6 +895,7 @@ def _handle_visual_package_generate(args: dict[str, Any], **_kw: Any) -> str:
             request_type="visual_feedback",
         )
     deadline_token = _ACTIVE_EXECUTION_DEADLINE.set(_new_execution_deadline(args))
+    kernel_token = _ACTIVE_VISUAL_KERNEL_CONTEXT.set(_visual_kernel_context(args))
     try:
         _deadline_checkpoint("request_start")
         payload = _visual_package_generate(args, prompt=prompt)
@@ -859,6 +926,7 @@ def _handle_visual_package_generate(args: dict[str, Any], **_kw: Any) -> str:
             ensure_ascii=False,
         )
     finally:
+        _ACTIVE_VISUAL_KERNEL_CONTEXT.reset(kernel_token)
         _ACTIVE_EXECUTION_DEADLINE.reset(deadline_token)
 
 
@@ -975,6 +1043,11 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
     if hybrid_final_combine and should_generate_image:
         candidate_budget = 1
         candidate_budget_source = "hybrid_final_combine_initial_then_repair"
+    candidate_budget, candidate_budget_source = _visual_kernel_candidate_budget(
+        args,
+        candidate_budget=candidate_budget,
+        candidate_budget_source=candidate_budget_source,
+    )
     video_budget = _video_budget(args, wants_video=wants_video)
     inline_vision_judge = _inline_vision_judge_mode(args)
     if (
@@ -1020,6 +1093,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         metadata={
             "intent_signature": intent_signature,
             "visual_agent_prompt_mediated": prompt,
+            **_visual_kernel_request_metadata(args),
         },
     )
 
@@ -1081,6 +1155,11 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         if hybrid_final_combine and should_generate_image:
             candidate_budget = 1
             candidate_budget_source = "hybrid_final_combine_initial_then_repair"
+        candidate_budget, candidate_budget_source = _visual_kernel_candidate_budget(
+            args,
+            candidate_budget=candidate_budget,
+            candidate_budget_source=candidate_budget_source,
+        )
         if (
             args.get("inline_vision_judge") is None
             and feedback_policy.get("require_preference_dimension_evidence") is True
@@ -1163,6 +1242,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                     aspect_ratio=aspect_ratio,
                     reference_conditioning=None,
                 ) or {}),
+                **_visual_kernel_generation_strategy(args),
                 "storyboard_execution": storyboard_result["execution"],
             },
         )
@@ -1391,25 +1471,38 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 image_candidates.append(image_candidate)
             elif not image_payload.get("success"):
                 fallback_candidate_added = False
-                for fallback_offset, fallback_payload in enumerate(_provider_fallback_payloads(
-                    generator=generate_image,
-                    payload=image_payload,
-                    base_kwargs=image_kwargs,
-                    request=image_request,
-                    modality="image",
-                    retry_of=candidate_index,
-                )):
+                fallback_payloads = (
+                    _provider_fallback_payloads(
+                        generator=generate_image,
+                        payload=image_payload,
+                        base_kwargs=image_kwargs,
+                        request=image_request,
+                        modality="image",
+                        retry_of=candidate_index,
+                        max_fallbacks=(
+                            1
+                            if _coerce_bool(args.get("visual_production_kernel"))
+                            else None
+                        ),
+                    )
+                    if _visual_kernel_allows_provider_fallback(args)
+                    else []
+                )
+                for fallback_offset, fallback_payload in enumerate(fallback_payloads):
                     image_payloads.append(fallback_payload)
                     fallback_candidate = _record_payload_candidate(
                         ledger,
                         request_id=request_id,
-                            payload=fallback_payload,
-                            artifact_key="image",
-                            expected_kind="image",
-                            prompt=str(fallback_payload.get("prompt") or provider_image_generation_prompt),
-                            prompt_original=visual_agent_original_prompt,
-                            provider=str(fallback_payload.get("provider") or ""),
-                            model=str(fallback_payload.get("model") or ""),
+                        payload=fallback_payload,
+                        artifact_key="image",
+                        expected_kind="image",
+                        prompt=str(
+                            fallback_payload.get("prompt")
+                            or provider_image_generation_prompt
+                        ),
+                        prompt_original=visual_agent_original_prompt,
+                        provider=str(fallback_payload.get("provider") or ""),
+                        model=str(fallback_payload.get("model") or ""),
                         requested_parameters=_image_attempt_parameters(
                             aspect_ratio,
                             attachments=attachments,
@@ -1429,13 +1522,19 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                         break
                 if fallback_candidate_added:
                     continue
+                retry_budget_remaining = (
+                    0
+                    if _coerce_bool(args.get("visual_production_kernel"))
+                    and fallback_payloads
+                    else provider_retry_budget
+                )
                 for retry_offset, retry_payload in enumerate(_retry_generation_payloads(
                     generator=generate_image,
                     modality="image",
                     payload=image_payload,
                     base_kwargs=image_kwargs,
                     request=image_request,
-                    retry_budget_remaining=provider_retry_budget,
+                    retry_budget_remaining=retry_budget_remaining,
                     retry_of=candidate_index,
                 )):
                     image_payloads.append(retry_payload)
@@ -1509,6 +1608,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 image_gate = _with_hybrid_quality_gate_block(image_gate, hybrid_quality_gate_metadata)
             else:
                 image_gate = _with_hybrid_quality_gate_pass(image_gate, hybrid_quality_gate_metadata)
+        image_gate = _apply_visual_kernel_delivery_gate(image_gate, selected_image, args)
         if direct_polish_mode:
             image_gate["polish_pass_attempted"] = True
         delivery_gate["image"] = image_gate
@@ -1628,6 +1728,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 learning["active_learning"]["image"] = polish_learning
                 selected_image = _selected_candidate(image_candidates, polish_decision.selected_artifact_id)
                 image_gate = _delivery_gate_decision(polish_learning, selected_image, prompt=prompt)
+                image_gate = _apply_visual_kernel_delivery_gate(image_gate, selected_image, args)
                 image_gate["polish_pass_attempted"] = True
                 delivery_gate["image"] = image_gate
         if (
@@ -1635,6 +1736,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             and not image_gate["allowed"]
             and not composition_guide_only
             and not hybrid_final_combine
+            and not _coerce_bool(args.get("visual_production_kernel"))
             and _should_escalate_candidate_budget(image_gate)
         ):
             escalation_prompt = _candidate_escalation_prompt(image_prompt_base, image_gate)
@@ -1753,10 +1855,23 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 escalated_from = image_gate
                 selected_image = _selected_candidate(image_candidates, escalation_decision.selected_artifact_id)
                 image_gate = _delivery_gate_decision(escalation_learning, selected_image, prompt=prompt)
+                image_gate = _apply_visual_kernel_delivery_gate(image_gate, selected_image, args)
                 image_gate["candidate_budget_escalated"] = True
                 image_gate["escalated_from"] = escalated_from
                 delivery_gate["image"] = image_gate
-        if selected_image and not image_gate["allowed"] and not composition_guide_only:
+        kernel_repair_plan = _visual_kernel_repair_plan(image_gate, args)
+        if kernel_repair_plan is not None:
+            image_gate["visual_kernel_repair"] = kernel_repair_plan
+            delivery_gate["image"] = image_gate
+        if (
+            selected_image
+            and not image_gate["allowed"]
+            and not composition_guide_only
+            and (
+                kernel_repair_plan is None
+                or kernel_repair_plan.get("should_generate") is True
+            )
+        ):
             image_repair_mode = (
                 "hybrid_final_combine"
                 if hybrid_final_combine
@@ -1768,6 +1883,15 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 mode=image_repair_mode,
                 reference_binding=reference_binding,
             )
+            if kernel_repair_plan is not None:
+                repair_prompt = (
+                    f"{repair_prompt}\n\n"
+                    "Visual contract repair strategy: "
+                    f"{kernel_repair_plan.get('strategy')}. "
+                    "Blocker codes: "
+                    f"{', '.join(_string_list(kernel_repair_plan.get('blocker_codes')))}. "
+                    f"{kernel_repair_plan.get('directive')}"
+                )
             repair_reference_policy = _reference_conditioning_policy_for_gate(
                 image_gate,
                 reference_conditioning_variants,
@@ -1811,6 +1935,18 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 "policy_mode": image_repair_mode,
                 "policy_actions": feedback_policy.get("applied_action_types", []),
             }
+            if kernel_repair_plan is not None:
+                repair_payload["quality_repair"].update(
+                    {
+                        "strategy": kernel_repair_plan.get("strategy"),
+                        "blocker_codes": _string_list(
+                            kernel_repair_plan.get("blocker_codes")
+                        ),
+                        "visual_contract_hash": str(
+                            args.get("visual_contract_hash") or ""
+                        ),
+                    }
+                )
             image_payloads.append(repair_payload)
             if not repair_payload.get("success"):
                 _annotate_generation_failure(
@@ -1883,6 +2019,11 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 learning["active_learning"]["image"] = repair_learning
                 selected_image = _selected_candidate([repair_candidate], repair_decision.selected_artifact_id)
                 repaired_gate = _delivery_gate_decision(repair_learning, selected_image, prompt=prompt)
+                repaired_gate = _apply_visual_kernel_delivery_gate(
+                    repaired_gate,
+                    selected_image,
+                    args,
+                )
                 repaired_gate["repair_attempted"] = True
                 repaired_gate["repaired_from"] = image_gate
                 if hybrid_final_combine:
@@ -2261,6 +2402,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         reference_conditioning_variants=reference_conditioning_variants,
         image_prompt_variants=_public_prompt_variants(image_prompt_variants),
     ) or {}
+    extra_generation_strategy.update(_visual_kernel_generation_strategy(args))
     if character_design_ref_only:
         extra_generation_strategy["character_design_ref_only"] = True
     if composition_guide_only:
@@ -4006,6 +4148,12 @@ def _image_attempt_parameters(
         parameters["reference_binding"] = sanitized_binding
     if extra:
         parameters.update(extra)
+    kernel_context = _ACTIVE_VISUAL_KERNEL_CONTEXT.get()
+    if isinstance(kernel_context, dict) and kernel_context.get("enabled") is True:
+        parameters["visual_contract_hash"] = str(
+            kernel_context.get("visual_contract_hash") or ""
+        )
+        parameters["visual_production_kernel"] = True
     return parameters
 
 
@@ -4158,6 +4306,11 @@ def _record_payload_candidate(
         "scores": score["scores"],
         "vision_observation": _payload_vision_observation(payload),
     }
+    kernel_context = _ACTIVE_VISUAL_KERNEL_CONTEXT.get()
+    if isinstance(kernel_context, dict) and kernel_context.get("enabled") is True:
+        candidate["visual_intent_contract"] = dict(
+            kernel_context.get("visual_intent_contract") or {}
+        )
     if artifact_role:
         candidate["artifact_role"] = artifact_role
     return candidate
@@ -4293,6 +4446,7 @@ def _provider_fallback_payloads(
     request: dict[str, Any],
     modality: str,
     retry_of: int,
+    max_fallbacks: int | None = None,
 ) -> list[dict[str, Any]]:
     failure_class = _payload_failure_class(payload)
     if failure_class not in {"quota_exceeded", "provider_unavailable", "rate_limited"}:
@@ -4304,6 +4458,8 @@ def _provider_fallback_payloads(
         else _available_video_provider_fallbacks(failed_provider=failed_provider)
     )
     fallbacks: list[dict[str, Any]] = []
+    if max_fallbacks is not None:
+        fallback_providers = fallback_providers[: max(0, int(max_fallbacks))]
     for provider_name in fallback_providers:
         _deadline_checkpoint(f"{modality}_provider_fallback:{provider_name}")
         if not provider_name or provider_name == failed_provider:
@@ -4894,6 +5050,8 @@ def _score_candidates(
             }
         if vision_failure:
             quality["vision_failure"] = vision_failure
+        candidate["visual_quality_confidence"] = quality.get("confidence")
+        candidate["evaluated_vision_observation"] = vision_observation
         content_hash = candidate.get("content_hash")
         if isinstance(content_hash, str) and content_hash:
             recent_hashes.add(content_hash)
@@ -5094,6 +5252,148 @@ def _candidate_has_blocking_video_source_issue(candidate: dict[str, Any], *, pro
         prompt=prompt,
     )
     return bool(quality_issues)
+
+
+def _visual_kernel_context(args: dict[str, Any]) -> dict[str, Any] | None:
+    if not _coerce_bool(args.get("visual_production_kernel")):
+        return None
+    return {
+        "enabled": True,
+        "visual_contract_hash": str(args.get("visual_contract_hash") or "").strip(),
+        "visual_intent_contract": (
+            dict(args["visual_intent_contract"])
+            if isinstance(args.get("visual_intent_contract"), dict)
+            else {}
+        ),
+        "provider_decision": (
+            dict(args["provider_decision"])
+            if isinstance(args.get("provider_decision"), dict)
+            else {}
+        ),
+        "max_generated_repairs": _max_visual_kernel_repairs(args),
+    }
+
+
+def _max_visual_kernel_repairs(args: dict[str, Any]) -> int:
+    value = _coerce_int(args.get("max_generated_repairs"))
+    return 1 if value is None else max(0, min(1, value))
+
+
+def _visual_kernel_candidate_budget(
+    args: dict[str, Any],
+    *,
+    candidate_budget: int,
+    candidate_budget_source: str,
+) -> tuple[int, str]:
+    if not _coerce_bool(args.get("visual_production_kernel")) or candidate_budget <= 0:
+        return candidate_budget, candidate_budget_source
+    if candidate_budget_source in {
+        "grok_web_current_result_operation",
+        "hybrid_final_combine_initial_then_repair",
+    }:
+        return candidate_budget, candidate_budget_source
+    requested_source = str(args.get("candidate_budget_source") or "planner_default")
+    if requested_source == "user":
+        return max(1, int(args.get("candidate_budget") or candidate_budget)), "user"
+    return 1, "visual_kernel_default"
+
+
+def _visual_kernel_allows_provider_fallback(args: dict[str, Any]) -> bool:
+    if not _coerce_bool(args.get("visual_production_kernel")):
+        return True
+    decision = args.get("provider_decision")
+    reason = str(decision.get("reason") or "") if isinstance(decision, dict) else ""
+    return not reason.startswith("explicit_override")
+
+
+def _visual_kernel_request_metadata(args: dict[str, Any]) -> dict[str, Any]:
+    context = _visual_kernel_context(args)
+    if context is None:
+        return {}
+    return {
+        "visual_production_kernel": {
+            "enabled": True,
+            "visual_contract_hash": context["visual_contract_hash"],
+            "visual_intent_contract": context["visual_intent_contract"],
+            "provider_decision": context["provider_decision"],
+            "max_generated_repairs": context["max_generated_repairs"],
+        }
+    }
+
+
+def _visual_kernel_generation_strategy(args: dict[str, Any]) -> dict[str, Any]:
+    context = _visual_kernel_context(args)
+    if context is None:
+        return {}
+    return {
+        "visual_production_kernel": {
+            "enabled": True,
+            "visual_contract_hash": context["visual_contract_hash"],
+            "provider_decision": context["provider_decision"],
+            "max_generated_repairs": context["max_generated_repairs"],
+            "default_candidate_policy": "one_then_bounded_repair",
+        }
+    }
+
+
+def _apply_visual_kernel_delivery_gate(
+    gate: dict[str, Any],
+    candidate: dict[str, Any] | None,
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    if not _coerce_bool(args.get("visual_production_kernel")) or candidate is None:
+        return gate
+    current_hash = str(args.get("visual_contract_hash") or "").strip()
+    requested = candidate.get("requested_parameters")
+    if not isinstance(requested, dict):
+        requested = candidate.get("user_requested_parameters")
+    if not isinstance(requested, dict):
+        requested = {}
+    vision_source = str(candidate.get("vision_observation_source") or "").strip()
+    trusted_vision_sources = {"candidate_vision_observation", "inline_vision_judge"}
+    confidence = (
+        candidate.get("visual_quality_confidence")
+        if vision_source in trusted_vision_sources and not candidate.get("vision_failure")
+        else 0.0
+    )
+    hard_gate = candidate.get("hard_gate")
+    hard_gate_passed = isinstance(hard_gate, dict) and hard_gate.get("passed") is True
+    decision = evaluate_visual_quality(
+        contract_hash=current_hash,
+        artifact_contract_hash=str(requested.get("visual_contract_hash") or ""),
+        artifact_id=str(candidate.get("artifact_id") or ""),
+        quality_issues=_string_list(gate.get("quality_issues")),
+        hard_gate_passed=hard_gate_passed,
+        provider_failure=candidate.get("provider_failure"),
+        vision_confidence=confidence,
+    )
+    result = dict(gate)
+    result["visual_kernel"] = decision.to_record()
+    result["blocker_codes"] = list(decision.blocker_codes)
+    result["allowed"] = bool(gate.get("allowed")) and decision.deliverable
+    if not result["allowed"] and gate.get("allowed"):
+        result["reason"] = "visual_kernel_blocked"
+    return result
+
+
+def _visual_kernel_repair_plan(
+    gate: dict[str, Any],
+    args: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not _coerce_bool(args.get("visual_production_kernel")):
+        return None
+    visual_kernel = gate.get("visual_kernel")
+    blockers = (
+        visual_kernel.get("blocker_codes")
+        if isinstance(visual_kernel, dict)
+        else gate.get("blocker_codes")
+    )
+    plan = plan_visual_repair(
+        _string_list(blockers),
+        prior_generated_repairs=(),
+        max_generated_repairs=_max_visual_kernel_repairs(args),
+    )
+    return plan.to_record()
 
 
 def _delivery_gate_decision(

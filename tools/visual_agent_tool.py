@@ -8,9 +8,14 @@ from agent.visual.agent_mode.handoff import is_visual_prompt_disclosure_request
 from agent.visual.agent_mode.handoff import is_visual_prompt_builder_request
 from agent.visual.agent_mode.handoff import normalise_visual_agent_attachment
 from agent.visual.agent_mode.planner import plan_visual_agent_request
+from agent.visual.attempt_ledger import VisualAttemptLedger
+from agent.visual.production_kernel.integration import attach_visual_production_kernel
+from agent.visual.production_kernel.providers import build_provider_quality_profiles
+from agent.visual.tracking import default_visual_ledger_path
 from tools.registry import registry
 from tools.registry import tool_error
 from tools.visual_package_tool import _handle_visual_package_generate
+from tools.visual_package_tool import _visual_request_category
 from tools.visual_package_tool import check_visual_package_requirements
 
 
@@ -143,6 +148,14 @@ def _handle_visual_agent_generate(args: dict[str, Any], **_kw: Any) -> str:
 
     package_args = dict(plan.get("arguments") or {})
     _merge_direct_visual_package_overrides(package_args, args)
+    if args.get("candidate_budget") is not None:
+        package_args["candidate_budget_source"] = str(
+            args.get("candidate_budget_source") or "user"
+        )
+    if args.get("image_provider"):
+        package_args["image_provider_source"] = str(
+            args.get("image_provider_source") or "direct_override"
+        )
     for key in (
         "visual_agent_llm_provider",
         "visual_agent_llm_model",
@@ -152,6 +165,11 @@ def _handle_visual_agent_generate(args: dict[str, Any], **_kw: Any) -> str:
         if args.get(key):
             package_args[key] = args[key]
     package_args, llm_plan = apply_visual_agent_llm_planner(package_args)
+    request_category = _visual_request_category(prompt)
+    package_args["provider_profiles"] = _runtime_provider_quality_profiles(
+        category=request_category
+    )
+    package_args = attach_visual_production_kernel(prompt, package_args)
 
     raw = _handle_visual_package_generate(package_args)
     try:
@@ -160,6 +178,13 @@ def _handle_visual_agent_generate(args: dict[str, Any], **_kw: Any) -> str:
         return raw
     if isinstance(payload, dict):
         provider_contract = dict(plan.get("provider_contract") or {})
+        provider_contract["image_provider"] = package_args.get("image_provider")
+        provider_contract["visual_media_provider_selected"] = package_args.get(
+            "image_provider"
+        )
+        provider_contract["visual_media_provider_selection_reason"] = (
+            package_args.get("provider_decision") or {}
+        ).get("reason")
         for key in (
             "image_provider",
             "image_model",
@@ -207,6 +232,22 @@ def _normalise_attachments(value: Any) -> list[str]:
         if attachment:
             attachments.append(attachment)
     return attachments
+
+
+def _runtime_provider_quality_profiles(
+    *,
+    category: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    ledger_path = default_visual_ledger_path()
+    if not ledger_path.exists():
+        return {}
+    try:
+        return build_provider_quality_profiles(
+            VisualAttemptLedger(ledger_path),
+            category=category,
+        )
+    except Exception:
+        return {}
 
 
 registry.register(

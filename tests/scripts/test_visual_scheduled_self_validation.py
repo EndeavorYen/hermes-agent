@@ -22,6 +22,7 @@ def test_scheduled_self_validation_defaults_to_fixture_and_writes_reports(tmp_pa
     assert report["summary"]["visual_package_tool_registered"] is True
     assert report["summary"]["visual_agent_planner_image_plus_video"] is True
     assert report["summary"]["visual_agent_planner_image_first_video"] is True
+    assert report["summary"]["visual_agent_production_kernel"] is True
     assert report["summary"]["prompt_disclosure_guard_active"] is True
     assert report["self_review"]["cron_safe"] is True
     assert report["self_review"]["live_e2e_requires_opt_in"] is True

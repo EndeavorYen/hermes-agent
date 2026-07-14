@@ -460,6 +460,12 @@ def _preference_dimension_issues(
 
 def _issue_for_defect(defect: str) -> str | None:
     return {
+        "subject_mismatch": "subject_mismatch",
+        "action_or_moment_missing": "action_or_moment_missing",
+        "style_mismatch": "style_mismatch",
+        "truth_or_evidence_risk": "truth_or_evidence_risk",
+        "required_detail_missing": "required_detail_missing",
+        "forbidden_detail_present": "forbidden_detail_present",
         "blurred_face": "subject_not_attractive",
         "distorted_face": "subject_not_attractive",
         "face_quality_low": "subject_not_attractive",
