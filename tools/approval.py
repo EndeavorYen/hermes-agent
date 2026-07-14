@@ -245,6 +245,14 @@ _STORY_VIDEO_CONTROL_STATE_PATH = (
     r'(?:\$hermes_home|\$\{hermes_home\})/)'
     r'story_videos/_workflow_state(?:/[^\s"\'`]+)?'
 )
+_STORY_VIDEO_PROJECT_STATE_PATH = (
+    r'(?:(?:~|\$home|\$\{home\})/\.hermes/|'
+    r'(?:\$hermes_home|\$\{hermes_home\})/)'
+    r'story_videos/[^/\s"\'`]+/'
+    r'(?:PROJECT_CONTRACT\.md|production_checklist\.json|'
+    r'pronunciation_lexicon\.json|scene_ledger\.json|script\.md|'
+    r'script_quality_report\.json|story_video_run_context\.json|storyboard\.md)'
+)
 # System-config paths that should trigger approval for any write/edit,
 # collapsing /etc, its macOS /private/etc mirror, and /etc/sudoers.d/ into
 # one shared fragment so new DANGEROUS_PATTERNS stay consistent.
@@ -393,6 +401,12 @@ HARDLINE_PATTERNS = [
         rf'\b(?:tee|touch|truncate|rm|mv|cp|install|chmod|chown|sed|perl|'
         rf'python[23]?|ruby|node)\b[^\n]*{_STORY_VIDEO_CONTROL_STATE_PATH})',
         "write to canonical story-video workflow state",
+    ),
+    (
+        rf'(?:>>?\s*["\']?{_STORY_VIDEO_PROJECT_STATE_PATH}|'
+        rf'\b(?:tee|touch|truncate|rm|mv|cp|install|chmod|chown|sed|perl|'
+        rf'python[23]?|ruby|node)\b[^\n]*{_STORY_VIDEO_PROJECT_STATE_PATH})',
+        "write to tool-owned story-video project state",
     ),
     # Filesystem format
     (r'\bmkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),

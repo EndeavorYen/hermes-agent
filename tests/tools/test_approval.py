@@ -116,6 +116,17 @@ class TestStoryVideoCanonicalStateProtection:
 
         assert blocked is False
 
+    def test_shell_cannot_mutate_story_video_planning_artifacts_directly(self):
+        command = (
+            "sed -i '' 's/planning/batch/' "
+            "$HERMES_HOME/story_videos/project-1/production_checklist.json"
+        )
+
+        blocked, description = detect_hardline_command(command)
+
+        assert blocked is True
+        assert description == "write to tool-owned story-video project state"
+
 
 class TestWindowsShellDestructiveCommands:
     def test_cmd_del_requires_approval(self):
