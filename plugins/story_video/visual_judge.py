@@ -23,6 +23,7 @@ from .quality import (
     candidate_quality_score,
     compile_shot_prompt,
     rank_candidate_assessments,
+    validate_quality_ledger,
 )
 from .shot_contract import (
     manifest_row_matches_shot_contract as _manifest_row_matches_shot_contract,
@@ -58,6 +59,7 @@ _REPLAN_MUTABLE_FIELDS = (
     "engagement_criteria",
     "calm_reason",
     "evidence_bridge",
+    "intentional_scale_repeat_reason",
 )
 _REPLAN_IMMUTABLE_FIELDS = (
     "shot_id",
@@ -436,8 +438,23 @@ def _apply_shot_contract_replan(
     if new_hash == old_hash:
         raise ValueError("redesigned_shot does not change the shot contract")
 
+    original_shot = dict(shot)
+    previous_violations = set(validate_quality_ledger(ledger).violations)
     shot.clear()
     shot.update(replanned)
+    introduced_violations = [
+        violation
+        for violation in validate_quality_ledger(ledger).violations
+        if violation not in previous_violations
+        and violation.startswith("repeated_shot_scale_without_reason:")
+    ]
+    if introduced_violations:
+        shot.clear()
+        shot.update(original_shot)
+        raise ValueError(
+            "redesigned_shot introduces ledger quality violations: "
+            + ", ".join(introduced_violations)
+        )
     _write_json_atomic(context.project_dir / "scene_ledger.json", ledger)
 
     replans = [

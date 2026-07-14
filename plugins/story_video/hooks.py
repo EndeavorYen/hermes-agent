@@ -620,6 +620,12 @@ def auto_continue_llm_output(
                 )
         elif next_work.get("work_status") == "human_review_required":
             return None
+        elif next_work.get("work_status") == "complete":
+            next_action = "story_video_control action=validate"
+            next_work_instruction = (
+                " Canonical batch work is complete. Validate the batch phase now; "
+                "do not edit the candidate manifest or regenerate selected shots."
+            )
     rotate_for_budget = (
         int(message_count or 0) >= _AUTOPILOT_ROTATE_AFTER_MESSAGES
         or int(auto_continuation_count or 0)

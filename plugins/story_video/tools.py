@@ -53,6 +53,36 @@ def _sync_candidate_manifest_phase(context: StoryVideoRunContext) -> None:
     tmp.replace(path)
 
 
+def _promote_legacy_scale_repeat_reasons(context: StoryVideoRunContext) -> None:
+    """Promote the pre-contract scale-repeat alias without changing shot hashes."""
+    path = context.project_dir / "scene_ledger.json"
+    payload = _load_json(path)
+    if not isinstance(payload, dict):
+        return
+    changed = False
+    for scene in payload.get("scenes") or []:
+        if not isinstance(scene, dict):
+            continue
+        for shot in scene.get("shots") or []:
+            if not isinstance(shot, dict):
+                continue
+            canonical = str(
+                shot.get("intentional_scale_repeat_reason") or ""
+            ).strip()
+            legacy = str(shot.get("scale_repetition_reason") or "").strip()
+            if not canonical and legacy:
+                shot["intentional_scale_repeat_reason"] = legacy
+                changed = True
+    if not changed:
+        return
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    tmp.replace(path)
+
+
 def _validate_planning(context: StoryVideoRunContext) -> PhaseProof:
     required = (
         "PROJECT_CONTRACT.md",
@@ -639,6 +669,8 @@ def story_video_control(
         )
         return json.dumps(_context_payload(context), ensure_ascii=False)
     if action == "validate":
+        if context.phase == "batch":
+            _promote_legacy_scale_repeat_reasons(context)
         proof = validate_phase(context)
         payload = _context_payload(context)
         payload.update(
