@@ -1455,6 +1455,18 @@ def _promote_bounded_best_effort(
             and blocker_codes == {"subtitle_collision"}
             and score >= QUALITY_THRESHOLD
         )
+        max_candidates = (
+            MAX_REPLANNED_CONTRACT_CANDIDATES
+            if _contract_replan_count(manifest, shot_id)
+            else MAX_REPAIR_ROUNDS
+        )
+        contract_candidate_budget_exhausted = len(shot_history) >= max_candidates
+        terminal_quality_status = str(row.get("status") or "") == (
+            "quality_budget_exhausted"
+        ) or (
+            str(row.get("status") or "") == "repair_required"
+            and contract_candidate_budget_exhausted
+        )
         selection_floor = (
             QUALITY_THRESHOLD if packaging_best_effort else BEST_EFFORT_QUALITY_FLOOR
         )
@@ -1462,11 +1474,14 @@ def _promote_bounded_best_effort(
             not shot_id
             or not candidate_id
             or row.get("selected") is True
-            or str(row.get("status") or "") != "quality_budget_exhausted"
+            or not terminal_quality_status
             or _provider(row.get("provider")) not in {"openai", "openai-codex"}
             or not (clean_best_effort or packaging_best_effort)
             or (row.get("vision_evidence") or {}).get("status") != "PASS"
-            or not plan_repair(shot_history).exhausted
+            or not (
+                plan_repair(shot_history).exhausted
+                or contract_candidate_budget_exhausted
+            )
         ):
             continue
         candidate_path = _project_path(
