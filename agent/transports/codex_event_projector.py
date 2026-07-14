@@ -11,7 +11,7 @@ Codex emits items with a discriminator field `type`:
   - reasoning           → stashed in the assistant's "reasoning" field
   - commandExecution    → assistant tool_call(name="exec") + tool result
   - fileChange          → assistant tool_call(name="apply_patch") + tool result
-  - mcpToolCall         → assistant tool_call(name=f"mcp.{server}.{tool}") + tool result
+  - mcpToolCall         → assistant tool_call(name=f"mcp__{server}__{tool}") + tool result
   - dynamicToolCall     → assistant tool_call(name=tool) + tool result
   - plan/hookPrompt/collabAgentToolCall → recorded as opaque assistant notes
 
@@ -33,7 +33,10 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from agent.codex_responses_adapter import _bounded_responses_call_id
+from agent.codex_responses_adapter import (
+    _bounded_responses_call_id,
+    _normalized_responses_function_name,
+)
 
 
 def _deterministic_call_id(item_type: str, item_id: str) -> str:
@@ -238,7 +241,9 @@ class CodexEventProjector:
                     "id": call_id,
                     "type": "function",
                     "function": {
-                        "name": f"mcp.{server}.{tool}",
+                        "name": _normalized_responses_function_name(
+                            f"mcp__{server}__{tool}"
+                        ),
                         "arguments": _format_tool_args(args),
                     },
                 }
