@@ -145,6 +145,52 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+def _write_candidate_manifest_atomic(path: Path, payload: dict[str, Any]) -> None:
+    outputs = [row for row in payload.get("outputs") or [] if isinstance(row, dict)]
+    history = [
+        row for row in payload.get("attempt_history") or [] if isinstance(row, dict)
+    ]
+    selected = [row for row in outputs if row.get("selected") is True]
+    selected_shot_ids = {
+        str(row.get("shot_id") or "").strip() for row in selected
+    } - {""}
+    latest = max(
+        outputs,
+        key=lambda row: str(row.get("reviewed_at") or row.get("selected_at") or ""),
+        default=None,
+    )
+    latest_selected = max(
+        selected,
+        key=lambda row: str(row.get("reviewed_at") or row.get("selected_at") or ""),
+        default=None,
+    )
+    updated = {
+        **payload,
+        "selected_shot_count": len(selected_shot_ids),
+        "generated_candidate_count": len(history) if history else len(outputs),
+    }
+    if latest is not None:
+        updated["current_shot_id"] = str(latest.get("shot_id") or "")
+    if latest_selected is not None:
+        selected_path = str(
+            latest_selected.get("local_path")
+            or latest_selected.get("candidate_path")
+            or ""
+        )
+        updated["current_selected_output"] = selected_path
+        updated["current_selected_output_path"] = selected_path
+        updated["selected_output"] = {
+            "shot_id": str(latest_selected.get("shot_id") or ""),
+            "candidate_id": str(latest_selected.get("candidate_id") or ""),
+            "image_path": selected_path,
+            "provider": str(latest_selected.get("provider") or ""),
+            "judge_provider": str(latest_selected.get("judge_provider") or ""),
+            "judge_score": latest_selected.get("quality_score"),
+            "status": "PASS",
+        }
+    _write_json_atomic(path, updated)
+
+
 def _provider(value: Any) -> str:
     return str(value or "").strip().lower().replace("_", "-")
 
@@ -414,7 +460,7 @@ def _apply_shot_contract_replan(
             "replanned_at": _utc_now(),
         }
     )
-    _write_json_atomic(
+    _write_candidate_manifest_atomic(
         manifest_path,
         {**manifest, "contract_replans": replans, "updated_at": _utc_now()},
     )
@@ -489,7 +535,7 @@ def _reconcile_manifest_contracts(
         "contract_events": events,
         "updated_at": _utc_now(),
     }
-    _write_json_atomic(
+    _write_candidate_manifest_atomic(
         context.project_dir / "manifests" / "shot_candidate_manifest.json",
         updated,
     )
@@ -1192,7 +1238,7 @@ def _judge_candidates(
             "updated_at": _utc_now(),
         }
     )
-    _write_json_atomic(manifest_path, manifest)
+    _write_candidate_manifest_atomic(manifest_path, manifest)
     status = (
         "selected"
         if selected_id
@@ -1352,7 +1398,7 @@ def _grandfather_clean_legacy_selections(
         "selection_events": events,
         "updated_at": _utc_now(),
     }
-    _write_json_atomic(
+    _write_candidate_manifest_atomic(
         context.project_dir / "manifests" / "shot_candidate_manifest.json",
         updated,
     )
@@ -1472,7 +1518,7 @@ def _promote_bounded_best_effort(
         "selection_events": events,
         "updated_at": _utc_now(),
     }
-    _write_json_atomic(
+    _write_candidate_manifest_atomic(
         context.project_dir / "manifests" / "shot_candidate_manifest.json",
         updated,
     )
