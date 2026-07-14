@@ -48,6 +48,13 @@ STORY_VIDEO_QUALITY_CONTROL_SCHEMA = {
                 "type": "string",
                 "description": "Shot id from scene_ledger.json.",
             },
+            "provider": {
+                "type": "string",
+                "enum": ["openai-codex"],
+                "description": (
+                    "Explicit authorized provider provenance for OpenAI vision QC."
+                ),
+            },
             "repair_round": {
                 "type": "integer",
                 "minimum": 1,

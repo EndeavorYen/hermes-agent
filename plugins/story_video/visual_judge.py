@@ -1735,6 +1735,73 @@ def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
     }
 
 
+def _next_batch_work_group(
+    context: StoryVideoRunContext,
+    *,
+    max_items: int = 3,
+) -> dict[str, Any]:
+    """Return a bounded group of fresh shots while keeping recovery serialized."""
+    limit = max(1, min(int(max_items or 1), 4))
+    first = _next_batch_work(context)
+    if first.get("work_status") != "ready":
+        return first
+
+    singleton = {
+        **first,
+        "parallelism": 1,
+        "work_items": [first],
+    }
+    if (
+        limit == 1
+        or first.get("operation") != "generate"
+        or first.get("contract_reset") is True
+    ):
+        return singleton
+
+    manifest = _load_json(
+        context.project_dir / "manifests" / "shot_candidate_manifest.json"
+    ) or {}
+    by_shot = {
+        str(row.get("shot_id") or ""): row
+        for row in manifest.get("outputs") or []
+        if isinstance(row, dict) and str(row.get("shot_id") or "").strip()
+    }
+    first_shot_id = str(first.get("shot_id") or "")
+    if first_shot_id in by_shot:
+        return singleton
+
+    work_items = [first]
+    for shot_id in _ordered_shot_ids(context):
+        if len(work_items) >= limit:
+            break
+        if shot_id == first_shot_id or shot_id in by_shot:
+            continue
+        prompt_info = _compile_prompt(context, shot_id=shot_id)
+        if not prompt_info.get("success"):
+            continue
+        work_items.append(
+            {
+                **prompt_info,
+                "action": "next_batch_work",
+                "work_status": "ready",
+                "operation": "generate",
+                "remaining_shot_count": first.get("remaining_shot_count", 0),
+            }
+        )
+
+    if len(work_items) == 1:
+        return singleton
+    return {
+        "success": True,
+        "action": "next_batch_work",
+        "work_status": "ready",
+        "operation": "generate_batch",
+        "parallelism": len(work_items),
+        "work_items": work_items,
+        "remaining_shot_count": first.get("remaining_shot_count", 0),
+    }
+
+
 def _required_project_file(
     context: StoryVideoRunContext,
     value: Any,
