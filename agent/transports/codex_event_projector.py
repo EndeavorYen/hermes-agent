@@ -33,6 +33,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from agent.codex_responses_adapter import _bounded_responses_call_id
+
 
 def _deterministic_call_id(item_type: str, item_id: str) -> str:
     """Stable id for tool_call message correlation.
@@ -42,9 +44,11 @@ def _deterministic_call_id(item_type: str, item_id: str) -> str:
     prefix caches stay valid. See AGENTS.md Pitfall #16 (deterministic IDs in
     tool call history)."""
     if item_id:
-        return f"codex_{item_type}_{item_id}"
-    digest = hashlib.sha256(f"{item_type}".encode()).hexdigest()[:16]
-    return f"codex_{item_type}_{digest}"
+        call_id = f"codex_{item_type}_{item_id}"
+    else:
+        digest = hashlib.sha256(f"{item_type}".encode()).hexdigest()[:16]
+        call_id = f"codex_{item_type}_{digest}"
+    return _bounded_responses_call_id(call_id)
 
 
 def _format_tool_args(d: dict) -> str:

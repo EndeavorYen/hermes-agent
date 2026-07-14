@@ -233,6 +233,26 @@ class TestMcpToolCallProjection:
         ).messages
         assert "error" in msgs[1]["content"]
 
+    def test_mcp_call_id_respects_openai_responses_limit(self) -> None:
+        item = {
+            "type": "mcpToolCall",
+            "id": "cf365273-d583-47f6-ad85-583990af40ca",
+            "server": "hermes-tools",
+            "tool": "story_video_quality_control",
+            "status": "completed",
+            "arguments": {"action": "judge_candidates"},
+            "result": {"success": True},
+            "error": None,
+        }
+
+        assistant, tool = CodexEventProjector().project(
+            {"method": "item/completed", "params": {"item": item}}
+        ).messages
+        call_id = assistant["tool_calls"][0]["id"]
+
+        assert len(call_id) <= 64
+        assert tool["tool_call_id"] == call_id
+
 
 class TestUserAndOpaqueProjection:
     def test_user_message_text_fragments_only(self) -> None:
@@ -273,6 +293,16 @@ class TestHelpers:
         b = _deterministic_call_id("exec", "")
         assert a == b
         assert "exec" in a
+
+    def test_deterministic_call_id_bounds_long_values_without_collisions(self) -> None:
+        item_type = "mcp__hermes-tools__story_video_quality_control"
+        first = _deterministic_call_id(item_type, "a" * 36)
+        replay = _deterministic_call_id(item_type, "a" * 36)
+        second = _deterministic_call_id(item_type, "b" * 36)
+
+        assert len(first) <= 64
+        assert first == replay
+        assert first != second
 
     def test_format_tool_args_sorted_keys(self) -> None:
         # Sorted keys = deterministic across replays = prefix cache stays valid
