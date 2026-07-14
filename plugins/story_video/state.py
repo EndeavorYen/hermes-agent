@@ -327,6 +327,34 @@ class StoryVideoStateStore:
     def for_session(self, session_id: str) -> StoryVideoRunContext | None:
         return self._from_index(self.session_index_path, session_id)
 
+    def for_original_request(
+        self,
+        original_request: str,
+    ) -> StoryVideoRunContext | None:
+        """Recover a run from the immutable Slack thread parent request.
+
+        Gateway session records can be pruned while the platform thread stays
+        alive. The quoted parent survives that reset, so use an exact compacted
+        request match instead of guessing from the newest project or topic.
+        """
+        target = _compact(original_request)
+        if not target or not self.run_state_root.is_dir():
+            return None
+        matches: list[StoryVideoRunContext] = []
+        for path in self.run_state_root.glob("*.json"):
+            payload = self._read_json(path, None)
+            if not isinstance(payload, dict):
+                continue
+            try:
+                context = StoryVideoRunContext.from_dict(payload)
+            except (KeyError, TypeError, ValueError):
+                continue
+            if _compact(context.original_request) == target:
+                matches.append(self._reconcile_production_context(context))
+        if not matches:
+            return None
+        return max(matches, key=lambda item: (item.updated_at, item.created_at))
+
     def for_run(
         self,
         *,

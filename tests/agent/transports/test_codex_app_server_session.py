@@ -635,6 +635,53 @@ class TestServerRequestRouting:
         s.run_turn("hi", turn_timeout=1.0)
         assert ("req-2", {"decision": "acceptForSession"}) in client.responses
 
+    def test_apply_patch_denies_story_video_canonical_state_even_when_auto_approved(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        protected = (
+            hermes_home
+            / "story_videos"
+            / "_workflow_state"
+            / "authorizations"
+            / "run-1.json"
+        )
+        client = FakeClient()
+        client.queue_notification(
+            "item/started",
+            item={
+                "type": "fileChange",
+                "id": "fc-protected",
+                "changes": [{"kind": {"type": "update"}, "path": str(protected)}],
+            },
+            threadId="t",
+            turnId="tu1",
+        )
+        client.queue_server_request(
+            "item/fileChange/requestApproval",
+            request_id="req-protected",
+            itemId="fc-protected",
+            turnId="tu1",
+            threadId="t",
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+        session = make_session(
+            client,
+            request_routing=_ServerRequestRouting(auto_approve_apply_patch=True),
+        )
+
+        session.run_turn("hi", turn_timeout=1.0)
+
+        assert (
+            "req-protected",
+            {"decision": "decline"},
+        ) in client.responses
+
     def test_unknown_server_request_replied_with_error(self):
         client = FakeClient()
         client.queue_server_request("totally/unknown", request_id="req-3")

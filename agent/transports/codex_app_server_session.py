@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from agent.codex_responses_adapter import _format_responses_error
+from agent.file_safety import is_write_denied
 from agent.redact import redact_sensitive_text
 from agent.transports.codex_app_server import (
     CodexAppServerClient,
@@ -245,6 +246,7 @@ class CodexAppServerSession:
         # approval params don't carry the changeset, so we cache here
         # to surface a real summary in the approval prompt (quirk #4).
         self._pending_file_changes: dict[str, str] = {}
+        self._pending_file_change_paths: dict[str, tuple[str, ...]] = {}
         self._closed = False
 
     # ---------- lifecycle ----------
@@ -909,6 +911,16 @@ class CodexAppServerSession:
         return "decline"  # fail-closed when no callback wired
 
     def _decide_apply_patch_approval(self, params: dict) -> str:
+        item_id = params.get("itemId") or ""
+        pending_paths = self._pending_file_change_paths.get(item_id, ())
+        for path in pending_paths:
+            resolved = path if os.path.isabs(path) else os.path.join(self._cwd, path)
+            if is_write_denied(resolved):
+                logger.warning(
+                    "Declining Codex apply_patch to protected path: %s",
+                    resolved,
+                )
+                return "decline"
         if self._routing.auto_approve_apply_patch:
             return "accept"
         if self._approval_callback is not None:
@@ -918,7 +930,6 @@ class CodexAppServerSession:
             # up by item_id so the user sees what's actually changing.
             reason = params.get("reason")
             grant_root = params.get("grantRoot")
-            item_id = params.get("itemId") or ""
             change_summary = self._lookup_pending_file_change(item_id)
             description_parts = []
             if reason:
@@ -976,6 +987,7 @@ class CodexAppServerSession:
                 p = ch.get("path") or ""
                 if p:
                     paths.append(p)
+            self._pending_file_change_paths[item_id] = tuple(paths)
             counts = ", ".join(f"{n} {k}" for k, n in sorted(kinds.items()))
             preview = ", ".join(paths[:3])
             if len(paths) > 3:
@@ -985,6 +997,7 @@ class CodexAppServerSession:
             )
         elif method == "item/completed":
             self._pending_file_changes.pop(item_id, None)
+            self._pending_file_change_paths.pop(item_id, None)
 
     def _lookup_pending_file_change(self, item_id: str) -> Optional[str]:
         """Look up an in-progress fileChange item by id and summarize its

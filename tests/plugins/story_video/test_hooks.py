@@ -8,10 +8,11 @@ from plugins.story_video.audit import ProviderAudit
 from plugins.story_video.state import StoryVideoStateStore
 
 
-def _event(text: str):
+def _event(text: str, *, reply_to_text: str | None = None):
     return SimpleNamespace(
         text=text,
         reply_to_message_id="thread-1",
+        reply_to_text=reply_to_text,
         source=SimpleNamespace(
             platform="slack",
             scope_id="workspace-1",
@@ -230,6 +231,89 @@ def test_gateway_migrates_legacy_source_binding_for_active_thread(
     assert result["action"] == "rewrite"
     assert '"action": "continue"' in result["text"]
     assert store.for_source(hooks._source_key(start_event)) is not None
+
+
+def test_same_slack_thread_recovers_story_run_after_session_index_reset(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    parent = "故事影片：恐龍的起源｜5分鐘｜真實自然史紀錄片風格。只規劃。"
+    original_event = _event(parent)
+    context = store.create_or_load(
+        source_key="gateway:pre-migration-source",
+        session_id="session-before-reset",
+        call=hooks.OperatorCall(
+            action="start",
+            topic="恐龍的起源",
+            duration="5分鐘",
+            visual_style="真實自然史紀錄片風格",
+        ),
+        original_request=parent,
+    )
+    context = store.update(context, phase="batch", auto_mode=True)
+    reset_event = _event(
+        "[Thread context — prior messages in this thread (not yet in conversation history):]\n"
+        f"[thread parent] simon: {parent}\n"
+        "simon: 全自動\n"
+        "[End of thread context]\n"
+        "請繼續",
+        reply_to_text=parent,
+    )
+
+    rewritten = hooks.pre_gateway_dispatch(event=reset_event)
+    result = hooks.pre_llm_call(
+        session_id="session-after-reset",
+        user_message=rewritten["text"],
+    )
+
+    resumed = store.for_session("session-after-reset")
+    assert resumed is not None
+    assert resumed.run_id == context.run_id
+    assert resumed.phase == "batch"
+    assert resumed.auto_mode is True
+    assert '"action": "continue"' in rewritten["text"]
+    assert "phase=batch" in result["context"]
+    assert store.for_source(hooks._source_key(original_event)).run_id == context.run_id
+
+
+def test_pre_llm_recovers_from_reply_wrapper_when_gateway_marker_is_missing(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    parent = "故事影片：恐龍起源｜5分鐘｜真實照片。只規劃。"
+    context = store.create_or_load(
+        source_key="source-before-reset",
+        session_id="session-before-reset",
+        call=hooks.OperatorCall(
+            action="start",
+            topic="恐龍起源",
+            duration="5分鐘",
+            visual_style="真實照片",
+        ),
+        original_request=parent,
+    )
+    context = store.update(context, phase="batch", auto_mode=True)
+
+    result = hooks.pre_llm_call(
+        session_id="session-after-reset",
+        user_message=(
+            f'[Replying to: "{parent}"]\n'
+            "[Thread context — prior messages in this thread (not yet in conversation history):]\n"
+            f"[thread parent] simon: {parent}\n"
+            "simon: 全自動\n"
+            "[End of thread context]\n"
+            "請繼續"
+        ),
+    )
+
+    resumed = store.for_session("session-after-reset")
+    assert resumed is not None
+    assert resumed.run_id == context.run_id
+    assert resumed.phase == "batch"
+    assert resumed.auto_mode is True
+    assert "phase=batch" in result["context"]
 
 
 def test_pre_llm_creates_context_and_injects_provider_policy(tmp_path, monkeypatch) -> None:
