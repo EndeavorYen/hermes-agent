@@ -83,6 +83,40 @@ class TestDetectDangerousRm:
         assert "delete" in desc.lower()
 
 
+class TestStoryVideoCanonicalStateProtection:
+    def test_shell_redirect_to_workflow_state_is_hardline_blocked(self):
+        command = (
+            "echo '{}' > "
+            "$HERMES_HOME/story_videos/_workflow_state/runs/run-1.json"
+        )
+
+        blocked, description = detect_hardline_command(command)
+
+        assert blocked is True
+        assert description == "write to canonical story-video workflow state"
+
+    def test_script_mutation_of_workflow_state_is_hardline_blocked(self):
+        command = (
+            "python3 repair.py "
+            "$HERMES_HOME/story_videos/_workflow_state/authorizations/run-1.json"
+        )
+
+        blocked, description = detect_hardline_command(command)
+
+        assert blocked is True
+        assert description == "write to canonical story-video workflow state"
+
+    def test_read_only_workflow_state_inspection_remains_allowed(self):
+        command = (
+            "jq . "
+            "$HERMES_HOME/story_videos/_workflow_state/runs/run-1.json"
+        )
+
+        blocked, _description = detect_hardline_command(command)
+
+        assert blocked is False
+
+
 class TestWindowsShellDestructiveCommands:
     def test_cmd_del_requires_approval(self):
         dangerous, key, desc = detect_dangerous_command(

@@ -31,6 +31,8 @@ _PHASE_BLOCKED_RE = re.compile(
 _AUTOPILOT_STALL_LIMIT = 3
 _AUTOPILOT_ROTATE_AFTER_CONTINUATIONS = 3
 _AUTOPILOT_ROTATE_AFTER_MESSAGES = 80
+_THREAD_CONTEXT_END = "[End of thread context]"
+_REPLY_PARENT_RE = re.compile(r'^\[Replying to: "(.*?)"\]', re.DOTALL)
 
 
 def _digest_source(parts: list[str]) -> str:
@@ -79,6 +81,18 @@ def _marker_payload(text: Any) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _current_operator_text(text: Any) -> str:
+    raw = str(text or "").strip()
+    if _THREAD_CONTEXT_END in raw:
+        return raw.rsplit(_THREAD_CONTEXT_END, 1)[1].strip()
+    return raw
+
+
+def _reply_parent_text(text: Any) -> str:
+    match = _REPLY_PARENT_RE.match(str(text or "").strip())
+    return match.group(1).strip() if match else ""
+
+
 def _write_project_contract(context: StoryVideoRunContext) -> None:
     path = context.project_dir / "PROJECT_CONTRACT.md"
     if path.exists():
@@ -116,13 +130,23 @@ def _write_project_contract(context: StoryVideoRunContext) -> None:
 
 def pre_gateway_dispatch(*, event: Any, **_: Any) -> dict[str, Any] | None:
     text = str(getattr(event, "text", "") or "")
+    operator_text = _current_operator_text(text)
     source_key = _source_key(event)
     context = _STORE.for_source(source_key)
     if context is None:
         context = _STORE.for_source(_legacy_source_key(event))
         if context is not None:
             _STORE.bind_source(context, source_key)
-    call = parse_operator_call(text, has_active_project=context is not None)
+    if context is None:
+        reply_parent = str(getattr(event, "reply_to_text", "") or "").strip()
+        if reply_parent:
+            context = _STORE.for_original_request(reply_parent)
+            if context is not None:
+                _STORE.bind_source(context, source_key)
+    call = parse_operator_call(
+        operator_text,
+        has_active_project=context is not None,
+    )
     if call is None:
         return None
     payload = {
@@ -134,7 +158,7 @@ def pre_gateway_dispatch(*, event: Any, **_: Any) -> dict[str, Any] | None:
         "auto_mode": call.auto_mode,
         "new_project": call.new_project,
         "source_key": source_key,
-        "original_request": text,
+        "original_request": operator_text,
     }
     rewritten = f"{text}\n\n{_MARKER} {json.dumps(payload, ensure_ascii=False)}"
     return {"action": "rewrite", "text": rewritten}
@@ -168,7 +192,27 @@ def pre_llm_call(
                         )
                     )
         if context is None:
-            call = parse_operator_call(str(user_message or ""), has_active_project=False)
+            reply_parent = _reply_parent_text(user_message)
+            if reply_parent:
+                recovered = _STORE.for_original_request(reply_parent)
+                if recovered is not None:
+                    context = _STORE.bind_session(recovered, session_id)
+                    ProviderAudit(context).append_event(
+                        ProviderAuditEvent(
+                            kind="session_reset_recovery",
+                            phase=context.phase,
+                            provider="",
+                            model="",
+                            status="ok",
+                            session_id=session_id,
+                            detail={"recovery_key": "reply_parent"},
+                        )
+                    )
+        if context is None:
+            call = parse_operator_call(
+                _current_operator_text(user_message),
+                has_active_project=False,
+            )
             if call is None:
                 return None
             context = _STORE.create_or_load(
@@ -181,7 +225,7 @@ def pre_llm_call(
             action = call.action
         else:
             call = parse_operator_call(
-                str(user_message or ""), has_active_project=True
+                _current_operator_text(user_message), has_active_project=True
             )
             if call is None:
                 action = "continue"

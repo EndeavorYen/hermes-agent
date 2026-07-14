@@ -240,6 +240,11 @@ _CREDENTIAL_FILES = (
 # /etc/sudoers on macOS but bypasses a plain "/etc/" pattern check. Match
 # both forms. Inspired by Claude Code 2.1.113's "dangerous path protection".
 _MACOS_PRIVATE_SYSTEM_PATH = r'/private/(?:etc|var|tmp|home)/'
+_STORY_VIDEO_CONTROL_STATE_PATH = (
+    r'(?:(?:~|\$home|\$\{home\})/\.hermes/|'
+    r'(?:\$hermes_home|\$\{hermes_home\})/)'
+    r'story_videos/_workflow_state(?:/[^\s"\'`]+)?'
+)
 # System-config paths that should trigger approval for any write/edit,
 # collapsing /etc, its macOS /private/etc mirror, and /etc/sudoers.d/ into
 # one shared fragment so new DANGEROUS_PATTERNS stay consistent.
@@ -383,6 +388,12 @@ HARDLINE_PATTERNS = [
     (_RM_FLAG_PREFIX + _hardline_rm_path(r'/(?:(?:\.\.?)?/)*(?:\.\.?)?\**|/ \*'), "recursive delete of root filesystem"),
     (_RM_FLAG_PREFIX + _hardline_rm_path(_HARDLINE_SYSTEM_DIRS), "recursive delete of system directory"),
     (_RM_FLAG_PREFIX + _hardline_rm_path(r'(?:~|\$\{?HOME\}?)(?:/?|/\*)?'), "recursive delete of home directory"),
+    (
+        rf'(?:>>?\s*["\']?{_STORY_VIDEO_CONTROL_STATE_PATH}|'
+        rf'\b(?:tee|touch|truncate|rm|mv|cp|install|chmod|chown|sed|perl|'
+        rf'python[23]?|ruby|node)\b[^\n]*{_STORY_VIDEO_CONTROL_STATE_PATH})',
+        "write to canonical story-video workflow state",
+    ),
     # Filesystem format
     (r'\bmkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),
     # Raw block device overwrites (dd + redirection)

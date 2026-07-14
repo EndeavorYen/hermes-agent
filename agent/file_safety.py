@@ -119,6 +119,17 @@ def is_write_denied(path: str) -> bool:
 
     for base_real in hermes_dirs:
         try:
+            workflow_state_real = os.path.realpath(
+                os.path.join(base_real, "story_videos", "_workflow_state")
+            )
+            if (
+                resolved == workflow_state_real
+                or resolved.startswith(workflow_state_real + os.sep)
+            ):
+                return True
+        except Exception:
+            pass
+        try:
             mcp_real = os.path.realpath(os.path.join(base_real, mcp_tokens_dir_name))
             if resolved == mcp_real or resolved.startswith(mcp_real + os.sep):
                 return True
