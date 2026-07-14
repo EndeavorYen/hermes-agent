@@ -391,8 +391,9 @@ def test_autopilot_context_requires_canonical_quality_tool_and_phase_loop(
     assert "original_request is historical" in result["context"]
     assert "never edit story_video_run_context.json" in result["context"]
     assert "never edit production_checklist.json phase" in result["context"]
-    assert "exactly one canonical batch work unit per LLM turn" in result["context"]
-    assert "Do not start the next batch work unit in the same turn" in result["context"]
+    assert "one canonical bounded work group per LLM turn" in result["context"]
+    assert "up to three fresh shots" in result["context"]
+    assert "repair, rejudge_existing" in result["context"]
 
 
 def test_autopilot_requests_internal_continuation_until_complete(
@@ -439,6 +440,15 @@ def test_autopilot_rotates_before_continuation_history_bloats(
 def test_autopilot_context_budget_is_small_enough_for_batch_workers() -> None:
     assert hooks._AUTOPILOT_ROTATE_AFTER_CONTINUATIONS <= 3
     assert hooks._AUTOPILOT_ROTATE_AFTER_MESSAGES <= 80
+
+
+def test_story_video_batch_parallelism_is_capped_at_three(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"story_video": {"batch_parallelism": 99}},
+    )
+
+    assert hooks._batch_parallelism() == 3
 
 
 def test_pre_llm_binds_rotated_child_to_parent_story_context(
@@ -602,6 +612,54 @@ def test_batch_autopilot_continuation_names_exact_next_quality_tool_call(
     assert "Do not generate another shot first" in continuation["message"]
 
 
+def test_batch_autopilot_continuation_batches_fresh_generation(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    start = hooks.pre_gateway_dispatch(
+        event=_event("故事影片：恐龍起源｜5分鐘｜真實照片。完整製作並出片。")
+    )
+    hooks.pre_llm_call(session_id="session-auto", user_message=start["text"])
+    context = store.for_session("session-auto")
+    assert context is not None
+    store.update(context, phase="batch", auto_mode=True)
+    monkeypatch.setattr(
+        hooks,
+        "_next_batch_work_group",
+        lambda _context, max_items: {
+            "success": True,
+            "work_status": "ready",
+            "operation": "generate_batch",
+            "parallelism": 3,
+            "remaining_shot_count": 4,
+            "work_items": [
+                {
+                    "operation": "generate",
+                    "shot_id": f"S00_SH0{index}",
+                    "candidate_id_hint": f"S00_SH0{index}_C01",
+                    "repair_strategy": "initial",
+                }
+                for index in range(3)
+            ],
+        },
+    )
+
+    continuation = hooks.auto_continue_llm_output(
+        session_id="session-auto",
+        response_text="STORY_VIDEO_PHASE_PROGRESS: batch IN_PROGRESS",
+    )
+
+    assert continuation is not None
+    message = continuation["message"]
+    assert "S00_SH00_C01" in message
+    assert "S00_SH01_C01" in message
+    assert "S00_SH02_C01" in message
+    assert "one parallel image_generate tool batch" in message
+    assert "judge each successful result sequentially" in message
+    assert "Do not generate another shot first" not in message
+
+
 def test_batch_autopilot_does_not_repeat_human_review_required_work(
     tmp_path, monkeypatch
 ) -> None:
@@ -621,8 +679,8 @@ def test_batch_autopilot_does_not_repeat_human_review_required_work(
     )
     monkeypatch.setattr(
         hooks,
-        "_next_batch_work",
-        lambda _context: {
+        "_next_batch_work_group",
+        lambda _context, max_items: {
             "work_status": "human_review_required",
             "shot_id": "S00_SH01",
             "error": "all evidence-backed repairs exhausted",
@@ -653,8 +711,8 @@ def test_batch_autopilot_executes_bounded_shot_contract_replan(
     store.update(context, phase="batch", auto_mode=True)
     monkeypatch.setattr(
         hooks,
-        "_next_batch_work",
-        lambda _context: {
+        "_next_batch_work_group",
+        lambda _context, max_items: {
             "success": True,
             "work_status": "ready",
             "operation": "replan_shot_contract",

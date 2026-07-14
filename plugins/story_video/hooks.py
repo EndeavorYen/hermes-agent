@@ -9,7 +9,7 @@ from typing import Any
 from .audit import ProviderAudit, ProviderAuditEvent
 from .policy import guard_tool_call
 from .state import OperatorCall, StoryVideoRunContext, StoryVideoStateStore, parse_operator_call
-from .visual_judge import _next_batch_work
+from .visual_judge import _next_batch_work, _next_batch_work_group
 
 
 _STORE = StoryVideoStateStore()
@@ -31,6 +31,7 @@ _PHASE_BLOCKED_RE = re.compile(
 _AUTOPILOT_STALL_LIMIT = 3
 _AUTOPILOT_ROTATE_AFTER_CONTINUATIONS = 3
 _AUTOPILOT_ROTATE_AFTER_MESSAGES = 80
+_DEFAULT_BATCH_PARALLELISM = 3
 _THREAD_CONTEXT_END = "[End of thread context]"
 _REPLY_PARENT_RE = re.compile(r'^\[Replying to: "(.*?)"\]', re.DOTALL)
 
@@ -38,6 +39,28 @@ _REPLY_PARENT_RE = re.compile(r'^\[Replying to: "(.*?)"\]', re.DOTALL)
 def _digest_source(parts: list[str]) -> str:
     digest = hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
     return f"gateway:{digest[:24]}"
+
+
+def _batch_parallelism() -> int:
+    """Return the conservative story-video source-image concurrency cap."""
+    value: Any = None
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config() or {}
+        story_video = config.get("story_video") if isinstance(config, dict) else None
+        image_gen = config.get("image_gen") if isinstance(config, dict) else None
+        if isinstance(story_video, dict):
+            value = story_video.get("batch_parallelism")
+        if value is None and isinstance(image_gen, dict):
+            value = image_gen.get("max_parallel_requests")
+    except Exception:
+        value = None
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        limit = _DEFAULT_BATCH_PARALLELISM
+    return max(1, min(limit, _DEFAULT_BATCH_PARALLELISM))
 
 
 def _legacy_source_key(event: Any) -> str:
@@ -313,7 +336,7 @@ def pre_llm_call(
         "spelling in all narration and never write spoken aliases into script.md; "
         "aliases belong only in pronunciation_lexicon.json and are compiled at voice time. "
         "During batch, first call story_video_quality_control "
-        "action=next_batch_work and execute only the returned shot. Existing "
+        "action=next_batch_work. Existing "
         "repair_required work always takes priority over generating a new shot. After "
         "an operation=replan_shot_contract response, design a replacement using only "
         "the returned mutable_fields, preserve immutable_contract exactly, and call "
@@ -381,9 +404,11 @@ def pre_llm_call(
             "the operator to reply with continue or repair. Stop only for an operator "
             "setup blocker such as missing credentials, exhausted quota, or unavailable "
             "required provider; otherwise finish the production and delivery. During "
-            "batch, execute exactly one canonical batch work unit per LLM turn: one "
-            "rejudge_existing action, one replan_shot_contract action, or one "
-            "compile/generate/judge cycle. After that unit writes its QC result, return "
+            "batch, execute one canonical bounded work group per LLM turn. A group may "
+            "contain up to three fresh shots whose image_generate calls run together; "
+            "judge their successful results sequentially. A repair, rejudge_existing, "
+            "or replan_shot_contract action is always a singleton and takes priority. "
+            "After that group writes its QC results, return "
             "a brief progress response immediately so the internal autopilot continuation "
             "can schedule the canonical next action. Do not start the next batch work unit "
             "in the same turn. This turn boundary is not an operator pause and must not "
@@ -483,11 +508,41 @@ def auto_continue_llm_output(
     next_work_instruction = ""
     if context.phase == "batch":
         try:
-            next_work = _next_batch_work(context)
+            next_work = _next_batch_work_group(
+                context,
+                max_items=_batch_parallelism(),
+            )
         except (OSError, TypeError, ValueError):
             next_work = {}
         if next_work.get("work_status") == "ready":
-            if next_work.get("operation") == "rejudge_existing":
+            if next_work.get("operation") == "generate_batch":
+                work_items = [
+                    {
+                        key: item.get(key)
+                        for key in (
+                            "shot_id",
+                            "candidate_id_hint",
+                            "repair_strategy",
+                            "shot_contract_hash",
+                        )
+                    }
+                    for item in next_work.get("work_items") or []
+                    if isinstance(item, dict)
+                ]
+                next_action = (
+                    "compile the listed story-video shots, then generate and judge them: "
+                    f"work_items={json.dumps(work_items, ensure_ascii=False, sort_keys=True)}"
+                )
+                next_work_instruction = (
+                    " Call compile_prompt for each listed shot in order. Then issue exactly "
+                    "one image_generate call per shot together in one parallel image_generate "
+                    "tool batch. Do not create alternate candidates. After the batch returns, "
+                    "judge each successful result sequentially with its exact candidate_id_hint, "
+                    "repair_strategy, generation prompt, and shot_contract_hash. If one provider "
+                    "call fails, preserve the successful results and leave only that shot for the "
+                    "next canonical retry."
+                )
+            elif next_work.get("operation") == "rejudge_existing":
                 candidate = json.dumps(
                     next_work["candidate"],
                     ensure_ascii=False,
