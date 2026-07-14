@@ -38,6 +38,8 @@ def test_quality_issue_taxonomy_maps_existing_visual_judge_output():
             "composition_bad",
             "face_unnatural",
             "style_adherence_low",
+            "required_detail_missing",
+            "forbidden_detail_present",
         ]
     )
 
@@ -62,3 +64,9 @@ def test_provider_failure_is_not_misclassified_as_visual_preference():
 
     assert "provider_failure" in decision.blocker_codes
     assert decision.deliverable is False
+
+
+def test_contract_detail_violations_are_artifact_blockers():
+    assert classify_quality_blockers(
+        ("required_detail_missing", "forbidden_detail_present")
+    ) == ("artifact_defect",)

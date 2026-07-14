@@ -82,8 +82,9 @@ allowed in the default single-image workflow.
 `agent.visual.production_kernel.providers` chooses an authorized provider from
 the explicit override, measured provider profiles, and availability evidence.
 Profiles are scoped by request category and record first-pass QC rate, provider
-failures, latency, and sample count. Sparse evidence cannot silently overturn
-the configured default.
+failures, and sample count. Sparse evidence cannot silently overturn the
+configured default. Latency remains runtime evidence but is not a routing input
+until the ledger records comparable provider timings.
 
 The coordinator returns a decision with reason and evidence; it does not call
 providers. This keeps policy independently testable and lets the existing

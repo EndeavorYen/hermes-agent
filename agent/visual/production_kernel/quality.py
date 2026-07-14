@@ -99,6 +99,8 @@ def classify_quality_blockers(quality_issues: Iterable[Any]) -> tuple[str, ...]:
             blockers.add("action_or_moment_missing")
         elif any(token in text for token in ("truth", "evidence", "unsupported", "sensational")):
             blockers.add("truth_or_evidence_risk")
+        elif text in {"required_detail_missing", "forbidden_detail_present"}:
+            blockers.add("artifact_defect")
         elif any(
             token in text
             for token in (

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 from typing import Mapping
@@ -107,6 +108,72 @@ def choose_visual_provider(
     )
 
 
+def build_provider_quality_profiles(
+    ledger: Any,
+    *,
+    category: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Build category-scoped provider profiles from first-candidate artifact QC."""
+    try:
+        requests = ledger._list("visual_requests")
+        attempts = ledger._list("visual_attempts")
+        judgments = ledger._list("visual_judgments")
+    except Exception:
+        return {}
+    request_categories = {
+        _row_id(request, "id", "request_id"): _request_category(request)
+        for request in requests
+        if isinstance(request, dict)
+    }
+    latest_judgment: dict[str, dict[str, Any]] = {}
+    for judgment in judgments:
+        if not isinstance(judgment, dict):
+            continue
+        if str(judgment.get("judge_name") or "").strip() != "visual_quality_judge":
+            continue
+        attempt_id = _row_id(judgment, "attempt_id")
+        if attempt_id:
+            latest_judgment[attempt_id] = judgment
+
+    grouped: dict[str, dict[str, int]] = {}
+    for attempt in attempts:
+        if not isinstance(attempt, dict) or _candidate_index(attempt) != 0:
+            continue
+        if category is not None:
+            request_id = _row_id(attempt, "request_id")
+            if request_categories.get(request_id) != category:
+                continue
+        provider = _provider(attempt.get("provider"))
+        if not provider:
+            continue
+        counts = grouped.setdefault(
+            provider,
+            {"sample_count": 0, "first_pass_count": 0, "failure_count": 0},
+        )
+        counts["sample_count"] += 1
+        if _attempt_failed(attempt):
+            counts["failure_count"] += 1
+            continue
+        judgment = latest_judgment.get(_row_id(attempt, "id", "attempt_id"))
+        if judgment is not None and _judgment_passed(judgment):
+            counts["first_pass_count"] += 1
+
+    return {
+        provider: {
+            "sample_count": counts["sample_count"],
+            "first_pass_rate": _fraction(
+                counts["first_pass_count"],
+                counts["sample_count"],
+            ),
+            "failure_rate": _fraction(
+                counts["failure_count"],
+                counts["sample_count"],
+            ),
+        }
+        for provider, counts in sorted(grouped.items())
+    }
+
+
 def _profile_score(profile: Mapping[str, Any]) -> float:
     first_pass_rate = _rate(profile.get("first_pass_rate"))
     failure_rate = _rate(profile.get("failure_rate"))
@@ -137,3 +204,63 @@ def _provider(value: Any) -> str:
         "x.ai": "xai",
     }
     return aliases.get(text, text)
+
+
+def _candidate_index(attempt: Mapping[str, Any]) -> int:
+    try:
+        return int(attempt.get("candidate_index") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _attempt_failed(attempt: Mapping[str, Any]) -> bool:
+    status = str(attempt.get("status") or "").strip().lower()
+    return status in {"failed", "error", "blocked"} or bool(
+        attempt.get("error_type") or attempt.get("provider_error_type")
+    )
+
+
+def _judgment_passed(judgment: Mapping[str, Any]) -> bool:
+    details = _mapping(judgment.get("details") or judgment.get("score_json"))
+    quality_issues = details.get("quality_issues")
+    if isinstance(quality_issues, (list, tuple, set)) and quality_issues:
+        return False
+    verdict = str(judgment.get("verdict") or "").strip().lower()
+    if verdict in {"pass", "passed", "accept", "post", "selected"}:
+        return True
+    try:
+        return float(judgment.get("score") or 0.0) >= 0.7
+    except (TypeError, ValueError):
+        return False
+
+
+def _request_category(request: Mapping[str, Any]) -> str:
+    intent = _mapping(
+        request.get("normalized_intent") or request.get("normalized_intent_json")
+    )
+    return str(intent.get("category") or "").strip()
+
+
+def _mapping(value: Any) -> Mapping[str, Any]:
+    if isinstance(value, Mapping):
+        return value
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except (TypeError, ValueError):
+            return {}
+        if isinstance(decoded, Mapping):
+            return decoded
+    return {}
+
+
+def _row_id(row: Mapping[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = row.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def _fraction(numerator: int, denominator: int) -> float:
+    return round(numerator / denominator, 4) if denominator > 0 else 0.0

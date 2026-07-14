@@ -517,3 +517,39 @@ def test_quality_judge_exports_portrait_preference_dimensions_and_issue_tags():
     ]
     assert "preference_dimension_face_naturalness_low" in result["uncertainty_reasons"]
     assert "preference_dimension_fashion_material_quality_low" in result["uncertainty_reasons"]
+
+
+def test_quality_judge_surfaces_visual_contract_defect_codes():
+    from agent.visual.judges.quality import judge_visual_quality
+
+    result = judge_visual_quality(
+        {
+            "artifact_id": "contract-mismatch",
+            "kind": "image",
+            "hard_gate": {"passed": True, "delivery_possible": True},
+            "scores": {"resolution": 0.9, "aspect_match": 0.9, "final_score": 0.9},
+        },
+        request_context={"category": "product"},
+        vision_observation={
+            "visual_appeal": 0.9,
+            "composition": 0.9,
+            "confidence": 0.9,
+            "artifact_defects": [
+                "subject_mismatch",
+                "action_or_moment_missing",
+                "style_mismatch",
+                "truth_or_evidence_risk",
+                "required_detail_missing",
+                "forbidden_detail_present",
+            ],
+        },
+    )
+
+    assert result["quality_issues"] == [
+        "subject_mismatch",
+        "action_or_moment_missing",
+        "style_mismatch",
+        "truth_or_evidence_risk",
+        "required_detail_missing",
+        "forbidden_detail_present",
+    ]

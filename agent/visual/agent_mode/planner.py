@@ -5,6 +5,7 @@ from typing import Any
 
 from agent.visual.feedback import is_visual_feedback_only_text
 from agent.visual.feedback import parse_visual_feedback
+from agent.visual.production_kernel.integration import attach_visual_production_kernel
 from agent.visual.prompt_text import strip_visual_prompt_metadata
 
 
@@ -275,6 +276,7 @@ def plan_visual_agent_request(
         if polish_provider is not None:
             arguments["polish_provider"] = polish_provider
             arguments["polish_provider_source"] = "prompt_override"
+        arguments = attach_visual_production_kernel(raw_prompt, arguments)
     contract_image_provider = image_provider
     if image_provider is None and image_provider_source in {
         "character_design_default",
@@ -797,8 +799,6 @@ def _planned_candidate_budget(
     *,
     composition_guide_only: bool,
 ) -> tuple[int, str]:
-    if not composition_guide_only:
-        return 2, "planner_default"
     text = str(value or "")
     if re.search(r"\b(?:one|single|1)\b\s+[^.\n]{0,80}\b(?:candidate|option|guide|composition)", text, re.IGNORECASE):
         return 1, "user"
@@ -812,7 +812,7 @@ def _planned_candidate_budget(
         count = {"二": 2, "兩": 2, "两": 2, "三": 3, "四": 4}.get(match.group(1))
         if count is not None:
             return count, "user"
-    return 3, "planner_default"
+    return 1, "planner_default"
 
 
 def _requests_visual_polish(value: str) -> bool:
@@ -1002,7 +1002,8 @@ def _build_storyboard_contract(value: str) -> dict[str, Any]:
         "enabled": True,
         "mode": "multi_shot_video",
         "shot_count": shot_count,
-        "candidate_budget_per_shot": 2,
+        "candidate_budget_per_shot": 1,
+        "candidate_budget_source": "planner_default",
         "source_image_policy": "one_ranked_image_per_shot",
         "composition_target": "single_coherent_video",
         "delivery_policy": "deliver_composed_video_when_available_else_selected_clips",

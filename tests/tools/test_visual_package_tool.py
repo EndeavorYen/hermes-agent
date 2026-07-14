@@ -4883,6 +4883,319 @@ def test_visual_package_applies_preferred_quality_repair_policy(monkeypatch, tmp
     assert len(repair_attempts) == 1
 
 
+def test_visual_package_kernel_runs_one_classified_repair_and_records_contract(monkeypatch, tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    bad_image = tmp_path / "bad-image.png"
+    good_image = tmp_path / "good-image.png"
+    bad_image.write_bytes(_ONE_PIXEL_PNG)
+    good_image.write_bytes(_ONE_PIXEL_PNG)
+    calls = []
+
+    def fake_generate_image(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return {
+                "success": True,
+                "image": str(bad_image),
+                "provider": "xai",
+                "model": "image",
+                "vision_observation": {
+                    "visual_appeal": 0.3,
+                    "composition": 0.2,
+                    "confidence": 0.9,
+                },
+            }
+        return {
+            "success": True,
+            "image": str(good_image),
+            "provider": "xai",
+            "model": "image",
+            "vision_observation": {
+                "visual_appeal": 0.9,
+                "composition": 0.9,
+                "confidence": 0.9,
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+    payload = json.loads(
+        visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "請產出時尚人物圖片，使用強烈編輯構圖。",
+                "include_video": False,
+                "candidate_budget": 1,
+                "candidate_budget_source": "planner_default",
+                "visual_production_kernel": True,
+                "max_generated_repairs": 1,
+                "visual_contract_hash": "contract-v1",
+                "visual_intent_contract": {
+                    "schema": "visual_intent_contract_v1",
+                    "original_request": "請產出時尚人物圖片，使用強烈編輯構圖。",
+                    "primary_subject": "時尚人物",
+                },
+                "provider_decision": {
+                    "provider": "xai",
+                    "reason": "configured_default",
+                    "available": True,
+                    "evidence": {},
+                },
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert len(calls) == 2
+    assert "composition_weak" in calls[1]["prompt"]
+    assert "materially different composition" in calls[1]["prompt"]
+    kernel_gate = payload["delivery_gate"]["image"]["visual_kernel"]
+    assert kernel_gate["deliverable"] is True
+    attempts = VisualAttemptLedger(default_visual_ledger_path())._list("visual_attempts")
+    assert len(attempts) == 2
+    assert all(
+        attempt["parameters_requested"]["visual_contract_hash"] == "contract-v1"
+        for attempt in attempts
+    )
+    repairs = [
+        attempt["metadata"]["quality_repair"]
+        for attempt in attempts
+        if isinstance(attempt.get("metadata"), dict)
+        and isinstance(attempt["metadata"].get("quality_repair"), dict)
+    ]
+    assert repairs[0]["strategy"] == "composition_reset"
+    assert "composition_weak" in repairs[0]["blocker_codes"]
+
+
+def test_visual_package_kernel_rejects_candidate_from_stale_contract():
+    from tools import visual_package_tool
+
+    gate = visual_package_tool._apply_visual_kernel_delivery_gate(
+        {
+            "allowed": True,
+            "reason": "delivery_allowed",
+            "quality_issues": [],
+        },
+        {
+            "artifact_id": "artifact-1",
+            "hard_gate": {"passed": True},
+            "requested_parameters": {"visual_contract_hash": "old-contract"},
+            "vision_observation": {"confidence": 0.9},
+        },
+        {
+            "visual_production_kernel": True,
+            "visual_contract_hash": "current-contract",
+        },
+    )
+
+    assert gate["allowed"] is False
+    assert gate["visual_kernel"]["blocker_codes"] == ["stale_contract"]
+
+
+def test_visual_package_kernel_prevents_learned_candidate_budget_expansion():
+    from tools import visual_package_tool
+
+    assert visual_package_tool._visual_kernel_candidate_budget(
+        {
+            "visual_production_kernel": True,
+            "candidate_budget_source": "planner_default",
+        },
+        candidate_budget=4,
+        candidate_budget_source="feedback_loop",
+    ) == (1, "visual_kernel_default")
+
+
+def test_visual_package_kernel_preserves_explicit_candidate_budget():
+    from tools import visual_package_tool
+
+    assert visual_package_tool._visual_kernel_candidate_budget(
+        {
+            "visual_production_kernel": True,
+            "candidate_budget": 3,
+            "candidate_budget_source": "user",
+        },
+        candidate_budget=4,
+        candidate_budget_source="feedback_loop",
+    ) == (3, "user")
+
+
+def test_visual_package_kernel_zero_repair_budget_is_preserved():
+    from tools import visual_package_tool
+
+    context = visual_package_tool._visual_kernel_context(
+        {
+            "visual_production_kernel": True,
+            "visual_contract_hash": "contract-v1",
+            "max_generated_repairs": 0,
+        }
+    )
+
+    assert context["max_generated_repairs"] == 0
+
+
+def test_visual_package_kernel_explicit_provider_disables_cross_provider_fallback():
+    from tools import visual_package_tool
+
+    assert visual_package_tool._visual_kernel_allows_provider_fallback(
+        {
+            "visual_production_kernel": True,
+            "provider_decision": {"reason": "explicit_override"},
+        }
+    ) is False
+    assert visual_package_tool._visual_kernel_allows_provider_fallback(
+        {
+            "visual_production_kernel": True,
+            "provider_decision": {"reason": "measured_quality_profile"},
+        }
+    ) is True
+
+
+def test_visual_package_kernel_provider_fallback_is_bounded_to_one(monkeypatch):
+    from tools import visual_package_tool
+
+    calls = []
+
+    monkeypatch.setattr(
+        visual_package_tool,
+        "_available_image_provider_fallbacks",
+        lambda failed_provider=None: ["openai-codex", "grok-web-imagine"],
+    )
+
+    def unavailable_provider(**kwargs):
+        calls.append(kwargs["_provider"])
+        return {
+            "success": False,
+            "provider": kwargs["_provider"],
+            "error_type": "provider_unavailable",
+            "error": "provider unavailable",
+        }
+
+    payloads = visual_package_tool._provider_fallback_payloads(
+        generator=unavailable_provider,
+        payload={
+            "success": False,
+            "provider": "xai",
+            "failure": {"failure_class": "provider_unavailable"},
+        },
+        base_kwargs={"prompt": "Create an image"},
+        request={"prompt": "Create an image", "arguments": {}},
+        modality="image",
+        retry_of=0,
+        max_fallbacks=1,
+    )
+
+    assert calls == ["openai-codex"]
+    assert len(payloads) == 1
+
+
+def test_visual_package_kernel_stops_after_one_failed_provider_fallback(
+    monkeypatch,
+    tmp_path,
+):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    calls = []
+
+    def unavailable_provider(**kwargs):
+        provider = kwargs.get("_provider") or "xai"
+        calls.append(provider)
+        return {
+            "success": False,
+            "provider": provider,
+            "error_type": "provider_unavailable",
+            "error": "provider unavailable",
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", unavailable_provider)
+    monkeypatch.setattr(
+        visual_package_tool,
+        "_available_image_provider_fallbacks",
+        lambda failed_provider=None: ["openai-codex", "grok-web-imagine"],
+    )
+
+    payload = json.loads(
+        visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "Create a clean product image",
+                "include_video": False,
+                "candidate_budget": 1,
+                "candidate_budget_source": "planner_default",
+                "visual_production_kernel": True,
+                "max_generated_repairs": 1,
+                "visual_contract_hash": "contract-v1",
+                "visual_intent_contract": {
+                    "schema": "visual_intent_contract_v1",
+                    "original_request": "Create a clean product image",
+                    "primary_subject": "product",
+                },
+                "provider_decision": {
+                    "provider": "xai",
+                    "reason": "configured_default",
+                    "available": True,
+                    "evidence": {},
+                },
+            }
+        )
+    )
+
+    assert payload["success"] is False
+    assert calls == ["xai", "openai-codex"]
+
+
+def test_visual_package_kernel_vision_prompt_contains_contract_criteria():
+    from tools import visual_package_tool
+
+    prompt = visual_package_tool._contract_aware_inline_vision_prompt(
+        {
+            "visual_intent_contract": {
+                "primary_subject": "red bicycle",
+                "observable_action": "crossing a rain-soaked street",
+                "focal_point": "front wheel splash",
+                "style": "cinematic documentary photography",
+                "required_details": ["visible rain streaks"],
+                "forbidden_details": ["watermark"],
+                "acceptance_criteria": ["bicycle is immediately readable"],
+                "truth_mode": "documentary",
+            }
+        },
+        "Base vision instructions",
+    )
+
+    assert "red bicycle" in prompt
+    assert "visible rain streaks" in prompt
+    assert "bicycle is immediately readable" in prompt
+    assert "subject_mismatch" in prompt
+    assert "action_or_moment_missing" in prompt
+    assert "truth_or_evidence_risk" in prompt
+    assert "required_detail_missing" in prompt
+    assert "forbidden_detail_present" in prompt
+
+
+def test_visual_package_kernel_blocks_delivery_without_artifact_vision_evidence():
+    from tools import visual_package_tool
+
+    gate = visual_package_tool._apply_visual_kernel_delivery_gate(
+        {"allowed": True, "reason": "delivery_allowed", "quality_issues": []},
+        {
+            "artifact_id": "artifact-1",
+            "hard_gate": {"passed": True},
+            "requested_parameters": {"visual_contract_hash": "contract-v1"},
+            "vision_observation_source": "artifact_metadata",
+            "visual_quality_confidence": 0.9,
+        },
+        {
+            "visual_production_kernel": True,
+            "visual_contract_hash": "contract-v1",
+        },
+    )
+
+    assert gate["allowed"] is False
+    assert gate["blocker_codes"] == ["vision_evidence_missing"]
+
+
 def test_visual_package_applies_self_validation_next_actions(monkeypatch, tmp_path):
     from tools import visual_package_tool
 

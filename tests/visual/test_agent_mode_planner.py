@@ -11,7 +11,7 @@ def test_agent_mode_planner_routes_image_plus_video_request_without_advanced_kno
     assert plan["confidence"] >= 0.75
     assert plan["arguments"]["include_image"] is True
     assert plan["arguments"]["include_video"] is True
-    assert plan["arguments"]["candidate_budget"] == 2
+    assert plan["arguments"]["candidate_budget"] == 1
     assert plan["arguments"]["video_budget"] == 1
     assert plan["arguments"]["attachments"] == ["/tmp/ref.png"]
     assert "autonomy_level" not in plan["arguments"]
@@ -89,13 +89,19 @@ def test_agent_mode_planner_supports_multiple_reference_roles_without_fixed_defa
 def test_agent_mode_planner_routes_image_only_request():
     from agent.visual.agent_mode.planner import plan_visual_agent_request
 
-    plan = plan_visual_agent_request("幫我做一張乾淨產品攝影圖")
+    plan = plan_visual_agent_request("請生成乾淨產品攝影圖片")
 
     assert plan["should_use_visual_package"] is True
     assert plan["arguments"]["include_image"] is True
     assert plan["arguments"]["include_video"] is False
-    assert plan["arguments"]["candidate_budget"] == 2
+    assert plan["arguments"]["candidate_budget"] == 1
     assert plan["arguments"]["candidate_budget_source"] == "planner_default"
+    assert plan["arguments"]["visual_production_kernel"] is True
+    assert plan["arguments"]["max_generated_repairs"] == 1
+    assert plan["arguments"]["visual_contract_hash"]
+    assert plan["arguments"]["visual_intent_contract"]["primary_subject"]
+    assert plan["arguments"]["provider_decision"]["provider"] == "xai"
+    assert plan["arguments"]["provider_decision"]["reason"] == "configured_default"
 
 
 def test_agent_mode_planner_defaults_reference_visual_brief_to_prompt_only():
@@ -157,7 +163,7 @@ def test_agent_mode_planner_routes_friendly_draw_character_request():
     assert plan["reason"] == "image_request"
     assert plan["arguments"]["include_image"] is True
     assert plan["arguments"]["include_video"] is False
-    assert plan["arguments"]["candidate_budget"] == 2
+    assert plan["arguments"]["candidate_budget"] == 1
     assert plan["arguments"]["candidate_budget_source"] == "planner_default"
     assert "autonomy_level" not in plan["arguments"]
 
@@ -170,7 +176,7 @@ def test_agent_mode_planner_routes_video_only_request():
     assert plan["should_use_visual_package"] is True
     assert plan["arguments"]["include_image"] is False
     assert plan["arguments"]["include_video"] is True
-    assert plan["arguments"]["candidate_budget"] == 2
+    assert plan["arguments"]["candidate_budget"] == 1
     assert plan["arguments"]["candidate_budget_source"] == "planner_default"
     assert plan["arguments"]["duration"] == 6
     assert plan["reason"] == "attachment_to_video_image_first_request"
@@ -198,7 +204,7 @@ def test_agent_mode_planner_routes_move_this_image_as_attachment_video():
     assert plan["should_use_visual_package"] is True
     assert plan["arguments"]["include_image"] is False
     assert plan["arguments"]["include_video"] is True
-    assert plan["arguments"]["candidate_budget"] == 2
+    assert plan["arguments"]["candidate_budget"] == 1
     assert plan["arguments"]["candidate_budget_source"] == "planner_default"
     assert plan["arguments"]["duration"] == 6
     assert plan["reason"] == "attachment_to_video_image_first_request"
@@ -212,7 +218,7 @@ def test_agent_mode_planner_routes_english_animate_request_as_image_first_video(
     assert plan["should_use_visual_package"] is True
     assert plan["arguments"]["include_image"] is False
     assert plan["arguments"]["include_video"] is True
-    assert plan["arguments"]["candidate_budget"] == 2
+    assert plan["arguments"]["candidate_budget"] == 1
     assert plan["arguments"]["candidate_budget_source"] == "planner_default"
     assert plan["arguments"]["duration"] == 5
     assert plan["reason"] == "attachment_to_video_image_first_request"
@@ -226,7 +232,7 @@ def test_agent_mode_planner_routes_text_only_video_through_image_first_candidate
     assert plan["should_use_visual_package"] is True
     assert plan["arguments"]["include_image"] is False
     assert plan["arguments"]["include_video"] is True
-    assert plan["arguments"]["candidate_budget"] == 2
+    assert plan["arguments"]["candidate_budget"] == 1
     assert plan["arguments"]["video_budget"] == 1
     assert plan["arguments"]["duration"] == 6
     assert plan["reason"] == "text_to_video_image_first_request"
@@ -241,12 +247,12 @@ def test_agent_mode_planner_routes_multishot_video_to_storyboard_contract():
     assert plan["reason"] == "storyboard_video_request"
     assert plan["arguments"]["include_image"] is False
     assert plan["arguments"]["include_video"] is True
-    assert plan["arguments"]["candidate_budget"] == 2
+    assert plan["arguments"]["candidate_budget"] == 1
     assert plan["arguments"]["candidate_budget_source"] == "planner_default"
     storyboard = plan["arguments"]["storyboard"]
     assert storyboard["enabled"] is True
     assert storyboard["shot_count"] == 3
-    assert storyboard["candidate_budget_per_shot"] == 2
+    assert storyboard["candidate_budget_per_shot"] == 1
     assert storyboard["source_image_policy"] == "one_ranked_image_per_shot"
     assert storyboard["composition_target"] == "single_coherent_video"
     assert len(storyboard["shots"]) == 3
@@ -408,14 +414,14 @@ simon: 現在用 openai 幫我產出構圖，一樣產出四張不同構圖讓�
     assert plan["arguments"]["candidate_budget_source"] == "user"
 
 
-def test_agent_mode_planner_composition_guide_default_count_is_not_user_locked():
+def test_agent_mode_planner_composition_guide_uses_one_candidate_by_default():
     from agent.visual.agent_mode.planner import plan_visual_agent_request
 
     plan = plan_visual_agent_request("先產構圖，低角度全身動態姿勢")
 
     assert plan["reason"] == "composition_guide_request"
     assert plan["arguments"]["composition_guide_only"] is True
-    assert plan["arguments"]["candidate_budget"] == 3
+    assert plan["arguments"]["candidate_budget"] == 1
     assert plan["arguments"]["candidate_budget_source"] == "planner_default"
 
 
