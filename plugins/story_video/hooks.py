@@ -356,7 +356,10 @@ def pre_llm_call(
         "pass strategy_reset=true with that single candidate; this is a one-candidate "
         "layout reset and must never restart the bounded candidate budget. "
         "Always pass the returned repair_strategy with the candidate so QC history can "
-        "advance anatomy, scientific, layout, and contextual repair independently. Always "
+        "advance anatomy, scientific, layout, and contextual repair independently. When "
+        "compile_prompt returns source_image_url, pass that exact path as image_url to "
+        "image_generate so targeted repair uses OpenAI image editing instead of "
+        "redrawing correct content from scratch. Always "
         "pass the exact returned shot_contract_hash with the generated candidate; never "
         "judge a candidate against a changed scene-ledger contract. "
         "Every image_generate and vision judge call MUST pass provider=openai-codex "
@@ -597,11 +600,22 @@ def auto_continue_llm_output(
                     "story_video_quality_control action=compile_prompt "
                     f"shot_id={next_work['shot_id']}"
                 )
+                edit_instruction = ""
+                source_image_url = str(
+                    next_work.get("source_image_url") or ""
+                ).strip()
+                if source_image_url:
+                    edit_instruction = (
+                        f" Pass image_url={source_image_url} to image_generate and perform "
+                        "an OpenAI image edit that preserves all already-correct content. "
+                        "Do not regenerate this repair from text alone."
+                    )
                 next_work_instruction = (
                     f" Use candidate_id_hint={next_work['candidate_id_hint']} to "
                     f"perform the {next_work['operation']} image/QC cycle with "
                     f"repair_strategy={next_work['repair_strategy']} and "
                     "provider=openai-codex on both image_generate and judge_candidates. "
+                    f"{edit_instruction} "
                     "Do not generate another shot first."
                 )
         elif next_work.get("work_status") == "human_review_required":

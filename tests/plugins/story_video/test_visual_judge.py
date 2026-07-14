@@ -352,6 +352,43 @@ def test_compile_prompt_includes_latest_qc_blocker_in_repair_directive(tmp_path)
     assert "Change the failing visual evidence" in payload["prompt"]
 
 
+def test_compile_prompt_uses_previous_candidate_as_targeted_edit_source(
+    tmp_path,
+) -> None:
+    store, context, shot = _context(tmp_path)
+    candidate = _candidate(context, "S00_SH00_C01")
+    prior = {
+        "shot_id": "S00_SH00",
+        "candidate_id": candidate["candidate_id"],
+        "status": "repair_required",
+        "repair_strategy": "initial",
+        "shot_contract_hash": _shot_contract_hash(shot),
+        "provider": "openai-codex",
+        "candidate_path": candidate["path"],
+        "local_path": candidate["path"],
+        "hard_blockers": ["one branch line is disconnected"],
+        "blocker_codes": ["anatomy_geometry"],
+    }
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps({"outputs": [prior], "attempt_history": [prior]}),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(story_video_quality_control(
+        {"action": "compile_prompt", "shot_id": "S00_SH00"},
+        session_id="session-1",
+        store=store,
+    ))
+
+    assert payload["success"] is True
+    assert payload["repair_strategy"] == "targeted_repair"
+    assert payload["source_image_url"] == candidate["path"]
+    assert payload["source_candidate_id"] == candidate["candidate_id"]
+    assert payload["generation_mode"] == "image_edit"
+
+
 def test_exhausted_prompt_allows_one_layout_strategy_reset(tmp_path) -> None:
     store, context, _shot = _context(tmp_path)
     manifests = context.project_dir / "manifests"
@@ -908,6 +945,152 @@ def test_next_batch_work_stops_after_bounded_contract_replans(tmp_path) -> None:
     assert payload["shot_id"] == "S00_SH00"
     assert payload["replan_revision"] == 2
     assert payload["error"] == "Automatic shot-contract replanning exhausted."
+
+
+def test_auto_mode_uses_continuity_hold_after_contract_replans_exhausted(
+    tmp_path,
+) -> None:
+    store, context, shot = _context(tmp_path)
+    ledger_path = context.project_dir / "scene_ledger.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    previous_shot = {
+        **shot,
+        "shot_id": "S00_SH_PREV",
+        "narration_text": "前一個已通過的鏡頭。",
+        "subject": "可信的前景環境",
+    }
+    ledger["scenes"][0]["shots"] = [previous_shot, shot]
+    ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+    context = store.update(context, phase="batch", auto_mode=True)
+
+    previous_path = context.project_dir / "images" / "S00_SH_PREV.png"
+    previous_path.parent.mkdir(parents=True, exist_ok=True)
+    previous_path.write_bytes(b"selected-openai-source")
+    failed_path = context.project_dir / "images_candidates" / "S00_SH00_C02.png"
+    failed_path.parent.mkdir(parents=True, exist_ok=True)
+    failed_path.write_bytes(b"scientifically-unsafe-candidate")
+    current_hash = _shot_contract_hash(shot)
+    failed = {
+        "shot_id": "S00_SH00",
+        "candidate_id": "S00_SH00_C02",
+        "status": "quality_budget_exhausted",
+        "selected": False,
+        "repair_strategy": "targeted_repair",
+        "shot_contract_hash": current_hash,
+        "provider": "openai-codex",
+        "candidate_path": str(failed_path),
+        "local_path": str(failed_path),
+        "quality_score": 84.05,
+        "hard_blockers": ["the scientific branch geometry is disconnected"],
+        "blocker_codes": ["anatomy_geometry", "scientific_identity"],
+        "vision_evidence": {"status": "PASS", "response_id": "resp_failed"},
+    }
+    attempts = [
+        {**failed, "candidate_id": "S00_SH00_C01"},
+        failed,
+    ]
+    previous = {
+        "shot_id": "S00_SH_PREV",
+        "candidate_id": "S00_SH_PREV_C01",
+        "status": "selected_current",
+        "selected": True,
+        "shot_contract_hash": _shot_contract_hash(previous_shot),
+        "provider": "openai-codex",
+        "judge_provider": "openai-codex",
+        "candidate_path": str(previous_path),
+        "local_path": str(previous_path),
+        "quality_score": 91.0,
+        "hard_blockers": [],
+        "blocker_codes": [],
+        "vision_evidence": {"status": "PASS", "response_id": "resp_previous"},
+    }
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps({
+            "outputs": [previous, failed],
+            "attempt_history": attempts,
+            "contract_replans": [
+                {"shot_id": "S00_SH00", "revision": 1},
+                {"shot_id": "S00_SH00", "revision": 2},
+            ],
+        }),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(story_video_quality_control(
+        {"action": "next_batch_work"}, session_id="session-1", store=store
+    ))
+
+    assert payload["work_status"] == "complete"
+    manifest = json.loads(
+        (manifests / "shot_candidate_manifest.json").read_text(encoding="utf-8")
+    )
+    selected = next(
+        row for row in manifest["outputs"] if row["shot_id"] == "S00_SH00"
+    )
+    assert selected["selected"] is True
+    assert selected["status"] == "selected_current"
+    assert selected["candidate_id"] == "S00_SH00_CONTINUITY_HOLD"
+    assert selected["auto_terminal_fallback"]["type"] == "continuity_hold"
+    assert selected["auto_terminal_fallback"]["source_shot_id"] == "S00_SH_PREV"
+    assert selected["final_qc_review_required"] is True
+    assert (context.project_dir / selected["local_path"]).read_bytes() == (
+        previous_path.read_bytes()
+    )
+
+
+def test_auto_mode_uses_best_available_draft_when_no_continuity_source(
+    tmp_path,
+) -> None:
+    store, context, shot = _context(tmp_path)
+    context = store.update(context, phase="batch", auto_mode=True)
+    candidate = _candidate(context, "S00_SH00_C02")
+    failed = {
+        "shot_id": "S00_SH00",
+        "candidate_id": candidate["candidate_id"],
+        "status": "quality_budget_exhausted",
+        "selected": False,
+        "repair_strategy": "targeted_repair",
+        "shot_contract_hash": _shot_contract_hash(shot),
+        "provider": "openai-codex",
+        "candidate_path": candidate["path"],
+        "local_path": candidate["path"],
+        "quality_score": 81.0,
+        "hard_blockers": ["the first-shot evidence remains ambiguous"],
+        "blocker_codes": ["scientific_identity"],
+        "vision_evidence": {"status": "PASS", "response_id": "resp_failed"},
+    }
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps({
+            "outputs": [failed],
+            "attempt_history": [
+                {**failed, "candidate_id": "S00_SH00_C01", "quality_score": 72.0},
+                failed,
+            ],
+            "contract_replans": [
+                {"shot_id": "S00_SH00", "revision": 1},
+                {"shot_id": "S00_SH00", "revision": 2},
+            ],
+        }),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(story_video_quality_control(
+        {"action": "next_batch_work"}, session_id="session-1", store=store
+    ))
+
+    assert payload["work_status"] == "complete"
+    manifest = json.loads(
+        (manifests / "shot_candidate_manifest.json").read_text(encoding="utf-8")
+    )
+    selected = manifest["outputs"][0]
+    assert selected["candidate_id"] == "S00_SH00_BEST_AVAILABLE_DRAFT"
+    assert selected["auto_terminal_fallback"]["type"] == "best_available_draft"
+    assert selected["final_qc_review_required"] is True
+    assert selected["image_qc_blocker_codes"] == ["scientific_identity"]
 
 
 def test_next_batch_work_replans_after_three_candidates_for_one_contract(tmp_path) -> None:
@@ -2118,6 +2301,11 @@ def test_prepare_render_writes_exact_renderer_v2_contract(tmp_path) -> None:
                         "status": "selected_current",
                         "local_path": "images/S00_SH00.png",
                         "provider": "openai-codex",
+                        "final_qc_review_required": True,
+                        "auto_terminal_fallback": {
+                            "type": "continuity_hold",
+                            "source_shot_id": "S00_SH_PREV",
+                        },
                         "packaging_fallback": {
                             "type": "adaptive_subtitle_band",
                             "subtitle_position": "top",
@@ -2172,6 +2360,11 @@ def test_prepare_render_writes_exact_renderer_v2_contract(tmp_path) -> None:
         "image": "images/S00_SH00.png",
         "narration": "直立腿讓早期恐龍移動得更有效率。",
         "subtitle_position": "top",
+        "final_qc_review_required": True,
+        "auto_terminal_fallback": {
+            "type": "continuity_hold",
+            "source_shot_id": "S00_SH_PREV",
+        },
     }
     assert render_input["opening_card"]["image"] == "images/S00_SH00.png"
     assert render_input["ending_card"]["image"] == "images/S00_SH00.png"

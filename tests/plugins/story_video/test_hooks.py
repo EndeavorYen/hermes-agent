@@ -613,6 +613,47 @@ def test_batch_autopilot_continuation_names_exact_next_quality_tool_call(
     assert "Do not generate another shot first" in continuation["message"]
 
 
+def test_batch_autopilot_uses_image_edit_source_for_targeted_repair(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    start = hooks.pre_gateway_dispatch(
+        event=_event("故事影片：恐龍起源｜5分鐘｜真實照片。完整製作並出片。")
+    )
+    hooks.pre_llm_call(session_id="session-auto", user_message=start["text"])
+    context = store.for_session("session-auto")
+    assert context is not None
+    store.update(context, phase="batch", auto_mode=True)
+    monkeypatch.setattr(
+        hooks,
+        "_next_batch_work_group",
+        lambda _context, max_items: {
+            "success": True,
+            "work_status": "ready",
+            "operation": "repair",
+            "shot_id": "S03_SH01",
+            "candidate_id_hint": "S03_SH01_C02",
+            "repair_strategy": "targeted_repair",
+            "shot_contract_hash": "contract-hash",
+            "source_image_url": "/tmp/S03_SH01_C01.png",
+            "source_candidate_id": "S03_SH01_C01",
+            "remaining_shot_count": 2,
+        },
+    )
+
+    continuation = hooks.auto_continue_llm_output(
+        session_id="session-auto",
+        response_text="STORY_VIDEO_PHASE_PROGRESS: batch IN_PROGRESS",
+    )
+
+    assert continuation is not None
+    message = continuation["message"]
+    assert "image_url=/tmp/S03_SH01_C01.png" in message
+    assert "OpenAI image edit" in message
+    assert "Do not regenerate this repair from text alone" in message
+
+
 def test_batch_autopilot_continuation_batches_fresh_generation(
     tmp_path, monkeypatch
 ) -> None:
