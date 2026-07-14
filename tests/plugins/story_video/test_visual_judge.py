@@ -721,6 +721,7 @@ def test_next_batch_work_replans_contract_after_visual_strategies_exhausted(
     assert payload["max_replan_revisions"] == 2
     assert payload["immutable_contract"]["narration_text"] == shot["narration_text"]
     assert "subject" in payload["mutable_fields"]
+    assert "intentional_scale_repeat_reason" in payload["mutable_fields"]
     assert payload["hard_blockers"] == attempts[-1]["hard_blockers"]
 
 
@@ -794,6 +795,117 @@ def test_replan_shot_contract_preserves_truth_fields_and_resets_generation(
     assert manifest["contract_replans"][0]["old_shot_contract_hash"] == old_hash
     assert manifest["contract_replans"][0]["new_shot_contract_hash"] == payload[
         "shot_contract_hash"
+    ]
+
+
+def test_replan_shot_contract_rejects_new_ledger_quality_violation(tmp_path) -> None:
+    store, context, base_shot = _context(tmp_path)
+    shots = []
+    for index, scale in enumerate(("medium", "medium", "wide")):
+        shot = dict(base_shot)
+        shot["shot_id"] = f"S00_SH0{index}"
+        shot["shot_scale"] = scale
+        shots.append(shot)
+    ledger_path = context.project_dir / "scene_ledger.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    ledger["scenes"][0]["shots"] = shots
+    ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+
+    selected = []
+    for shot in shots[:2]:
+        selected.append(
+            {
+                "shot_id": shot["shot_id"],
+                "candidate_id": f"{shot['shot_id']}_C01",
+                "status": "selected_current",
+                "selected": True,
+                "shot_contract_hash": _shot_contract_hash(shot),
+            }
+        )
+    target = shots[2]
+    target_hash = _shot_contract_hash(target)
+    attempts = [
+        {
+            "shot_id": target["shot_id"],
+            "candidate_id": f"{target['shot_id']}_C0{index}",
+            "status": "quality_budget_exhausted",
+            "selected": False,
+            "repair_strategy": strategy,
+            "hard_blockers": ["the evidence is not visible"],
+            "blocker_codes": ["other"],
+            "shot_contract_hash": target_hash,
+        }
+        for index, strategy in enumerate(
+            ("layout_reset", "contextual_replan", "documentary_context"),
+            start=1,
+        )
+    ]
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps(
+            {
+                "outputs": [*selected, attempts[-1]],
+                "attempt_history": attempts,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        story_video_quality_control(
+            {
+                "action": "replan_shot_contract",
+                "shot_id": target["shot_id"],
+                "redesigned_shot": {
+                    "subject": "one fossil footprint in a comparison row",
+                    "action": "the third footprint becomes visible",
+                    "evidence_detail": "all three prints remain equally readable",
+                    "shot_scale": "medium",
+                    "camera_angle": "eye level",
+                    "focal_point": "the third footprint",
+                    "subtitle_safe_area": "upper right clear",
+                    "acceptance_criteria": ["three prints remain readable"],
+                },
+            },
+            session_id="session-1",
+            store=store,
+        )
+    )
+
+    assert payload["success"] is False
+    assert "repeated_shot_scale_without_reason:medium:3" in payload["error"]
+    unchanged = json.loads(ledger_path.read_text(encoding="utf-8"))
+    assert unchanged["scenes"][0]["shots"][2]["shot_scale"] == "wide"
+
+    accepted = json.loads(
+        story_video_quality_control(
+            {
+                "action": "replan_shot_contract",
+                "shot_id": target["shot_id"],
+                "redesigned_shot": {
+                    "subject": "one fossil footprint in a comparison row",
+                    "action": "the third footprint becomes visible",
+                    "evidence_detail": "all three prints remain equally readable",
+                    "shot_scale": "medium",
+                    "camera_angle": "eye level",
+                    "focal_point": "the third footprint",
+                    "subtitle_safe_area": "upper right clear",
+                    "acceptance_criteria": ["three prints remain readable"],
+                    "intentional_scale_repeat_reason": (
+                        "Keep equal visual weight across the three-print comparison."
+                    ),
+                },
+            },
+            session_id="session-1",
+            store=store,
+        )
+    )
+
+    assert accepted["success"] is True
+    repaired = json.loads(ledger_path.read_text(encoding="utf-8"))
+    assert repaired["scenes"][0]["shots"][2][
+        "intentional_scale_repeat_reason"
     ]
 
 

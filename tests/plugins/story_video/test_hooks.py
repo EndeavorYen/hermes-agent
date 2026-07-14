@@ -703,6 +703,43 @@ def test_batch_autopilot_continuation_batches_fresh_generation(
     assert "Do not generate another shot first" not in message
 
 
+def test_batch_autopilot_validates_when_canonical_work_is_complete(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    start = hooks.pre_gateway_dispatch(
+        event=_event("故事影片：恐龍起源｜5分鐘｜真實照片。完整製作並出片。")
+    )
+    hooks.pre_llm_call(session_id="session-auto", user_message=start["text"])
+    context = store.for_session("session-auto")
+    assert context is not None
+    store.update(
+        context,
+        phase="batch",
+        auto_mode=True,
+        repair_request="補齊 batch：repeated_shot_scale_without_reason:medium:3",
+    )
+    monkeypatch.setattr(
+        hooks,
+        "_next_batch_work_group",
+        lambda _context, max_items: {
+            "success": True,
+            "work_status": "complete",
+            "remaining_shot_count": 0,
+        },
+    )
+
+    continuation = hooks.auto_continue_llm_output(
+        session_id="session-auto",
+        response_text="STORY_VIDEO_PHASE_PROOF: batch BLOCKED",
+    )
+
+    assert continuation is not None
+    assert "story_video_control action=validate" in continuation["message"]
+    assert "Execute the next action now: None" not in continuation["message"]
+
+
 def test_batch_autopilot_does_not_repeat_human_review_required_work(
     tmp_path, monkeypatch
 ) -> None:

@@ -624,6 +624,42 @@ def test_batch_validation_accepts_scene_ledger_selected_asset_path(tmp_path) -> 
     assert proof.ok is True
 
 
+def test_batch_autopilot_promotes_legacy_scale_repeat_reason_and_transitions(
+    tmp_path,
+) -> None:
+    store, context = _active_context(tmp_path)
+    context = store.update(context, phase="batch", auto_mode=True)
+    ledger = _write_planning_fixture(context, shot_count=8)
+    shots = ledger["scenes"][0]["shots"]
+    for shot in shots[1:4]:
+        shot["shot_scale"] = "medium"
+    shots[3]["scale_repetition_reason"] = (
+        "Keep equal visual weight while comparing three adjacent subjects."
+    )
+    _write_candidate_manifest(context, shots)
+    (context.project_dir / "scene_ledger.json").write_text(
+        json.dumps(ledger), encoding="utf-8"
+    )
+
+    payload = json.loads(
+        story_video_control(
+            {"action": "validate"},
+            session_id="session-1",
+            store=store,
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["proof"] == "STORY_VIDEO_PHASE_PROOF: batch PASS"
+    assert payload["phase"] == "voice"
+    repaired = json.loads(
+        (context.project_dir / "scene_ledger.json").read_text(encoding="utf-8")
+    )
+    assert repaired["scenes"][0]["shots"][3][
+        "intentional_scale_repeat_reason"
+    ] == shots[3]["scale_repetition_reason"]
+
+
 def test_batch_validation_rejects_selected_asset_from_superseded_shot_contract(
     tmp_path,
 ) -> None:
