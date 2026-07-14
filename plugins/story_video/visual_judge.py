@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import mimetypes
 import re
 import shutil
@@ -30,8 +31,10 @@ from .shot_contract import shot_contract_hash as _shot_contract_hash
 from .state import StoryVideoRunContext, StoryVideoStateStore
 
 
-MAX_REPAIR_ROUNDS = 5
+MAX_REPAIR_ROUNDS = 3
 MAX_CONTRACT_REPLANS = 2
+MAX_REPLANNED_CONTRACT_CANDIDATES = 2
+QUALITY_CONTRACT_VERSION = 3
 BEST_EFFORT_QUALITY_FLOOR = 75.0
 _PLUGIN_LLM: Any = None
 
@@ -158,6 +161,68 @@ def _relative(context: StoryVideoRunContext, path: Path) -> str:
         return str(path.resolve().relative_to(context.project_dir.resolve()))
     except ValueError:
         return str(path.resolve())
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _cached_qc_result(
+    context: StoryVideoRunContext,
+    manifest: dict[str, Any],
+    *,
+    shot_id: str,
+    contract_hash: str,
+    artifact_sha256: str,
+) -> dict[str, Any] | None:
+    rows = [
+        row
+        for row in (
+            manifest.get("attempt_history") or manifest.get("outputs") or []
+        )
+        if isinstance(row, dict)
+    ]
+    for row in reversed(rows):
+        dimensions = row.get("quality_dimensions")
+        if (
+            str(row.get("shot_id") or "") != shot_id
+            or str(row.get("shot_contract_hash") or "") != contract_hash
+            or str(row.get("artifact_sha256") or "") != artifact_sha256
+            or int(row.get("quality_contract_version") or 0)
+            != QUALITY_CONTRACT_VERSION
+            or not isinstance(dimensions, dict)
+            or any(name not in dimensions for name in DIMENSION_WEIGHTS)
+            or (row.get("vision_evidence") or {}).get("status") != "PASS"
+        ):
+            continue
+        selected = row.get("selected") is True
+        stored_status = str(row.get("status") or "repair_required")
+        status = "selected" if selected else stored_status
+        return {
+            "success": selected,
+            "action": "judge_candidates",
+            "shot_id": shot_id,
+            "status": status,
+            "cache_hit": True,
+            "quality_contract_version": QUALITY_CONTRACT_VERSION,
+            "artifact_sha256": artifact_sha256,
+            "selected_candidate_id": str(row.get("candidate_id") or "") if selected else "",
+            "selected_asset": str(row.get("local_path") or "") if selected else "",
+            "best_score": float(row.get("quality_score") or 0.0),
+            "quality_threshold": QUALITY_THRESHOLD,
+            "repair_strategy": str(row.get("repair_strategy") or "initial"),
+            "manifest": "manifests/shot_candidate_manifest.json",
+            "judge_provider": str(row.get("judge_provider") or "openai-codex"),
+            "judge_model": str(row.get("judge_model") or ""),
+            "judge_response_id": str(
+                (row.get("vision_evidence") or {}).get("response_id") or ""
+            ),
+        }
+    return None
 
 
 def _subtitle_packaging_fallback(shot: dict[str, Any]) -> dict[str, Any]:
@@ -805,6 +870,30 @@ def _judge_candidates(
         candidate_paths[candidate_id] = path
         candidate_rows.append(candidate)
 
+    manifest_path = context.project_dir / "manifests" / "shot_candidate_manifest.json"
+    manifest = _load_json(manifest_path) or {
+        "schema": "story_video_shot_candidate_manifest_v1",
+        "provider": "openai-codex",
+        "judge_provider": "openai-codex",
+        "quality_threshold": QUALITY_THRESHOLD,
+        "outputs": [],
+        "attempt_history": [],
+    }
+    artifact_hashes = {
+        candidate_id: _file_sha256(path)
+        for candidate_id, path in candidate_paths.items()
+    }
+    if len(candidate_rows) == 1:
+        cached = _cached_qc_result(
+            context,
+            manifest,
+            shot_id=shot_id,
+            contract_hash=contract_hash,
+            artifact_sha256=artifact_hashes[candidate_rows[0]["candidate_id"]],
+        )
+        if cached is not None:
+            return cached
+
     bound_prompts = {
         str(row.get("prompt") or row.get("generation_prompt") or "").strip()
         for row in candidate_rows
@@ -923,15 +1012,6 @@ def _judge_candidates(
         )
     decision = rank_candidate_assessments(assessments, threshold=QUALITY_THRESHOLD)
     selected_path = context.project_dir / "images" / f"{shot_id}.png"
-    manifest_path = context.project_dir / "manifests" / "shot_candidate_manifest.json"
-    manifest = _load_json(manifest_path) or {
-        "schema": "story_video_shot_candidate_manifest_v1",
-        "provider": "openai-codex",
-        "judge_provider": "openai-codex",
-        "quality_threshold": QUALITY_THRESHOLD,
-        "outputs": [],
-        "attempt_history": [],
-    }
     prior_attempts = [
         row
         for row in (manifest.get("attempt_history") or manifest.get("outputs") or [])
@@ -1028,6 +1108,8 @@ def _judge_candidates(
                 "shot_id": shot_id,
                 "shot_scale": str(shot.get("shot_scale") or ""),
                 "shot_contract_hash": contract_hash,
+                "artifact_sha256": artifact_hashes[candidate_id],
+                "quality_contract_version": QUALITY_CONTRACT_VERSION,
                 "candidate_id": candidate_id,
                 "selected": candidate_id == selected_id,
                 "status": (
@@ -1187,6 +1269,95 @@ def _ordered_shot_ids(context: StoryVideoRunContext) -> list[str]:
     return shot_ids
 
 
+def _grandfather_clean_legacy_selections(
+    context: StoryVideoRunContext,
+    manifest: dict[str, Any],
+) -> dict[str, Any]:
+    outputs = [dict(row) for row in manifest.get("outputs") or [] if isinstance(row, dict)]
+    events = [dict(row) for row in manifest.get("selection_events") or [] if isinstance(row, dict)]
+    event_keys = {
+        (
+            str(row.get("event") or ""),
+            str(row.get("shot_id") or ""),
+            str(row.get("candidate_id") or ""),
+        )
+        for row in events
+    }
+    legacy_prompts = {
+        str(row.get("shot_id") or ""): str(row.get("prompt") or "").strip()
+        for row in manifest.get("shots") or []
+        if isinstance(row, dict)
+    }
+    changed = False
+    for row in outputs:
+        dimensions = row.get("quality_dimensions")
+        if (
+            row.get("selected") is not True
+            or row.get("legacy_qc_grandfathered") is True
+            or _provider(row.get("provider")) not in {"openai", "openai-codex"}
+            or not isinstance(dimensions, dict)
+            or (
+                "narrative_engagement" in dimensions
+                and "story_moment_clarity" in dimensions
+            )
+            or row.get("hard_blockers")
+            or (row.get("vision_evidence") or {}).get("status") != "PASS"
+        ):
+            continue
+        shot_id = str(row.get("shot_id") or "").strip()
+        candidate_id = str(row.get("candidate_id") or "").strip()
+        try:
+            _ledger, _scene, shot = _find_shot(context, shot_id)
+        except ValueError:
+            continue
+        if not _manifest_row_matches_shot_contract(
+            row,
+            shot,
+            legacy_prompts.get(shot_id, ""),
+        ):
+            continue
+        score = float(row.get("quality_score") or 0.0)
+        if score < BEST_EFFORT_QUALITY_FLOOR:
+            continue
+        candidate_path = _project_path(
+            context,
+            row.get("local_path") or row.get("candidate_path"),
+        )
+        if not candidate_path.is_file():
+            continue
+        row.update({
+            "legacy_qc_grandfathered": True,
+            "quality_contract_version": int(row.get("quality_contract_version") or 2),
+            "accepted_under_quality_contract_version": QUALITY_CONTRACT_VERSION,
+            "grandfathered_at": _utc_now(),
+        })
+        key = ("legacy_qc_grandfathered", shot_id, candidate_id)
+        if key not in event_keys:
+            events.append({
+                "event": "legacy_qc_grandfathered",
+                "shot_id": shot_id,
+                "candidate_id": candidate_id,
+                "quality_score": score,
+                "accepted_under_quality_contract_version": QUALITY_CONTRACT_VERSION,
+                "selected_at": _utc_now(),
+            })
+            event_keys.add(key)
+        changed = True
+    if not changed:
+        return manifest
+    updated = {
+        **manifest,
+        "outputs": outputs,
+        "selection_events": events,
+        "updated_at": _utc_now(),
+    }
+    _write_json_atomic(
+        context.project_dir / "manifests" / "shot_candidate_manifest.json",
+        updated,
+    )
+    return updated
+
+
 def _promote_bounded_best_effort(
     context: StoryVideoRunContext,
     manifest: dict[str, Any],
@@ -1319,6 +1490,7 @@ def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
         ledger,
         manifest,
     )
+    manifest = _grandfather_clean_legacy_selections(context, manifest)
     manifest = _promote_bounded_best_effort(context, manifest)
     legacy_prompts = {
         str(row.get("shot_id") or ""): str(row.get("prompt") or "").strip()
@@ -1366,6 +1538,36 @@ def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
         )
         if recovery is not None:
             return recovery
+        _current_ledger, _current_scene, current_shot = _find_shot(context, shot_id)
+        current_attempts = [
+            row
+            for row in manifest.get("attempt_history") or []
+            if isinstance(row, dict)
+            and str(row.get("shot_id") or "") == shot_id
+            and _manifest_row_matches_shot_contract(
+                row,
+                current_shot,
+                legacy_prompts.get(shot_id, ""),
+            )
+        ]
+        max_candidates = (
+            MAX_REPLANNED_CONTRACT_CANDIDATES
+            if _contract_replan_count(manifest, shot_id)
+            else MAX_REPAIR_ROUNDS
+        )
+        if len(current_attempts) >= max_candidates:
+            return {
+                **_contract_replan_work(
+                    context,
+                    shot_id=shot_id,
+                    manifest=manifest,
+                    output=by_shot.get(shot_id, {}),
+                    remaining_shot_count=len(unresolved),
+                ),
+                "candidate_budget_exhausted": True,
+                "attempt_count_for_contract": len(current_attempts),
+                "max_candidates_per_contract": max_candidates,
+            }
         prompt_info = _compile_prompt(context, shot_id=shot_id)
         if not prompt_info.get("success"):
             return _contract_replan_work(
@@ -1390,6 +1592,7 @@ def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
             dimensions = row.get("quality_dimensions")
             if (
                 row.get("selected") is True
+                and row.get("legacy_qc_grandfathered") is not True
                 and _provider(row.get("provider")) in {"openai", "openai-codex"}
                 and (
                     not isinstance(dimensions, dict)

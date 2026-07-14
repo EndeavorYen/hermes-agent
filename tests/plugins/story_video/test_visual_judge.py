@@ -201,6 +201,54 @@ def test_candidate_judge_forces_openai_provider_before_inference(tmp_path) -> No
     assert llm.calls[0]["provider"] == "openai-codex"
 
 
+def test_candidate_judge_reuses_content_addressed_qc_result(tmp_path) -> None:
+    store, context, _shot = _context(tmp_path)
+    candidate = _candidate(context, "S00_SH00_C01")
+    first_llm = FakeLlm(
+        [{
+            "candidate_id": candidate["candidate_id"],
+            "hard_blockers": [],
+            "blocker_codes": [],
+            "dimensions": _dimensions(90),
+            "evidence": ["the declared action and evidence are visibly readable"],
+        }]
+    )
+    first = json.loads(story_video_quality_control(
+        {
+            "action": "judge_candidates",
+            "shot_id": "S00_SH00",
+            "repair_round": 1,
+            "candidates": [candidate],
+        },
+        session_id="session-1",
+        store=store,
+        llm=first_llm,
+    ))
+    second_llm = FakeLlm([])
+    second = json.loads(story_video_quality_control(
+        {
+            "action": "judge_candidates",
+            "shot_id": "S00_SH00",
+            "repair_round": 1,
+            "candidates": [candidate],
+        },
+        session_id="session-1",
+        store=store,
+        llm=second_llm,
+    ))
+
+    assert first["success"] is True
+    assert second["success"] is True
+    assert second["cache_hit"] is True
+    assert second["selected_candidate_id"] == candidate["candidate_id"]
+    assert second_llm.calls == []
+    manifest = json.loads(
+        (context.project_dir / "manifests" / "shot_candidate_manifest.json").read_text()
+    )
+    assert manifest["outputs"][0]["artifact_sha256"]
+    assert manifest["outputs"][0]["quality_contract_version"] == 3
+
+
 def test_compile_prompt_writes_traceable_prompt_and_budget(tmp_path) -> None:
     store, context, _shot = _context(tmp_path)
 
@@ -215,7 +263,7 @@ def test_compile_prompt_writes_traceable_prompt_and_budget(tmp_path) -> None:
     assert payload["success"] is True
     assert payload["candidate_budget"] == 1
     assert payload["generation_policy"] == "qc_driven_selective_regeneration"
-    assert payload["max_repair_rounds"] == 5
+    assert payload["max_repair_rounds"] == 3
     assert "Evidence that must be readable" in payload["prompt"]
     assert (context.project_dir / payload["prompt_path"]).is_file()
 
@@ -675,6 +723,37 @@ def test_next_batch_work_stops_after_bounded_contract_replans(tmp_path) -> None:
     assert payload["error"] == "Automatic shot-contract replanning exhausted."
 
 
+def test_next_batch_work_replans_after_three_candidates_for_one_contract(tmp_path) -> None:
+    store, context, shot = _context(tmp_path)
+    contract_hash = _shot_contract_hash(shot)
+    attempts = [
+        {
+            "shot_id": "S00_SH00",
+            "candidate_id": f"S00_SH00_C{index:02d}",
+            "status": "quality_budget_exhausted" if index == 3 else "repair_required",
+            "selected": False,
+            "repair_strategy": "targeted_repair",
+            "hard_blockers": ["scientific identity remains ambiguous"],
+            "blocker_codes": ["scientific_identity"],
+            "shot_contract_hash": contract_hash,
+        }
+        for index in range(1, 4)
+    ]
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps({"outputs": [attempts[-1]], "attempt_history": attempts}),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(story_video_quality_control(
+        {"action": "next_batch_work"}, session_id="session-1", store=store
+    ))
+
+    assert payload["operation"] == "replan_shot_contract"
+    assert payload["candidate_budget_exhausted"] is True
+
+
 def test_next_batch_work_advances_in_ledger_order_after_selection(tmp_path) -> None:
     store, context, shot = _context(tmp_path)
     ledger_path = context.project_dir / "scene_ledger.json"
@@ -825,7 +904,7 @@ def test_next_batch_work_returns_complete_when_every_shot_is_selected(tmp_path) 
     }
 
 
-def test_next_batch_work_rejudges_legacy_selection_before_new_generation(
+def test_next_batch_work_grandfathers_clean_legacy_selection(
     tmp_path,
 ) -> None:
     store, context, shot = _context(tmp_path)
@@ -860,6 +939,7 @@ def test_next_batch_work_rejudges_legacy_selection_before_new_generation(
             "visual_truth_mode": "reconstruction",
         }
     )
+    ledger["scenes"][0]["shots"][0] = shot
     ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
     candidate = _candidate(context, "S00_SH00_C01")
     legacy_dimensions = _dimensions(88)
@@ -889,6 +969,11 @@ def test_next_batch_work_rejudges_legacy_selection_before_new_generation(
                         "local_path": candidate["path"],
                         "repair_round": 1,
                         "quality_dimensions": legacy_dimensions,
+                        "quality_score": 88.0,
+                        "hard_blockers": [],
+                        "blocker_codes": [],
+                        "vision_evidence": {"status": "PASS", "response_id": "resp_old"},
+                        "shot_contract_hash": _shot_contract_hash(shot),
                     }
                 ]
             }
@@ -904,15 +989,14 @@ def test_next_batch_work_rejudges_legacy_selection_before_new_generation(
         )
     )
 
-    assert payload["work_status"] == "ready"
-    assert payload["operation"] == "rejudge_existing"
-    assert payload["shot_id"] == "S00_SH00"
-    assert payload["candidate"]["candidate_id"] == "S00_SH00_C01_V3_REVIEW"
-    assert payload["candidate"]["path"] == candidate["path"]
-    assert payload["candidate"]["generation_prompt"] == (
-        "Legacy prompt bound to the selected image."
+    assert payload["work_status"] == "complete"
+    manifest = json.loads(
+        (manifests / "shot_candidate_manifest.json").read_text(encoding="utf-8")
     )
-    assert payload["candidate_budget"] == 0
+    selected = manifest["outputs"][0]
+    assert selected["legacy_qc_grandfathered"] is True
+    assert selected["quality_contract_version"] == 2
+    assert manifest["selection_events"][0]["event"] == "legacy_qc_grandfathered"
 
 
 def test_legacy_rejudge_ignores_exhausted_generation_strategies(tmp_path) -> None:
@@ -958,6 +1042,7 @@ def test_legacy_rejudge_ignores_exhausted_generation_strategies(tmp_path) -> Non
         "quality_dimensions": legacy_dimensions,
         "quality_score": 76.0,
         "hard_blockers": [],
+        "vision_evidence": {"status": "PASS", "response_id": "resp_old"},
     }
     manifests = context.project_dir / "manifests"
     manifests.mkdir(parents=True, exist_ok=True)
@@ -980,11 +1065,11 @@ def test_legacy_rejudge_ignores_exhausted_generation_strategies(tmp_path) -> Non
     )
 
     assert payload["success"] is True
-    assert payload["work_status"] == "ready"
-    assert payload["operation"] == "rejudge_existing"
-    assert payload["shot_id"] == "S00_SH00"
-    assert payload["candidate_budget"] == 0
-    assert payload["candidate"]["path"] == candidate["path"]
+    assert payload["work_status"] == "complete"
+    manifest = json.loads(
+        (manifests / "shot_candidate_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["outputs"][0]["legacy_qc_grandfathered"] is True
 
 
 def test_legacy_rejudge_falls_back_to_existing_project_local_asset(tmp_path) -> None:
@@ -1530,12 +1615,12 @@ def test_judge_blocks_below_threshold_without_promoting_least_bad_candidate(tmp_
     assert not (context.project_dir / "images" / "S00_SH00.png").exists()
 
 
-def test_fifth_failed_round_reports_quality_budget_exhausted(tmp_path) -> None:
+def test_third_failed_round_reports_quality_budget_exhausted(tmp_path) -> None:
     store, context, _shot = _context(tmp_path)
     llm = FakeLlm(
         [
             {
-                "candidate_id": "S00_SH00_C05",
+                "candidate_id": "S00_SH00_C03",
                 "hard_blockers": ["scientifically incorrect anatomy"],
                 "dimensions": _dimensions(94),
                 "evidence": ["limb joint is malformed"],
@@ -1549,8 +1634,8 @@ def test_fifth_failed_round_reports_quality_budget_exhausted(tmp_path) -> None:
             {
                 "action": "judge_candidates",
                 "shot_id": "S00_SH00",
-                "candidates": [_candidate(context, "S00_SH00_C05")],
-                "repair_round": 5,
+                "candidates": [_candidate(context, "S00_SH00_C03")],
+                "repair_round": 3,
             },
             session_id="session-1",
             store=store,
@@ -1559,7 +1644,7 @@ def test_fifth_failed_round_reports_quality_budget_exhausted(tmp_path) -> None:
 
     assert payload["success"] is False
     assert payload["status"] == "quality_budget_exhausted"
-    assert payload["repair_round"] == 5
+    assert payload["repair_round"] == 3
 
 
 def test_candidate_suffix_prevents_repair_round_from_resetting(tmp_path) -> None:
@@ -1567,7 +1652,7 @@ def test_candidate_suffix_prevents_repair_round_from_resetting(tmp_path) -> None
     llm = FakeLlm(
         [
             {
-                "candidate_id": "S00_SH00_C05",
+                "candidate_id": "S00_SH00_C03",
                 "hard_blockers": ["subtitle collision"],
                 "dimensions": _dimensions(90),
                 "evidence": ["subtitle-safe area is occupied"],
@@ -1580,7 +1665,7 @@ def test_candidate_suffix_prevents_repair_round_from_resetting(tmp_path) -> None
             {
                 "action": "judge_candidates",
                 "shot_id": "S00_SH00",
-                "candidates": [_candidate(context, "S00_SH00_C05")],
+                "candidates": [_candidate(context, "S00_SH00_C03")],
                 "repair_round": 1,
             },
             session_id="session-1",
@@ -1591,7 +1676,7 @@ def test_candidate_suffix_prevents_repair_round_from_resetting(tmp_path) -> None
 
     assert payload["success"] is False
     assert payload["status"] == "quality_budget_exhausted"
-    assert payload["repair_round"] == 5
+    assert payload["repair_round"] == 3
 
 
 def test_failed_layout_strategy_reset_exhausts_after_one_candidate(tmp_path) -> None:

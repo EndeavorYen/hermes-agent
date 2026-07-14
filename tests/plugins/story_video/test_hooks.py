@@ -349,6 +349,11 @@ def test_autopilot_rotates_before_continuation_history_bloats(
     assert continuation["reason"] == "story_video_context_budget"
 
 
+def test_autopilot_context_budget_is_small_enough_for_batch_workers() -> None:
+    assert hooks._AUTOPILOT_ROTATE_AFTER_CONTINUATIONS <= 3
+    assert hooks._AUTOPILOT_ROTATE_AFTER_MESSAGES <= 80
+
+
 def test_pre_llm_binds_rotated_child_to_parent_story_context(
     tmp_path, monkeypatch
 ) -> None:
