@@ -5382,6 +5382,8 @@ def _visual_kernel_repair_plan(
 ) -> dict[str, Any] | None:
     if not _coerce_bool(args.get("visual_production_kernel")):
         return None
+    if gate.get("allowed") is True:
+        return None
     visual_kernel = gate.get("visual_kernel")
     blockers = (
         visual_kernel.get("blocker_codes")

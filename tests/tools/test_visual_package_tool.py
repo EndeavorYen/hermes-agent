@@ -5035,6 +5035,29 @@ def test_visual_package_kernel_zero_repair_budget_is_preserved():
     assert context["max_generated_repairs"] == 0
 
 
+def test_visual_package_kernel_passed_gate_has_no_repair_plan():
+    from tools import visual_package_tool
+
+    plan = visual_package_tool._visual_kernel_repair_plan(
+        {
+            "allowed": True,
+            "reason": "delivery_allowed",
+            "blocker_codes": [],
+            "visual_kernel": {
+                "deliverable": True,
+                "blocker_codes": [],
+                "reason": "quality_pass",
+            },
+        },
+        {
+            "visual_production_kernel": True,
+            "max_generated_repairs": 1,
+        },
+    )
+
+    assert plan is None
+
+
 def test_visual_package_kernel_explicit_provider_disables_cross_provider_fallback():
     from tools import visual_package_tool
 

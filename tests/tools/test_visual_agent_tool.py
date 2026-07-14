@@ -466,6 +466,37 @@ def test_visual_agent_provider_contract_records_direct_runtime_media_overrides(
     )
 
 
+def test_visual_agent_provider_contract_records_direct_llm_overrides(monkeypatch):
+    from tools import visual_agent_tool
+
+    monkeypatch.setattr(
+        visual_agent_tool,
+        "apply_visual_agent_llm_planner",
+        lambda args: (args, None),
+    )
+    monkeypatch.setattr(
+        visual_agent_tool,
+        "_handle_visual_package_generate",
+        lambda args, **_kwargs: json.dumps(
+            {"success": True, "images": ["/tmp/current.png"], "videos": []}
+        ),
+    )
+
+    payload = json.loads(
+        visual_agent_tool._handle_visual_agent_generate(
+            {
+                "prompt": "請產出一張圖片",
+                "visual_agent_llm_provider": "openai-codex",
+                "visual_agent_llm_model": "gpt-5.5",
+            }
+        )
+    )
+
+    contract = payload["visual_agent_provider_contract"]
+    assert contract["visual_agent_llm_provider"] == "openai-codex"
+    assert contract["visual_agent_llm_model"] == "gpt-5.5"
+
+
 def test_visual_agent_generate_rejects_prompt_disclosure_without_regenerating(monkeypatch):
     from tools import visual_agent_tool
 
