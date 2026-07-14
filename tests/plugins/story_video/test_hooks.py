@@ -304,6 +304,9 @@ def test_autopilot_context_requires_canonical_quality_tool_and_phase_loop(
     assert "never edit shot_candidate_manifest.json manually" in result["context"]
     assert "candidate_id_hint" in result["context"]
     assert "strategy_reset=true" in result["context"]
+    assert "original_request is historical" in result["context"]
+    assert "never edit story_video_run_context.json" in result["context"]
+    assert "never edit production_checklist.json phase" in result["context"]
     assert "exactly one canonical batch work unit per LLM turn" in result["context"]
     assert "Do not start the next batch work unit in the same turn" in result["context"]
 

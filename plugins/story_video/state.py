@@ -15,6 +15,7 @@ from typing import Any
 DEFAULT_DURATION = "60-120s"
 DEFAULT_STYLE = "Bright PICO-8 storybook pixel art v1"
 PHASES = ("planning", "keyframes", "batch", "voice", "render", "complete")
+AUTOPILOT_AUTHORIZATION_SCHEMA = "story_video_autopilot_authorization_v1"
 DEFAULT_PROVIDER_POLICY: dict[str, Any] = {
     "llm": ["openai", "openai-codex"],
     "image": ["openai", "openai-codex"],
@@ -312,6 +313,8 @@ class StoryVideoStateStore:
         hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
         self.root = Path(root) if root is not None else hermes_home / "story_videos"
         self.state_root = self.root / "_workflow_state"
+        self.run_state_root = self.state_root / "runs"
+        self.authorization_state_root = self.state_root / "authorizations"
         self.source_index_path = self.state_root / "source_index.json"
         self.session_index_path = self.state_root / "session_index.json"
 
@@ -338,7 +341,13 @@ class StoryVideoStateStore:
             candidate.relative_to(root)
         except (OSError, RuntimeError, ValueError):
             return None
-        payload = self._read_json(candidate / "story_video_run_context.json", None)
+        canonical_path = self.run_state_root / f"{run_id}.json"
+        payload = self._read_json(canonical_path, None)
+        if not isinstance(payload, dict):
+            payload = self._read_json(
+                candidate / "story_video_run_context.json",
+                None,
+            )
         if not isinstance(payload, dict):
             return None
         try:
@@ -351,7 +360,10 @@ class StoryVideoStateStore:
             return None
         if context.run_id != run_id or context_dir != candidate:
             return None
-        return context
+        recovered = self._reconcile_production_context(context)
+        if recovered != context:
+            self.save(recovered)
+        return recovered
 
     def create_or_load(
         self,
@@ -410,6 +422,9 @@ class StoryVideoStateStore:
                     "updated_at": _utc_now(),
                 }
             )
+            if call.auto_mode:
+                self._write_autopilot_authorization(context)
+            context = self._reconcile_production_context(context)
             self.save(context)
             return context
 
@@ -421,16 +436,14 @@ class StoryVideoStateStore:
                 context.project_dir / "story_video_run_context.json",
                 context.to_dict(),
             )
+            canonical_path = self.run_state_root / f"{context.run_id}.json"
+            self._write_json(canonical_path, context.to_dict())
             source_index = self._read_json(self.source_index_path, {})
-            source_index[context.source_key] = str(
-                context.project_dir / "story_video_run_context.json"
-            )
+            source_index[context.source_key] = str(canonical_path)
             self._write_json(self.source_index_path, source_index)
             session_index = self._read_json(self.session_index_path, {})
             for session_id in context.session_ids:
-                session_index[session_id] = str(
-                    context.project_dir / "story_video_run_context.json"
-                )
+                session_index[session_id] = str(canonical_path)
             self._write_json(self.session_index_path, session_index)
 
     def update(
@@ -438,16 +451,41 @@ class StoryVideoStateStore:
         context: StoryVideoRunContext,
         **changes: Any,
     ) -> StoryVideoRunContext:
-        if changes.get("phase", context.phase) != context.phase:
-            changes.setdefault("repair_request", "")
-            changes.setdefault("repair_phase", "")
-            changes.setdefault("autopilot_last_signature", "")
-            changes.setdefault("autopilot_stall_count", 0)
-        elif changes.get("repair_request") == "":
-            changes.setdefault("repair_phase", "")
-        updated = replace(context, updated_at=_utc_now(), **changes)
-        self.save(updated)
-        return updated
+        with _LOCK:
+            canonical = self._read_json(
+                self.run_state_root / f"{context.run_id}.json",
+                None,
+            )
+            if isinstance(canonical, dict):
+                try:
+                    latest = StoryVideoRunContext.from_dict(canonical)
+                except (KeyError, TypeError, ValueError):
+                    latest = None
+                if (
+                    latest is not None
+                    and latest.run_id == context.run_id
+                    and latest.project_dir == context.project_dir
+                ):
+                    context = latest
+
+            next_phase = changes.get("phase", context.phase)
+            if next_phase not in PHASES:
+                raise ValueError(f"Unknown story-video phase: {next_phase}")
+            if PHASES.index(next_phase) < PHASES.index(context.phase):
+                raise ValueError(
+                    f"Story-video phase regression is forbidden: "
+                    f"{context.phase} -> {next_phase}"
+                )
+            if next_phase != context.phase:
+                changes.setdefault("repair_request", "")
+                changes.setdefault("repair_phase", "")
+                changes.setdefault("autopilot_last_signature", "")
+                changes.setdefault("autopilot_stall_count", 0)
+            elif changes.get("repair_request") == "":
+                changes.setdefault("repair_phase", "")
+            updated = replace(context, updated_at=_utc_now(), **changes)
+            self.save(updated)
+            return updated
 
     def bind_session(
         self,
@@ -468,7 +506,7 @@ class StoryVideoStateStore:
             self.state_root.mkdir(parents=True, exist_ok=True)
             source_index = self._read_json(self.source_index_path, {})
             source_index[source_key] = str(
-                context.project_dir / "story_video_run_context.json"
+                self.run_state_root / f"{context.run_id}.json"
             )
             self._write_json(self.source_index_path, source_index)
         return context
@@ -489,6 +527,9 @@ class StoryVideoStateStore:
             if not isinstance(payload, dict):
                 return None
             context = StoryVideoRunContext.from_dict(payload)
+            recovered = self._reconcile_production_context(context)
+            changed = recovered != context
+            context = recovered
             if context.repair_is_stale:
                 context = replace(
                     context,
@@ -496,8 +537,71 @@ class StoryVideoStateStore:
                     repair_phase="",
                     updated_at=_utc_now(),
                 )
-                self._write_json(Path(context_path), context.to_dict())
+                changed = True
+            if changed:
+                self.save(context)
             return context
+
+    def _write_autopilot_authorization(
+        self,
+        context: StoryVideoRunContext,
+    ) -> None:
+        self._write_json(
+            self.authorization_state_root / f"{context.run_id}.json",
+            {
+                "schema": AUTOPILOT_AUTHORIZATION_SCHEMA,
+                "run_id": context.run_id,
+                "enabled": True,
+                "authorized_at": _utc_now(),
+                "source": "operator_auto_command",
+            },
+        )
+
+    def _reconcile_production_context(
+        self,
+        context: StoryVideoRunContext,
+    ) -> StoryVideoRunContext:
+        authorization = self._read_json(
+            self.authorization_state_root / f"{context.run_id}.json",
+            None,
+        )
+        if not isinstance(authorization, dict) or not (
+            authorization.get("schema") == AUTOPILOT_AUTHORIZATION_SCHEMA
+            and authorization.get("run_id") == context.run_id
+            and authorization.get("enabled") is True
+        ):
+            return context
+
+        manifest = self._read_json(
+            context.project_dir / "manifests" / "shot_candidate_manifest.json",
+            None,
+        )
+        manifest_phase = manifest.get("phase") if isinstance(manifest, dict) else None
+        recovered_phase = context.phase
+        if (
+            manifest_phase in PHASES
+            and manifest.get("run_id") == context.run_id
+            and PHASES.index(manifest_phase) > PHASES.index(context.phase)
+        ):
+            recovered_phase = manifest_phase
+
+        if context.auto_mode and recovered_phase == context.phase:
+            return context
+        recovered = replace(
+            context,
+            auto_mode=True,
+            phase=recovered_phase,
+            repair_request="" if recovered_phase != context.phase else context.repair_request,
+            repair_phase="" if recovered_phase != context.phase else context.repair_phase,
+            autopilot_last_signature=(
+                "" if recovered_phase != context.phase else context.autopilot_last_signature
+            ),
+            autopilot_stall_count=(
+                0 if recovered_phase != context.phase else context.autopilot_stall_count
+            ),
+            updated_at=_utc_now(),
+        )
+        return recovered
 
     @staticmethod
     def _read_json(path: Path, default: Any) -> Any:

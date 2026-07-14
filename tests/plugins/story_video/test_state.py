@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from plugins.story_video.state import (
     StoryVideoStateStore,
     parse_operator_call,
@@ -184,6 +186,146 @@ def test_existing_project_persists_autopilot_activation(tmp_path) -> None:
     assert store.for_session("session-1").auto_mode is True
 
 
+def test_autopilot_authorization_recovers_polluted_production_context(tmp_path) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    start = parse_operator_call(
+        "故事影片：恐龍起源｜5分鐘｜真實照片。只規劃。"
+    )
+    assert start is not None
+    context = store.create_or_load(
+        source_key="source-1",
+        session_id="session-1",
+        call=start,
+        original_request="只規劃",
+    )
+    auto = parse_operator_call("全自動", has_active_project=True)
+    assert auto is not None
+    context = store.create_or_load(
+        source_key="source-1",
+        session_id="session-1",
+        call=auto,
+        original_request="全自動",
+    )
+    (context.project_dir / "manifests").mkdir(parents=True, exist_ok=True)
+    (context.project_dir / "manifests" / "shot_candidate_manifest.json").write_text(
+        json.dumps({"run_id": context.run_id, "phase": "batch"}),
+        encoding="utf-8",
+    )
+    polluted = {
+        **context.to_dict(),
+        "phase": "planning",
+        "auto_mode": False,
+        "last_validated_phase": "planning",
+    }
+    (context.project_dir / "story_video_run_context.json").write_text(
+        json.dumps(polluted),
+        encoding="utf-8",
+    )
+
+    recovered = store.for_session("session-1")
+
+    assert recovered is not None
+    assert recovered.phase == "batch"
+    assert recovered.auto_mode is True
+    assert recovered.last_validated_phase == ""
+    authorization = json.loads(
+        (store.authorization_state_root / f"{context.run_id}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert authorization["run_id"] == context.run_id
+    assert authorization["enabled"] is True
+
+
+def test_private_canonical_state_wins_over_project_context_pollution(tmp_path) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    start = parse_operator_call(
+        "故事影片：恐龍起源｜5分鐘｜真實照片。完整製作並出片。"
+    )
+    assert start is not None
+    context = store.create_or_load(
+        source_key="source-1",
+        session_id="session-1",
+        call=start,
+        original_request="完整製作並出片",
+    )
+    context = store.update(context, phase="batch")
+    project_context = context.project_dir / "story_video_run_context.json"
+    project_context.write_text(
+        json.dumps({**context.to_dict(), "phase": "planning", "auto_mode": False}),
+        encoding="utf-8",
+    )
+
+    by_session = store.for_session("session-1")
+    by_run = store.for_run(run_id=context.run_id, project_dir=context.project_dir)
+
+    assert by_session is not None
+    assert by_session.phase == "batch"
+    assert by_session.auto_mode is True
+    assert by_run == by_session
+    assert (store.state_root / "runs" / f"{context.run_id}.json").is_file()
+
+
+def test_batch_media_does_not_override_planning_without_authorization(tmp_path) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    start = parse_operator_call(
+        "故事影片：恐龍起源｜5分鐘｜真實照片。只規劃。"
+    )
+    assert start is not None
+    context = store.create_or_load(
+        source_key="source-1",
+        session_id="session-1",
+        call=start,
+        original_request="只規劃",
+    )
+    (context.project_dir / "manifests").mkdir(parents=True)
+    (context.project_dir / "manifests" / "shot_candidate_manifest.json").write_text(
+        json.dumps({"run_id": context.run_id, "phase": "batch"}),
+        encoding="utf-8",
+    )
+
+    preserved = store.for_session("session-1")
+
+    assert preserved is not None
+    assert preserved.phase == "planning"
+    assert preserved.auto_mode is False
+
+
+def test_state_store_rejects_phase_regression(tmp_path) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    start = parse_operator_call("故事影片：恐龍起源｜5分鐘｜真實照片")
+    assert start is not None
+    context = store.create_or_load(
+        source_key="source-1",
+        session_id="session-1",
+        call=start,
+        original_request="開始",
+    )
+    context = store.update(context, phase="batch")
+
+    with pytest.raises(ValueError, match="phase regression"):
+        store.update(context, phase="planning")
+
+
+def test_stale_worker_update_cannot_overwrite_newer_canonical_phase(tmp_path) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    start = parse_operator_call("故事影片：恐龍起源｜5分鐘｜真實照片")
+    assert start is not None
+    stale = store.create_or_load(
+        source_key="source-1",
+        session_id="session-1",
+        call=start,
+        original_request="開始",
+    )
+    store.update(stale, phase="batch")
+
+    updated = store.update(stale, autopilot_stall_count=1)
+
+    assert updated.phase == "batch"
+    assert updated.autopilot_stall_count == 1
+    assert store.for_session("session-1").phase == "batch"
+
+
 def test_existing_source_reloads_project_and_binds_new_session(tmp_path) -> None:
     store = StoryVideoStateStore(tmp_path)
     start = parse_operator_call("故事影片：恐龍起源｜5分｜真實照片")
@@ -256,23 +398,24 @@ def test_loading_advanced_phase_clears_stale_legacy_repair(tmp_path) -> None:
         call=start,
         original_request="start",
     )
-    context_path = context.project_dir / "story_video_run_context.json"
-    payload = context.to_dict()
-    payload.update(
-        {
-            "phase": "render",
-            "last_validated_phase": "voice",
-            "repair_request": "補齊 voice：audio narration segments",
-        }
+    store.update(
+        context,
+        phase="render",
+        last_validated_phase="voice",
+        repair_request="補齊 voice：audio narration segments",
     )
-    context_path.write_text(json.dumps(payload), encoding="utf-8")
 
     reloaded = store.for_session("session-1")
 
     assert reloaded is not None
     assert reloaded.repair_request == ""
     assert reloaded.next_call == "出片"
-    assert json.loads(context_path.read_text(encoding="utf-8"))["repair_request"] == ""
+    persisted = json.loads(
+        (context.project_dir / "story_video_run_context.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert persisted["repair_request"] == ""
 
 
 def test_new_cross_phase_repair_is_not_treated_as_stale(tmp_path) -> None:
