@@ -1529,6 +1529,66 @@ def test_next_batch_work_promotes_subtitle_collision_to_packaging_fallback(
     assert manifest["selection_events"][0]["quality_floor"] == 80.0
 
 
+def test_next_batch_work_promotes_packaging_fallback_at_replanned_contract_cap(
+    tmp_path,
+) -> None:
+    store, context, shot = _context(tmp_path)
+    contract_hash = _shot_contract_hash(shot)
+    candidate = _candidate(context, "S00_SH00_REPLAN_C02")
+    attempts = [
+        {
+            "shot_id": "S00_SH00",
+            "candidate_id": "S00_SH00_REPLAN_C01",
+            "status": "repair_required",
+            "repair_strategy": "initial",
+            "shot_contract_hash": contract_hash,
+            "hard_blockers": ["bottom subtitle band is occupied"],
+            "blocker_codes": ["subtitle_collision"],
+        },
+        {
+            "shot_id": "S00_SH00",
+            "candidate_id": candidate["candidate_id"],
+            "status": "repair_required",
+            "repair_strategy": "targeted_repair",
+            "shot_contract_hash": contract_hash,
+            "provider": "openai-codex",
+            "candidate_path": candidate["path"],
+            "local_path": candidate["path"],
+            "quality_score": 89.7,
+            "hard_blockers": ["bottom subtitle band is occupied"],
+            "blocker_codes": ["subtitle_collision"],
+            "vision_evidence": {"status": "PASS", "response_id": "resp_qc"},
+        },
+    ]
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps({
+            "outputs": [attempts[-1]],
+            "attempt_history": attempts,
+            "contract_replans": [
+                {"shot_id": "S00_SH00", "revision": 1},
+                {"shot_id": "S00_SH00", "revision": 2},
+            ],
+        }),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(story_video_quality_control(
+        {"action": "next_batch_work"}, session_id="session-1", store=store
+    ))
+
+    assert payload["work_status"] == "complete"
+    manifest = json.loads(
+        (manifests / "shot_candidate_manifest.json").read_text(encoding="utf-8")
+    )
+    selected = manifest["outputs"][0]
+    assert selected["selected"] is True
+    assert selected["status"] == "selected_current"
+    assert selected["packaging_fallback"]["subtitle_position"] == "top"
+    assert selected["image_qc_blocker_codes"] == ["subtitle_collision"]
+
+
 def test_judge_uses_candidate_prompt_after_repair_plan_is_exhausted(tmp_path) -> None:
     store, context, _shot = _context(tmp_path)
     candidate = _candidate(context, "S00_SH00_MANUAL_C01")
