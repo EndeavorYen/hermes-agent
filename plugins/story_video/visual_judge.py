@@ -632,7 +632,20 @@ def _compile_prompt(
     prompt_path = context.project_dir / "prompts" / f"{shot_id}.txt"
     prompt_path.parent.mkdir(parents=True, exist_ok=True)
     prompt_path.write_text(prompt + "\n", encoding="utf-8")
-    return {
+    source_image_url = ""
+    source_candidate_id = ""
+    if repair_plan.strategy == "targeted_repair" and previous is not None:
+        source_path = _project_path(
+            context,
+            previous.get("candidate_path") or previous.get("local_path"),
+        )
+        if (
+            _provider(previous.get("provider")) in {"openai", "openai-codex"}
+            and source_path.is_file()
+        ):
+            source_image_url = str(source_path)
+            source_candidate_id = str(previous.get("candidate_id") or "")
+    result = {
         "success": True,
         "action": "compile_prompt",
         "shot_id": shot_id,
@@ -654,7 +667,14 @@ def _compile_prompt(
         "shot_contract_hash": contract_hash,
         "contract_reset": contract_reset,
         "effective_shot_contract": effective_shot,
+        "generation_mode": "image_edit" if source_image_url else "text_to_image",
     }
+    if source_image_url:
+        result.update({
+            "source_image_url": source_image_url,
+            "source_candidate_id": source_candidate_id,
+        })
+    return result
 
 
 def _review_instructions(shot: dict[str, Any], candidate_ids: list[str]) -> str:
@@ -1540,6 +1560,210 @@ def _promote_bounded_best_effort(
     return updated
 
 
+def _terminal_fallback_source(
+    context: StoryVideoRunContext,
+    *,
+    target_shot_id: str,
+    shot_ids: list[str],
+    outputs: list[dict[str, Any]],
+    history: list[dict[str, Any]],
+) -> tuple[dict[str, Any], Path, str] | None:
+    target_index = shot_ids.index(target_shot_id)
+    _ledger, target_scene, _shot = _find_shot(context, target_shot_id)
+    target_scene_id = str(target_scene.get("scene_id") or "")
+    continuity_sources: list[tuple[tuple[int, int, int], dict[str, Any], Path]] = []
+    for row in outputs:
+        source_shot_id = str(row.get("shot_id") or "").strip()
+        if (
+            source_shot_id == target_shot_id
+            or source_shot_id not in shot_ids
+            or row.get("selected") is not True
+            or _provider(row.get("provider")) not in {"openai", "openai-codex"}
+        ):
+            continue
+        source_path = _project_path(
+            context,
+            row.get("local_path") or row.get("candidate_path"),
+        )
+        if not source_path.is_file():
+            continue
+        try:
+            _source_ledger, source_scene, _source_shot = _find_shot(
+                context,
+                source_shot_id,
+            )
+        except ValueError:
+            continue
+        source_index = shot_ids.index(source_shot_id)
+        rank = (
+            0 if str(source_scene.get("scene_id") or "") == target_scene_id else 1,
+            0 if source_index < target_index else 1,
+            abs(target_index - source_index),
+        )
+        continuity_sources.append((rank, row, source_path))
+    if continuity_sources:
+        _rank, row, source_path = min(continuity_sources, key=lambda item: item[0])
+        return row, source_path, "continuity_hold"
+
+    best_available: list[tuple[float, dict[str, Any], Path]] = []
+    for row in history:
+        if (
+            str(row.get("shot_id") or "") != target_shot_id
+            or _provider(row.get("provider")) not in {"openai", "openai-codex"}
+            or (row.get("vision_evidence") or {}).get("status") != "PASS"
+        ):
+            continue
+        source_path = _project_path(
+            context,
+            row.get("local_path") or row.get("candidate_path"),
+        )
+        if source_path.is_file():
+            best_available.append(
+                (float(row.get("quality_score") or 0.0), row, source_path)
+            )
+    if not best_available:
+        return None
+    _score, row, source_path = max(best_available, key=lambda item: item[0])
+    return row, source_path, "best_available_draft"
+
+
+def _promote_auto_terminal_fallbacks(
+    context: StoryVideoRunContext,
+    manifest: dict[str, Any],
+    *,
+    shot_ids: list[str],
+) -> dict[str, Any]:
+    if not context.auto_mode:
+        return manifest
+    outputs = [dict(row) for row in manifest.get("outputs") or [] if isinstance(row, dict)]
+    history = [dict(row) for row in manifest.get("attempt_history") or [] if isinstance(row, dict)]
+    events = [dict(row) for row in manifest.get("selection_events") or [] if isinstance(row, dict)]
+    by_shot = {
+        str(row.get("shot_id") or ""): row
+        for row in outputs
+        if str(row.get("shot_id") or "")
+    }
+    legacy_prompts = {
+        str(row.get("shot_id") or ""): str(row.get("prompt") or "").strip()
+        for row in manifest.get("shots") or []
+        if isinstance(row, dict)
+    }
+    changed = False
+    for shot_id in shot_ids:
+        current = by_shot.get(shot_id)
+        if (
+            current is None
+            or current.get("selected") is True
+            or str(current.get("status") or "")
+            not in {"repair_required", "quality_budget_exhausted"}
+            or _contract_replan_count(manifest, shot_id) < MAX_CONTRACT_REPLANS
+        ):
+            continue
+        try:
+            _ledger, _scene, shot = _find_shot(context, shot_id)
+        except ValueError:
+            continue
+        current_history = [
+            row
+            for row in history
+            if str(row.get("shot_id") or "") == shot_id
+            and _manifest_row_matches_shot_contract(
+                row,
+                shot,
+                legacy_prompts.get(shot_id, ""),
+            )
+        ]
+        if len(current_history) < MAX_REPLANNED_CONTRACT_CANDIDATES:
+            continue
+        source = _terminal_fallback_source(
+            context,
+            target_shot_id=shot_id,
+            shot_ids=shot_ids,
+            outputs=outputs,
+            history=history,
+        )
+        if source is None:
+            continue
+        source_row, source_path, fallback_type = source
+        target_path = context.project_dir / "images" / f"{shot_id}.png"
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, target_path)
+        original_blockers = [
+            str(value) for value in current.get("hard_blockers") or [] if value
+        ]
+        original_codes = sorted(
+            classify_blockers(
+                original_blockers,
+                current.get("blocker_codes") or (),
+            )
+        )
+        source_shot_id = str(source_row.get("shot_id") or "")
+        candidate_suffix = (
+            "CONTINUITY_HOLD"
+            if fallback_type == "continuity_hold"
+            else "BEST_AVAILABLE_DRAFT"
+        )
+        fallback_row = {
+            **current,
+            "candidate_id": f"{shot_id}_{candidate_suffix}",
+            "selected": True,
+            "status": "selected_current",
+            "provider": _provider(source_row.get("provider")),
+            "model": str(source_row.get("model") or ""),
+            "judge_provider": str(
+                source_row.get("judge_provider") or "openai-codex"
+            ),
+            "quality_score": float(source_row.get("quality_score") or 0.0),
+            "quality_dimensions": source_row.get("quality_dimensions") or {},
+            "vision_evidence": source_row.get("vision_evidence") or {},
+            "candidate_path": _relative(context, target_path),
+            "local_path": _relative(context, target_path),
+            "artifact_sha256": _file_sha256(target_path),
+            "shot_contract_hash": _shot_contract_hash(shot),
+            "hard_blockers": [],
+            "blocker_codes": [],
+            "image_qc_blockers": original_blockers,
+            "image_qc_blocker_codes": original_codes,
+            "final_qc_review_required": True,
+            "auto_terminal_fallback": {
+                "type": fallback_type,
+                "source_shot_id": source_shot_id,
+                "source_candidate_id": str(source_row.get("candidate_id") or ""),
+                "source_artifact": _relative(context, source_path),
+                "reason": "automatic shot-contract replanning exhausted",
+                "replan_revision": _contract_replan_count(manifest, shot_id),
+            },
+            "selected_at": _utc_now(),
+        }
+        outputs = [
+            fallback_row if str(row.get("shot_id") or "") == shot_id else row
+            for row in outputs
+        ]
+        by_shot[shot_id] = fallback_row
+        events.append({
+            "event": "auto_terminal_fallback_selected",
+            "shot_id": shot_id,
+            "candidate_id": fallback_row["candidate_id"],
+            "fallback_type": fallback_type,
+            "source_shot_id": source_shot_id,
+            "selected_at": fallback_row["selected_at"],
+        })
+        changed = True
+    if not changed:
+        return manifest
+    updated = {
+        **manifest,
+        "outputs": outputs,
+        "selection_events": events,
+        "updated_at": _utc_now(),
+    }
+    _write_candidate_manifest_atomic(
+        context.project_dir / "manifests" / "shot_candidate_manifest.json",
+        updated,
+    )
+    return updated
+
+
 def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
     """Return one deterministic image/QC cycle, prioritizing repairs."""
     shot_ids = _ordered_shot_ids(context)
@@ -1554,6 +1778,11 @@ def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
     )
     manifest = _grandfather_clean_legacy_selections(context, manifest)
     manifest = _promote_bounded_best_effort(context, manifest)
+    manifest = _promote_auto_terminal_fallbacks(
+        context,
+        manifest,
+        shot_ids=shot_ids,
+    )
     legacy_prompts = {
         str(row.get("shot_id") or ""): str(row.get("prompt") or "").strip()
         for row in manifest.get("shots") or []
@@ -1928,6 +2157,11 @@ def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
                 ).strip()
                 if subtitle_position in {"top", "bottom"}:
                     shot_input["subtitle_position"] = subtitle_position
+            if selected.get("final_qc_review_required") is True:
+                shot_input["final_qc_review_required"] = True
+                shot_input["auto_terminal_fallback"] = selected.get(
+                    "auto_terminal_fallback"
+                )
             shots.append(shot_input)
         scenes.append(
             {
