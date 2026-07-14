@@ -337,10 +337,11 @@ def _apply_shot_contract_replan(
         ),
         {},
     )
-    prompt_info = _compile_prompt(context, shot_id=shot_id)
+    next_work = _next_batch_work(context)
     if (
-        str(current_output.get("status") or "") != "quality_budget_exhausted"
-        or prompt_info.get("success") is True
+        str(next_work.get("shot_id") or "") != shot_id
+        or next_work.get("work_status") != "ready"
+        or next_work.get("operation") != "replan_shot_contract"
     ):
         raise ValueError(
             "shot-contract replanning is only allowed after visual repair "
