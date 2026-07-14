@@ -218,7 +218,7 @@ class TestMcpToolCallProjection:
         msgs = CodexEventProjector().project(
             {"method": "item/completed", "params": {"item": item}}
         ).messages
-        assert msgs[0]["tool_calls"][0]["function"]["name"] == "mcp.obsidian.search_notes"
+        assert msgs[0]["tool_calls"][0]["function"]["name"] == "mcp__obsidian__search_notes"
         assert "found" in msgs[1]["content"]
 
     def test_mcp_error_surfaced(self) -> None:

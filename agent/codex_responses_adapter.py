@@ -23,6 +23,8 @@ from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 logger = logging.getLogger(__name__)
 
 _MAX_RESPONSES_CALL_ID_LENGTH = 64
+_MAX_RESPONSES_FUNCTION_NAME_LENGTH = 64
+_INVALID_RESPONSES_FUNCTION_NAME_CHARS = re.compile(r"[^a-zA-Z0-9_-]")
 
 
 def _classify_responses_issuer(
@@ -192,6 +194,22 @@ def _bounded_responses_call_id(call_id: str) -> str:
     ).hexdigest()[:16]
     prefix_length = _MAX_RESPONSES_CALL_ID_LENGTH - len(digest) - 1
     return f"{candidate[:prefix_length]}_{digest}"
+
+
+def _normalized_responses_function_name(name: str) -> str:
+    """Return a stable function name accepted by the Responses API."""
+    candidate = str(name or "").strip()
+    normalized = _INVALID_RESPONSES_FUNCTION_NAME_CHARS.sub("_", candidate)
+    if not normalized:
+        normalized = "tool"
+    if len(normalized) <= _MAX_RESPONSES_FUNCTION_NAME_LENGTH:
+        return normalized
+
+    digest = hashlib.sha256(
+        candidate.encode("utf-8", errors="replace")
+    ).hexdigest()[:16]
+    prefix_length = _MAX_RESPONSES_FUNCTION_NAME_LENGTH - len(digest) - 1
+    return f"{normalized[:prefix_length]}_{digest}"
 
 def _deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:
     """Generate a deterministic call_id from tool call content.
@@ -537,7 +555,7 @@ def _chat_messages_to_responses_input(
                         items.append({
                             "type": "function_call",
                             "call_id": call_id,
-                            "name": fn_name,
+                            "name": _normalized_responses_function_name(fn_name),
                             "arguments": arguments,
                         })
                 continue
@@ -621,7 +639,7 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
                 {
                     "type": "function_call",
                     "call_id": call_id.strip(),
-                    "name": name.strip(),
+                    "name": _normalized_responses_function_name(name),
                     "arguments": arguments,
                 }
             )
