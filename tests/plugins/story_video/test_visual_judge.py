@@ -647,6 +647,80 @@ def test_replan_shot_contract_preserves_truth_fields_and_resets_generation(
     ]
 
 
+def test_replan_handler_accepts_the_same_exhausted_state_returned_by_next_work(
+    tmp_path,
+) -> None:
+    store, context, shot = _context(tmp_path)
+    contract_hash = _shot_contract_hash(shot)
+    attempts = [
+        {
+            "shot_id": "S00_SH00",
+            "candidate_id": "S00_SH00_C01",
+            "status": "repair_required",
+            "selected": False,
+            "repair_strategy": "initial",
+            "hard_blockers": ["subtitle collision"],
+            "blocker_codes": ["subtitle_collision"],
+            "shot_contract_hash": contract_hash,
+        },
+        {
+            "shot_id": "S00_SH00",
+            "candidate_id": "S00_SH00_C02",
+            "status": "repair_required",
+            "selected": False,
+            "repair_strategy": "targeted_repair",
+            "hard_blockers": ["scientific identity is unclear"],
+            "blocker_codes": ["scientific_identity"],
+            "shot_contract_hash": contract_hash,
+        },
+        {
+            "shot_id": "S00_SH00",
+            "candidate_id": "S00_SH00_C03",
+            "status": "quality_budget_exhausted",
+            "selected": False,
+            "repair_strategy": "targeted_repair",
+            "hard_blockers": ["scientific identity and subtitle collision"],
+            "blocker_codes": ["scientific_identity", "subtitle_collision"],
+            "shot_contract_hash": contract_hash,
+        },
+    ]
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps({"outputs": [attempts[-1]], "attempt_history": attempts}),
+        encoding="utf-8",
+    )
+    next_work = json.loads(story_video_quality_control(
+        {"action": "next_batch_work"}, session_id="session-1", store=store
+    ))
+    assert next_work["operation"] == "replan_shot_contract"
+
+    payload = json.loads(story_video_quality_control(
+        {
+            "action": "replan_shot_contract",
+            "shot_id": "S00_SH00",
+            "redesigned_shot": {
+                "subject": "one physical museum comparison display",
+                "action": "one small model becomes three across a wooden divider",
+                "evidence_detail": "the bounded increase remains visibly subordinate",
+                "shot_scale": "wide",
+                "camera_angle": "eye level",
+                "focal_point": "the one-to-three comparison",
+                "subtitle_safe_area": "upper right clear",
+                "acceptance_criteria": [
+                    "the physical divider is visible",
+                    "the subtitle area is empty",
+                ],
+            },
+        },
+        session_id="session-1",
+        store=store,
+    ))
+
+    assert payload["success"] is True
+    assert payload["replan_revision"] == 1
+
+
 def test_replan_shot_contract_rejects_premature_redesign(tmp_path) -> None:
     store, _context_value, _shot = _context(tmp_path)
 
