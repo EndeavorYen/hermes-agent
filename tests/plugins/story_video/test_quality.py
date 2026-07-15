@@ -98,11 +98,30 @@ def test_quality_ledger_rejects_shot_without_observable_evidence() -> None:
     assert "S00_SH00.evidence_detail" in report.violations
 
 
-def test_five_minute_quality_profile_requires_40_to_60_shots() -> None:
+def test_five_minute_quality_profile_requires_25_to_40_semantic_shots() -> None:
     report = validate_quality_ledger(_ledger([_shot(i) for i in range(20)], duration=300))
 
     assert report.ok is False
-    assert "shot_density_below_quality_first_minimum:20<40" in report.violations
+    assert "shot_density_below_quality_first_minimum:20<25" in report.violations
+
+
+def test_quality_ledger_rejects_narration_fragments_as_visual_shots() -> None:
+    shots = [_shot(i, scale="close_up" if i % 4 == 0 else "medium") for i in range(6)]
+    shots[1]["narration_text"] = "海洋與陸地上的生命大量消失，"
+
+    report = validate_quality_ledger(_ledger(shots))
+
+    assert "S00_SH01.narration_fragment" in report.violations
+
+
+def test_quality_ledger_allows_explicit_fast_cut_fragment() -> None:
+    shots = [_shot(i, scale="close_up" if i % 4 == 0 else "medium") for i in range(6)]
+    shots[1]["narration_text"] = "海洋與陸地上的生命大量消失，"
+    shots[1]["intentional_fast_cut_reason"] = "opening evidence montage"
+
+    report = validate_quality_ledger(_ledger(shots))
+
+    assert "S00_SH01.narration_fragment" not in report.violations
 
 
 def test_science_profile_requires_close_up_evidence_mix() -> None:
@@ -120,8 +139,6 @@ def test_science_profile_requires_close_up_evidence_mix() -> None:
         "medium",
         "close_up",
         "medium",
-        "medium",
-        "insert",
     ]
     passing = [_shot(i, scale=scale) for i, scale in enumerate(scales)]
     assert validate_quality_ledger(_ledger(passing)).ok is True

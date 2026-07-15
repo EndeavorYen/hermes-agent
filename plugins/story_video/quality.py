@@ -79,7 +79,12 @@ def _shot_count_bounds(duration_sec: float) -> tuple[int, int]:
     if duration_sec <= 0:
         return 1, 0
     minutes = duration_sec / 60.0
-    return max(1, math.ceil(minutes * 8.0)), max(1, math.ceil(minutes * 12.0))
+    return max(1, math.ceil(minutes * 5.0)), max(1, math.ceil(minutes * 8.0))
+
+
+def _is_narration_fragment(value: Any) -> bool:
+    text = _text(value)
+    return bool(text) and text.endswith(("，", "、", "：", "；", ",", ":", ";"))
 
 
 def _scene_shots(ledger: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
@@ -137,6 +142,11 @@ def validate_quality_ledger(ledger: dict[str, Any]) -> LedgerQualityReport:
                     violations.append(f"{shot_id}.{field_name}")
             elif not _text(value):
                 violations.append(f"{shot_id}.{field_name}")
+        if (
+            _is_narration_fragment(shot.get("narration_text"))
+            and not _text(shot.get("intentional_fast_cut_reason"))
+        ):
+            violations.append(f"{shot_id}.narration_fragment")
         scale = _text(shot.get("shot_scale")).lower()
         if scale and scale not in SHOT_SCALES:
             violations.append(f"{shot_id}.shot_scale:{scale}")
