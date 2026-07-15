@@ -2484,6 +2484,74 @@ def test_prepare_render_writes_exact_renderer_v2_contract(tmp_path) -> None:
     assert render_input["ending_card"]["duration_sec"] == 5.0
 
 
+def test_prepare_render_copies_verified_segment_timing_to_matching_shot(tmp_path) -> None:
+    store, context, _shot = _context(tmp_path)
+    image = context.project_dir / "images" / "S00_SH00.png"
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b"selected-image")
+    audio = context.project_dir / "audio" / "qwen" / "S00.wav"
+    audio.parent.mkdir(parents=True)
+    audio.write_bytes(b"narration")
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps(
+            {
+                "outputs": [
+                    {
+                        "shot_id": "S00_SH00",
+                        "selected": True,
+                        "local_path": "images/S00_SH00.png",
+                        "provider": "openai-codex",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (manifests / "narration_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema": "story_video_narration_manifest_v4",
+                "provider": "local_qwen",
+                "outputs": [
+                    {
+                        "scene_id": "S00",
+                        "audio": str(audio),
+                        "display_text": "直立腿讓早期恐龍移動得更有效率。",
+                        "segments": [
+                            {
+                                "shot_id": "S00_SH00",
+                                "display_text": "直立腿讓早期恐龍移動得更有效率。",
+                                "timeline_duration_sec": 4.37,
+                                "speech_end_sec": 4.19,
+                                "alignment_status": "PASS",
+                                "pronunciation_status": "PASS",
+                                "prosody_status": "PASS",
+                            }
+                        ],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        story_video_quality_control(
+            {"action": "prepare_render"}, session_id="session-1", store=store
+        )
+    )
+
+    assert payload["success"] is True
+    render_input = json.loads(
+        (context.project_dir / "render_input.json").read_text(encoding="utf-8")
+    )
+    assert render_input["scenes"][0]["shots"][0]["timeline_duration_sec"] == 4.37
+    assert render_input["scenes"][0]["shots"][0]["speech_end_sec"] == 4.19
+
+
 def test_prepare_render_prefers_branded_release_cards(tmp_path) -> None:
     store, context, _shot = _context(tmp_path)
     image = context.project_dir / "images" / "S00_SH00.png"

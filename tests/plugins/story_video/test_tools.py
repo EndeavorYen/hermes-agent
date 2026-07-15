@@ -728,7 +728,7 @@ def test_voice_validation_rejects_local_macos_timing_draft(tmp_path) -> None:
     assert "production narration provider is local, expected local-qwen" in proof.violations
 
 
-def test_voice_validation_accepts_locked_local_qwen_narration_manifest(tmp_path) -> None:
+def test_voice_validation_requires_complete_v4_acoustic_contract(tmp_path) -> None:
     store, context = _active_context(tmp_path)
     context = store.update(context, phase="voice")
     audio = context.project_dir / "audio" / "qwen" / "S00.wav"
@@ -753,9 +753,18 @@ def test_voice_validation_accepts_locked_local_qwen_narration_manifest(tmp_path)
     pronunciation_path.write_text(
         json.dumps(
             {
-                "schema": "story_video_pronunciation_qc_v1",
+                "schema": "story_video_pronunciation_qc_v2",
                 "status": "PASS",
                 "language": "zh-TW",
+                "method": "lexicon_plus_independent_asr",
+                "acoustic_evidence": [
+                    {
+                        "shot_id": "S00_SH00",
+                        "alignment_status": "PASS",
+                        "pronunciation_status": "PASS",
+                        "prosody_status": "PASS",
+                    }
+                ],
             }
         ),
         encoding="utf-8",
@@ -763,6 +772,7 @@ def test_voice_validation_accepts_locked_local_qwen_narration_manifest(tmp_path)
     manifest_path.write_text(
         json.dumps(
             {
+                "schema": "story_video_narration_manifest_v4",
                 "provider": "local_qwen",
                 "engine": "Qwen3-TTS via MLX-Audio",
                 "language": "zh-TW",
@@ -776,6 +786,8 @@ def test_voice_validation_accepts_locked_local_qwen_narration_manifest(tmp_path)
                 "inference_mode": "offline",
                 "network_fallback": "forbidden",
                 "pronunciation_status": "PASS",
+                "alignment_status": "PASS",
+                "prosody_status": "PASS",
                 "outputs": [
                     {
                         "scene_id": "S00",
@@ -783,6 +795,15 @@ def test_voice_validation_accepts_locked_local_qwen_narration_manifest(tmp_path)
                         "display_text": "三疊紀。",
                         "spoken_text": "三碟紀。",
                         "pronunciation_status": "PASS",
+                        "segments": [
+                            {
+                                "shot_id": "S00_SH00",
+                                "timeline_duration_sec": 1.25,
+                                "alignment_status": "PASS",
+                                "pronunciation_status": "PASS",
+                                "prosody_status": "PASS",
+                            }
+                        ],
                     }
                 ],
             }
@@ -793,6 +814,17 @@ def test_voice_validation_accepts_locked_local_qwen_narration_manifest(tmp_path)
     proof = validate_phase(context)
 
     assert proof.ok is True
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["outputs"][0]["segments"][0]["prosody_status"] = "FAIL"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    failed = validate_phase(context)
+
+    assert failed.ok is False
+    assert (
+        "audio narration segment[0].segments[0] prosody is not PASS"
+        in failed.violations
+    )
 
 
 def test_voice_validation_blocks_local_qwen_without_pronunciation_proof(tmp_path) -> None:
