@@ -919,9 +919,10 @@ def test_direct_visual_handoff_strips_visual_arsenal_metadata_from_prompt():
     handoff = build_direct_visual_agent_handoff(agent, message)
 
     assert handoff is not None
-    assert handoff["arguments"]["prompt"] == (
+    assert handoff["arguments"]["prompt"].startswith(
         "請用 Grok Imagine + reference 固定這位角色，產出不同姿勢候選並選最佳，只交付最佳圖片。"
     )
+    assert handoff["arguments"]["reference_binding"]["reference_order"][0]["role_hint"] == "character_identity"
     assert "Visual Arsenal" not in handoff["arguments"]["prompt"]
     assert "image_cache" not in handoff["arguments"]["prompt"]
 
@@ -1249,7 +1250,7 @@ def test_direct_visual_handoff_uses_session_edit_anchor_for_followup_edit():
     }
 
 
-def test_direct_visual_handoff_continues_current_grok_web_result_for_followup_edit():
+def test_direct_visual_handoff_routes_grok_web_alias_followup_to_xai():
     from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
     from gateway.session_context import reset_visual_reference_context, set_visual_reference_context
 
@@ -1283,14 +1284,13 @@ def test_direct_visual_handoff_continues_current_grok_web_result_for_followup_ed
 
     assert handoff is not None
     args = handoff["arguments"]
-    assert args["image_provider"] == "grok-web-imagine"
-    assert args["image_operation"] == "continue_current"
+    assert args["image_provider"] == "xai"
     assert args["candidate_budget"] == 1
-    assert args["candidate_budget_source"] == "grok_web_current_result_operation"
+    assert args["candidate_budget_source"] == "planner_default"
     assert args["attachments"] == ["/tmp/character.png"]
 
 
-def test_direct_visual_handoff_regenerates_current_grok_web_result_for_regenerate_request():
+def test_direct_visual_handoff_routes_grok_web_alias_regenerate_to_xai():
     from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
     from gateway.session_context import reset_visual_reference_context, set_visual_reference_context
 
@@ -1318,12 +1318,11 @@ def test_direct_visual_handoff_regenerates_current_grok_web_result_for_regenerat
 
     assert handoff is not None
     args = handoff["arguments"]
-    assert args["image_provider"] == "grok-web-imagine"
-    assert args["image_operation"] == "regenerate_current"
+    assert args["image_provider"] == "xai"
     assert args["attachments"] == ["/tmp/previous-selected.png"]
 
 
-def test_direct_visual_handoff_promotes_current_attachment_for_grok_web_polish():
+def test_direct_visual_handoff_promotes_current_attachment_for_direct_xai_polish():
     from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
 
     agent = SimpleNamespace(
@@ -1343,7 +1342,7 @@ def test_direct_visual_handoff_promotes_current_attachment_for_grok_web_polish()
     args = handoff["arguments"]
     assert args["include_image"] is True
     assert args["include_video"] is False
-    assert args["polish_provider"] == "grok-web-imagine"
+    assert args["polish_provider"] == "xai"
     assert args["polish_provider_source"] == "prompt_override"
     assert args["attachments"] == ["/tmp/current-selected.png", "/tmp/older-reference.png"]
     assert args["reference_binding"]["reference_order"][0] == {
@@ -1362,7 +1361,7 @@ def test_direct_visual_handoff_promotes_current_attachment_for_grok_web_polish()
     assert "edit target" in args["prompt"]
 
 
-def test_direct_visual_handoff_promotes_session_reference_for_grok_web_polish():
+def test_direct_visual_handoff_promotes_session_reference_for_direct_xai_polish():
     from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
     from gateway.session_context import reset_visual_reference_context, set_visual_reference_context
 
@@ -1392,7 +1391,7 @@ def test_direct_visual_handoff_promotes_session_reference_for_grok_web_polish():
 
     assert handoff is not None
     args = handoff["arguments"]
-    assert args["polish_provider"] == "grok-web-imagine"
+    assert args["polish_provider"] == "xai"
     assert args["attachments"] == ["/tmp/current-selected.png", "/tmp/older-reference.png"]
     assert args["reference_binding"]["reference_order"][0] == {
         "index": 1,

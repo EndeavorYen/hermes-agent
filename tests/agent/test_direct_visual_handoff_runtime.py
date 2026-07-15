@@ -143,6 +143,62 @@ def test_run_conversation_executes_direct_visual_handoff_before_base_llm(monkeyp
     assert payload["direct_visual_agent_handoff"]["mode"] == "pre_llm_direct"
 
 
+def test_codex_app_server_executes_direct_xai_handoff_before_runtime(monkeypatch):
+    import agent.conversation_loop as conversation_loop
+    from agent.visual.agent_mode import handoff as handoff_module
+    from tools.registry import registry
+
+    agent = _FakeAgent()
+    agent.api_mode = "codex_app_server"
+    dispatched = {}
+
+    def fail_codex_runtime(**_kwargs):
+        raise AssertionError("Codex app-server must not receive a direct visual request")
+
+    agent._run_codex_app_server_turn = fail_codex_runtime
+
+    def fake_build_turn_context(*_args, **_kwargs):
+        user_message = "用 xai imagine 產出四張高品質圖片讓我挑選"
+        return SimpleNamespace(
+            user_message=user_message,
+            original_user_message=user_message,
+            messages=[{"role": "user", "content": user_message}],
+            conversation_history=[],
+            active_system_prompt="",
+            effective_task_id="task-xai-visual",
+            turn_id="turn-xai-visual",
+            current_turn_user_idx=0,
+            should_review_memory=False,
+            plugin_user_context="",
+            ext_prefetch_cache=None,
+        )
+
+    def fake_dispatch(name, args, **_kwargs):
+        dispatched["name"] = name
+        dispatched["args"] = dict(args)
+        return json.dumps(
+            {
+                "success": True,
+                "package_status": "completed",
+                "images": ["/tmp/current-xai.png"],
+                "videos": [],
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr(conversation_loop, "build_turn_context", fake_build_turn_context)
+    monkeypatch.setattr(handoff_module, "_raphael_handoff_control_enabled", lambda: False)
+    monkeypatch.setattr(registry, "dispatch", fake_dispatch)
+
+    result = conversation_loop.run_conversation(agent, "ignored by fake context")
+
+    assert result["api_calls"] == 0
+    assert result["turn_exit_reason"] == "direct_visual_agent_handoff"
+    assert dispatched["name"] == "visual_agent_generate"
+    assert dispatched["args"]["image_provider"] == "xai"
+    assert dispatched["args"]["candidate_budget"] == 4
+
+
 def test_gateway_attachment_context_reaches_visual_handoff_consumer():
     from gateway.run import _run_conversation_with_visual_reference_context
     from gateway.session_context import get_visual_reference_context_entries

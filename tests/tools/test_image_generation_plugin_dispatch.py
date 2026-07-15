@@ -52,6 +52,76 @@ class _NamedRecordingProvider(ImageGenProvider):
 
 
 class TestPluginDispatch:
+    def test_legacy_reference_images_reach_xai_provider_as_reference_urls(
+        self, monkeypatch, tmp_path
+    ):
+        from agent import image_gen_registry as registry_module
+        from hermes_cli import plugins as plugins_module
+        from tools import image_generation_tool
+
+        provider = _NamedRecordingProvider("xai")
+        reference = tmp_path / "identity.png"
+        reference.write_bytes(b"identity")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "xai")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda *a, **k: None)
+        monkeypatch.setattr(
+            registry_module,
+            "get_provider",
+            lambda name: provider if name == "xai" else None,
+        )
+
+        payload = json.loads(
+            image_generation_tool._handle_image_generate(
+                {
+                    "prompt": "Keep the same identity and change the pose",
+                    "aspect_ratio": "portrait",
+                    "provider": "grok-web-imagine",
+                    "reference_images": [str(reference)],
+                }
+            )
+        )
+
+        assert payload["success"] is True
+        assert payload["provider"] == "xai"
+        assert provider.last_kwargs["reference_image_urls"] == [str(reference)]
+
+    def test_configured_grok_web_alias_cannot_dispatch_browser_provider(
+        self, monkeypatch, tmp_path
+    ):
+        from agent import image_gen_registry as registry_module
+        from hermes_cli import plugins as plugins_module
+        from tools import image_generation_tool
+
+        provider = _NamedRecordingProvider("xai")
+        requested_providers = []
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(
+            image_generation_tool,
+            "_read_configured_image_provider",
+            lambda: "grok-web-imagine",
+        )
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda *a, **k: None)
+
+        def get_provider(name):
+            requested_providers.append(name)
+            return provider if name == "xai" else None
+
+        monkeypatch.setattr(registry_module, "get_provider", get_provider)
+
+        payload = json.loads(
+            image_generation_tool._handle_image_generate(
+                {
+                    "prompt": "Create a cinematic portrait",
+                    "aspect_ratio": "portrait",
+                }
+            )
+        )
+
+        assert payload["success"] is True
+        assert payload["provider"] == "xai"
+        assert requested_providers == ["xai"]
+
     def test_explicit_provider_override_preserves_exact_registry_ids(self):
         from tools import image_generation_tool
 
@@ -63,6 +133,10 @@ class TestPluginDispatch:
             {"image_provider": "custom-openai"},
             "draw a still",
         ) == "custom-openai"
+        assert image_generation_tool._image_provider_override_arg(
+            {"provider": "grok-web-imagine"},
+            "draw a still",
+        ) == "xai"
 
     def test_prompt_provider_negation_and_comparison_do_not_infer_override(self):
         from tools import image_generation_tool

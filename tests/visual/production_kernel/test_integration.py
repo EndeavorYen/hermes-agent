@@ -1,6 +1,25 @@
 from agent.visual.production_kernel.integration import attach_visual_production_kernel
 
 
+def test_production_kernel_never_authorizes_grok_web_provider():
+    result = attach_visual_production_kernel(
+        "Create a cinematic product image",
+        {
+            "candidate_budget": 1,
+            "candidate_budget_source": "planner_default",
+            "image_provider": "grok-web-imagine",
+            "authorized_image_providers": ["grok-web-imagine", "xai"],
+            "provider_profiles": {
+                "grok-web-imagine": {"sample_count": 100, "first_pass_rate": 1.0},
+                "xai": {"sample_count": 20, "first_pass_rate": 0.5},
+            },
+        },
+    )
+
+    assert result["image_provider"] == "xai"
+    assert "grok-web-imagine" not in result["authorized_image_providers"]
+
+
 def test_explicit_zero_repair_budget_is_preserved():
     result = attach_visual_production_kernel(
         "Create a clean product image",

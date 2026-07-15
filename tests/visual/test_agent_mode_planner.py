@@ -86,6 +86,24 @@ def test_agent_mode_planner_supports_multiple_reference_roles_without_fixed_defa
     assert "clothing, wardrobe" in prompt
 
 
+def test_agent_mode_planner_treats_unindexed_locked_ref_as_character_identity():
+    from agent.visual.agent_mode.planner import plan_visual_agent_request
+
+    plan = plan_visual_agent_request(
+        "用 xai imagine，locked ref 人物，產出不同姿勢圖片但保留同一人物",
+        attachments=["/tmp/person.png"],
+    )
+
+    assert plan["arguments"]["image_provider"] == "xai"
+    assert plan["arguments"]["reference_binding"]["reference_order"] == [
+        {
+            "index": 1,
+            "role_hint": "character_identity",
+            "attachment": "/tmp/person.png",
+        }
+    ]
+
+
 def test_agent_mode_planner_routes_image_only_request():
     from agent.visual.agent_mode.planner import plan_visual_agent_request
 
@@ -435,17 +453,17 @@ def test_agent_mode_planner_allows_openai_image2_media_override():
     assert plan["arguments"]["image_provider_source"] == "prompt_override"
 
 
-def test_agent_mode_planner_allows_grok_web_imagine_media_override():
+def test_agent_mode_planner_routes_grok_web_alias_to_direct_xai():
     from agent.visual.agent_mode.planner import plan_visual_agent_request
 
     plan = plan_visual_agent_request("請用 Grok Web Imagine 產出一張高品質動漫圖")
 
-    assert plan["provider_contract"]["visual_media_provider_override"] == "grok-web-imagine"
-    assert plan["arguments"]["image_provider"] == "grok-web-imagine"
+    assert plan["provider_contract"]["visual_media_provider_override"] == "xai"
+    assert plan["arguments"]["image_provider"] == "xai"
     assert plan["arguments"]["image_provider_source"] == "prompt_override"
 
 
-def test_agent_mode_planner_routes_grok_web_polish_as_image_polish_not_video():
+def test_agent_mode_planner_routes_grok_web_polish_to_direct_xai_not_video():
     from agent.visual.agent_mode.planner import plan_visual_agent_request
 
     plan = plan_visual_agent_request("用 grok web polish 試試看", attachments=["/tmp/current.png"])
@@ -455,5 +473,5 @@ def test_agent_mode_planner_routes_grok_web_polish_as_image_polish_not_video():
     assert plan["arguments"]["include_video"] is False
     assert plan["arguments"]["image_provider"] == "xai"
     assert plan["arguments"]["image_provider_source"] == "visual_agent_default"
-    assert plan["arguments"]["polish_provider"] == "grok-web-imagine"
+    assert plan["arguments"]["polish_provider"] == "xai"
     assert plan["arguments"]["polish_provider_source"] == "prompt_override"

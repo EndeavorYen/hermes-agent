@@ -6,6 +6,7 @@ from typing import Any
 from agent.visual.production_kernel.contract import compile_visual_intent_contract
 from agent.visual.production_kernel.contract import visual_contract_hash
 from agent.visual.production_kernel.providers import choose_visual_provider
+from agent.visual.production_kernel.providers import _provider as _normalize_provider
 
 
 _EXPLICIT_PROVIDER_SOURCES = {
@@ -30,10 +31,12 @@ def attach_visual_production_kernel(
             storyboard["candidate_budget_per_shot"] = 1
         result["storyboard"] = storyboard
 
-    provider = str(result.get("image_provider") or "xai").strip()
+    provider = _normalize_provider(result.get("image_provider") or "xai")
+    result["image_provider"] = provider
     provider_source = str(result.get("image_provider_source") or "visual_agent_default").strip()
     explicit_provider = provider if provider_source in _EXPLICIT_PROVIDER_SOURCES else None
     authorized = _authorized_providers(result, provider)
+    result["authorized_image_providers"] = list(authorized)
     profiles = result.get("provider_profiles")
     if not isinstance(profiles, dict):
         profiles = {}
@@ -94,8 +97,9 @@ def _uses_planner_default_budget(arguments: dict[str, Any]) -> bool:
 def _authorized_providers(arguments: dict[str, Any], current: str) -> tuple[str, ...]:
     configured = arguments.get("authorized_image_providers")
     values = list(configured) if isinstance(configured, (list, tuple)) else []
-    values.extend((current, "xai", "openai-codex", "grok-web-imagine"))
-    return tuple(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
+    values.extend((current, "xai", "openai-codex"))
+    normalized = (_normalize_provider(value) for value in values)
+    return tuple(dict.fromkeys(value for value in normalized if value))
 
 
 def _reference_roles(value: Any) -> list[dict[str, str]]:

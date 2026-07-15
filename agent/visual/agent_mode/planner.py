@@ -463,7 +463,21 @@ def _reference_binding_for_prompt(prompt: str, attachments: list[str]) -> dict[s
         if _mentions_reference_index(compact, index)
     ]
     if not referenced_indices:
-        return None
+        if len(attachments) != 1 or not _requests_unindexed_identity_lock(compact):
+            return None
+        return {
+            "mode": "ordered_references",
+            "reference_order_source": "user_visible_upload_order",
+            "role_policy": "explicit_identity_lock",
+            "reference_order": [
+                {
+                    "index": index,
+                    "role_hint": "character_identity",
+                    "attachment": attachment,
+                }
+                for index, attachment in enumerate(attachments, start=1)
+            ],
+        }
     reference_order = []
     for index in referenced_indices:
         role_hint = _role_hint_for_reference(compact, index) or "visual_reference"
@@ -480,6 +494,29 @@ def _reference_binding_for_prompt(prompt: str, attachments: list[str]) -> dict[s
         "role_policy": "derive_from_user_prompt",
         "reference_order": reference_order,
     }
+
+
+def _requests_unindexed_identity_lock(compact_prompt: str) -> bool:
+    return any(
+        marker in compact_prompt
+        for marker in (
+            "lockedref",
+            "identitylock",
+            "referenceidentity",
+            "鎖定人物",
+            "鎖定角色",
+            "固定人物",
+            "固定角色",
+            "固定這位人物",
+            "固定這位角色",
+            "同一人物",
+            "同一角色",
+            "同一張臉",
+            "sameperson",
+            "samecharacter",
+            "sameface",
+        )
+    )
 
 
 def _mentions_reference_index(compact_prompt: str, index: int) -> bool:
@@ -738,7 +775,7 @@ def _requested_image_provider(value: str) -> str | None:
         or "grokweb" in compact
         or "grok web imagine" in lowered
     ):
-        return "grok-web-imagine"
+        return "xai"
     if "grok" in lowered or "x.ai" in lowered or re.search(r"\bxai\b", lowered):
         return "xai"
     if (
@@ -757,7 +794,7 @@ def _requested_polish_provider(value: str) -> str | None:
     if not _requests_visual_polish(value):
         return None
     if "grok web" in lowered or "web polish" in lowered or compact in {"grokwebpolish"}:
-        return "grok-web-imagine"
+        return "xai"
     return None
 
 

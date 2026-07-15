@@ -1989,7 +1989,7 @@ def test_visual_package_followup_reuses_session_visual_references(monkeypatch, t
     assert payload["generation_strategy"]["image_reference_source"] == "session_visual_context"
 
 
-def test_visual_package_grok_web_followup_continues_current_web_result(monkeypatch, tmp_path):
+def test_visual_package_grok_web_alias_uses_direct_xai_with_references(monkeypatch, tmp_path):
     from gateway.session_context import (
         reset_visual_reference_context,
         set_visual_reference_context,
@@ -2030,10 +2030,13 @@ def test_visual_package_grok_web_followup_continues_current_web_result(monkeypat
         reset_visual_reference_context(ref_token)
 
     assert payload["success"] is True
-    assert image_calls[0]["_provider"] == "grok-web-imagine"
-    assert image_calls[0]["operation"] == "continue_current"
+    assert image_calls[0]["_provider"] == "xai"
+    assert image_calls[0]["reference_image_urls"] == [
+        "/tmp/previous-selected.png",
+        "/tmp/original-ref.png",
+    ]
     assert payload["generation_strategy"]["image_reference_source"] == "session_visual_context"
-    assert payload["generation_strategy"]["grok_web_imagine_policy"]["mode"] == "controlled_visual_agent_provider"
+    assert "grok_web_imagine_policy" not in payload["generation_strategy"]
 
 
 def test_visual_package_original_ref_followup_filters_generated_session_outputs(monkeypatch, tmp_path):
@@ -2099,7 +2102,7 @@ def test_visual_package_original_ref_followup_filters_generated_session_outputs(
     )
 
 
-def test_visual_package_routes_controlled_grok_web_provider_when_enabled(monkeypatch, tmp_path):
+def test_visual_package_web_env_cannot_reenable_grok_web_provider(monkeypatch, tmp_path):
     from tools import visual_package_tool
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -2136,17 +2139,12 @@ def test_visual_package_routes_controlled_grok_web_provider_when_enabled(monkeyp
     )
 
     assert payload["success"] is True
-    assert image_calls[0]["_provider"] == "grok-web-imagine"
-    assert payload["generation_strategy"]["image_provider"] == "grok-web-imagine"
-    assert payload["generation_strategy"]["grok_web_imagine_policy"] == {
-        "enabled": True,
-        "mode": "controlled_visual_agent_provider",
-        "source": "prompt_override",
-        "handoff_mode": "pre_llm_direct",
-    }
+    assert image_calls[0]["_provider"] == "xai"
+    assert payload["generation_strategy"]["image_provider"] == "xai"
+    assert "grok_web_imagine_policy" not in payload["generation_strategy"]
 
 
-def test_visual_package_grok_web_polish_pass_edits_selected_candidate(monkeypatch, tmp_path):
+def test_visual_package_grok_web_polish_alias_uses_xai_image_edit(monkeypatch, tmp_path):
     from tools import visual_package_tool
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -2206,20 +2204,20 @@ def test_visual_package_grok_web_polish_pass_edits_selected_candidate(monkeypatc
     assert payload["success"] is True
     assert len(image_calls) == 2
     assert image_calls[0]["_provider"] == "xai"
-    assert image_calls[1]["_provider"] == "grok-web-imagine"
+    assert image_calls[1]["_provider"] == "xai"
     assert image_calls[1]["image_url"] == str(source)
     assert image_calls[1]["reference_image_urls"] is None
     assert "polish" in image_calls[1]["prompt"].lower()
     assert payload["images"] == [str(polished)]
     assert payload["generation_strategy"]["polish_pass"] == {
         "enabled": True,
-        "provider": "grok-web-imagine",
+        "provider": "xai",
         "selected_source_image": str(source),
         "status": "completed",
     }
 
 
-def test_visual_package_grok_web_polish_prompt_edits_current_anchor_directly(monkeypatch, tmp_path):
+def test_visual_package_grok_web_polish_prompt_routes_current_anchor_to_xai(monkeypatch, tmp_path):
     from tools import visual_package_tool
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -2292,13 +2290,13 @@ def test_visual_package_grok_web_polish_prompt_edits_current_anchor_directly(mon
 
     assert payload["success"] is True
     assert len(image_calls) == 1
-    assert image_calls[0]["_provider"] == "grok-web-imagine"
+    assert image_calls[0]["_provider"] == "xai"
     assert image_calls[0]["image_url"] == str(source)
     assert image_calls[0]["reference_image_urls"] is None
     assert payload["images"] == [str(polished)]
     assert payload["generation_strategy"]["polish_pass"] == {
         "enabled": True,
-        "provider": "grok-web-imagine",
+        "provider": "xai",
         "selected_source_image": str(source),
         "status": "completed",
         "mode": "direct_edit_anchor_polish",

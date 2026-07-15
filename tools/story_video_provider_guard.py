@@ -63,6 +63,14 @@ _XAI_PROVIDER_ALIASES = {
     "grok imagine image quality",
     "grok-imagine-image-quality",
     "grok_imagine_image_quality",
+    "grok web imagine",
+    "grok-web-imagine",
+    "grok_web_imagine",
+    "grokwebimagine",
+    "grok web",
+    "grok-web",
+    "grok_web",
+    "grokweb",
 }
 
 _OPENAI_CODEX_PROVIDER_ALIASES = {

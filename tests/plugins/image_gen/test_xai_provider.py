@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -127,6 +128,128 @@ class TestConfig:
 
 
 class TestGenerate:
+    def test_grok_build_resolves_session_relative_image_path(self, tmp_path):
+        from plugins.image_gen.xai import _extract_grok_build_image
+
+        workdir = tmp_path / "work"
+        workdir.mkdir()
+        grok_home = tmp_path / ".grok"
+        session_id = "019f671d-6a86-7ee3-a189-24235146c063"
+        from urllib.parse import quote
+
+        image = (
+            grok_home
+            / "sessions"
+            / quote(str(workdir.resolve()), safe="")
+            / session_id
+            / "images"
+            / "1.jpg"
+        )
+        image.parent.mkdir(parents=True)
+        image.write_bytes(b"image")
+        stdout = json.dumps(
+            {
+                "sessionId": session_id,
+                "structuredOutput": {"image_path": "images/1.jpg"},
+            }
+        )
+
+        assert _extract_grok_build_image(
+            stdout,
+            workdir=workdir,
+            config={"grok_home": str(grok_home)},
+        ) == str(image.resolve())
+
+    def test_grok_build_transport_uses_native_image_tools_without_web(
+        self, monkeypatch, tmp_path
+    ):
+        from plugins.image_gen import xai as xai_module
+
+        image = tmp_path / "generated.jpg"
+        image.write_bytes(b"image")
+        captured = {}
+
+        def fake_run(command, **kwargs):
+            captured["command"] = command
+            captured["kwargs"] = kwargs
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps({"result": {"image_path": str(image)}}),
+                stderr="",
+            )
+
+        monkeypatch.setattr(
+            xai_module,
+            "_load_xai_config",
+            lambda: {
+                "transport": "grok-build",
+                "grok_binary": "/Users/simon/.local/bin/grok",
+            },
+        )
+        monkeypatch.setattr(xai_module, "_grok_build_available", lambda _cfg=None: True)
+        monkeypatch.setattr(xai_module.subprocess, "run", fake_run)
+
+        result = xai_module.XAIImageGenProvider().generate(
+            prompt="A dramatic studio portrait",
+            aspect_ratio="portrait",
+        )
+
+        assert result["success"] is True
+        assert result["provider"] == "xai"
+        assert result["transport"] == "grok-build"
+        assert result["image"] == str(image)
+        command = captured["command"]
+        assert "--disable-web-search" in command
+        assert "--tools" not in command
+        denied = command[command.index("--disallowed-tools") + 1]
+        assert "run_terminal_cmd" in denied
+        assert "web_search" in denied
+        assert "web_fetch" in denied
+        assert "Agent" in denied
+        assert "--no-subagents" in command
+        assert "--no-memory" in command
+        assert captured["kwargs"]["shell"] is False
+
+    def test_grok_build_transport_instructs_native_edit_for_reference(
+        self, monkeypatch, tmp_path
+    ):
+        from plugins.image_gen import xai as xai_module
+
+        source = tmp_path / "source.png"
+        source.write_bytes(b"source")
+        image = tmp_path / "edited.jpg"
+        image.write_bytes(b"image")
+        captured = {}
+
+        def fake_run(command, **_kwargs):
+            captured["command"] = command
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps({"image_path": str(image)}),
+                stderr="",
+            )
+
+        monkeypatch.setattr(
+            xai_module,
+            "_load_xai_config",
+            lambda: {"transport": "grok-build", "grok_binary": "grok"},
+        )
+        monkeypatch.setattr(xai_module, "_grok_build_available", lambda _cfg=None: True)
+        monkeypatch.setattr(xai_module.subprocess, "run", fake_run)
+
+        result = xai_module.XAIImageGenProvider().generate(
+            prompt="Keep identity and change the pose",
+            aspect_ratio="portrait",
+            image_url=str(source),
+        )
+
+        assert result["success"] is True
+        single_prompt = captured["command"][captured["command"].index("--single") + 1]
+        assert "image_edit" in single_prompt
+        assert str(source) in single_prompt
+
     def test_missing_api_key(self, monkeypatch):
         monkeypatch.delenv("XAI_API_KEY", raising=False)
         from plugins.image_gen.xai import XAIImageGenProvider
