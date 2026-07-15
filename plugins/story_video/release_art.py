@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageEnhance, ImageFont
+
+from .style import compile_style_directive
 
 
 def _text(value: Any) -> str:
@@ -63,6 +65,34 @@ def _fit_title(
     for size in range(preferred_size, minimum_size - 1, -2):
         font = _font(size, bold=True)
         box = draw.textbbox((0, 0), title, font=font, stroke_width=2)
+        if box[2] - box[0] <= max_width:
+            return font
+    return _font(minimum_size, bold=True)
+
+
+def _wrap_zh(text: str, *, max_chars: int = 16) -> str:
+    value = _text(text)
+    if len(value) <= max_chars:
+        return value
+    split = min(max_chars, max(1, len(value) // 2))
+    for index in range(split, max(1, split - 5), -1):
+        if value[index - 1] in "，。！？；：":
+            split = index
+            break
+    return value[:split].rstrip() + "\n" + value[split:].lstrip()
+
+
+def _fit_multiline(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    *,
+    max_width: int,
+    preferred_size: int,
+    minimum_size: int,
+) -> ImageFont.FreeTypeFont:
+    for size in range(preferred_size, minimum_size - 1, -2):
+        font = _font(size, bold=True)
+        box = draw.multiline_textbbox((0, 0), text, font=font, spacing=10, stroke_width=2)
         if box[2] - box[0] <= max_width:
             return font
     return _font(minimum_size, bold=True)
@@ -198,11 +228,18 @@ def compile_release_art_brief(topic: str, ledger: dict[str, Any]) -> dict[str, s
         return score
 
     hero_shot = max(shots, key=hero_score) if shots else first_shot
+    story_engine = ledger.get("story_engine")
+    story_engine = story_engine if isinstance(story_engine, dict) else {}
+    last_scene = next(
+        (scene for scene in reversed(ledger.get("scenes") or []) if isinstance(scene, dict)),
+        {},
+    )
     takeaway = _text(first_shot.get("viewer_takeaway"))
     subject = _text(hero_shot.get("subject")) or topic
     action = _text(hero_shot.get("action"))
     story_moment = _text(hero_shot.get("story_moment"))
     style = _text(ledger.get("visual_style")) or "cinematic factual reconstruction"
+    style_directive = compile_style_directive(ledger)
     prompt = " ".join((
         f"Create a premium 16:9 cinematic hero image for a story video titled {topic}.",
         f"Hero subject: {subject}.",
@@ -213,6 +250,7 @@ def compile_release_art_brief(topic: str, ledger: dict[str, Any]) -> dict[str, s
         "Use a decisive story instant, dramatic low or intimate camera placement, motivated high-contrast light, volumetric atmosphere, selective depth of field, and strong leading lines.",
         "Controlled exaggeration of perspective, lighting, particles, weather, and scale is welcome, while factual anatomy, evidence, time period, and causal meaning remain credible.",
         f"Visual direction: {style}, premium theatrical color separation, emotionally inviting for a curious general audience.",
+        style_directive,
         "Avoid empty landscapes, museum-catalog staging, generic documentary stock photography, passive centered subjects, collages, grids, and infographic layouts.",
         "No generated text, title, caption, label, logo, border, or watermark; typography will be composed locally.",
     ))
@@ -220,6 +258,13 @@ def compile_release_art_brief(topic: str, ledger: dict[str, Any]) -> dict[str, s
         "prompt": prompt,
         "title": topic,
         "subtitle": takeaway[:38] if takeaway else "從一個線索，看見完整故事",
+        "ending_label": "今天帶走的發現",
+        "ending_heading": _text(story_engine.get("ending_echo"))
+        or "原來，答案一直藏在線索裡。",
+        "ending_takeaway": _text(story_engine.get("knowledge_payoff"))
+        or _text(last_scene.get("viewer_takeaway"))
+        or takeaway
+        or "帶著今天的線索，繼續問下一個好問題。",
     }
 
 
@@ -229,6 +274,9 @@ def compose_release_art(
     output_dir: Path,
     title: str,
     subtitle: str,
+    ending_label: str = "今天帶走的發現",
+    ending_heading: str = "原來，答案一直藏在線索裡。",
+    ending_takeaway: str = "帶著今天的線索，繼續問下一個好問題。",
 ) -> dict[str, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     with Image.open(source) as opened:
@@ -251,34 +299,57 @@ def compose_release_art(
     thumbnail_path = output_dir / "thumbnail.jpg"
     thumbnail.convert("RGB").save(thumbnail_path, "JPEG", quality=94, optimize=True)
 
-    ending = _cover(hero, (1920, 1080)).filter(ImageFilter.GaussianBlur(7))
-    ending = ImageEnhance.Brightness(ending).enhance(0.42)
+    ending = _cover(hero, (1920, 1080))
+    ending = ImageEnhance.Color(ending).enhance(1.04)
+    ending = ImageEnhance.Contrast(ending).enhance(1.10)
+    ending = ImageEnhance.Brightness(ending).enhance(0.80)
+    _shade(ending)
     draw = ImageDraw.Draw(ending)
-    heading_font = _fit_title(
+    label_font = _font(30, bold=True)
+    heading = _wrap_zh(ending_heading)
+    heading_font = _fit_multiline(
         draw,
-        "探索仍在繼續",
-        max_width=1400,
-        preferred_size=108,
-        minimum_size=72,
+        heading,
+        max_width=1420,
+        preferred_size=82,
+        minimum_size=54,
     )
-    subtitle_font = _font(42)
-    heading_box = draw.textbbox((0, 0), "探索仍在繼續", font=heading_font)
-    x = (1920 - (heading_box[2] - heading_box[0])) // 2
+    takeaway_font = _font(38)
+    margin = 108
+    accent = (255, 196, 59, 255)
+    draw.rounded_rectangle((margin, 390, margin + 105, 402), radius=3, fill=accent)
     draw.text(
-        (x, 430),
-        "探索仍在繼續",
+        (margin, 420),
+        ending_label,
+        font=label_font,
+        fill=(244, 245, 242, 245),
+        stroke_width=1,
+        stroke_fill=(0, 0, 0, 180),
+    )
+    draw.multiline_text(
+        (margin, 475),
+        heading,
         font=heading_font,
-        fill="white",
+        spacing=10,
+        fill=(255, 255, 255, 255),
         stroke_width=3,
-        stroke_fill=(0, 0, 0, 220),
+        stroke_fill=(0, 0, 0, 225),
     )
-    topic_box = draw.textbbox((0, 0), title, font=subtitle_font)
-    draw.text(
-        ((1920 - (topic_box[2] - topic_box[0])) // 2, 575),
-        title,
-        font=subtitle_font,
-        fill=(238, 239, 235),
+    heading_box = draw.multiline_textbbox(
+        (margin, 475), heading, font=heading_font, spacing=10, stroke_width=3
     )
+    takeaway = _wrap_zh(ending_takeaway, max_chars=26)
+    draw.multiline_text(
+        (margin, min(850, heading_box[3] + 34)),
+        takeaway,
+        font=takeaway_font,
+        spacing=8,
+        fill=(238, 239, 235, 248),
+        stroke_width=2,
+        stroke_fill=(0, 0, 0, 215),
+    )
+    topic_font = _font(28, bold=True)
+    draw.text((margin, 990), title, font=topic_font, fill=(255, 196, 59, 245))
     ending_path = output_dir / "ending_card.png"
     ending.convert("RGB").save(ending_path, "PNG", optimize=True)
 

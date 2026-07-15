@@ -57,6 +57,26 @@ def test_project_contract_defaults_to_semantic_holds_and_cinematic_focus_push(
     assert "40-60" not in contract
 
 
+def test_runtime_context_requires_modular_child_story_style_and_educational_ending_contracts(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    start = hooks.pre_gateway_dispatch(
+        event=_event("故事影片：恐龍起源｜5分｜電影感科普。只規劃。")
+    )
+
+    runtime = hooks.pre_llm_call(session_id="session-v4", user_message=start["text"])
+    context = runtime["context"]
+
+    assert "quality_contract_version=4" in context
+    assert "minimum_age_years=5" in context
+    assert "story_engine" in context
+    assert "style_bible" in context
+    assert "style reference" in context.lower()
+    assert "educational ending" in context.lower()
+
+
 def _write_planning_fixture(context) -> None:
     (context.project_dir / "script.md").write_text(
         "### S00\nfinal narration script", encoding="utf-8"
@@ -451,7 +471,7 @@ def test_pre_llm_creates_context_and_injects_provider_policy(tmp_path, monkeypat
     assert "establishing|wide|medium|close_up|macro|insert" in result["context"]
     assert "5-8 semantic shots per minute" in result["context"]
     assert "story_video_script_quality_v1" in result["context"]
-    assert "quality_contract_version=3" in result["context"]
+    assert "quality_contract_version=4" in result["context"]
     assert "audience_profile" in result["context"]
     assert "engagement_profile" in result["context"]
     assert "story_moment" in result["context"]

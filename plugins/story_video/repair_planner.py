@@ -19,6 +19,7 @@ BLOCKER_CODES = frozenset({
     "audience_mismatch",
     "sensationalized_claim",
     "mixed_evidence_reconstruction",
+    "style_drift",
     "other",
 })
 
@@ -71,6 +72,9 @@ _KEYWORDS = {
     "mixed_evidence_reconstruction": (
         "mixed evidence", "evidence and reconstruction", "證據與重建混用", "證據重建混淆",
     ),
+    "style_drift": (
+        "style drift", "style mismatch", "inconsistent style", "風格漂移", "風格不一致",
+    ),
 }
 
 
@@ -117,6 +121,11 @@ _DIRECTIVES = {
         "Remove unsupported danger, behavior, emotion, and certainty. If evidence and "
         "reconstruction cannot be distinguished in one image, show the direct evidence "
         "only and reserve reconstruction for a separate shot."
+    ),
+    "style_reframe": (
+        "Regenerate the same shot content under the locked style bible and approved style "
+        "reference. Match medium, palette, lighting, lens language, texture, atmosphere, "
+        "and subject treatment; do not copy the reference subject or composition."
     ),
 }
 
@@ -259,6 +268,15 @@ def apply_repair_strategy(
                 "the main idea is understandable without labels or background knowledge",
             ],
         })
+    elif strategy == "style_reframe":
+        effective.update({
+            "acceptance_criteria": [
+                *acceptance,
+                "matches the locked style bible and approved style reference",
+                "preserves shot-specific subject, action, evidence, and composition",
+            ],
+            "risk_class": "high",
+        })
     elif strategy == "truth_reframe":
         if is_camera_reveal_shot(shot) and str(
             shot.get("visual_truth_mode") or ""
@@ -339,6 +357,8 @@ def plan_repair(attempts: Iterable[dict[str, Any]]) -> RepairPlan:
     preferred: list[str] | None = None
     if codes & {"sensationalized_claim", "mixed_evidence_reconstruction"}:
         preferred = ["truth_reframe", "story_reframe", "audience_reframe"]
+    elif "style_drift" in codes:
+        preferred = ["style_reframe", "story_reframe", "audience_reframe"]
     elif "audience_mismatch" in codes:
         preferred = ["audience_reframe", "story_reframe", "truth_reframe"]
     elif codes & {"static_catalog", "missing_story_moment", "flat_composition"}:
@@ -373,6 +393,7 @@ def plan_repair(attempts: Iterable[dict[str, Any]]) -> RepairPlan:
         "story_reframe": "STORY_C01",
         "audience_reframe": "AUDIENCE_C01",
         "truth_reframe": "TRUTH_C01",
+        "style_reframe": "STYLE_C01",
     }
     for strategy in preferred:
         if strategy not in used:

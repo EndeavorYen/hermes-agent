@@ -741,6 +741,17 @@ def _compile_prompt(
         "effective_shot_contract": effective_shot,
         "generation_mode": "image_edit" if source_image_url else "text_to_image",
     }
+    style_anchor_path = _style_anchor_source(
+        context,
+        ledger=ledger,
+        manifest=manifest,
+        current_shot_id=shot_id,
+    )
+    if style_anchor_path is not None:
+        result.update({
+            "reference_image_urls": [str(style_anchor_path)],
+            "style_reference_policy": "style_only_do_not_copy_subject_or_composition",
+        })
     if source_image_url:
         result.update({
             "source_image_url": source_image_url,
@@ -749,7 +760,44 @@ def _compile_prompt(
     return result
 
 
-def _review_instructions(shot: dict[str, Any], candidate_ids: list[str]) -> str:
+def _style_anchor_source(
+    context: StoryVideoRunContext,
+    *,
+    ledger: dict[str, Any],
+    manifest: dict[str, Any],
+    current_shot_id: str,
+) -> Path | None:
+    bible = ledger.get("style_bible")
+    if not isinstance(bible, dict):
+        return None
+    anchor_shot_id = str(bible.get("anchor_shot_id") or "").strip()
+    if not anchor_shot_id or anchor_shot_id == current_shot_id:
+        return None
+    for row in manifest.get("outputs") or []:
+        if (
+            not isinstance(row, dict)
+            or str(row.get("shot_id") or "").strip() != anchor_shot_id
+            or row.get("selected") is not True
+            or str(row.get("status") or "") != "selected_current"
+            or _provider(row.get("provider")) not in {"openai", "openai-codex"}
+        ):
+            continue
+        path = _project_path(
+            context,
+            row.get("local_path") or row.get("candidate_path"),
+        )
+        if path.is_file():
+            return path
+    return None
+
+
+def _review_instructions(
+    shot: dict[str, Any],
+    candidate_ids: list[str],
+    *,
+    style_bible: dict[str, Any] | None = None,
+    has_style_anchor: bool = False,
+) -> str:
     shot_specific: list[str] = []
     if is_camera_reveal_shot(shot):
         shot_specific.append(
@@ -770,11 +818,20 @@ def _review_instructions(shot: dict[str, Any], candidate_ids: list[str]) -> str:
             "Inspect every candidate image and score only what is visibly supported.",
             "The generation provider and the judging provider are both required to be OpenAI.",
             f"Shot contract: {json.dumps(shot, ensure_ascii=False, sort_keys=True)}",
+            f"Style bible: {json.dumps(style_bible or {}, ensure_ascii=False, sort_keys=True)}",
+            (
+                "Style reference image appears before candidate images. Compare medium, "
+                "palette, lighting, lens language, texture, atmosphere, and subject treatment; "
+                "do not require the candidate to copy its subject or composition."
+                if has_style_anchor
+                else "No visual style reference is available yet; judge against the textual style bible."
+            ),
             f"Candidate image order: {json.dumps(candidate_ids, ensure_ascii=False)}",
-            "Hard blockers include wrong spoken-claim content, scientific contradiction, malformed anatomy or geometry, generated text/watermark, unclear focus, an image that adds no information beyond adjacent shots, static_catalog, missing_story_moment, flat_composition, generic documentary or museum-catalog framing, audience_mismatch, sensationalized_claim, and mixed_evidence_reconstruction. Subtitle placement is not part of source-image QC because typography is added in post-composite rendering.",
+            "Hard blockers include wrong spoken-claim content, scientific contradiction, malformed anatomy or geometry, generated text/watermark, unclear focus, an image that adds no information beyond adjacent shots, static_catalog, missing_story_moment, flat_composition, generic documentary or museum-catalog framing, audience_mismatch, sensationalized_claim, mixed_evidence_reconstruction, and style_drift. Subtitle placement is not part of source-image QC because typography is added in post-composite rendering.",
             "Score narrative_engagement from the artifact's attention path, purposeful visual progression, and audience fit. High energy is not inherently better.",
             "Score story_moment_clarity from whether one decisive instant and its immediate consequence are visibly understandable.",
             "Score cinematic_impact from bold depth hierarchy, dramatic but motivated light, scale, visual tension, and a hero subject that immediately earns attention without changing factual content.",
+            "Score style_consistency from visible adherence to the locked style bible and, when supplied, the style reference image. Reject a different medium, palette family, lighting logic, lens language, texture treatment, or subject rendering as style_drift even if the isolated image is attractive.",
             "Intentional calm or breathe shots may score highly when the declared calm_reason is supported by a strong focal hierarchy and useful pause; calm alone is not static_catalog.",
             *shot_specific,
             "For every hard blocker, return one or more blocker_codes from: "
@@ -1076,6 +1133,12 @@ def _judge_candidates(
     if strategy_reset and not candidate_strategy:
         repair_strategy = "layout_reset"
     candidate_ids = [str(row["candidate_id"]) for row in candidate_rows]
+    style_anchor_path = _style_anchor_source(
+        context,
+        ledger=ledger,
+        manifest=manifest,
+        current_shot_id=shot_id,
+    )
     inputs: list[dict[str, Any]] = [
         {
             "type": "text",
@@ -1085,6 +1148,17 @@ def _judge_candidates(
             ),
         }
     ]
+    if style_anchor_path is not None:
+        inputs.extend(
+            (
+                {
+                    "type": "text",
+                    "text": "Approved style reference image; compare style only, not subject or composition.",
+                },
+                _image_input(style_anchor_path),
+                {"type": "text", "text": "Candidate image follows."},
+            )
+        )
     inputs.extend(_image_input(candidate_paths[candidate_id]) for candidate_id in candidate_ids)
     if llm is None:
         return {
@@ -1097,6 +1171,12 @@ def _judge_candidates(
             instructions=_review_instructions(
                 prompt_info.get("effective_shot_contract") or shot,
                 candidate_ids,
+                style_bible=(
+                    ledger.get("style_bible")
+                    if isinstance(ledger.get("style_bible"), dict)
+                    else None
+                ),
+                has_style_anchor=style_anchor_path is not None,
             ),
             input=inputs,
             json_schema=CANDIDATE_REVIEW_SCHEMA,
@@ -1175,6 +1255,7 @@ def _judge_candidates(
         "story_reframe",
         "audience_reframe",
         "truth_reframe",
+        "style_reframe",
     }
     best_assessment = max(
         assessments,
@@ -1252,6 +1333,16 @@ def _judge_candidates(
                 "shot_contract_hash": contract_hash,
                 "artifact_sha256": artifact_hashes[candidate_id],
                 "quality_contract_version": QUALITY_CONTRACT_VERSION,
+                "style_id": str(
+                    ledger["style_bible"].get("style_id") or ""
+                    if isinstance(ledger.get("style_bible"), dict)
+                    else ""
+                ),
+                "style_anchor_path": (
+                    _relative(context, style_anchor_path)
+                    if style_anchor_path is not None
+                    else ""
+                ),
                 "candidate_id": candidate_id,
                 "selected": candidate_id == selected_id,
                 "status": (
@@ -1882,6 +1973,16 @@ def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
         for shot_id in shot_ids
         if by_shot.get(shot_id, {}).get("selected") is not True
     ]
+    style_bible = ledger.get("style_bible")
+    anchor_shot_id = (
+        str(style_bible.get("anchor_shot_id") or "").strip()
+        if isinstance(style_bible, dict)
+        else ""
+    )
+    if anchor_shot_id in unresolved:
+        unresolved = [anchor_shot_id, *(
+            shot_id for shot_id in unresolved if shot_id != anchor_shot_id
+        )]
     contract_resets = [
         shot_id for shot_id in shot_ids if shot_id in superseded_contracts
     ]
@@ -2084,10 +2185,18 @@ def _next_batch_work_group(
         "parallelism": 1,
         "work_items": [first],
     }
+    ledger = _load_json(context.project_dir / "scene_ledger.json") or {}
+    style_bible = ledger.get("style_bible")
+    anchor_shot_id = (
+        str(style_bible.get("anchor_shot_id") or "").strip()
+        if isinstance(style_bible, dict)
+        else ""
+    )
     if (
         limit == 1
         or first.get("operation") != "generate"
         or first.get("contract_reset") is True
+        or str(first.get("shot_id") or "") == anchor_shot_id
     ):
         return singleton
 
@@ -2156,6 +2265,15 @@ def _compile_release_art(context: StoryVideoRunContext) -> dict[str, Any]:
     if not isinstance(ledger, dict):
         raise ValueError("scene_ledger.json is missing or invalid")
     brief = compile_release_art_brief(context.topic, ledger)
+    manifest = _load_json(
+        context.project_dir / "manifests" / "shot_candidate_manifest.json"
+    ) or {}
+    style_anchor_path = _style_anchor_source(
+        context,
+        ledger=ledger,
+        manifest=manifest,
+        current_shot_id="RELEASE_HERO",
+    )
     prompt_path = context.project_dir / "prompts" / "RELEASE_HERO.txt"
     prompt_path.parent.mkdir(parents=True, exist_ok=True)
     prompt_path.write_text(brief["prompt"] + "\n", encoding="utf-8")
@@ -2167,12 +2285,15 @@ def _compile_release_art(context: StoryVideoRunContext) -> dict[str, Any]:
             "run_id": context.run_id,
             "title": brief["title"],
             "subtitle": brief["subtitle"],
+            "ending_label": brief["ending_label"],
+            "ending_heading": brief["ending_heading"],
+            "ending_takeaway": brief["ending_takeaway"],
             "prompt": brief["prompt"],
             "provider": "openai-codex",
             "candidate_id_hint": "RELEASE_HERO_C01",
         },
     )
-    return {
+    result = {
         "success": True,
         "action": "compile_release_art",
         "provider": "openai-codex",
@@ -2181,6 +2302,12 @@ def _compile_release_art(context: StoryVideoRunContext) -> dict[str, Any]:
         "prompt_path": _relative(context, prompt_path),
         "brief": _relative(context, brief_path),
     }
+    if style_anchor_path is not None:
+        result.update({
+            "reference_image_urls": [str(style_anchor_path)],
+            "style_reference_policy": "style_only_do_not_copy_subject_or_composition",
+        })
+    return result
 
 
 def _register_release_art(
@@ -2206,6 +2333,14 @@ def _register_release_art(
         output_dir=context.project_dir / "release_art",
         title=str(brief_payload.get("title") or context.topic),
         subtitle=str(brief_payload.get("subtitle") or ""),
+        ending_label=str(brief_payload.get("ending_label") or "今天帶走的發現"),
+        ending_heading=str(
+            brief_payload.get("ending_heading") or "原來，答案一直藏在線索裡。"
+        ),
+        ending_takeaway=str(
+            brief_payload.get("ending_takeaway")
+            or "帶著今天的線索，繼續問下一個好問題。"
+        ),
     )
     manifest_path = context.project_dir / "manifests" / "release_art_manifest.json"
     _write_json_atomic(
@@ -2218,6 +2353,11 @@ def _register_release_art(
             "model": str(candidate.get("model") or ""),
             "response_id": response_id,
             "prompt_path": "prompts/RELEASE_HERO.txt",
+            "ending_copy": {
+                "label": str(brief_payload.get("ending_label") or ""),
+                "heading": str(brief_payload.get("ending_heading") or ""),
+                "takeaway": str(brief_payload.get("ending_takeaway") or ""),
+            },
             "artifacts": {
                 name: {
                     "path": _relative(context, path),

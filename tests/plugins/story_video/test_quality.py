@@ -58,6 +58,7 @@ def _assessment(candidate_id: str, score: float, **overrides) -> dict:
         "narrative_engagement": score,
         "story_moment_clarity": score,
         "cinematic_impact": score,
+        "style_consistency": score,
     }
     payload = {
         "candidate_id": candidate_id,
@@ -281,6 +282,38 @@ def test_prompt_compiler_demands_cinematic_tension_without_reserving_subtitle_sp
     assert "bottom 20 percent clear" not in prompt
     assert "下三分之一" not in prompt
     assert "lower third" not in prompt
+
+
+def test_prompt_compiler_applies_one_traceable_style_bible_to_every_shot() -> None:
+    shot = _shot(0, scale="close_up")
+    ledger = _ledger([shot], duration=8)
+    ledger.update(
+        {
+            "quality_contract_version": 4,
+            "style_bible": {
+                "style_id": "theatrical-discovery-v1",
+                "anchor_shot_id": "S00_SH00",
+                "medium": "camera-real cinematic factual reconstruction",
+                "palette": "storm teal, mineral earth, restrained amber",
+                "lighting": "motivated directional light",
+                "lens_language": "intimate low wide lens and evidence close-up",
+                "texture": "credible material detail and filmic grain",
+                "atmosphere": "awe and discovery tension",
+                "subject_treatment": "one dominant hero subject with factual anatomy",
+                "forbidden_drift": ["flat stock photo", "painterly illustration", "glossy CGI"],
+            },
+        }
+    )
+
+    prompt = compile_shot_prompt(
+        ledger=ledger,
+        scene={"scene_id": "S00", "setting": "scientifically credible setting"},
+        shot=shot,
+    )
+
+    assert "Style bible lock: theatrical-discovery-v1" in prompt
+    assert "storm teal, mineral earth, restrained amber" in prompt
+    assert "flat stock photo" in prompt
 
 
 def test_quality_ledger_enforces_engagement_contract_for_v3() -> None:

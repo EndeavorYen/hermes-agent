@@ -12,6 +12,7 @@ from plugins.story_video import hooks
 from plugins.story_video.state import StoryVideoStateStore, parse_operator_call
 from plugins.story_video.visual_judge import (
     CANDIDATE_REVIEW_SCHEMA,
+    _compile_prompt,
     _next_batch_work_group,
     _review_instructions,
     _shot_contract_hash,
@@ -126,6 +127,7 @@ def _dimensions(score: int) -> dict:
         "narrative_engagement": score,
         "story_moment_clarity": score,
         "cinematic_impact": score,
+        "style_consistency": score,
     }
 
 
@@ -145,12 +147,84 @@ def test_visual_judge_scores_story_engagement_from_artifact_evidence() -> None:
     assert "narrative_engagement" in dimensions["required"]
     assert "story_moment_clarity" in dimensions["required"]
     assert "cinematic_impact" in dimensions["required"]
+    assert "style_consistency" in dimensions["required"]
     candidate_schema = CANDIDATE_REVIEW_SCHEMA["properties"]["candidates"]["items"]
     assert "focal_point_normalized" in candidate_schema["required"]
     assert "Intentional calm" in instructions
     assert "static_catalog" in instructions
     assert "generic documentary" in instructions
     assert "subtitle collision" not in instructions
+
+
+def test_visual_judge_requires_style_comparison_when_anchor_is_available() -> None:
+    instructions = _review_instructions(
+        {"shot_id": "S00_SH01"},
+        ["C01"],
+        style_bible={"style_id": "theatrical-discovery-v1"},
+        has_style_anchor=True,
+    )
+
+    assert "Style reference image appears before candidate images" in instructions
+    assert "style_consistency" in instructions
+    assert "style_drift" in instructions
+
+
+def test_compile_prompt_passes_selected_openai_anchor_as_style_reference(tmp_path) -> None:
+    _store, context, anchor_shot = _context(tmp_path)
+    ledger_path = context.project_dir / "scene_ledger.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    target_shot = {
+        **anchor_shot,
+        "shot_id": "S00_SH01",
+        "subject": "early dinosaur looking toward a distant dust plume",
+        "action": "turns its head as the plume rises",
+    }
+    ledger["quality_contract_version"] = 4
+    ledger["style_bible"] = {
+        "style_id": "theatrical-discovery-v1",
+        "anchor_shot_id": "S00_SH00",
+        "medium": "cinematic photoreal reconstruction",
+        "palette": "mineral greens and volcanic amber",
+        "lighting": "motivated shafts with deep dimensional contrast",
+        "lens_language": "low 35mm hero perspective and selective focus",
+        "texture": "tactile skin, dust, and vegetation",
+        "atmosphere": "wonder with controlled danger",
+        "subject_treatment": "one dominant story action",
+        "forbidden_drift": ["flat encyclopedia plate"],
+    }
+    ledger["scenes"][0]["shots"].append(target_shot)
+    ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+
+    anchor_path = context.project_dir / "images_candidates" / "S00_SH00" / "anchor.png"
+    anchor_path.parent.mkdir(parents=True, exist_ok=True)
+    anchor_path.write_bytes(b"selected-openai-anchor")
+    manifest_path = context.project_dir / "manifests" / "shot_candidate_manifest.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "outputs": [
+                    {
+                        "shot_id": "S00_SH00",
+                        "candidate_id": "anchor",
+                        "local_path": str(anchor_path.relative_to(context.project_dir)),
+                        "provider": "openai-codex",
+                        "selected": True,
+                        "status": "selected_current",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = _compile_prompt(context, shot_id="S00_SH01")
+
+    assert result["success"] is True
+    assert result["reference_image_urls"] == [str(anchor_path)]
+    assert result["style_reference_policy"] == (
+        "style_only_do_not_copy_subject_or_composition"
+    )
 
 
 def test_visual_judge_does_not_require_camera_motion_inside_reveal_source_frame() -> None:
@@ -691,6 +765,38 @@ def test_next_batch_work_group_batches_fresh_shots_without_extra_candidates(
         "S00_SH02_C01",
     ]
     assert payload["remaining_shot_count"] == 4
+
+
+def test_next_batch_work_group_locks_declared_style_anchor_before_parallel_batch(
+    tmp_path,
+) -> None:
+    _store, context, shot = _context(tmp_path)
+    ledger_path = context.project_dir / "scene_ledger.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    ledger["scenes"][0]["shots"] = [
+        {**shot, "shot_id": f"S00_SH0{index}", "subject": f"subject {index}"}
+        for index in range(4)
+    ]
+    ledger["quality_contract_version"] = 4
+    ledger["style_bible"] = {
+        "style_id": "theatrical-discovery-v1",
+        "anchor_shot_id": "S00_SH02",
+        "medium": "cinematic photoreal reconstruction",
+        "palette": "mineral green and volcanic amber",
+        "lighting": "motivated shafts with dimensional contrast",
+        "lens_language": "low 35mm hero perspective",
+        "texture": "tactile skin, dust, and vegetation",
+        "atmosphere": "wonder with controlled danger",
+        "subject_treatment": "one dominant story action",
+        "forbidden_drift": ["flat encyclopedia plate"],
+    }
+    ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+
+    payload = _next_batch_work_group(context, max_items=3)
+
+    assert payload["operation"] == "generate"
+    assert payload["parallelism"] == 1
+    assert [item["shot_id"] for item in payload["work_items"]] == ["S00_SH02"]
 
 
 def test_next_batch_work_group_keeps_repairs_singleton(tmp_path) -> None:
@@ -2562,6 +2668,43 @@ def test_release_art_actions_compile_cinematic_prompt_and_compose_cards(
     tmp_path, monkeypatch
 ) -> None:
     store, context, _shot = _context(tmp_path)
+    ledger_path = context.project_dir / "scene_ledger.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    ledger["quality_contract_version"] = 4
+    ledger["style_bible"] = {
+        "style_id": "theatrical-discovery-v1",
+        "anchor_shot_id": "S00_SH00",
+        "medium": "cinematic photoreal reconstruction",
+        "palette": "mineral green and volcanic amber",
+        "lighting": "motivated shafts with dimensional contrast",
+        "lens_language": "low 35mm hero perspective",
+        "texture": "tactile skin, dust, and vegetation",
+        "atmosphere": "wonder with controlled danger",
+        "subject_treatment": "one dominant story action",
+        "forbidden_drift": ["flat encyclopedia plate"],
+    }
+    ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+    anchor = context.project_dir / "images_candidates" / "S00_SH00" / "anchor.png"
+    anchor.parent.mkdir(parents=True, exist_ok=True)
+    anchor.write_bytes(b"approved-style-anchor")
+    manifest_path = context.project_dir / "manifests" / "shot_candidate_manifest.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "outputs": [
+                    {
+                        "shot_id": "S00_SH00",
+                        "local_path": str(anchor.relative_to(context.project_dir)),
+                        "provider": "openai-codex",
+                        "selected": True,
+                        "status": "selected_current",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(
         "plugins.story_video.release_art._font",
         lambda size, *, bold=False: ImageFont.load_default(size=size),
@@ -2579,8 +2722,10 @@ def test_release_art_actions_compile_cinematic_prompt_and_compose_cards(
     assert compiled["provider"] == "openai-codex"
     assert "cinematic hero image" in compiled["prompt"].lower()
     assert "no generated text" in compiled["prompt"].lower()
+    assert "Style bible lock: theatrical-discovery-v1" in compiled["prompt"]
+    assert compiled["reference_image_urls"] == [str(anchor)]
     source = context.project_dir / "images_candidates" / "RELEASE_HERO_C01.png"
-    source.parent.mkdir(parents=True)
+    source.parent.mkdir(parents=True, exist_ok=True)
     Image.new("RGB", (1280, 720), (23, 71, 102)).save(source)
 
     registered = json.loads(

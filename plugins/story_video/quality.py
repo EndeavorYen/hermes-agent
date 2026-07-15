@@ -10,6 +10,8 @@ from .engagement import (
     is_subtitle_packaging_constraint,
     validate_engagement_ledger,
 )
+from .story_contract import validate_story_engine
+from .style import compile_style_directive, validate_style_bible
 
 
 OPENAI_PROVIDERS = frozenset({"openai", "openai-codex"})
@@ -33,15 +35,16 @@ REQUIRED_SHOT_FIELDS = (
     "risk_class",
 )
 DIMENSION_WEIGHTS = {
-    "text_alignment": 17.0,
-    "focal_clarity": 13.0,
+    "text_alignment": 16.0,
+    "focal_clarity": 12.0,
     "evidence_specificity": 10.0,
-    "professional_quality": 10.0,
+    "professional_quality": 9.0,
     "scientific_credibility": 10.0,
-    "continuity_and_diversity": 7.0,
-    "narrative_engagement": 11.0,
-    "story_moment_clarity": 10.0,
-    "cinematic_impact": 12.0,
+    "continuity_and_diversity": 5.0,
+    "narrative_engagement": 10.0,
+    "story_moment_clarity": 9.0,
+    "cinematic_impact": 10.0,
+    "style_consistency": 9.0,
 }
 
 
@@ -192,6 +195,10 @@ def validate_quality_ledger(ledger: dict[str, Any]) -> LedgerQualityReport:
 
     engagement_report = validate_engagement_ledger(ledger)
     violations.extend(engagement_report.violations)
+    story_report = validate_story_engine(ledger)
+    violations.extend(story_report.violations)
+    style_report = validate_style_bible(ledger)
+    violations.extend(style_report.violations)
     metrics = {
         "duration_sec": duration_sec,
         "shot_count": shot_count,
@@ -200,6 +207,8 @@ def validate_quality_ledger(ledger: dict[str, Any]) -> LedgerQualityReport:
         "close_evidence_count": close_evidence_count,
         "close_evidence_ratio": round(close_ratio, 4),
         "engagement": engagement_report.metrics,
+        "story": story_report.metrics,
+        "style": style_report.metrics,
     }
     return LedgerQualityReport(not violations, tuple(violations), metrics)
 
@@ -270,6 +279,7 @@ def compile_shot_prompt(
         if engagement_contract_enabled(ledger)
         else ()
     )
+    style_directive = compile_style_directive(ledger)
     parts = (
         f"Viewer takeaway: {_text(shot.get('viewer_takeaway'))}.",
         f"Primary subject: {_text(shot.get('subject'))}.",
@@ -280,6 +290,7 @@ def compile_shot_prompt(
         _cinematic_instruction(shot),
         composition,
         f"Subordinate setting: {setting}.",
+        style_directive,
         f"Visual style: {style}; cinematic color separation, credible materials, coherent anatomy and geometry, 16:9 landscape.",
         f"Continuity anchors: {_text(shot.get('continuity_anchors')) or 'preserve the approved subject, period, palette, and environment logic'}.",
         "Use an edge-to-edge composition and judge the clean source image on its own; subtitles are added only during post-composite rendering, so do not reserve an empty subtitle area.",

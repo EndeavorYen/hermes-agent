@@ -10,6 +10,7 @@ from .audit import ProviderAudit, normalize_provider
 from .engagement import engagement_contract_enabled
 from .quality import CLOSE_EVIDENCE_SCALES, QUALITY_THRESHOLD, validate_quality_ledger
 from .state import PHASES, StoryVideoRunContext, StoryVideoStateStore
+from .story_contract import story_contract_enabled, validate_story_script_bindings
 
 
 @dataclass(frozen=True)
@@ -125,6 +126,7 @@ def _validate_planning(context: StoryVideoRunContext) -> PhaseProof:
     ledger = parsed.get("scene_ledger.json")
     if isinstance(ledger, dict):
         violations.extend(validate_quality_ledger(ledger).violations)
+        violations.extend(validate_story_script_bindings(ledger, script_text))
     report = parsed.get("script_quality_report.json")
     if isinstance(report, dict):
         status = str(report.get("status") or "").upper()
@@ -142,6 +144,19 @@ def _validate_planning(context: StoryVideoRunContext) -> PhaseProof:
             if version < 3:
                 violations.append("script_quality_report.quality_contract_version<3")
             required_checks.extend(("audience_engagement", "visual_truth"))
+        if isinstance(ledger, dict) and story_contract_enabled(ledger):
+            if version < 4:
+                violations.append("script_quality_report.quality_contract_version<4")
+            required_checks.extend(
+                (
+                    "child_curiosity",
+                    "dramatic_arc",
+                    "read_aloud_liveliness",
+                    "knowledge_integrity",
+                    "visual_causality",
+                    "style_consistency",
+                )
+            )
         if not isinstance(checks, dict) or any(
             str(checks.get(name) or "").upper() != "PASS" for name in required_checks
         ):
