@@ -2081,6 +2081,7 @@ def _required_project_file(
 
 def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
     ledger = _load_json(context.project_dir / "scene_ledger.json")
+    existing_render_input = _load_json(context.project_dir / "render_input.json")
     candidate_manifest = _load_json(
         context.project_dir / "manifests" / "shot_candidate_manifest.json"
     )
@@ -2116,6 +2117,17 @@ def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
         if isinstance(output, dict) and str(output.get("scene_id") or "").strip()
     }
     narration_schema = str(narration_manifest.get("schema") or "")
+    semantic_plans_by_scene: dict[str, dict[str, dict[str, Any]]] = {}
+    if isinstance(existing_render_input, dict):
+        for scene in existing_render_input.get("scenes") or []:
+            if not isinstance(scene, dict):
+                continue
+            scene_id = str(scene.get("scene_id") or "").strip()
+            semantic_plans_by_scene[scene_id] = {
+                str(shot.get("shot_id") or "").strip(): shot
+                for shot in scene.get("shots") or []
+                if isinstance(shot, dict) and str(shot.get("shot_id") or "").strip()
+            }
     raw_scenes = ledger.get("scenes")
     if not isinstance(raw_scenes, list) or not raw_scenes:
         raise ValueError("scene_ledger.json has no scenes")
@@ -2173,37 +2185,108 @@ def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
         raw_shots = scene.get("shots")
         if not isinstance(raw_shots, list) or not raw_shots:
             raise ValueError(f"scene {scene_id} has no shots")
-        for shot in raw_shots:
-            if not isinstance(shot, dict):
-                continue
-            shot_id = str(shot.get("shot_id") or "").strip()
-            selected = selected_by_shot.get(shot_id)
+        ledger_shots = {
+            str(shot.get("shot_id") or "").strip(): shot
+            for shot in raw_shots
+            if isinstance(shot, dict) and str(shot.get("shot_id") or "").strip()
+        }
+        render_rows: list[tuple[str, list[str], str, dict[str, Any], dict[str, Any] | None]] = []
+        if segment_by_shot:
+            covered_source_shots: set[str] = set()
+            existing_scene_plan = semantic_plans_by_scene.get(scene_id, {})
+            for segment_id, segment in segment_by_shot.items():
+                semantic_plan = existing_scene_plan.get(segment_id, {})
+                raw_source_ids = segment.get("source_shot_ids") or semantic_plan.get(
+                    "source_shot_ids"
+                )
+                if isinstance(raw_source_ids, list):
+                    source_shot_ids = [
+                        str(value).strip() for value in raw_source_ids if str(value).strip()
+                    ]
+                elif segment_id in ledger_shots:
+                    source_shot_ids = [segment_id]
+                else:
+                    raise ValueError(
+                        f"semantic narration segment {segment_id} has no source_shot_ids"
+                    )
+                representative_shot_id = str(
+                    segment.get("representative_shot_id")
+                    or semantic_plan.get("representative_shot_id")
+                    or (source_shot_ids[0] if len(source_shot_ids) == 1 else "")
+                ).strip()
+                if representative_shot_id not in source_shot_ids:
+                    raise ValueError(
+                        f"semantic narration segment {segment_id} has an invalid representative shot"
+                    )
+                unknown_sources = [
+                    source_id
+                    for source_id in source_shot_ids
+                    if source_id not in ledger_shots
+                ]
+                if unknown_sources:
+                    raise ValueError(
+                        f"semantic narration segment {segment_id} has unknown source shots: "
+                        + ", ".join(unknown_sources)
+                    )
+                duplicate_sources = covered_source_shots.intersection(source_shot_ids)
+                if duplicate_sources:
+                    raise ValueError(
+                        f"semantic narration source shots are reused: "
+                        + ", ".join(sorted(duplicate_sources))
+                    )
+                covered_source_shots.update(source_shot_ids)
+                render_rows.append(
+                    (
+                        segment_id,
+                        source_shot_ids,
+                        representative_shot_id,
+                        ledger_shots[representative_shot_id],
+                        segment,
+                    )
+                )
+            uncovered_sources = set(ledger_shots).difference(covered_source_shots)
+            if uncovered_sources:
+                raise ValueError(
+                    f"semantic narration does not cover source shots: "
+                    + ", ".join(sorted(uncovered_sources))
+                )
+        else:
+            render_rows = [
+                (shot_id, [shot_id], shot_id, shot, None)
+                for shot_id, shot in ledger_shots.items()
+            ]
+
+        for shot_id, source_shot_ids, representative_shot_id, shot, segment in render_rows:
+            selected = selected_by_shot.get(representative_shot_id)
             if selected is None:
-                raise ValueError(f"missing selected image for shot {shot_id}")
+                raise ValueError(f"missing selected image for shot {representative_shot_id}")
             if not _manifest_row_matches_shot_contract(
                 selected,
                 shot,
-                legacy_prompts.get(shot_id, ""),
+                legacy_prompts.get(representative_shot_id, ""),
             ):
                 raise ValueError(
-                    f"selected image for {shot_id} uses superseded shot contract"
+                    f"selected image for {representative_shot_id} uses superseded shot contract"
                 )
             _image_path, image_relative = _required_project_file(
                 context,
                 selected.get("local_path"),
-                label=f"image for {shot_id}",
+                label=f"image for {representative_shot_id}",
             )
             selected_images.append(image_relative)
             shot_input = {
                 "shot_id": shot_id,
                 "selected": True,
                 "image": image_relative,
-                "narration": str(shot.get("narration_text") or display_text),
+                "narration": str(
+                    (segment or {}).get("display_text")
+                    or shot.get("narration_text")
+                    or display_text
+                ),
             }
-            if segment_by_shot:
-                segment = segment_by_shot.get(shot_id)
-                if segment is None:
-                    raise ValueError(f"missing verified narration segment for shot {shot_id}")
+            if segment is not None:
+                shot_input["source_shot_ids"] = source_shot_ids
+                shot_input["representative_shot_id"] = representative_shot_id
                 shot_input["timeline_duration_sec"] = float(
                     segment["timeline_duration_sec"]
                 )
