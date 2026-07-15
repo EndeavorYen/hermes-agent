@@ -2479,7 +2479,9 @@ def test_prepare_render_writes_exact_renderer_v2_contract(tmp_path) -> None:
         },
     }
     assert render_input["opening_card"]["image"] == "images/S00_SH00.png"
+    assert render_input["opening_card"]["duration_sec"] == 2.0
     assert render_input["ending_card"]["image"] == "images/S00_SH00.png"
+    assert render_input["ending_card"]["duration_sec"] == 5.0
 
 
 def test_prepare_render_prefers_branded_release_cards(tmp_path) -> None:

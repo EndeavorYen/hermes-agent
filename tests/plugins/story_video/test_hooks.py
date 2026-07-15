@@ -349,7 +349,7 @@ def test_pre_llm_creates_context_and_injects_provider_policy(tmp_path, monkeypat
     assert "camera_angle" in result["context"]
     assert "subtitle_safe_area" in result["context"]
     assert "establishing|wide|medium|close_up|macro|insert" in result["context"]
-    assert "8-12 shots per minute" in result["context"]
+    assert "5-8 semantic shots per minute" in result["context"]
     assert "story_video_script_quality_v1" in result["context"]
     assert "quality_contract_version=3" in result["context"]
     assert "audience_profile" in result["context"]
@@ -363,7 +363,9 @@ def test_pre_llm_creates_context_and_injects_provider_policy(tmp_path, monkeypat
     assert "### S00" in result["context"]
     assert "never write spoken aliases into script.md" in result["context"]
     assert "acceptance_criteria MUST be a non-empty JSON array of strings" in result["context"]
-    assert "40-60" in result["context"]
+    assert "25-40" in result["context"]
+    assert "8-12 seconds" in result["context"]
+    assert "complete narration thought" in result["context"]
 
 
 def test_autopilot_context_requires_canonical_quality_tool_and_phase_loop(

@@ -2213,12 +2213,12 @@ def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
         "opening_card": {
             "title": context.topic,
             "image": opening_image,
-            "duration_sec": 2.0 if opening_image.startswith("release_art/") else 1.0,
+            "duration_sec": 2.0,
         },
         "ending_card": {
             "title": "探索仍在繼續",
             "image": ending_image,
-            "duration_sec": 5.0 if ending_image.startswith("release_art/") else 1.0,
+            "duration_sec": 5.0,
         },
         "scenes": scenes,
         "output": "video/final.mp4",
