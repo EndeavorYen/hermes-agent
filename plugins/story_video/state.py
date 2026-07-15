@@ -318,6 +318,10 @@ class StoryVideoRunContext:
     updated_at: str = field(default_factory=_utc_now)
 
     @property
+    def planning_only(self) -> bool:
+        return _planning_only_requested(self.original_request)
+
+    @property
     def next_call(self) -> str | None:
         if self.repair_request and not self.repair_is_stale:
             return f"修正：{self.repair_request}"

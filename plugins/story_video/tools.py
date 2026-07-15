@@ -751,7 +751,17 @@ def story_video_control(
             payload["proof"] = proof.marker
             payload["missing"] = list(proof.missing)
             payload["violations"] = list(proof.violations)
-        if proof.ok and context.phase != "complete":
+        if proof.ok and context.phase == "planning" and context.planning_only:
+            context = state_store.update(
+                context,
+                last_validated_phase=proof.phase,
+                repair_request="",
+                repair_phase="",
+                status="complete",
+            )
+            payload.update(_context_payload(context))
+            payload["proof"] = proof.marker
+        elif proof.ok and context.phase != "complete":
             context = state_store.update(
                 context,
                 phase=_next_phase(context.phase),
