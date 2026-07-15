@@ -75,6 +75,31 @@ def _autopilot_command(text: str) -> bool:
     )
 
 
+def _revision_command(text: str) -> bool:
+    compact = re.sub(r"\s+", "", str(text or "").casefold())
+    if any(
+        marker in compact
+        for marker in (
+            "不要重製",
+            "不要重制",
+            "不要重新製作",
+            "不要重新制作",
+        )
+    ):
+        return False
+    return any(
+        marker in compact
+        for marker in (
+            "重製",
+            "重制",
+            "重新製作",
+            "重新制作",
+            "重新產生影片",
+            "重新生成影片",
+        )
+    )
+
+
 def _stop_command(text: str) -> bool:
     compact = re.sub(r"[\s，,。.!！?？;；:：_-]+", "", str(text or "").casefold())
     if any(
@@ -205,6 +230,12 @@ def parse_operator_call(
     if has_active_project and _stop_command(raw):
         return OperatorCall(action="stop")
 
+    if has_active_project and _revision_command(raw) and not explicit_new_project:
+        return OperatorCall(
+            action="revision",
+            auto_mode=_autopilot_command(raw),
+        )
+
     if has_active_project and _autopilot_command(raw) and not explicit_new_project:
         return OperatorCall(action="auto", auto_mode=True)
 
@@ -303,6 +334,8 @@ class StoryVideoRunContext:
     topic: str
     duration: str
     visual_style: str
+    parent_run_id: str = ""
+    source_project_dir: Path | None = None
     auto_mode: bool = False
     autopilot_last_signature: str = ""
     autopilot_stall_count: int = 0
@@ -347,6 +380,9 @@ class StoryVideoRunContext:
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["project_dir"] = str(self.project_dir)
+        payload["source_project_dir"] = (
+            str(self.source_project_dir) if self.source_project_dir is not None else None
+        )
         payload["session_ids"] = list(self.session_ids)
         return payload
 
@@ -354,6 +390,8 @@ class StoryVideoRunContext:
     def from_dict(cls, payload: dict[str, Any]) -> "StoryVideoRunContext":
         data = dict(payload)
         data["project_dir"] = Path(data["project_dir"])
+        if data.get("source_project_dir"):
+            data["source_project_dir"] = Path(data["source_project_dir"])
         data["session_ids"] = tuple(data.get("session_ids") or ())
         return cls(**data)
 
@@ -453,7 +491,24 @@ class StoryVideoStateStore:
     ) -> StoryVideoRunContext:
         with _LOCK:
             existing = self.for_source(source_key)
-            if existing is not None and (
+            if existing is not None and call.action == "revision":
+                run_id = uuid.uuid4().hex
+                project_id = f"{_slug(existing.topic)}-{run_id[:8]}"
+                context = StoryVideoRunContext(
+                    run_id=run_id,
+                    project_id=project_id,
+                    project_dir=self.root / project_id,
+                    source_key=source_key,
+                    session_ids=(),
+                    original_request=original_request,
+                    topic=existing.topic,
+                    duration=existing.duration,
+                    visual_style=existing.visual_style,
+                    parent_run_id=existing.run_id,
+                    source_project_dir=existing.project_dir,
+                    auto_mode=call.auto_mode,
+                )
+            elif existing is not None and (
                 call.action != "start"
                 or call.topic == existing.topic
                 or not call.new_project

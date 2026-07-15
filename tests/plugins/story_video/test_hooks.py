@@ -496,6 +496,37 @@ def test_pre_llm_creates_context_and_injects_provider_policy(tmp_path, monkeypat
     assert "complete narration thought" in result["context"]
 
 
+def test_remake_rebinds_thread_to_revision_and_injects_source_boundary(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    started = hooks.pre_gateway_dispatch(
+        event=_event("故事影片：恐龍起源｜5分｜真實照片")
+    )
+    hooks.pre_llm_call(session_id="session-old", user_message=started["text"])
+    original = store.for_session("session-old")
+    assert original is not None
+    store.update(original, phase="complete", status="complete")
+
+    remake = hooks.pre_gateway_dispatch(
+        event=_event("沿用目前專案，全自動重新製作最新版。")
+    )
+    result = hooks.pre_llm_call(
+        session_id="session-revision",
+        user_message=remake["text"],
+    )
+
+    revised = store.for_session("session-revision")
+    assert revised is not None
+    assert revised.run_id != original.run_id
+    assert revised.parent_run_id == original.run_id
+    assert revised.source_project_dir == original.project_dir
+    assert f"revision_source_run_id={original.run_id}" in result["context"]
+    assert f"revision_source_project_dir={original.project_dir}" in result["context"]
+    assert "never deliver any render from the revision source" in result["context"]
+
+
 def test_autopilot_context_requires_canonical_quality_tool_and_phase_loop(
     tmp_path, monkeypatch
 ) -> None:
@@ -1567,7 +1598,7 @@ def test_transform_output_blocks_video_not_selected_by_current_render_manifest(
     assert str(selected) in allowed
 
 
-def test_transform_output_allows_same_project_alias_with_selected_render_content(
+def test_transform_output_blocks_same_project_alias_with_selected_render_content(
     tmp_path, monkeypatch
 ) -> None:
     store = StoryVideoStateStore(tmp_path)
@@ -1594,13 +1625,13 @@ def test_transform_output_allows_same_project_alias_with_selected_render_content
     )
     store.update(context, phase="complete", status="complete")
 
-    allowed = hooks.transform_llm_output(
+    blocked = hooks.transform_llm_output(
         response_text=f"新版已完成：MEDIA:{review_alias}",
         session_id="session-1",
     )
 
-    assert "STORY_VIDEO_DELIVERY_BLOCKED" not in allowed
-    assert str(review_alias) in allowed
+    assert "STORY_VIDEO_DELIVERY_BLOCKED" in blocked
+    assert str(review_alias) not in blocked
 
 
 def test_transform_output_blocks_matching_render_content_outside_current_project(

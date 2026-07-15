@@ -38,6 +38,58 @@ def test_active_story_video_can_enable_autopilot_with_natural_command() -> None:
     assert call.auto_mode is True
 
 
+def test_active_story_video_parses_full_remake_as_linked_revision() -> None:
+    call = parse_operator_call(
+        "沿用目前恐龍起源專案，套用最新版故事影片流程全自動重新製作。",
+        has_active_project=True,
+    )
+
+    assert call is not None
+    assert call.action == "revision"
+    assert call.auto_mode is True
+
+
+def test_state_store_creates_fresh_revision_and_rebinds_source(tmp_path) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    start = parse_operator_call("故事影片：恐龍起源｜5分｜真實照片")
+    assert start is not None
+    original = store.create_or_load(
+        source_key="source-1",
+        session_id="session-1",
+        call=start,
+        original_request="故事影片：恐龍起源｜5分｜真實照片",
+    )
+    original = store.update(original, phase="complete", status="complete")
+    revision = parse_operator_call(
+        "沿用目前專案，全自動重新製作最新版。",
+        has_active_project=True,
+    )
+    assert revision is not None
+
+    revised = store.create_or_load(
+        source_key="source-1",
+        session_id="session-2",
+        call=revision,
+        original_request="沿用目前專案，全自動重新製作最新版。",
+    )
+
+    assert revised.run_id != original.run_id
+    assert revised.project_dir != original.project_dir
+    assert revised.topic == original.topic
+    assert revised.duration == original.duration
+    assert revised.visual_style == original.visual_style
+    assert revised.parent_run_id == original.run_id
+    assert revised.source_project_dir == original.project_dir
+    assert revised.phase == "planning"
+    assert revised.status == "active"
+    assert revised.auto_mode is True
+    assert store.for_source("source-1").run_id == revised.run_id
+    assert store.for_run(
+        run_id=original.run_id,
+        project_dir=original.project_dir,
+    ).run_id == original.run_id
+
+
 @pytest.mark.parametrize(
     "text",
     (
