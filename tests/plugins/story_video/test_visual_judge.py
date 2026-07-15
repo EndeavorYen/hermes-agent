@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from PIL import Image
+from PIL import Image, ImageFont
 
 from plugins import story_video
 from plugins.story_video import hooks
@@ -2558,8 +2558,14 @@ def test_prepare_render_writes_exact_renderer_v2_contract(tmp_path) -> None:
     assert render_input["ending_card"]["duration_sec"] == 5.0
 
 
-def test_release_art_actions_compile_cinematic_prompt_and_compose_cards(tmp_path) -> None:
+def test_release_art_actions_compile_cinematic_prompt_and_compose_cards(
+    tmp_path, monkeypatch
+) -> None:
     store, context, _shot = _context(tmp_path)
+    monkeypatch.setattr(
+        "plugins.story_video.release_art._font",
+        lambda size, *, bold=False: ImageFont.load_default(size=size),
+    )
 
     compiled = json.loads(
         story_video_quality_control(
