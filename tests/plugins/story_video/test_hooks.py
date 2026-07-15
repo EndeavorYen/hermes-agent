@@ -182,6 +182,84 @@ def test_gateway_rewrites_polite_continue_for_active_thread(tmp_path, monkeypatc
     assert '"action": "continue"' in result["text"]
 
 
+def test_gateway_natural_stop_revokes_autopilot_and_uses_hard_stop(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    start = hooks.pre_gateway_dispatch(
+        event=_event("故事影片：恐龍起源｜5分｜真實照片。完整製作並出片。")
+    )
+    hooks.pre_llm_call(session_id="session-auto", user_message=start["text"])
+    assert store.for_session("session-auto").auto_mode is True
+
+    stopped = hooks.pre_gateway_dispatch(event=_event("停止，不要做了"))
+
+    assert stopped == {"action": "rewrite", "text": "/stop"}
+    context = store.for_session("session-auto")
+    assert context is not None
+    assert context.status == "stopped"
+    assert context.auto_mode is False
+    assert hooks.auto_continue_llm_output(
+        session_id="session-auto",
+        response_text="STORY_VIDEO_PHASE_PROGRESS: batch IN_PROGRESS",
+    ) is None
+    blocked = hooks.pre_tool_call(
+        session_id="session-auto",
+        turn_id="stale-turn",
+        tool_name="image_generate",
+        args={"prompt": "stale generation", "provider": "openai-codex"},
+    )
+    assert blocked["action"] == "block"
+    assert "stopped by the operator" in blocked["message"]
+
+
+def test_gateway_natural_stop_cannot_be_triggered_by_unauthorized_sender(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    start = hooks.pre_gateway_dispatch(
+        event=_event("故事影片：恐龍起源｜5分｜真實照片。完整製作並出片。")
+    )
+    hooks.pre_llm_call(session_id="session-auto", user_message=start["text"])
+    gateway = SimpleNamespace(_is_user_authorized=lambda source: False)
+
+    stopped = hooks.pre_gateway_dispatch(
+        event=_event("停止，不要做了"),
+        gateway=gateway,
+    )
+
+    assert stopped is None
+    context = store.for_session("session-auto")
+    assert context is not None
+    assert context.status == "active"
+    assert context.auto_mode is True
+
+
+def test_unrelated_message_does_not_implicitly_resume_stopped_story_video(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    start = hooks.pre_gateway_dispatch(
+        event=_event("故事影片：恐龍起源｜5分｜真實照片。完整製作並出片。")
+    )
+    hooks.pre_llm_call(session_id="session-auto", user_message=start["text"])
+    hooks.pre_gateway_dispatch(event=_event("停止，不要做了"))
+
+    result = hooks.pre_llm_call(
+        session_id="session-auto",
+        user_message="現在幾點？",
+    )
+
+    assert result is None
+    context = store.for_session("session-auto")
+    assert context is not None
+    assert context.status == "stopped"
+    assert context.auto_mode is False
+
+
 def test_gateway_source_key_uses_real_slack_reply_thread_id() -> None:
     first = _event("繼續")
     second = _event("繼續")

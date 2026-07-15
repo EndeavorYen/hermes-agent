@@ -16,6 +16,7 @@ _STORE = StoryVideoStateStore()
 _MARKER = "STORY_VIDEO_OPERATOR_CONTEXT"
 _MARKER_RE = re.compile(rf"{_MARKER}\s+(\{{.*\}})\s*$", re.DOTALL)
 _SESSION_PHASE_AT_LLM_START: dict[str, str] = {}
+_SESSION_STATUS_AT_LLM_START: dict[str, str] = {}
 _SETUP_BLOCKER_RE = re.compile(
     r"(?:(?:quota|rate.?limit|配額|額度).{0,32}"
     r"(?:exhausted|exceeded|blocked|required|耗盡|用完|不足)|"
@@ -151,7 +152,12 @@ def _write_project_contract(context: StoryVideoRunContext) -> None:
     )
 
 
-def pre_gateway_dispatch(*, event: Any, **_: Any) -> dict[str, Any] | None:
+def pre_gateway_dispatch(
+    *,
+    event: Any,
+    gateway: Any = None,
+    **_: Any,
+) -> dict[str, Any] | None:
     text = str(getattr(event, "text", "") or "")
     operator_text = _current_operator_text(text)
     source_key = _source_key(event)
@@ -172,6 +178,20 @@ def pre_gateway_dispatch(*, event: Any, **_: Any) -> dict[str, Any] | None:
     )
     if call is None:
         return None
+    if call.action == "stop" and context is not None:
+        if gateway is not None:
+            try:
+                if not gateway._is_user_authorized(event.source):
+                    return None
+            except (AttributeError, TypeError, ValueError):
+                return None
+        _STORE.create_or_load(
+            source_key=context.source_key,
+            session_id=context.session_ids[-1] if context.session_ids else "",
+            call=call,
+            original_request=operator_text,
+        )
+        return {"action": "rewrite", "text": "/stop"}
     payload = {
         "action": call.action,
         "topic": call.topic,
@@ -251,6 +271,11 @@ def pre_llm_call(
                 _current_operator_text(user_message), has_active_project=True
             )
             if call is None:
+                if context.status == "stopped":
+                    if session_id:
+                        _SESSION_PHASE_AT_LLM_START[session_id] = context.phase
+                        _SESSION_STATUS_AT_LLM_START[session_id] = context.status
+                    return None
                 action = "continue"
             else:
                 context = _STORE.create_or_load(
@@ -279,8 +304,12 @@ def pre_llm_call(
         _write_project_contract(context)
         action = str(payload.get("action") or "continue")
 
+    if action == "stop":
+        return None
+
     if session_id:
         _SESSION_PHASE_AT_LLM_START[session_id] = context.phase
+        _SESSION_STATUS_AT_LLM_START[session_id] = context.status
 
     instruction = (
         f"STORY_VIDEO_RUN_CONTEXT run_id={context.run_id} phase={context.phase} "
@@ -678,7 +707,12 @@ def pre_tool_call(
         return None
     payload = args if isinstance(args, dict) else {}
     message: str | None = None
-    if str(tool_name or "").strip().lower() == "image_generate":
+    if (
+        context.status == "stopped"
+        and _SESSION_STATUS_AT_LLM_START.get(session_id) != "stopped"
+    ):
+        message = "Story-video production was stopped by the operator; discard this stale tool call."
+    if message is None and str(tool_name or "").strip().lower() == "image_generate":
         explicit_provider = payload.get("provider") or payload.get("_provider")
         if explicit_provider:
             message = guard_tool_call(context, tool_name, payload)
@@ -826,6 +860,7 @@ def transform_llm_output(
         str(response_text or "").rstrip(),
     )
     phase_at_start = _SESSION_PHASE_AT_LLM_START.pop(session_id, None)
+    _SESSION_STATUS_AT_LLM_START.pop(session_id, None)
     if _SETUP_BLOCKER_RE.search(text):
         pass
     elif phase_at_start == context.phase == "batch":
