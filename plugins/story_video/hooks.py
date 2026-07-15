@@ -315,9 +315,21 @@ def pre_llm_call(
         _SESSION_PHASE_AT_LLM_START[session_id] = context.phase
         _SESSION_STATUS_AT_LLM_START[session_id] = context.status
 
+    revision_boundary = ""
+    if context.parent_run_id and context.source_project_dir is not None:
+        revision_boundary = (
+            f" revision_source_run_id={context.parent_run_id} "
+            f"revision_source_project_dir={context.source_project_dir}. "
+            "The revision source is read-only evidence: reuse validated research and "
+            "explicitly approved assets only when the new ledger selects them, but write "
+            "all revision artifacts under the current project_dir and never deliver any "
+            "render from the revision source. "
+        )
+
     instruction = (
         f"STORY_VIDEO_RUN_CONTEXT run_id={context.run_id} phase={context.phase} "
         f"project_dir={context.project_dir}. Operator action={action}. "
+        f"{revision_boundary}"
         "This structured session is authoritative even when individual scene prompts "
         "do not mention story video. The original_request is historical and must not "
         "revoke a later operator autopilot authorization; never edit "
@@ -1048,32 +1060,6 @@ def _selected_render_path(context: StoryVideoRunContext) -> Path | None:
     return None
 
 
-def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _matches_selected_render(
-    candidate: Path,
-    *,
-    selected: Path,
-    project_dir: Path,
-    selected_sha256: str,
-) -> bool:
-    if candidate == selected:
-        return True
-    try:
-        candidate.relative_to(project_dir.resolve())
-        if not candidate.is_file() or candidate.stat().st_size != selected.stat().st_size:
-            return False
-        return _file_sha256(candidate) == selected_sha256
-    except (OSError, ValueError):
-        return False
-
-
 def _guard_render_delivery(text: str, context: StoryVideoRunContext) -> str:
     matches = list(_VIDEO_PATH_RE.finditer(text))
     if not matches:
@@ -1083,24 +1069,10 @@ def _guard_render_delivery(text: str, context: StoryVideoRunContext) -> str:
     if selected is not None and selected.is_file():
         if referenced == {selected}:
             return text
-        try:
-            selected_sha256 = _file_sha256(selected)
-        except OSError:
-            selected_sha256 = ""
-        if selected_sha256 and all(
-            _matches_selected_render(
-                candidate,
-                selected=selected,
-                project_dir=context.project_dir,
-                selected_sha256=selected_sha256,
-            )
-            for candidate in referenced
-        ):
-            return text
     return "\n".join(
         [
             "STORY_VIDEO_DELIVERY_BLOCKED",
-            "狀態：拒絕上傳未經目前 render manifest 選中的影片。",
-            "風險：可能是舊成品、跨專案成品，或尚未通過 render proof。",
+            "狀態：拒絕上傳不是目前 render manifest 精確選中的影片路徑。",
+            "風險：可能是舊成品、換名複本、跨專案成品，或尚未通過 render proof。",
         ]
     )
