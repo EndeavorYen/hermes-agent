@@ -719,6 +719,35 @@ def test_autopilot_stops_for_operator_setup_blocker(tmp_path, monkeypatch) -> No
     assert continuation is None
 
 
+def test_autopilot_recovers_when_visual_strategy_budget_is_exhausted(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    start = hooks.pre_gateway_dispatch(
+        event=_event("故事影片：恐龍起源｜5分鐘｜真實照片。完整製作並出片。")
+    )
+    hooks.pre_llm_call(session_id="session-auto", user_message=start["text"])
+    context = store.for_session("session-auto")
+    assert context is not None
+    store.update(context, phase="keyframes", auto_mode=True)
+
+    continuation = hooks.auto_continue_llm_output(
+        session_id="session-auto",
+        response_text=(
+            "錨點第二版的 vision QC 得分 78.11，低於 80，且該視覺策略額度已耗盡。"
+            "我現在走 canonical bounded repair／replan 路徑。"
+        ),
+        recoverable_transport_error=True,
+        turn_error="codex went silent for 90s after a tool result",
+    )
+
+    assert continuation is not None
+    assert continuation["action"] == "rotate"
+    assert continuation["reason"] == "story_video_transport_recovery"
+    assert "phase=keyframes" in continuation["message"]
+
+
 def test_autopilot_stops_after_three_identical_blocked_phase_reports(
     tmp_path, monkeypatch
 ) -> None:

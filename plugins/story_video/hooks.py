@@ -25,6 +25,14 @@ _SETUP_BLOCKER_RE = re.compile(
     r"憑證|认证|認證|授權|订阅|訂閱)|setup.?required)",
     re.IGNORECASE,
 )
+_INTERNAL_WORKFLOW_BUDGET_EXHAUSTED_RE = re.compile(
+    r"(?:(?:視覺|视觉)\s*策略\s*(?:額度|额度|配額|配额|預算|预算)|"
+    r"(?:品質|质量|候選|候选|修復|修复|重規劃|重规划)\s*(?:策略)?\s*"
+    r"(?:額度|额度|配額|配额|預算|预算)|"
+    r"(?:quality|candidate|repair|replan|strategy)[ _-]*(?:quota|budget))"
+    r"\s*(?:已|already)?\s*(?:耗盡|耗尽|用完|不足|exhausted|depleted|[=:]\s*0)",
+    re.IGNORECASE,
+)
 _PHASE_BLOCKED_RE = re.compile(
     r"STORY_VIDEO_PHASE_PROOF:\s+[a-z]+\s+BLOCKED",
     re.IGNORECASE,
@@ -35,6 +43,15 @@ _AUTOPILOT_ROTATE_AFTER_MESSAGES = 80
 _DEFAULT_BATCH_PARALLELISM = 3
 _THREAD_CONTEXT_END = "[End of thread context]"
 _REPLY_PARENT_RE = re.compile(r'^\[Replying to: "(.*?)"\]', re.DOTALL)
+
+
+def _has_operator_setup_blocker(*values: str) -> bool:
+    text = "\n".join(str(value or "") for value in values)
+    text = _INTERNAL_WORKFLOW_BUDGET_EXHAUSTED_RE.sub(
+        "internal workflow budget exhausted",
+        text,
+    )
+    return _SETUP_BLOCKER_RE.search(text) is not None
 
 
 def _digest_source(parts: list[str]) -> str:
@@ -569,9 +586,7 @@ def auto_continue_llm_output(
     )
     if not context.auto_mode and not planning_completion:
         return None
-    if _SETUP_BLOCKER_RE.search(
-        f"{response_text or ''}\n{turn_error or ''}"
-    ):
+    if _has_operator_setup_blocker(response_text, turn_error):
         return None
     if planning_completion:
         signature = (
@@ -963,7 +978,7 @@ def transform_llm_output(
     )
     phase_at_start = _SESSION_PHASE_AT_LLM_START.pop(session_id, None)
     _SESSION_STATUS_AT_LLM_START.pop(session_id, None)
-    if _SETUP_BLOCKER_RE.search(text):
+    if _has_operator_setup_blocker(text):
         pass
     elif phase_at_start == context.phase == "batch":
         try:
