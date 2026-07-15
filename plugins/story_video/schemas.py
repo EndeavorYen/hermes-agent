@@ -102,6 +102,7 @@ STORY_VIDEO_QUALITY_CONTROL_SCHEMA = {
                                 "story_reframe",
                                 "audience_reframe",
                                 "truth_reframe",
+                                "style_reframe",
                                 "camera_reveal_policy_review",
                             ],
                             "description": (

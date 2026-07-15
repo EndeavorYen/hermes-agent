@@ -135,10 +135,14 @@ def _write_project_contract(context: StoryVideoRunContext) -> None:
                 "- Source image provider: `openai-codex`",
                 "- Generic video provider: forbidden",
                 "- Render provider: local deterministic renderer",
-                "- TTS provider: OpenAI when configured, otherwise locked local narration; no Edge/xAI fallback",
+                "- TTS provider: locked local Qwen narration; no network, Edge, or xAI fallback",
                 "- Timeline: image changes only on narration-segment boundaries; never cut a spoken sentence",
                 "- Motion: cinematic focus push 1.0 -> 1.10; one eased focal target, no per-frame tracking",
                 "- Quality mode: quality-first shot-driven production",
+                "- Audience default: curious children age 5+; clear but never baby talk",
+                "- Story craft: Taiwan children's prose skill -> story-video script director -> production pipeline",
+                "- Visual continuity: one style bible and one approved style anchor across the full video",
+                "- Ending: cinematic educational payoff from the story's knowledge payoff and ending echo",
                 "- Semantic image hold: normally at least two complete sentences per image",
                 "- Candidate selection: one precise OpenAI candidate by default; vision QC selectively regenerates failures",
                 "",
@@ -336,10 +340,21 @@ def pre_llm_call(
         "三疊紀 -> 三碟紀. "
         "Apply the story-video-script-director and story-video-production-pipeline "
         "quality contracts. scene_ledger.json MUST use exact machine keys: root schema="
-        "story_video_scene_ledger_v2, quality_contract_version=3, production_type, "
+        "story_video_scene_ledger_v2, quality_contract_version=4, production_type, "
         "target_duration_sec, visual_style, audience_profile, engagement_profile, "
-        "and scenes. audience_profile MUST declare age_band, knowledge_level, "
-        "attention_style, and safety_intensity. engagement_profile MUST declare mode, "
+        "story_engine, style_bible, and scenes. The default audience is curious children "
+        "age 5+ unless the operator explicitly overrides it. audience_profile MUST declare "
+        "age_band=school_age, minimum_age_years=5, knowledge_level=newcomer, "
+        "attention_style=curious_explorer, and safety_intensity=gentle. First apply "
+        "taiwan-childrens-story-writing as the prose craft owner, then "
+        "story-video-script-director as the dramatic and visual adaptation owner. "
+        "story_engine MUST declare audience_promise, opening_question, dramatic_question, "
+        "curiosity_gap, a three-or-more-step escalation array, knowledge_payoff, ending_echo, "
+        "and humor_strategy. The exact opening_question, knowledge_payoff, and ending_echo "
+        "MUST appear in script.md. The scene arc MUST contain hook, turn, payoff, and close. "
+        "Use curiosity, reversals, discovery, consequence, and earned wonder rather than "
+        "textbook exposition, baby talk, random danger, or forced jokes. "
+        "engagement_profile MUST declare mode, "
         "energy, humor, and sensationalism_forbidden=true. Each scenes item MUST contain scene_id, "
         "narrative_role, viewer_takeaway, and a scene.shots array; never put shot "
         "objects directly in scenes. A scene is a narrative unit; every purpose-built "
@@ -360,10 +375,17 @@ def pre_llm_call(
         "a visual merely at a comma, colon, semicolon, or short connective fragment. A deliberate "
         "3-5 second hook or montage cut requires intentional_fast_cut_reason. Preserve close-up "
         "evidence coverage while using camera motion within a held image instead of extra cuts. "
+        "style_bible MUST declare style_id, anchor_shot_id, medium, palette, lighting, "
+        "lens_language, texture, atmosphere, subject_treatment, and a non-empty "
+        "forbidden_drift array. anchor_shot_id MUST identify a real representative ledger "
+        "shot. Treat its first selected image as the visual style reference; all later "
+        "generation and visual QC compare against it for style_consistency. "
         "script_quality_report.json MUST use schema=story_video_script_quality_v1, "
-        "quality_contract_version=3, status=PASS, production_type, shot_count, and "
+        "quality_contract_version=4, status=PASS, production_type, shot_count, and "
         "checks. checks MUST be an object whose visual_evidence, narrative_roles, "
-        "claim_confidence, audience_engagement, and visual_truth values are PASS, not a list. "
+        "claim_confidence, audience_engagement, visual_truth, child_curiosity, dramatic_arc, "
+        "read_aloud_liveliness, knowledge_integrity, visual_causality, and style_consistency "
+        "values are PASS, not a list. "
         "script.md MUST contain narration-only sections headed exactly ### S00, "
         "### S01, and so on for the local voice parser. Preserve correct display "
         "spelling in all narration and never write spoken aliases into script.md; "
@@ -392,7 +414,10 @@ def pre_llm_call(
         "advance anatomy, scientific, layout, and contextual repair independently. When "
         "compile_prompt returns source_image_url, pass that exact path as image_url to "
         "image_generate so targeted repair uses OpenAI image editing instead of "
-        "redrawing correct content from scratch. Always "
+        "redrawing correct content from scratch. Pass every returned "
+        "reference_image_urls value to image_generate exactly; these are style references "
+        "only, so preserve their medium, palette, light, lens, texture, and subject treatment "
+        "without copying their subject or composition. Always "
         "pass the exact returned shot_contract_hash with the generated candidate; never "
         "judge a candidate against a changed scene-ledger contract. "
         "Every image_generate and vision judge call MUST pass provider=openai-codex "
@@ -407,9 +432,12 @@ def pre_llm_call(
         "During render, create dedicated release art before prepare_render. First call "
         "story_video_quality_control action=compile_release_art, generate exactly one "
         "text-free hero with image_generate provider=openai-codex using the returned "
-        "prompt and candidate_id_hint, then call action=register_release_art with the "
+        "prompt, candidate_id_hint, and every returned reference_image_urls value, then "
+        "call action=register_release_art with the "
         "returned local path, provider, model, and response_id. The registration action "
-        "composes the thumbnail, opening, and ending typography locally. Never substitute "
+        "composes the thumbnail, opening, and a cinematic educational ending locally. "
+        "The ending MUST present story_engine ending_echo and knowledge_payoff as a beautiful "
+        "final discovery, not a generic CTA or a blurred placeholder. Never substitute "
         "the first or last body shot for missing release art. During render, call "
         "story_video_quality_control action=prepare_render; it is "
         "the only writer of render_input.json. Never hand-edit render_input.json or "

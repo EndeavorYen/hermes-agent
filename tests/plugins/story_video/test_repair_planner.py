@@ -189,6 +189,51 @@ def test_audience_mismatch_routes_to_audience_reframe() -> None:
     assert "audience" in plan.directive.lower()
 
 
+def test_style_drift_gets_one_style_locked_reframe_before_other_repairs() -> None:
+    first = plan_repair(
+        [
+            {
+                "status": "repair_required",
+                "repair_round": 1,
+                "blocker_codes": ["style_drift"],
+                "hard_blockers": ["Lighting and palette do not match the style reference."],
+            }
+        ]
+    )
+
+    assert first.strategy == "style_reframe"
+    assert first.candidate_suffix == "STYLE_C01"
+    assert "locked style bible" in first.directive
+
+    effective = apply_repair_strategy(
+        {
+            "subject": "one small dinosaur",
+            "action": "steps over a fresh track",
+            "evidence_detail": "upright hind limbs",
+            "acceptance_criteria": ["anatomy remains credible"],
+        },
+        first.strategy,
+        blocker_codes=first.blocker_codes,
+    )
+    assert effective["subject"] == "one small dinosaur"
+    assert effective["action"] == "steps over a fresh track"
+    assert any(
+        "matches the locked style bible" in criterion
+        for criterion in effective["acceptance_criteria"]
+    )
+
+    second = plan_repair(
+        [
+            {
+                "status": "quality_budget_exhausted",
+                "repair_strategy": "style_reframe",
+                "blocker_codes": ["style_drift"],
+            }
+        ]
+    )
+    assert second.strategy == "story_reframe"
+
+
 def test_sensationalized_or_mixed_truth_routes_to_truth_reframe() -> None:
     plan = plan_repair(
         [
