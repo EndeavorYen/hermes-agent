@@ -38,6 +38,27 @@ def test_active_story_video_can_enable_autopilot_with_natural_command() -> None:
     assert call.auto_mode is True
 
 
+@pytest.mark.parametrize(
+    "text",
+    (
+        "停止，不要做了",
+        "請停止故事影片",
+        "不要再繼續製作",
+        "cancel story video",
+    ),
+)
+def test_active_story_video_can_stop_with_natural_command(text) -> None:
+    call = parse_operator_call(text, has_active_project=True)
+
+    assert call is not None
+    assert call.action == "stop"
+    assert call.auto_mode is False
+
+
+def test_stop_command_does_not_match_request_to_keep_going() -> None:
+    assert parse_operator_call("不要停止，繼續做", has_active_project=True) is None
+
+
 def test_parse_short_start_ignores_planning_only_media_prohibition() -> None:
     call = parse_operator_call(
         "故事影片：三疊紀發音與恐龍起源測試｜30秒｜真實照片風格。"
@@ -184,6 +205,58 @@ def test_existing_project_persists_autopilot_activation(tmp_path) -> None:
     assert context.autopilot_last_signature == ""
     assert context.autopilot_stall_count == 0
     assert store.for_session("session-1").auto_mode is True
+
+
+def test_stop_revokes_durable_autopilot_and_explicit_continue_resumes_manual_mode(
+    tmp_path,
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    start = parse_operator_call(
+        "故事影片：恐龍起源｜5分鐘｜真實照片。完整製作並出片。"
+    )
+    assert start is not None
+    context = store.create_or_load(
+        source_key="source-1",
+        session_id="session-1",
+        call=start,
+        original_request="start",
+    )
+    assert context.auto_mode is True
+
+    stop = parse_operator_call("停止，不要做了", has_active_project=True)
+    assert stop is not None
+    stopped = store.create_or_load(
+        source_key="source-1",
+        session_id="session-1",
+        call=stop,
+        original_request="停止，不要做了",
+    )
+
+    assert stopped.status == "stopped"
+    assert stopped.auto_mode is False
+    assert stopped.next_call is None
+    authorization = json.loads(
+        (store.authorization_state_root / f"{stopped.run_id}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert authorization["enabled"] is False
+    assert authorization["source"] == "operator_stop_command"
+    reloaded = StoryVideoStateStore(tmp_path).for_session("session-1")
+    assert reloaded is not None
+    assert reloaded.status == "stopped"
+    assert reloaded.auto_mode is False
+
+    resume = parse_operator_call("繼續", has_active_project=True)
+    assert resume is not None
+    resumed = store.create_or_load(
+        source_key="source-1",
+        session_id="session-1",
+        call=resume,
+        original_request="繼續",
+    )
+    assert resumed.status == "active"
+    assert resumed.auto_mode is False
 
 
 def test_autopilot_authorization_recovers_polluted_production_context(tmp_path) -> None:

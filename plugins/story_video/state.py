@@ -75,6 +75,49 @@ def _autopilot_command(text: str) -> bool:
     )
 
 
+def _stop_command(text: str) -> bool:
+    compact = re.sub(r"[\s，,。.!！?？;；:：_-]+", "", str(text or "").casefold())
+    if any(
+        marker in compact
+        for marker in (
+            "不要停止",
+            "别停止",
+            "別停止",
+            "不要停",
+            "繼續不要停",
+            "继续不要停",
+            "donotstop",
+            "don'tstop",
+            "keepgoing",
+        )
+    ):
+        return False
+    if compact in {"停", "停止", "stop", "cancel", "abort"}:
+        return True
+    return any(
+        marker in compact
+        for marker in (
+            "停止不要做了",
+            "停止故事影片",
+            "停止製作",
+            "停止制作",
+            "不要再繼續製作",
+            "不要再继续制作",
+            "不要做了",
+            "不要再做",
+            "取消故事影片",
+            "取消製作",
+            "取消制作",
+            "先停",
+            "停下來",
+            "停下来",
+            "stopstoryvideo",
+            "cancelstoryvideo",
+            "abortstoryvideo",
+        )
+    )
+
+
 def _split_fields(text: str) -> list[str]:
     return [part.strip() for part in re.split(r"[｜|，,]+", text) if part.strip()]
 
@@ -158,6 +201,9 @@ def parse_operator_call(
         raw,
         re.I,
     ))
+
+    if has_active_project and _stop_command(raw):
+        return OperatorCall(action="stop")
 
     if has_active_project and _autopilot_command(raw) and not explicit_new_project:
         return OperatorCall(action="auto", auto_mode=True)
@@ -275,7 +321,7 @@ class StoryVideoRunContext:
     def next_call(self) -> str | None:
         if self.repair_request and not self.repair_is_stale:
             return f"修正：{self.repair_request}"
-        if self.status == "complete" or self.phase == "complete":
+        if self.status in {"complete", "stopped"} or self.phase == "complete":
             return None
         if self.phase == "render":
             return "出片"
@@ -432,18 +478,40 @@ class StoryVideoStateStore:
                 call.repair_request if call.action == "repair" else context.repair_request
             )
             repair_phase = context.phase if call.action == "repair" else context.repair_phase
+            if call.action == "stop":
+                self._write_autopilot_authorization(
+                    context,
+                    enabled=False,
+                    source="operator_stop_command",
+                )
+                auto_mode = False
+                status = "stopped"
+                repair_request = ""
+                repair_phase = ""
+            elif call.action == "auto":
+                auto_mode = True
+                status = "active"
+            elif context.status == "stopped":
+                auto_mode = False
+                status = "active"
+            else:
+                auto_mode = context.auto_mode
+                status = context.status
             context = StoryVideoRunContext.from_dict(
                 {
                     **context.to_dict(),
                     "session_ids": list(sessions),
-                    "auto_mode": (
-                        True if call.action == "auto" else context.auto_mode
-                    ),
+                    "auto_mode": auto_mode,
+                    "status": status,
                     "autopilot_last_signature": (
-                        "" if call.action == "auto" else context.autopilot_last_signature
+                        ""
+                        if call.action in {"auto", "stop"}
+                        else context.autopilot_last_signature
                     ),
                     "autopilot_stall_count": (
-                        0 if call.action == "auto" else context.autopilot_stall_count
+                        0
+                        if call.action in {"auto", "stop"}
+                        else context.autopilot_stall_count
                     ),
                     "repair_request": repair_request,
                     "repair_phase": repair_phase,
@@ -451,7 +519,11 @@ class StoryVideoStateStore:
                 }
             )
             if call.auto_mode:
-                self._write_autopilot_authorization(context)
+                self._write_autopilot_authorization(
+                    context,
+                    enabled=True,
+                    source="operator_auto_command",
+                )
             context = self._reconcile_production_context(context)
             self.save(context)
             return context
@@ -573,15 +645,19 @@ class StoryVideoStateStore:
     def _write_autopilot_authorization(
         self,
         context: StoryVideoRunContext,
+        *,
+        enabled: bool,
+        source: str,
     ) -> None:
+        timestamp_key = "authorized_at" if enabled else "revoked_at"
         self._write_json(
             self.authorization_state_root / f"{context.run_id}.json",
             {
                 "schema": AUTOPILOT_AUTHORIZATION_SCHEMA,
                 "run_id": context.run_id,
-                "enabled": True,
-                "authorized_at": _utc_now(),
-                "source": "operator_auto_command",
+                "enabled": enabled,
+                timestamp_key: _utc_now(),
+                "source": source,
             },
         )
 
