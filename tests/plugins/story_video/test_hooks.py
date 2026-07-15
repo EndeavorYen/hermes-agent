@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from plugins.story_video import hooks
 from plugins.story_video.audit import ProviderAudit
 from plugins.story_video.state import StoryVideoStateStore
+from plugins.story_video.tools import story_video_control
 
 
 def _event(text: str, *, reply_to_text: str | None = None):
@@ -538,6 +539,62 @@ def test_autopilot_requests_internal_continuation_until_complete(
 
     assert continuation["action"] == "continue"
     assert "STORY_VIDEO_AUTOPILOT" in continuation["message"]
+
+
+def test_planning_only_request_auto_completes_bundle_then_holds_before_media(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    start = hooks.pre_gateway_dispatch(
+        event=_event(
+            "故事影片：海底火山｜5分鐘｜電影感寫實重建。只規劃，建立完整規劃檔並驗證。"
+        )
+    )
+    hooks.pre_llm_call(session_id="session-plan", user_message=start["text"])
+    context = store.for_session("session-plan")
+    assert context is not None
+    assert context.auto_mode is False
+    assert context.planning_only is True
+
+    incomplete = hooks.auto_continue_llm_output(
+        session_id="session-plan",
+        response_text="接下來我會建立規劃檔。",
+    )
+
+    assert incomplete is not None
+    assert incomplete["action"] == "continue"
+    assert "STORY_VIDEO_PLANNING_COMPLETION" in incomplete["message"]
+    assert "Do not generate images, narration, or video" in incomplete["message"]
+
+    _write_planning_fixture(context)
+    ready = hooks.auto_continue_llm_output(
+        session_id="session-plan",
+        response_text="規劃檔已建立。",
+    )
+
+    assert ready is not None
+    assert "story_video_control action=validate" in ready["message"]
+
+    validated = json.loads(
+        story_video_control(
+            {"action": "validate"},
+            session_id="session-plan",
+            store=store,
+        )
+    )
+    held = store.for_session("session-plan")
+
+    assert validated["success"] is True
+    assert validated["proof"] == "STORY_VIDEO_PHASE_PROOF: planning PASS"
+    assert held is not None
+    assert held.phase == "planning"
+    assert held.status == "complete"
+    assert held.last_validated_phase == "planning"
+    assert hooks.auto_continue_llm_output(
+        session_id="session-plan",
+        response_text=validated["proof"],
+    ) is None
 
 
 def test_autopilot_rotates_before_continuation_history_bloats(

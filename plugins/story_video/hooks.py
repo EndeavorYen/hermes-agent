@@ -544,13 +544,37 @@ def auto_continue_llm_output(
     **_: Any,
 ) -> dict[str, str] | None:
     context = _STORE.for_session(session_id)
-    if context is None or not context.auto_mode or not context.next_call:
+    if context is None or not context.next_call:
+        return None
+    planning_completion = (
+        context.planning_only
+        and context.phase == "planning"
+        and context.status == "active"
+    )
+    if not context.auto_mode and not planning_completion:
         return None
     if _SETUP_BLOCKER_RE.search(
         f"{response_text or ''}\n{turn_error or ''}"
     ):
         return None
-    if (
+    if planning_completion:
+        signature = (
+            f"planning:completion:{context.next_call}:"
+            f"{_autopilot_progress_token(context)}"
+        )
+        stall_count = (
+            context.autopilot_stall_count + 1
+            if context.autopilot_last_signature == signature
+            else 1
+        )
+        context = _STORE.update(
+            context,
+            autopilot_last_signature=signature,
+            autopilot_stall_count=stall_count,
+        )
+        if stall_count >= _AUTOPILOT_STALL_LIMIT:
+            return None
+    elif (
         _PHASE_BLOCKED_RE.search(str(response_text or ""))
         or recoverable_transport_error
     ):
@@ -579,7 +603,27 @@ def auto_continue_llm_output(
         )
     next_action = context.next_call
     next_work_instruction = ""
-    if context.phase == "batch":
+    if planning_completion:
+        from .tools import validate_phase
+
+        proof = validate_phase(context)
+        if proof.ok:
+            next_action = "story_video_control action=validate"
+            next_work_instruction = (
+                " The complete planning bundle is present. Validate planning now and "
+                "persist planning / complete without advancing to keyframes."
+            )
+        else:
+            details = [*proof.missing, *proof.violations]
+            next_action = "complete and validate the story-video planning bundle"
+            next_work_instruction = (
+                " Repair these exact planning gaps: "
+                + json.dumps(details, ensure_ascii=False)
+                + ". Create or correct every required planning artifact, then call "
+                "story_video_control action=validate. Do not generate images, narration, "
+                "or video."
+            )
+    elif context.phase == "batch":
         try:
             next_work = _next_batch_work_group(
                 context,
@@ -705,12 +749,19 @@ def auto_continue_llm_output(
         "reason": (
             "story_video_transport_recovery"
             if recoverable_transport_error
+            else "story_video_planning_completion"
+            if planning_completion
             else "story_video_context_budget"
             if rotate_for_budget
             else "story_video_autopilot"
         ),
         "message": (
-            f"STORY_VIDEO_AUTOPILOT run_id={context.run_id} phase={context.phase}. "
+            (
+                "STORY_VIDEO_PLANNING_COMPLETION"
+                if planning_completion
+                else "STORY_VIDEO_AUTOPILOT"
+            )
+            + f" run_id={context.run_id} phase={context.phase}. "
             f"Execute the next action now: {next_action}.{next_work_instruction} "
             "Do not merely report "
             "status; complete the phase, repair every gate failure that is locally "
