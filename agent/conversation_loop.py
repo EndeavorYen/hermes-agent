@@ -776,11 +776,23 @@ def run_conversation(
     # over instead of spinning. Reset here so each turn starts fresh. See #26080.
     agent._auth_pool_refresh_counts = {}
 
-    # Optional opt-in runtime: if api_mode == codex_app_server, hand the
-    # turn to the codex app-server subprocess (terminal/file ops/patching
-    # all run inside Codex). Default Hermes path is bypassed entirely.
-    # See agent/transports/codex_app_server_session.py for the adapter
-    # and references/codex-app-server-runtime.md for the rationale.
+    _direct_visual_result = _try_direct_visual_agent_handoff(
+        agent,
+        user_message=user_message,
+        original_user_message=original_user_message,
+        messages=messages,
+        conversation_history=conversation_history,
+        effective_task_id=effective_task_id,
+        turn_id=turn_id,
+        should_review_memory=_should_review_memory,
+        raphael_decision=_raphael_decision,
+    )
+    if _direct_visual_result is not None:
+        return _direct_visual_result
+
+    # Optional opt-in runtime: deterministic Hermes handoffs above retain
+    # ownership of product routes such as Visual Agent. Remaining turns can be
+    # delegated to Codex app-server for general terminal/file work.
     if agent.api_mode == "codex_app_server":
         _codex_injections = []
         if isinstance(_ext_prefetch_cache, str) and _ext_prefetch_cache:
@@ -801,20 +813,6 @@ def run_conversation(
             should_review_memory=_should_review_memory,
             raphael_decision=_raphael_decision,
         )
-
-    _direct_visual_result = _try_direct_visual_agent_handoff(
-        agent,
-        user_message=user_message,
-        original_user_message=original_user_message,
-        messages=messages,
-        conversation_history=conversation_history,
-        effective_task_id=effective_task_id,
-        turn_id=turn_id,
-        should_review_memory=_should_review_memory,
-        raphael_decision=_raphael_decision,
-    )
-    if _direct_visual_result is not None:
-        return _direct_visual_result
 
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot

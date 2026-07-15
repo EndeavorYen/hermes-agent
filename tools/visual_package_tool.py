@@ -452,7 +452,7 @@ def _normalise_image_provider(value: Any, *, allow_unknown: bool = True) -> str 
         "grok_web",
         "grokweb",
     }:
-        return "grok-web-imagine"
+        return "xai"
     normalized = normalize_visual_provider(raw)
     if allow_unknown:
         return normalized
@@ -527,7 +527,7 @@ def _polish_provider_override(args: dict[str, Any], *, prompt: str | None = None
         if provider:
             return provider
     if _coerce_bool(args.get("grok_web_polish")):
-        return "grok-web-imagine"
+        return "xai"
     provider = _normalise_polish_provider_from_prompt(prompt)
     if provider:
         return provider
@@ -557,7 +557,7 @@ def _normalise_polish_provider_from_prompt(prompt: str | None) -> str | None:
     if not has_polish:
         return None
     if "grok web" in lowered or "web polish" in lowered or compact == "grokwebpolish":
-        return "grok-web-imagine"
+        return "xai"
     return None
 
 

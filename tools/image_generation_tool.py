@@ -1490,6 +1490,8 @@ def _dispatch_to_plugin_provider(
     route to its edit endpoint.
     """
     configured_from_config = _read_configured_image_provider()
+    if normalize_visual_provider(configured_from_config) == "xai":
+        configured_from_config = "xai"
     configured = provider_override or configured_from_config
     if not configured:
         return None
@@ -1719,6 +1721,8 @@ def _handle_image_generate(args, **kw):
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
     image_url = args.get("image_url")
     reference_image_urls = args.get("reference_image_urls")
+    if reference_image_urls is None:
+        reference_image_urls = args.get("reference_images")
     provider_override = _image_provider_override_arg(args, prompt)
     provider_override, story_video_provider_error = resolve_story_video_image_provider(
         args,

@@ -202,6 +202,10 @@ def _provider(value: Any) -> str:
         "image2": "openai-codex",
         "grok": "xai",
         "x.ai": "xai",
+        "grok-web-imagine": "xai",
+        "grok-web": "xai",
+        "grokwebimagine": "xai",
+        "grokweb": "xai",
     }
     return aliases.get(text, text)
 

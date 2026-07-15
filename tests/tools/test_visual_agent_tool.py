@@ -796,7 +796,7 @@ def test_visual_agent_generate_preserves_direct_handoff_reference_operation_and_
     payload = json.loads(raw)
 
     assert payload["success"] is True
-    assert captured["image_provider"] == "grok-web-imagine"
+    assert captured["image_provider"] == "xai"
     assert captured["image_provider_source"] == "prompt_override"
     assert captured["image_operation"] == "continue_current"
     assert captured["candidate_budget"] == 1
