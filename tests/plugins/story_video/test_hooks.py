@@ -475,6 +475,13 @@ def test_pre_llm_creates_context_and_injects_provider_policy(tmp_path, monkeypat
     assert "quality_contract_version=4" in result["context"]
     assert "audience_profile" in result["context"]
     assert "engagement_profile" in result["context"]
+    assert "mode=young_explorer, energy=high, humor=light" in result["context"]
+    assert (
+        "young_explorer|discovery_documentary|human_drama|transformation|"
+        "decision_tension|calm_wonder"
+    ) in result["context"]
+    assert "gentle|balanced|high" in result["context"]
+    assert "none|light|playful" in result["context"]
     assert "story_moment" in result["context"]
     assert "visual_truth_mode" in result["context"]
     assert "audience_engagement" in result["context"]
