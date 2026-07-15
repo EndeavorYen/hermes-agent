@@ -1565,3 +1565,76 @@ def test_transform_output_blocks_video_not_selected_by_current_render_manifest(
     assert str(stale) not in blocked
     assert "STORY_VIDEO_DELIVERY_BLOCKED" in blocked
     assert str(selected) in allowed
+
+
+def test_transform_output_allows_same_project_alias_with_selected_render_content(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    context = store.create_or_load(
+        source_key="gateway:thread-1",
+        session_id="session-1",
+        call=hooks.OperatorCall(
+            action="start",
+            topic="恐龍起源",
+            duration="5分",
+            visual_style="真實照片",
+        ),
+        original_request="故事影片：恐龍起源｜5分｜真實照片",
+    )
+    selected = context.project_dir / "video" / "final.mp4"
+    review_alias = context.project_dir / "video" / "恐龍起源_review.mp4"
+    selected.parent.mkdir(parents=True)
+    selected.write_bytes(b"current-selected-render")
+    review_alias.write_bytes(selected.read_bytes())
+    (context.project_dir / "render_manifest.json").write_text(
+        json.dumps({"output": {"path": "video/final.mp4"}}),
+        encoding="utf-8",
+    )
+    store.update(context, phase="complete", status="complete")
+
+    allowed = hooks.transform_llm_output(
+        response_text=f"新版已完成：MEDIA:{review_alias}",
+        session_id="session-1",
+    )
+
+    assert "STORY_VIDEO_DELIVERY_BLOCKED" not in allowed
+    assert str(review_alias) in allowed
+
+
+def test_transform_output_blocks_matching_render_content_outside_current_project(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    context = store.create_or_load(
+        source_key="gateway:thread-1",
+        session_id="session-1",
+        call=hooks.OperatorCall(
+            action="start",
+            topic="恐龍起源",
+            duration="5分",
+            visual_style="真實照片",
+        ),
+        original_request="故事影片：恐龍起源｜5分｜真實照片",
+    )
+    selected = context.project_dir / "video" / "final.mp4"
+    cross_project = tmp_path / "other-project" / "final.mp4"
+    selected.parent.mkdir(parents=True)
+    cross_project.parent.mkdir(parents=True)
+    selected.write_bytes(b"current-selected-render")
+    cross_project.write_bytes(selected.read_bytes())
+    (context.project_dir / "render_manifest.json").write_text(
+        json.dumps({"output": {"path": "video/final.mp4"}}),
+        encoding="utf-8",
+    )
+    store.update(context, phase="complete", status="complete")
+
+    blocked = hooks.transform_llm_output(
+        response_text=f"新版已完成：MEDIA:{cross_project}",
+        session_id="session-1",
+    )
+
+    assert str(cross_project) not in blocked
+    assert "STORY_VIDEO_DELIVERY_BLOCKED" in blocked
