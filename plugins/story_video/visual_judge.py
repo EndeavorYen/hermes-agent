@@ -7,7 +7,7 @@ import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from .engagement import engagement_contract_enabled, is_camera_reveal_shot
 from .repair_planner import (
@@ -25,6 +25,7 @@ from .quality import (
     rank_candidate_assessments,
     validate_quality_ledger,
 )
+from .release_art import compile_release_art_brief, compose_release_art
 from .shot_contract import (
     manifest_row_matches_shot_contract as _manifest_row_matches_shot_contract,
 )
@@ -35,7 +36,7 @@ from .state import StoryVideoRunContext, StoryVideoStateStore
 MAX_REPAIR_ROUNDS = 3
 MAX_CONTRACT_REPLANS = 2
 MAX_REPLANNED_CONTRACT_CANDIDATES = 2
-QUALITY_CONTRACT_VERSION = 3
+QUALITY_CONTRACT_VERSION = 4
 BEST_EFFORT_QUALITY_FLOOR = 75.0
 _PLUGIN_LLM: Any = None
 
@@ -88,6 +89,7 @@ CANDIDATE_REVIEW_SCHEMA = {
                     "blocker_codes",
                     "dimensions",
                     "evidence",
+                    "focal_point_normalized",
                 ],
                 "properties": {
                     "candidate_id": {"type": "string"},
@@ -112,6 +114,15 @@ CANDIDATE_REVIEW_SCHEMA = {
                         "type": "array",
                         "items": {"type": "string"},
                         "minItems": 1,
+                    },
+                    "focal_point_normalized": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["x", "y"],
+                        "properties": {
+                            "x": {"type": "number", "minimum": 0, "maximum": 1},
+                            "y": {"type": "number", "minimum": 0, "maximum": 1},
+                        },
                     },
                 },
             },
@@ -195,6 +206,46 @@ def _write_candidate_manifest_atomic(path: Path, payload: dict[str, Any]) -> Non
 
 def _provider(value: Any) -> str:
     return str(value or "").strip().lower().replace("_", "-")
+
+
+def _source_image_qc_blockers(
+    hard_blockers: Iterable[Any],
+    explicit_codes: Iterable[Any] = (),
+) -> tuple[list[str], set[str]]:
+    blockers = [str(item).strip() for item in hard_blockers if str(item).strip()]
+    filtered = [
+        blocker
+        for blocker in blockers
+        if classify_blockers([blocker], ()) != {"subtitle_collision"}
+    ]
+    codes = {
+        str(code).strip()
+        for code in explicit_codes
+        if str(code).strip() and str(code).strip() != "subtitle_collision"
+    }
+    if filtered or codes:
+        codes = classify_blockers(filtered, codes)
+        codes.discard("subtitle_collision")
+    return filtered, codes
+
+
+def _normalize_source_image_qc_row(row: dict[str, Any]) -> dict[str, Any]:
+    blockers = [str(item).strip() for item in row.get("hard_blockers") or [] if str(item).strip()]
+    explicit_codes = [str(item).strip() for item in row.get("blocker_codes") or [] if str(item).strip()]
+    filtered, codes = _source_image_qc_blockers(blockers, explicit_codes)
+    ignored_blockers = [item for item in blockers if item not in filtered]
+    ignored_codes = [item for item in explicit_codes if item == "subtitle_collision"]
+    if not ignored_blockers and not ignored_codes:
+        return dict(row)
+    return {
+        **row,
+        "hard_blockers": filtered,
+        "blocker_codes": sorted(codes),
+        "post_composite_subtitle_qc": True,
+        "ignored_source_image_qc_blockers": ignored_blockers,
+        "ignored_source_image_qc_blocker_codes": ignored_codes,
+        "packaging_fallback": None,
+    }
 
 
 def _project_path(context: StoryVideoRunContext, value: Any) -> Path:
@@ -323,8 +374,11 @@ def _contract_replan_work(
 ) -> dict[str, Any]:
     _ledger, _scene, shot = _find_shot(context, shot_id)
     revision = _contract_replan_count(manifest, shot_id)
-    blockers = [str(value) for value in output.get("hard_blockers") or [] if value]
-    blocker_codes = [str(value) for value in output.get("blocker_codes") or [] if value]
+    blockers, normalized_codes = _source_image_qc_blockers(
+        output.get("hard_blockers") or (),
+        output.get("blocker_codes") or (),
+    )
+    blocker_codes = sorted(normalized_codes)
     if revision >= MAX_CONTRACT_REPLANS:
         return {
             "success": False,
@@ -360,7 +414,8 @@ def _contract_replan_work(
             "Preserve the approved narration, takeaway, truth mode, and risk. "
             "Replace the visual design with one coherent, directly readable moment "
             "whose visible evidence supports the same takeaway, avoids every listed "
-            "blocker, and leaves the declared subtitle-safe area clear."
+            "blocker. Judge the clean source image edge to edge; subtitle layout is a "
+            "separate post-composite QC stage."
         ),
         "remaining_shot_count": remaining_shot_count,
     }
@@ -578,12 +633,12 @@ def _compile_prompt(
         "",
     )
     all_history_rows = [
-        row
+        _normalize_source_image_qc_row(row)
         for row in manifest.get("attempt_history") or []
         if isinstance(row, dict) and str(row.get("shot_id") or "") == shot_id
     ]
     all_current_rows = [
-        row
+        _normalize_source_image_qc_row(row)
         for row in manifest.get("outputs") or []
         if isinstance(row, dict) and str(row.get("shot_id") or "") == shot_id
     ]
@@ -716,15 +771,16 @@ def _review_instructions(shot: dict[str, Any], candidate_ids: list[str]) -> str:
             "The generation provider and the judging provider are both required to be OpenAI.",
             f"Shot contract: {json.dumps(shot, ensure_ascii=False, sort_keys=True)}",
             f"Candidate image order: {json.dumps(candidate_ids, ensure_ascii=False)}",
-            "Hard blockers include wrong spoken-claim content, scientific contradiction, malformed anatomy or geometry, generated text/watermark, unclear focus, subtitle collision, an image that adds no information beyond adjacent shots, static_catalog, missing_story_moment, flat_composition, audience_mismatch, sensationalized_claim, and mixed_evidence_reconstruction.",
+            "Hard blockers include wrong spoken-claim content, scientific contradiction, malformed anatomy or geometry, generated text/watermark, unclear focus, an image that adds no information beyond adjacent shots, static_catalog, missing_story_moment, flat_composition, generic documentary or museum-catalog framing, audience_mismatch, sensationalized_claim, and mixed_evidence_reconstruction. Subtitle placement is not part of source-image QC because typography is added in post-composite rendering.",
             "Score narrative_engagement from the artifact's attention path, purposeful visual progression, and audience fit. High energy is not inherently better.",
             "Score story_moment_clarity from whether one decisive instant and its immediate consequence are visibly understandable.",
+            "Score cinematic_impact from bold depth hierarchy, dramatic but motivated light, scale, visual tension, and a hero subject that immediately earns attention without changing factual content.",
             "Intentional calm or breathe shots may score highly when the declared calm_reason is supported by a strong focal hierarchy and useful pause; calm alone is not static_catalog.",
             *shot_specific,
             "For every hard blocker, return one or more blocker_codes from: "
-            + ", ".join(sorted(BLOCKER_CODES))
-            + ".",
-            "Return one row for every candidate id. Scores use 0-100. Evidence must cite concrete visible observations, not metadata or prompt intent.",
+            + ", ".join(sorted(BLOCKER_CODES - {"subtitle_collision"}))
+            + ". Never return subtitle_collision; subtitles are absent from source-image QC.",
+            "Return one row for every candidate id. Scores use 0-100. Also return focal_point_normalized as the center of the most important visible subject or evidence, with x and y in the inclusive 0-1 range. Evidence must cite concrete visible observations, not metadata or prompt intent.",
         )
     )
 
@@ -1082,13 +1138,14 @@ def _judge_candidates(
     for row in rows:
         candidate_id = str(row.get("candidate_id") or "")
         source = next(item for item in candidate_rows if item["candidate_id"] == candidate_id)
-        blocker_codes = classify_blockers(
+        hard_blockers, blocker_codes = _source_image_qc_blockers(
             row.get("hard_blockers") or (),
             row.get("blocker_codes") or (),
         )
         assessments.append(
             {
                 **row,
+                "hard_blockers": hard_blockers,
                 "blocker_codes": sorted(blocker_codes),
                 "provider": source.get("provider"),
                 "judge_provider": judge_provider,
@@ -1136,7 +1193,7 @@ def _judge_candidates(
             "blocker_codes": best_assessment.get("blocker_codes") or [],
         },
     ]).exhausted
-    best_blocker_codes = classify_blockers(
+    _best_blockers, best_blocker_codes = _source_image_qc_blockers(
         best_assessment.get("hard_blockers") or (),
         best_assessment.get("blocker_codes") or (),
     )
@@ -1164,10 +1221,10 @@ def _judge_candidates(
         shot_id=shot_id,
         repair_strategy=repair_strategy,
         score=best_assessment_score,
-        blocker_codes=classify_blockers(
+        blocker_codes=_source_image_qc_blockers(
             best_assessment.get("hard_blockers") or (),
             best_assessment.get("blocker_codes") or (),
-        ),
+        )[1],
     )
     terminal_status = (
         "selected_current"
@@ -1180,10 +1237,11 @@ def _judge_candidates(
         candidate_id = str(assessment.get("candidate_id") or "")
         source = next(item for item in candidate_rows if item["candidate_id"] == candidate_id)
         score = candidate_quality_score(assessment.get("dimensions")) or 0.0
-        blockers = [str(item) for item in assessment.get("hard_blockers") or []]
-        blocker_codes = sorted(
-            classify_blockers(blockers, assessment.get("blocker_codes") or ())
+        blockers, normalized_codes = _source_image_qc_blockers(
+            assessment.get("hard_blockers") or (),
+            assessment.get("blocker_codes") or (),
         )
+        blocker_codes = sorted(normalized_codes)
         selected_with_packaging = bool(
             candidate_id == selected_id and packaging_fallback_selected
         )
@@ -1229,6 +1287,7 @@ def _judge_candidates(
                     else None
                 ),
                 "quality_dimensions": assessment.get("dimensions"),
+                "focal_point_normalized": assessment.get("focal_point_normalized"),
                 "vision_evidence": {
                     "status": "PASS",
                     "response_id": response_id,
@@ -1446,8 +1505,16 @@ def _promote_bounded_best_effort(
     context: StoryVideoRunContext,
     manifest: dict[str, Any],
 ) -> dict[str, Any]:
-    outputs = [dict(row) for row in manifest.get("outputs") or [] if isinstance(row, dict)]
-    history = [row for row in manifest.get("attempt_history") or [] if isinstance(row, dict)]
+    outputs = [
+        _normalize_source_image_qc_row(row)
+        for row in manifest.get("outputs") or []
+        if isinstance(row, dict)
+    ]
+    history = [
+        _normalize_source_image_qc_row(row)
+        for row in manifest.get("attempt_history") or []
+        if isinstance(row, dict)
+    ]
     events = [dict(row) for row in manifest.get("selection_events") or [] if isinstance(row, dict)]
     event_keys = {
         (str(row.get("shot_id") or ""), str(row.get("candidate_id") or ""))
@@ -1903,9 +1970,14 @@ def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
                 and row.get("legacy_qc_grandfathered") is not True
                 and _provider(row.get("provider")) in {"openai", "openai-codex"}
                 and (
+                    int(row.get("quality_contract_version") or 0)
+                    < QUALITY_CONTRACT_VERSION
+                    or
                     not isinstance(dimensions, dict)
                     or "narrative_engagement" not in dimensions
                     or "story_moment_clarity" not in dimensions
+                    or "cinematic_impact" not in dimensions
+                    or not isinstance(row.get("focal_point_normalized"), dict)
                 )
             ):
                 stale_reviews.append((shot_id, row))
@@ -2077,6 +2149,135 @@ def _required_project_file(
     if not path.is_file():
         raise ValueError(f"missing {label}: {relative}")
     return path, relative
+
+
+def _compile_release_art(context: StoryVideoRunContext) -> dict[str, Any]:
+    ledger = _load_json(context.project_dir / "scene_ledger.json")
+    if not isinstance(ledger, dict):
+        raise ValueError("scene_ledger.json is missing or invalid")
+    brief = compile_release_art_brief(context.topic, ledger)
+    prompt_path = context.project_dir / "prompts" / "RELEASE_HERO.txt"
+    prompt_path.parent.mkdir(parents=True, exist_ok=True)
+    prompt_path.write_text(brief["prompt"] + "\n", encoding="utf-8")
+    brief_path = context.project_dir / "release_art" / "brief.json"
+    _write_json_atomic(
+        brief_path,
+        {
+            "schema": "story_video_release_art_brief_v1",
+            "run_id": context.run_id,
+            "title": brief["title"],
+            "subtitle": brief["subtitle"],
+            "prompt": brief["prompt"],
+            "provider": "openai-codex",
+            "candidate_id_hint": "RELEASE_HERO_C01",
+        },
+    )
+    return {
+        "success": True,
+        "action": "compile_release_art",
+        "provider": "openai-codex",
+        "candidate_id_hint": "RELEASE_HERO_C01",
+        "prompt": brief["prompt"],
+        "prompt_path": _relative(context, prompt_path),
+        "brief": _relative(context, brief_path),
+    }
+
+
+def _register_release_art(
+    context: StoryVideoRunContext,
+    candidate: dict[str, Any],
+) -> dict[str, Any]:
+    if _provider(candidate.get("provider")) not in {"openai", "openai-codex"}:
+        raise ValueError("dedicated release art must come from OpenAI")
+    source = _project_path(context, candidate.get("path"))
+    if not source.is_file():
+        raise ValueError(f"release-art candidate file missing: {source}")
+    response_id = str(candidate.get("response_id") or "").strip()
+    if not response_id:
+        raise ValueError("release-art candidate requires an OpenAI response_id")
+    brief_payload = _load_json(context.project_dir / "release_art" / "brief.json")
+    if not isinstance(brief_payload, dict):
+        compiled = _compile_release_art(context)
+        brief_payload = _load_json(context.project_dir / str(compiled["brief"]))
+    if not isinstance(brief_payload, dict):
+        raise ValueError("release-art brief is missing or invalid")
+    artifacts = compose_release_art(
+        source=source,
+        output_dir=context.project_dir / "release_art",
+        title=str(brief_payload.get("title") or context.topic),
+        subtitle=str(brief_payload.get("subtitle") or ""),
+    )
+    manifest_path = context.project_dir / "manifests" / "release_art_manifest.json"
+    _write_json_atomic(
+        manifest_path,
+        {
+            "schema": "story_video_release_art_manifest_v1",
+            "run_id": context.run_id,
+            "status": "PASS",
+            "provider": "openai-codex",
+            "model": str(candidate.get("model") or ""),
+            "response_id": response_id,
+            "prompt_path": "prompts/RELEASE_HERO.txt",
+            "artifacts": {
+                name: {
+                    "path": _relative(context, path),
+                    "sha256": _file_sha256(path),
+                }
+                for name, path in artifacts.items()
+            },
+            "created_at": _utc_now(),
+        },
+    )
+    return {
+        "success": True,
+        "action": "register_release_art",
+        "manifest": _relative(context, manifest_path),
+        "artifacts": {
+            name: _relative(context, path) for name, path in artifacts.items()
+        },
+    }
+
+
+def _verified_release_art(context: StoryVideoRunContext) -> dict[str, str]:
+    manifest = _load_json(
+        context.project_dir / "manifests" / "release_art_manifest.json"
+    )
+    if not isinstance(manifest, dict):
+        raise ValueError(
+            "dedicated release art manifest is required before render"
+        )
+    if str(manifest.get("schema") or "") != "story_video_release_art_manifest_v1":
+        raise ValueError("dedicated release art manifest schema is invalid")
+    if str(manifest.get("status") or "").upper() != "PASS":
+        raise ValueError("dedicated release art manifest is not PASS")
+    if str(manifest.get("run_id") or "") != context.run_id:
+        raise ValueError("stale dedicated release art belongs to a different run")
+    if _provider(manifest.get("provider")) not in {"openai", "openai-codex"}:
+        raise ValueError("dedicated release art must come from OpenAI")
+    if not str(manifest.get("response_id") or "").strip():
+        raise ValueError("dedicated release art lacks OpenAI response evidence")
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, dict):
+        raise ValueError("dedicated release art artifact evidence is missing")
+    verified: dict[str, str] = {}
+    for name in ("hero_source", "opening_card", "ending_card", "thumbnail"):
+        evidence = artifacts.get(name)
+        if not isinstance(evidence, dict):
+            raise ValueError(f"dedicated release art {name} evidence is missing")
+        path = _project_path(context, evidence.get("path")).resolve()
+        try:
+            relative = path.relative_to(context.project_dir.resolve())
+        except ValueError as exc:
+            raise ValueError(
+                f"dedicated release art {name} must be inside the current project"
+            ) from exc
+        if not path.is_file():
+            raise ValueError(f"dedicated release art {name} file is missing")
+        expected_sha = str(evidence.get("sha256") or "").strip()
+        if not expected_sha or _file_sha256(path) != expected_sha:
+            raise ValueError(f"dedicated release art {name} hash mismatch")
+        verified[name] = str(relative)
+    return verified
 
 
 def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
@@ -2283,7 +2484,20 @@ def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
                     or shot.get("narration_text")
                     or display_text
                 ),
+                "subtitle_position": "bottom",
             }
+            focal = selected.get("focal_point_normalized")
+            if isinstance(focal, dict):
+                try:
+                    focal_x = float(focal.get("x"))
+                    focal_y = float(focal.get("y"))
+                except (TypeError, ValueError):
+                    focal_x = focal_y = -1.0
+                if 0.0 <= focal_x <= 1.0 and 0.0 <= focal_y <= 1.0:
+                    shot_input["focus_end"] = {
+                        "x": round(focal_x, 4),
+                        "y": round(focal_y, 4),
+                    }
             if segment is not None:
                 shot_input["source_shot_ids"] = source_shot_ids
                 shot_input["representative_shot_id"] = representative_shot_id
@@ -2294,13 +2508,6 @@ def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
                     segment.get("speech_end_sec")
                     or segment["timeline_duration_sec"]
                 )
-            packaging_fallback = selected.get("packaging_fallback")
-            if isinstance(packaging_fallback, dict):
-                subtitle_position = str(
-                    packaging_fallback.get("subtitle_position") or ""
-                ).strip()
-                if subtitle_position in {"top", "bottom"}:
-                    shot_input["subtitle_position"] = subtitle_position
             if selected.get("final_qc_review_required") is True:
                 shot_input["final_qc_review_required"] = True
                 shot_input["auto_terminal_fallback"] = selected.get(
@@ -2319,12 +2526,9 @@ def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
     if not selected_images:
         raise ValueError("render requires selected shot images")
 
-    opening_image = "release_art/opening_card.png"
-    if not (context.project_dir / opening_image).is_file():
-        opening_image = selected_images[0]
-    ending_image = "release_art/ending_card.png"
-    if not (context.project_dir / ending_image).is_file():
-        ending_image = selected_images[-1]
+    release_art = _verified_release_art(context)
+    opening_image = release_art["opening_card"]
+    ending_image = release_art["ending_card"]
 
     render_input = {
         "schema": "story_video_render_input_v2",
@@ -2332,20 +2536,28 @@ def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
         "title": context.topic,
         "resolution": {"width": 1920, "height": 1080},
         "fps": 30,
-        "post_speech_hold_sec": 0.85,
-        "max_post_speech_hold_sec": 1.5,
-        "motion_policy": "stable_center_zoom",
-        "zoom_max": 1.025,
-        "subtitle": {"max_lines": 2, "max_chars_per_line": 29},
+        "post_speech_hold_sec": 0.18,
+        "max_post_speech_hold_sec": 0.6,
+        "motion_policy": "cinematic_focus_push",
+        "zoom_max": 1.1,
+        "subtitle": {
+            "max_lines": 2,
+            "max_chars_per_line": 29,
+            "position": "bottom",
+            "production_stage": "post_composite",
+            "qc_mode": "fast_post_composite",
+        },
         "opening_card": {
             "title": context.topic,
             "image": opening_image,
-            "duration_sec": 2.0,
+            "duration_sec": 3.0,
+            "precomposed": True,
         },
         "ending_card": {
             "title": "探索仍在繼續",
             "image": ending_image,
             "duration_sec": 5.0,
+            "precomposed": True,
         },
         "scenes": scenes,
         "output": "video/final.mp4",
@@ -2403,6 +2615,13 @@ def story_video_quality_control(
             )
         elif action == "prepare_render":
             payload = _prepare_render(context)
+        elif action == "compile_release_art":
+            payload = _compile_release_art(context)
+        elif action == "register_release_art":
+            payload = _register_release_art(
+                context,
+                args.get("release_art_candidate") or {},
+            )
         elif action == "next_batch_work":
             payload = _next_batch_work(context)
         elif action == "replan_shot_contract":

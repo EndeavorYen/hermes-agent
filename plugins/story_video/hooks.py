@@ -136,11 +136,11 @@ def _write_project_contract(context: StoryVideoRunContext) -> None:
                 "- Generic video provider: forbidden",
                 "- Render provider: local deterministic renderer",
                 "- TTS provider: OpenAI when configured, otherwise locked local narration; no Edge/xAI fallback",
-                "- Timeline: narration duration + 0.85s; max unreasoned hold 1.5s",
-                "- Motion: stable center zoom 1.0 -> 1.025",
+                "- Timeline: image changes only on narration-segment boundaries; never cut a spoken sentence",
+                "- Motion: cinematic focus push 1.0 -> 1.10; one eased focal target, no per-frame tracking",
                 "- Quality mode: quality-first shot-driven production",
-                "- Five-minute shot target: 40-60 purpose-built shots",
-                "- Candidate selection: OpenAI vision, threshold 80/100, no first-success promotion",
+                "- Semantic image hold: normally at least two complete sentences per image",
+                "- Candidate selection: one precise OpenAI candidate by default; vision QC selectively regenerates failures",
                 "",
                 "## Original Request",
                 "",
@@ -404,7 +404,14 @@ def pre_llm_call(
         "stopping. "
         "During voice, compile display text to low-ambiguity spoken text with the "
         "project pronunciation lexicon and require qc/pronunciation_qc_report.json. "
-        "During render, call story_video_quality_control action=prepare_render; it is "
+        "During render, create dedicated release art before prepare_render. First call "
+        "story_video_quality_control action=compile_release_art, generate exactly one "
+        "text-free hero with image_generate provider=openai-codex using the returned "
+        "prompt and candidate_id_hint, then call action=register_release_art with the "
+        "returned local path, provider, model, and response_id. The registration action "
+        "composes the thumbnail, opening, and ending typography locally. Never substitute "
+        "the first or last body shot for missing release art. During render, call "
+        "story_video_quality_control action=prepare_render; it is "
         "the only writer of render_input.json. Never hand-edit render_input.json or "
         "invent renderer aliases. Then run the story-video production pipeline's "
         "render_story_video.py for project_dir and validate render. "

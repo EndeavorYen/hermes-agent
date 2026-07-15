@@ -40,6 +40,8 @@ STORY_VIDEO_QUALITY_CONTROL_SCHEMA = {
                     "judge_candidates",
                     "next_batch_work",
                     "replan_shot_contract",
+                    "compile_release_art",
+                    "register_release_art",
                     "prepare_render",
                     "status",
                 ],
@@ -114,6 +116,22 @@ STORY_VIDEO_QUALITY_CONTROL_SCHEMA = {
                         "shot_contract_hash",
                     ],
                 },
+            },
+            "release_art_candidate": {
+                "type": "object",
+                "description": (
+                    "Dedicated text-free release hero returned by OpenAI image generation."
+                ),
+                "properties": {
+                    "path": {"type": "string"},
+                    "provider": {
+                        "type": "string",
+                        "enum": ["openai-codex"],
+                    },
+                    "model": {"type": "string"},
+                    "response_id": {"type": "string"},
+                },
+                "required": ["path", "provider", "response_id"],
             },
             "redesigned_shot": {
                 "type": "object",

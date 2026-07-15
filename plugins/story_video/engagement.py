@@ -108,6 +108,25 @@ def _text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def is_subtitle_packaging_constraint(value: Any) -> bool:
+    text = _text(value).lower()
+    return any(
+        marker in text
+        for marker in (
+            "subtitle",
+            "caption",
+            "lower third",
+            "lower-third",
+            "bottom third",
+            "safe area",
+            "字幕",
+            "安全區",
+            "下三分之一",
+            "下方三分之一",
+        )
+    )
+
+
 def _version(ledger: dict[str, Any]) -> int:
     try:
         return int(ledger.get("quality_contract_version") or 0)
@@ -190,7 +209,9 @@ def compile_engagement_directives(
     )
     truth_mode = _text(shot.get("visual_truth_mode")) or "direct_evidence"
     criteria = "; ".join(
-        _text(item) for item in shot.get("engagement_criteria") or [] if _text(item)
+        _text(item)
+        for item in shot.get("engagement_criteria") or []
+        if _text(item) and not is_subtitle_packaging_constraint(item)
     )
     if is_camera_reveal_shot(shot):
         story_moment = (
@@ -237,7 +258,9 @@ def compile_engagement_directives(
         parts.append(f"Engagement acceptance: {criteria}.")
     if engagement.get("sensationalism_forbidden") is True:
         parts.append(
-            "Do not invent danger, conflict, emotion, behavior, or certainty beyond the shot contract."
+            "Do not invent facts, danger, behavior, or certainty beyond the shot contract. "
+            "Dramatic framing, motivated light, atmosphere, scale cues, and audience emotion "
+            "are encouraged when they clarify the supported story moment."
         )
     return tuple(parts)
 
