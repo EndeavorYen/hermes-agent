@@ -1048,14 +1048,55 @@ def _selected_render_path(context: StoryVideoRunContext) -> Path | None:
     return None
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _matches_selected_render(
+    candidate: Path,
+    *,
+    selected: Path,
+    project_dir: Path,
+    selected_sha256: str,
+) -> bool:
+    if candidate == selected:
+        return True
+    try:
+        candidate.relative_to(project_dir.resolve())
+        if not candidate.is_file() or candidate.stat().st_size != selected.stat().st_size:
+            return False
+        return _file_sha256(candidate) == selected_sha256
+    except (OSError, ValueError):
+        return False
+
+
 def _guard_render_delivery(text: str, context: StoryVideoRunContext) -> str:
     matches = list(_VIDEO_PATH_RE.finditer(text))
     if not matches:
         return text
     selected = _selected_render_path(context) if context.phase == "complete" else None
     referenced = {Path(match.group(1)).expanduser().resolve() for match in matches}
-    if selected is not None and referenced == {selected} and selected.is_file():
-        return text
+    if selected is not None and selected.is_file():
+        if referenced == {selected}:
+            return text
+        try:
+            selected_sha256 = _file_sha256(selected)
+        except OSError:
+            selected_sha256 = ""
+        if selected_sha256 and all(
+            _matches_selected_render(
+                candidate,
+                selected=selected,
+                project_dir=context.project_dir,
+                selected_sha256=selected_sha256,
+            )
+            for candidate in referenced
+        ):
+            return text
     return "\n".join(
         [
             "STORY_VIDEO_DELIVERY_BLOCKED",
