@@ -21,6 +21,27 @@ def test_parse_short_start_call_uses_operator_fields() -> None:
     assert call.auto_mode is False
 
 
+def test_unspecified_visual_style_uses_generic_cinematic_default() -> None:
+    call = parse_operator_call("故事影片：雲為什麼會下雨")
+
+    assert call is not None
+    assert call.visual_style == "Cinematic topic-appropriate visual storytelling"
+    assert "pico" not in call.visual_style.casefold()
+
+
+def test_long_form_revision_brief_extracts_chinese_duration_and_documentary_style() -> None:
+    call = parse_operator_call(
+        "做一部《恐龍的起源》的五分鐘故事影片，全自動到可審片。"
+        "沿用既有專案的題材、研究方向與真實自然史紀錄片風格。"
+    )
+
+    assert call is not None
+    assert call.topic == "恐龍的起源"
+    assert call.duration == "五分鐘"
+    assert call.visual_style == "真實自然史紀錄片風格"
+    assert call.auto_mode is True
+
+
 def test_planning_only_start_does_not_enable_autopilot() -> None:
     call = parse_operator_call(
         "故事影片：恐龍起源｜5分鐘｜真實照片。只規劃。"

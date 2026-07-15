@@ -13,7 +13,7 @@ from typing import Any
 
 
 DEFAULT_DURATION = "60-120s"
-DEFAULT_STYLE = "Bright PICO-8 storybook pixel art v1"
+DEFAULT_STYLE = "Cinematic topic-appropriate visual storytelling"
 PHASES = ("planning", "keyframes", "batch", "voice", "render", "complete")
 AUTOPILOT_AUTHORIZATION_SCHEMA = "story_video_autopilot_authorization_v1"
 DEFAULT_PROVIDER_POLICY: dict[str, Any] = {
@@ -176,9 +176,18 @@ def _parse_explicit_long_form_start(text: str) -> OperatorCall | None:
     )
     if topic_match is None:
         return None
-    topic = topic_match.group(1).strip(" ，,。:：-–")
+    duration_token = (
+        r"(?:\d+(?:\.\d+)?|[零〇一二三四五六七八九十百兩两]+)\s*"
+        r"(?:mins?|minutes?|secs?|seconds?|分鐘|分钟|秒|分)"
+    )
+    topic = re.sub(
+        rf"(?:的)?{duration_token}$",
+        "",
+        topic_match.group(1).strip(" ，,。:：-–"),
+        flags=re.I,
+    ).strip(" ，,。:：-–《》")
     duration_match = re.search(
-        r"(\d+(?:\.\d+)?\s*(?:mins?|minutes?|secs?|seconds?|分鐘|秒|分))",
+        rf"({duration_token})",
         text,
         re.I,
     )
@@ -188,6 +197,13 @@ def _parse_explicit_long_form_start(text: str) -> OperatorCall | None:
         text,
         re.I,
     )
+    if style_match is None:
+        style_match = re.search(
+            r"((?:真實|真实|寫實|写实|照片|photoreal(?:istic)?|cinematic|電影感|电影感)"
+            r"[^，。；;\n]{0,32}?(?:紀錄片風格|纪录片风格|紀錄片|纪录片|風格|风格))",
+            text,
+            re.I,
+        )
     return OperatorCall(
         action="start",
         topic=topic or "未命名故事影片",
