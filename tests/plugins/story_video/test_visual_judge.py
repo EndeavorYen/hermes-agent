@@ -2552,6 +2552,138 @@ def test_prepare_render_copies_verified_segment_timing_to_matching_shot(tmp_path
     assert render_input["scenes"][0]["shots"][0]["speech_end_sec"] == 4.19
 
 
+def test_prepare_render_uses_verified_semantic_shot_groups(tmp_path) -> None:
+    store, context, first_shot = _context(tmp_path)
+    second_shot = {
+        **first_shot,
+        "shot_id": "S00_SH01",
+        "narration_text": "牠的步態也更有效率。",
+    }
+    ledger_path = context.project_dir / "scene_ledger.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    ledger["scenes"][0]["shots"].append(second_shot)
+    ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+
+    for shot_id in ("S00_SH00", "S00_SH01"):
+        image = context.project_dir / "images" / f"{shot_id}.png"
+        image.parent.mkdir(parents=True, exist_ok=True)
+        image.write_bytes(f"image-{shot_id}".encode())
+    audio = context.project_dir / "audio" / "qwen" / "S00.wav"
+    audio.parent.mkdir(parents=True)
+    audio.write_bytes(b"narration")
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps(
+            {
+                "outputs": [
+                    {
+                        "shot_id": shot_id,
+                        "selected": True,
+                        "local_path": f"images/{shot_id}.png",
+                        "provider": "openai-codex",
+                    }
+                    for shot_id in ("S00_SH00", "S00_SH01")
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (context.project_dir / "render_input.json").write_text(
+        json.dumps(
+            {
+                "scenes": [
+                    {
+                        "scene_id": "S00",
+                        "shots": [
+                            {
+                                "shot_id": "S00_SH00__S00_SH01",
+                                "source_shot_ids": ["S00_SH00", "S00_SH01"],
+                                "representative_shot_id": "S00_SH01",
+                                "image": "images/S00_SH01.png",
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (manifests / "narration_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema": "story_video_narration_manifest_v4",
+                "outputs": [
+                    {
+                        "scene_id": "S00",
+                        "audio": str(audio),
+                        "display_text": (
+                            "直立腿讓早期恐龍移動得更有效率。牠的步態也更有效率。"
+                        ),
+                        "segments": [
+                            {
+                                "shot_id": "S00_SH00__S00_SH01",
+                                "display_text": (
+                                    "直立腿讓早期恐龍移動得更有效率。"
+                                    "牠的步態也更有效率。"
+                                ),
+                                "timeline_duration_sec": 7.25,
+                                "speech_end_sec": 7.07,
+                                "alignment_status": "PASS",
+                                "pronunciation_status": "PASS",
+                                "prosody_status": "PASS",
+                            }
+                        ],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        story_video_quality_control(
+            {"action": "prepare_render"}, session_id="session-1", store=store
+        )
+    )
+
+    assert payload["success"] is True
+    render_input = json.loads(
+        (context.project_dir / "render_input.json").read_text(encoding="utf-8")
+    )
+    assert render_input["scenes"][0]["shots"] == [
+        {
+            "shot_id": "S00_SH00__S00_SH01",
+            "selected": True,
+            "image": "images/S00_SH01.png",
+            "narration": (
+                "直立腿讓早期恐龍移動得更有效率。牠的步態也更有效率。"
+            ),
+            "source_shot_ids": ["S00_SH00", "S00_SH01"],
+            "representative_shot_id": "S00_SH01",
+            "timeline_duration_sec": 7.25,
+            "speech_end_sec": 7.07,
+        }
+    ]
+
+    narration_path = manifests / "narration_manifest.json"
+    narration_manifest = json.loads(narration_path.read_text(encoding="utf-8"))
+    narration_segment = narration_manifest["outputs"][0]["segments"][0]
+    narration_segment["source_shot_ids"] = ["S00_SH00"]
+    narration_segment["representative_shot_id"] = "S00_SH00"
+    narration_path.write_text(json.dumps(narration_manifest), encoding="utf-8")
+
+    rejected = json.loads(
+        story_video_quality_control(
+            {"action": "prepare_render"}, session_id="session-1", store=store
+        )
+    )
+
+    assert rejected["success"] is False
+    assert "semantic narration does not cover source shots: S00_SH01" in rejected["error"]
+
+
 def test_prepare_render_prefers_branded_release_cards(tmp_path) -> None:
     store, context, _shot = _context(tmp_path)
     image = context.project_dir / "images" / "S00_SH00.png"
