@@ -2115,6 +2115,7 @@ def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
         for output in narration_manifest.get("outputs") or []
         if isinstance(output, dict) and str(output.get("scene_id") or "").strip()
     }
+    narration_schema = str(narration_manifest.get("schema") or "")
     raw_scenes = ledger.get("scenes")
     if not isinstance(raw_scenes, list) or not raw_scenes:
         raise ValueError("scene_ledger.json has no scenes")
@@ -2136,6 +2137,38 @@ def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
         display_text = str(narration.get("display_text") or "").strip()
         if not display_text:
             raise ValueError(f"missing display_text for scene {scene_id}")
+        segment_by_shot: dict[str, dict[str, Any]] = {}
+        if narration_schema == "story_video_narration_manifest_v4":
+            raw_segments = narration.get("segments")
+            if not isinstance(raw_segments, list) or not raw_segments:
+                raise ValueError(f"missing verified narration segments for scene {scene_id}")
+            for segment in raw_segments:
+                if not isinstance(segment, dict):
+                    continue
+                segment_shot_id = str(segment.get("shot_id") or "").strip()
+                if not segment_shot_id:
+                    raise ValueError(f"narration segment in {scene_id} is missing shot_id")
+                failed_gate = next(
+                    (
+                        gate
+                        for gate in (
+                            "alignment_status",
+                            "pronunciation_status",
+                            "prosody_status",
+                        )
+                        if str(segment.get(gate) or "").upper() != "PASS"
+                    ),
+                    None,
+                )
+                if failed_gate:
+                    raise ValueError(
+                        f"narration segment {segment_shot_id} has not passed {failed_gate}"
+                    )
+                if float(segment.get("timeline_duration_sec") or 0.0) <= 0:
+                    raise ValueError(
+                        f"narration segment {segment_shot_id} has no measured timeline"
+                    )
+                segment_by_shot[segment_shot_id] = segment
         shots: list[dict[str, Any]] = []
         raw_shots = scene.get("shots")
         if not isinstance(raw_shots, list) or not raw_shots:
@@ -2167,6 +2200,17 @@ def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
                 "image": image_relative,
                 "narration": str(shot.get("narration_text") or display_text),
             }
+            if segment_by_shot:
+                segment = segment_by_shot.get(shot_id)
+                if segment is None:
+                    raise ValueError(f"missing verified narration segment for shot {shot_id}")
+                shot_input["timeline_duration_sec"] = float(
+                    segment["timeline_duration_sec"]
+                )
+                shot_input["speech_end_sec"] = float(
+                    segment.get("speech_end_sec")
+                    or segment["timeline_duration_sec"]
+                )
             packaging_fallback = selected.get("packaging_fallback")
             if isinstance(packaging_fallback, dict):
                 subtitle_position = str(

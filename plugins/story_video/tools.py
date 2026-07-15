@@ -406,6 +406,8 @@ def _validate_voice(context: StoryVideoRunContext) -> PhaseProof:
     if provider == "azure" and str(manifest.get("engine") or "") != "Azure AI Speech":
         violations.append("production narration engine is not Azure AI Speech")
     if provider == "local-qwen":
+        narration_schema = str(manifest.get("schema") or "")
+        acoustic_contract = narration_schema == "story_video_narration_manifest_v4"
         if str(manifest.get("engine") or "") != "Qwen3-TTS via MLX-Audio":
             violations.append("production narration engine is not Qwen3-TTS via MLX-Audio")
         if str(manifest.get("inference_mode") or "") != "offline":
@@ -428,15 +430,31 @@ def _validate_voice(context: StoryVideoRunContext) -> PhaseProof:
         if not isinstance(pronunciation_report, dict):
             missing.append("qc/pronunciation_qc_report.json")
         else:
-            if (
-                str(pronunciation_report.get("schema") or "")
-                != "story_video_pronunciation_qc_v1"
-            ):
+            qc_schema = str(pronunciation_report.get("schema") or "")
+            if qc_schema not in {
+                "story_video_pronunciation_qc_v1",
+                "story_video_pronunciation_qc_v2",
+            }:
                 violations.append("local Qwen pronunciation QC schema is invalid")
             if str(pronunciation_report.get("status") or "").upper() != "PASS":
                 violations.append("local Qwen pronunciation QC is not PASS")
+            if acoustic_contract:
+                if qc_schema != "story_video_pronunciation_qc_v2":
+                    violations.append("local Qwen acoustic pronunciation QC is not v2")
+                if (
+                    str(pronunciation_report.get("method") or "")
+                    != "lexicon_plus_independent_asr"
+                ):
+                    violations.append("local Qwen pronunciation QC lacks independent ASR")
+                evidence = pronunciation_report.get("acoustic_evidence")
+                if not isinstance(evidence, list) or not evidence:
+                    missing.append("local Qwen acoustic pronunciation evidence")
         if str(manifest.get("pronunciation_status") or "").upper() != "PASS":
             violations.append("local Qwen narration pronunciation status is not PASS")
+        if acoustic_contract:
+            for gate in ("alignment_status", "prosody_status"):
+                if str(manifest.get(gate) or "").upper() != "PASS":
+                    violations.append(f"local Qwen narration {gate} is not PASS")
     if str(manifest.get("language") or "") != "zh-TW":
         violations.append("production narration language is not zh-TW")
     if str(manifest.get("profile_status") or "") != "locked_by_user":
@@ -465,6 +483,31 @@ def _validate_voice(context: StoryVideoRunContext) -> PhaseProof:
                     violations.append(
                         f"audio narration segment[{index}] pronunciation is not PASS"
                     )
+                if acoustic_contract:
+                    segments = output.get("segments")
+                    if not isinstance(segments, list) or not segments:
+                        missing.append(f"audio narration segment[{index}].segments")
+                    else:
+                        for segment_index, segment in enumerate(segments):
+                            if not isinstance(segment, dict):
+                                missing.append(
+                                    f"audio narration segment[{index}].segments[{segment_index}]"
+                                )
+                                continue
+                            if float(segment.get("timeline_duration_sec") or 0.0) <= 0:
+                                missing.append(
+                                    f"audio narration segment[{index}].segments[{segment_index}].timeline_duration_sec"
+                                )
+                            for gate in (
+                                "alignment_status",
+                                "pronunciation_status",
+                                "prosody_status",
+                            ):
+                                if str(segment.get(gate) or "").upper() != "PASS":
+                                    violations.append(
+                                        f"audio narration segment[{index}].segments[{segment_index}] "
+                                        f"{gate.removesuffix('_status')} is not PASS"
+                                    )
             audio = str(output.get("audio") or "").strip()
             if not audio:
                 missing.append(f"audio narration segment[{index}].audio")
