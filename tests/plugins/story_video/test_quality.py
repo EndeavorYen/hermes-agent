@@ -57,6 +57,7 @@ def _assessment(candidate_id: str, score: float, **overrides) -> dict:
         "continuity_and_diversity": score,
         "narrative_engagement": score,
         "story_moment_clarity": score,
+        "cinematic_impact": score,
     }
     payload = {
         "candidate_id": candidate_id,
@@ -229,6 +230,57 @@ def test_prompt_compiler_puts_audience_story_moment_and_truth_before_style() -> 
     assert prompt.index("Audience contract") < prompt.index("Visual style")
     assert "Story moment: capture one decisive visible instant" in prompt
     assert "Visual truth mode: reconstruction" in prompt
+
+
+def test_prompt_compiler_demands_cinematic_tension_without_reserving_subtitle_space() -> None:
+    shot = _shot(0, scale="close_up", risk="high")
+    shot.update(
+        {
+            "engagement_role": "reveal",
+            "attention_hook": "先看見結果，再理解成因",
+            "story_moment": "關鍵證據在動作發生的一瞬間清楚出現",
+            "action_consequence": "前景動作直接改變中景結果",
+            "composition_energy": "tense",
+            "viewer_emotion": "awe",
+            "engagement_criteria": [
+                "the decisive instant dominates the frame",
+                "下三分之一保留字幕安全區",
+            ],
+            "acceptance_criteria": [
+                "the decisive instant dominates the frame",
+                "keep the lower third clear for subtitles",
+            ],
+            "visual_truth_mode": "reconstruction",
+        }
+    )
+    ledger = _ledger([shot], duration=8)
+    ledger.update(
+        {
+            "quality_contract_version": 3,
+            "engagement_profile": {
+                "mode": "discovery_documentary",
+                "energy": "high",
+                "humor": "none",
+                "sensationalism_forbidden": True,
+            },
+        }
+    )
+
+    prompt = compile_shot_prompt(
+        ledger=ledger,
+        scene={"scene_id": "S00", "setting": "scientifically credible setting"},
+        shot=shot,
+    ).lower()
+
+    assert "cinematic factual reconstruction" in prompt
+    assert "foreground, midground, and background" in prompt
+    assert "motivated dramatic light" in prompt
+    assert "edge-to-edge composition" in prompt
+    assert "generic stock documentary" in prompt
+    assert "subtitle band" not in prompt
+    assert "bottom 20 percent clear" not in prompt
+    assert "下三分之一" not in prompt
+    assert "lower third" not in prompt
 
 
 def test_quality_ledger_enforces_engagement_contract_for_v3() -> None:

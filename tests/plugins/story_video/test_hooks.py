@@ -35,6 +35,28 @@ def _event_with_identity(
     return event
 
 
+def test_project_contract_defaults_to_semantic_holds_and_cinematic_focus_push(
+    tmp_path,
+) -> None:
+    context = SimpleNamespace(
+        project_dir=tmp_path,
+        run_id="run-1",
+        topic="測試主題",
+        duration="5mins",
+        visual_style="cinematic factual reconstruction",
+        original_request="請製作故事影片",
+    )
+
+    hooks._write_project_contract(context)
+
+    contract = (tmp_path / "PROJECT_CONTRACT.md").read_text(encoding="utf-8")
+    assert "cinematic focus push 1.0 -> 1.10" in contract
+    assert "normally at least two complete sentences" in contract
+    assert "one precise OpenAI candidate by default" in contract
+    assert "stable center zoom" not in contract
+    assert "40-60" not in contract
+
+
 def _write_planning_fixture(context) -> None:
     (context.project_dir / "script.md").write_text(
         "### S00\nfinal narration script", encoding="utf-8"
@@ -474,6 +496,9 @@ def test_autopilot_context_requires_canonical_quality_tool_and_phase_loop(
     assert "one canonical bounded work group per LLM turn" in result["context"]
     assert "up to three fresh shots" in result["context"]
     assert "repair, rejudge_existing" in result["context"]
+    assert "compile_release_art" in result["context"]
+    assert "register_release_art" in result["context"]
+    assert "before prepare_render" in result["context"]
 
 
 def test_autopilot_requests_internal_continuation_until_complete(

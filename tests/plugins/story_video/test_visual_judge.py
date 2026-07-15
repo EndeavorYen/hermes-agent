@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
+
+from PIL import Image
 
 from plugins import story_video
 from plugins.story_video import hooks
@@ -12,6 +15,7 @@ from plugins.story_video.visual_judge import (
     _next_batch_work_group,
     _review_instructions,
     _shot_contract_hash,
+    _source_image_qc_blockers,
     configure_plugin_llm,
     story_video_quality_control,
 )
@@ -77,6 +81,40 @@ def _candidate(context, candidate_id: str, provider: str = "openai-codex") -> di
     }
 
 
+def _release_cards(context) -> None:
+    release_art = context.project_dir / "release_art"
+    release_art.mkdir(parents=True, exist_ok=True)
+    artifacts = {
+        "hero_source": release_art / "hero_source.png",
+        "opening_card": release_art / "opening_card.png",
+        "ending_card": release_art / "ending_card.png",
+        "thumbnail": release_art / "thumbnail.jpg",
+    }
+    for name, path in artifacts.items():
+        path.write_bytes(name.encode())
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    (manifests / "release_art_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema": "story_video_release_art_manifest_v1",
+                "run_id": context.run_id,
+                "status": "PASS",
+                "provider": "openai-codex",
+                "response_id": "img_release_test",
+                "artifacts": {
+                    name: {
+                        "path": str(path.relative_to(context.project_dir)),
+                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                    }
+                    for name, path in artifacts.items()
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def _dimensions(score: int) -> dict:
     return {
         "text_alignment": score,
@@ -87,6 +125,7 @@ def _dimensions(score: int) -> dict:
         "continuity_and_diversity": score,
         "narrative_engagement": score,
         "story_moment_clarity": score,
+        "cinematic_impact": score,
     }
 
 
@@ -105,8 +144,13 @@ def test_visual_judge_scores_story_engagement_from_artifact_evidence() -> None:
 
     assert "narrative_engagement" in dimensions["required"]
     assert "story_moment_clarity" in dimensions["required"]
+    assert "cinematic_impact" in dimensions["required"]
+    candidate_schema = CANDIDATE_REVIEW_SCHEMA["properties"]["candidates"]["items"]
+    assert "focal_point_normalized" in candidate_schema["required"]
     assert "Intentional calm" in instructions
     assert "static_catalog" in instructions
+    assert "generic documentary" in instructions
+    assert "subtitle collision" not in instructions
 
 
 def test_visual_judge_does_not_require_camera_motion_inside_reveal_source_frame() -> None:
@@ -301,7 +345,7 @@ def test_candidate_judge_reuses_content_addressed_qc_result(tmp_path) -> None:
         (context.project_dir / "manifests" / "shot_candidate_manifest.json").read_text()
     )
     assert manifest["outputs"][0]["artifact_sha256"]
-    assert manifest["outputs"][0]["quality_contract_version"] == 3
+    assert manifest["outputs"][0]["quality_contract_version"] == 4
 
 
 def test_compile_prompt_writes_traceable_prompt_and_budget(tmp_path) -> None:
@@ -323,7 +367,17 @@ def test_compile_prompt_writes_traceable_prompt_and_budget(tmp_path) -> None:
     assert (context.project_dir / payload["prompt_path"]).is_file()
 
 
-def test_compile_prompt_includes_latest_qc_blocker_in_repair_directive(tmp_path) -> None:
+def test_source_image_qc_ignores_subtitle_packaging_blockers() -> None:
+    blockers, codes = _source_image_qc_blockers(
+        ["subtitle-safe area is occupied", "the fossil anatomy is malformed"],
+        ["subtitle_collision", "anatomy_geometry"],
+    )
+
+    assert blockers == ["the fossil anatomy is malformed"]
+    assert codes == {"anatomy_geometry"}
+
+
+def test_compile_prompt_ignores_subtitle_packaging_feedback(tmp_path) -> None:
     store, context, _shot = _context(tmp_path)
     manifests = context.project_dir / "manifests"
     manifests.mkdir(parents=True, exist_ok=True)
@@ -344,11 +398,11 @@ def test_compile_prompt_includes_latest_qc_blocker_in_repair_directive(tmp_path)
     ))
 
     assert payload["success"] is True
-    assert payload["repair_feedback_applied"] is True
+    assert payload["repair_feedback_applied"] is False
     assert payload["strategy_reset"] is False
     assert payload["candidate_id_hint"] == "S00_SH00_C03"
-    assert "Prior QC blocker" in payload["prompt"]
-    assert "subtitle-safe area is occupied by the fossil" in payload["prompt"]
+    assert "Prior QC blocker" not in payload["prompt"]
+    assert "subtitle-safe area is occupied by the fossil" not in payload["prompt"]
     assert "Change the failing visual evidence" in payload["prompt"]
 
 
@@ -389,7 +443,9 @@ def test_compile_prompt_uses_previous_candidate_as_targeted_edit_source(
     assert payload["generation_mode"] == "image_edit"
 
 
-def test_exhausted_prompt_allows_one_layout_strategy_reset(tmp_path) -> None:
+def test_exhausted_prompt_does_not_repair_post_composite_subtitle_layout(
+    tmp_path,
+) -> None:
     store, context, _shot = _context(tmp_path)
     manifests = context.project_dir / "manifests"
     manifests.mkdir(parents=True, exist_ok=True)
@@ -411,10 +467,10 @@ def test_exhausted_prompt_allows_one_layout_strategy_reset(tmp_path) -> None:
     ))
 
     assert payload["success"] is True
-    assert payload["strategy_reset"] is True
-    assert payload["candidate_id_hint"] == "S00_SH00_LAYOUT_C01"
-    assert payload["remaining_strategy_reset_candidates"] == 1
-    assert "Adaptive repair strategy: layout_reset" in payload["prompt"]
+    assert payload["strategy_reset"] is False
+    assert payload["candidate_id_hint"] == "S00_SH00_CONTEXT_C01"
+    assert payload["remaining_strategy_reset_candidates"] == 0
+    assert "subtitle collision" not in payload["prompt"]
 
 
 def test_compile_prompt_replans_context_after_failed_layout_reset(tmp_path) -> None:
@@ -441,7 +497,7 @@ def test_compile_prompt_replans_context_after_failed_layout_reset(tmp_path) -> N
     assert payload["success"] is True
     assert payload["repair_strategy"] == "contextual_replan"
     assert payload["candidate_id_hint"] == "S00_SH00_CONTEXT_C01"
-    assert payload["hard_blockers"] == ["subtitle collision remains"]
+    assert payload["hard_blockers"] == []
 
 
 def test_compile_prompt_reframes_scientific_evidence_after_layout_reset(
@@ -722,7 +778,9 @@ def test_next_batch_work_replans_contract_after_visual_strategies_exhausted(
     assert payload["immutable_contract"]["narration_text"] == shot["narration_text"]
     assert "subject" in payload["mutable_fields"]
     assert "intentional_scale_repeat_reason" in payload["mutable_fields"]
-    assert payload["hard_blockers"] == attempts[-1]["hard_blockers"]
+    assert payload["hard_blockers"] == []
+    assert payload["blocker_codes"] == []
+    assert "post-composite QC stage" in payload["replan_directive"]
 
 
 def test_replan_shot_contract_preserves_truth_fields_and_resets_generation(
@@ -1605,7 +1663,9 @@ def test_legacy_rejudge_falls_back_to_existing_project_local_asset(tmp_path) -> 
                         "provider": "openai-codex",
                         "candidate_path": "cache/removed.png",
                         "local_path": "images/S00_SH00.png",
-                        "quality_dimensions": {"text_alignment": 90},
+                        "quality_contract_version": 3,
+                        "quality_dimensions": _dimensions(90),
+                        "focal_point_normalized": {"x": 0.5, "y": 0.5},
                     }
                 ]
             }
@@ -1760,7 +1820,7 @@ def test_next_batch_work_rejudges_prior_clean_camera_reveal_after_bad_repair_loo
     assert payload["candidate"]["generation_prompt"] == "original camera reveal prompt"
 
 
-def test_next_batch_work_promotes_subtitle_collision_to_packaging_fallback(
+def test_next_batch_work_treats_subtitle_collision_as_post_composite_qc(
     tmp_path,
 ) -> None:
     store, context, _shot = _context(tmp_path)
@@ -1813,18 +1873,17 @@ def test_next_batch_work_promotes_subtitle_collision_to_packaging_fallback(
     )
     selected = manifest["outputs"][0]
     assert selected["selected"] is True
-    assert selected["packaging_fallback"] == {
-        "type": "adaptive_subtitle_band",
-        "subtitle_position": "top",
-        "resolved_blocker_codes": ["subtitle_collision"],
-    }
+    assert selected["packaging_fallback"] is None
     assert selected["hard_blockers"] == []
-    assert selected["image_qc_blockers"] == ["bottom subtitle band is occupied"]
-    assert selected["best_effort_quality_floor"] == 80.0
-    assert manifest["selection_events"][0]["quality_floor"] == 80.0
+    assert selected["ignored_source_image_qc_blockers"] == [
+        "bottom subtitle band is occupied"
+    ]
+    assert selected["post_composite_subtitle_qc"] is True
+    assert selected["best_effort_quality_floor"] == 75.0
+    assert manifest["selection_events"][0]["quality_floor"] == 75.0
 
 
-def test_next_batch_work_promotes_packaging_fallback_at_replanned_contract_cap(
+def test_next_batch_work_ignores_subtitle_layout_at_replanned_contract_cap(
     tmp_path,
 ) -> None:
     store, context, shot = _context(tmp_path)
@@ -1880,8 +1939,10 @@ def test_next_batch_work_promotes_packaging_fallback_at_replanned_contract_cap(
     selected = manifest["outputs"][0]
     assert selected["selected"] is True
     assert selected["status"] == "selected_current"
-    assert selected["packaging_fallback"]["subtitle_position"] == "top"
-    assert selected["image_qc_blocker_codes"] == ["subtitle_collision"]
+    assert selected["packaging_fallback"] is None
+    assert selected["ignored_source_image_qc_blocker_codes"] == [
+        "subtitle_collision"
+    ]
 
 
 def test_judge_uses_candidate_prompt_after_repair_plan_is_exhausted(tmp_path) -> None:
@@ -1974,7 +2035,7 @@ def test_judge_prefers_candidate_bound_prompt_over_mutable_repair_prompt(
     )
 
 
-def test_judge_selects_packaging_recoverable_subtitle_collision(tmp_path) -> None:
+def test_judge_ignores_subtitle_collision_for_clean_source_image_qc(tmp_path) -> None:
     store, context, _shot = _context(tmp_path)
     candidate = _candidate(context, "S00_SH00_MANUAL_C01")
     candidate["prompt"] = "Bound compiled prompt for a subtitle-layout retry."
@@ -2018,13 +2079,14 @@ def test_judge_selects_packaging_recoverable_subtitle_collision(tmp_path) -> Non
     ))
 
     assert payload["success"] is True
-    assert payload["packaging_fallback_selected"] is True
+    assert payload["packaging_fallback_selected"] is False
     manifest = json.loads(
         (manifests / "shot_candidate_manifest.json").read_text(encoding="utf-8")
     )
     selected = manifest["outputs"][0]
-    assert selected["packaging_fallback"]["subtitle_position"] == "top"
+    assert selected["packaging_fallback"] is None
     assert selected["hard_blockers"] == []
+    assert selected["blocker_codes"] == []
 
 
 def test_next_batch_work_carries_adaptive_repair_strategy(tmp_path) -> None:
@@ -2189,7 +2251,9 @@ def test_third_failed_round_reports_quality_budget_exhausted(tmp_path) -> None:
     assert payload["repair_round"] == 3
 
 
-def test_candidate_suffix_prevents_repair_round_from_resetting(tmp_path) -> None:
+def test_candidate_suffix_can_select_when_only_subtitle_layout_was_flagged(
+    tmp_path,
+) -> None:
     store, context, _shot = _context(tmp_path)
     llm = FakeLlm(
         [
@@ -2216,12 +2280,15 @@ def test_candidate_suffix_prevents_repair_round_from_resetting(tmp_path) -> None
         )
     )
 
-    assert payload["success"] is False
-    assert payload["status"] == "quality_budget_exhausted"
+    assert payload["success"] is True
+    assert payload["status"] == "selected"
+    assert payload["selected_candidate_id"] == "S00_SH00_C03"
     assert payload["repair_round"] == 3
 
 
-def test_failed_layout_strategy_reset_exhausts_after_one_candidate(tmp_path) -> None:
+def test_layout_strategy_candidate_is_selected_when_only_subtitle_layout_was_flagged(
+    tmp_path,
+) -> None:
     store, context, _shot = _context(tmp_path)
     candidate = _candidate(context, "S00_SH00_LAYOUT_C01")
     candidate["strategy_reset"] = True
@@ -2248,12 +2315,13 @@ def test_failed_layout_strategy_reset_exhausts_after_one_candidate(tmp_path) -> 
         llm=llm,
     ))
 
-    assert payload["success"] is False
-    assert payload["status"] == "quality_budget_exhausted"
+    assert payload["success"] is True
+    assert payload["status"] == "selected"
     manifest = json.loads(
         (context.project_dir / "manifests" / "shot_candidate_manifest.json").read_text()
     )
     assert manifest["outputs"][0]["strategy_reset"] is True
+    assert manifest["outputs"][0]["hard_blockers"] == []
 
 
 def test_clean_final_semantic_candidate_is_selected_at_bounded_floor(tmp_path) -> None:
@@ -2401,6 +2469,7 @@ def test_prepare_render_writes_exact_renderer_v2_contract(tmp_path) -> None:
     audio.write_bytes(b"narration")
     manifests = context.project_dir / "manifests"
     manifests.mkdir(parents=True, exist_ok=True)
+    _release_cards(context)
     (manifests / "shot_candidate_manifest.json").write_text(
         json.dumps(
             {
@@ -2413,6 +2482,7 @@ def test_prepare_render_writes_exact_renderer_v2_contract(tmp_path) -> None:
                         "status": "selected_current",
                         "local_path": "images/S00_SH00.png",
                         "provider": "openai-codex",
+                        "focal_point_normalized": {"x": 0.72, "y": 0.41},
                         "final_qc_review_required": True,
                         "auto_terminal_fallback": {
                             "type": "continuity_hold",
@@ -2459,9 +2529,12 @@ def test_prepare_render_writes_exact_renderer_v2_contract(tmp_path) -> None:
     )
     assert render_input["schema"] == "story_video_render_input_v2"
     assert render_input["resolution"] == {"width": 1920, "height": 1080}
-    assert render_input["post_speech_hold_sec"] == 0.85
-    assert render_input["max_post_speech_hold_sec"] == 1.5
-    assert render_input["zoom_max"] == 1.025
+    assert render_input["post_speech_hold_sec"] == 0.18
+    assert render_input["max_post_speech_hold_sec"] == 0.6
+    assert render_input["motion_policy"] == "cinematic_focus_push"
+    assert render_input["zoom_max"] == 1.1
+    assert render_input["subtitle"]["position"] == "bottom"
+    assert render_input["subtitle"]["production_stage"] == "post_composite"
     scene = render_input["scenes"][0]
     assert scene["selected"] is True
     assert scene["audio"] == "audio/qwen/S00.wav"
@@ -2471,21 +2544,208 @@ def test_prepare_render_writes_exact_renderer_v2_contract(tmp_path) -> None:
         "selected": True,
         "image": "images/S00_SH00.png",
         "narration": "直立腿讓早期恐龍移動得更有效率。",
-        "subtitle_position": "top",
+        "subtitle_position": "bottom",
+        "focus_end": {"x": 0.72, "y": 0.41},
         "final_qc_review_required": True,
         "auto_terminal_fallback": {
             "type": "continuity_hold",
             "source_shot_id": "S00_SH_PREV",
         },
     }
-    assert render_input["opening_card"]["image"] == "images/S00_SH00.png"
-    assert render_input["opening_card"]["duration_sec"] == 2.0
-    assert render_input["ending_card"]["image"] == "images/S00_SH00.png"
+    assert render_input["opening_card"]["image"] == "release_art/opening_card.png"
+    assert render_input["opening_card"]["duration_sec"] == 3.0
+    assert render_input["ending_card"]["image"] == "release_art/ending_card.png"
     assert render_input["ending_card"]["duration_sec"] == 5.0
+
+
+def test_release_art_actions_compile_cinematic_prompt_and_compose_cards(tmp_path) -> None:
+    store, context, _shot = _context(tmp_path)
+
+    compiled = json.loads(
+        story_video_quality_control(
+            {"action": "compile_release_art"},
+            session_id="session-1",
+            store=store,
+        )
+    )
+
+    assert compiled["success"] is True
+    assert compiled["provider"] == "openai-codex"
+    assert "cinematic hero image" in compiled["prompt"].lower()
+    assert "no generated text" in compiled["prompt"].lower()
+    source = context.project_dir / "images_candidates" / "RELEASE_HERO_C01.png"
+    source.parent.mkdir(parents=True)
+    Image.new("RGB", (1280, 720), (23, 71, 102)).save(source)
+
+    registered = json.loads(
+        story_video_quality_control(
+            {
+                "action": "register_release_art",
+                "release_art_candidate": {
+                    "path": str(source),
+                    "provider": "openai-codex",
+                    "model": "gpt-image-2-high",
+                    "response_id": "img_release_01",
+                },
+            },
+            session_id="session-1",
+            store=store,
+        )
+    )
+
+    assert registered["success"] is True
+    for relative in (
+        "release_art/hero_source.png",
+        "release_art/opening_card.png",
+        "release_art/ending_card.png",
+        "release_art/thumbnail.jpg",
+        "manifests/release_art_manifest.json",
+    ):
+        assert (context.project_dir / relative).is_file()
+    manifest = json.loads(
+        (context.project_dir / "manifests" / "release_art_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["provider"] == "openai-codex"
+    assert manifest["response_id"] == "img_release_01"
+    assert manifest["status"] == "PASS"
+    assert manifest["run_id"] == context.run_id
+
+
+def test_register_release_art_rejects_non_openai_source(tmp_path) -> None:
+    store, context, _shot = _context(tmp_path)
+    source = context.project_dir / "candidate.png"
+    Image.new("RGB", (1280, 720), "black").save(source)
+
+    payload = json.loads(
+        story_video_quality_control(
+            {
+                "action": "register_release_art",
+                "release_art_candidate": {
+                    "path": str(source),
+                    "provider": "xai",
+                },
+            },
+            session_id="session-1",
+            store=store,
+        )
+    )
+
+    assert payload["success"] is False
+    assert "OpenAI" in payload["error"]
+
+
+def test_prepare_render_fails_closed_without_dedicated_release_art(tmp_path) -> None:
+    store, context, _shot = _context(tmp_path)
+    image = context.project_dir / "images" / "S00_SH00.png"
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b"selected-image")
+    audio = context.project_dir / "audio" / "qwen" / "S00.wav"
+    audio.parent.mkdir(parents=True)
+    audio.write_bytes(b"narration")
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps(
+            {
+                "outputs": [
+                    {
+                        "shot_id": "S00_SH00",
+                        "selected": True,
+                        "local_path": "images/S00_SH00.png",
+                        "provider": "openai-codex",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (manifests / "narration_manifest.json").write_text(
+        json.dumps(
+            {
+                "provider": "local_qwen",
+                "outputs": [
+                    {
+                        "scene_id": "S00",
+                        "audio": str(audio),
+                        "display_text": "直立腿讓早期恐龍移動得更有效率。",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        story_video_quality_control(
+            {"action": "prepare_render"},
+            session_id="session-1",
+            store=store,
+        )
+    )
+
+    assert payload["success"] is False
+    assert "dedicated release art" in payload["error"]
+
+
+def test_prepare_render_rejects_release_art_from_stale_run(tmp_path) -> None:
+    store, context, _shot = _context(tmp_path)
+    _release_cards(context)
+    manifest_path = context.project_dir / "manifests" / "release_art_manifest.json"
+    release_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    release_manifest["run_id"] = "stale-run"
+    manifest_path.write_text(json.dumps(release_manifest), encoding="utf-8")
+    image = context.project_dir / "images" / "S00_SH00.png"
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b"selected-image")
+    audio = context.project_dir / "audio" / "qwen" / "S00.wav"
+    audio.parent.mkdir(parents=True)
+    audio.write_bytes(b"narration")
+    manifests = context.project_dir / "manifests"
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps(
+            {
+                "outputs": [
+                    {
+                        "shot_id": "S00_SH00",
+                        "selected": True,
+                        "local_path": "images/S00_SH00.png",
+                        "provider": "openai-codex",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (manifests / "narration_manifest.json").write_text(
+        json.dumps(
+            {
+                "outputs": [
+                    {
+                        "scene_id": "S00",
+                        "audio": "audio/qwen/S00.wav",
+                        "display_text": "旁白",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        story_video_quality_control(
+            {"action": "prepare_render"}, session_id="session-1", store=store
+        )
+    )
+
+    assert payload["success"] is False
+    assert "stale" in payload["error"].lower()
 
 
 def test_prepare_render_copies_verified_segment_timing_to_matching_shot(tmp_path) -> None:
     store, context, _shot = _context(tmp_path)
+    _release_cards(context)
     image = context.project_dir / "images" / "S00_SH00.png"
     image.parent.mkdir(parents=True)
     image.write_bytes(b"selected-image")
@@ -2554,6 +2814,7 @@ def test_prepare_render_copies_verified_segment_timing_to_matching_shot(tmp_path
 
 def test_prepare_render_uses_verified_semantic_shot_groups(tmp_path) -> None:
     store, context, first_shot = _context(tmp_path)
+    _release_cards(context)
     second_shot = {
         **first_shot,
         "shot_id": "S00_SH01",
@@ -2657,9 +2918,10 @@ def test_prepare_render_uses_verified_semantic_shot_groups(tmp_path) -> None:
             "shot_id": "S00_SH00__S00_SH01",
             "selected": True,
             "image": "images/S00_SH01.png",
-            "narration": (
-                "直立腿讓早期恐龍移動得更有效率。牠的步態也更有效率。"
-            ),
+                "narration": (
+                    "直立腿讓早期恐龍移動得更有效率。牠的步態也更有效率。"
+                ),
+                "subtitle_position": "bottom",
             "source_shot_ids": ["S00_SH00", "S00_SH01"],
             "representative_shot_id": "S00_SH01",
             "timeline_duration_sec": 7.25,
@@ -2692,10 +2954,7 @@ def test_prepare_render_prefers_branded_release_cards(tmp_path) -> None:
     audio = context.project_dir / "audio" / "qwen" / "S00.wav"
     audio.parent.mkdir(parents=True)
     audio.write_bytes(b"narration")
-    release_art = context.project_dir / "release_art"
-    release_art.mkdir(parents=True)
-    (release_art / "opening_card.png").write_bytes(b"opening")
-    (release_art / "ending_card.png").write_bytes(b"ending")
+    _release_cards(context)
     manifests = context.project_dir / "manifests"
     manifests.mkdir(parents=True, exist_ok=True)
     (manifests / "shot_candidate_manifest.json").write_text(
@@ -2720,10 +2979,12 @@ def test_prepare_render_prefers_branded_release_cards(tmp_path) -> None:
     assert render_input["opening_card"] == {
         "title": context.topic,
         "image": "release_art/opening_card.png",
-        "duration_sec": 2.0,
+        "duration_sec": 3.0,
+        "precomposed": True,
     }
     assert render_input["ending_card"] == {
         "title": "探索仍在繼續",
         "image": "release_art/ending_card.png",
         "duration_sec": 5.0,
+        "precomposed": True,
     }

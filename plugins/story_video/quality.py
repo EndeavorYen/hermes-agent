@@ -7,6 +7,7 @@ from typing import Any
 from .engagement import (
     compile_engagement_directives,
     engagement_contract_enabled,
+    is_subtitle_packaging_constraint,
     validate_engagement_ledger,
 )
 
@@ -32,14 +33,15 @@ REQUIRED_SHOT_FIELDS = (
     "risk_class",
 )
 DIMENSION_WEIGHTS = {
-    "text_alignment": 20.0,
-    "focal_clarity": 15.0,
-    "evidence_specificity": 12.0,
-    "professional_quality": 12.0,
+    "text_alignment": 17.0,
+    "focal_clarity": 13.0,
+    "evidence_specificity": 10.0,
+    "professional_quality": 10.0,
     "scientific_credibility": 10.0,
-    "continuity_and_diversity": 9.0,
+    "continuity_and_diversity": 7.0,
     "narrative_engagement": 11.0,
-    "story_moment_clarity": 11.0,
+    "story_moment_clarity": 10.0,
+    "cinematic_impact": 12.0,
 }
 
 
@@ -219,6 +221,25 @@ def _scale_instruction(scale: str) -> str:
     return mapping.get(scale, mapping["medium"])
 
 
+def _cinematic_instruction(shot: dict[str, Any]) -> str:
+    energy = _text(shot.get("composition_energy") or "curious").lower()
+    energy_direction = {
+        "calm": "controlled stillness with monumental scale and a precise visual reveal",
+        "curious": "discovery tension with a strong visual question and a rewarding reveal",
+        "tense": "compressed visual tension at the decisive instant, without inventing danger",
+        "kinetic": "directional action, suspended particles, and a clearly readable consequence",
+        "awe": "monumental scale, atmospheric depth, and a subject that feels larger than the frame",
+    }.get(energy, "discovery tension with a decisive visible reveal")
+    return (
+        "Cinematic factual reconstruction: build a bold foreground, midground, and "
+        "background hierarchy with one dominant subject or evidence detail; use "
+        "asymmetry, leading lines, selective depth of field, motivated dramatic light, "
+        f"and {energy_direction}. Controlled exaggeration may intensify perspective, "
+        "lighting, atmosphere, and apparent scale, but must never alter the factual "
+        "claim, anatomy, evidence, or causal relationship."
+    )
+
+
 def compile_shot_prompt(
     *,
     ledger: dict[str, Any],
@@ -227,12 +248,12 @@ def compile_shot_prompt(
 ) -> str:
     shot_type = _text(shot.get("shot_type") or "single_camera")
     scale = _text(shot.get("shot_scale") or "medium").lower()
-    style = _text(ledger.get("visual_style")) or "professional documentary photography"
+    style = _text(ledger.get("visual_style")) or "cinematic factual reconstruction"
     setting = _text(scene.get("setting")) or "context appropriate to the spoken claim"
     acceptance = "; ".join(
         _text(item)
         for item in shot.get("acceptance_criteria") or []
-        if _text(item)
+        if _text(item) and not is_subtitle_packaging_constraint(item)
     )
     if shot_type in {"comparison", "diagram_background", "recap_comparison"}:
         composition = (
@@ -256,13 +277,14 @@ def compile_shot_prompt(
         f"Evidence that must be readable: {_text(shot.get('evidence_detail'))}.",
         *engagement_parts,
         f"Shot design: {_scale_instruction(scale)}; camera angle: {_text(shot.get('camera_angle'))}; focal point: {_text(shot.get('focal_point'))}.",
+        _cinematic_instruction(shot),
         composition,
         f"Subordinate setting: {setting}.",
-        f"Visual style: {style}; professional natural light, credible materials, coherent anatomy and geometry, 16:9 landscape.",
+        f"Visual style: {style}; cinematic color separation, credible materials, coherent anatomy and geometry, 16:9 landscape.",
         f"Continuity anchors: {_text(shot.get('continuity_anchors')) or 'preserve the approved subject, period, palette, and environment logic'}.",
-        f"Composition safety: {_text(shot.get('subtitle_safe_area'))}; keep the focal evidence outside the subtitle band.",
+        "Use an edge-to-edge composition and judge the clean source image on its own; subtitles are added only during post-composite rendering, so do not reserve an empty subtitle area.",
         f"Acceptance criteria: {acceptance}." if acceptance else "",
-        "No generated text, labels, captions, watermark, logo, modern contamination, glossy toy/CGI look, malformed anatomy, or irrelevant spectacle.",
+        "Reject a generic stock documentary, museum-catalog, empty landscape, or passive specimen composition. No generated text, labels, captions, watermark, logo, modern contamination, glossy toy/CGI look, malformed anatomy, or irrelevant spectacle.",
     )
     return " ".join(part for part in parts if part)
 
