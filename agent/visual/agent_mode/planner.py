@@ -124,7 +124,6 @@ _COMPOSITION_GUIDE_ONLY_TOKENS = (
     "composition guide",
     "layout guide",
     "composition candidate",
-    "pose candidate",
     "composition study",
     "先產構圖",
     "先产构图",
@@ -837,10 +836,26 @@ def planned_candidate_budget(
     composition_guide_only: bool,
 ) -> tuple[int, str]:
     text = str(value or "")
-    if re.search(r"\b(?:one|single|1)\b\s+[^.\n]{0,80}\b(?:candidate|option|guide|composition)", text, re.IGNORECASE):
+    if re.search(
+        r"\b(?:one|single)\b\s+[^.\n]{0,80}\b(?:candidate|option|guide|composition)",
+        text,
+        re.IGNORECASE,
+    ) or re.search(
+        r"\b1\s+(?:candidate|option|guide|composition|image)\b",
+        text,
+        re.IGNORECASE,
+    ):
         return 1, "user"
     if re.search(r"(?:一|1)\s*(?:張|张)", text):
         return 1, "user"
+    match = re.search(
+        r"\b(?:create|generate|make|produce|return)\s+(?:exactly\s+)?([2-4])\b"
+        r"[^.\n]{0,80}\b(?:candidates?|options?|images?)\b",
+        text,
+        re.IGNORECASE,
+    )
+    if match:
+        return int(match.group(1)), "user"
     match = re.search(r"([2-4])\s*(?:張|张|個|个|candidates?|options?)", text, re.IGNORECASE)
     if match:
         return max(2, min(4, int(match.group(1)))), "user"
@@ -935,6 +950,12 @@ def _explicit_image_output_requested(value: str) -> bool:
         "image output",
     )
     if any(pattern in lowered for pattern in english_patterns):
+        return True
+    if re.search(
+        r"\b(?:create|generate|make|produce|return|deliver)\b"
+        r"[^.\n]{0,120}\b(?:final\s+)?(?:images|pictures|illustrations)\b",
+        lowered,
+    ):
         return True
     chinese_patterns = (
         "產出圖片",
