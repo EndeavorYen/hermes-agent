@@ -37,6 +37,23 @@ def test_voice_executor_is_idempotent_when_current_manifest_passes(tmp_path) -> 
     assert calls == []
 
 
+def test_voice_executor_preserves_virtualenv_python_symlink(tmp_path) -> None:
+    base_python = tmp_path / "base-python"
+    base_python.write_text("runtime", encoding="utf-8")
+    venv_python = tmp_path / "venv-python"
+    venv_python.symlink_to(base_python)
+
+    executor = StoryVideoVoiceExecutor(
+        command_runner=lambda _command, _cancel: CommandResult(returncode=0),
+        phase_validator=lambda _context: _proof(ok=True),
+        python_path=venv_python,
+        script_path=tmp_path / "generate.py",
+    )
+
+    assert executor.python_path == venv_python
+    assert executor.python_path != base_python.resolve()
+
+
 def test_voice_executor_retries_one_transient_mlx_abort_then_passes(tmp_path) -> None:
     context = _context(tmp_path)
     python = tmp_path / "python"

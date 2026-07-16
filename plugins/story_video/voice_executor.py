@@ -92,7 +92,8 @@ class StoryVideoVoiceExecutor:
     ) -> None:
         self.phase_validator = phase_validator
         self.command_runner = command_runner
-        self.python_path = Path(python_path).expanduser().resolve()
+        # Preserve venv launchers: resolving their symlink bypasses site-packages.
+        self.python_path = Path(python_path).expanduser().absolute()
         self.script_path = Path(script_path).expanduser().resolve()
 
     def run(
