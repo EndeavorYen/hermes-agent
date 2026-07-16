@@ -1424,6 +1424,11 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                     str(prompt_variant.get("prompt") or image_generation_prompt_base),
                     reference_conditioning,
                 )
+            image_generation_prompt = _single_candidate_generation_prompt(
+                image_generation_prompt,
+                candidate_index=candidate_index,
+                candidate_budget=effective_candidate_budget,
+            )
             provider_image_generation_prompt = build_provider_facing_visual_prompt(
                 image_generation_prompt,
                 provider=image_provider_override,
@@ -2934,6 +2939,55 @@ def _prompt_variant_for_candidate(
         "applied_dimensions": [],
         "atom_signatures": [],
     }
+
+
+def _single_candidate_generation_prompt(
+    prompt: str,
+    *,
+    candidate_index: int,
+    candidate_budget: int,
+) -> str:
+    if candidate_budget <= 1:
+        return prompt
+    singular = re.sub(
+        r"\b(create|generate|make|produce|return|deliver)\s+"
+        r"(?:exactly\s+)?(?:[2-9]|two|three|four)\b",
+        lambda match: f"{match.group(1)} exactly one",
+        str(prompt or ""),
+        flags=re.IGNORECASE,
+    )
+    singular = re.sub(
+        r"\buse\s+(?:[2-9]|two|three|four)\s+(?:clearly\s+)?different\s+",
+        "Use one distinct ",
+        singular,
+        flags=re.IGNORECASE,
+    )
+    singular = re.sub(
+        r"((?:產出|生成|製作|制作|給我|给我|回傳|回传|上傳|上传)\s*)"
+        r"(?:[2-9]|二|兩|两|三|四)\s*(?:張|张|個|个)",
+        r"\g<1>1 張",
+        singular,
+    )
+    directive = (
+        f"Provider batch candidate {candidate_index + 1} of {candidate_budget}. "
+        "Generate exactly ONE image in this call. The orchestration layer generates "
+        "the other candidates separately. Do not generate multiple images, multiple "
+        "files, a grid, a collage, a contact sheet, or a variant set in this call. "
+        "Make this one candidate visually distinct from the references and other batch "
+        "candidates while preserving every subject and safety constraint."
+    )
+    if re.search(r"\bposes?\b|姿勢|姿势|動作|动作", singular, re.IGNORECASE):
+        pose_lanes = (
+            "a grounded three-quarter standing pose with one hand visibly supported on a nearby surface and both feet separated",
+            "a supported seated or perched pose with both hands visible, both feet clearly supported, and no crossed or overlapping legs",
+            "a controlled mid-step or turning pose with one hand touching a scene element and every limb clearly separated",
+            "a supported lean against a scene element with uncrossed arms and legs, complete hands, and both shoes visible",
+        )
+        directive += (
+            f" Pose diversity lane: {pose_lanes[candidate_index % len(pose_lanes)]}; "
+            "use a different camera height and limb layout from the references."
+        )
+    return f"{directive}\n\n{singular}".strip()
 
 
 def _should_apply_arsenal_prompt_variants(
