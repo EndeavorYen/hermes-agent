@@ -3200,6 +3200,10 @@ def test_prepare_render_rejects_release_art_from_stale_run(tmp_path) -> None:
 def test_prepare_render_copies_verified_segment_timing_to_matching_shot(tmp_path) -> None:
     store, context, _shot = _context(tmp_path)
     _release_cards(context)
+    ledger_path = context.project_dir / "scene_ledger.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    ledger["scenes"][0]["scene_id"] = "SC00"
+    ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
     image = context.project_dir / "images" / "S00_SH00.png"
     image.parent.mkdir(parents=True)
     image.write_bytes(b"selected-image")
@@ -3288,6 +3292,7 @@ def test_prepare_render_copies_verified_segment_timing_to_matching_shot(tmp_path
     render_input = json.loads(
         (context.project_dir / "render_input.json").read_text(encoding="utf-8")
     )
+    assert render_input["scenes"][0]["scene_id"] == "SC00"
     assert render_input["scenes"][0]["shots"][0]["timeline_duration_sec"] == 4.37
     assert render_input["scenes"][0]["shots"][0]["speech_end_sec"] == 4.19
     assert render_input["scenes"][0]["shots"][0]["subtitle_timing_source"] == (
