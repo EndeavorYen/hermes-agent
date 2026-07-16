@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from agent.visual.agent_mode.planner import _requests_visual_polish
-from agent.visual.agent_mode.planner import plan_visual_agent_request
+from agent.visual.agent_mode.planner import plan_visual_agent_request, planned_candidate_budget
 from agent.visual.prompt_text import strip_visual_prompt_metadata
 from agent.visual.session_references import filter_visual_reference_entries_for_prompt
 from agent.visual.session_references import prompt_requests_visual_reference_reuse
@@ -125,6 +125,17 @@ def build_direct_visual_agent_handoff(
         arguments["include_video"] = False
         arguments.setdefault("candidate_budget", 2)
         arguments.setdefault("candidate_budget_source", "planner_default")
+        if (
+            _is_current_result_regenerate_request(prompt)
+            and arguments.get("candidate_budget_source") == "planner_default"
+        ):
+            inherited_budget, inherited_source = planned_candidate_budget(
+                raw_prompt,
+                composition_guide_only=False,
+            )
+            if inherited_source == "user":
+                arguments["candidate_budget"] = inherited_budget
+                arguments["candidate_budget_source"] = "thread_context"
         arguments["reference_binding"] = _session_reference_binding(session_reference_entries)
         arguments["prompt"] = _prompt_with_session_edit_context(prompt, session_reference_entries)
     contract = dict(plan.get("provider_contract") or {})
@@ -280,7 +291,13 @@ def _is_current_result_regenerate_request(prompt: str) -> bool:
         "redo",
         "try again",
         "重新產生",
+        "重新產出",
+        "再產出",
+        "重新出圖",
         "重新生成",
+        "重新产出",
+        "再产出",
+        "重新出图",
         "再生成",
         "重試",
         "重试",
