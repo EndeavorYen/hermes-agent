@@ -25,6 +25,7 @@ _DIRECT_VISUAL_PACKAGE_OVERRIDE_KEYS = frozenset(
         "autonomy_level",
         "candidate_budget",
         "candidate_budget_source",
+        "deliver_candidate_options",
         "duration",
         "execution_deadline_seconds",
         "grok_web_operation",

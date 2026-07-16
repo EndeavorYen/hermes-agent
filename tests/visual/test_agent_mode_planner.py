@@ -311,6 +311,7 @@ def test_agent_mode_planner_keeps_final_pose_candidates_as_final_images():
     assert plan["should_use_visual_package"] is True
     assert plan["arguments"]["include_image"] is True
     assert plan["arguments"]["candidate_budget"] == 4
+    assert plan["arguments"]["deliver_candidate_options"] is True
     assert plan["arguments"]["image_provider"] == "xai"
     assert plan["arguments"]["image_provider_source"] == "prompt_override"
     assert "composition_guide_only" not in plan["arguments"]

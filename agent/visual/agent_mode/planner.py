@@ -239,6 +239,8 @@ def plan_visual_agent_request(
         )
         arguments["candidate_budget"] = candidate_budget
         arguments["candidate_budget_source"] = candidate_budget_source
+        if wants_image and candidate_budget > 1 and candidate_budget_source == "user":
+            arguments["deliver_candidate_options"] = True
     if wants_video:
         arguments["video_budget"] = 1
     if character_design_ref_only:

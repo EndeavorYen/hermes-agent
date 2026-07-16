@@ -364,6 +364,13 @@ VISUAL_PACKAGE_SCHEMA: dict[str, Any] = {
                     "direct package calls retain their existing default."
                 ),
             },
+            "deliver_candidate_options": {
+                "type": "boolean",
+                "description": (
+                    "Deliver all current ranked image candidates when the user explicitly "
+                    "requested multiple options for selection."
+                ),
+            },
             "include_image": {
                 "type": "boolean",
                 "description": (
@@ -1016,6 +1023,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
     character_design_ref_only = _coerce_bool(args.get("character_design_ref_only"))
     composition_guide_only = _coerce_bool(args.get("composition_guide_only"))
     hybrid_final_combine = _coerce_bool(args.get("hybrid_final_combine"))
+    deliver_candidate_options = _coerce_bool(args.get("deliver_candidate_options"))
     aspect_ratio = _visual_package_aspect_ratio(args, attachments, reference_binding)
     image_aspect_ratio = _image_tool_aspect_ratio(aspect_ratio)
     duration = _coerce_int(args.get("duration")) or 6
@@ -2355,7 +2363,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                         image_candidates,
                         image_decision.ranked_artifact_ids,
                     )
-                    if composition_guide_only
+                    if composition_guide_only or deliver_candidate_options
                     else [selected_image]
                 )
                 for deliverable_image in deliverable_images:
@@ -2706,6 +2714,8 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         extra_generation_strategy["character_design_ref_only"] = True
     if composition_guide_only:
         extra_generation_strategy["composition_guide_only"] = True
+    if deliver_candidate_options:
+        extra_generation_strategy["deliver_candidate_options"] = True
     if hybrid_final_combine:
         extra_generation_strategy["hybrid_final_combine"] = True
         if hybrid_quality_gate_metadata is not None:

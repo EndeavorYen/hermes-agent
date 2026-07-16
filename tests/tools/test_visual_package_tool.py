@@ -793,6 +793,58 @@ def test_visual_package_composition_guide_only_ranks_best_pose_candidate(
     assert payload["delivery_metadata"]["visual_artifacts"][str(weak)]["artifact_role"] == "pose_composition_ref"
 
 
+def test_visual_package_delivers_ranked_final_candidate_options_when_requested(
+    monkeypatch,
+    tmp_path,
+):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    weak = tmp_path / "weak-final.png"
+    strong = tmp_path / "strong-final.png"
+    weak.write_bytes(_ONE_PIXEL_PNG)
+    strong.write_bytes(_ONE_PIXEL_PNG + b"strong")
+    image_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        image_path = weak if len(image_calls) == 1 else strong
+        score = 0.55 if len(image_calls) == 1 else 0.92
+        return {
+            "success": True,
+            "image": str(image_path),
+            "provider": "xai",
+            "model": "grok-build-native-image",
+            "vision_observation": {
+                "visual_appeal": score,
+                "composition": score,
+                "face_quality": score,
+                "anatomy_quality": score,
+                "confidence": 0.9,
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "Create 2 final pose candidates and return both for user selection.",
+                "include_image": True,
+                "include_video": False,
+                "image_provider": "xai",
+                "candidate_budget": 2,
+                "deliver_candidate_options": True,
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["images"] == [str(strong), str(weak)]
+    assert len(payload["delivery_metadata"]["selected_visual_artifact_ids"]) == 2
+    assert payload["generation_strategy"]["deliver_candidate_options"] is True
+
+
 def test_visual_package_category_treats_openai_composition_as_composition_guide():
     from tools import visual_package_tool
 
