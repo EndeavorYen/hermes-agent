@@ -189,6 +189,22 @@ class TestGenerate:
             workdir=workdir,
         ) == str(image.resolve())
 
+    def test_grok_build_does_not_reuse_unbound_workdir_image(self, tmp_path):
+        from plugins.image_gen.xai import _extract_grok_build_image
+
+        workdir = tmp_path / "work"
+        stale_image = workdir / "images" / "1.jpg"
+        stale_image.parent.mkdir(parents=True)
+        stale_image.write_bytes(b"stale image")
+        stdout = json.dumps(
+            {
+                "sessionId": "019f6c47-6ffd-7a70-8acf-b14c53822113",
+                "structuredOutput": {"image_path": "images/1.jpg"},
+            }
+        )
+
+        assert _extract_grok_build_image(stdout, workdir=workdir) is None
+
     def test_grok_build_resolves_url_encoded_vscode_file_link(self, tmp_path):
         from urllib.parse import quote
 

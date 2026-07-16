@@ -255,7 +255,6 @@ def _extract_grok_build_image(
                 / "sessions"
                 / quote(str(workdir.resolve()), safe="")
                 / session_id,
-                workdir.resolve(),
             )
             for candidate in candidates:
                 relative = Path(str(candidate).strip())
