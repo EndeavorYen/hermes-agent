@@ -355,7 +355,12 @@ visual agent : 用原本的ref, 再產2張不同姿勢的圖"""
                     "function": {
                         "name": "visual_agent_generate",
                         "arguments": json.dumps(
-                            {"attachments": ["/tmp/original-locked-ref.png"]}
+                            {
+                                "attachments": [
+                                    "/tmp/original-locked-ref.png",
+                                    "/tmp/generated-last-turn.png",
+                                ]
+                            }
                         ),
                     },
                 }

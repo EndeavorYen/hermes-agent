@@ -1682,7 +1682,7 @@ def _visual_reference_context_for_turn(
     if requests_original:
         historical = collect_recent_original_visual_reference_entries(
             agent_history,
-            limit=MAX_SESSION_VISUAL_REFERENCES,
+            limit=1,
         )
     else:
         historical = collect_recent_visual_reference_entries(
