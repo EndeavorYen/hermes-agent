@@ -199,6 +199,93 @@ def test_codex_app_server_executes_direct_xai_handoff_before_runtime(monkeypatch
     assert dispatched["args"]["candidate_budget"] == 4
 
 
+def test_codex_app_server_routes_slack_regenerate_output_through_visual_tool(monkeypatch):
+    import agent.conversation_loop as conversation_loop
+    from gateway.session_context import reset_visual_reference_context, set_visual_reference_context
+    from tools.registry import registry
+
+    agent = _FakeAgent()
+    agent.api_mode = "codex_app_server"
+    dispatched = {}
+
+    def fail_codex_runtime(**_kwargs):
+        raise AssertionError("Slack visual regeneration must bypass Codex app-server")
+
+    agent._run_codex_app_server_turn = fail_codex_runtime
+    user_message = (
+        '[Replying to: "用 xai imagine，locked ref 人物，產出類似但不同姿勢，'
+        '給我 4 張挑選"]\n\n'
+        "[Thread context — prior messages in this thread (not yet in conversation history):]\n"
+        "[thread parent] simon: 用 xai imagine，locked ref 人物，產出類似但不同姿勢，給我 4 張挑選\n"
+        "[End of thread context]\n\n"
+        "請重新產出"
+    )
+
+    def fake_build_turn_context(*_args, **_kwargs):
+        return SimpleNamespace(
+            user_message=user_message,
+            original_user_message=user_message,
+            messages=[{"role": "user", "content": user_message}],
+            conversation_history=[],
+            active_system_prompt="",
+            effective_task_id="task-slack-regenerate",
+            turn_id="turn-slack-regenerate",
+            current_turn_user_idx=0,
+            should_review_memory=False,
+            plugin_user_context="",
+            ext_prefetch_cache=None,
+            raphael_decision={
+                "mode": "visual_agent_generation",
+                "completion_policy": "visual",
+                "route": {},
+                "runtime_contract": {},
+            },
+        )
+
+    def fake_dispatch(name, args, **_kwargs):
+        dispatched["name"] = name
+        dispatched["args"] = dict(args)
+        return json.dumps(
+            {
+                "success": True,
+                "package_status": "completed",
+                "images": ["/tmp/current-regenerated.png"],
+                "videos": [],
+                "selected_artifact": "/tmp/current-regenerated.png",
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr(conversation_loop, "build_turn_context", fake_build_turn_context)
+    monkeypatch.setattr(registry, "dispatch", fake_dispatch)
+    token = set_visual_reference_context(
+        [
+            {
+                "uri": "/tmp/locked-character.png",
+                "role_hint": "character_identity",
+                "source": "previous_tool_reference",
+                "user_ref_index": 1,
+            }
+        ]
+    )
+    try:
+        result = conversation_loop.run_conversation(agent, "ignored by fake context")
+    finally:
+        reset_visual_reference_context(token)
+
+    assert result["api_calls"] == 0
+    assert result["turn_exit_reason"] == "direct_visual_agent_handoff"
+    assert dispatched["name"] == "visual_agent_generate"
+    assert dispatched["args"]["image_provider"] == "xai"
+    assert dispatched["args"]["attachments"] == ["/tmp/locked-character.png"]
+    assert dispatched["args"]["candidate_budget"] == 4
+    tool_results = [msg for msg in result["messages"] if msg.get("role") == "tool"]
+    assert len(tool_results) == 1
+    payload = json.loads(tool_results[0]["content"])
+    assert payload["selected_artifact"] == "/tmp/current-regenerated.png"
+    assert payload["direct_visual_agent_handoff"]["mode"] == "pre_llm_direct"
+
+
 def test_gateway_attachment_context_reaches_visual_handoff_consumer():
     from gateway.run import _run_conversation_with_visual_reference_context
     from gateway.session_context import get_visual_reference_context_entries

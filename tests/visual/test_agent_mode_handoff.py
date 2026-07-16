@@ -1322,6 +1322,50 @@ def test_direct_visual_handoff_routes_grok_web_alias_regenerate_to_xai():
     assert args["attachments"] == ["/tmp/previous-selected.png"]
 
 
+def test_direct_visual_handoff_routes_traditional_chinese_regenerate_output_to_xai():
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+    from gateway.session_context import reset_visual_reference_context, set_visual_reference_context
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.6-sol",
+    )
+    token = set_visual_reference_context(
+        [
+            {
+                "uri": "/tmp/locked-character.png",
+                "role_hint": "character_identity",
+                "source": "previous_tool_reference",
+                "user_ref_index": 1,
+            }
+        ]
+    )
+    try:
+        handoff = build_direct_visual_agent_handoff(
+            agent,
+            (
+                '[Replying to: "用 xai imagine，locked ref 人物，產出類似但不同姿勢，'
+                '給我 4 張挑選"]\n\n'
+                "[Thread context — prior messages in this thread (not yet in conversation history):]\n"
+                "[thread parent] simon: 用 xai imagine，locked ref 人物，產出類似但不同姿勢，給我 4 張挑選\n"
+                "[End of thread context]\n\n"
+                "請重新產出"
+            ),
+        )
+    finally:
+        reset_visual_reference_context(token)
+
+    assert handoff is not None
+    args = handoff["arguments"]
+    assert args["image_provider"] == "xai"
+    assert args["attachments"] == ["/tmp/locked-character.png"]
+    assert args["include_image"] is True
+    assert args["include_video"] is False
+    assert args["candidate_budget"] == 4
+    assert args["candidate_budget_source"] == "thread_context"
+
+
 def test_direct_visual_handoff_promotes_current_attachment_for_direct_xai_polish():
     from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
 

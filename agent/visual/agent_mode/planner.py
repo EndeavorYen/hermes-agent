@@ -234,7 +234,7 @@ def plan_visual_agent_request(
             "edit_anchor": False,
         }
     if wants_image or image_first_for_video:
-        candidate_budget, candidate_budget_source = _planned_candidate_budget(
+        candidate_budget, candidate_budget_source = planned_candidate_budget(
             prompt,
             composition_guide_only=composition_guide_only,
         )
@@ -831,7 +831,7 @@ def _looks_like_hybrid_final_combine_request(value: str) -> bool:
     )
 
 
-def _planned_candidate_budget(
+def planned_candidate_budget(
     value: str,
     *,
     composition_guide_only: bool,
