@@ -199,6 +199,27 @@ def _build_server() -> Any:
 
     exposed_count = 0
 
+    def _attach_authoritative_schema(tool_name: str, schema: dict[str, Any]) -> None:
+        from pydantic import ConfigDict
+        from mcp.server.fastmcp.utilities.func_metadata import ArgModelBase
+
+        class AuthoritativeArguments(ArgModelBase):
+            model_config = ConfigDict(
+                arbitrary_types_allowed=True,
+                extra="allow",
+            )
+
+            def model_dump_one_level(self) -> dict[str, Any]:
+                values = super().model_dump_one_level()
+                values.update(self.model_extra or {})
+                return values
+
+        tool = mcp._tool_manager.get_tool(tool_name)
+        if tool is None:
+            raise RuntimeError(f"FastMCP did not register tool {tool_name!r}")
+        tool.parameters = json.loads(json.dumps(schema))
+        tool.fn_metadata.arg_model = AuthoritativeArguments
+
     for name in EXPOSED_TOOLS:
         spec = all_defs.get(name)
         if spec is None:
@@ -212,9 +233,9 @@ def _build_server() -> Any:
 
         # FastMCP wants a Python callable. Build a closure that takes the
         # arguments dict, dispatches via handle_function_call, and returns
-        # the result string. We use add_tool() for full control over the
-        # input schema (FastMCP's @tool() decorator inspects type hints,
-        # which we can't get from a JSON schema at runtime).
+        # the result string. FastMCP infers **kwargs as one opaque field, so
+        # _attach_authoritative_schema replaces that inferred contract after
+        # registration while retaining the callable metadata it needs.
         def _make_handler(tool_name: str):
             def _dispatch(**kwargs: Any) -> str:
                 try:
@@ -235,14 +256,13 @@ def _build_server() -> Any:
                 _make_handler(name),
                 name=name,
                 description=description,
-                # FastMCP accepts JSON schema directly via the
-                # input_schema parameter on newer versions; older
-                # versions use parameters_schema. Try both for compat.
             )
         except TypeError:
             # Older mcp SDK signature — fall back to decorator-style.
             handler = _make_handler(name)
             handler = mcp.tool(name=name, description=description)(handler)
+
+        _attach_authoritative_schema(name, params_schema)
 
         exposed_count += 1
 

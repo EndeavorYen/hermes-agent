@@ -8,8 +8,9 @@ build helper assembles a server when the SDK is present.
 
 from __future__ import annotations
 
+import json
 
-
+import pytest
 
 class TestModuleSurface:
     def test_module_imports_clean(self):
@@ -54,6 +55,59 @@ class TestModuleSurface:
 
         assert "story_video_control" in EXPOSED_TOOLS
         assert "story_video_quality_control" in EXPOSED_TOOLS
+
+    @pytest.mark.asyncio
+    async def test_story_video_tools_advertise_authoritative_schema_and_accept_top_level_args(
+        self, tmp_path, monkeypatch
+    ):
+        import agent.transports.hermes_tools_mcp_server as m
+        import model_tools
+        from plugins.story_video.schemas import (
+            STORY_VIDEO_CONTROL_SCHEMA,
+            STORY_VIDEO_QUALITY_CONTROL_SCHEMA,
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+        monkeypatch.setattr(
+            model_tools,
+            "get_tool_definitions",
+            lambda **_: [
+                {"type": "function", "function": STORY_VIDEO_CONTROL_SCHEMA},
+                {
+                    "type": "function",
+                    "function": STORY_VIDEO_QUALITY_CONTROL_SCHEMA,
+                },
+            ],
+        )
+        monkeypatch.setattr(
+            model_tools,
+            "handle_function_call",
+            lambda name, args, **_: json.dumps(
+                {
+                    "success": False,
+                    "error_type": "story_video_context_missing",
+                    "tool": name,
+                    "args": args,
+                }
+            ),
+        )
+        server = m._build_server()
+        quality_tool = server._tool_manager.get_tool("story_video_quality_control")
+        control_tool = server._tool_manager.get_tool("story_video_control")
+
+        assert quality_tool is not None
+        assert control_tool is not None
+        assert quality_tool.parameters == STORY_VIDEO_QUALITY_CONTROL_SCHEMA["parameters"]
+        assert "kwargs" not in quality_tool.parameters.get("properties", {})
+        actions = quality_tool.parameters["properties"]["action"]["enum"]
+        assert "run_batch_chunk" in actions
+
+        result = await control_tool.run({"action": "status"})
+        assert "story_video_context_missing" in str(result)
+
+        legacy_result = await control_tool.run({"kwargs": {"action": "status"}})
+        assert "story_video_context_missing" in str(legacy_result)
 
     def test_mcp_dispatch_forwards_hermes_session_id(self, monkeypatch):
         import agent.transports.hermes_tools_mcp_server as m

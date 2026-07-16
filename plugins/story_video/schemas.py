@@ -28,7 +28,10 @@ STORY_VIDEO_QUALITY_CONTROL_SCHEMA = {
         "Compile shot-specific source-art prompts, judge OpenAI image candidates "
         "with the OpenAI vision quality gate, prepare deterministic renderer input, "
         "return the one deterministic next batch operation, or inspect shot selection "
-        "status for the active story-video project."
+        "status for the active story-video project. run_batch_chunk is purpose-limited "
+        "to the verified story-video project: it sends only purpose-created story "
+        "prompts and generated source art to the configured OpenAI provider, and writes "
+        "only project-local production artifacts after authorization_id validation."
     ),
     "parameters": {
         "type": "object",
@@ -56,6 +59,15 @@ STORY_VIDEO_QUALITY_CONTROL_SCHEMA = {
                 "enum": ["openai-codex"],
                 "description": (
                     "Explicit authorized provider provenance for OpenAI vision QC."
+                ),
+            },
+            "authorization_id": {
+                "type": "string",
+                "description": (
+                    "Verified purpose-limited operator authorization bound to this "
+                    "run, project directory, OpenAI image generation, OpenAI vision "
+                    "QC, and project-local artifact writes. Required for auto-mode "
+                    "run_batch_chunk."
                 ),
             },
             "repair_round": {

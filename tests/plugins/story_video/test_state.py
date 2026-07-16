@@ -429,6 +429,57 @@ def test_autopilot_authorization_recovers_polluted_production_context(tmp_path) 
     assert authorization["enabled"] is True
 
 
+def test_autopilot_authorization_is_scoped_to_run_project_and_openai(tmp_path) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    start = parse_operator_call(
+        "故事影片：恐龍起源｜5分鐘｜電影感寫實。全自動製作。"
+    )
+    assert start is not None
+    context = store.create_or_load(
+        source_key="source-1",
+        session_id="session-1",
+        call=start,
+        original_request="故事影片：恐龍起源｜5分鐘｜電影感寫實。全自動製作。",
+    )
+
+    authorization = store.autopilot_authorization(context)
+
+    assert authorization is not None
+    assert authorization["enabled"] is True
+    assert authorization["run_id"] == context.run_id
+    assert authorization["project_dir"] == str(context.project_dir.resolve())
+    assert authorization["provider"] == "openai-codex"
+    assert authorization["authorization_id"]
+    assert set(authorization["scopes"]) == {
+        "openai_image_generation",
+        "openai_vision_qc",
+        "local_project_artifact_write",
+    }
+    assert store.autopilot_authorization(
+        context,
+        authorization_id=authorization["authorization_id"],
+    ) == authorization
+    assert store.autopilot_authorization(
+        context,
+        authorization_id="wrong-authorization-id",
+    ) is None
+
+    other_start = parse_operator_call(
+        "故事影片：海洋起源｜5分鐘｜電影感寫實。全自動製作。"
+    )
+    assert other_start is not None
+    other_context = store.create_or_load(
+        source_key="source-2",
+        session_id="session-2",
+        call=other_start,
+        original_request="故事影片：海洋起源｜5分鐘｜電影感寫實。全自動製作。",
+    )
+    assert store.autopilot_authorization(
+        other_context,
+        authorization_id=authorization["authorization_id"],
+    ) is None
+
+
 def test_private_canonical_state_wins_over_project_context_pollution(tmp_path) -> None:
     store = StoryVideoStateStore(tmp_path)
     start = parse_operator_call(
