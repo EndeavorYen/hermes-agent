@@ -314,6 +314,24 @@ def test_gateway_run_force_flag_survives_parser_extraction():
     assert args.force is True
 
 
+def test_gateway_restart_force_flag_survives_parser_extraction():
+    from hermes_cli.subcommands.gateway import build_gateway_parser
+
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command")
+
+    build_gateway_parser(
+        subparsers,
+        cmd_gateway=lambda _args: None,
+        cmd_proxy=lambda _args: None,
+        cmd_gateway_enroll=lambda _args: None,
+    )
+
+    args = parser.parse_args(["gateway", "restart", "--force"])
+
+    assert args.force is True
+
+
 def test_run_gateway_windows_foreground_keeps_ctrl_c_enabled(monkeypatch):
     calls = []
 
@@ -530,6 +548,89 @@ def test_gateway_restart_on_windows_without_service_uses_detached_backend(monkey
     )
 
     args = SimpleNamespace(gateway_command="restart", system=False, all=False)
+    gateway.gateway_command(args)
+
+    assert calls == ["restart"]
+
+
+def _configure_launchd_restart(monkeypatch, calls):
+    monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+    monkeypatch.setattr(
+        gateway,
+        "launchd_restart",
+        lambda: calls.append("restart"),
+    )
+    monkeypatch.setattr(gateway, "_dispatch_via_service_manager_if_s6", lambda _a: False)
+    monkeypatch.setattr(gateway, "_dispatch_all_via_service_manager_if_s6", lambda _a: False)
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gateway, "is_macos", lambda: True)
+    monkeypatch.setattr(gateway, "is_windows", lambda: False)
+    monkeypatch.setattr(gateway, "get_launchd_plist_path", lambda: gateway.Path("/"))
+
+
+def test_gateway_restart_refuses_to_interrupt_active_agents(monkeypatch, capsys):
+    """A deployment restart must fail closed while a user task is active."""
+    calls = []
+    _configure_launchd_restart(monkeypatch, calls)
+    monkeypatch.setattr(gateway, "_active_gateway_agent_count", lambda: 2)
+
+    args = SimpleNamespace(
+        gateway_command="restart",
+        system=False,
+        all=False,
+        force=False,
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        gateway.gateway_command(args)
+
+    assert exc_info.value.code == 75
+    assert calls == []
+    output = capsys.readouterr().out
+    assert "2 active agent" in output
+    assert "--force" in output
+
+
+def test_active_gateway_agent_count_requires_matching_live_pid(monkeypatch):
+    monkeypatch.setattr(
+        gateway,
+        "_read_gateway_runtime_status",
+        lambda: {
+            "pid": 42,
+            "gateway_state": "running",
+            "active_agents": 3,
+        },
+    )
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda **_kwargs: 42)
+
+    assert gateway._active_gateway_agent_count() == 3
+
+
+def test_active_gateway_agent_count_ignores_stale_runtime_pid(monkeypatch):
+    monkeypatch.setattr(
+        gateway,
+        "_read_gateway_runtime_status",
+        lambda: {
+            "pid": 41,
+            "gateway_state": "running",
+            "active_agents": 7,
+        },
+    )
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda **_kwargs: 42)
+
+    assert gateway._active_gateway_agent_count() == 0
+
+
+def test_gateway_restart_force_explicitly_bypasses_active_agent_guard(monkeypatch):
+    calls = []
+    _configure_launchd_restart(monkeypatch, calls)
+    monkeypatch.setattr(gateway, "_active_gateway_agent_count", lambda: 1)
+
+    args = SimpleNamespace(
+        gateway_command="restart",
+        system=False,
+        all=False,
+        force=True,
+    )
     gateway.gateway_command(args)
 
     assert calls == ["restart"]
