@@ -138,6 +138,48 @@ def test_visual_agent_generate_routes_one_provider_from_measured_quality_profile
     ] == "measured_quality_profile"
 
 
+def test_visual_agent_generate_does_not_downgrade_prompt_provider_source(monkeypatch):
+    from tools import visual_agent_tool
+
+    captured = {}
+    monkeypatch.setattr(
+        visual_agent_tool,
+        "_runtime_provider_quality_profiles",
+        lambda **_kwargs: {
+            "xai": {"sample_count": 12, "first_pass_rate": 0.5, "failure_rate": 0.1},
+            "openai-codex": {
+                "sample_count": 12,
+                "first_pass_rate": 0.95,
+                "failure_rate": 0.0,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        visual_agent_tool,
+        "_handle_visual_package_generate",
+        lambda args, **_kwargs: captured.update(args)
+        or json.dumps({"success": True, "images": ["/tmp/current.png"], "videos": []}),
+    )
+
+    payload = json.loads(
+        visual_agent_tool._handle_visual_agent_generate(
+            {
+                "prompt": "請使用 xAI 固定這位角色，產出 4 張不同姿勢的精緻圖片並完成 QC",
+                "attachments": ["/tmp/ref.png"],
+                "image_provider": "xai",
+                "image_provider_source": "runtime_contract",
+                "candidate_budget": 4,
+                "candidate_budget_source": "user",
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert captured["image_provider"] == "xai"
+    assert captured["image_provider_source"] == "prompt_override"
+    assert captured["provider_decision"]["reason"] == "explicit_override"
+
+
 def test_visual_agent_generate_materializes_data_uri_attachment(monkeypatch, tmp_path):
     from tools import visual_agent_tool
 

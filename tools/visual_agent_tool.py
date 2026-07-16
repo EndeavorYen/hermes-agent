@@ -48,6 +48,15 @@ _DIRECT_VISUAL_PACKAGE_OVERRIDE_KEYS = frozenset(
     }
 )
 
+_EXPLICIT_IMAGE_PROVIDER_SOURCES = frozenset(
+    {
+        "direct_override",
+        "explicit_override",
+        "prompt_override",
+        "user",
+    }
+)
+
 
 VISUAL_AGENT_SCHEMA: dict[str, Any] = {
     "name": "visual_agent_generate",
@@ -147,15 +156,27 @@ def _handle_visual_agent_generate(args: dict[str, Any], **_kw: Any) -> str:
         return tool_error("visual_agent_generate requires a visual image or video request")
 
     package_args = dict(plan.get("arguments") or {})
+    planned_image_provider = package_args.get("image_provider")
+    planned_image_provider_source = str(
+        package_args.get("image_provider_source") or ""
+    )
     _merge_direct_visual_package_overrides(package_args, args)
     if args.get("candidate_budget") is not None:
         package_args["candidate_budget_source"] = str(
             args.get("candidate_budget_source") or "user"
         )
     if args.get("image_provider"):
-        package_args["image_provider_source"] = str(
+        direct_image_provider_source = str(
             args.get("image_provider_source") or "direct_override"
         )
+        if (
+            planned_image_provider_source in _EXPLICIT_IMAGE_PROVIDER_SOURCES
+            and direct_image_provider_source not in _EXPLICIT_IMAGE_PROVIDER_SOURCES
+        ):
+            package_args["image_provider"] = planned_image_provider
+            package_args["image_provider_source"] = planned_image_provider_source
+        else:
+            package_args["image_provider_source"] = direct_image_provider_source
     for key in (
         "visual_agent_llm_provider",
         "visual_agent_llm_model",

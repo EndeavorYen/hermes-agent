@@ -9521,6 +9521,100 @@ def test_visual_package_default_deadline_is_bounded_and_operator_configurable(mo
     assert configured_deadline.configured_seconds == 600.0
 
 
+def test_visual_package_default_deadline_scales_for_xai_candidate_waves(monkeypatch):
+    from hermes_cli import config
+    from tools import visual_package_tool
+
+    monkeypatch.delenv("HERMES_VISUAL_EXECUTION_DEADLINE_SECONDS", raising=False)
+    monkeypatch.setattr(config, "read_raw_config", lambda: {})
+    monkeypatch.setattr(visual_package_tool, "_monotonic", lambda: 100.0)
+
+    deadline = visual_package_tool._new_execution_deadline(
+        {
+            "include_image": True,
+            "candidate_budget": 4,
+            "image_provider": "xai",
+        }
+    )
+    serial_deadline = visual_package_tool._new_execution_deadline(
+        {
+            "include_image": True,
+            "candidate_budget": 4,
+            "image_provider": "fixture-provider",
+        }
+    )
+
+    assert deadline.configured_seconds == 660.0
+    assert deadline.expires_at == 760.0
+    assert serial_deadline.configured_seconds == 1380.0
+
+
+def test_visual_package_parallelizes_explicit_xai_candidate_batch(monkeypatch, tmp_path):
+    import threading
+
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    images = []
+    for index in range(4):
+        image = tmp_path / f"candidate-{index}.png"
+        image.write_bytes(_ONE_PIXEL_PNG)
+        images.append(image)
+
+    lock = threading.Lock()
+    overlap = threading.Event()
+    state = {"next": 0, "active": 0, "max_active": 0}
+
+    def fake_generate_image(**_kwargs):
+        with lock:
+            index = state["next"]
+            state["next"] += 1
+            state["active"] += 1
+            state["max_active"] = max(state["max_active"], state["active"])
+            if state["active"] >= 2:
+                overlap.set()
+        overlap.wait(timeout=0.3)
+        with lock:
+            state["active"] -= 1
+        return {
+            "success": True,
+            "image": str(images[index]),
+            "provider": "xai",
+            "model": "grok-imagine-image-quality",
+            "vision_observation": {
+                "face_quality": 0.9,
+                "visual_appeal": 0.9,
+                "composition": 0.9,
+                "fashion_material_quality": 0.9,
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "用 xAI 產出 4 張不同姿勢圖片",
+                "include_image": True,
+                "include_video": False,
+                "candidate_budget": 4,
+                "candidate_budget_source": "user",
+                "image_provider": "xai",
+                "image_provider_source": "prompt_override",
+                "inline_vision_judge": False,
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert state["next"] == 4
+    assert state["max_active"] == 2
+    waves = payload["generation_strategy"]["image_generation_waves"]
+    assert waves["provider"] == "xai"
+    assert waves["max_parallelism_used"] == 2
+    assert waves["total_succeeded"] == 4
+
+
 @pytest.mark.parametrize(
     ("reencode", "expected_stage"),
     [
