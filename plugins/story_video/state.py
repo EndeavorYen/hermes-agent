@@ -16,11 +16,16 @@ from typing import Any
 DEFAULT_DURATION = "60-120s"
 DEFAULT_STYLE = "Cinematic topic-appropriate visual storytelling"
 PHASES = ("planning", "keyframes", "batch", "voice", "render", "complete")
-AUTOPILOT_AUTHORIZATION_SCHEMA = "story_video_autopilot_authorization_v2"
-LEGACY_AUTOPILOT_AUTHORIZATION_SCHEMA = "story_video_autopilot_authorization_v1"
+AUTOPILOT_AUTHORIZATION_SCHEMA = "story_video_autopilot_authorization_v3"
+LEGACY_AUTOPILOT_AUTHORIZATION_SCHEMAS = {
+    "story_video_autopilot_authorization_v1",
+    "story_video_autopilot_authorization_v2",
+}
 AUTOPILOT_AUTHORIZATION_SCOPES = (
     "openai_image_generation",
     "openai_vision_qc",
+    "local_qwen_tts",
+    "local_voice_qc",
     "local_project_artifact_write",
 )
 DEFAULT_PROVIDER_POLICY: dict[str, Any] = {
@@ -717,7 +722,7 @@ class StoryVideoStateStore:
         payload = self._read_json(path, None)
         if (
             isinstance(payload, dict)
-            and payload.get("schema") == LEGACY_AUTOPILOT_AUTHORIZATION_SCHEMA
+            and payload.get("schema") in LEGACY_AUTOPILOT_AUTHORIZATION_SCHEMAS
             and payload.get("run_id") == context.run_id
             and payload.get("enabled") is True
         ):
@@ -764,7 +769,8 @@ class StoryVideoStateStore:
         for path in self.authorization_state_root.glob("*.json"):
             payload = self._read_json(path, None)
             if not isinstance(payload, dict) or not (
-                payload.get("schema") == AUTOPILOT_AUTHORIZATION_SCHEMA
+                payload.get("schema")
+                in {AUTOPILOT_AUTHORIZATION_SCHEMA, *LEGACY_AUTOPILOT_AUTHORIZATION_SCHEMAS}
                 and payload.get("enabled") is True
             ):
                 continue

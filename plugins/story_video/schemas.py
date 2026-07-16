@@ -42,6 +42,7 @@ STORY_VIDEO_QUALITY_CONTROL_SCHEMA = {
                     "compile_prompt",
                     "judge_candidates",
                     "run_batch_chunk",
+                    "run_voice_phase",
                     "next_batch_work",
                     "replan_shot_contract",
                     "compile_release_art",
@@ -68,6 +69,8 @@ STORY_VIDEO_QUALITY_CONTROL_SCHEMA = {
                     "run, project directory, OpenAI image generation, OpenAI vision "
                     "QC, and project-local artifact writes. Required for auto-mode "
                     "run_batch_chunk."
+                    " Also required for auto-mode run_voice_phase, which runs only the "
+                    "locked offline local Qwen narrator and project-local voice QC."
                 ),
             },
             "run_id": {

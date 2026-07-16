@@ -38,8 +38,8 @@ _PHASE_BLOCKED_RE = re.compile(
     r"STORY_VIDEO_PHASE_PROOF:\s+[a-z]+\s+BLOCKED",
     re.IGNORECASE,
 )
-_BATCH_REVIEW_REQUIRED_RE = re.compile(
-    r"(?:STORY_VIDEO_PHASE_ATTENTION:\s*batch\s+REVIEW_REQUIRED|"
+_PHASE_REVIEW_REQUIRED_RE = re.compile(
+    r"(?:STORY_VIDEO_PHASE_ATTENTION:\s*(?:batch|voice)\s+REVIEW_REQUIRED|"
     r"[\"']work_status[\"']\s*:\s*[\"']human_review_required[\"'])",
     re.IGNORECASE,
 )
@@ -197,6 +197,20 @@ def _native_chunk_call(context: StoryVideoRunContext) -> str:
     )
 
 
+def _native_voice_call(context: StoryVideoRunContext) -> str:
+    authorization = _STORE.autopilot_authorization(context)
+    authorization_id = (
+        str(authorization.get("authorization_id") or "")
+        if authorization is not None
+        else ""
+    )
+    return (
+        "story_video_quality_control action=run_voice_phase "
+        f"authorization_id={authorization_id} run_id={context.run_id} "
+        f"project_dir={context.project_dir}"
+    )
+
+
 def _autopilot_authorization_instruction(
     context: StoryVideoRunContext,
 ) -> str:
@@ -212,7 +226,8 @@ def _autopilot_authorization_instruction(
         "This authorization was persisted from the operator's full-auto story-video "
         "request and is purpose-limited to sending purpose-created story prompts and "
         "generated source art to OpenAI for image generation and vision QC, plus writes "
-        "inside this project directory; unrelated workspace data is not authorized. "
+        "inside this project directory and offline local Qwen narration with local voice "
+        "QC; unrelated workspace data is not authorized. "
         "The native tool verifies the authorization ID, run, project, provider, and "
         "scopes before dispatch; a stop command revokes it. "
     )
@@ -514,8 +529,13 @@ def pre_llm_call(
         )
     if context.phase == "voice":
         instruction += (
-        "During voice, compile display text to low-ambiguity spoken text with the "
-        "project pronunciation lexicon and require qc/pronunciation_qc_report.json. "
+        f"During voice, call {_native_voice_call(context)} exactly once per turn. "
+        "This is exactly one native voice phase call: it owns pronunciation compilation, "
+        "offline local Qwen synthesis, acoustic QC, one bounded transient MLX retry, and "
+        "stop/resume. Do not call generic text_to_speech, run shell commands, edit the "
+        "pronunciation lexicon, regenerate individual segments, or hand-write narration "
+        "manifests yourself. Return brief progress after the native call so internal "
+        "autopilot can validate voice and advance to render. "
         )
     if context.phase == "render":
         instruction += (
@@ -532,7 +552,10 @@ def pre_llm_call(
         "story_video_quality_control action=prepare_render; it is "
         "the only writer of render_input.json. Never hand-edit render_input.json or "
         "invent renderer aliases. Then run the story-video production pipeline's "
-        "render_story_video.py for project_dir and validate render. "
+        "render_story_video.py for project_dir and validate render. If the selected "
+        "final MP4 already exists and only manifest or QC proof is blocked, run "
+        "render_story_video.py project_dir --refresh-qc to recompute evidence without "
+        "re-encoding the video. "
         )
     instruction += (
         "Do not inspect other story-video projects, source code, memory, or unrelated "
@@ -705,7 +728,7 @@ def auto_continue_llm_output(
         return None
     if _has_operator_setup_blocker(response_text, turn_error):
         return None
-    if context.phase == "batch" and _BATCH_REVIEW_REQUIRED_RE.search(
+    if context.phase in {"batch", "voice"} and _PHASE_REVIEW_REQUIRED_RE.search(
         str(response_text or "")
     ):
         return None
@@ -775,21 +798,34 @@ def auto_continue_llm_output(
                 "story_video_control action=validate. Do not generate images, narration, "
                 "or video."
             )
-    elif context.phase in {"keyframes", "batch"}:
+    elif context.phase in {"keyframes", "batch", "voice"}:
         if context.phase == "keyframes":
+            from .tools import validate_phase
+
+            native_work_complete = validate_phase(context).ok
+        elif context.phase == "voice":
             from .tools import validate_phase
 
             native_work_complete = validate_phase(context).ok
         else:
             native_work_complete = _batch_assets_complete(context)
         if not native_work_complete:
-            next_action = _native_chunk_call(context)
-            next_work_instruction = (
-                " Run exactly one native bounded production chunk. The tool owns prompt "
-                "compilation, up to three parallel OpenAI image requests, QC, persistent "
-                "end-to-end budgets, and stop/resume behavior. Do not call image_generate, "
-                "compile_prompt, judge_candidates, or replan_shot_contract yourself."
-            )
+            if context.phase == "voice":
+                next_action = _native_voice_call(context)
+                next_work_instruction = (
+                    " Run exactly one native voice phase call. The tool owns offline local "
+                    "Qwen synthesis, pronunciation/alignment/prosody QC, bounded retry, "
+                    "and stop/resume behavior. Generic text_to_speech is forbidden; do not "
+                    "run shell commands or edit voice artifacts yourself."
+                )
+            else:
+                next_action = _native_chunk_call(context)
+                next_work_instruction = (
+                    " Run exactly one native bounded production chunk. The tool owns prompt "
+                    "compilation, up to three parallel OpenAI image requests, QC, persistent "
+                    "end-to-end budgets, and stop/resume behavior. Do not call image_generate, "
+                    "compile_prompt, judge_candidates, or replan_shot_contract yourself."
+                )
         else:
             next_action = "story_video_control action=validate"
             next_work_instruction = (
@@ -799,7 +835,7 @@ def auto_continue_llm_output(
             )
     continuation_limit = (
         _AUTOPILOT_BATCH_ROTATE_AFTER_CONTINUATIONS
-        if context.phase in {"keyframes", "batch"}
+        if context.phase in {"keyframes", "batch", "voice"}
         else _AUTOPILOT_ROTATE_AFTER_CONTINUATIONS
     )
     rotate_for_budget = (
@@ -1027,8 +1063,12 @@ def transform_llm_output(
     _SESSION_STATUS_AT_LLM_START.pop(session_id, None)
     if _has_operator_setup_blocker(text):
         pass
+    elif phase_at_start == context.phase == "voice" and _PHASE_REVIEW_REQUIRED_RE.search(
+        text
+    ):
+        pass
     elif phase_at_start == context.phase == "batch":
-        if _BATCH_REVIEW_REQUIRED_RE.search(text):
+        if _PHASE_REVIEW_REQUIRED_RE.search(text):
             pass
         elif not _batch_assets_complete(context):
             text = "\n".join(

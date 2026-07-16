@@ -558,6 +558,36 @@ def _render_manifest_path(context: StoryVideoRunContext) -> Path | None:
     return None
 
 
+def _shot_density_evidence_passes(
+    timeline: dict[str, Any],
+    evidence: dict[str, Any],
+) -> bool:
+    selected_shot_count = evidence.get(
+        "selected_shot_count",
+        timeline.get("selected_shot_count"),
+    )
+    if not isinstance(selected_shot_count, int) or selected_shot_count <= 0:
+        return False
+    if str(evidence.get("status") or "").upper() == "PASS":
+        return True
+    rate = evidence.get(
+        "selected_shots_per_minute",
+        timeline.get("selected_shots_per_minute"),
+    )
+    preferred = timeline.get("preferred_shots_per_minute")
+    hard = timeline.get("hard_shots_per_minute")
+    if not isinstance(rate, (int, float)) or not isinstance(preferred, dict):
+        return False
+    if not isinstance(hard, dict):
+        hard = {
+            "minimum": float(preferred.get("minimum") or 0.0) * 0.9,
+            "maximum": float(preferred.get("maximum") or 0.0) * 1.1,
+        }
+    minimum = float(hard.get("minimum") or 0.0)
+    maximum = float(hard.get("maximum") or 0.0)
+    return minimum > 0 and minimum <= float(rate) <= maximum
+
+
 def _render_artifact_violations(
     context: StoryVideoRunContext,
     manifest: dict[str, Any],
@@ -582,14 +612,20 @@ def _render_artifact_violations(
         (manifest.get("timeline") or {}).get("motion_policy") or ""
     ).lower()
     if "static" in motion_policy or not any(
-        token in motion_policy for token in ("zoom", "pan", "motion")
+        token in motion_policy
+        for token in ("zoom", "pan", "motion", "focus_push", "center_zoom")
     ):
         violations.append("primary render has no non-static motion policy")
     timeline = manifest.get("timeline")
-    if not isinstance(timeline, dict) or (
-        str(timeline.get("shot_density_status") or "").upper() != "PASS"
-        or not isinstance(timeline.get("selected_shot_count"), int)
-        or int(timeline.get("selected_shot_count") or 0) <= 0
+    if not isinstance(timeline, dict) or not _shot_density_evidence_passes(
+        timeline,
+        {
+            "status": timeline.get("shot_density_status"),
+            "selected_shot_count": timeline.get("selected_shot_count"),
+            "selected_shots_per_minute": timeline.get(
+                "selected_shots_per_minute"
+            ),
+        },
     ):
         violations.append("render manifest lacks selected-shot density evidence")
     cards = manifest.get("cards")
@@ -618,10 +654,9 @@ def _render_artifact_violations(
     ):
         violations.append("render QC lacks non-static motion evidence")
     shot_density = evidence.get("shot_density") if isinstance(evidence, dict) else None
-    if not isinstance(shot_density, dict) or (
-        str(shot_density.get("status") or "").upper() != "PASS"
-        or not isinstance(shot_density.get("selected_shot_count"), int)
-        or int(shot_density.get("selected_shot_count") or 0) <= 0
+    if not isinstance(shot_density, dict) or not _shot_density_evidence_passes(
+        timeline,
+        shot_density,
     ):
         violations.append("render QC lacks selected-shot density evidence")
     title_cards = evidence.get("title_cards") if isinstance(evidence, dict) else None

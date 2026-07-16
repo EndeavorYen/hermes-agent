@@ -453,6 +453,8 @@ def test_autopilot_authorization_is_scoped_to_run_project_and_openai(tmp_path) -
     assert set(authorization["scopes"]) == {
         "openai_image_generation",
         "openai_vision_qc",
+        "local_qwen_tts",
+        "local_voice_qc",
         "local_project_artifact_write",
     }
     assert store.autopilot_authorization(
@@ -481,6 +483,37 @@ def test_autopilot_authorization_is_scoped_to_run_project_and_openai(tmp_path) -
         other_context,
         authorization_id=authorization["authorization_id"],
     ) is None
+
+
+def test_v2_authorization_migrates_for_native_local_voice_scope(tmp_path) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    start = parse_operator_call(
+        "故事影片：恐龍起源｜5分鐘｜電影感寫實。全自動製作。"
+    )
+    assert start is not None
+    context = store.create_or_load(
+        source_key="source-1",
+        session_id="session-1",
+        call=start,
+        original_request="故事影片：恐龍起源｜5分鐘｜電影感寫實。全自動製作。",
+    )
+    authorization_path = store.authorization_state_root / f"{context.run_id}.json"
+    authorization = json.loads(authorization_path.read_text(encoding="utf-8"))
+    authorization["schema"] = "story_video_autopilot_authorization_v2"
+    authorization["scopes"] = [
+        "openai_image_generation",
+        "openai_vision_qc",
+        "local_project_artifact_write",
+    ]
+    authorization_path.write_text(json.dumps(authorization), encoding="utf-8")
+
+    recovered = store.for_autopilot_authorization(authorization["authorization_id"])
+    migrated = json.loads(authorization_path.read_text(encoding="utf-8"))
+
+    assert recovered == context
+    assert migrated["schema"] == "story_video_autopilot_authorization_v3"
+    assert "local_qwen_tts" in migrated["scopes"]
+    assert "local_voice_qc" in migrated["scopes"]
 
 
 def test_private_canonical_state_wins_over_project_context_pollution(tmp_path) -> None:
