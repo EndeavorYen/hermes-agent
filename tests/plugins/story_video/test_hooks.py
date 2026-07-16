@@ -138,6 +138,38 @@ def test_keyframe_autopilot_uses_authorized_native_chunk_instead_of_manual_tools
     assert "next_batch_work" not in message
 
 
+def test_voice_autopilot_uses_one_native_phase_call_instead_of_shell_or_tts(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    start = hooks.pre_gateway_dispatch(
+        event=_event(
+            "故事影片：恐龍起源｜5分鐘｜電影感寫實。全自動製作，完成後供 review。"
+        )
+    )
+    hooks.pre_llm_call(session_id="session-auto", user_message=start["text"])
+    context = store.for_session("session-auto")
+    assert context is not None
+    context = store.update(context, phase="voice", auto_mode=True)
+    authorization = store.autopilot_authorization(context)
+    assert authorization is not None
+
+    continuation = hooks.auto_continue_llm_output(
+        session_id="session-auto",
+        response_text="STORY_VIDEO_PHASE_PROOF: voice BLOCKED",
+    )
+
+    assert continuation is not None
+    message = continuation["message"]
+    assert "story_video_quality_control action=run_voice_phase" in message
+    assert f"authorization_id={authorization['authorization_id']}" in message
+    assert "exactly one native voice phase call" in message
+    assert "exec_command" not in message
+    assert "text_to_speech" in message
+    assert "forbidden" in message
+
+
 def _write_planning_fixture(context) -> None:
     (context.project_dir / "script.md").write_text(
         "### S00\nfinal narration script", encoding="utf-8"
@@ -686,6 +718,8 @@ def test_autopilot_context_requires_canonical_quality_tool_and_phase_loop(
     assert "compile_release_art" in render["context"]
     assert "register_release_art" in render["context"]
     assert "before prepare_render" in render["context"]
+    assert "--refresh-qc" in render["context"]
+    assert "without re-encoding" in render["context"]
     assert "During batch, first call" not in render["context"]
 
 

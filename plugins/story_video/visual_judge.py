@@ -2083,6 +2083,35 @@ def _run_batch_chunk(
     return payload
 
 
+def _run_voice_phase(
+    context: StoryVideoRunContext,
+    *,
+    state_store: StoryVideoStateStore,
+) -> dict[str, Any]:
+    from dataclasses import asdict
+
+    from .tools import validate_phase
+    from .voice_executor import StoryVideoVoiceExecutor
+
+    def cancelled() -> bool:
+        latest = state_store.for_run(
+            run_id=context.run_id,
+            project_dir=context.project_dir,
+        )
+        return latest is None or latest.status == "stopped"
+
+    summary = StoryVideoVoiceExecutor(
+        phase_validator=validate_phase,
+    ).run(context, cancel_check=cancelled)
+    payload = asdict(summary)
+    payload["success"] = summary.work_status == "complete"
+    payload["action"] = "run_voice_phase"
+    payload["provider"] = "local_qwen"
+    payload["inference_mode"] = "offline"
+    payload["network_fallback"] = "forbidden"
+    return payload
+
+
 def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
     """Return one deterministic image/QC cycle, prioritizing repairs."""
     shot_ids = _ordered_shot_ids(context)
@@ -2921,6 +2950,38 @@ def story_video_quality_control(
                     context,
                     state_store=state_store,
                     llm=llm or _PLUGIN_LLM,
+                )
+                if authorization is not None:
+                    payload["authorization_verified"] = True
+        elif action == "run_voice_phase":
+            authorization_id = str(args.get("authorization_id") or "").strip()
+            authorization = (
+                state_store.autopilot_authorization(
+                    context,
+                    authorization_id=authorization_id,
+                )
+                if authorization_id
+                else None
+            )
+            if context.auto_mode and authorization is None:
+                payload = {
+                    "success": False,
+                    "error_type": "story_video_operator_authorization_required",
+                    "error": (
+                        "run_voice_phase requires the verified purpose-limited "
+                        "authorization_id for this active story-video run"
+                    ),
+                }
+            elif context.phase != "voice":
+                payload = {
+                    "success": False,
+                    "error_type": "story_video_voice_phase_required",
+                    "error": f"run_voice_phase cannot run during {context.phase}",
+                }
+            else:
+                payload = _run_voice_phase(
+                    context,
+                    state_store=state_store,
                 )
                 if authorization is not None:
                     payload["authorization_verified"] = True

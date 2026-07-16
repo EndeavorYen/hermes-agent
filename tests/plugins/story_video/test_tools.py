@@ -967,6 +967,25 @@ def test_render_validation_blocks_soft_subtitles_and_static_motion(tmp_path) -> 
     assert "primary render has no non-static motion policy" in proof.violations
 
 
+def test_render_validation_recognizes_cinematic_focus_push_as_motion(tmp_path) -> None:
+    store, context = _active_context(tmp_path)
+    context = store.update(context, phase="render")
+    _write_render_fixture(context, motion_policy="cinematic_focus_push")
+    ProviderAudit(context).append_event(
+        ProviderAuditEvent(
+            kind="api",
+            phase="render",
+            provider="openai-codex",
+            model="gpt-5.6-sol",
+            status="ok",
+        )
+    )
+
+    proof = validate_phase(context)
+
+    assert "primary render has no non-static motion policy" not in proof.violations
+
+
 def test_render_validation_requires_shot_density_evidence(tmp_path) -> None:
     store, context = _active_context(tmp_path)
     context = store.update(context, phase="render")
@@ -995,6 +1014,46 @@ def test_render_validation_requires_shot_density_evidence(tmp_path) -> None:
     assert proof.ok is False
     assert "render manifest lacks selected-shot density evidence" in proof.violations
     assert "render QC lacks selected-shot density evidence" in proof.violations
+
+
+def test_render_validation_allows_small_semantic_density_tolerance(tmp_path) -> None:
+    store, context = _active_context(tmp_path)
+    context = store.update(context, phase="render")
+    _write_render_fixture(context, motion_policy="cinematic_focus_push")
+    for relative in ("render_manifest.json", "manifests/render_manifest.json"):
+        path = context.project_dir / relative
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        manifest["timeline"].update(
+            {
+                "shot_density_status": "BLOCKED",
+                "selected_shots_per_minute": 4.0839,
+                "preferred_shots_per_minute": {"minimum": 3.0, "maximum": 4.0},
+            }
+        )
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+    qc_path = context.project_dir / "render_qc.json"
+    qc = json.loads(qc_path.read_text(encoding="utf-8"))
+    qc["artifact_quality_evidence"]["shot_density"].update(
+        {
+            "status": "BLOCKED",
+            "selected_shots_per_minute": 4.0839,
+        }
+    )
+    qc_path.write_text(json.dumps(qc), encoding="utf-8")
+    ProviderAudit(context).append_event(
+        ProviderAuditEvent(
+            kind="api",
+            phase="render",
+            provider="openai-codex",
+            model="gpt-5.6-sol",
+            status="ok",
+        )
+    )
+
+    proof = validate_phase(context)
+
+    assert "render manifest lacks selected-shot density evidence" not in proof.violations
+    assert "render QC lacks selected-shot density evidence" not in proof.violations
 
 
 def test_render_validation_requires_opening_and_ending_cards(tmp_path) -> None:
