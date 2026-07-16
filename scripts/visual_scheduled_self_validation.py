@@ -116,7 +116,7 @@ def _fixture_summary() -> dict[str, Any]:
         kernel_contract = kernel_arguments.get("visual_intent_contract", {})
         visual_agent_production_kernel = (
             kernel_arguments.get("visual_production_kernel") is True
-            and kernel_arguments.get("max_generated_repairs") == 1
+            and kernel_arguments.get("max_generated_repairs") == 2
             and bool(kernel_arguments.get("visual_contract_hash"))
             and isinstance(kernel_contract, dict)
             and kernel_contract.get("schema") == "visual_intent_contract_v1"

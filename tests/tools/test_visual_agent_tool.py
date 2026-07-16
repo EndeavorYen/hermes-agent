@@ -74,7 +74,7 @@ def test_visual_agent_generate_plans_natural_image_plus_video_request(monkeypatc
     assert captured["candidate_budget_source"] == "user"
     assert captured["video_budget"] == 1
     assert captured["visual_production_kernel"] is True
-    assert captured["max_generated_repairs"] == 1
+    assert captured["max_generated_repairs"] == 2
     assert captured["visual_contract_hash"]
     assert captured["visual_intent_contract"]["original_request"] == (
         "請用這張 reference 產出一張圖片和一段 6 秒影片"

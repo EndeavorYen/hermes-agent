@@ -34,6 +34,20 @@ def test_explicit_zero_repair_budget_is_preserved():
     assert result["max_generated_repairs"] == 0
 
 
+def test_default_repair_budget_allows_two_bounded_quality_rounds():
+    result = attach_visual_production_kernel(
+        "Create a dramatic educational image",
+        {
+            "candidate_budget": 1,
+            "candidate_budget_source": "planner_default",
+            "image_provider": "xai",
+        },
+    )
+
+    assert result["candidate_budget"] == 1
+    assert result["max_generated_repairs"] == 2
+
+
 def test_explicit_override_source_cannot_be_replaced_by_quality_profile():
     result = attach_visual_production_kernel(
         "Create a clean product image",

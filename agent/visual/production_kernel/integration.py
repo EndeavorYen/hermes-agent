@@ -119,11 +119,11 @@ def _reference_roles(value: Any) -> list[dict[str, str]]:
 
 def _bounded_repair_budget(value: Any) -> int:
     if value is None:
-        return 1
+        return 2
     try:
-        return max(0, min(1, int(value)))
+        return max(0, min(2, int(value)))
     except (TypeError, ValueError):
-        return 1
+        return 2
 
 
 def _primary_subject(prompt: str) -> str:

@@ -38,6 +38,8 @@ from agent.visual.judges.deterministic import judge_artifact
 from agent.visual.judges.quality import judge_visual_quality
 from agent.visual.media_probe import probe_media_reference
 from agent.visual.preference_profile import build_preference_profile
+from agent.visual.production_kernel.quality_loop import BoundedQualityLoop
+from agent.visual.production_kernel.quality_loop import snapshot_from_candidate
 from agent.visual.production_kernel.quality import evaluate_visual_quality
 from agent.visual.production_kernel.repair import plan_visual_repair
 from agent.visual.prompt_arsenal import approved_prompt_arsenal_entries
@@ -1859,7 +1861,196 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 image_gate["candidate_budget_escalated"] = True
                 image_gate["escalated_from"] = escalated_from
                 delivery_gate["image"] = image_gate
-        kernel_repair_plan = _visual_kernel_repair_plan(image_gate, args)
+        quality_loop = None
+        if (
+            selected_image
+            and not image_gate["allowed"]
+            and not composition_guide_only
+            and _coerce_bool(args.get("visual_production_kernel"))
+        ):
+            quality_loop = BoundedQualityLoop(
+                snapshot_from_candidate(selected_image, image_gate),
+                max_rounds=_max_visual_kernel_repairs(args),
+            )
+            generation_attempts_before_loop = len(image_payloads)
+            prior_repair_strategies: list[str] = []
+            while True:
+                repair_plan = _visual_kernel_repair_plan(
+                    image_gate,
+                    args,
+                    prior_generated_repairs=tuple(prior_repair_strategies),
+                )
+                if repair_plan is None:
+                    quality_loop.stop_reason = "quality_gate_passed"
+                    break
+                strategy = str(repair_plan.get("strategy") or "targeted_repair")
+                blockers = _string_list(repair_plan.get("blocker_codes"))
+                repair_fingerprint = f"{strategy}:{','.join(blockers)}"
+                attempt_decision = quality_loop.can_attempt(repair_fingerprint)
+                if not attempt_decision.allowed:
+                    break
+                if repair_plan.get("should_generate") is not True:
+                    quality_loop.stop_reason = str(
+                        repair_plan.get("reason") or "repair_not_generation_safe"
+                    )
+                    break
+                repair_provider, provider_stop_reason = _quality_repair_provider(
+                    image_provider_override,
+                    repair_plan,
+                    args,
+                )
+                if provider_stop_reason:
+                    quality_loop.stop_reason = provider_stop_reason
+                    break
+
+                previous_gate = image_gate
+                repair_round = quality_loop.rounds_attempted + 1
+                repair_candidate, repair_payload = _generate_image_quality_repair_candidate(
+                    args=args,
+                    ledger=ledger,
+                    request_id=request_id,
+                    image_prompt_base=image_prompt_base,
+                    image_gate=image_gate,
+                    repair_plan=repair_plan,
+                    feedback_policy=feedback_policy,
+                    hybrid_final_combine=hybrid_final_combine,
+                    reference_binding=reference_binding,
+                    attachments=attachments,
+                    reference_conditioning_variants=reference_conditioning_variants,
+                    aspect_ratio=aspect_ratio,
+                    image_aspect_ratio=image_aspect_ratio,
+                    image_provider_override=repair_provider,
+                    request_category=request_category,
+                    selected_image=selected_image,
+                    candidate_index=len(image_candidates),
+                    image_input_artifacts=image_input_artifacts,
+                    image_artifact_role=image_artifact_role,
+                    prompt_original=visual_agent_original_prompt,
+                    repair_round=repair_round,
+                )
+                image_payloads.append(repair_payload)
+                prior_repair_strategies.append(strategy)
+                if repair_candidate:
+                    image_candidates.append(repair_candidate)
+                    _score_candidates(
+                        ledger,
+                        request_id=request_id,
+                        intent_signature=intent_signature,
+                        strategy_signature=strategy_plan.strategy_signature,
+                        modality="image",
+                        has_reference_image=bool(attachments),
+                        request_category=request_category,
+                        candidates=[repair_candidate],
+                        inline_vision_judge=inline_vision_judge,
+                        vision_analyzer=analyze_candidate_with_vision_tool,
+                        reference_binding=reference_binding,
+                    )
+                    repair_decision = rank_visual_candidates(
+                        request_id=request_id,
+                        candidates=[repair_candidate],
+                        post_threshold=0.0,
+                        ask_threshold=0.0,
+                    )
+                    repair_learning = _active_learning_trace(
+                        rank_decision=repair_decision.__dict__,
+                        candidates=[repair_candidate],
+                        has_reference_image=bool(attachments),
+                    )
+                    challenger = repair_candidate
+                    challenger_gate = _delivery_gate_decision(
+                        repair_learning,
+                        challenger,
+                        prompt=prompt,
+                    )
+                    challenger_gate = _apply_visual_kernel_delivery_gate(
+                        challenger_gate,
+                        challenger,
+                        args,
+                    )
+                    challenger_gate["repair_attempted"] = True
+                    challenger_gate["repair_round"] = repair_round
+                    challenger_gate["repaired_from"] = previous_gate
+                    if hybrid_final_combine:
+                        repaired_hybrid_gate = _hybrid_final_combine_quality_gate(challenger)
+                        repaired_hybrid_gate["repair_attempted"] = True
+                        repaired_hybrid_gate["repaired_from"] = hybrid_quality_gate_metadata
+                        hybrid_quality_gate_metadata = repaired_hybrid_gate
+                        if repaired_hybrid_gate.get("passed") is not True:
+                            challenger_gate = _with_hybrid_quality_gate_block(
+                                challenger_gate,
+                                repaired_hybrid_gate,
+                            )
+                        else:
+                            challenger_gate = _with_hybrid_quality_gate_pass(
+                                challenger_gate,
+                                repaired_hybrid_gate,
+                            )
+                    observation = quality_loop.observe(
+                        snapshot_from_candidate(challenger, challenger_gate),
+                        repair_fingerprint=repair_fingerprint,
+                    )
+                    if observation.accepted:
+                        repair_learning = _record_learning_trace(
+                            ledger,
+                            request_id=request_id,
+                            intent_signature=intent_signature,
+                            strategy_signature=strategy_plan.strategy_signature,
+                            strategy_plan=strategy_plan.to_record(),
+                            modality="image",
+                            rank_decision=repair_decision.__dict__,
+                            candidates=[repair_candidate],
+                            has_reference_image=bool(attachments),
+                        )
+                        selected_image = challenger
+                        image_gate = challenger_gate
+                        rankings["image"] = repair_decision.__dict__
+                        learning["active_learning"]["image"] = repair_learning
+                else:
+                    quality_loop.observe(
+                        snapshot_from_candidate(
+                            None,
+                            {
+                                "allowed": False,
+                                "blocker_codes": ["provider_failure"],
+                            },
+                        ),
+                        repair_fingerprint=repair_fingerprint,
+                    )
+                if quality_loop.stop_reason:
+                    break
+
+            quality_loop_record = quality_loop.to_record()
+            quality_loop_record["generation_attempts_before_loop"] = generation_attempts_before_loop
+            quality_loop_record["total_generation_attempts"] = len(image_payloads)
+            image_gate["quality_loop"] = quality_loop_record
+            delivery_gate["image"] = image_gate
+            generation_payloads["image"] = (
+                image_payloads[0] if len(image_payloads) == 1 else image_payloads
+            )
+            record_shadow_update(
+                ledger,
+                request_id=request_id,
+                intent_signature=intent_signature,
+                strategy_signature=strategy_plan.strategy_signature,
+                proposed_change={
+                    "type": "bounded_quality_loop_observation",
+                    "activation": "shadow_only",
+                },
+                evidence=quality_loop_record,
+                confidence=quality_loop.champion.score,
+            )
+
+        if quality_loop is not None and not image_gate["allowed"]:
+            kernel_repair_plan = {
+                "strategy": "stop_quality_loop",
+                "should_generate": False,
+                "should_switch_provider": False,
+                "blocker_codes": list(quality_loop.champion.blocker_codes),
+                "directive": "Keep the current champion and stop generated repairs.",
+                "reason": str(quality_loop.stop_reason or "bounded_quality_loop_stopped"),
+            }
+        else:
+            kernel_repair_plan = _visual_kernel_repair_plan(image_gate, args)
         if kernel_repair_plan is not None:
             image_gate["visual_kernel_repair"] = kernel_repair_plan
             delivery_gate["image"] = image_gate
@@ -1867,6 +2058,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             selected_image
             and not image_gate["allowed"]
             and not composition_guide_only
+            and quality_loop is None
             and (
                 kernel_repair_plan is None
                 or kernel_repair_plan.get("should_generate") is True
@@ -5126,23 +5318,14 @@ def _record_learning_trace(
     candidates: list[dict[str, Any]],
     has_reference_image: bool,
 ) -> dict[str, Any]:
+    active_learning = _active_learning_trace(
+        rank_decision=rank_decision,
+        candidates=candidates,
+        has_reference_image=has_reference_image,
+    )
     selected = _selected_candidate(candidates, rank_decision.get("selected_artifact_id"))
     top = selected or _top_ranked_candidate(candidates, rank_decision.get("ranked_artifact_ids"))
     reward = top.get("reward", {}) if top else {}
-    active_learning = decide_visual_action(
-        {
-            "decision": rank_decision.get("decision"),
-            "top_score": reward.get("final_score", 0.0),
-            "top_confidence": reward.get("confidence", 0.0),
-            "uncertainty_reasons": reward.get("uncertainty_reasons", []),
-        },
-        request_context={
-            "has_reference_image": has_reference_image,
-            "candidate_count": len(candidates),
-            "retry_budget_remaining": 0,
-            "failure_type": rank_decision.get("reason"),
-        },
-    )
     ledger.record_ranking(
         request_id=request_id,
         selected_artifact_id=rank_decision.get("selected_artifact_id"),
@@ -5176,6 +5359,31 @@ def _record_learning_trace(
         confidence=active_learning.get("top_confidence"),
     )
     return active_learning
+
+
+def _active_learning_trace(
+    *,
+    rank_decision: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    has_reference_image: bool,
+) -> dict[str, Any]:
+    selected = _selected_candidate(candidates, rank_decision.get("selected_artifact_id"))
+    top = selected or _top_ranked_candidate(candidates, rank_decision.get("ranked_artifact_ids"))
+    reward = top.get("reward", {}) if top else {}
+    return decide_visual_action(
+        {
+            "decision": rank_decision.get("decision"),
+            "top_score": reward.get("final_score", 0.0),
+            "top_confidence": reward.get("confidence", 0.0),
+            "uncertainty_reasons": reward.get("uncertainty_reasons", []),
+        },
+        request_context={
+            "has_reference_image": has_reference_image,
+            "candidate_count": len(candidates),
+            "retry_budget_remaining": 0,
+            "failure_type": rank_decision.get("reason"),
+        },
+    )
 
 
 def _selected_candidate(
@@ -5276,7 +5484,7 @@ def _visual_kernel_context(args: dict[str, Any]) -> dict[str, Any] | None:
 
 def _max_visual_kernel_repairs(args: dict[str, Any]) -> int:
     value = _coerce_int(args.get("max_generated_repairs"))
-    return 1 if value is None else max(0, min(1, value))
+    return 2 if value is None else max(0, min(2, value))
 
 
 def _visual_kernel_candidate_budget(
@@ -5379,6 +5587,9 @@ def _apply_visual_kernel_delivery_gate(
 def _visual_kernel_repair_plan(
     gate: dict[str, Any],
     args: dict[str, Any],
+    *,
+    prior_generated_repairs: tuple[str, ...] = (),
+    repeated_blockers: tuple[str, ...] = (),
 ) -> dict[str, Any] | None:
     if not _coerce_bool(args.get("visual_production_kernel")):
         return None
@@ -5392,10 +5603,178 @@ def _visual_kernel_repair_plan(
     )
     plan = plan_visual_repair(
         _string_list(blockers),
-        prior_generated_repairs=(),
+        prior_generated_repairs=prior_generated_repairs,
+        repeated_blockers=repeated_blockers,
         max_generated_repairs=_max_visual_kernel_repairs(args),
     )
     return plan.to_record()
+
+
+def _quality_repair_provider(
+    image_provider_override: str | None,
+    repair_plan: dict[str, Any],
+    args: dict[str, Any],
+) -> tuple[str | None, str | None]:
+    if repair_plan.get("should_switch_provider") is not True:
+        return image_provider_override, None
+    decision = args.get("provider_decision")
+    reason = str(decision.get("reason") or "") if isinstance(decision, dict) else ""
+    if reason.startswith("explicit_override"):
+        return None, "explicit_provider_pinned"
+    if not _visual_kernel_allows_provider_fallback(args):
+        return None, "explicit_provider_pinned"
+    fallback_providers = _available_image_provider_fallbacks(
+        failed_provider=image_provider_override,
+    )
+    configured = args.get("authorized_image_providers")
+    authorized = {
+        provider
+        for provider in (
+            _normalise_image_provider(value)
+            for value in configured
+        )
+        if provider
+    } if isinstance(configured, (list, tuple)) else set()
+    for fallback_provider in fallback_providers:
+        normalized = _normalise_image_provider(fallback_provider)
+        if normalized and normalized in authorized:
+            return normalized, None
+    return None, "fallback_provider_unavailable"
+
+
+def _generate_image_quality_repair_candidate(
+    *,
+    args: dict[str, Any],
+    ledger: VisualAttemptLedger,
+    request_id: str,
+    image_prompt_base: str,
+    image_gate: dict[str, Any],
+    repair_plan: dict[str, Any] | None,
+    feedback_policy: dict[str, Any],
+    hybrid_final_combine: bool,
+    reference_binding: dict[str, Any] | None,
+    attachments: list[str],
+    reference_conditioning_variants: list[str] | None,
+    aspect_ratio: str,
+    image_aspect_ratio: str,
+    image_provider_override: str | None,
+    request_category: str,
+    selected_image: dict[str, Any],
+    candidate_index: int,
+    image_input_artifacts: list[dict[str, Any]],
+    image_artifact_role: str,
+    prompt_original: str,
+    repair_round: int,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    image_repair_mode = (
+        "hybrid_final_combine"
+        if hybrid_final_combine
+        else _quality_repair_policy_mode(feedback_policy, "image")
+    )
+    repair_prompt = _quality_repair_prompt(
+        image_prompt_base,
+        image_gate,
+        mode=image_repair_mode,
+        reference_binding=reference_binding,
+    )
+    if repair_plan is not None:
+        repair_prompt = (
+            f"{repair_prompt}\n\n"
+            "Visual contract repair strategy: "
+            f"{repair_plan.get('strategy')}. "
+            "Blocker codes: "
+            f"{', '.join(_string_list(repair_plan.get('blocker_codes')))}. "
+            f"{repair_plan.get('directive')}"
+        )
+    repair_reference_policy = _reference_conditioning_policy_for_gate(
+        image_gate,
+        reference_conditioning_variants,
+    )
+    provider_reference_images, reference_conditioning = _provider_reference_image_urls(
+        attachments,
+        reference_binding,
+        conditioning_policy=repair_reference_policy,
+    )
+    reference_attempt_extra = _provider_reference_attempt_extra(
+        provider_reference_images,
+        reference_conditioning,
+    )
+    repair_prompt = _apply_provider_reference_conditioning_prompt(
+        repair_prompt,
+        reference_conditioning,
+    )
+    repair_prompt = build_provider_facing_visual_prompt(
+        repair_prompt,
+        provider=image_provider_override,
+        request_category=request_category,
+    )
+    repair_kwargs = {
+        "prompt": repair_prompt,
+        "aspect_ratio": image_aspect_ratio,
+        "reference_image_urls": provider_reference_images or None,
+    }
+    if str(args.get("image_model") or "").strip():
+        repair_kwargs["model"] = str(args["image_model"]).strip()
+    _apply_image_provider_override(repair_kwargs, image_provider_override)
+    repair_payload = _call_generation_provider(
+        generate_image,
+        kind="image",
+        stage=f"image_quality_repair_{repair_round}",
+        kwargs=repair_kwargs,
+    )
+    repair_payload["retry_of"] = selected_image.get("attempt_id")
+    repair_payload["quality_repair"] = {
+        "round": repair_round,
+        "reason": image_gate.get("reason"),
+        "quality_issues": image_gate.get("quality_issues", []),
+        "policy_mode": image_repair_mode,
+        "policy_actions": feedback_policy.get("applied_action_types", []),
+    }
+    if repair_plan is not None:
+        repair_payload["quality_repair"].update(
+            {
+                "strategy": repair_plan.get("strategy"),
+                "blocker_codes": _string_list(repair_plan.get("blocker_codes")),
+                "visual_contract_hash": str(args.get("visual_contract_hash") or ""),
+            }
+        )
+    if not repair_payload.get("success"):
+        _annotate_generation_failure(
+            repair_payload,
+            base_kwargs=repair_kwargs,
+            request={
+                "prompt": repair_prompt,
+                "arguments": repair_kwargs,
+                "source_media": _source_media_from_attachments(attachments),
+                "quality_repair": repair_payload["quality_repair"],
+            },
+            retry_budget_remaining=0,
+        )
+    repair_candidate = _record_payload_candidate(
+        ledger,
+        request_id=request_id,
+        payload=repair_payload,
+        artifact_key="image",
+        expected_kind="image",
+        prompt=repair_prompt,
+        prompt_original=prompt_original,
+        provider=str(repair_payload.get("provider") or ""),
+        model=str(repair_payload.get("model") or ""),
+        requested_parameters=_image_attempt_parameters(
+            aspect_ratio,
+            attachments=attachments,
+            reference_binding=reference_binding,
+            extra={
+                **reference_attempt_extra,
+                "quality_repair_of": selected_image.get("artifact_id"),
+                "quality_repair_round": repair_round,
+            },
+        ),
+        candidate_index=candidate_index,
+        input_artifacts=image_input_artifacts,
+        artifact_role=image_artifact_role,
+    )
+    return repair_candidate, repair_payload
 
 
 def _delivery_gate_decision(

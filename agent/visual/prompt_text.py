@@ -46,6 +46,11 @@ _XAI_REFERENCE_SENTENCE = (
     "Use attached references as collective identity/style evidence; create a new cohesive "
     "composition instead of cleaning up, copying, extending, stitching, or averaging one reference."
 )
+_XAI_PHOTOREAL_AUDIENCE_GUARDRAIL = (
+    "Audience age affects emotional clarity only; preserve physically plausible anatomy and natural "
+    "proportions. Use photographic documentary realism, not illustration, animation, mascot, or "
+    "oversized cute eyes."
+)
 _XAI_NEGATIVE_LABELS = {"avoid", "negative", "negative constraints", "negative prompt"}
 _XAI_POSITIVE_LABELS = {
     "composition",
@@ -299,6 +304,15 @@ def _compact_xai_creative_brief_prompt(prompt: str) -> str:
         positive_blocks.append(block)
 
     positive_blocks = _dedupe_prompt_blocks(positive_blocks)
+    if _xai_prompt_requests_photorealism(prompt):
+        if positive_blocks:
+            positive_blocks = [
+                positive_blocks[0],
+                _XAI_PHOTOREAL_AUDIENCE_GUARDRAIL,
+                *positive_blocks[1:],
+            ]
+        else:
+            positive_blocks = [_XAI_PHOTOREAL_AUDIENCE_GUARDRAIL]
     if not reference_added and _prompt_mentions_collective_reference_policy(prompt):
         reference_blocks.append(_XAI_REFERENCE_SENTENCE)
     reference_blocks = _dedupe_prompt_blocks(reference_blocks)
@@ -405,6 +419,43 @@ def _prompt_mentions_explicit_reference_roles(text: str) -> bool:
         or "pose_composition" in lowered
         or "wardrobe_reference" in lowered
     )
+
+
+def _xai_prompt_requests_photorealism(text: str) -> bool:
+    lowered = str(text or "").lower()
+    compact = re.sub(r"\s+", "", lowered)
+    realism_requested = any(
+        marker in lowered
+        for marker in (
+            "photoreal",
+            "photo-real",
+            "realistic photography",
+            "documentary still",
+            "nature documentary",
+        )
+    ) or any(marker in compact for marker in ("寫實", "真实摄影", "真實攝影", "紀錄片", "纪录片"))
+    english_style = r"(?:anime|cartoon(?:ish)?|illustration|animated|pixar)"
+    stylized_intent = re.sub(
+        rf"\b(?:no|not|avoid|without)\s+(?:an?\s+)?{english_style}"
+        rf"(?:(?:\s*(?:,|/)\s*|\s+(?:or|and)\s+|\s+)(?:an?\s+)?{english_style})*",
+        "",
+        lowered,
+    )
+    chinese_style = r"(?:卡通|動畫|动画|插圖|插图|動漫|动漫)"
+    stylized_intent = re.sub(
+        rf"(?:不要|避免|非|不是){chinese_style}(?:(?:、|或|和|與|与|及|/)?{chinese_style})*",
+        "",
+        stylized_intent,
+    )
+    stylized_compact = re.sub(r"\s+", "", stylized_intent)
+    stylized_requested = any(
+        marker in stylized_intent
+        for marker in ("anime", "cartoon", "illustration", "animated", "pixar")
+    ) or any(
+        marker in stylized_compact
+        for marker in ("卡通", "動畫", "动画", "插圖", "插图", "動漫", "动漫")
+    )
+    return realism_requested and not stylized_requested
 
 
 def _capitalise_ascii_sentence(text: str) -> str:
