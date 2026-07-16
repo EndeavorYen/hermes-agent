@@ -29,8 +29,11 @@ def test_quality_tool_schema_exposes_native_batch_chunk() -> None:
     actions = STORY_VIDEO_QUALITY_CONTROL_SCHEMA["parameters"]["properties"][
         "action"
     ]["enum"]
+    properties = STORY_VIDEO_QUALITY_CONTROL_SCHEMA["parameters"]["properties"]
 
     assert "run_batch_chunk" in actions
+    assert "run_id" in properties
+    assert "project_dir" in properties
 
 
 def test_auto_native_batch_requires_matching_scoped_authorization(

@@ -100,8 +100,21 @@ class TestModuleSurface:
         assert control_tool is not None
         assert quality_tool.parameters == STORY_VIDEO_QUALITY_CONTROL_SCHEMA["parameters"]
         assert "kwargs" not in quality_tool.parameters.get("properties", {})
+        assert "run_id" in quality_tool.parameters["properties"]
+        assert "project_dir" in quality_tool.parameters["properties"]
         actions = quality_tool.parameters["properties"]["action"]["enum"]
         assert "run_batch_chunk" in actions
+
+        routed = await quality_tool.run(
+            {
+                "action": "run_batch_chunk",
+                "run_id": "run-1",
+                "project_dir": "/tmp/story-video-run-1",
+                "authorization_id": "authorization-1",
+            }
+        )
+        assert '"run_id": "run-1"' in str(routed)
+        assert '"project_dir": "/tmp/story-video-run-1"' in str(routed)
 
         result = await control_tool.run({"action": "status"})
         assert "story_video_context_missing" in str(result)
@@ -206,6 +219,58 @@ class TestModuleSurface:
 
         assert result == "ok"
         assert observed["session_id"] == "story-session-1"
+
+    def test_mcp_dispatch_recovers_story_session_from_scoped_authorization(
+        self, tmp_path, monkeypatch
+    ):
+        import agent.transports.hermes_tools_mcp_server as m
+        from plugins.story_video.state import OperatorCall, StoryVideoStateStore
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+        store = StoryVideoStateStore()
+        context = store.create_or_load(
+            source_key="source-1",
+            session_id="story-session-1",
+            call=OperatorCall(action="start", topic="Triassic", auto_mode=True),
+            original_request="story video full auto",
+        )
+        authorization = store.autopilot_authorization(context)
+        assert authorization is not None
+        observed = {}
+
+        def fake_handle(name, args, **kwargs):
+            observed.update({"name": name, "args": args, **kwargs})
+            return "ok"
+
+        result = m._dispatch_tool(
+            "story_video_quality_control",
+            {
+                "action": "run_batch_chunk",
+                "authorization_id": authorization["authorization_id"],
+            },
+            handle_function_call=fake_handle,
+        )
+
+        assert result == "ok"
+        assert observed["session_id"] == "story-session-1"
+
+        store.create_or_load(
+            source_key="source-1",
+            session_id="story-session-1",
+            call=OperatorCall(action="stop"),
+            original_request="stop story video",
+        )
+        observed.clear()
+        m._dispatch_tool(
+            "story_video_quality_control",
+            {
+                "action": "run_batch_chunk",
+                "authorization_id": authorization["authorization_id"],
+            },
+            handle_function_call=fake_handle,
+        )
+        assert observed["session_id"] is None
 
     def test_mcp_dispatch_rejects_mismatched_story_run_context(
         self, tmp_path, monkeypatch

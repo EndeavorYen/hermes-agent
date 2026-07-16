@@ -70,6 +70,22 @@ STORY_VIDEO_QUALITY_CONTROL_SCHEMA = {
                     "run_batch_chunk."
                 ),
             },
+            "run_id": {
+                "type": "string",
+                "description": (
+                    "Active story-video run identifier used only to resolve the "
+                    "canonical run context when the MCP process does not inherit the "
+                    "originating Hermes session."
+                ),
+            },
+            "project_dir": {
+                "type": "string",
+                "description": (
+                    "Absolute active story-video project directory paired with run_id "
+                    "for canonical MCP context resolution. It does not broaden the "
+                    "authorization beyond project-local artifact writes."
+                ),
+            },
             "repair_round": {
                 "type": "integer",
                 "minimum": 1,
