@@ -1644,6 +1644,62 @@ def _run_conversation_with_visual_reference_context(
     finally:
         reset_visual_reference_context(token)
 
+
+def _visual_reference_context_for_turn(
+    message: Any,
+    *,
+    current_attachment_paths: List[str],
+    agent_history: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Bind current uploads plus explicitly requested thread references."""
+    from agent.visual.session_references import (
+        MAX_SESSION_VISUAL_REFERENCES,
+        collect_recent_original_visual_reference_entries,
+        collect_recent_visual_reference_entries,
+        prompt_requests_original_visual_references,
+        prompt_requests_visual_reference_reuse,
+    )
+    from tools.story_video_provider_guard import current_operator_request_text
+
+    references: List[Dict[str, Any]] = [
+        {
+            "uri": path,
+            "role_hint": "visual_reference",
+            "source": "gateway_attachment",
+            "user_ref_index": index,
+        }
+        for index, path in enumerate(current_attachment_paths)
+        if isinstance(path, str) and path.strip()
+    ]
+    operator_request = current_operator_request_text(message)
+    requests_original = prompt_requests_original_visual_references(operator_request)
+    if not (
+        requests_original
+        or prompt_requests_visual_reference_reuse(operator_request)
+    ):
+        return references[:MAX_SESSION_VISUAL_REFERENCES]
+
+    if requests_original:
+        historical = collect_recent_original_visual_reference_entries(
+            agent_history,
+            limit=MAX_SESSION_VISUAL_REFERENCES,
+        )
+    else:
+        historical = collect_recent_visual_reference_entries(
+            agent_history,
+            limit=MAX_SESSION_VISUAL_REFERENCES,
+        )
+    seen = {str(entry.get("uri") or "") for entry in references}
+    for entry in historical:
+        uri = str(entry.get("uri") or "").strip()
+        if not uri or uri in seen:
+            continue
+        references.append(entry)
+        seen.add(uri)
+        if len(references) >= MAX_SESSION_VISUAL_REFERENCES:
+            break
+    return references
+
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
 # Must run BEFORE any HTTP library (discord, aiohttp, etc.) is imported.
@@ -19176,16 +19232,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _conversation_kwargs["moa_config"] = moa_config
                 if _persist_user_timestamp_override is not None:
                     _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
-                _visual_references = [
-                    {
-                        "uri": path,
-                        "role_hint": "visual_reference",
-                        "source": "gateway_attachment",
-                        "user_ref_index": index,
-                    }
-                    for index, path in enumerate(_native_imgs)
-                    if isinstance(path, str) and path.strip()
-                ]
+                _visual_references = _visual_reference_context_for_turn(
+                    _run_message,
+                    current_attachment_paths=_native_imgs,
+                    agent_history=agent_history,
+                )
                 result = _run_conversation_with_visual_reference_context(
                     agent,
                     _api_run_message,

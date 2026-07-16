@@ -212,6 +212,52 @@ def test_explicit_visual_agent_turn_overrides_active_slack_reply_wrapper():
     assert handoff["arguments"]["include_video"] is True
 
 
+def test_explicit_visual_agent_reproduce_with_original_ref_routes_selected_delivery():
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+    from gateway.session_context import (
+        reset_visual_reference_context,
+        set_visual_reference_context,
+    )
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.6",
+    )
+    prompt = """[Replying to: "用 xai imagine，locked ref 角色，給我 4 張挑選"]
+
+[Thread context — prior messages in this thread (not yet in conversation history):]
+[thread parent] user: 用 xai imagine，locked ref 角色，給我 4 張挑選
+user: 沒看到圖，沒有成功上傳
+[End of thread context]
+
+visual agent : 用原本的ref, 再產2張不同姿勢的圖"""
+    token = set_visual_reference_context(
+        [
+            {
+                "uri": "/tmp/original-selected-ref.png",
+                "role_hint": "edit_anchor",
+                "source": "previous_tool_reference",
+            }
+        ]
+    )
+    try:
+        handoff = build_direct_visual_agent_handoff(agent, prompt)
+    finally:
+        reset_visual_reference_context(token)
+
+    assert handoff is not None
+    assert handoff["mode"] == "pre_llm_direct"
+    assert handoff["tool_name"] == "visual_agent_generate"
+    assert handoff["arguments"]["attachments"] == [
+        "/tmp/original-selected-ref.png"
+    ]
+    assert handoff["arguments"]["candidate_budget"] == 2
+    assert handoff["arguments"]["image_provider"] == "xai"
+    assert handoff["arguments"]["include_image"] is True
+    assert handoff["arguments"]["include_video"] is False
+
+
 def test_visual_agent_capability_question_does_not_trigger_generation():
     from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
 
