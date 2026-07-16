@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -80,16 +81,31 @@ def _duration_seconds(value: Any) -> float:
     return duration if math.isfinite(duration) and duration > 0 else 0.0
 
 
-def _shot_count_bounds(duration_sec: float) -> tuple[int, int]:
+def _quality_contract_version(ledger: dict[str, Any]) -> int:
+    try:
+        return int(ledger.get("quality_contract_version") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _shot_count_bounds(
+    duration_sec: float, *, quality_contract_version: int = 0
+) -> tuple[int, int]:
     if duration_sec <= 0:
         return 1, 0
     minutes = duration_sec / 60.0
+    if quality_contract_version >= 5:
+        return max(1, math.ceil(minutes * 3.0)), max(1, math.ceil(minutes * 4.0))
     return max(1, math.ceil(minutes * 5.0)), max(1, math.ceil(minutes * 8.0))
 
 
 def _is_narration_fragment(value: Any) -> bool:
     text = _text(value)
     return bool(text) and text.endswith(("，", "、", "：", "；", ",", ":", ";"))
+
+
+def _complete_sentence_count(value: Any) -> int:
+    return len(re.findall(r"[。！？.!?]+(?:[」』”’\"')\]]*)", _text(value)))
 
 
 def _scene_shots(ledger: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
@@ -112,6 +128,7 @@ def _scene_shots(ledger: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
 
 def validate_quality_ledger(ledger: dict[str, Any]) -> LedgerQualityReport:
     violations: list[str] = []
+    quality_contract_version = _quality_contract_version(ledger)
     scenes = ledger.get("scenes")
     if not isinstance(scenes, list) or not scenes:
         return LedgerQualityReport(False, ("scene_ledger.scenes",), {"shot_count": 0})
@@ -152,6 +169,16 @@ def validate_quality_ledger(ledger: dict[str, Any]) -> LedgerQualityReport:
             and not _text(shot.get("intentional_fast_cut_reason"))
         ):
             violations.append(f"{shot_id}.narration_fragment")
+        sentence_count = _complete_sentence_count(shot.get("narration_text"))
+        if (
+            quality_contract_version >= 5
+            and sentence_count < 2
+            and not _text(shot.get("intentional_fast_cut_reason"))
+            and not _text(shot.get("intentional_single_sentence_hold_reason"))
+        ):
+            violations.append(
+                f"{shot_id}.narration_hold_too_short:{sentence_count}<2"
+            )
         scale = _text(shot.get("shot_scale")).lower()
         if scale and scale not in SHOT_SCALES:
             violations.append(f"{shot_id}.shot_scale:{scale}")
@@ -162,7 +189,9 @@ def validate_quality_ledger(ledger: dict[str, Any]) -> LedgerQualityReport:
     duration_sec = _duration_seconds(
         ledger.get("target_duration_sec") or ledger.get("duration_sec")
     )
-    minimum_shots, maximum_shots = _shot_count_bounds(duration_sec)
+    minimum_shots, maximum_shots = _shot_count_bounds(
+        duration_sec, quality_contract_version=quality_contract_version
+    )
     shot_count = len(shot_rows)
     if duration_sec and shot_count < minimum_shots:
         violations.append(
@@ -201,6 +230,7 @@ def validate_quality_ledger(ledger: dict[str, Any]) -> LedgerQualityReport:
     violations.extend(style_report.violations)
     metrics = {
         "duration_sec": duration_sec,
+        "quality_contract_version": quality_contract_version,
         "shot_count": shot_count,
         "minimum_shots": minimum_shots,
         "maximum_shots": maximum_shots,

@@ -248,6 +248,19 @@ def test_planning_validation_rejects_missing_or_failed_script_quality(tmp_path) 
     assert "script_quality_report.json" in missing.missing
 
 
+def test_planning_validation_requires_v5_script_report_for_v5_ledger(tmp_path) -> None:
+    _store, context = _active_context(tmp_path)
+    ledger = _write_planning_fixture(context)
+    ledger["quality_contract_version"] = 5
+    (context.project_dir / "scene_ledger.json").write_text(
+        json.dumps(ledger), encoding="utf-8"
+    )
+
+    proof = validate_phase(context)
+
+    assert "script_quality_report.quality_contract_version<5" in proof.violations
+
+
 def test_planning_validation_requires_the_final_script_artifact(tmp_path) -> None:
     _store, context = _active_context(tmp_path)
     _write_planning_fixture(context)

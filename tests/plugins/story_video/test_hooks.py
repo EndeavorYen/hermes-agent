@@ -67,10 +67,10 @@ def test_runtime_context_requires_modular_child_story_style_and_educational_endi
         event=_event("故事影片：恐龍起源｜5分｜電影感科普。只規劃。")
     )
 
-    runtime = hooks.pre_llm_call(session_id="session-v4", user_message=start["text"])
+    runtime = hooks.pre_llm_call(session_id="session-v5", user_message=start["text"])
     context = runtime["context"]
 
-    assert "quality_contract_version=4" in context
+    assert "quality_contract_version=5" in context
     assert "minimum_age_years=5" in context
     assert "story_engine" in context
     assert "style_bible" in context
@@ -470,9 +470,9 @@ def test_pre_llm_creates_context_and_injects_provider_policy(tmp_path, monkeypat
     assert "camera_angle" in result["context"]
     assert "subtitle_safe_area" in result["context"]
     assert "establishing|wide|medium|close_up|macro|insert" in result["context"]
-    assert "5-8 semantic shots per minute" in result["context"]
+    assert "3-4 semantic shots per minute" in result["context"]
     assert "story_video_script_quality_v1" in result["context"]
-    assert "quality_contract_version=4" in result["context"]
+    assert "quality_contract_version=5" in result["context"]
     assert "audience_profile" in result["context"]
     assert "engagement_profile" in result["context"]
     assert "mode=young_explorer, energy=high, humor=light" in result["context"]
@@ -491,9 +491,10 @@ def test_pre_llm_creates_context_and_injects_provider_policy(tmp_path, monkeypat
     assert "### S00" in result["context"]
     assert "never write spoken aliases into script.md" in result["context"]
     assert "acceptance_criteria MUST be a non-empty JSON array of strings" in result["context"]
-    assert "25-40" in result["context"]
-    assert "8-12 seconds" in result["context"]
-    assert "complete narration thought" in result["context"]
+    assert "15-20" in result["context"]
+    assert "15-20 seconds" in result["context"]
+    assert "at least two complete sentences" in result["context"]
+    assert "complete narration beat" in result["context"]
 
 
 def test_remake_rebinds_thread_to_revision_and_injects_source_boundary(

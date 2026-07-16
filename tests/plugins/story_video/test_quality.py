@@ -12,7 +12,7 @@ def _shot(index: int, *, scale: str = "medium", risk: str = "normal") -> dict:
     shot_id = f"S00_SH{index:02d}"
     return {
         "shot_id": shot_id,
-        "narration_text": f"第 {index} 個可視化旁白片段",
+        "narration_text": f"第 {index} 個線索先出現。接著看見它造成的結果。",
         "narrative_role": "evidence" if scale in {"close_up", "macro", "insert"} else "mechanism",
         "viewer_takeaway": "直立腿讓移動更有效率",
         "subject": "小型早期恐龍的後肢",
@@ -100,11 +100,48 @@ def test_quality_ledger_rejects_shot_without_observable_evidence() -> None:
     assert "S00_SH00.evidence_detail" in report.violations
 
 
-def test_five_minute_quality_profile_requires_25_to_40_semantic_shots() -> None:
-    report = validate_quality_ledger(_ledger([_shot(i) for i in range(20)], duration=300))
+def test_five_minute_efficiency_profile_requires_15_to_20_semantic_shots() -> None:
+    sparse_ledger = _ledger([_shot(i) for i in range(14)], duration=300)
+    dense_ledger = _ledger([_shot(i) for i in range(21)], duration=300)
+    sparse_ledger["quality_contract_version"] = 5
+    dense_ledger["quality_contract_version"] = 5
+    too_sparse = validate_quality_ledger(sparse_ledger)
+    too_dense = validate_quality_ledger(dense_ledger)
 
-    assert report.ok is False
-    assert "shot_density_below_quality_first_minimum:20<25" in report.violations
+    assert "shot_density_below_quality_first_minimum:14<15" in too_sparse.violations
+    assert "shot_density_above_quality_first_maximum:21>20" in too_dense.violations
+
+
+def test_legacy_v4_ledger_keeps_original_semantic_shot_density() -> None:
+    ledger = _ledger([_shot(i) for i in range(25)], duration=300)
+    ledger["quality_contract_version"] = 4
+
+    report = validate_quality_ledger(ledger)
+
+    assert not any("shot_density_" in item for item in report.violations)
+
+
+def test_v5_normal_shot_holds_at_least_two_complete_sentences() -> None:
+    shots = [_shot(i, scale="close_up" if i % 4 == 0 else "medium") for i in range(4)]
+    shots[1]["narration_text"] = "這是一句很短的旁白。"
+
+    ledger = _ledger(shots)
+    ledger["quality_contract_version"] = 5
+    report = validate_quality_ledger(ledger)
+
+    assert "S00_SH01.narration_hold_too_short:1<2" in report.violations
+
+
+def test_v5_allows_explained_single_sentence_hold() -> None:
+    shots = [_shot(i, scale="close_up" if i % 4 == 0 else "medium") for i in range(4)]
+    shots[1]["narration_text"] = "這是一句獨立而完整的長旁白。"
+    shots[1]["intentional_single_sentence_hold_reason"] = "closing question held for emphasis"
+
+    ledger = _ledger(shots)
+    ledger["quality_contract_version"] = 5
+    report = validate_quality_ledger(ledger)
+
+    assert not any("narration_hold_too_short" in item for item in report.violations)
 
 
 def test_quality_ledger_rejects_narration_fragments_as_visual_shots() -> None:

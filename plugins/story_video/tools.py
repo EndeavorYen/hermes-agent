@@ -157,6 +157,15 @@ def _validate_planning(context: StoryVideoRunContext) -> PhaseProof:
                     "style_consistency",
                 )
             )
+        if isinstance(ledger, dict):
+            try:
+                ledger_quality_version = int(
+                    ledger.get("quality_contract_version") or 0
+                )
+            except (TypeError, ValueError):
+                ledger_quality_version = 0
+            if ledger_quality_version >= 5 and version < 5:
+                violations.append("script_quality_report.quality_contract_version<5")
         if not isinstance(checks, dict) or any(
             str(checks.get(name) or "").upper() != "PASS" for name in required_checks
         ):
