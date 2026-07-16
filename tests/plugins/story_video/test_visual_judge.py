@@ -2864,8 +2864,40 @@ def test_status_summarizes_selected_and_blocked_shots(tmp_path) -> None:
     assert payload["blocked_shot_ids"] == ["S00_SH01"]
 
 
-def test_prepare_render_writes_exact_renderer_v2_contract(tmp_path) -> None:
+def test_prepare_render_writes_exact_renderer_v2_contract(
+    tmp_path, monkeypatch
+) -> None:
     store, context, _shot = _context(tmp_path)
+    hermes_home = tmp_path / "hermes-home"
+    music = hermes_home / "music" / "curious-discovery.wav"
+    music.parent.mkdir(parents=True)
+    music.write_bytes(b"licensed-music")
+    (hermes_home / "story_video_music_library.json").write_text(
+        json.dumps(
+            {
+                "schema": "story_video_music_library_v1",
+                "tracks": [
+                    {
+                        "track_id": "curious-discovery",
+                        "path": str(music),
+                        "enabled": True,
+                        "rights_status": "approved",
+                        "license": "user_owned",
+                        "source": "commission receipt 2026-07-17",
+                        "moods": ["young_explorer", "high", "discovery"],
+                        "ducking": {
+                            "threshold": 0.025,
+                            "ratio": 12.0,
+                            "attack_ms": 60,
+                            "release_ms": 650,
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     image = context.project_dir / "images" / "S00_SH00.png"
     image.parent.mkdir(parents=True)
     image.write_bytes(b"selected-image")
@@ -2965,6 +2997,24 @@ def test_prepare_render_writes_exact_renderer_v2_contract(tmp_path) -> None:
     assert render_input["opening_card"]["duration_sec"] == 3.0
     assert render_input["ending_card"]["image"] == "release_art/ending_card.png"
     assert render_input["ending_card"]["duration_sec"] == 5.0
+    assert payload["background_music_status"] == "SELECTED"
+    assert render_input["background_music"] == {
+        "enabled": True,
+        "track_id": "curious-discovery",
+        "path": str(music),
+        "rights_status": "approved",
+        "license": "user_owned",
+        "source": "commission receipt 2026-07-17",
+        "volume_db": -22.0,
+        "fade_in_sec": 2.0,
+        "fade_out_sec": 4.0,
+        "ducking": {
+            "threshold": 0.025,
+            "ratio": 12.0,
+            "attack_ms": 60,
+            "release_ms": 650,
+        },
+    }
 
 
 def test_release_art_actions_compile_cinematic_prompt_and_compose_cards(

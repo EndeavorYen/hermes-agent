@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import mimetypes
+import os
 import re
 import shutil
 from datetime import datetime, timezone
@@ -2656,6 +2657,81 @@ def _canonical_story_scene_id(value: str) -> str:
     return f"S{int(digits):0{max(2, len(digits))}d}"
 
 
+def _select_background_music(
+    context: StoryVideoRunContext,
+    ledger: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str]:
+    hermes_home = Path(
+        os.environ.get("HERMES_HOME") or (Path.home() / ".hermes")
+    ).expanduser()
+    library_path = hermes_home / "story_video_music_library.json"
+    library = _load_json(library_path)
+    if not isinstance(library, dict):
+        return None, "NOT_CONFIGURED"
+    if str(library.get("schema") or "") != "story_video_music_library_v1":
+        return None, "INVALID_LIBRARY"
+
+    engagement = ledger.get("engagement_profile") or {}
+    desired_tags = {
+        str(engagement.get("mode") or "young_explorer").strip().lower(),
+        str(engagement.get("energy") or "high").strip().lower(),
+        "discovery",
+    }
+    candidates: list[tuple[int, str, dict[str, Any], Path]] = []
+    for raw in library.get("tracks") or []:
+        if not isinstance(raw, dict) or raw.get("enabled") is not True:
+            continue
+        if str(raw.get("rights_status") or "").strip().lower() != "approved":
+            continue
+        if not str(raw.get("license") or "").strip():
+            continue
+        if not str(raw.get("source") or "").strip():
+            continue
+        track_id = str(raw.get("track_id") or "").strip()
+        raw_path = Path(str(raw.get("path") or "")).expanduser()
+        track_path = (
+            raw_path if raw_path.is_absolute() else library_path.parent / raw_path
+        ).resolve()
+        if not track_id or not track_path.is_file():
+            continue
+        moods = {
+            str(value).strip().lower()
+            for value in raw.get("moods") or []
+            if str(value).strip()
+        }
+        score = len(desired_tags & moods)
+        stable_tiebreak = hashlib.sha256(
+            f"{context.topic}\x1f{track_id}".encode("utf-8")
+        ).hexdigest()
+        candidates.append((score, stable_tiebreak, raw, track_path))
+    if not candidates:
+        return None, "NO_APPROVED_TRACK"
+    _score, _tie, selected, track_path = max(
+        candidates, key=lambda row: (row[0], row[1])
+    )
+    ducking = selected.get("ducking") or {}
+    return (
+        {
+            "enabled": True,
+            "track_id": str(selected["track_id"]),
+            "path": str(track_path),
+            "rights_status": "approved",
+            "license": str(selected["license"]),
+            "source": str(selected["source"]),
+            "volume_db": float(selected.get("volume_db", -22.0)),
+            "fade_in_sec": float(selected.get("fade_in_sec", 2.0)),
+            "fade_out_sec": float(selected.get("fade_out_sec", 4.0)),
+            "ducking": {
+                "threshold": float(ducking.get("threshold", 0.03)),
+                "ratio": float(ducking.get("ratio", 10.0)),
+                "attack_ms": int(ducking.get("attack_ms", 80)),
+                "release_ms": int(ducking.get("release_ms", 800)),
+            },
+        },
+        "SELECTED",
+    )
+
+
 def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
     ledger = _load_json(context.project_dir / "scene_ledger.json")
     existing_render_input = _load_json(context.project_dir / "render_input.json")
@@ -2925,6 +3001,9 @@ def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
     opening_image = release_art["opening_card"]
     ending_image = release_art["ending_card"]
 
+    background_music, background_music_status = _select_background_music(
+        context, ledger
+    )
     render_input = {
         "schema": "story_video_render_input_v2",
         "project_title": context.topic,
@@ -2961,6 +3040,8 @@ def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
         "scenes": scenes,
         "output": "video/final.mp4",
     }
+    if background_music is not None:
+        render_input["background_music"] = background_music
     path = context.project_dir / "render_input.json"
     _write_json_atomic(path, render_input)
     return {
@@ -2973,6 +3054,7 @@ def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
         ),
         "scene_count": len(scenes),
         "selected_shot_count": len(selected_images),
+        "background_music_status": background_music_status,
     }
 
 

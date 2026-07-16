@@ -720,6 +720,8 @@ def test_autopilot_context_requires_canonical_quality_tool_and_phase_loop(
     assert "before prepare_render" in render["context"]
     assert "--refresh-qc" in render["context"]
     assert "without re-encoding" in render["context"]
+    assert "approved story-video music library" in render["context"]
+    assert "must never download random or unlicensed music" in render["context"]
     assert "During batch, first call" not in render["context"]
 
 

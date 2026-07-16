@@ -462,22 +462,24 @@ def _validate_voice(context: StoryVideoRunContext) -> PhaseProof:
             if qc_schema not in {
                 "story_video_pronunciation_qc_v1",
                 "story_video_pronunciation_qc_v2",
+                "story_video_pronunciation_qc_v3",
             }:
                 violations.append("local Qwen pronunciation QC schema is invalid")
             if str(pronunciation_report.get("status") or "").upper() != "PASS":
                 violations.append("local Qwen pronunciation QC is not PASS")
             if acoustic_contract:
-                if qc_schema != "story_video_pronunciation_qc_v2":
-                    violations.append("local Qwen acoustic pronunciation QC is not v2")
-                accepted_methods = {
-                    "lexicon_plus_independent_asr",
-                    "sentence_chunk_lexicon_plus_independent_asr",
-                }
-                if str(pronunciation_report.get("method") or "") not in accepted_methods:
-                    violations.append("local Qwen pronunciation QC lacks independent ASR")
+                if qc_schema != "story_video_pronunciation_qc_v3":
+                    violations.append("local Qwen acoustic pronunciation QC is not v3")
+                if (
+                    str(pronunciation_report.get("method") or "")
+                    != "sentence_chunk_plus_forced_alignment_isolated_term_asr"
+                ):
+                    violations.append(
+                        "local Qwen acoustic pronunciation QC lacks isolated term ASR"
+                    )
                 if sentence_chunk_contract and (
                     str(pronunciation_report.get("method") or "")
-                    != "sentence_chunk_lexicon_plus_independent_asr"
+                    != "sentence_chunk_plus_forced_alignment_isolated_term_asr"
                     or str(pronunciation_report.get("checked_unit") or "")
                     != "voice_chunk"
                 ):
@@ -487,6 +489,38 @@ def _validate_voice(context: StoryVideoRunContext) -> PhaseProof:
                 evidence = pronunciation_report.get("acoustic_evidence")
                 if not isinstance(evidence, list) or not evidence:
                     missing.append("local Qwen acoustic pronunciation evidence")
+                elif qc_schema == "story_video_pronunciation_qc_v3":
+                    term_checks = [
+                        check
+                        for row in evidence
+                        if isinstance(row, dict)
+                        for check in row.get("term_checks") or []
+                        if isinstance(check, dict)
+                    ]
+                    if any(
+                        str(check.get("status") or "").upper() != "PASS"
+                        or str(check.get("method") or "")
+                        != "forced_alignment_isolated_term_asr"
+                        for check in term_checks
+                    ):
+                        violations.append(
+                            "local Qwen isolated pronunciation term QC is not PASS"
+                        )
+                    required_terms = {
+                        str(entry.get("display") or "").strip()
+                        for entry in pronunciation_report.get("applied_entries") or []
+                        if isinstance(entry, dict)
+                        and str(entry.get("risk") or "").lower() == "high"
+                    }
+                    checked_terms = {
+                        str(check.get("display") or "").strip()
+                        for check in term_checks
+                        if str(check.get("status") or "").upper() == "PASS"
+                    }
+                    if required_terms - checked_terms:
+                        violations.append(
+                            "local Qwen pronunciation QC lacks isolated high-risk term evidence"
+                        )
         if str(manifest.get("pronunciation_status") or "").upper() != "PASS":
             violations.append("local Qwen narration pronunciation status is not PASS")
         if acoustic_contract:
