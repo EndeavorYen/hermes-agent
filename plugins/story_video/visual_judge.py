@@ -2647,6 +2647,15 @@ def _measured_voice_chunk_subtitle_cues(
     return cues
 
 
+def _canonical_story_scene_id(value: str) -> str:
+    normalized = str(value or "").strip().upper()
+    match = re.fullmatch(r"SC?(\d+)", normalized)
+    if match is None:
+        return normalized
+    digits = match.group(1)
+    return f"S{int(digits):0{max(2, len(digits))}d}"
+
+
 def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
     ledger = _load_json(context.project_dir / "scene_ledger.json")
     existing_render_input = _load_json(context.project_dir / "render_input.json")
@@ -2679,11 +2688,19 @@ def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
             raise ValueError(f"selected shot {shot_id} is not from OpenAI")
         selected_by_shot[shot_id] = output
 
-    narration_by_scene = {
-        str(output.get("scene_id") or "").strip(): output
-        for output in narration_manifest.get("outputs") or []
-        if isinstance(output, dict) and str(output.get("scene_id") or "").strip()
-    }
+    narration_by_scene: dict[str, dict[str, Any]] = {}
+    for output in narration_manifest.get("outputs") or []:
+        if not isinstance(output, dict):
+            continue
+        raw_scene_id = str(output.get("scene_id") or "").strip()
+        if not raw_scene_id:
+            continue
+        canonical_scene_id = _canonical_story_scene_id(raw_scene_id)
+        if canonical_scene_id in narration_by_scene:
+            raise ValueError(
+                f"duplicate narration scene alias for {canonical_scene_id}"
+            )
+        narration_by_scene[canonical_scene_id] = output
     narration_schema = str(narration_manifest.get("schema") or "")
     semantic_plans_by_scene: dict[str, dict[str, dict[str, Any]]] = {}
     if isinstance(existing_render_input, dict):
@@ -2691,7 +2708,7 @@ def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
             if not isinstance(scene, dict):
                 continue
             scene_id = str(scene.get("scene_id") or "").strip()
-            semantic_plans_by_scene[scene_id] = {
+            semantic_plans_by_scene[_canonical_story_scene_id(scene_id)] = {
                 str(shot.get("shot_id") or "").strip(): shot
                 for shot in scene.get("shots") or []
                 if isinstance(shot, dict) and str(shot.get("shot_id") or "").strip()
@@ -2706,7 +2723,8 @@ def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
         if not isinstance(scene, dict):
             continue
         scene_id = str(scene.get("scene_id") or "").strip()
-        narration = narration_by_scene.get(scene_id)
+        canonical_scene_id = _canonical_story_scene_id(scene_id)
+        narration = narration_by_scene.get(canonical_scene_id)
         if not scene_id or narration is None:
             raise ValueError(f"missing narration output for scene {scene_id or '<unknown>'}")
         _audio_path, audio_relative = _required_project_file(
@@ -2761,7 +2779,9 @@ def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
         render_rows: list[tuple[str, list[str], str, dict[str, Any], dict[str, Any] | None]] = []
         if segment_by_shot:
             covered_source_shots: set[str] = set()
-            existing_scene_plan = semantic_plans_by_scene.get(scene_id, {})
+            existing_scene_plan = semantic_plans_by_scene.get(
+                canonical_scene_id, {}
+            )
             for segment_id, segment in segment_by_shot.items():
                 semantic_plan = existing_scene_plan.get(segment_id, {})
                 raw_source_ids = segment.get("source_shot_ids") or semantic_plan.get(
