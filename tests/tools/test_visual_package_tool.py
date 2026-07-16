@@ -8717,6 +8717,26 @@ def test_reference_aware_inline_vision_uses_contact_sheet(monkeypatch, tmp_path)
     assert "candidate output" in seen["user_prompt"]
 
 
+def test_reference_aware_inline_vision_treats_pose_guidance_as_nonbinding():
+    from tools import visual_package_tool
+
+    prompt = visual_package_tool._reference_aware_inline_vision_prompt(
+        {
+            "input_artifacts": [
+                {"index": 1, "role_hint": "character_identity", "uri": "/tmp/ref1.png"},
+                {"index": 2, "role_hint": "pose_composition", "uri": "/tmp/ref2.png"},
+            ],
+            "requested_parameters": {
+                "reference_binding": {"pose_composition_policy": "guidance_only"}
+            },
+        }
+    )
+
+    assert "guidance only" in prompt
+    assert "different pose or camera angle is not a defect" in prompt
+    assert "Keep character identity strict" in prompt
+
+
 def test_delivery_gate_blocks_missing_reference_role_evidence_for_reference_request():
     from tools import visual_package_tool
 

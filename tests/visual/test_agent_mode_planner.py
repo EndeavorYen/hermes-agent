@@ -314,6 +314,10 @@ def test_agent_mode_planner_keeps_final_pose_candidates_as_final_images():
     assert plan["arguments"]["deliver_candidate_options"] is True
     assert plan["arguments"]["image_provider"] == "xai"
     assert plan["arguments"]["image_provider_source"] == "prompt_override"
+    assert (
+        plan["arguments"]["reference_binding"]["pose_composition_policy"]
+        == "guidance_only"
+    )
     assert "composition_guide_only" not in plan["arguments"]
 
 

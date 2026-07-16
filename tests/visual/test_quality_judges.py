@@ -131,6 +131,44 @@ def test_quality_judge_uses_role_specific_reference_evidence():
     assert result["scores"]["reference_adherence"] >= 0.85
 
 
+def test_quality_judge_does_not_require_pose_copy_for_guidance_only_reference():
+    from agent.visual.judges.quality import judge_visual_quality
+
+    result = judge_visual_quality(
+        {
+            "artifact_id": "var_demo",
+            "kind": "image",
+            "hard_gate": {"passed": True, "delivery_possible": True},
+            "scores": {"aspect_match": 0.9, "resolution": 0.8, "final_score": 0.8},
+        },
+        request_context={
+            "has_reference_image": True,
+            "category": "portrait",
+            "reference_binding": {
+                "pose_composition_policy": "guidance_only",
+                "reference_order": [
+                    {"index": 1, "role_hint": "character_identity"},
+                    {"index": 2, "role_hint": "pose_composition"},
+                ],
+            },
+        },
+        vision_observation={
+            "reference_adherence": 0.9,
+            "character_identity_adherence": 0.92,
+            "pose_composition_adherence": 0.1,
+            "visual_appeal": 0.9,
+            "composition": 0.9,
+            "pose_composition": 0.8,
+            "confidence": 0.85,
+            "artifact_defects": [],
+        },
+    )
+
+    assert "composition_bad" not in result["quality_issues"]
+    assert "reference_role_evidence_missing" not in result["quality_issues"]
+    assert result["scores"]["reference_adherence"] >= 0.9
+
+
 def test_quality_judge_accepts_edit_anchor_reference_adherence_evidence():
     from agent.visual.judges.quality import judge_visual_quality
 

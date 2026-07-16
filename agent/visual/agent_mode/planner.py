@@ -489,12 +489,49 @@ def _reference_binding_for_prompt(prompt: str, attachments: list[str]) -> dict[s
                 "attachment": attachments[index - 1],
             }
         )
-    return {
+    binding = {
         "mode": "ordered_references",
         "reference_order_source": "user_visible_upload_order",
         "role_policy": "derive_from_user_prompt",
         "reference_order": reference_order,
     }
+    if any(item["role_hint"] == "pose_composition" for item in reference_order) and (
+        _pose_composition_is_guidance_only(lowered, compact)
+    ):
+        binding["pose_composition_policy"] = "guidance_only"
+    return binding
+
+
+def _pose_composition_is_guidance_only(lowered_prompt: str, compact_prompt: str) -> bool:
+    return any(
+        marker in lowered_prompt
+        for marker in (
+            "secondary composition guidance",
+            "composition guidance only",
+            "pose guidance only",
+            "use only as composition guidance",
+            "use only as pose guidance",
+            "do not copy the pose",
+            "don't copy the pose",
+            "distinct poses",
+        )
+    ) or any(
+        marker in compact_prompt
+        for marker in (
+            "只作構圖參考",
+            "只做構圖參考",
+            "僅作構圖參考",
+            "僅做構圖參考",
+            "僅供構圖參考",
+            "只供構圖參考",
+            "只作姿勢參考",
+            "只做姿勢參考",
+            "僅供姿勢參考",
+            "不要照搬姿勢",
+            "不要複製姿勢",
+            "不同姿勢",
+        )
+    )
 
 
 def _requests_unindexed_identity_lock(compact_prompt: str) -> bool:
