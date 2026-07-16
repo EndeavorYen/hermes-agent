@@ -169,6 +169,45 @@ class TestGenerate:
             config={"grok_home": str(grok_home)},
         ) == str(image.resolve())
 
+    def test_grok_build_resolves_workdir_session_relative_image_path(self, tmp_path):
+        from plugins.image_gen.xai import _extract_grok_build_image
+
+        workdir = tmp_path / "work"
+        session_id = "019f6c47-6ffd-7a70-8acf-b14c53822113"
+        image = workdir / session_id / "images" / "1.jpg"
+        image.parent.mkdir(parents=True)
+        image.write_bytes(b"image")
+        stdout = json.dumps(
+            {
+                "sessionId": session_id,
+                "structuredOutput": {"image_path": "images/1.jpg"},
+            }
+        )
+
+        assert _extract_grok_build_image(
+            stdout,
+            workdir=workdir,
+        ) == str(image.resolve())
+
+    def test_grok_build_resolves_url_encoded_vscode_file_link(self, tmp_path):
+        from urllib.parse import quote
+
+        from plugins.image_gen.xai import _extract_grok_build_image
+
+        image = tmp_path / "generated image.jpg"
+        image.write_bytes(b"image")
+        encoded_path = quote(str(image.resolve()), safe="")
+        stdout = json.dumps(
+            {
+                "text": (
+                    "Generated file: "
+                    f"[Open](vscode-file://vscode-app/{encoded_path})"
+                )
+            }
+        )
+
+        assert _extract_grok_build_image(stdout) == str(image.resolve())
+
     def test_grok_build_transport_uses_native_image_tools_without_web(
         self, monkeypatch, tmp_path
     ):
