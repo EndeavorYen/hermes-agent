@@ -377,3 +377,50 @@ def test_executor_surfaces_quota_as_setup_required_without_semantic_repair(
     assert summary.work_status == "setup_required"
     assert summary.provider_failure_classes == ("quota_exceeded",)
     assert summary.error_type == "provider_quota_or_subscription_required"
+    assert summary.generated_candidates == 0
+    batch_manifest = json.loads(
+        (context.project_dir / "manifests" / "batch_run_manifest.json").read_text()
+    )
+    assert batch_manifest["budget"]["generated_by_shot"] == {}
+
+
+def test_executor_retries_transient_provider_failure_as_fresh_without_repair_spend(
+    tmp_path,
+) -> None:
+    context = _context(tmp_path, shot_count=3)
+    generator = FakeGenerator(tmp_path)
+    failed_once = False
+
+    def transient_generator(args: dict, *, task_id: str = "") -> dict:
+        nonlocal failed_once
+        if task_id.endswith("S01_SH00") and not failed_once:
+            failed_once = True
+            return {
+                "success": False,
+                "provider": "openai-codex",
+                "error_type": "provider_unavailable",
+                "error": "HTTP 503 Service Unavailable",
+            }
+        return generator(args, task_id=task_id)
+
+    executor = StoryVideoBatchExecutor(
+        prompt_compiler=_compiler,
+        image_generator=transient_generator,
+        candidate_judge=FakeJudge(set()),
+        max_workers=3,
+    )
+
+    first = executor.run_chunk(context)
+    retried = executor.run_chunk(context)
+
+    assert first.generated_candidates == 2
+    assert retried.wave == "initial"
+    assert retried.attempted_shots == ("S01_SH00",)
+    batch_manifest = json.loads(
+        (context.project_dir / "manifests" / "batch_run_manifest.json").read_text()
+    )
+    assert batch_manifest["budget"]["generated_by_shot"] == {
+        "S00_SH00": 1,
+        "S01_SH00": 1,
+        "S02_SH00": 1,
+    }

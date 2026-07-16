@@ -75,6 +75,29 @@ class BatchBudget:
             str(contract_hash or "")
         )
 
+    def release_generation(self, shot_id: str, contract_hash: str) -> None:
+        """Release one provider reservation that produced no candidate artifact."""
+        normalized_shot_id = str(shot_id).strip()
+        count = self.generated_for(normalized_shot_id)
+        if not normalized_shot_id or count <= 0:
+            return
+        if count == 1:
+            self._generated_by_shot.pop(normalized_shot_id, None)
+        else:
+            self._generated_by_shot[normalized_shot_id] = count - 1
+
+        hashes = self._contract_hashes_by_shot.get(normalized_shot_id) or []
+        expected = str(contract_hash or "")
+        for index in range(len(hashes) - 1, -1, -1):
+            if hashes[index] == expected:
+                hashes.pop(index)
+                break
+        else:
+            if hashes:
+                hashes.pop()
+        if not hashes:
+            self._contract_hashes_by_shot.pop(normalized_shot_id, None)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema": "story_video_batch_budget_v1",

@@ -211,7 +211,7 @@ def _extract_grok_build_image(
             )
         )
     for candidate in candidates:
-        path = Path(str(candidate).strip()).expanduser()
+        path = Path(str(candidate).strip().strip("`'\"")).expanduser()
         if path.suffix.lower() in _IMAGE_SUFFIXES and path.is_file():
             return str(path.resolve())
     if isinstance(parsed, dict) and workdir is not None:
@@ -275,16 +275,9 @@ def _generate_with_grok_build(
             "conditioning with a text-only description.\n"
             f"Source images:\n{reference_lines}\n"
         )
-    instruction += "Return the generated local image path in `image_path`."
-
-    schema = json.dumps(
-        {
-            "type": "object",
-            "properties": {"image_path": {"type": "string"}},
-            "required": ["image_path"],
-            "additionalProperties": False,
-        },
-        separators=(",", ":"),
+    instruction += (
+        "After the native image tool succeeds, return its exact generated local path. "
+        "Never invent or predict a path. If the tool fails, state the tool error."
     )
     workdir = _grok_build_workdir(config)
     command = [
@@ -295,8 +288,6 @@ def _generate_with_grok_build(
         instruction,
         "--output-format",
         "json",
-        "--json-schema",
-        schema,
         "--disallowed-tools",
         (
             "run_terminal_cmd,read_file,grep,list_dir,search_replace,web_search,"
