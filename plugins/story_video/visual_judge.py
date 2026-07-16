@@ -2898,11 +2898,32 @@ def story_video_quality_control(
                 llm=llm or _PLUGIN_LLM,
             )
         elif action == "run_batch_chunk":
-            payload = _run_batch_chunk(
-                context,
-                state_store=state_store,
-                llm=llm or _PLUGIN_LLM,
+            authorization_id = str(args.get("authorization_id") or "").strip()
+            authorization = (
+                state_store.autopilot_authorization(
+                    context,
+                    authorization_id=authorization_id,
+                )
+                if authorization_id
+                else None
             )
+            if context.auto_mode and authorization is None:
+                payload = {
+                    "success": False,
+                    "error_type": "story_video_operator_authorization_required",
+                    "error": (
+                        "run_batch_chunk requires the verified purpose-limited "
+                        "authorization_id for this active story-video run"
+                    ),
+                }
+            else:
+                payload = _run_batch_chunk(
+                    context,
+                    state_store=state_store,
+                    llm=llm or _PLUGIN_LLM,
+                )
+                if authorization is not None:
+                    payload["authorization_verified"] = True
         elif action == "prepare_render":
             payload = _prepare_render(context)
         elif action == "compile_release_art":

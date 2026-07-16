@@ -183,6 +183,41 @@ def _write_project_contract(context: StoryVideoRunContext) -> None:
     )
 
 
+def _native_chunk_call(context: StoryVideoRunContext) -> str:
+    authorization = _STORE.autopilot_authorization(context)
+    authorization_id = (
+        str(authorization.get("authorization_id") or "")
+        if authorization is not None
+        else ""
+    )
+    return (
+        "story_video_quality_control action=run_batch_chunk "
+        f"authorization_id={authorization_id} run_id={context.run_id} "
+        f"project_dir={context.project_dir}"
+    )
+
+
+def _autopilot_authorization_instruction(
+    context: StoryVideoRunContext,
+) -> str:
+    authorization = _STORE.autopilot_authorization(context)
+    if authorization is None:
+        return ""
+    scopes = ",".join(str(scope) for scope in authorization["scopes"])
+    return (
+        " VERIFIED_STORY_VIDEO_AUTHORIZATION "
+        f"authorization_id={authorization['authorization_id']} "
+        f"run_id={context.run_id} project_dir={context.project_dir} "
+        f"provider={authorization['provider']} scopes={scopes}. "
+        "This authorization was persisted from the operator's full-auto story-video "
+        "request and is purpose-limited to sending purpose-created story prompts and "
+        "generated source art to OpenAI for image generation and vision QC, plus writes "
+        "inside this project directory; unrelated workspace data is not authorized. "
+        "The native tool verifies the authorization ID, run, project, provider, and "
+        "scopes before dispatch; a stop command revokes it. "
+    )
+
+
 def pre_gateway_dispatch(
     *,
     event: Any,
@@ -379,6 +414,8 @@ def pre_llm_call(
         "Complete the current phase in this turn; do not stop after announcing "
         "what you will do. "
     )
+    if context.auto_mode:
+        instruction += _autopilot_authorization_instruction(context)
     if context.phase == "planning":
         instruction += (
         "During planning, immediately create script.md, storyboard.md, "
@@ -452,7 +489,7 @@ def pre_llm_call(
         )
     if context.phase == "batch":
         instruction += (
-        "During batch, call story_video_quality_control action=run_batch_chunk exactly "
+        f"During batch, call {_native_chunk_call(context)} exactly "
         "once per turn. This native tool owns deterministic prompt compilation, up to "
         "three parallel OpenAI image requests, candidate judging, end-to-end generation "
         "budgets across contract revisions, continuity holds, and persisted stop/resume. "
@@ -466,43 +503,14 @@ def pre_llm_call(
         )
     elif context.phase == "keyframes":
         instruction += (
-        "During keyframes, first call story_video_quality_control "
-        "action=next_batch_work. Existing "
-        "repair_required work always takes priority over generating a new shot. After "
-        "an operation=replan_shot_contract response, design a replacement using only "
-        "the returned mutable_fields, preserve immutable_contract exactly, and call "
-        "story_video_quality_control action=replan_shot_contract with the complete "
-        "redesigned_shot object. Do not edit scene_ledger.json directly or generate an "
-        "image before the replan action succeeds. This bounded path is for a visual "
-        "contract whose semantically equivalent image repairs are exhausted. After "
-        "an operation=rejudge_existing response, do not generate an image; pass the "
-        "returned candidate and repair_round directly to judge_candidates so legacy "
-        "selected art receives the current engagement QC without image quota burn. After "
-        "judging that candidate, call next_batch_work again and repeat until it reports "
-        "work_status=complete. During keyframes, choose representative ledger shots "
-        "until the keyframe scale-coverage gate passes. In both phases, generate "
-        "exactly one candidate per shot at a time, "
-        "always use the candidate_id_hint returned by compile_prompt, and carry its "
-        "repair directive into generation. If compile_prompt returns strategy_reset=true, "
-        "pass strategy_reset=true with that single candidate; this is a one-candidate "
-        "layout reset and must never restart the bounded candidate budget. "
-        "Always pass the returned repair_strategy with the candidate so QC history can "
-        "advance anatomy, scientific, layout, and contextual repair independently. When "
-        "compile_prompt returns source_image_url, pass that exact path as image_url to "
-        "image_generate so targeted repair uses OpenAI image editing instead of "
-        "redrawing correct content from scratch. Pass every returned "
-        "reference_image_urls value to image_generate exactly; these are style references "
-        "only, so preserve their medium, palette, light, lens, texture, and subject treatment "
-        "without copying their subject or composition. Always "
-        "pass the exact returned shot_contract_hash with the generated candidate; never "
-        "judge a candidate against a changed scene-ledger contract. "
-        "Every image_generate and vision judge call MUST pass provider=openai-codex "
-        "explicitly; do not rely on an implicit provider or a post-dispatch hook. "
-        "then call story_video_quality_control action=judge_candidates. That tool is the "
-        "only writer of the canonical shot_candidate_manifest.json outputs[] contract; "
-        "never edit shot_candidate_manifest.json manually and never invent judge scores "
-        "or vision evidence. Complete every required shot in the current phase before "
-        "stopping. "
+        f"During keyframes, call {_native_chunk_call(context)} exactly once per turn. "
+        "The native tool generates the style anchor serially, then produces bounded "
+        "representative keyframes with OpenAI vision QC until the scale-coverage gate "
+        "passes. Do not call image_generate, compile_prompt, judge_candidates, "
+        "next_batch_work, rejudge_existing, or replan_shot_contract yourself. Never edit "
+        "shot_candidate_manifest.json, batch_run_manifest.json, or scene_ledger.json "
+        "manually. Return brief progress after the chunk so internal autopilot can "
+        "validate keyframes and schedule the next authorized chunk. "
         )
     if context.phase == "voice":
         instruction += (
@@ -606,14 +614,13 @@ def _autopilot_progress_token(context: StoryVideoRunContext) -> str:
             for row in payload.get("outputs") or []
             if isinstance(row, dict)
         ]
-        if context.phase == "batch":
-            batch_path = context.project_dir / "manifests" / "batch_run_manifest.json"
-            try:
-                evidence["batch_manifest"] = hashlib.sha256(
-                    batch_path.read_bytes()
-                ).hexdigest()[:16]
-            except OSError:
-                evidence["batch_manifest"] = ""
+        batch_path = context.project_dir / "manifests" / "batch_run_manifest.json"
+        try:
+            evidence["batch_manifest"] = hashlib.sha256(
+                batch_path.read_bytes()
+            ).hexdigest()[:16]
+        except OSError:
+            evidence["batch_manifest"] = ""
     elif context.phase == "voice":
         path = context.project_dir / "manifests" / "narration_manifest.json"
         try:
@@ -768,9 +775,15 @@ def auto_continue_llm_output(
                 "story_video_control action=validate. Do not generate images, narration, "
                 "or video."
             )
-    elif context.phase == "batch":
-        if not _batch_assets_complete(context):
-            next_action = "story_video_quality_control action=run_batch_chunk"
+    elif context.phase in {"keyframes", "batch"}:
+        if context.phase == "keyframes":
+            from .tools import validate_phase
+
+            native_work_complete = validate_phase(context).ok
+        else:
+            native_work_complete = _batch_assets_complete(context)
+        if not native_work_complete:
+            next_action = _native_chunk_call(context)
             next_work_instruction = (
                 " Run exactly one native bounded production chunk. The tool owns prompt "
                 "compilation, up to three parallel OpenAI image requests, QC, persistent "
@@ -780,12 +793,13 @@ def auto_continue_llm_output(
         else:
             next_action = "story_video_control action=validate"
             next_work_instruction = (
-                " Canonical batch work is complete. Validate the batch phase now; "
+                f" Canonical {context.phase} work is complete. Validate the "
+                f"{context.phase} phase now; "
                 "do not edit the candidate manifest or regenerate selected shots."
             )
     continuation_limit = (
         _AUTOPILOT_BATCH_ROTATE_AFTER_CONTINUATIONS
-        if context.phase == "batch"
+        if context.phase in {"keyframes", "batch"}
         else _AUTOPILOT_ROTATE_AFTER_CONTINUATIONS
     )
     rotate_for_budget = (

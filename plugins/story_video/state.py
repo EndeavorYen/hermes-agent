@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -15,7 +16,13 @@ from typing import Any
 DEFAULT_DURATION = "60-120s"
 DEFAULT_STYLE = "Cinematic topic-appropriate visual storytelling"
 PHASES = ("planning", "keyframes", "batch", "voice", "render", "complete")
-AUTOPILOT_AUTHORIZATION_SCHEMA = "story_video_autopilot_authorization_v1"
+AUTOPILOT_AUTHORIZATION_SCHEMA = "story_video_autopilot_authorization_v2"
+LEGACY_AUTOPILOT_AUTHORIZATION_SCHEMA = "story_video_autopilot_authorization_v1"
+AUTOPILOT_AUTHORIZATION_SCOPES = (
+    "openai_image_generation",
+    "openai_vision_qc",
+    "local_project_artifact_write",
+)
 DEFAULT_PROVIDER_POLICY: dict[str, Any] = {
     "llm": ["openai", "openai-codex"],
     "image": ["openai", "openai-codex"],
@@ -700,6 +707,53 @@ class StoryVideoStateStore:
             self._write_json(self.source_index_path, source_index)
         return context
 
+    def autopilot_authorization(
+        self,
+        context: StoryVideoRunContext,
+        *,
+        authorization_id: str = "",
+    ) -> dict[str, Any] | None:
+        path = self.authorization_state_root / f"{context.run_id}.json"
+        payload = self._read_json(path, None)
+        if (
+            isinstance(payload, dict)
+            and payload.get("schema") == LEGACY_AUTOPILOT_AUTHORIZATION_SCHEMA
+            and payload.get("run_id") == context.run_id
+            and payload.get("enabled") is True
+        ):
+            self._write_autopilot_authorization(
+                context,
+                enabled=True,
+                source=str(payload.get("source") or "legacy_operator_auto_command"),
+            )
+            payload = self._read_json(path, None)
+        if not isinstance(payload, dict):
+            return None
+        try:
+            project_dir = str(context.project_dir.expanduser().resolve())
+        except (OSError, RuntimeError):
+            return None
+        expected_scopes = set(AUTOPILOT_AUTHORIZATION_SCOPES)
+        actual_scopes = {
+            str(scope) for scope in payload.get("scopes") or [] if str(scope).strip()
+        }
+        if not (
+            payload.get("schema") == AUTOPILOT_AUTHORIZATION_SCHEMA
+            and payload.get("run_id") == context.run_id
+            and payload.get("project_dir") == project_dir
+            and payload.get("provider") == "openai-codex"
+            and payload.get("enabled") is True
+            and actual_scopes == expected_scopes
+            and str(payload.get("authorization_id") or "").strip()
+        ):
+            return None
+        if authorization_id and not hmac.compare_digest(
+            str(payload["authorization_id"]),
+            str(authorization_id),
+        ):
+            return None
+        return payload
+
     def _from_index(
         self,
         index_path: Path,
@@ -738,12 +792,22 @@ class StoryVideoStateStore:
         enabled: bool,
         source: str,
     ) -> None:
+        path = self.authorization_state_root / f"{context.run_id}.json"
+        existing = self._read_json(path, {})
+        authorization_id = str(existing.get("authorization_id") or uuid.uuid4().hex)
         timestamp_key = "authorized_at" if enabled else "revoked_at"
         self._write_json(
-            self.authorization_state_root / f"{context.run_id}.json",
+            path,
             {
                 "schema": AUTOPILOT_AUTHORIZATION_SCHEMA,
                 "run_id": context.run_id,
+                "project_dir": str(context.project_dir.expanduser().resolve()),
+                "provider": "openai-codex",
+                "scopes": list(AUTOPILOT_AUTHORIZATION_SCOPES),
+                "authorization_id": authorization_id,
+                "original_request_sha256": hashlib.sha256(
+                    context.original_request.encode("utf-8")
+                ).hexdigest(),
                 "enabled": enabled,
                 timestamp_key: _utc_now(),
                 "source": source,
@@ -754,15 +818,8 @@ class StoryVideoStateStore:
         self,
         context: StoryVideoRunContext,
     ) -> StoryVideoRunContext:
-        authorization = self._read_json(
-            self.authorization_state_root / f"{context.run_id}.json",
-            None,
-        )
-        if not isinstance(authorization, dict) or not (
-            authorization.get("schema") == AUTOPILOT_AUTHORIZATION_SCHEMA
-            and authorization.get("run_id") == context.run_id
-            and authorization.get("enabled") is True
-        ):
+        authorization = self.autopilot_authorization(context)
+        if authorization is None:
             return context
 
         manifest = self._read_json(

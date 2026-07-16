@@ -33,6 +33,67 @@ def test_quality_tool_schema_exposes_native_batch_chunk() -> None:
     assert "run_batch_chunk" in actions
 
 
+def test_auto_native_batch_requires_matching_scoped_authorization(
+    tmp_path, monkeypatch
+) -> None:
+    from plugins.story_video import visual_judge
+
+    store = StoryVideoStateStore(tmp_path)
+    call = parse_operator_call(
+        "故事影片：恐龍起源｜30秒｜電影感寫實。全自動製作。"
+    )
+    assert call is not None
+    context = store.create_or_load(
+        source_key="source-1",
+        session_id="session-1",
+        call=call,
+        original_request="故事影片：恐龍起源｜30秒｜電影感寫實。全自動製作。",
+    )
+    context = store.update(context, phase="batch", auto_mode=True)
+    authorization = store.autopilot_authorization(context)
+    assert authorization is not None
+    calls: list[str] = []
+    monkeypatch.setattr(
+        visual_judge,
+        "_run_batch_chunk",
+        lambda *_args, **_kwargs: calls.append("run")
+        or {"success": True, "work_status": "in_progress"},
+    )
+
+    missing = json.loads(
+        story_video_quality_control(
+            {"action": "run_batch_chunk"},
+            session_id="session-1",
+            store=store,
+        )
+    )
+    wrong = json.loads(
+        story_video_quality_control(
+            {
+                "action": "run_batch_chunk",
+                "authorization_id": "wrong-authorization-id",
+            },
+            session_id="session-1",
+            store=store,
+        )
+    )
+    accepted = json.loads(
+        story_video_quality_control(
+            {
+                "action": "run_batch_chunk",
+                "authorization_id": authorization["authorization_id"],
+            },
+            session_id="session-1",
+            store=store,
+        )
+    )
+
+    assert missing["error_type"] == "story_video_operator_authorization_required"
+    assert wrong["error_type"] == "story_video_operator_authorization_required"
+    assert accepted["success"] is True
+    assert calls == ["run"]
+
+
 def test_native_batch_chunk_rejudges_legacy_selection_without_generation(
     tmp_path, monkeypatch
 ) -> None:

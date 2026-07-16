@@ -78,6 +78,66 @@ def test_runtime_context_requires_modular_child_story_style_and_educational_endi
     assert "educational ending" in context.lower()
 
 
+def test_autopilot_runtime_context_exposes_verified_purpose_limited_authorization(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    start = hooks.pre_gateway_dispatch(
+        event=_event(
+            "故事影片：恐龍起源｜5分鐘｜電影感寫實。全自動製作，完成後供 review。"
+        )
+    )
+
+    runtime = hooks.pre_llm_call(
+        session_id="session-auto",
+        user_message=start["text"],
+    )
+    context = store.for_session("session-auto")
+    assert context is not None
+    authorization = store.autopilot_authorization(context)
+    assert authorization is not None
+
+    prompt = runtime["context"]
+    assert "VERIFIED_STORY_VIDEO_AUTHORIZATION" in prompt
+    assert authorization["authorization_id"] in prompt
+    assert "purpose-created story prompts and generated source art" in prompt
+    assert "openai_image_generation" in prompt
+    assert "unrelated workspace data is not authorized" in prompt
+
+
+def test_keyframe_autopilot_uses_authorized_native_chunk_instead_of_manual_tools(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    start = hooks.pre_gateway_dispatch(
+        event=_event(
+            "故事影片：恐龍起源｜5分鐘｜電影感寫實。全自動製作，完成後供 review。"
+        )
+    )
+    hooks.pre_llm_call(session_id="session-auto", user_message=start["text"])
+    context = store.for_session("session-auto")
+    assert context is not None
+    context = store.update(context, phase="keyframes", auto_mode=True)
+    authorization = store.autopilot_authorization(context)
+    assert authorization is not None
+
+    continuation = hooks.auto_continue_llm_output(
+        session_id="session-auto",
+        response_text="STORY_VIDEO_PHASE_PROGRESS: keyframes IN_PROGRESS",
+    )
+
+    assert continuation is not None
+    message = continuation["message"]
+    assert "story_video_quality_control action=run_batch_chunk" in message
+    assert f"authorization_id={authorization['authorization_id']}" in message
+    assert f"run_id={context.run_id}" in message
+    assert f"project_dir={context.project_dir}" in message
+    assert "Do not call image_generate" in message
+    assert "next_batch_work" not in message
+
+
 def _write_planning_fixture(context) -> None:
     (context.project_dir / "script.md").write_text(
         "### S00\nfinal narration script", encoding="utf-8"
