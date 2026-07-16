@@ -437,6 +437,41 @@ def test_visual_agent_generate_routes_grok_imagine_request_to_xai_provider(monke
     assert payload["visual_agent_plan"]["arguments"]["image_provider"] == "xai"
 
 
+def test_visual_agent_generate_routes_pose_candidates_to_final_images(monkeypatch):
+    from tools import visual_agent_tool
+
+    captured = {}
+
+    def fake_visual_package_generate(args, **kwargs):
+        captured.update(args)
+        return json.dumps({"success": True, "images": ["/tmp/current.png"], "videos": []})
+
+    monkeypatch.setattr(
+        visual_agent_tool,
+        "_handle_visual_package_generate",
+        fake_visual_package_generate,
+    )
+
+    raw = visual_agent_tool._handle_visual_agent_generate(
+        {
+            "prompt": (
+                "Use xAI Imagine native reference generation. Create exactly 4 separate, "
+                "high-quality pose candidates of the same clearly adult woman. Treat ref 1 "
+                "as the primary identity anchor and ref 2 as secondary composition guidance. "
+                "Return four individual final images for user selection, then run QC."
+            ),
+            "attachments": ["/tmp/G1.jpg", "/tmp/G2.jpg"],
+        }
+    )
+    payload = json.loads(raw)
+
+    assert payload["success"] is True
+    assert captured["image_provider"] == "xai"
+    assert captured["image_provider_source"] == "prompt_override"
+    assert captured["candidate_budget"] == 4
+    assert "composition_guide_only" not in captured
+
+
 def test_visual_agent_generate_passes_default_xai_media_provider_contract(monkeypatch):
     from tools import visual_agent_tool
 

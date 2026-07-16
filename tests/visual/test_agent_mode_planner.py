@@ -297,6 +297,25 @@ def test_agent_mode_planner_does_not_turn_final_image_video_composition_quality_
     assert plan["arguments"]["image_provider_source"] == "visual_agent_default"
 
 
+def test_agent_mode_planner_keeps_final_pose_candidates_as_final_images():
+    from agent.visual.agent_mode.planner import plan_visual_agent_request
+
+    plan = plan_visual_agent_request(
+        "Use xAI Imagine native reference generation. Create exactly 4 separate, "
+        "high-quality pose candidates of the same clearly adult woman. Treat ref 1 "
+        "as the primary identity anchor and ref 2 as secondary composition guidance. "
+        "Return four individual final images for user selection, then run QC.",
+        attachments=["/tmp/G1.jpg", "/tmp/G2.jpg"],
+    )
+
+    assert plan["should_use_visual_package"] is True
+    assert plan["arguments"]["include_image"] is True
+    assert plan["arguments"]["candidate_budget"] == 4
+    assert plan["arguments"]["image_provider"] == "xai"
+    assert plan["arguments"]["image_provider_source"] == "prompt_override"
+    assert "composition_guide_only" not in plan["arguments"]
+
+
 def test_agent_mode_planner_infers_landscape_aspect_for_desk_product_photography():
     from agent.visual.agent_mode.planner import plan_visual_agent_request
 
