@@ -26,6 +26,8 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
+from urllib.parse import unquote
+from urllib.parse import urlparse
 
 import requests
 
@@ -183,6 +185,27 @@ def _iter_output_strings(value: Any):
             yield from _iter_output_strings(item)
 
 
+def _grok_build_image_path_candidates(value: Any) -> List[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return []
+    candidates = [raw, unquote(raw)]
+    for source in (raw, unquote(raw)):
+        for match in re.finditer(
+            r"(?:vscode-file|file)://[^\s`'\"<>]+",
+            source,
+            re.IGNORECASE,
+        ):
+            uri = match.group(0).rstrip(").,;]")
+            parsed = urlparse(uri)
+            path = unquote(parsed.path)
+            if path.startswith("//"):
+                path = path[1:]
+            if path:
+                candidates.append(path)
+    return list(dict.fromkeys(candidates))
+
+
 def _extract_grok_build_image(
     stdout: str,
     *,
@@ -210,6 +233,11 @@ def _extract_grok_build_image(
                 re.IGNORECASE,
             )
         )
+    candidates = [
+        path
+        for candidate in candidates
+        for path in _grok_build_image_path_candidates(candidate)
+    ]
     for candidate in candidates:
         path = Path(str(candidate).strip().strip("`'\"")).expanduser()
         if path.suffix.lower() in _IMAGE_SUFFIXES and path.is_file():
@@ -221,11 +249,12 @@ def _extract_grok_build_image(
             grok_home = Path(
                 str(cfg.get("grok_home") or Path.home() / ".grok")
             ).expanduser()
-            session_root = (
+            session_roots = (
+                workdir.resolve() / session_id,
                 grok_home
                 / "sessions"
                 / quote(str(workdir.resolve()), safe="")
-                / session_id
+                / session_id,
             )
             for candidate in candidates:
                 relative = Path(str(candidate).strip())
@@ -235,9 +264,10 @@ def _extract_grok_build_image(
                     or ".." in relative.parts
                 ):
                     continue
-                path = session_root / relative
-                if path.is_file():
-                    return str(path.resolve())
+                for session_root in session_roots:
+                    path = session_root / relative
+                    if path.is_file():
+                        return str(path.resolve())
     return None
 
 
