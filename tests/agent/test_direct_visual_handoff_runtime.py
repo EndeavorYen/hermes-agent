@@ -286,6 +286,92 @@ def test_codex_app_server_routes_slack_regenerate_output_through_visual_tool(mon
     assert payload["direct_visual_agent_handoff"]["mode"] == "pre_llm_direct"
 
 
+def test_codex_app_server_routes_current_attachment_generation_before_runtime(monkeypatch):
+    import agent.conversation_loop as conversation_loop
+    from gateway.session_context import reset_visual_reference_context, set_visual_reference_context
+    from tools.registry import registry
+
+    agent = _FakeAgent()
+    agent.api_mode = "codex_app_server"
+    dispatched = {}
+
+    def fail_codex_runtime(**_kwargs):
+        raise AssertionError("Current-attachment generation must bypass Codex app-server")
+
+    agent._run_codex_app_server_turn = fail_codex_runtime
+    user_message = """用 xai imagine，參考附件的圖片，產出類似但不同姿勢、高品質，給我 4 張挑選
+
+[Visual Arsenal source images]
+1. image_path: /tmp/current-slack-reference.png (image/png)
+
+[Image attached at: /tmp/current-slack-reference.png]
+[screenshot]"""
+
+    def fake_build_turn_context(*_args, **_kwargs):
+        return SimpleNamespace(
+            user_message=user_message,
+            original_user_message=user_message,
+            messages=[{"role": "user", "content": user_message}],
+            conversation_history=[],
+            active_system_prompt="",
+            effective_task_id="task-current-attachment",
+            turn_id="turn-current-attachment",
+            current_turn_user_idx=0,
+            should_review_memory=False,
+            plugin_user_context="",
+            ext_prefetch_cache=None,
+            raphael_decision={
+                "mode": "visual_agent_generation",
+                "completion_policy": "visual",
+                "route": {
+                    "visual_media_provider": "xai",
+                    "visual_media_provider_source": "prompt_override",
+                },
+                "runtime_contract": {"image_provider": "xai"},
+            },
+        )
+
+    def fake_dispatch(name, args, **_kwargs):
+        dispatched["name"] = name
+        dispatched["args"] = dict(args)
+        return json.dumps(
+            {
+                "success": True,
+                "package_status": "completed",
+                "images": ["/tmp/current-selected.png"],
+                "videos": [],
+                "selected_artifact": "/tmp/current-selected.png",
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr(conversation_loop, "build_turn_context", fake_build_turn_context)
+    monkeypatch.setattr(registry, "dispatch", fake_dispatch)
+    token = set_visual_reference_context(
+        [
+            {
+                "uri": "/tmp/current-slack-reference.png",
+                "role_hint": "visual_reference",
+                "source": "gateway_attachment",
+                "user_ref_index": 0,
+            }
+        ]
+    )
+    try:
+        result = conversation_loop.run_conversation(agent, "ignored by fake context")
+    finally:
+        reset_visual_reference_context(token)
+
+    assert result["api_calls"] == 0
+    assert result["turn_exit_reason"] == "direct_visual_agent_handoff"
+    assert dispatched["name"] == "visual_agent_generate"
+    assert dispatched["args"]["attachments"] == [
+        "/tmp/current-slack-reference.png"
+    ]
+    assert dispatched["args"]["image_provider"] == "xai"
+    assert dispatched["args"]["candidate_budget"] == 4
+
+
 def test_gateway_attachment_context_reaches_visual_handoff_consumer():
     from gateway.run import _run_conversation_with_visual_reference_context
     from gateway.session_context import get_visual_reference_context_entries
