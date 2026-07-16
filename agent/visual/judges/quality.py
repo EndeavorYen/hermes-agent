@@ -214,6 +214,10 @@ def _surface_artifact_defects(
     has_reference_image = request_context.get("has_reference_image") is True
     for defect in defects:
         defect_text = str(defect)
+        if defect_text == "pose_composition_weak" and _pose_composition_is_guidance_only(
+            request_context
+        ):
+            continue
         if defect_text == "reference_identity_drift" and not has_reference_image:
             continue
         if defect_text == "face_quality_low" and not portrait_like:
@@ -259,6 +263,10 @@ def _quality_issues_from_observation(
     defect_set = {str(defect) for defect in defects}
     for defect in defects:
         defect_text = str(defect)
+        if defect_text == "pose_composition_weak" and _pose_composition_is_guidance_only(
+            request_context
+        ):
+            continue
         issue = _issue_for_defect(defect_text)
         if issue == "reference_identity_drift" and not has_reference_image:
             continue

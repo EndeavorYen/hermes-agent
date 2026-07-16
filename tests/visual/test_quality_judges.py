@@ -160,7 +160,7 @@ def test_quality_judge_does_not_require_pose_copy_for_guidance_only_reference():
             "composition": 0.9,
             "pose_composition": 0.8,
             "confidence": 0.85,
-            "artifact_defects": [],
+            "artifact_defects": ["pose_composition_weak"],
         },
     )
 
