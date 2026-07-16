@@ -17,6 +17,7 @@ _MARKER = "STORY_VIDEO_OPERATOR_CONTEXT"
 _MARKER_RE = re.compile(rf"{_MARKER}\s+(\{{.*\}})\s*$", re.DOTALL)
 _SESSION_PHASE_AT_LLM_START: dict[str, str] = {}
 _SESSION_STATUS_AT_LLM_START: dict[str, str] = {}
+_VISUAL_AGENT_BYPASS_SESSIONS: set[str] = set()
 _SETUP_BLOCKER_RE = re.compile(
     r"(?:(?:quota|rate.?limit|配額|額度).{0,32}"
     r"(?:exhausted|exceeded|blocked|required|耗盡|用完|不足)|"
@@ -244,6 +245,16 @@ def pre_llm_call(
     user_message: Any = "",
     **_: Any,
 ) -> dict[str, str] | None:
+    from tools.story_video_provider_guard import explicit_visual_agent_request_detected
+
+    if explicit_visual_agent_request_detected(user_message):
+        if session_id:
+            _VISUAL_AGENT_BYPASS_SESSIONS.add(session_id)
+            _SESSION_PHASE_AT_LLM_START.pop(session_id, None)
+            _SESSION_STATUS_AT_LLM_START.pop(session_id, None)
+        return None
+    if session_id:
+        _VISUAL_AGENT_BYPASS_SESSIONS.discard(session_id)
     payload = _marker_payload(user_message)
     if payload is None:
         context = _STORE.for_session(session_id)
@@ -672,6 +683,9 @@ def auto_continue_llm_output(
     auto_continuation_count: int = 0,
     **_: Any,
 ) -> dict[str, str] | None:
+    if session_id in _VISUAL_AGENT_BYPASS_SESSIONS:
+        _VISUAL_AGENT_BYPASS_SESSIONS.discard(session_id)
+        return None
     context = _STORE.for_session(session_id)
     if context is None or not context.next_call:
         return None
@@ -824,6 +838,8 @@ def pre_tool_call(
     tool_call_id: str = "",
     **_: Any,
 ) -> dict[str, str] | None:
+    if session_id in _VISUAL_AGENT_BYPASS_SESSIONS:
+        return None
     context = _STORE.for_session(session_id)
     if context is None:
         return None
@@ -870,6 +886,8 @@ def pre_api_request(
     model: str = "",
     **_: Any,
 ) -> None:
+    if session_id in _VISUAL_AGENT_BYPASS_SESSIONS:
+        return
     context = _STORE.for_session(session_id)
     if context is None:
         return
@@ -897,6 +915,8 @@ def api_request_error(**kwargs: Any) -> None:
 
 def _record_api_result(status: str, payload: dict[str, Any]) -> None:
     session_id = str(payload.get("session_id") or "")
+    if session_id in _VISUAL_AGENT_BYPASS_SESSIONS:
+        return
     context = _STORE.for_session(session_id)
     if context is None:
         return
@@ -924,6 +944,8 @@ def post_tool_call(
     tool_call_id: str = "",
     **_: Any,
 ) -> None:
+    if session_id in _VISUAL_AGENT_BYPASS_SESSIONS:
+        return
     context = _STORE.for_session(session_id)
     if context is None or tool_name not in {
         "image_generate",
@@ -962,6 +984,8 @@ def subagent_start(
     child_session_id: str = "",
     **_: Any,
 ) -> None:
+    if parent_session_id in _VISUAL_AGENT_BYPASS_SESSIONS:
+        return
     context = _STORE.for_session(parent_session_id)
     if context is not None and child_session_id:
         _STORE.bind_session(context, child_session_id)
@@ -973,6 +997,10 @@ def transform_llm_output(
     session_id: str = "",
     **_: Any,
 ) -> str | None:
+    if session_id in _VISUAL_AGENT_BYPASS_SESSIONS:
+        _SESSION_PHASE_AT_LLM_START.pop(session_id, None)
+        _SESSION_STATUS_AT_LLM_START.pop(session_id, None)
+        return None
     context = _STORE.for_session(session_id)
     if context is None:
         return None

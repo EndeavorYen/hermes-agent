@@ -15,8 +15,6 @@ _DIRECT_STORY_VIDEO_MARKERS = (
     "story_video",
     "story-video-production-pipeline",
     "故事影片",
-    "科普影片",
-    "介紹影片",
 )
 
 _LONG_FORM_VIDEO_MARKERS = (
@@ -38,7 +36,38 @@ _LONG_FORM_VIDEO_MARKERS = (
 )
 
 _CHINESE_LONG_FORM_VIDEO_RE = re.compile(
-    r"(?:\d+\s*分鐘|\d+\s*mins?|\d+\s*min|大概\s*\d+|旁白|字幕|場景帳本)"
+    r"(?:(?:\d+(?:\.\d+)?|[零〇一二三四五六七八九十百兩两]+)\s*"
+    r"(?:分鐘|分钟|分|mins?|minutes?)|旁白|字幕|場景帳本)"
+)
+_MINUTE_SCALE_RE = re.compile(
+    r"(?:\d+(?:\.\d+)?|[零〇一二三四五六七八九十百兩两]+)"
+    r"\s*(?:[-–]\s*)?(?:分鐘|分钟|分|mins?|minutes?)(?![A-Za-z])",
+    re.I,
+)
+_VIDEO_CONTENT_MARKERS = (
+    "video",
+    "documentary",
+    "explainer",
+    "影片",
+    "紀錄片",
+    "纪录片",
+    "科普",
+    "故事",
+    "介紹",
+    "介绍",
+)
+_LONG_FORM_STRUCTURE_RE = re.compile(
+    r"\b(?:narration|narrated|subtitles?|multi[ -](?:scene|shot))\b|"
+    r"(?:旁白|字幕|多(?:場景|场景|鏡頭|镜头))",
+    re.I,
+)
+_NEGATED_LONG_FORM_STRUCTURE_RE = re.compile(
+    r"\b(?:without|no)\s+(?:narration|subtitles?)"
+    r"(?:\s+(?:and|or)\s+(?:narration|subtitles?))*\b|"
+    r"\bnot\s+(?:narrated|subtitled)\b|"
+    r"(?:不要|不需(?:要)?|無|无|沒有|没有)\s*(?:旁白|字幕)"
+    r"(?:\s*(?:、|和|或|與|与|及)\s*(?:旁白|字幕))*",
+    re.I,
 )
 
 _STORY_VIDEO_FLAG_KEYS = (
@@ -46,6 +75,18 @@ _STORY_VIDEO_FLAG_KEYS = (
     "story_video_mode",
     "story_video_workflow",
     "use_story_video_workflow",
+)
+
+_THREAD_CONTEXT_END = "[End of thread context]"
+_REPLY_CONTEXT_END = '"]\n\n'
+_EXPLICIT_VISUAL_AGENT_ROUTE_RE = re.compile(
+    r"^\s*(?:(?:請|请|麻煩|麻烦|幫我|帮我)\s*)?"
+    r"(?:(?:呼叫|调用|使用|用|走)\s*)?"
+    r"(?:visual[ -]?agent|視覺\s*agent|视觉\s*agent)"
+    r"(?:\s*[:：\-]\s*|\s+(?=(?:請|请|幫我|帮我|產出|产出|生成|製作|制作|"
+    r"做|畫|画|繪製|绘制|建立|create|generate|make|draw|produce|animate|"
+    r"to\s+(?:create|generate|make|draw|produce|animate))))",
+    re.I,
 )
 
 _XAI_PROVIDER_ALIASES = {
@@ -99,25 +140,86 @@ def _truthy_story_video_flag(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on", "enabled"}
 
 
-def story_video_request_detected(prompt: Any, args: Any = None) -> bool:
+def _extract_prompt_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        if value.get("type") in {"text", "input_text"}:
+            return str(value.get("text") or "").strip()
+        return _extract_prompt_text(value.get("content"))
+    if isinstance(value, (list, tuple)):
+        return "\n".join(
+            text
+            for item in value
+            if (text := _extract_prompt_text(item))
+        )
+    return ""
+
+
+def current_operator_request_text(prompt: Any) -> str:
+    text = _extract_prompt_text(prompt).replace("\r\n", "\n")
+    if _THREAD_CONTEXT_END in text:
+        return text.rsplit(_THREAD_CONTEXT_END, 1)[1].strip()
+    if text.startswith('[Replying to: "') and _REPLY_CONTEXT_END in text:
+        return text.split(_REPLY_CONTEXT_END, 1)[1].strip()
+    return text
+
+
+def explicit_visual_agent_request_detected(prompt: Any) -> bool:
+    return _EXPLICIT_VISUAL_AGENT_ROUTE_RE.match(
+        current_operator_request_text(prompt)
+    ) is not None
+
+
+def story_video_request_detected(
+    prompt: Any,
+    args: Any = None,
+    *,
+    preserve_thread_context: bool = False,
+) -> bool:
     if isinstance(args, dict) and any(
         _truthy_story_video_flag(args.get(key)) for key in _STORY_VIDEO_FLAG_KEYS
     ):
         return True
-    text = strip_visual_prompt_metadata(prompt) if isinstance(prompt, str) else ""
+    prompt_text = _extract_prompt_text(prompt)
+    text = (
+        prompt_text
+        if preserve_thread_context
+        else strip_visual_prompt_metadata(prompt_text)
+    )
     if not text:
         return False
+    if explicit_visual_agent_request_detected(text):
+        return False
     lowered = text.lower()
+    structure_text = _NEGATED_LONG_FORM_STRUCTURE_RE.sub("", text)
+    structure_lowered = structure_text.lower()
     compact = re.sub(r"[\s_\-.]+", "", lowered)
     if any(marker in lowered for marker in _DIRECT_STORY_VIDEO_MARKERS):
         return True
     if any(marker.replace("-", "").replace(" ", "") in compact for marker in _DIRECT_STORY_VIDEO_MARKERS):
         return True
-    if _CHINESE_LONG_FORM_VIDEO_RE.search(text) and any(
+    if re.match(
+        r"^\s*(?:新(?:的)?\s*)?產影片(?:\s*[:：\-]|\s|$)",
+        text,
+        re.I,
+    ):
+        return True
+    if _MINUTE_SCALE_RE.search(text) and any(
+        marker in lowered for marker in _VIDEO_CONTENT_MARKERS
+    ):
+        return True
+    if _LONG_FORM_STRUCTURE_RE.search(structure_text) and any(
+        marker in lowered for marker in _VIDEO_CONTENT_MARKERS
+    ):
+        return True
+    if _CHINESE_LONG_FORM_VIDEO_RE.search(structure_text) and any(
         marker in text for marker in ("科普", "故事", "介紹", "長影片")
     ):
         return True
-    long_form_hits = sum(1 for marker in _LONG_FORM_VIDEO_MARKERS if marker in lowered)
+    long_form_hits = sum(
+        1 for marker in _LONG_FORM_VIDEO_MARKERS if marker in structure_lowered
+    )
     if long_form_hits >= 2 and any(
         marker in lowered
         for marker in (

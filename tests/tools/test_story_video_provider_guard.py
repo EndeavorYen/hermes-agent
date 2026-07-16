@@ -56,6 +56,89 @@ def test_story_video_false_flag_does_not_trigger_detection():
     ) is False
 
 
+def test_short_product_intro_stays_on_generic_visual_route():
+    from tools.story_video_provider_guard import story_video_request_detected
+
+    assert story_video_request_detected(
+        "幫我做一支 6 秒產品介紹影片，從產品照開始。",
+        {},
+    ) is False
+
+
+def test_short_product_intro_with_whole_video_wording_stays_visual():
+    from tools.story_video_provider_guard import story_video_request_detected
+
+    assert story_video_request_detected(
+        "Visual Agent：幫我做一部 6 秒產品介紹影片，從產品照開始。",
+        {},
+    ) is False
+
+
+def test_explicit_visual_agent_route_supports_multimodal_messages():
+    from tools.story_video_provider_guard import explicit_visual_agent_request_detected
+
+    assert explicit_visual_agent_request_detected(
+        [
+            {"type": "text", "text": "Visual Agent：依照附件做一張圖"},
+            {"type": "image_url", "image_url": {"url": "/tmp/reference.png"}},
+        ]
+    ) is True
+    assert explicit_visual_agent_request_detected(
+        "請用 Visual Agent 幫我做一張產品照"
+    ) is True
+
+
+def test_explicit_visual_agent_route_strips_active_slack_reply_wrapper():
+    from tools.story_video_provider_guard import explicit_visual_agent_request_detected
+
+    assert explicit_visual_agent_request_detected(
+        '[Replying to: "故事影片：恐龍起源｜5分｜真實照片"]\n\n'
+        "Visual Agent：幫我做一張產品照和 6 秒短片"
+    ) is True
+
+
+def test_minute_scale_explainer_routes_to_story_video():
+    from tools.story_video_provider_guard import story_video_request_detected
+
+    assert story_video_request_detected(
+        "幫我做一部恐龍起源的科普影片，大概 5 分鐘。",
+        {},
+    ) is True
+
+
+def test_arbitrary_english_minute_scale_documentary_routes_to_story_video():
+    from tools.story_video_provider_guard import story_video_request_detected
+
+    assert story_video_request_detected(
+        "Make a 3-minute documentary about the origin of dinosaurs.",
+        {},
+    ) is True
+
+
+def test_single_long_form_structure_signal_routes_video_to_story_video():
+    from tools.story_video_provider_guard import story_video_request_detected
+
+    for prompt in (
+        "Create a video with narration about dinosaurs.",
+        "Create a video with subtitles about dinosaurs.",
+        "Create a multi-scene video about dinosaurs.",
+    ):
+        assert story_video_request_detected(prompt, {}) is True
+
+
+def test_negated_structure_terms_keep_seconds_scale_clips_on_visual_route():
+    from tools.story_video_provider_guard import story_video_request_detected
+
+    for prompt in (
+        "Create a 6-second video about a pen without subtitles.",
+        "Create a 6-second video with no narration about a pen.",
+        "Create a 6-second video without narration or subtitles.",
+        "製作一支 6 秒產品影片，不要字幕。",
+        "製作一支 6 秒產品影片，不要旁白或字幕。",
+    ):
+        assert story_video_request_detected(prompt, {}) is False
+
+
 def test_story_video_attachment_path_does_not_trigger_detection():
     from tools.story_video_provider_guard import story_video_request_detected
 

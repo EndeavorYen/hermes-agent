@@ -166,8 +166,15 @@ def _slug(text: str) -> str:
 
 
 def _parse_explicit_long_form_start(text: str) -> OperatorCall | None:
-    if not re.search(r"故事影片|story[ -]?video", text, re.I):
+    from tools.story_video_provider_guard import story_video_request_detected
+
+    if not story_video_request_detected(text):
         return None
+    duration_token = (
+        r"(?:\d+(?:\.\d+)?|[零〇一二三四五六七八九十百兩两]+)\s*"
+        r"(?:[-–]\s*)?(?:minutes?|mins?|seconds?|secs?|分鐘|分钟|秒|分)"
+        r"(?![A-Za-z])"
+    )
     topic_match = re.search(
         r"^\s*(?:幫我|請)?(?:做|製作|產生|生成)(?:一部|一支)?\s*"
         r"(.+?)(?:的)?(?:科普|故事|介紹|紀錄片)?影片",
@@ -175,11 +182,18 @@ def _parse_explicit_long_form_start(text: str) -> OperatorCall | None:
         re.I,
     )
     if topic_match is None:
-        return None
-    duration_token = (
-        r"(?:\d+(?:\.\d+)?|[零〇一二三四五六七八九十百兩两]+)\s*"
-        r"(?:mins?|minutes?|secs?|seconds?|分鐘|分钟|秒|分)"
-    )
+        topic_match = re.search(
+            rf"^\s*(?:please\s+)?(?:make|create|produce|generate)\s+"
+            rf"(?:me\s+)?(?:an?\s+)?(?:{duration_token}\s+)?"
+            r"(?:(?:multi[ -](?:scene|shot)|narrated)\s+)*"
+            r"(?:documentary|explainer(?:\s+video)?|story[ -]?video|video)"
+            r"(?:\s+with\s+(?:narration|subtitles?))?\s+"
+            r"(?:about|on)\s+(.+?)(?:[.!?]|$)",
+            text,
+            re.I,
+        )
+        if topic_match is None:
+            return None
     topic = re.sub(
         rf"(?:的)?{duration_token}$",
         "",

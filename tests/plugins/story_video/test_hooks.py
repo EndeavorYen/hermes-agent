@@ -185,6 +185,57 @@ def test_gateway_only_rewrites_continue_when_source_is_active(tmp_path, monkeypa
     assert '"action": "continue"' in result["text"]
 
 
+def test_gateway_leaves_short_visual_agent_video_request_unmodified(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(hooks, "_STORE", StoryVideoStateStore(tmp_path))
+
+    result = hooks.pre_gateway_dispatch(
+        event=_event("幫我做一支 6 秒產品介紹影片，從產品照開始。")
+    )
+
+    assert result is None
+
+
+def test_explicit_visual_agent_turn_bypasses_active_story_hooks_once(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    monkeypatch.setattr(hooks, "_VISUAL_AGENT_BYPASS_SESSIONS", set())
+    start = hooks.pre_gateway_dispatch(
+        event=_event("故事影片：恐龍起源｜5分｜真實照片。完整製作並出片。")
+    )
+    hooks.pre_llm_call(session_id="session-auto", user_message=start["text"])
+
+    visual_turn = (
+        '[Replying to: "故事影片：恐龍起源｜5分｜真實照片"]\n'
+        "\n"
+        "Visual Agent：幫我做一張產品照和 6 秒短片"
+    )
+    assert hooks.pre_llm_call(
+        session_id="session-auto", user_message=visual_turn
+    ) is None
+    assert hooks.pre_tool_call(
+        session_id="session-auto",
+        tool_name="video_generate",
+        args={"prompt": "short product clip", "provider": "xai"},
+    ) is None
+    assert hooks.transform_llm_output(
+        session_id="session-auto", response_text="visual result"
+    ) is None
+    assert hooks.auto_continue_llm_output(
+        session_id="session-auto", response_text="visual result"
+    ) is None
+    assert "session-auto" not in hooks._VISUAL_AGENT_BYPASS_SESSIONS
+
+    resumed = hooks.pre_llm_call(
+        session_id="session-auto", user_message="繼續"
+    )
+    assert resumed is not None
+    assert "STORY_VIDEO_RUN_CONTEXT" in resumed["context"]
+
+
 def test_youtube_package_and_upload_approval_are_distinct_active_project_actions(
     tmp_path, monkeypatch
 ) -> None:
