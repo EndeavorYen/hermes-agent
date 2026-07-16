@@ -86,3 +86,50 @@ def test_provider_facing_prompt_removes_internal_quality_dimension_labels():
     assert "Dimension-specific quality guidance" not in provider_prompt
     assert "subject_beauty:" not in provider_prompt
     assert "fashion_material_quality:" not in provider_prompt
+
+
+def test_xai_photoreal_request_prevents_child_audience_from_cartoonizing_style():
+    prompt = (
+        "適合五歲兒童的寫實自然史紀錄片畫面：剛破殼的幼龍踏出第一步，"
+        "成年恐龍在雨中保護牠。"
+    )
+
+    provider_prompt = build_provider_facing_visual_prompt(
+        prompt,
+        provider="xai",
+        request_category="educational",
+    )
+
+    assert "Audience age affects emotional clarity only" in provider_prompt
+    assert "physically plausible anatomy and natural proportions" in provider_prompt
+    assert "not illustration, animation, mascot, or oversized cute eyes" in provider_prompt
+
+
+def test_xai_stylized_request_does_not_receive_photorealism_guardrail():
+    provider_prompt = build_provider_facing_visual_prompt(
+        "適合五歲兒童的可愛卡通幼龍動畫插圖。",
+        provider="xai",
+        request_category="anime",
+    )
+
+    assert "Audience age affects emotional clarity only" not in provider_prompt
+
+
+def test_xai_negated_stylized_terms_keep_photorealism_guardrail():
+    provider_prompt = build_provider_facing_visual_prompt(
+        "Photoreal nature documentary for children; no cartoon or illustration; 不要卡通或動畫。",
+        provider="xai",
+        request_category="educational",
+    )
+
+    assert "Audience age affects emotional clarity only" in provider_prompt
+
+
+def test_xai_unrelated_negation_does_not_hide_explicit_stylized_intent():
+    provider_prompt = build_provider_facing_visual_prompt(
+        "Photoreal lighting, not gloomy but use cartoon illustration; 寫實光影，不是陰暗而是卡通動畫。",
+        provider="xai",
+        request_category="anime",
+    )
+
+    assert "Audience age affects emotional clarity only" not in provider_prompt

@@ -4967,6 +4967,220 @@ def test_visual_package_kernel_runs_one_classified_repair_and_records_contract(m
     assert "composition_weak" in repairs[0]["blocker_codes"]
 
 
+def test_visual_package_kernel_runs_bounded_improving_repairs_until_quality_passes(
+    monkeypatch,
+    tmp_path,
+):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image_paths = [tmp_path / f"quality-round-{index}.png" for index in range(3)]
+    for path in image_paths:
+        path.write_bytes(_ONE_PIXEL_PNG)
+    observations = [
+        {
+            "visual_appeal": 0.30,
+            "composition": 0.20,
+            "confidence": 0.90,
+            "artifact_defects": ["distorted_anatomy", "action_or_moment_missing"],
+        },
+        {
+            "visual_appeal": 0.75,
+            "composition": 0.75,
+            "confidence": 0.90,
+            "artifact_defects": ["action_or_moment_missing"],
+        },
+        {"visual_appeal": 0.92, "composition": 0.90, "confidence": 0.95},
+    ]
+    calls = []
+
+    def fake_generate_image(**kwargs):
+        index = len(calls)
+        calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(image_paths[index]),
+            "provider": "xai",
+            "model": "image",
+            "vision_observation": observations[index],
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+    payload = json.loads(
+        visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "產出一張有明確故事瞬間與強烈焦點的科普圖片。",
+                "include_video": False,
+                "candidate_budget": 1,
+                "candidate_budget_source": "planner_default",
+                "visual_production_kernel": True,
+                "max_generated_repairs": 2,
+                "visual_contract_hash": "contract-v2",
+                "visual_intent_contract": {
+                    "schema": "visual_intent_contract_v1",
+                    "original_request": "產出一張有明確故事瞬間與強烈焦點的科普圖片。",
+                    "primary_subject": "科普故事瞬間",
+                },
+                "provider_decision": {
+                    "provider": "xai",
+                    "reason": "configured_default",
+                    "available": True,
+                    "evidence": {},
+                },
+            }
+        )
+    )
+
+    assert payload["success"] is True, json.dumps(
+        {"delivery_gate": payload.get("delivery_gate"), "call_count": len(calls)},
+        ensure_ascii=False,
+    )
+    assert len(calls) == 3, payload.get("delivery_gate")
+    assert payload["images"] == [str(image_paths[2])]
+    quality_loop = payload["delivery_gate"]["image"]["quality_loop"]
+    assert quality_loop["rounds_attempted"] == 2
+    assert quality_loop["stop_reason"] == "quality_gate_passed"
+    assert quality_loop["generation_attempts_before_loop"] == 1
+    assert quality_loop["total_generation_attempts"] == 3
+    assert [item["accepted"] for item in quality_loop["history"]] == [True, True]
+    shadow_rows = VisualAttemptLedger(default_visual_ledger_path())._list("visual_shadow_updates")
+    quality_rows = [
+        row
+        for row in shadow_rows
+        if row["proposed_change"].get("type") == "bounded_quality_loop_observation"
+    ]
+    assert len(quality_rows) == 1
+    assert quality_rows[0]["activation_status"] == "shadow"
+    assert quality_rows[0]["evidence"]["stop_reason"] == "quality_gate_passed"
+    assert quality_rows[0]["evidence"]["rounds_attempted"] == 2
+
+
+def test_visual_package_kernel_compares_worse_repair_as_challenger_and_keeps_champion(
+    monkeypatch,
+    tmp_path,
+):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.tracking import default_visual_ledger_path
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image_paths = [tmp_path / f"quality-regression-{index}.png" for index in range(2)]
+    for path in image_paths:
+        path.write_bytes(_ONE_PIXEL_PNG)
+    observations = [
+        {
+            "visual_appeal": 0.72,
+            "composition": 0.72,
+            "confidence": 0.90,
+            "artifact_defects": ["action_or_moment_missing"],
+        },
+        {
+            "visual_appeal": 0.25,
+            "composition": 0.25,
+            "confidence": 0.90,
+            "artifact_defects": ["action_or_moment_missing"],
+        },
+    ]
+    calls = []
+
+    def fake_generate_image(**kwargs):
+        index = len(calls)
+        calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(image_paths[index]),
+            "provider": "xai",
+            "model": "image",
+            "vision_observation": observations[index],
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+    payload = json.loads(
+        visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "產出一張有明確故事瞬間與強烈焦點的科普圖片。",
+                "include_video": False,
+                "candidate_budget": 1,
+                "visual_production_kernel": True,
+                "max_generated_repairs": 2,
+                "visual_contract_hash": "contract-regression",
+                "visual_intent_contract": {
+                    "schema": "visual_intent_contract_v1",
+                    "original_request": "產出一張有明確故事瞬間與強烈焦點的科普圖片。",
+                    "primary_subject": "科普故事瞬間",
+                },
+                "provider_decision": {
+                    "provider": "xai",
+                    "reason": "configured_default",
+                    "available": True,
+                    "evidence": {},
+                },
+            }
+        )
+    )
+
+    assert len(calls) == 2
+    quality_loop = payload["delivery_gate"]["image"]["quality_loop"]
+    assert quality_loop["stop_reason"] == "no_progress"
+    assert quality_loop["history"][0]["accepted"] is False
+    assert quality_loop["history"][0]["challenger_artifact_id"] != quality_loop["history"][0][
+        "champion_artifact_id"
+    ]
+    assert payload["delivery_gate"]["image"]["visual_kernel_repair"] == {
+        "strategy": "stop_quality_loop",
+        "should_generate": False,
+        "should_switch_provider": False,
+        "blocker_codes": quality_loop["champion"]["blocker_codes"],
+        "directive": "Keep the current champion and stop generated repairs.",
+        "reason": "no_progress",
+    }
+    rankings = VisualAttemptLedger(default_visual_ledger_path())._list("visual_rankings")
+    assert rankings[-1]["selected_artifact_id"] == quality_loop["champion"]["artifact_id"]
+
+
+def test_visual_package_quality_repair_provider_keeps_explicit_route(monkeypatch):
+    from tools import visual_package_tool
+
+    monkeypatch.setattr(
+        visual_package_tool,
+        "_available_image_provider_fallbacks",
+        lambda **_kwargs: ["fal", "openai-codex"],
+    )
+
+    provider, stop_reason = visual_package_tool._quality_repair_provider(
+        "xai",
+        {"should_switch_provider": True},
+        {"provider_decision": {"reason": "explicit_override"}},
+    )
+
+    assert provider is None
+    assert stop_reason == "explicit_provider_pinned"
+
+
+def test_visual_package_quality_repair_provider_uses_authorized_fallback(monkeypatch):
+    from tools import visual_package_tool
+
+    monkeypatch.setattr(
+        visual_package_tool,
+        "_available_image_provider_fallbacks",
+        lambda **_kwargs: ["fal", "openai-codex"],
+    )
+
+    provider, stop_reason = visual_package_tool._quality_repair_provider(
+        "xai",
+        {"should_switch_provider": True},
+        {
+            "provider_decision": {"reason": "configured_default"},
+            "authorized_image_providers": ["xai", "openai-codex"],
+        },
+    )
+
+    assert provider == "openai-codex"
+    assert stop_reason is None
+
+
 def test_visual_package_kernel_rejects_candidate_from_stale_contract():
     from tools import visual_package_tool
 
