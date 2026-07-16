@@ -189,6 +189,40 @@ class TestGenerate:
             workdir=workdir,
         ) == str(image.resolve())
 
+    def test_grok_build_resolves_noisy_pretty_json_session_output(self, tmp_path):
+        from urllib.parse import quote
+
+        from plugins.image_gen.xai import _extract_grok_build_image
+
+        workdir = tmp_path / "work"
+        workdir.mkdir()
+        grok_home = tmp_path / ".grok"
+        session_id = "019f6ca0-c172-7af3-a85c-9576ab0d31fc"
+        image = (
+            grok_home
+            / "sessions"
+            / quote(str(workdir.resolve()), safe="")
+            / session_id
+            / "images"
+            / "1.jpg"
+        )
+        image.parent.mkdir(parents=True)
+        image.write_bytes(b"image")
+        stdout = f'''Native image tool completed successfully.
+{{
+  "result": "Generated file: `images/1.jpg`",
+  "stopReason": "EndTurn",
+  "sessionId": "{session_id}",
+  "thought": "The image was generated successfully."
+}}
+'''
+
+        assert _extract_grok_build_image(
+            stdout,
+            workdir=workdir,
+            config={"grok_home": str(grok_home)},
+        ) == str(image.resolve())
+
     def test_grok_build_does_not_reuse_unbound_workdir_image(self, tmp_path):
         from plugins.image_gen.xai import _extract_grok_build_image
 
