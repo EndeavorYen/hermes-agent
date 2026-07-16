@@ -817,6 +817,9 @@ def run_codex_app_server_turn(
             request_routing=_ServerRequestRouting(
                 auto_approve_exec=auto_approve_requests,
                 auto_approve_apply_patch=auto_approve_requests,
+                auto_resolve_user_input=_is_story_video_workflow(
+                    raphael_decision
+                ),
             ),
             subprocess_env={
                 "HERMES_SESSION_ID": str(agent.session_id or ""),

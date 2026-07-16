@@ -256,6 +256,7 @@ def test_codex_runtime_keeps_story_video_slack_worker_out_of_codex_task_list(
     )
 
     assert captured["ephemeral"] is True
+    assert captured["request_routing"].auto_resolve_user_input is True
 
 
 def test_codex_runtime_honors_explicit_ephemeral_override(monkeypatch):

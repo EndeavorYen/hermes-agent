@@ -196,6 +196,7 @@ class _ServerRequestRouting:
 
     auto_approve_exec: bool = False
     auto_approve_apply_patch: bool = False
+    auto_resolve_user_input: bool = False
 
 
 class CodexAppServerSession:
@@ -391,7 +392,7 @@ class CodexAppServerSession:
         *,
         turn_timeout: float = 600.0,
         notification_poll_timeout: float = 0.25,
-        post_tool_quiet_timeout: float = 90.0,
+        post_tool_quiet_timeout: float = 300.0,
     ) -> TurnResult:
         """Send a user message and block until turn/completed, while
         forwarding server-initiated approval requests and projecting items
@@ -583,10 +584,20 @@ class CodexAppServerSession:
                 # tool-shaped item completes.
                 last_tool_completion_at = time.monotonic()
             else:
-                # Any non-tool projected activity (assistant message,
-                # status update, etc.) means codex is still producing
-                # output — clear the quiet timer so we don't fast-fail.
-                if projection.messages or projection.final_text is not None:
+                # Streaming item notifications are meaningful model progress
+                # even though the projector deliberately does not persist
+                # deltas. Refresh the watchdog so long frontier-model
+                # reasoning is not mistaken for a wedged subprocess.
+                if (
+                    last_tool_completion_at is not None
+                    and method.startswith("item/")
+                    and projection.final_text is None
+                ):
+                    last_tool_completion_at = time.monotonic()
+                # A completed assistant message is usable terminal output;
+                # retain the existing outer-deadline recovery behavior while
+                # waiting for turn/completed.
+                elif projection.final_text is not None:
                     last_tool_completion_at = None
             if projection.final_text is not None:
                 # Codex can emit multiple agentMessage items in one turn
@@ -859,6 +870,36 @@ class CodexAppServerSession:
             # profile in ~/.codex/config.toml and surprise escalations
             # shouldn't be silently accepted.
             self._client.respond(rid, {"decision": "decline"})
+        elif method == "item/tool/requestUserInput":
+            if not self._routing.auto_resolve_user_input:
+                self._client.respond_error(
+                    rid,
+                    code=-32601,
+                    message="User input is unavailable in this client",
+                )
+                return
+            # Hermes gateway/cron turns are headless, so leaving Codex's
+            # experimental request_user_input call unresolved wedges the
+            # entire turn. Choose the first (recommended) option or tell the
+            # model to use its recommended default. Never fabricate secrets.
+            answers: dict[str, dict[str, list[str]]] = {}
+            for question in params.get("questions") or []:
+                if not isinstance(question, dict):
+                    continue
+                question_id = str(question.get("id") or "").strip()
+                if not question_id:
+                    continue
+                selected: list[str] = []
+                if not question.get("isSecret"):
+                    options = question.get("options") or []
+                    if options and isinstance(options[0], dict):
+                        label = str(options[0].get("label") or "").strip()
+                        if label:
+                            selected = [label]
+                    if not selected:
+                        selected = ["Proceed with your recommended default."]
+                answers[question_id] = {"answers": selected}
+            self._client.respond(rid, {"answers": answers})
         elif method == "mcpServer/elicitation/request":
             # Codex's MCP layer asks the user for structured input on
             # behalf of an MCP server (e.g. tool-call confirmation,

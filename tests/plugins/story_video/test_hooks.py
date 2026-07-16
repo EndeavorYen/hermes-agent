@@ -546,19 +546,36 @@ def test_autopilot_context_requires_canonical_quality_tool_and_phase_loop(
     assert context is not None
     assert context.auto_mode is True
     assert "AUTOPILOT is enabled" in result["context"]
-    assert "story_video_quality_control" in result["context"]
-    assert "never edit shot_candidate_manifest.json manually" in result["context"]
-    assert "candidate_id_hint" in result["context"]
-    assert "strategy_reset=true" in result["context"]
     assert "original_request is historical" in result["context"]
     assert "never edit story_video_run_context.json" in result["context"]
     assert "never edit production_checklist.json phase" in result["context"]
-    assert "one canonical bounded work group per LLM turn" in result["context"]
-    assert "up to three fresh shots" in result["context"]
-    assert "repair, rejudge_existing" in result["context"]
-    assert "compile_release_art" in result["context"]
-    assert "register_release_art" in result["context"]
-    assert "before prepare_render" in result["context"]
+    assert "scene_ledger.json MUST use exact machine keys" in result["context"]
+    assert "During batch, first call" not in result["context"]
+    assert "During render, create dedicated release art" not in result["context"]
+
+    context = store.update(context, phase="batch")
+    batch = hooks.pre_llm_call(
+        session_id="session-auto",
+        user_message="繼續",
+    )
+    assert "story_video_quality_control" in batch["context"]
+    assert "never edit shot_candidate_manifest.json manually" in batch["context"]
+    assert "candidate_id_hint" in batch["context"]
+    assert "strategy_reset=true" in batch["context"]
+    assert "one canonical bounded work group per LLM turn" in batch["context"]
+    assert "up to three fresh shots" in batch["context"]
+    assert "repair, rejudge_existing" in batch["context"]
+    assert "scene_ledger.json MUST use exact machine keys" not in batch["context"]
+
+    store.update(context, phase="render")
+    render = hooks.pre_llm_call(
+        session_id="session-auto",
+        user_message="繼續",
+    )
+    assert "compile_release_art" in render["context"]
+    assert "register_release_art" in render["context"]
+    assert "before prepare_render" in render["context"]
+    assert "During batch, first call" not in render["context"]
 
 
 def test_autopilot_requests_internal_continuation_until_complete(
@@ -817,6 +834,40 @@ def test_autopilot_does_not_stall_when_candidate_manifest_advances(
 
     assert hooks.auto_continue_llm_output(
         session_id="session-auto", response_text=blocked
+    ) is not None
+    advanced = store.for_session("session-auto")
+    assert advanced is not None
+    assert advanced.autopilot_stall_count == 1
+
+
+def test_planning_autopilot_does_not_stall_when_artifacts_advance(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    start = hooks.pre_gateway_dispatch(
+        event=_event("故事影片：恐龍起源｜5分鐘｜真實照片。完整製作並出片。")
+    )
+    hooks.pre_llm_call(session_id="session-auto", user_message=start["text"])
+
+    assert hooks.auto_continue_llm_output(
+        session_id="session-auto",
+        response_text="",
+        recoverable_transport_error=True,
+        turn_error="codex went silent for 90s after a tool result",
+    ) is not None
+
+    context = store.for_session("session-auto")
+    assert context is not None
+    (context.project_dir / "script.md").write_text(
+        "### S00\n新的旁白進度", encoding="utf-8"
+    )
+
+    assert hooks.auto_continue_llm_output(
+        session_id="session-auto",
+        response_text="",
+        recoverable_transport_error=True,
+        turn_error="codex went silent for 90s after a tool result",
     ) is not None
     advanced = store.for_session("session-auto")
     assert advanced is not None
