@@ -2593,6 +2593,60 @@ def _verified_release_art(context: StoryVideoRunContext) -> dict[str, str]:
     return verified
 
 
+def _measured_voice_chunk_subtitle_cues(
+    segment: dict[str, Any], *, scene_id: str
+) -> list[dict[str, Any]] | None:
+    raw_chunks = segment.get("voice_chunks")
+    if raw_chunks is None:
+        return None
+    if not isinstance(raw_chunks, list) or not raw_chunks:
+        raise ValueError(f"narration segment in {scene_id} has invalid voice_chunks")
+    cues: list[dict[str, Any]] = []
+    previous_end = 0.0
+    for index, chunk in enumerate(raw_chunks):
+        if not isinstance(chunk, dict):
+            raise ValueError(f"voice chunk[{index}] in {scene_id} must be an object")
+        chunk_id = str(chunk.get("voice_chunk_id") or "").strip()
+        text = str(chunk.get("display_text") or "").strip()
+        start_sec = float(chunk.get("start_sec") or 0.0)
+        end_sec = float(chunk.get("speech_end_sec") or 0.0)
+        failed_gate = next(
+            (
+                gate
+                for gate in (
+                    "alignment_status",
+                    "pronunciation_status",
+                    "prosody_status",
+                )
+                if str(chunk.get(gate) or "").upper() != "PASS"
+            ),
+            None,
+        )
+        if not chunk_id or not text:
+            raise ValueError(f"voice chunk[{index}] in {scene_id} is incomplete")
+        if failed_gate:
+            raise ValueError(f"voice chunk {chunk_id} has not passed {failed_gate}")
+        if start_sec < previous_end or end_sec <= start_sec:
+            raise ValueError(f"voice chunk {chunk_id} has invalid measured timing")
+        cues.append(
+            {
+                "text": text,
+                "start_sec": round(start_sec, 4),
+                "end_sec": round(end_sec, 4),
+                "sentence_count": 1,
+            }
+        )
+        previous_end = end_sec
+    timeline_duration = float(segment.get("timeline_duration_sec") or 0.0)
+    if timeline_duration <= 0 or cues[-1]["end_sec"] > timeline_duration + 0.05:
+        raise ValueError(f"voice chunks in {scene_id} exceed their segment timeline")
+    source_text = "".join(str(segment.get("display_text") or "").split())
+    cue_text = "".join("".join(str(cue["text"]).split()) for cue in cues)
+    if not source_text or cue_text != source_text:
+        raise ValueError(f"voice chunks in {scene_id} do not preserve narration")
+    return cues
+
+
 def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
     ledger = _load_json(context.project_dir / "scene_ledger.json")
     existing_render_input = _load_json(context.project_dir / "render_input.json")
@@ -2821,6 +2875,14 @@ def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
                     segment.get("speech_end_sec")
                     or segment["timeline_duration_sec"]
                 )
+                subtitle_cues = _measured_voice_chunk_subtitle_cues(
+                    segment, scene_id=scene_id
+                )
+                if subtitle_cues is not None:
+                    shot_input["subtitle_timing_source"] = (
+                        "measured_voice_chunks"
+                    )
+                    shot_input["subtitle_cues"] = subtitle_cues
             if selected.get("final_qc_review_required") is True:
                 shot_input["final_qc_review_required"] = True
                 shot_input["auto_terminal_fallback"] = selected.get(

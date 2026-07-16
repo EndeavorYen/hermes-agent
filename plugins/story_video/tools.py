@@ -432,6 +432,10 @@ def _validate_voice(context: StoryVideoRunContext) -> PhaseProof:
     if provider == "local-qwen":
         narration_schema = str(manifest.get("schema") or "")
         acoustic_contract = narration_schema == "story_video_narration_manifest_v4"
+        sentence_chunk_contract = (
+            str(manifest.get("voice_segmentation") or "")
+            == "sentence_chunks_v1"
+        )
         if str(manifest.get("engine") or "") != "Qwen3-TTS via MLX-Audio":
             violations.append("production narration engine is not Qwen3-TTS via MLX-Audio")
         if str(manifest.get("inference_mode") or "") != "offline":
@@ -465,11 +469,21 @@ def _validate_voice(context: StoryVideoRunContext) -> PhaseProof:
             if acoustic_contract:
                 if qc_schema != "story_video_pronunciation_qc_v2":
                     violations.append("local Qwen acoustic pronunciation QC is not v2")
-                if (
-                    str(pronunciation_report.get("method") or "")
-                    != "lexicon_plus_independent_asr"
-                ):
+                accepted_methods = {
+                    "lexicon_plus_independent_asr",
+                    "sentence_chunk_lexicon_plus_independent_asr",
+                }
+                if str(pronunciation_report.get("method") or "") not in accepted_methods:
                     violations.append("local Qwen pronunciation QC lacks independent ASR")
+                if sentence_chunk_contract and (
+                    str(pronunciation_report.get("method") or "")
+                    != "sentence_chunk_lexicon_plus_independent_asr"
+                    or str(pronunciation_report.get("checked_unit") or "")
+                    != "voice_chunk"
+                ):
+                    violations.append(
+                        "local Qwen pronunciation QC lacks sentence chunk evidence"
+                    )
                 evidence = pronunciation_report.get("acoustic_evidence")
                 if not isinstance(evidence, list) or not evidence:
                     missing.append("local Qwen acoustic pronunciation evidence")
@@ -532,6 +546,33 @@ def _validate_voice(context: StoryVideoRunContext) -> PhaseProof:
                                         f"audio narration segment[{index}].segments[{segment_index}] "
                                         f"{gate.removesuffix('_status')} is not PASS"
                                     )
+                            if sentence_chunk_contract:
+                                voice_chunks = segment.get("voice_chunks")
+                                if not isinstance(voice_chunks, list) or not voice_chunks:
+                                    missing.append(
+                                        f"audio narration segment[{index}].segments[{segment_index}].voice_chunks"
+                                    )
+                                    continue
+                                for chunk_index, chunk in enumerate(voice_chunks):
+                                    if not isinstance(chunk, dict):
+                                        missing.append(
+                                            f"audio narration segment[{index}].segments[{segment_index}].voice_chunks[{chunk_index}]"
+                                        )
+                                        continue
+                                    if not str(chunk.get("voice_chunk_id") or "").strip():
+                                        missing.append(
+                                            f"audio narration segment[{index}].segments[{segment_index}].voice_chunks[{chunk_index}].voice_chunk_id"
+                                        )
+                                    for gate in (
+                                        "alignment_status",
+                                        "pronunciation_status",
+                                        "prosody_status",
+                                    ):
+                                        if str(chunk.get(gate) or "").upper() != "PASS":
+                                            violations.append(
+                                                f"audio narration segment[{index}].segments[{segment_index}].voice_chunks[{chunk_index}] "
+                                                f"{gate.removesuffix('_status')} is not PASS"
+                                            )
             audio = str(output.get("audio") or "").strip()
             if not audio:
                 missing.append(f"audio narration segment[{index}].audio")
