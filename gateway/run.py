@@ -3189,6 +3189,56 @@ def _should_clear_resume_pending_after_turn(agent_result: dict) -> bool:
     return True
 
 
+def _build_restart_resume_message(
+    *,
+    reason: Optional[str],
+    user_message: str,
+) -> str:
+    """Build restart recovery guidance without abandoning unfinished work.
+
+    Completed side effects must not be replayed, but a gateway interruption is
+    not user intent to cancel the task.  The model should inspect durable state
+    and continue from the last verified checkpoint whenever the objective is
+    recoverable from conversation history.
+    """
+    reason_phrase = (
+        "a gateway restart"
+        if reason == "restart_timeout"
+        else "a gateway shutdown"
+        if reason == "shutdown_timeout"
+        else "a gateway interruption"
+    )
+    if user_message:
+        guidance = (
+            "Address the user's NEW message below FIRST. If it asks to "
+            "continue, recover the interrupted objective from conversation "
+            "history and continue from the last durable checkpoint. If it is "
+            "unrelated, follow the newest request."
+        )
+    else:
+        guidance = (
+            "Continue the interrupted user task autonomously from the last "
+            "durable checkpoint in conversation history. First inspect "
+            "durable state and persisted artifacts to determine what already "
+            "completed, then finish the remaining work. Briefly report the "
+            "recovery only as useful status; do not ask what to do next when "
+            "the objective is recoverable."
+        )
+    message = (
+        f"[System note: The previous turn was interrupted by {reason_phrase}; "
+        f"the gateway is now back online. Any restart/shutdown command in the "
+        f"history has already run - do NOT re-execute or verify it. {guidance} "
+        f"Do NOT re-execute old tool calls blindly. Treat persisted tool "
+        f"results and artifacts as evidence of prior effects; before retrying "
+        f"an operation with an uncertain outcome, inspect durable state. "
+        f"Unless the newest request cancels or replaces the interrupted "
+        f"objective, continue its remaining work once recovery state is known. "
+        f"Ask the user only if the interrupted objective cannot be recovered "
+        f"or continuation would be unsafe.]"
+    )
+    return message + (f"\n\n{user_message}" if user_message else "")
+
+
 def _preserve_queued_followup_history_offset(
     current_result: dict,
     followup_result: dict,
@@ -19093,36 +19143,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             if _is_resume_pending:
                 _reason = getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
-                _reason_phrase = (
-                    "a gateway restart"
-                    if _reason == "restart_timeout"
-                    else "a gateway shutdown"
-                    if _reason == "shutdown_timeout"
-                    else "a gateway interruption"
-                )
                 _persist_user_message_override = message
-                # The empty-message case is the auto-resume startup turn
-                # synthesized by _schedule_resume_pending_sessions — there is
-                # no NEW user message to address, so tell the model to report
-                # recovery instead of the (nonexistent) "new message".
-                if message:
-                    _resume_guidance = (
-                        "Address the user's NEW message below FIRST and focus "
-                        "on what the user is asking now."
-                    )
-                else:
-                    _resume_guidance = (
-                        "Report to the user that the session was restored "
-                        "successfully and ask what they would like to do next."
-                    )
-                message = (
-                    f"[System note: The previous turn was interrupted by "
-                    f"{_reason_phrase}; the gateway is now back online. "
-                    f"Any restart/shutdown command in the history has already "
-                    f"run — do NOT re-execute or verify it. {_resume_guidance} "
-                    f"Do NOT re-execute old tool calls — skip any unfinished "
-                    f"work from the conversation history.]"
-                    + (f"\n\n{message}" if message else "")
+                message = _build_restart_resume_message(
+                    reason=_reason,
+                    user_message=message,
                 )
             elif _has_fresh_tool_tail:
                 _persist_user_message_override = message
@@ -19163,22 +19187,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _sn_reason = (
                     getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
                 )
-                _sn_reason_phrase = (
-                    "a gateway restart"
-                    if _sn_reason == "restart_timeout"
-                    else "a gateway shutdown"
-                    if _sn_reason == "shutdown_timeout"
-                    else "a gateway interruption"
-                )
-                message = (
-                    f"[System note: The previous turn was interrupted by "
-                    f"{_sn_reason_phrase}; the gateway is now back online. "
-                    f"Any restart/shutdown command in the history has already "
-                    f"run — do NOT re-execute or verify it. Report to the user "
-                    f"that the session was restored successfully and ask what "
-                    f"they would like to do next. Do NOT re-execute old tool "
-                    f"calls — skip any unfinished work from the conversation "
-                    f"history.]"
+                message = _build_restart_resume_message(
+                    reason=_sn_reason,
+                    user_message="",
                 )
 
             _approval_session_key = session_key or ""
