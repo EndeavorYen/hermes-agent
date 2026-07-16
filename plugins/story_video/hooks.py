@@ -357,7 +357,11 @@ def pre_llm_call(
         "and never use xAI/Grok through terminal or delegation. Use local locked "
         "narration/render components only; generic text_to_speech is forbidden. "
         "Complete the current phase in this turn; do not stop after announcing "
-        "what you will do. During planning, immediately create script.md, storyboard.md, "
+        "what you will do. "
+    )
+    if context.phase == "planning":
+        instruction += (
+        "During planning, immediately create script.md, storyboard.md, "
         "scene_ledger.json, production_checklist.json, script_quality_report.json, "
         "and pronunciation_lexicon.json in project_dir from the original request "
         "and a proactive zh-TW risk-term scan; PROJECT_CONTRACT.md already exists. "
@@ -424,6 +428,10 @@ def pre_llm_call(
         "### S01, and so on for the local voice parser. Preserve correct display "
         "spelling in all narration and never write spoken aliases into script.md; "
         "aliases belong only in pronunciation_lexicon.json and are compiled at voice time. "
+        "The ending_echo MUST support a cinematic educational ending. "
+        )
+    if context.phase in {"keyframes", "batch"}:
+        instruction += (
         "During batch, first call story_video_quality_control "
         "action=next_batch_work. Existing "
         "repair_required work always takes priority over generating a new shot. After "
@@ -461,8 +469,14 @@ def pre_llm_call(
         "never edit shot_candidate_manifest.json manually and never invent judge scores "
         "or vision evidence. Complete every required shot in the current phase before "
         "stopping. "
+        )
+    if context.phase == "voice":
+        instruction += (
         "During voice, compile display text to low-ambiguity spoken text with the "
         "project pronunciation lexicon and require qc/pronunciation_qc_report.json. "
+        )
+    if context.phase == "render":
+        instruction += (
         "During render, create dedicated release art before prepare_render. First call "
         "story_video_quality_control action=compile_release_art, generate exactly one "
         "text-free hero with image_generate provider=openai-codex using the returned "
@@ -477,6 +491,8 @@ def pre_llm_call(
         "the only writer of render_input.json. Never hand-edit render_input.json or "
         "invent renderer aliases. Then run the story-video production pipeline's "
         "render_story_video.py for project_dir and validate render. "
+        )
+    instruction += (
         "Do not inspect other story-video projects, source code, memory, or unrelated "
         "skills, and do not "
         "invoke brainstorming, nested Hermes sessions, web research, or media "
@@ -510,8 +526,11 @@ def pre_llm_call(
             "execute the exact repair_request immediately and validate again. Do not ask "
             "the operator to reply with continue or repair. Stop only for an operator "
             "setup blocker such as missing credentials, exhausted quota, or unavailable "
-            "required provider; otherwise finish the production and delivery. During "
-            "batch, execute one canonical bounded work group per LLM turn. A group may "
+            "required provider; otherwise finish the production and delivery. "
+        )
+        if context.phase == "batch":
+            instruction += (
+            "During batch, execute one canonical bounded work group per LLM turn. A group may "
             "contain up to three fresh shots whose image_generate calls run together; "
             "judge their successful results sequentially. A repair, rejudge_existing, "
             "or replan_shot_contract action is always a singleton and takes priority. "
@@ -520,13 +539,29 @@ def pre_llm_call(
             "can schedule the canonical next action. Do not start the next batch work unit "
             "in the same turn. This turn boundary is not an operator pause and must not "
             "request input."
-        )
+            )
     return {"context": instruction}
 
 
 def _autopilot_progress_token(context: StoryVideoRunContext) -> str:
     evidence: dict[str, Any] = {"phase": context.phase}
-    if context.phase in {"keyframes", "batch"}:
+    if context.phase == "planning":
+        evidence["artifacts"] = []
+        for name in (
+            "script.md",
+            "storyboard.md",
+            "scene_ledger.json",
+            "production_checklist.json",
+            "script_quality_report.json",
+            "pronunciation_lexicon.json",
+        ):
+            path = context.project_dir / name
+            try:
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+            except OSError:
+                digest = ""
+            evidence["artifacts"].append((name, digest))
+    elif context.phase in {"keyframes", "batch"}:
         path = context.project_dir / "manifests" / "shot_candidate_manifest.json"
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))

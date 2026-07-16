@@ -7,6 +7,7 @@ deadline timeouts. These tests pin all of that without spawning real codex.
 
 from __future__ import annotations
 
+import inspect
 import time
 from unittest.mock import patch
 from typing import Any, Optional
@@ -696,6 +697,95 @@ class TestServerRequestRouting:
             for (rid, code, _msg) in client.error_responses
         )
 
+    def test_request_user_input_uses_safe_unattended_defaults(self):
+        client = FakeClient()
+        client.queue_server_request(
+            "item/tool/requestUserInput",
+            request_id="input-1",
+            threadId="t",
+            turnId="tu1",
+            itemId="tool-1",
+            autoResolutionMs=None,
+            questions=[
+                {
+                    "id": "mode",
+                    "header": "Mode",
+                    "question": "Choose a mode",
+                    "isOther": True,
+                    "isSecret": False,
+                    "options": [
+                        {"label": "Recommended", "description": "Best default"},
+                        {"label": "Alternate", "description": "More manual"},
+                    ],
+                },
+                {
+                    "id": "detail",
+                    "header": "Detail",
+                    "question": "Add details",
+                    "isOther": True,
+                    "isSecret": False,
+                    "options": None,
+                },
+                {
+                    "id": "secret",
+                    "header": "Secret",
+                    "question": "Enter a key",
+                    "isOther": False,
+                    "isSecret": True,
+                    "options": None,
+                },
+            ],
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+
+        make_session(
+            client,
+            request_routing=_ServerRequestRouting(
+                auto_resolve_user_input=True,
+            ),
+        ).run_turn("continue", turn_timeout=1.0)
+
+        assert (
+            "input-1",
+            {
+                "answers": {
+                    "mode": {"answers": ["Recommended"]},
+                    "detail": {
+                        "answers": ["Proceed with your recommended default."]
+                    },
+                    "secret": {"answers": []},
+                }
+            },
+        ) in client.responses
+
+    def test_request_user_input_without_autonomy_fails_closed(self):
+        client = FakeClient()
+        client.queue_server_request(
+            "item/tool/requestUserInput",
+            request_id="input-2",
+            threadId="t",
+            turnId="tu1",
+            itemId="tool-2",
+            autoResolutionMs=None,
+            questions=[],
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+
+        make_session(client).run_turn("continue", turn_timeout=1.0)
+
+        assert any(
+            rid == "input-2" and code == -32601
+            for rid, code, _message in client.error_responses
+        )
+
     def test_mcp_elicitation_for_hermes_tools_auto_accepts(self):
         """When codex elicits on behalf of hermes-tools (our own callback),
         accept automatically — the user already opted in by enabling the
@@ -888,6 +978,13 @@ class TestSessionRetirement:
             "respawns codex instead of riding a wedged subprocess."
         )
 
+    def test_default_post_tool_quiet_window_allows_frontier_reasoning(self):
+        default = inspect.signature(
+            CodexAppServerSession.run_turn
+        ).parameters["post_tool_quiet_timeout"].default
+
+        assert default >= 300.0
+
     def test_completed_turn_does_not_retire(self):
         client = FakeClient()
         client.queue_notification(
@@ -1024,6 +1121,76 @@ class TestSessionRetirement:
         assert r.final_text == "tool finished"
         assert r.should_retire is False
         assert r.interrupted is False
+
+    def test_post_tool_watchdog_treats_reasoning_delta_as_progress(self):
+        """Streaming reasoning after a tool is live model progress, even though
+        the event projector intentionally does not persist delta notifications.
+        """
+        clock = [0.0]
+
+        class ReasoningProgressClient(FakeClient):
+            def __init__(self):
+                super().__init__()
+                self.polls = 0
+
+            def take_notification(self, timeout: float = 0.0):
+                self.polls += 1
+                if self.polls == 1:
+                    return {
+                        "method": "item/completed",
+                        "params": {
+                            "item": {
+                                "type": "commandExecution",
+                                "id": "ex1",
+                                "command": "echo hi",
+                                "cwd": "/tmp",
+                                "status": "completed",
+                                "aggregatedOutput": "hi",
+                                "exitCode": 0,
+                                "commandActions": [],
+                            },
+                            "threadId": "t",
+                            "turnId": "tu1",
+                        },
+                    }
+                if self.polls == 2:
+                    clock[0] = 0.09
+                    return {
+                        "method": "item/reasoning/summaryTextDelta",
+                        "params": {
+                            "delta": "still working",
+                            "threadId": "t",
+                            "turnId": "tu1",
+                        },
+                    }
+                if self.polls == 3:
+                    clock[0] = 0.16
+                    return None
+                return {
+                    "method": "turn/completed",
+                    "params": {
+                        "threadId": "t",
+                        "turn": {
+                            "id": "tu1",
+                            "status": "completed",
+                            "error": None,
+                        },
+                    },
+                }
+
+        client = ReasoningProgressClient()
+        session = make_session(client)
+        with patch.object(session_mod.time, "monotonic", side_effect=lambda: clock[0]):
+            result = session.run_turn(
+                "tool then reason",
+                turn_timeout=5.0,
+                notification_poll_timeout=0.0,
+                post_tool_quiet_timeout=0.1,
+            )
+
+        assert result.interrupted is False
+        assert result.should_retire is False
+        assert result.error is None
 
     def test_turn_aborted_marker_in_text_is_terminal(self):
         """If codex emits `<turn_aborted>` in agent text and never sends
