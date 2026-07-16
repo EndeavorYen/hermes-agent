@@ -2856,6 +2856,10 @@ def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
         "subtitle": {
             "max_lines": 2,
             "max_chars_per_line": 29,
+            "preferred_sentences_per_cue": 1,
+            "max_sentences_per_cue": 2,
+            "min_cue_duration_sec": 1.5,
+            "hide_outside_speech": True,
             "position": "bottom",
             "production_stage": "post_composite",
             "qc_mode": "fast_post_composite",

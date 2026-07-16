@@ -2908,6 +2908,10 @@ def test_prepare_render_writes_exact_renderer_v2_contract(tmp_path) -> None:
     assert render_input["zoom_max"] == 1.1
     assert render_input["subtitle"]["position"] == "bottom"
     assert render_input["subtitle"]["production_stage"] == "post_composite"
+    assert render_input["subtitle"]["preferred_sentences_per_cue"] == 1
+    assert render_input["subtitle"]["max_sentences_per_cue"] == 2
+    assert render_input["subtitle"]["min_cue_duration_sec"] == 1.5
+    assert render_input["subtitle"]["hide_outside_speech"] is True
     scene = render_input["scenes"][0]
     assert scene["selected"] is True
     assert scene["audio"] == "audio/qwen/S00.wav"
