@@ -1807,6 +1807,7 @@ def _promote_auto_terminal_fallbacks(
     manifest: dict[str, Any],
     *,
     shot_ids: list[str],
+    force_exhausted_shot_ids: Iterable[str] = (),
 ) -> dict[str, Any]:
     if not context.auto_mode:
         return manifest
@@ -1824,6 +1825,7 @@ def _promote_auto_terminal_fallbacks(
         if isinstance(row, dict)
     }
     changed = False
+    forced = {str(value) for value in force_exhausted_shot_ids if str(value)}
     for shot_id in shot_ids:
         current = by_shot.get(shot_id)
         if (
@@ -1831,7 +1833,10 @@ def _promote_auto_terminal_fallbacks(
             or current.get("selected") is True
             or str(current.get("status") or "")
             not in {"repair_required", "quality_budget_exhausted"}
-            or _contract_replan_count(manifest, shot_id) < MAX_CONTRACT_REPLANS
+            or (
+                shot_id not in forced
+                and _contract_replan_count(manifest, shot_id) < MAX_CONTRACT_REPLANS
+            )
         ):
             continue
         try:
@@ -1848,7 +1853,10 @@ def _promote_auto_terminal_fallbacks(
                 legacy_prompts.get(shot_id, ""),
             )
         ]
-        if len(current_history) < MAX_REPLANNED_CONTRACT_CANDIDATES:
+        if (
+            shot_id not in forced
+            and len(current_history) < MAX_REPLANNED_CONTRACT_CANDIDATES
+        ):
             continue
         source = _terminal_fallback_source(
             context,
@@ -1860,6 +1868,18 @@ def _promote_auto_terminal_fallbacks(
         if source is None:
             continue
         source_row, source_path, fallback_type = source
+        if shot_id in forced and fallback_type == "best_available_draft":
+            source_blockers = [
+                str(value)
+                for value in source_row.get("hard_blockers") or []
+                if value
+            ]
+            if (
+                source_blockers
+                or float(source_row.get("quality_score") or 0.0)
+                < BEST_EFFORT_QUALITY_FLOOR
+            ):
+                continue
         target_path = context.project_dir / "images" / f"{shot_id}.png"
         target_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source_path, target_path)
@@ -1889,8 +1909,10 @@ def _promote_auto_terminal_fallbacks(
                 source_row.get("judge_provider") or "openai-codex"
             ),
             "quality_score": float(source_row.get("quality_score") or 0.0),
+            "quality_score_origin": "source_asset",
             "quality_dimensions": source_row.get("quality_dimensions") or {},
             "vision_evidence": source_row.get("vision_evidence") or {},
+            "vision_evidence_applies_to_shot_id": source_shot_id,
             "candidate_path": _relative(context, target_path),
             "local_path": _relative(context, target_path),
             "artifact_sha256": _file_sha256(target_path),
@@ -1905,7 +1927,11 @@ def _promote_auto_terminal_fallbacks(
                 "source_shot_id": source_shot_id,
                 "source_candidate_id": str(source_row.get("candidate_id") or ""),
                 "source_artifact": _relative(context, source_path),
-                "reason": "automatic shot-contract replanning exhausted",
+                "reason": (
+                    "end-to-end generation budget exhausted"
+                    if shot_id in forced
+                    else "automatic shot-contract replanning exhausted"
+                ),
                 "replan_revision": _contract_replan_count(manifest, shot_id),
             },
             "selected_at": _utc_now(),
@@ -1937,6 +1963,124 @@ def _promote_auto_terminal_fallbacks(
         updated,
     )
     return updated
+
+
+def _run_batch_chunk(
+    context: StoryVideoRunContext,
+    *,
+    state_store: StoryVideoStateStore,
+    llm: Any,
+) -> dict[str, Any]:
+    from dataclasses import asdict
+
+    from tools.image_generation_tool import generate_image
+
+    from .batch_executor import StoryVideoBatchExecutor
+    from .hooks import _batch_parallelism
+
+    shot_ids = _ordered_shot_ids(context)
+    manifest_path = context.project_dir / "manifests" / "shot_candidate_manifest.json"
+    existing_manifest = _load_json(manifest_path) or {}
+    selected_before = {
+        str(row.get("shot_id") or "")
+        for row in existing_manifest.get("outputs") or []
+        if isinstance(row, dict) and row.get("selected") is True
+    }
+    if shot_ids and set(shot_ids).issubset(selected_before):
+        preflight = _next_batch_work(context)
+        if preflight.get("operation") == "rejudge_existing":
+            judged = _judge_candidates(
+                context,
+                shot_id=str(preflight.get("shot_id") or ""),
+                candidates=[dict(preflight.get("candidate") or {})],
+                repair_round=int(preflight.get("repair_round") or 1),
+                llm=llm,
+            )
+            return {
+                **judged,
+                "action": "run_batch_chunk",
+                "work_status": "in_progress",
+                "wave": "legacy_rejudge",
+                "generated_candidates": 0,
+            }
+        if preflight.get("work_status") == "human_review_required":
+            return {
+                **preflight,
+                "success": False,
+                "action": "run_batch_chunk",
+            }
+
+    def judge(
+        current: StoryVideoRunContext,
+        *,
+        shot_id: str,
+        candidate: dict[str, Any],
+        repair_round: int,
+    ) -> dict[str, Any]:
+        return _judge_candidates(
+            current,
+            shot_id=shot_id,
+            candidates=[candidate],
+            repair_round=repair_round,
+            llm=llm,
+        )
+
+    def cancelled() -> bool:
+        latest = state_store.for_run(
+            run_id=context.run_id,
+            project_dir=context.project_dir,
+        )
+        return latest is None or latest.status == "stopped"
+
+    executor = StoryVideoBatchExecutor(
+        prompt_compiler=_compile_prompt,
+        image_generator=generate_image,
+        candidate_judge=judge,
+        max_workers=_batch_parallelism(),
+    )
+    summary = executor.run_chunk(context, cancel_check=cancelled)
+    payload = asdict(summary)
+    payload["success"] = summary.work_status not in {
+        "human_review_required",
+        "setup_required",
+        "terminal_required",
+    }
+    payload["action"] = "run_batch_chunk"
+    if summary.work_status != "terminal_required":
+        return payload
+
+    manifest = _load_json(manifest_path) or {}
+    selected = {
+        str(row.get("shot_id") or "")
+        for row in manifest.get("outputs") or []
+        if isinstance(row, dict) and row.get("selected") is True
+    }
+    unresolved = [shot_id for shot_id in shot_ids if shot_id not in selected]
+    manifest = _promote_auto_terminal_fallbacks(
+        context,
+        manifest,
+        shot_ids=shot_ids,
+        force_exhausted_shot_ids=unresolved,
+    )
+    selected = {
+        str(row.get("shot_id") or "")
+        for row in manifest.get("outputs") or []
+        if isinstance(row, dict) and row.get("selected") is True
+    }
+    remaining = [shot_id for shot_id in shot_ids if shot_id not in selected]
+    payload.update(
+        {
+            "success": not remaining,
+            "work_status": "complete" if not remaining else "human_review_required",
+            "continuity_hold_shots": [
+                shot_id
+                for shot_id in unresolved
+                if shot_id in selected
+            ],
+            "failed_shots": remaining,
+        }
+    )
+    return payload
 
 
 def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
@@ -2751,6 +2895,12 @@ def story_video_quality_control(
                     row for row in args.get("candidates") or [] if isinstance(row, dict)
                 ],
                 repair_round=int(args.get("repair_round") or 1),
+                llm=llm or _PLUGIN_LLM,
+            )
+        elif action == "run_batch_chunk":
+            payload = _run_batch_chunk(
+                context,
+                state_store=state_store,
                 llm=llm or _PLUGIN_LLM,
             )
         elif action == "prepare_render":

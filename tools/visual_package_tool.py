@@ -33,6 +33,8 @@ from agent.visual.autonomous_orchestration import build_post_generation_orchestr
 from agent.visual.autonomous_validation import validate_visual_generation_payload
 from agent.visual.feedback_policy import resolve_visual_feedback_policy
 from agent.visual.feedback import is_visual_feedback_only_text
+from agent.visual.generation_waves import GenerationWaveItem
+from agent.visual.generation_waves import GenerationWaveScheduler
 from agent.visual.intent_signature import build_intent_signature
 from agent.visual.judges.deterministic import judge_artifact
 from agent.visual.judges.quality import judge_visual_quality
@@ -3151,16 +3153,25 @@ def _run_storyboard_execution(
     composition_error: dict[str, Any] = {}
     composed_video: str | None = None
     composed_video_artifact_id: str | None = None
-
-    for shot_index, shot in enumerate(_storyboard_shots(storyboard)):
-        _deadline_checkpoint(f"storyboard_shot:{shot_index}")
+    storyboard_shots = _storyboard_shots(storyboard)
+    anchor_shot_id = str(
+        storyboard.get("anchor_shot_id")
+        or storyboard.get("style_anchor_shot_id")
+        or ""
+    ).strip()
+    image_wave_specs: dict[str, dict[str, Any]] = {}
+    image_wave_items: list[GenerationWaveItem] = []
+    for shot_index, shot in enumerate(storyboard_shots):
         shot_id = str(shot.get("shot_id") or f"shot_{shot_index + 1}")
         shot_prompt = _storyboard_shot_prompt(prompt, shot, shot_index=shot_index)
-        image_payloads: list[dict[str, Any]] = []
-        image_candidates: list[dict[str, Any]] = []
         for candidate_index in range(candidate_budget_per_shot):
-            _deadline_checkpoint(f"storyboard_image_candidate:{shot_index}:{candidate_index}")
-            image_generation_prompt = _apply_first_pass_quality_guidance(shot_prompt, quality_guidance["image"])
+            _deadline_checkpoint(
+                f"storyboard_image_candidate_plan:{shot_index}:{candidate_index}"
+            )
+            image_generation_prompt = _apply_first_pass_quality_guidance(
+                shot_prompt,
+                quality_guidance["image"],
+            )
             provider_image_generation_prompt = build_provider_facing_visual_prompt(
                 image_generation_prompt,
                 provider=image_provider_override,
@@ -3172,11 +3183,50 @@ def _run_storyboard_execution(
                 "reference_image_urls": attachments or None,
             }
             _apply_image_provider_override(image_kwargs, image_provider_override)
-            image_payload = _call_generation_provider(
-                generate_image,
-                kind="image",
-                stage=f"storyboard_image_generate:{shot_index}:{candidate_index}",
-                kwargs=image_kwargs,
+            item_key = f"{shot_index}:{candidate_index}"
+            spec = {
+                "stage": f"storyboard_image_generate:{shot_index}:{candidate_index}",
+                "kwargs": image_kwargs,
+                "generation_prompt": provider_image_generation_prompt,
+            }
+            image_wave_specs[item_key] = spec
+            image_wave_items.append(
+                GenerationWaveItem(
+                    key=item_key,
+                    group_key=shot_id,
+                    payload=spec,
+                    requires_serial=bool(anchor_shot_id and shot_id == anchor_shot_id),
+                )
+            )
+
+    image_wave_run = GenerationWaveScheduler(
+        provider=image_provider_override,
+    ).run(
+        image_wave_items,
+        lambda spec: _call_generation_provider(
+            generate_image,
+            kind="image",
+            stage=spec["stage"],
+            kwargs=spec["kwargs"],
+        ),
+    )
+    image_wave_results = {
+        result.key: result for result in image_wave_run.results
+    }
+
+    for shot_index, shot in enumerate(storyboard_shots):
+        _deadline_checkpoint(f"storyboard_shot:{shot_index}")
+        shot_id = str(shot.get("shot_id") or f"shot_{shot_index + 1}")
+        shot_prompt = _storyboard_shot_prompt(prompt, shot, shot_index=shot_index)
+        image_payloads: list[dict[str, Any]] = []
+        image_candidates: list[dict[str, Any]] = []
+        for candidate_index in range(candidate_budget_per_shot):
+            item_key = f"{shot_index}:{candidate_index}"
+            spec = image_wave_specs[item_key]
+            provider_image_generation_prompt = spec["generation_prompt"]
+            image_payload = _storyboard_wave_payload(
+                image_wave_results[item_key],
+                provider=image_provider_override,
             )
             image_payloads.append(image_payload)
             image_candidate = _record_payload_candidate(
@@ -3426,6 +3476,7 @@ def _run_storyboard_execution(
         "delivery_policy": storyboard.get("delivery_policy") or "deliver_composed_video_when_available_else_selected_clips",
         "source_image_policy": storyboard.get("source_image_policy") or "one_ranked_image_per_shot",
         "candidate_budget_per_shot": candidate_budget_per_shot,
+        "image_generation_waves": image_wave_run.to_record(),
         "shots": execution_shots,
     }
     rankings["storyboard"]["shot_count"] = shot_count
@@ -3440,6 +3491,21 @@ def _run_storyboard_execution(
         "first_source_artifact_id": first_source_artifact_id,
         "candidate_budget_per_shot": candidate_budget_per_shot,
         "execution": execution,
+    }
+
+
+def _storyboard_wave_payload(
+    result,
+    *,
+    provider: str | None,
+) -> dict[str, Any]:
+    if isinstance(result.value, dict):
+        return result.value
+    return {
+        "success": False,
+        "provider": provider or "",
+        "error_type": result.failure_class or "generation_wave_task_failed",
+        "error": result.error or "storyboard image generation was not dispatched",
     }
 
 

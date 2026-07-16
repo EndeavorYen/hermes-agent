@@ -59,6 +59,23 @@ def test_classify_visual_provider_failure_detects_xai_spending_limit_before_bloc
     assert result["provider_message_code"] == "personal-team-blocked:spending-limit"
 
 
+def test_classify_visual_provider_failure_detects_expired_authentication() -> None:
+    from agent.visual.provider_failures import classify_visual_provider_failure
+
+    result = classify_visual_provider_failure(
+        {
+            "success": False,
+            "status_code": 401,
+            "error_type": "authentication_failed",
+            "error": "Codex access token expired; run codex login",
+        }
+    )
+
+    assert result["failure_class"] == "authentication_required"
+    assert result["retryable"] is False
+    assert result["safe_reframe_allowed"] is False
+
+
 def test_classify_visual_provider_failure_extracts_python_repr_provider_code():
     from agent.visual.provider_failures import classify_visual_provider_failure
 
@@ -182,6 +199,24 @@ def test_classify_visual_provider_failure_detects_xai_connection_refused_503_tex
     assert result["failure_class"] == "provider_unavailable"
     assert result["retryable"] is True
     assert result["safe_reframe_allowed"] is False
+
+
+def test_classify_visual_provider_failure_prefers_503_over_empty_response_label():
+    from agent.visual.provider_failures import classify_visual_provider_failure
+
+    result = classify_visual_provider_failure(
+        {
+            "success": False,
+            "error_type": "empty_response",
+            "error": (
+                "xAI Grok Build image generation failed (0): image generation failed "
+                "with HTTP 503 Service Unavailable: upstream connect error"
+            ),
+        }
+    )
+
+    assert result["failure_class"] == "provider_unavailable"
+    assert result["retryable"] is True
 
 
 def test_classify_visual_provider_failure_detects_dns_resolution_failure():

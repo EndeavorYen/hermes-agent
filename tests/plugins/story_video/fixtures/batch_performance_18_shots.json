@@ -1,0 +1,25 @@
+{
+  "schema": "story_video_batch_benchmark_fixture_v1",
+  "shot_count": 18,
+  "initial_failures": [
+    "S02_SH00",
+    "S05_SH00",
+    "S08_SH00",
+    "S11_SH00",
+    "S14_SH00",
+    "S17_SH00"
+  ],
+  "repair_successes": [
+    "S02_SH00",
+    "S05_SH00",
+    "S08_SH00"
+  ],
+  "expected": {
+    "max_image_generations": 22,
+    "max_candidates_per_shot": 2,
+    "max_orchestration_calls": 9,
+    "expected_parallelism": 3,
+    "expected_selected_count": 15,
+    "expected_continuity_hold_count": 3
+  }
+}
