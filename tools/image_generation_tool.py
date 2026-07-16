@@ -1371,8 +1371,10 @@ IMAGE_GENERATE_SCHEMA = {
         "edit / transform an existing image (image-to-image) when the active "
         "model supports it. Pass `image_url` to edit that image; add "
         "`reference_image_urls` for style/composition references; omit both "
-        "for text-to-image. The underlying backend (FAL, OpenAI, xAI, etc.) "
-        "and model are user-configured and not selectable by the agent. "
+        "for text-to-image. The configured backend (FAL, OpenAI, xAI, etc.) "
+        "is the default. When an operator or workflow policy requires a "
+        "specific registered backend, pass `provider` to override that "
+        "default for this call. "
         "Returns the result in the `image` field — either a URL or an absolute "
         "file path. To show it to the user, reference that path/URL in your "
         "response using the file-delivery convention for the current platform "
@@ -1397,6 +1399,15 @@ IMAGE_GENERATE_SCHEMA = {
                 "enum": list(VALID_ASPECT_RATIOS),
                 "description": "The aspect ratio of the generated image. 'landscape' is 16:9 wide, 'portrait' is 16:9 tall, 'square' is 1:1.",
                 "default": DEFAULT_ASPECT_RATIO,
+            },
+            "provider": {
+                "type": "string",
+                "description": (
+                    "Optional registered image backend for this call. This "
+                    "overrides the configured default and should be used only "
+                    "when the operator or active workflow policy requires a "
+                    "specific provider."
+                ),
             },
             "image_url": {
                 "type": "string",
@@ -1891,12 +1902,15 @@ def _build_dynamic_image_schema() -> Dict[str, Any]:
     model = info.get("model")
     modalities = set(info.get("modalities") or ["text"])
 
-    line = "\nActive backend"
+    line = "\nDefault backend"
     if provider:
         line += f": {provider}"
     if model:
         line += f" · model: {model}"
     parts.append(line)
+    parts.append(
+        "Explicit `provider` overrides this default for the current call."
+    )
 
     if "image" in modalities and "text" in modalities:
         max_refs = info.get("max_reference_images") or 0
@@ -1922,7 +1936,32 @@ def _build_dynamic_image_schema() -> Dict[str, Any]:
             "text-only prompt."
         )
 
-    return {"description": "\n".join(parts)}
+    parameters = dict(IMAGE_GENERATE_SCHEMA["parameters"])
+    properties = dict(parameters["properties"])
+    provider_schema = dict(properties["provider"])
+    try:
+        from agent.image_gen_registry import list_providers
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        available = []
+        for image_provider in list_providers():
+            try:
+                if image_provider.is_available():
+                    available.append(image_provider.name)
+            except Exception:
+                continue
+        if available:
+            provider_schema["enum"] = sorted(set(available))
+    except Exception:
+        pass
+    properties["provider"] = provider_schema
+    parameters["properties"] = properties
+
+    return {
+        "description": "\n".join(parts),
+        "parameters": parameters,
+    }
 
 
 registry.register(

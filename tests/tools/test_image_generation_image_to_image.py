@@ -373,6 +373,27 @@ class TestDynamicSchema:
         assert "image-to-image / editing" in desc
         assert "up to 5 reference image(s)" in desc
 
+    def test_schema_exposes_available_provider_override(self, cfg_home, monkeypatch):
+        from tools.image_generation_tool import _build_dynamic_image_schema
+        from agent import image_gen_registry as reg
+
+        _write_cfg(cfg_home, {"image_gen": {"provider": "both"}})
+        reg.register_provider(_PluginBothProvider())
+        self._no_discovery(monkeypatch)
+
+        schema = _build_dynamic_image_schema()
+        provider = schema["parameters"]["properties"]["provider"]
+
+        assert provider["enum"] == ["both"]
+        assert "overrides the configured default" in provider["description"]
+        assert "Explicit `provider` overrides this default" in schema["description"]
+
+    def test_static_schema_does_not_claim_provider_is_agent_unselectable(self):
+        from tools.image_generation_tool import IMAGE_GENERATE_SCHEMA
+
+        assert "provider" in IMAGE_GENERATE_SCHEMA["parameters"]["properties"]
+        assert "not selectable by the agent" not in IMAGE_GENERATE_SCHEMA["description"]
+
     def test_builder_wired_into_registry(self):
         from tools.registry import discover_builtin_tools, registry
 
