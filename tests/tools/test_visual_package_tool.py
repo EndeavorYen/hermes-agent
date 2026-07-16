@@ -841,8 +841,37 @@ def test_visual_package_delivers_ranked_final_candidate_options_when_requested(
 
     assert payload["success"] is True
     assert payload["images"] == [str(strong), str(weak)]
+    assert len(image_calls) == 2
+    assert "candidate 1 of 2" in image_calls[0]["prompt"]
+    assert "candidate 2 of 2" in image_calls[1]["prompt"]
+    assert all("Generate exactly ONE image in this call" in call["prompt"] for call in image_calls)
+    assert all("Create 2 final pose candidates" not in call["prompt"] for call in image_calls)
     assert len(payload["delivery_metadata"]["selected_visual_artifact_ids"]) == 2
     assert payload["generation_strategy"]["deliver_candidate_options"] is True
+
+
+def test_visual_package_singularizes_production_batch_prompt_per_provider_call():
+    from tools import visual_package_tool
+
+    prompt = (
+        "Create exactly 4 separate final portrait images. "
+        "Use four clearly different supported poses. "
+        "Return four individual final images for user selection."
+    )
+
+    result = visual_package_tool._single_candidate_generation_prompt(
+        prompt,
+        candidate_index=2,
+        candidate_budget=4,
+    )
+
+    assert "Provider batch candidate 3 of 4" in result
+    assert "Generate exactly ONE image in this call" in result
+    assert "Create exactly 4" not in result
+    assert "Use four clearly different" not in result
+    assert "Return four individual" not in result
+    assert "controlled mid-step or turning pose" in result
+    assert "different camera height and limb layout from the references" in result
 
 
 def test_visual_package_category_treats_openai_composition_as_composition_guide():
