@@ -459,6 +459,9 @@ def test_autopilot_authorization_is_scoped_to_run_project_and_openai(tmp_path) -
         context,
         authorization_id=authorization["authorization_id"],
     ) == authorization
+    assert store.for_autopilot_authorization(
+        authorization["authorization_id"]
+    ) == context
     assert store.autopilot_authorization(
         context,
         authorization_id="wrong-authorization-id",

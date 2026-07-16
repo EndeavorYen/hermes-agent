@@ -754,6 +754,37 @@ class StoryVideoStateStore:
             return None
         return payload
 
+    def for_autopilot_authorization(
+        self,
+        authorization_id: str,
+    ) -> StoryVideoRunContext | None:
+        normalized_id = str(authorization_id or "").strip()
+        if not normalized_id or not self.authorization_state_root.exists():
+            return None
+        for path in self.authorization_state_root.glob("*.json"):
+            payload = self._read_json(path, None)
+            if not isinstance(payload, dict) or not (
+                payload.get("schema") == AUTOPILOT_AUTHORIZATION_SCHEMA
+                and payload.get("enabled") is True
+            ):
+                continue
+            candidate_id = str(payload.get("authorization_id") or "").strip()
+            if not candidate_id or not hmac.compare_digest(candidate_id, normalized_id):
+                continue
+            context = self.for_run(
+                run_id=str(payload.get("run_id") or ""),
+                project_dir=str(payload.get("project_dir") or ""),
+            )
+            if context is None:
+                return None
+            if self.autopilot_authorization(
+                context,
+                authorization_id=normalized_id,
+            ) is None:
+                return None
+            return context
+        return None
+
     def _from_index(
         self,
         index_path: Path,

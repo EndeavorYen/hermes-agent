@@ -113,13 +113,17 @@ def _dispatch_session_id(kwargs: dict[str, Any]) -> str | None:
     inherited = os.environ.get("HERMES_SESSION_ID") or None
     run_id = str(kwargs.get("run_id") or "").strip()
     project_dir = str(kwargs.get("project_dir") or "").strip()
-    if not run_id or not project_dir:
+    authorization_id = str(kwargs.get("authorization_id") or "").strip()
+    if not ((run_id and project_dir) or authorization_id):
         return inherited
     try:
         from plugins.story_video.state import StoryVideoStateStore
 
         store = StoryVideoStateStore()
-        context = store.for_run(run_id=run_id, project_dir=project_dir)
+        if run_id and project_dir:
+            context = store.for_run(run_id=run_id, project_dir=project_dir)
+        else:
+            context = store.for_autopilot_authorization(authorization_id)
     except Exception:
         logger.debug("could not resolve story-video run context", exc_info=True)
         return inherited
