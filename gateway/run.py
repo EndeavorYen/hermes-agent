@@ -3193,6 +3193,7 @@ def _build_restart_resume_message(
     *,
     reason: Optional[str],
     user_message: str,
+    interrupted_objective: Optional[str] = None,
 ) -> str:
     """Build restart recovery guidance without abandoning unfinished work.
 
@@ -3224,10 +3225,21 @@ def _build_restart_resume_message(
             "recovery only as useful status; do not ask what to do next when "
             "the objective is recoverable."
         )
+    objective_guidance = ""
+    if interrupted_objective and not user_message:
+        objective_guidance = (
+            " The interrupted objective below was recovered from this session only. "
+            "Continue only this objective; do not infer work from other sessions, "
+            "unrelated workspaces, global recent files, or machine-wide activity. "
+            "<interrupted_objective>"
+            f"{interrupted_objective}"
+            "</interrupted_objective>"
+        )
     message = (
         f"[System note: The previous turn was interrupted by {reason_phrase}; "
         f"the gateway is now back online. Any restart/shutdown command in the "
-        f"history has already run - do NOT re-execute or verify it. {guidance} "
+        f"history has already run - do NOT re-execute or verify it. {guidance}"
+        f"{objective_guidance} "
         f"Do NOT re-execute old tool calls blindly. Treat persisted tool "
         f"results and artifacts as evidence of prior effects; before retrying "
         f"an operation with an uncertain outcome, inspect durable state. "
@@ -3237,6 +3249,37 @@ def _build_restart_resume_message(
         f"or continuation would be unsafe.]"
     )
     return message + (f"\n\n{user_message}" if user_message else "")
+
+
+def _last_session_user_objective(
+    history: list[dict[str, Any]],
+    *,
+    max_chars: int = 8000,
+) -> str:
+    """Return the latest real user objective from this session transcript.
+
+    Startup auto-resume runs on an empty synthetic turn.  Persisted recovery
+    notes may also appear as user rows, so skip those and bind recovery to the
+    latest actual user request instead of inviting machine-global discovery.
+    Keep the tail when truncation is necessary because platform adapters append
+    the newest request after reply/thread context.
+    """
+    recovery_prefix = "[System note: The previous turn was interrupted by "
+    for row in reversed(history or []):
+        if row.get("role") != "user":
+            continue
+        content = row.get("content")
+        if not isinstance(content, str):
+            continue
+        objective = content.strip()
+        if not objective or objective.startswith(recovery_prefix):
+            continue
+        if max_chars > 0 and len(objective) > max_chars:
+            objective = (
+                "[earlier session context truncated]\n" + objective[-max_chars:]
+            )
+        return objective
+    return ""
 
 
 def _preserve_queued_followup_history_offset(
@@ -19144,9 +19187,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _is_resume_pending:
                 _reason = getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
                 _persist_user_message_override = message
+                _interrupted_objective = (
+                    _last_session_user_objective(history)
+                    if isinstance(message, str) and not message.strip()
+                    else ""
+                )
                 message = _build_restart_resume_message(
                     reason=_reason,
                     user_message=message,
+                    interrupted_objective=_interrupted_objective,
                 )
             elif _has_fresh_tool_tail:
                 _persist_user_message_override = message
@@ -19190,6 +19239,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 message = _build_restart_resume_message(
                     reason=_sn_reason,
                     user_message="",
+                    interrupted_objective=_last_session_user_objective(history),
                 )
 
             _approval_session_key = session_key or ""

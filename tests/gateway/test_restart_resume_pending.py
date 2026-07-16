@@ -32,6 +32,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from gateway import run as gateway_run
 from gateway.config import GatewayConfig, HomeChannel, Platform
 from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.run import (
@@ -817,6 +818,48 @@ class TestResumePendingSystemNote:
         assert "NEW message" not in result
         # Nothing appended after the closing bracket (no empty user text).
         assert result.rstrip().endswith("]")
+
+    def test_auto_resume_binds_latest_real_user_objective_from_same_session(self):
+        """Blank startup recovery must not guess from global recent work.
+
+        Regression for the 2026-07-17 incident: the correct Slack session was
+        resumed, but its empty synthetic turn searched machine-global Codex
+        rollouts and adopted an unrelated Alpha Agent Lab review.  Recovery
+        must quote the latest real user objective from this session and ignore
+        an older generated recovery note persisted as a user row.
+        """
+        history = [
+            {
+                "role": "user",
+                "content": (
+                    "Continue the xAI visual run using G1/G2 and upload four "
+                    "QC-passed images to this thread."
+                ),
+            },
+            {"role": "assistant", "content": "Starting the visual run."},
+            {
+                "role": "user",
+                "content": (
+                    "[System note: The previous turn was interrupted by a "
+                    "gateway restart; inspect durable state.]"
+                ),
+            },
+        ]
+
+        extractor = getattr(gateway_run, "_last_session_user_objective", None)
+        assert extractor is not None, "session-scoped objective extractor is required"
+        objective = extractor(history)
+        assert objective.startswith("Continue the xAI visual run")
+
+        prompt = _build_restart_resume_message(
+            reason="restart_timeout",
+            user_message="",
+            interrupted_objective=objective,
+        )
+        assert objective in prompt
+        assert "this session only" in prompt
+        assert "other sessions" in prompt
+        assert "global recent files" in prompt
 
 
 # ---------------------------------------------------------------------------
