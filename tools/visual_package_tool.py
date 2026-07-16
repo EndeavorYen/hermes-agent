@@ -35,6 +35,7 @@ from agent.visual.feedback_policy import resolve_visual_feedback_policy
 from agent.visual.feedback import is_visual_feedback_only_text
 from agent.visual.generation_waves import GenerationWaveItem
 from agent.visual.generation_waves import GenerationWaveScheduler
+from agent.visual.generation_waves import resolve_generation_parallelism
 from agent.visual.intent_signature import build_intent_signature
 from agent.visual.judges.deterministic import judge_artifact
 from agent.visual.judges.quality import judge_visual_quality
@@ -149,8 +150,10 @@ _ACTIVE_VISUAL_KERNEL_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar(
 
 def _configured_execution_deadline_seconds(args: dict[str, Any]) -> float:
     value: Any = args.get("execution_deadline_seconds")
+    explicitly_configured = value not in (None, "")
     if value in (None, ""):
         value = os.getenv("HERMES_VISUAL_EXECUTION_DEADLINE_SECONDS")
+        explicitly_configured = value not in (None, "")
     if value in (None, ""):
         try:
             from hermes_cli.config import read_raw_config
@@ -159,6 +162,7 @@ def _configured_execution_deadline_seconds(args: dict[str, Any]) -> float:
             visual = config.get("visual") if isinstance(config, dict) else None
             if isinstance(visual, dict):
                 value = visual.get("execution_deadline_seconds")
+                explicitly_configured = value not in (None, "")
         except Exception:
             value = None
     try:
@@ -167,7 +171,34 @@ def _configured_execution_deadline_seconds(args: dict[str, Any]) -> float:
         seconds = DEFAULT_VISUAL_EXECUTION_DEADLINE_SECONDS
     if not math.isfinite(seconds) or seconds <= 0:
         seconds = DEFAULT_VISUAL_EXECUTION_DEADLINE_SECONDS
+    if not explicitly_configured:
+        seconds = max(seconds, _workload_execution_deadline_seconds(args))
     return max(1.0, min(seconds, MAX_VISUAL_EXECUTION_DEADLINE_SECONDS))
+
+
+def _workload_execution_deadline_seconds(args: dict[str, Any]) -> float:
+    candidate_budget = _coerce_int(args.get("candidate_budget")) or 0
+    wants_image = _coerce_bool(args.get("include_image")) or candidate_budget > 0
+    provider = _normalise_image_provider(
+        args.get("_provider") or args.get("image_provider") or args.get("provider")
+    )
+    image_waves = 0
+    if wants_image:
+        parallelism = (
+            resolve_generation_parallelism(provider)
+            if provider in {"xai", "openai-codex"}
+            else 1
+        )
+        image_waves = max(1, math.ceil(max(1, candidate_budget) / parallelism))
+    video_budget = (
+        max(1, _coerce_int(args.get("video_budget")) or 1)
+        if _coerce_bool(args.get("include_video"))
+        else 0
+    )
+    work_waves = image_waves + video_budget
+    if work_waves <= 1:
+        return DEFAULT_VISUAL_EXECUTION_DEADLINE_SECONDS
+    return DEFAULT_VISUAL_EXECUTION_DEADLINE_SECONDS + (work_waves - 1) * 360.0
 
 
 def _new_execution_deadline(args: dict[str, Any]) -> _VisualExecutionDeadline:
@@ -1110,6 +1141,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
     rankings: dict[str, dict[str, Any]] = {}
     generation_payloads: dict[str, Any] = {}
     image_payloads: list[dict[str, Any]] = []
+    image_wave_run = None
     delivery_gate: dict[str, dict[str, Any]] = {}
     polish_pass_metadata: dict[str, Any] | None = None
     hybrid_quality_gate_metadata: dict[str, Any] | None = None
@@ -1340,6 +1372,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             reference_binding,
             conditioning_policy=primary_reference_policy,
         )
+        image_generation_specs: list[dict[str, Any]] = []
         for candidate_index in range(effective_candidate_budget):
             _deadline_checkpoint(f"image_candidate:{candidate_index}")
             if direct_polish_mode and direct_polish_source:
@@ -1434,11 +1467,78 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                     "source_artifact_id": "edit_anchor",
                     "mode": "direct_edit_anchor_polish",
                 }
-            image_payload = _call_generation_provider(
-                generate_image,
-                kind="image",
-                stage=f"image_generate:{candidate_index}",
-                kwargs=image_kwargs,
+            image_generation_specs.append(
+                {
+                    "key": f"image-candidate-{candidate_index}",
+                    "candidate_index": candidate_index,
+                    "provider_image_generation_prompt": provider_image_generation_prompt,
+                    "reference_attempt_extra": reference_attempt_extra,
+                    "image_attempt_parameters": image_attempt_parameters,
+                    "image_kwargs": image_kwargs,
+                    "image_request": image_request,
+                }
+            )
+
+        parallel_candidate_batch = (
+            effective_candidate_budget > 1
+            and image_provider_override in {"xai", "openai-codex"}
+            and not direct_polish_mode
+            and not grok_web_current_operation
+        )
+        image_wave_items = [
+            GenerationWaveItem(
+                key=str(spec["key"]),
+                payload=spec,
+                requires_serial=not parallel_candidate_batch,
+            )
+            for spec in image_generation_specs
+        ]
+
+        def generate_image_spec(spec: dict[str, Any]) -> dict[str, Any]:
+            try:
+                return _call_generation_provider(
+                    generate_image,
+                    kind="image",
+                    stage=f"image_generate:{spec['candidate_index']}",
+                    kwargs=spec["image_kwargs"],
+                )
+            except _VisualPackageDeadlineExceeded as exc:
+                return {
+                    "success": False,
+                    "error": str(exc),
+                    "error_type": "visual_package_deadline_exceeded",
+                    "_deadline_exception": exc,
+                }
+
+        image_wave_run = GenerationWaveScheduler(
+            provider=image_provider_override,
+            requested_parallelism=(
+                args.get("max_parallel_requests") if parallel_candidate_batch else 1
+            ),
+        ).run(image_wave_items, generate_image_spec)
+        for result in image_wave_run.results:
+            value = result.value
+            deadline_exception = (
+                value.get("_deadline_exception") if isinstance(value, dict) else None
+            )
+            if isinstance(deadline_exception, _VisualPackageDeadlineExceeded):
+                raise deadline_exception
+        image_wave_results = {
+            result.key: result for result in image_wave_run.results
+        }
+
+        for spec in image_generation_specs:
+            candidate_index = int(spec["candidate_index"])
+            provider_image_generation_prompt = str(
+                spec["provider_image_generation_prompt"]
+            )
+            reference_attempt_extra = dict(spec["reference_attempt_extra"])
+            image_attempt_parameters = dict(spec["image_attempt_parameters"])
+            image_kwargs = dict(spec["image_kwargs"])
+            image_request = dict(spec["image_request"])
+            image_payload = _image_wave_payload(
+                image_wave_results[str(spec["key"])],
+                provider=image_provider_override,
             )
             if direct_polish_mode and direct_polish_source and polish_pass_metadata:
                 polish_pass_metadata["status"] = "completed" if image_payload.get("success") else "failed"
@@ -1560,7 +1660,10 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                     if retry_candidate:
                         image_candidates.append(retry_candidate)
                         break
-                if _provider_quota_should_stop_candidate_batch(image_payload):
+                if (
+                    _provider_quota_should_stop_candidate_batch(image_payload)
+                    and not parallel_candidate_batch
+                ):
                     break
         generation_payloads["image"] = image_payloads[0] if len(image_payloads) == 1 else image_payloads
         _score_candidates(
@@ -2597,6 +2700,8 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         image_prompt_variants=_public_prompt_variants(image_prompt_variants),
     ) or {}
     extra_generation_strategy.update(_visual_kernel_generation_strategy(args))
+    if image_wave_run is not None:
+        extra_generation_strategy["image_generation_waves"] = image_wave_run.to_record()
     if character_design_ref_only:
         extra_generation_strategy["character_design_ref_only"] = True
     if composition_guide_only:
@@ -3506,6 +3611,21 @@ def _storyboard_wave_payload(
         "provider": provider or "",
         "error_type": result.failure_class or "generation_wave_task_failed",
         "error": result.error or "storyboard image generation was not dispatched",
+    }
+
+
+def _image_wave_payload(
+    result,
+    *,
+    provider: str | None,
+) -> dict[str, Any]:
+    if isinstance(result.value, dict):
+        return result.value
+    return {
+        "success": False,
+        "provider": provider or "",
+        "error_type": result.failure_class or "generation_wave_task_failed",
+        "error": result.error or "image generation was not dispatched",
     }
 
 

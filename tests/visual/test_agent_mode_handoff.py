@@ -73,6 +73,44 @@ def test_direct_visual_handoff_applies_raphael_runtime_media_contract():
     )
 
 
+def test_direct_visual_handoff_keeps_prompt_provider_over_runtime_default():
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.6-sol",
+    )
+    decision = {
+        "mode": "visual_agent_generation",
+        "route": {
+            "visual_media_provider": "xai",
+            "visual_media_model": "grok-imagine-image-quality",
+            "visual_media_provider_source": "visual_agent_default",
+        },
+        "runtime_contract": {
+            "image_provider": "xai",
+            "image_model": "grok-imagine-image-quality",
+        },
+    }
+
+    handoff = build_direct_visual_agent_handoff(
+        agent,
+        [
+            {
+                "type": "text",
+                "text": "請使用 xAI 固定這位角色，產出 4 張不同姿勢的精緻圖片並完成 QC",
+            },
+            {"type": "image_url", "image_url": {"url": "/tmp/ref.png"}},
+        ],
+        raphael_decision=decision,
+    )
+
+    assert handoff is not None
+    assert handoff["arguments"]["image_provider"] == "xai"
+    assert handoff["arguments"]["image_provider_source"] == "prompt_override"
+
+
 def test_direct_visual_handoff_preserves_compact_s_suffix_video_duration():
     from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
 

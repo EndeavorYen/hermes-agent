@@ -158,7 +158,10 @@ def build_direct_visual_agent_handoff(
         and isinstance(raphael_control.get("runtime_contract"), dict)
         else {}
     )
-    if str(control_route.get("visual_media_provider_source") or "") != "prompt_override":
+    if (
+        str(control_route.get("visual_media_provider_source") or "") != "prompt_override"
+        and str(arguments.get("image_provider_source") or "") != "prompt_override"
+    ):
         media_values = {
             "image_provider": control_route.get("visual_media_provider")
             or runtime_contract.get("image_provider"),
