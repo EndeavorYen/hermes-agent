@@ -469,6 +469,7 @@ def test_visual_agent_generate_routes_pose_candidates_to_final_images(monkeypatc
     assert captured["image_provider"] == "xai"
     assert captured["image_provider_source"] == "prompt_override"
     assert captured["candidate_budget"] == 4
+    assert captured["deliver_candidate_options"] is True
     assert "composition_guide_only" not in captured
 
 
