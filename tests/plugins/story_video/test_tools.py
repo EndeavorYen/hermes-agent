@@ -766,17 +766,32 @@ def test_voice_validation_requires_complete_v4_acoustic_contract(tmp_path) -> No
     pronunciation_path.write_text(
         json.dumps(
             {
-                "schema": "story_video_pronunciation_qc_v2",
+                "schema": "story_video_pronunciation_qc_v3",
                 "status": "PASS",
                 "language": "zh-TW",
-                "method": "sentence_chunk_lexicon_plus_independent_asr",
+                "method": "sentence_chunk_plus_forced_alignment_isolated_term_asr",
                 "checked_unit": "voice_chunk",
+                "applied_entries": [
+                    {
+                        "display": "三疊紀",
+                        "spoken": "三碟紀",
+                        "expected_pinyin": "san1 die2 ji4",
+                        "risk": "high",
+                    }
+                ],
                 "acoustic_evidence": [
                     {
                         "shot_id": "S00_SH00",
                         "alignment_status": "PASS",
                         "pronunciation_status": "PASS",
                         "prosody_status": "PASS",
+                        "term_checks": [
+                            {
+                                "display": "三疊紀",
+                                "status": "PASS",
+                                "method": "forced_alignment_isolated_term_asr",
+                            }
+                        ],
                     }
                 ],
             }
@@ -841,6 +856,22 @@ def test_voice_validation_requires_complete_v4_acoustic_contract(tmp_path) -> No
     proof = validate_phase(context)
 
     assert proof.ok is True
+
+    pronunciation_report = json.loads(pronunciation_path.read_text(encoding="utf-8"))
+    pronunciation_report["method"] = "sentence_chunk_lexicon_plus_independent_asr"
+    pronunciation_path.write_text(json.dumps(pronunciation_report), encoding="utf-8")
+    legacy_method = validate_phase(context)
+
+    assert legacy_method.ok is False
+    assert (
+        "local Qwen acoustic pronunciation QC lacks isolated term ASR"
+        in legacy_method.violations
+    )
+
+    pronunciation_report["method"] = (
+        "sentence_chunk_plus_forced_alignment_isolated_term_asr"
+    )
+    pronunciation_path.write_text(json.dumps(pronunciation_report), encoding="utf-8")
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["outputs"][0]["segments"][0]["voice_chunks"][0][
