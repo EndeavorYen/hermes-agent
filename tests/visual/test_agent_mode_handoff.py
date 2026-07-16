@@ -258,6 +258,54 @@ visual agent : 用原本的ref, 再產2張不同姿勢的圖"""
     assert handoff["arguments"]["include_video"] is False
 
 
+def test_direct_visual_handoff_routes_natural_attachment_generation_request():
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+    from gateway.session_context import (
+        reset_visual_reference_context,
+        set_visual_reference_context,
+    )
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.6-sol",
+    )
+    prompt = """用 xai imagine，參考附件的圖片，產出類似但不同姿勢、高品質，給我 4 張挑選
+
+[Visual Arsenal source images]
+The current Slack message includes user-uploaded source/reference images cached on this machine.
+1. image_path: /tmp/current-slack-reference.png (image/png)
+
+[Image attached at: /tmp/current-slack-reference.png]
+[screenshot]"""
+    token = set_visual_reference_context(
+        [
+            {
+                "uri": "/tmp/current-slack-reference.png",
+                "role_hint": "visual_reference",
+                "source": "gateway_attachment",
+                "user_ref_index": 0,
+            }
+        ]
+    )
+    try:
+        handoff = build_direct_visual_agent_handoff(agent, prompt)
+    finally:
+        reset_visual_reference_context(token)
+
+    assert handoff is not None
+    assert handoff["mode"] == "pre_llm_direct"
+    assert handoff["tool_name"] == "visual_agent_generate"
+    assert handoff["arguments"]["attachments"] == [
+        "/tmp/current-slack-reference.png"
+    ]
+    assert handoff["arguments"]["candidate_budget"] == 4
+    assert handoff["arguments"]["candidate_budget_source"] == "user"
+    assert handoff["arguments"]["image_provider"] == "xai"
+    assert handoff["arguments"]["include_image"] is True
+    assert handoff["arguments"]["include_video"] is False
+
+
 def test_visual_agent_capability_question_does_not_trigger_generation():
     from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
 

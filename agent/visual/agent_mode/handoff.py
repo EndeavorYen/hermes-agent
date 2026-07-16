@@ -69,7 +69,10 @@ def build_direct_visual_agent_handoff(
     session_reference_entries: list[dict[str, Any]] = []
     polish_request = _is_visual_polish_request(prompt)
     followup_request = _is_visual_followup_edit_request(prompt) or _is_current_result_regenerate_request(prompt)
-    if not attachments and (followup_request or polish_request):
+    explicit_generation_request = _is_explicit_visual_generation_request(prompt)
+    if not attachments and (
+        followup_request or polish_request or explicit_generation_request
+    ):
         session_reference_entries = _session_visual_reference_entries(prompt)
         if polish_request:
             session_reference_entries = _promote_first_reference_to_edit_anchor(session_reference_entries)
@@ -77,7 +80,7 @@ def build_direct_visual_agent_handoff(
     elif attachments and polish_request:
         session_reference_entries = _current_attachment_polish_entries(attachments)
     if not prompt or not (
-        _is_explicit_visual_generation_request(prompt)
+        explicit_generation_request
         or (bool(attachments) and polish_request)
         or bool(session_reference_entries)
     ):
@@ -121,8 +124,9 @@ def build_direct_visual_agent_handoff(
         arguments["attachments"] = attachments
     if session_reference_entries:
         arguments["attachments"] = attachments
-        arguments["include_image"] = True
-        arguments["include_video"] = False
+        if followup_request or polish_request:
+            arguments["include_image"] = True
+            arguments["include_video"] = False
         arguments.setdefault("candidate_budget", 2)
         arguments.setdefault("candidate_budget_source", "planner_default")
         if (
