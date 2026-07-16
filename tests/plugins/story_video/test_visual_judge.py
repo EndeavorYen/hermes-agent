@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from PIL import Image, ImageFont
 
 from plugins import story_video
@@ -13,6 +14,7 @@ from plugins.story_video.state import StoryVideoStateStore, parse_operator_call
 from plugins.story_video.visual_judge import (
     CANDIDATE_REVIEW_SCHEMA,
     _compile_prompt,
+    _measured_voice_chunk_subtitle_cues,
     _next_batch_work_group,
     _promote_auto_terminal_fallbacks,
     _review_instructions,
@@ -21,6 +23,36 @@ from plugins.story_video.visual_judge import (
     configure_plugin_llm,
     story_video_quality_control,
 )
+
+
+def test_measured_voice_chunk_cues_fail_closed_on_unverified_chunk() -> None:
+    segment = {
+        "display_text": "第一句。第二句。",
+        "timeline_duration_sec": 2.36,
+        "voice_chunks": [
+            {
+                "voice_chunk_id": "S00_SH00__C01",
+                "display_text": "第一句。",
+                "start_sec": 0.0,
+                "speech_end_sec": 1.0,
+                "alignment_status": "PASS",
+                "pronunciation_status": "PASS",
+                "prosody_status": "PASS",
+            },
+            {
+                "voice_chunk_id": "S00_SH00__C02",
+                "display_text": "第二句。",
+                "start_sec": 1.18,
+                "speech_end_sec": 2.18,
+                "alignment_status": "PASS",
+                "pronunciation_status": "FAIL",
+                "prosody_status": "PASS",
+            },
+        ],
+    }
+
+    with pytest.raises(ValueError, match="pronunciation_status"):
+        _measured_voice_chunk_subtitle_cues(segment, scene_id="S00")
 
 
 def test_quality_tool_schema_exposes_native_batch_chunk() -> None:
@@ -3200,16 +3232,42 @@ def test_prepare_render_copies_verified_segment_timing_to_matching_shot(tmp_path
                     {
                         "scene_id": "S00",
                         "audio": str(audio),
-                        "display_text": "直立腿讓早期恐龍移動得更有效率。",
+                        "display_text": (
+                            "直立腿讓早期恐龍移動得更有效率。"
+                            "牠們還能迅速改變方向。"
+                        ),
                         "segments": [
                             {
                                 "shot_id": "S00_SH00",
-                                "display_text": "直立腿讓早期恐龍移動得更有效率。",
+                                "display_text": (
+                                    "直立腿讓早期恐龍移動得更有效率。"
+                                    "牠們還能迅速改變方向。"
+                                ),
                                 "timeline_duration_sec": 4.37,
                                 "speech_end_sec": 4.19,
                                 "alignment_status": "PASS",
                                 "pronunciation_status": "PASS",
                                 "prosody_status": "PASS",
+                                "voice_chunks": [
+                                    {
+                                        "voice_chunk_id": "S00_SH00__C01",
+                                        "display_text": "直立腿讓早期恐龍移動得更有效率。",
+                                        "start_sec": 0.0,
+                                        "speech_end_sec": 2.41,
+                                        "alignment_status": "PASS",
+                                        "pronunciation_status": "PASS",
+                                        "prosody_status": "PASS",
+                                    },
+                                    {
+                                        "voice_chunk_id": "S00_SH00__C02",
+                                        "display_text": "牠們還能迅速改變方向。",
+                                        "start_sec": 2.59,
+                                        "speech_end_sec": 4.19,
+                                        "alignment_status": "PASS",
+                                        "pronunciation_status": "PASS",
+                                        "prosody_status": "PASS",
+                                    },
+                                ],
                             }
                         ],
                     }
@@ -3232,6 +3290,23 @@ def test_prepare_render_copies_verified_segment_timing_to_matching_shot(tmp_path
     )
     assert render_input["scenes"][0]["shots"][0]["timeline_duration_sec"] == 4.37
     assert render_input["scenes"][0]["shots"][0]["speech_end_sec"] == 4.19
+    assert render_input["scenes"][0]["shots"][0]["subtitle_timing_source"] == (
+        "measured_voice_chunks"
+    )
+    assert render_input["scenes"][0]["shots"][0]["subtitle_cues"] == [
+        {
+            "text": "直立腿讓早期恐龍移動得更有效率。",
+            "start_sec": 0.0,
+            "end_sec": 2.41,
+            "sentence_count": 1,
+        },
+        {
+            "text": "牠們還能迅速改變方向。",
+            "start_sec": 2.59,
+            "end_sec": 4.19,
+            "sentence_count": 1,
+        },
+    ]
 
 
 def test_prepare_render_uses_verified_semantic_shot_groups(tmp_path) -> None:

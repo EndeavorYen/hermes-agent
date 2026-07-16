@@ -769,7 +769,8 @@ def test_voice_validation_requires_complete_v4_acoustic_contract(tmp_path) -> No
                 "schema": "story_video_pronunciation_qc_v2",
                 "status": "PASS",
                 "language": "zh-TW",
-                "method": "lexicon_plus_independent_asr",
+                "method": "sentence_chunk_lexicon_plus_independent_asr",
+                "checked_unit": "voice_chunk",
                 "acoustic_evidence": [
                     {
                         "shot_id": "S00_SH00",
@@ -801,6 +802,8 @@ def test_voice_validation_requires_complete_v4_acoustic_contract(tmp_path) -> No
                 "pronunciation_status": "PASS",
                 "alignment_status": "PASS",
                 "prosody_status": "PASS",
+                "voice_segmentation": "sentence_chunks_v1",
+                "voice_chunk_count": 1,
                 "outputs": [
                     {
                         "scene_id": "S00",
@@ -815,6 +818,17 @@ def test_voice_validation_requires_complete_v4_acoustic_contract(tmp_path) -> No
                                 "alignment_status": "PASS",
                                 "pronunciation_status": "PASS",
                                 "prosody_status": "PASS",
+                                "voice_chunks": [
+                                    {
+                                        "voice_chunk_id": "S00_SH00__C01",
+                                        "display_text": "三疊紀。",
+                                        "start_sec": 0.0,
+                                        "speech_end_sec": 1.07,
+                                        "alignment_status": "PASS",
+                                        "pronunciation_status": "PASS",
+                                        "prosody_status": "PASS",
+                                    }
+                                ],
                             }
                         ],
                     }
@@ -829,6 +843,21 @@ def test_voice_validation_requires_complete_v4_acoustic_contract(tmp_path) -> No
     assert proof.ok is True
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["outputs"][0]["segments"][0]["voice_chunks"][0][
+        "pronunciation_status"
+    ] = "FAIL"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    failed_chunk = validate_phase(context)
+
+    assert failed_chunk.ok is False
+    assert (
+        "audio narration segment[0].segments[0].voice_chunks[0] pronunciation is not PASS"
+        in failed_chunk.violations
+    )
+
+    manifest["outputs"][0]["segments"][0]["voice_chunks"][0][
+        "pronunciation_status"
+    ] = "PASS"
     manifest["outputs"][0]["segments"][0]["prosody_status"] = "FAIL"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     failed = validate_phase(context)
