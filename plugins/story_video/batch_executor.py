@@ -243,6 +243,18 @@ class StoryVideoBatchExecutor:
                 }
             )
         )
+        generated_shot_ids = {
+            shot_id
+            for shot_id, result in generation_results.items()
+            if result.get("success") and str(result.get("image") or "").strip()
+        }
+        for item in compiled:
+            shot_id = str(item["shot_id"])
+            if shot_id not in generated_shot_ids:
+                budget.release_generation(
+                    shot_id,
+                    str(item.get("shot_contract_hash") or ""),
+                )
 
         selected_now: list[str] = []
         failed_now: list[str] = list(compile_failures)
@@ -327,7 +339,7 @@ class StoryVideoBatchExecutor:
             attempted_shots=tuple(str(item["shot_id"]) for item in compiled),
             selected_shots=tuple(selected_now),
             failed_shots=tuple(dict.fromkeys(failed_now)),
-            generated_candidates=len(compiled),
+            generated_candidates=len(generated_shot_ids),
             provider_failure_classes=provider_failure_classes,
             error_type=setup_error_type,
         )

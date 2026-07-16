@@ -66,3 +66,14 @@ def test_run_wide_cap_stops_otherwise_eligible_shot() -> None:
 
     assert budget.total_generated == policy.max_total_candidates
     assert budget.can_generate("S02_SH00") is False
+
+
+def test_batch_budget_releases_failed_provider_reservation() -> None:
+    budget = BatchBudget(BatchPolicy.for_run(3))
+    budget.record_generation("S00_SH00", "contract-a")
+
+    budget.release_generation("S00_SH00", "contract-a")
+
+    assert budget.generated_for("S00_SH00") == 0
+    assert budget.contract_hashes_for("S00_SH00") == ()
+    assert budget.can_generate("S00_SH00") is True

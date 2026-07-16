@@ -128,6 +128,15 @@ class TestConfig:
 
 
 class TestGenerate:
+    def test_grok_build_extracts_markdown_wrapped_absolute_image_path(self, tmp_path):
+        from plugins.image_gen.xai import _extract_grok_build_image
+
+        image = tmp_path / "generated.jpg"
+        image.write_bytes(b"image")
+        stdout = json.dumps({"text": f"`{image}`"})
+
+        assert _extract_grok_build_image(stdout) == str(image.resolve())
+
     def test_grok_build_resolves_session_relative_image_path(self, tmp_path):
         from plugins.image_gen.xai import _extract_grok_build_image
 
@@ -202,6 +211,7 @@ class TestGenerate:
         command = captured["command"]
         assert "--disable-web-search" in command
         assert "--tools" not in command
+        assert "--json-schema" not in command
         denied = command[command.index("--disallowed-tools") + 1]
         assert "run_terminal_cmd" in denied
         assert "web_search" in denied
