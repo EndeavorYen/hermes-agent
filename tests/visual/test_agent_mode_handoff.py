@@ -153,6 +153,99 @@ def test_direct_visual_handoff_skips_followup_in_long_form_story_video_thread():
     assert handoff is None
 
 
+def test_direct_visual_handoff_keeps_short_product_intro_on_visual_agent_route():
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.6",
+    )
+
+    handoff = build_direct_visual_agent_handoff(
+        agent,
+        "Visual Agent：幫我做一部 6 秒產品介紹影片，從產品照開始。",
+    )
+
+    assert handoff is not None
+    assert handoff["arguments"]["include_video"] is True
+
+
+def test_explicit_visual_agent_turn_overrides_story_parent_for_current_turn():
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.6",
+    )
+    prompt = """[Replying to: "故事影片：恐龍起源｜5分鐘｜真實照片"]
+
+[Thread context — prior messages in this thread (not yet in conversation history):]
+[thread parent] simon: 故事影片：恐龍起源｜5分鐘｜真實照片
+[End of thread context]
+
+Visual Agent：幫我做一張霧黑鋼筆產品照和 6 秒短片"""
+
+    handoff = build_direct_visual_agent_handoff(agent, prompt)
+
+    assert handoff is not None
+    assert handoff["arguments"]["include_video"] is True
+
+
+def test_explicit_visual_agent_turn_overrides_active_slack_reply_wrapper():
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.6",
+    )
+    prompt = (
+        '[Replying to: "故事影片：恐龍起源｜5分鐘｜真實照片"]\n\n'
+        "Visual Agent：幫我做一張霧黑鋼筆產品照和 6 秒短片"
+    )
+
+    handoff = build_direct_visual_agent_handoff(agent, prompt)
+
+    assert handoff is not None
+    assert handoff["arguments"]["include_video"] is True
+
+
+def test_visual_agent_capability_question_does_not_trigger_generation():
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.6",
+    )
+
+    handoff = build_direct_visual_agent_handoff(
+        agent,
+        "Does Visual Agent support video?",
+    )
+
+    assert handoff is None
+
+
+def test_visual_agent_leading_capability_question_does_not_trigger_generation():
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.6",
+    )
+
+    handoff = build_direct_visual_agent_handoff(
+        agent,
+        "Visual Agent supports video?",
+    )
+
+    assert handoff is None
+
+
 def test_direct_visual_handoff_skips_grok_planner_for_openai_composition_guide():
     from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
 

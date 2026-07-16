@@ -159,6 +159,52 @@ def test_parse_long_form_request_that_explicitly_routes_to_story_video() -> None
     assert call.visual_style == "真實照片風格"
 
 
+def test_parse_minute_scale_explainer_uses_same_story_video_intent_contract() -> None:
+    call = parse_operator_call(
+        "幫我做一部恐龍起源的科普影片，大概 5 分鐘，圖片走電影感寫實風格。"
+    )
+
+    assert call is not None
+    assert call.action == "start"
+    assert call.topic == "恐龍起源"
+    assert call.duration == "5分鐘"
+
+
+def test_parse_english_minute_scale_documentary_uses_same_intent_contract() -> None:
+    call = parse_operator_call(
+        "Make a 3-minute documentary about dinosaurs"
+    )
+
+    assert call is not None
+    assert call.action == "start"
+    assert call.topic == "dinosaurs"
+    assert call.duration == "3-minute"
+
+
+def test_parse_narrated_multiscene_video_uses_story_video_contract() -> None:
+    call = parse_operator_call(
+        "Create a multi-scene video with narration about dinosaurs"
+    )
+
+    assert call is not None
+    assert call.action == "start"
+    assert call.topic == "dinosaurs"
+
+
+def test_parse_narrated_video_uses_story_video_contract() -> None:
+    call = parse_operator_call("Create a narrated video about dinosaurs")
+
+    assert call is not None
+    assert call.action == "start"
+    assert call.topic == "dinosaurs"
+
+
+def test_short_product_intro_does_not_activate_story_video() -> None:
+    assert parse_operator_call(
+        "幫我做一支 6 秒產品介紹影片，從產品照開始。"
+    ) is None
+
+
 def test_continue_is_only_story_video_call_when_source_has_active_project() -> None:
     assert parse_operator_call("繼續", has_active_project=False) is None
 
