@@ -808,7 +808,27 @@ def _reference_aware_inline_vision_prompt(candidate: dict[str, Any]) -> str:
         if index is not None:
             lines.append(f"- ref {index} role: {role_hint}")
     lines.append("- candidate output: generated image to evaluate")
+    if _candidate_pose_composition_policy(candidate) == "guidance_only":
+        lines.extend(
+            (
+                "The pose/composition reference is guidance only; a different pose or camera angle is not a defect.",
+                "Judge pose_composition from the candidate's intrinsic clarity, anatomy, framing, and requested pose lane.",
+                "Do not lower pose_composition_adherence or emit pose_composition_weak solely for deviating from that reference.",
+                "Keep character identity strict against the character_identity reference.",
+            )
+        )
     return "\n".join(lines)
+
+
+def _candidate_pose_composition_policy(candidate: dict[str, Any]) -> str:
+    for parameters_key in ("requested_parameters", "user_requested_parameters"):
+        parameters = candidate.get(parameters_key)
+        if not isinstance(parameters, dict):
+            continue
+        binding = parameters.get("reference_binding")
+        if isinstance(binding, dict):
+            return str(binding.get("pose_composition_policy") or "").strip()
+    return ""
 
 
 def _contract_aware_inline_vision_prompt(
@@ -7110,10 +7130,20 @@ def _reference_role_contract_block(binding: dict[str, Any]) -> str:
             role_lines.append(f"- ref {index} role: {role_hint}")
     if not role_lines:
         return ""
+    policy_lines = []
+    if binding.get("pose_composition_policy") == "guidance_only":
+        policy_lines.extend(
+            (
+                "The pose/composition reference is guidance only. Create the requested distinct poses; "
+                "do not copy its exact pose, camera angle, or framing.",
+                "Keep character identity strict against character_identity references.",
+            )
+        )
     return "\n".join(
         [
             "Reference roles for this request:",
             *role_lines,
+            *policy_lines,
             "Use each reference only for its listed role. Do not transfer character identity "
             "from a pose/composition reference, and do not transfer pose/composition from a "
             "character identity reference unless the user explicitly asks for that blend.",

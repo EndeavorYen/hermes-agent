@@ -214,6 +214,10 @@ def _surface_artifact_defects(
     has_reference_image = request_context.get("has_reference_image") is True
     for defect in defects:
         defect_text = str(defect)
+        if defect_text == "pose_composition_weak" and _pose_composition_is_guidance_only(
+            request_context
+        ):
+            continue
         if defect_text == "reference_identity_drift" and not has_reference_image:
             continue
         if defect_text == "face_quality_low" and not portrait_like:
@@ -259,6 +263,10 @@ def _quality_issues_from_observation(
     defect_set = {str(defect) for defect in defects}
     for defect in defects:
         defect_text = str(defect)
+        if defect_text == "pose_composition_weak" and _pose_composition_is_guidance_only(
+            request_context
+        ):
+            continue
         issue = _issue_for_defect(defect_text)
         if issue == "reference_identity_drift" and not has_reference_image:
             continue
@@ -338,6 +346,8 @@ def _reference_role_scores(vision: dict[str, Any], request_context: dict[str, An
         role_hint = str(item.get("role_hint") or "").strip()
         if not role_hint or role_hint == "visual_reference" or role_hint in scores:
             continue
+        if role_hint == "pose_composition" and _pose_composition_is_guidance_only(request_context):
+            continue
         value = _role_evidence_score(vision, role_hint)
         if value is not None:
             scores[role_hint] = value
@@ -372,9 +382,16 @@ def _reference_role_evidence_missing(vision: dict[str, Any], request_context: di
     }
     role_hints.discard("")
     role_hints.discard("visual_reference")
+    if _pose_composition_is_guidance_only(request_context):
+        role_hints.discard("pose_composition")
     if not role_hints:
         return False
     return not all(_has_role_evidence(vision, role_hint) for role_hint in role_hints)
+
+
+def _pose_composition_is_guidance_only(request_context: dict[str, Any]) -> bool:
+    binding = request_context.get("reference_binding")
+    return isinstance(binding, dict) and binding.get("pose_composition_policy") == "guidance_only"
 
 
 def _has_role_evidence(vision: dict[str, Any], role_hint: str) -> bool:
