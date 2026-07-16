@@ -14,12 +14,85 @@ from plugins.story_video.visual_judge import (
     CANDIDATE_REVIEW_SCHEMA,
     _compile_prompt,
     _next_batch_work_group,
+    _promote_auto_terminal_fallbacks,
     _review_instructions,
     _shot_contract_hash,
     _source_image_qc_blockers,
     configure_plugin_llm,
     story_video_quality_control,
 )
+
+
+def test_quality_tool_schema_exposes_native_batch_chunk() -> None:
+    from plugins.story_video.schemas import STORY_VIDEO_QUALITY_CONTROL_SCHEMA
+
+    actions = STORY_VIDEO_QUALITY_CONTROL_SCHEMA["parameters"]["properties"][
+        "action"
+    ]["enum"]
+
+    assert "run_batch_chunk" in actions
+
+
+def test_native_batch_chunk_rejudges_legacy_selection_without_generation(
+    tmp_path, monkeypatch
+) -> None:
+    from plugins.story_video import visual_judge
+
+    store, context, shot = _context(tmp_path)
+    ledger_path = context.project_dir / "scene_ledger.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    ledger["quality_contract_version"] = 5
+    ledger["engagement_profile"] = {
+        "mode": "discovery_documentary",
+        "energy": "balanced",
+    }
+    ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+    context = store.update(context, phase="batch", auto_mode=True)
+    image = context.project_dir / "images" / "legacy.png"
+    image.parent.mkdir(parents=True, exist_ok=True)
+    image.write_bytes(b"legacy")
+    manifest_path = (
+        context.project_dir / "manifests" / "shot_candidate_manifest.json"
+    )
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "outputs": [
+                    {
+                        "shot_id": shot["shot_id"],
+                        "candidate_id": "S00_SH00_C01",
+                        "selected": True,
+                        "status": "selected_current",
+                        "provider": "openai-codex",
+                        "candidate_path": str(image),
+                        "local_path": str(image),
+                        "quality_contract_version": 2,
+                        "quality_dimensions": {"text_alignment": 88},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured: dict = {}
+
+    def fake_judge(_context, **kwargs):
+        captured.update(kwargs)
+        return {"success": True, "status": "selected"}
+
+    monkeypatch.setattr(visual_judge, "_judge_candidates", fake_judge)
+
+    payload = visual_judge._run_batch_chunk(
+        context,
+        state_store=store,
+        llm=object(),
+    )
+
+    assert payload["work_status"] == "in_progress"
+    assert payload["wave"] == "legacy_rejudge"
+    assert payload["generated_candidates"] == 0
+    assert captured["shot_id"] == "S00_SH00"
 
 
 def _context(tmp_path):
@@ -1367,6 +1440,75 @@ def test_auto_mode_uses_best_available_draft_when_no_continuity_source(
     assert selected["auto_terminal_fallback"]["type"] == "best_available_draft"
     assert selected["final_qc_review_required"] is True
     assert selected["image_qc_blocker_codes"] == ["scientific_identity"]
+
+
+def test_end_to_end_budget_never_forces_a_hard_blocked_draft(tmp_path) -> None:
+    store, context, shot = _context(tmp_path)
+    context = store.update(context, phase="batch", auto_mode=True)
+    candidate = _candidate(context, "S00_SH00_C02")
+    failed = {
+        "shot_id": "S00_SH00",
+        "candidate_id": candidate["candidate_id"],
+        "status": "quality_budget_exhausted",
+        "selected": False,
+        "shot_contract_hash": _shot_contract_hash(shot),
+        "provider": "openai-codex",
+        "candidate_path": candidate["path"],
+        "local_path": candidate["path"],
+        "quality_score": 81.0,
+        "hard_blockers": ["the first-shot evidence remains ambiguous"],
+        "blocker_codes": ["scientific_identity"],
+        "vision_evidence": {"status": "PASS", "response_id": "resp_failed"},
+    }
+    manifest = {
+        "outputs": [failed],
+        "attempt_history": [failed],
+    }
+
+    updated = _promote_auto_terminal_fallbacks(
+        context,
+        manifest,
+        shot_ids=["S00_SH00"],
+        force_exhausted_shot_ids=["S00_SH00"],
+    )
+
+    assert updated["outputs"][0]["selected"] is False
+    assert updated["outputs"][0]["hard_blockers"] == [
+        "the first-shot evidence remains ambiguous"
+    ]
+
+
+def test_end_to_end_budget_accepts_only_clean_bounded_best_effort(tmp_path) -> None:
+    store, context, shot = _context(tmp_path)
+    context = store.update(context, phase="batch", auto_mode=True)
+    candidate = _candidate(context, "S00_SH00_C02")
+    failed = {
+        "shot_id": "S00_SH00",
+        "candidate_id": candidate["candidate_id"],
+        "status": "quality_budget_exhausted",
+        "selected": False,
+        "shot_contract_hash": _shot_contract_hash(shot),
+        "provider": "openai-codex",
+        "candidate_path": candidate["path"],
+        "local_path": candidate["path"],
+        "quality_score": 78.0,
+        "hard_blockers": [],
+        "blocker_codes": [],
+        "vision_evidence": {"status": "PASS", "response_id": "resp_clean"},
+    }
+    manifest = {"outputs": [failed], "attempt_history": [failed]}
+
+    updated = _promote_auto_terminal_fallbacks(
+        context,
+        manifest,
+        shot_ids=["S00_SH00"],
+        force_exhausted_shot_ids=["S00_SH00"],
+    )
+
+    assert updated["outputs"][0]["selected"] is True
+    assert updated["outputs"][0]["auto_terminal_fallback"]["type"] == (
+        "best_available_draft"
+    )
 
 
 def test_next_batch_work_replans_after_three_candidates_for_one_contract(tmp_path) -> None:

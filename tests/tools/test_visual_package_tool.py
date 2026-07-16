@@ -1,5 +1,7 @@
 import base64
 import json
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -3422,10 +3424,18 @@ def test_visual_package_storyboard_generates_ranked_clip_per_shot(monkeypatch, t
     image_calls = []
     video_calls = []
     compose_calls = []
+    image_call_counts = {"shot_1": 0, "shot_2": 0}
+    image_call_lock = threading.Lock()
 
     def fake_generate_image(**kwargs):
-        image_calls.append(kwargs)
-        image = image_paths[len(image_calls) - 1]
+        prompt = str(kwargs.get("prompt") or "")
+        shot_id = "shot_1" if "shot_1" in prompt else "shot_2"
+        with image_call_lock:
+            candidate_index = image_call_counts[shot_id]
+            image_call_counts[shot_id] += 1
+            image_calls.append(kwargs)
+        shot_index = 0 if shot_id == "shot_1" else 1
+        image = image_paths[(shot_index * 2) + candidate_index]
         return {
             "success": True,
             "image": str(image),
@@ -3520,6 +3530,107 @@ def test_visual_package_storyboard_generates_ranked_clip_per_shot(monkeypatch, t
     assert len(payload["delivery_metadata"]["selected_visual_artifact_ids"]) == 2
 
 
+def test_visual_package_storyboard_parallelizes_fresh_shots_without_extra_candidates(
+    monkeypatch,
+    tmp_path,
+):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image_paths = []
+    video_paths = []
+    for shot_index in range(3):
+        image = tmp_path / f"parallel-shot-{shot_index + 1}.png"
+        image.write_bytes(_ONE_PIXEL_PNG)
+        image_paths.append(image)
+        video = tmp_path / f"parallel-shot-{shot_index + 1}.mp4"
+        video.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+        video_paths.append(video)
+
+    active = 0
+    max_active = 0
+    image_index = 0
+    video_index = 0
+    lock = threading.Lock()
+
+    def fake_generate_image(**_kwargs):
+        nonlocal active, image_index, max_active
+        with lock:
+            index = image_index
+            image_index += 1
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.05)
+        with lock:
+            active -= 1
+        return {
+            "success": True,
+            "image": str(image_paths[index]),
+            "provider": "openai-codex",
+            "model": "image-fixture",
+            "vision_observation": {
+                "subject_quality": 0.9,
+                "visual_appeal": 0.9,
+                "composition": 0.9,
+            },
+        }
+
+    def fake_generate_video(**_kwargs):
+        nonlocal video_index
+        index = video_index
+        video_index += 1
+        return {
+            "success": True,
+            "video": str(video_paths[index]),
+            "provider": "fixture",
+            "model": "video-fixture",
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+    monkeypatch.setattr(visual_package_tool, "generate_video", fake_generate_video)
+    monkeypatch.setattr(
+        visual_package_tool,
+        "_compose_storyboard_clips",
+        lambda *_args, **_kwargs: {
+            "success": False,
+            "error_type": "fixture_composition_unavailable",
+            "error": "fixture",
+        },
+    )
+
+    payload = json.loads(
+        visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "Create a three shot product video.",
+                "include_image": False,
+                "include_video": True,
+                "image_provider": "openai-codex",
+                "candidate_budget": 1,
+                "video_budget": 1,
+                "storyboard": {
+                    "enabled": True,
+                    "shot_count": 3,
+                    "candidate_budget_per_shot": 1,
+                    "shots": [
+                        {"shot_id": f"shot_{index + 1}", "role": "detail"}
+                        for index in range(3)
+                    ],
+                },
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert image_index == 3
+    assert max_active == 3
+    assert payload["generation_strategy"]["storyboard_execution"][
+        "candidate_budget_per_shot"
+    ] == 1
+    assert payload["generation_strategy"]["storyboard_execution"][
+        "image_generation_waves"
+    ]["total_dispatched"] == 3
+
+
 def test_visual_package_storyboard_delivers_composed_video_when_composition_succeeds(monkeypatch, tmp_path):
     from agent.visual.attempt_ledger import VisualAttemptLedger
     from agent.visual.tracking import default_visual_ledger_path
@@ -3542,12 +3653,20 @@ def test_visual_package_storyboard_delivers_composed_video_when_composition_succ
     image_calls = []
     video_calls = []
     compose_calls = []
+    image_call_counts = {"shot_1": 0, "shot_2": 0}
+    image_call_lock = threading.Lock()
 
     def fake_generate_image(**kwargs):
-        image_calls.append(kwargs)
+        prompt = str(kwargs.get("prompt") or "")
+        shot_id = "shot_1" if "shot_1" in prompt else "shot_2"
+        with image_call_lock:
+            candidate_index = image_call_counts[shot_id]
+            image_call_counts[shot_id] += 1
+            image_calls.append(kwargs)
+        shot_index = 0 if shot_id == "shot_1" else 1
         return {
             "success": True,
-            "image": str(image_paths[len(image_calls) - 1]),
+            "image": str(image_paths[(shot_index * 2) + candidate_index]),
             "provider": "fixture",
             "model": "image-fixture",
             "vision_observation": {

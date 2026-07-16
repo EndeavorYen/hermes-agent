@@ -1821,6 +1821,30 @@ def _handle_image_generate(args, **kw):
     )
 
 
+def generate_image(args: Dict[str, Any], *, task_id: str = "") -> Dict[str, Any]:
+    """Run the provider-safe image path and return its structured payload."""
+    raw = _handle_image_generate(dict(args), task_id=task_id)
+    if isinstance(raw, dict):
+        return raw
+    try:
+        payload = json.loads(str(raw))
+    except (TypeError, ValueError):
+        return {
+            "success": False,
+            "image": None,
+            "error_type": "provider_contract",
+            "error": "Image provider returned an invalid response.",
+        }
+    if not isinstance(payload, dict):
+        return {
+            "success": False,
+            "image": None,
+            "error_type": "provider_contract",
+            "error": "Image provider returned a non-object response.",
+        }
+    return payload
+
+
 # ---------------------------------------------------------------------------
 # Dynamic schema — reflect the active backend's image-to-image capability
 # ---------------------------------------------------------------------------

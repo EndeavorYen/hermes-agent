@@ -114,21 +114,9 @@ def _flush_session_db_after_tool_progress(
 
 def _image_generate_parallel_limit() -> int:
     """Return a conservative, configurable image-provider concurrency cap."""
-    value = None
-    try:
-        from hermes_cli.config import load_config
+    from agent.visual.generation_waves import resolve_generation_parallelism
 
-        config = load_config() or {}
-        image_gen = config.get("image_gen") if isinstance(config, dict) else None
-        if isinstance(image_gen, dict):
-            value = image_gen.get("max_parallel_requests")
-    except Exception:
-        value = None
-    try:
-        limit = int(value)
-    except (TypeError, ValueError):
-        limit = _DEFAULT_IMAGE_PARALLEL_REQUESTS
-    return max(1, min(limit, _MAX_TOOL_WORKERS))
+    return resolve_generation_parallelism(None)
 
 
 def _max_workers_for_tool_batch(runnable_calls) -> int:
@@ -137,7 +125,21 @@ def _max_workers_for_tool_batch(runnable_calls) -> int:
         return 0
     max_workers = _MAX_TOOL_WORKERS
     if any(name == "image_generate" for _, _, name, _ in runnable_calls):
-        max_workers = min(max_workers, _image_generate_parallel_limit())
+        from agent.visual.generation_waves import resolve_generation_parallelism
+
+        image_limits = [
+            resolve_generation_parallelism(
+                args.get("provider")
+                or args.get("_provider")
+                or args.get("image_provider")
+            )
+            for _, _, name, args in runnable_calls
+            if name == "image_generate" and isinstance(args, dict)
+        ]
+        max_workers = min(
+            max_workers,
+            min(image_limits, default=_DEFAULT_IMAGE_PARALLEL_REQUESTS),
+        )
     return min(len(runnable_calls), max_workers)
 
 

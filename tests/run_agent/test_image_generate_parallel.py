@@ -52,3 +52,22 @@ def test_image_parallel_worker_cap_can_be_configured_lower():
         return_value={"image_gen": {"max_parallel_requests": 2}},
     ):
         assert tool_executor._max_workers_for_tool_batch(runnable_calls) == 2
+
+
+def test_xai_image_parallel_worker_cap_defaults_to_two():
+    runnable_calls = [
+        (
+            index,
+            _tool_call(
+                "image_generate",
+                {"prompt": str(index), "provider": "xai"},
+                f"img_{index}",
+            ),
+            "image_generate",
+            {"prompt": str(index), "provider": "xai"},
+        )
+        for index in range(3)
+    ]
+
+    with patch("hermes_cli.config.load_config", return_value={}):
+        assert tool_executor._max_workers_for_tool_batch(runnable_calls) == 2

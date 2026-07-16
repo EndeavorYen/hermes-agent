@@ -14,6 +14,22 @@ def classify_visual_provider_failure(payload: dict[str, Any] | Exception) -> dic
         return _result("timeout", retryable=True, safe_reframe_allowed=False, provider_message_code=code)
     if _is_quota_exceeded_text(text):
         return _result("quota_exceeded", retryable=False, safe_reframe_allowed=False, provider_message_code=code)
+    if status_code in {401, 403} or _contains(
+        text,
+        "authentication_failed",
+        "authentication failed",
+        "authentication required",
+        "access token expired",
+        "invalid credential",
+        "missing credential",
+        "unauthorized",
+        "run codex login",
+    ):
+        return _result("authentication_required", retryable=False, safe_reframe_allowed=False, provider_message_code=code)
+    if status_code == 429 or _contains(text, "rate limit", "rate_limited", "too many requests"):
+        return _result("rate_limited", retryable=True, safe_reframe_allowed=False, provider_message_code=code)
+    if status_code in {500, 502, 503, 504} or _is_provider_unavailable_text(text):
+        return _result("provider_unavailable", retryable=True, safe_reframe_allowed=False, provider_message_code=code)
     if _contains(text, "artifact_too_small", "no_usable_generated_artifact"):
         return _result("empty_response", retryable=True, safe_reframe_allowed=False, provider_message_code=code)
     if _contains(text, "content_moderation", "moderation", "safety", "policy rejected", "blocked", "policy_violation"):
@@ -31,10 +47,6 @@ def classify_visual_provider_failure(payload: dict[str, Any] | Exception) -> dic
         return _result("unsupported_reference", retryable=True, safe_reframe_allowed=False, provider_message_code=code)
     if _contains(text, "aspect ratio", "invalid aspect", "unsupported aspect"):
         return _result("unsupported_aspect_ratio", retryable=True, safe_reframe_allowed=False, provider_message_code=code)
-    if status_code == 429 or _contains(text, "rate limit", "rate_limited", "too many requests"):
-        return _result("rate_limited", retryable=True, safe_reframe_allowed=False, provider_message_code=code)
-    if status_code in {500, 502, 503, 504} or _is_provider_unavailable_text(text):
-        return _result("provider_unavailable", retryable=True, safe_reframe_allowed=False, provider_message_code=code)
     return _result("unknown", retryable=False, safe_reframe_allowed=False, provider_message_code=code)
 
 
@@ -64,6 +76,7 @@ def _operator_summary(failure_class: str) -> str:
         "rate_limited": "provider rate limit was hit",
         "provider_unavailable": "provider is unavailable",
         "quota_exceeded": "provider account quota or subscription limit was hit",
+        "authentication_required": "provider authentication must be refreshed",
     }.get(failure_class, "provider failure could not be classified")
 
 

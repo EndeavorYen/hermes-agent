@@ -9,7 +9,7 @@ from typing import Any
 from .audit import ProviderAudit, ProviderAuditEvent
 from .policy import guard_tool_call
 from .state import OperatorCall, StoryVideoRunContext, StoryVideoStateStore, parse_operator_call
-from .visual_judge import _next_batch_work, _next_batch_work_group
+from .visual_judge import _next_batch_work
 
 
 _STORE = StoryVideoStateStore()
@@ -37,8 +37,14 @@ _PHASE_BLOCKED_RE = re.compile(
     r"STORY_VIDEO_PHASE_PROOF:\s+[a-z]+\s+BLOCKED",
     re.IGNORECASE,
 )
+_BATCH_REVIEW_REQUIRED_RE = re.compile(
+    r"(?:STORY_VIDEO_PHASE_ATTENTION:\s*batch\s+REVIEW_REQUIRED|"
+    r"[\"']work_status[\"']\s*:\s*[\"']human_review_required[\"'])",
+    re.IGNORECASE,
+)
 _AUTOPILOT_STALL_LIMIT = 3
 _AUTOPILOT_ROTATE_AFTER_CONTINUATIONS = 3
+_AUTOPILOT_BATCH_ROTATE_AFTER_CONTINUATIONS = 9
 _AUTOPILOT_ROTATE_AFTER_MESSAGES = 80
 _DEFAULT_BATCH_PARALLELISM = 3
 _THREAD_CONTEXT_END = "[End of thread context]"
@@ -62,6 +68,7 @@ def _digest_source(parts: list[str]) -> str:
 def _batch_parallelism() -> int:
     """Return the conservative story-video source-image concurrency cap."""
     value: Any = None
+    config: dict[str, Any] = {}
     try:
         from hermes_cli.config import load_config
 
@@ -74,11 +81,13 @@ def _batch_parallelism() -> int:
             value = image_gen.get("max_parallel_requests")
     except Exception:
         value = None
-    try:
-        limit = int(value)
-    except (TypeError, ValueError):
-        limit = _DEFAULT_BATCH_PARALLELISM
-    return max(1, min(limit, _DEFAULT_BATCH_PARALLELISM))
+    from agent.visual.generation_waves import resolve_generation_parallelism
+
+    return resolve_generation_parallelism(
+        "openai-codex",
+        requested_limit=value,
+        config=config,
+    )
 
 
 def _legacy_source_key(event: Any) -> str:
@@ -430,9 +439,23 @@ def pre_llm_call(
         "aliases belong only in pronunciation_lexicon.json and are compiled at voice time. "
         "The ending_echo MUST support a cinematic educational ending. "
         )
-    if context.phase in {"keyframes", "batch"}:
+    if context.phase == "batch":
         instruction += (
-        "During batch, first call story_video_quality_control "
+        "During batch, call story_video_quality_control action=run_batch_chunk exactly "
+        "once per turn. This native tool owns deterministic prompt compilation, up to "
+        "three parallel OpenAI image requests, candidate judging, end-to-end generation "
+        "budgets across contract revisions, continuity holds, and persisted stop/resume. "
+        "Do not call image_generate, compile_prompt, judge_candidates, next_batch_work, "
+        "rejudge_existing, or replan_shot_contract yourself. Never edit "
+        "shot_candidate_manifest.json, batch_run_manifest.json, or scene_ledger.json "
+        "manually. If the tool returns in_progress, report brief progress and let internal "
+        "autopilot schedule the next native chunk. If it returns complete, validate batch. "
+        "Every generation and judge remains explicitly provider=openai-codex; xAI and Grok "
+        "are forbidden."
+        )
+    elif context.phase == "keyframes":
+        instruction += (
+        "During keyframes, first call story_video_quality_control "
         "action=next_batch_work. Existing "
         "repair_required work always takes priority over generating a new shot. After "
         "an operation=replan_shot_contract response, design a replacement using only "
@@ -530,15 +553,10 @@ def pre_llm_call(
         )
         if context.phase == "batch":
             instruction += (
-            "During batch, execute one canonical bounded work group per LLM turn. A group may "
-            "contain up to three fresh shots whose image_generate calls run together; "
-            "judge their successful results sequentially. A repair, rejudge_existing, "
-            "or replan_shot_contract action is always a singleton and takes priority. "
-            "After that group writes its QC results, return "
-            "a brief progress response immediately so the internal autopilot continuation "
-            "can schedule the canonical next action. Do not start the next batch work unit "
-            "in the same turn. This turn boundary is not an operator pause and must not "
-            "request input."
+            "Batch autopilot advances only through action=run_batch_chunk. Return a brief "
+            "progress response after that native chunk so internal continuation can invoke "
+            "the next chunk. This boundary is not an operator pause and must not request "
+            "input."
             )
     return {"context": instruction}
 
@@ -577,6 +595,14 @@ def _autopilot_progress_token(context: StoryVideoRunContext) -> str:
             for row in payload.get("outputs") or []
             if isinstance(row, dict)
         ]
+        if context.phase == "batch":
+            batch_path = context.project_dir / "manifests" / "batch_run_manifest.json"
+            try:
+                evidence["batch_manifest"] = hashlib.sha256(
+                    batch_path.read_bytes()
+                ).hexdigest()[:16]
+            except OSError:
+                evidence["batch_manifest"] = ""
     elif context.phase == "voice":
         path = context.project_dir / "manifests" / "narration_manifest.json"
         try:
@@ -602,6 +628,40 @@ def _autopilot_progress_token(context: StoryVideoRunContext) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
 
 
+def _batch_assets_complete(context: StoryVideoRunContext) -> bool:
+    try:
+        ledger = json.loads(
+            (context.project_dir / "scene_ledger.json").read_text(encoding="utf-8")
+        )
+        manifest = json.loads(
+            (
+                context.project_dir
+                / "manifests"
+                / "shot_candidate_manifest.json"
+            ).read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        return False
+    shot_ids = {
+        str(shot.get("shot_id") or "")
+        for scene in ledger.get("scenes") or []
+        if isinstance(scene, dict)
+        for shot in scene.get("shots") or []
+        if isinstance(shot, dict) and str(shot.get("shot_id") or "")
+    }
+    selected = {
+        str(row.get("shot_id") or "")
+        for row in manifest.get("outputs") or []
+        if isinstance(row, dict) and row.get("selected") is True
+    }
+    if not shot_ids or not shot_ids.issubset(selected):
+        return False
+    try:
+        return _next_batch_work(context).get("work_status") == "complete"
+    except (OSError, TypeError, ValueError):
+        return False
+
+
 def auto_continue_llm_output(
     *,
     session_id: str = "",
@@ -623,6 +683,10 @@ def auto_continue_llm_output(
     if not context.auto_mode and not planning_completion:
         return None
     if _has_operator_setup_blocker(response_text, turn_error):
+        return None
+    if context.phase == "batch" and _BATCH_REVIEW_REQUIRED_RE.search(
+        str(response_text or "")
+    ):
         return None
     if planning_completion:
         signature = (
@@ -691,124 +755,29 @@ def auto_continue_llm_output(
                 "or video."
             )
     elif context.phase == "batch":
-        try:
-            next_work = _next_batch_work_group(
-                context,
-                max_items=_batch_parallelism(),
+        if not _batch_assets_complete(context):
+            next_action = "story_video_quality_control action=run_batch_chunk"
+            next_work_instruction = (
+                " Run exactly one native bounded production chunk. The tool owns prompt "
+                "compilation, up to three parallel OpenAI image requests, QC, persistent "
+                "end-to-end budgets, and stop/resume behavior. Do not call image_generate, "
+                "compile_prompt, judge_candidates, or replan_shot_contract yourself."
             )
-        except (OSError, TypeError, ValueError):
-            next_work = {}
-        if next_work.get("work_status") == "ready":
-            if next_work.get("operation") == "generate_batch":
-                work_items = [
-                    {
-                        key: item.get(key)
-                        for key in (
-                            "shot_id",
-                            "candidate_id_hint",
-                            "repair_strategy",
-                            "shot_contract_hash",
-                        )
-                    }
-                    for item in next_work.get("work_items") or []
-                    if isinstance(item, dict)
-                ]
-                next_action = (
-                    "compile the listed story-video shots, then generate and judge them: "
-                    f"work_items={json.dumps(work_items, ensure_ascii=False, sort_keys=True)}"
-                )
-                next_work_instruction = (
-                    " Call compile_prompt for each listed shot in order. Then issue exactly "
-                    "one image_generate call per shot with provider=openai-codex together in "
-                    "one parallel image_generate "
-                    "tool batch. Do not create alternate candidates. After the batch returns, "
-                    "judge each successful result sequentially with provider=openai-codex and "
-                    "its exact candidate_id_hint, "
-                    "repair_strategy, generation prompt, and shot_contract_hash. If one provider "
-                    "call fails, preserve the successful results and leave only that shot for the "
-                    "next canonical retry."
-                )
-            elif next_work.get("operation") == "rejudge_existing":
-                candidate = json.dumps(
-                    next_work["candidate"],
-                    ensure_ascii=False,
-                    sort_keys=True,
-                )
-                next_action = (
-                    "story_video_quality_control action=judge_candidates "
-                    f"shot_id={next_work['shot_id']} "
-                    f"repair_round={next_work['repair_round']} "
-                    f"candidates=[{candidate}]"
-                )
-                next_work_instruction = (
-                    " This is operation=rejudge_existing with candidate_budget=0. "
-                    "Judge that exact existing candidate; do not call compile_prompt, "
-                    "invoke image generation, or contact any image provider."
-                )
-            elif next_work.get("operation") == "replan_shot_contract":
-                replan_spec = json.dumps(
-                    {
-                        key: next_work.get(key)
-                        for key in (
-                            "replan_revision",
-                            "max_replan_revisions",
-                            "immutable_contract",
-                            "current_mutable_contract",
-                            "mutable_fields",
-                            "hard_blockers",
-                            "blocker_codes",
-                            "replan_directive",
-                        )
-                    },
-                    ensure_ascii=False,
-                    sort_keys=True,
-                )
-                next_action = (
-                    "story_video_quality_control action=replan_shot_contract "
-                    f"shot_id={next_work['shot_id']} redesigned_shot=<complete JSON>"
-                )
-                next_work_instruction = (
-                    " This is operation=replan_shot_contract. "
-                    f"Replan spec={replan_spec}. Preserve immutable_contract exactly; "
-                    "replace only mutable_fields with a coherent visual design that "
-                    "resolves every blocker. Do not edit the ledger directly. Do not "
-                    "generate an image before the replan action succeeds."
-                )
-            else:
-                next_action = (
-                    "story_video_quality_control action=compile_prompt "
-                    f"shot_id={next_work['shot_id']}"
-                )
-                edit_instruction = ""
-                source_image_url = str(
-                    next_work.get("source_image_url") or ""
-                ).strip()
-                if source_image_url:
-                    edit_instruction = (
-                        f" Pass image_url={source_image_url} to image_generate and perform "
-                        "an OpenAI image edit that preserves all already-correct content. "
-                        "Do not regenerate this repair from text alone."
-                    )
-                next_work_instruction = (
-                    f" Use candidate_id_hint={next_work['candidate_id_hint']} to "
-                    f"perform the {next_work['operation']} image/QC cycle with "
-                    f"repair_strategy={next_work['repair_strategy']} and "
-                    "provider=openai-codex on both image_generate and judge_candidates. "
-                    f"{edit_instruction} "
-                    "Do not generate another shot first."
-                )
-        elif next_work.get("work_status") == "human_review_required":
-            return None
-        elif next_work.get("work_status") == "complete":
+        else:
             next_action = "story_video_control action=validate"
             next_work_instruction = (
                 " Canonical batch work is complete. Validate the batch phase now; "
                 "do not edit the candidate manifest or regenerate selected shots."
             )
+    continuation_limit = (
+        _AUTOPILOT_BATCH_ROTATE_AFTER_CONTINUATIONS
+        if context.phase == "batch"
+        else _AUTOPILOT_ROTATE_AFTER_CONTINUATIONS
+    )
     rotate_for_budget = (
         int(message_count or 0) >= _AUTOPILOT_ROTATE_AFTER_MESSAGES
         or int(auto_continuation_count or 0)
-        >= _AUTOPILOT_ROTATE_AFTER_CONTINUATIONS
+        >= continuation_limit
     )
     rotate = recoverable_transport_error or rotate_for_budget
     return {
@@ -1017,31 +986,16 @@ def transform_llm_output(
     if _has_operator_setup_blocker(text):
         pass
     elif phase_at_start == context.phase == "batch":
-        try:
-            next_work = _next_batch_work(context)
-        except (OSError, TypeError, ValueError):
-            next_work = {}
-        work_status = str(next_work.get("work_status") or "")
-        if work_status == "ready":
-            shot_id = str(next_work.get("shot_id") or "unknown")
-            operation = str(next_work.get("operation") or "work")
-            remaining = int(next_work.get("remaining_shot_count") or 0)
+        if _BATCH_REVIEW_REQUIRED_RE.search(text):
+            pass
+        elif not _batch_assets_complete(context):
             text = "\n".join(
                 (
-                    f"故事影片 batch 自動製作中：目前處理 {shot_id}（{operation}）。",
-                    f"STORY_VIDEO_PHASE_PROGRESS: batch IN_PROGRESS shot_id={shot_id} remaining={remaining}",
+                    "故事影片 batch 原生批次製作中。",
+                    "STORY_VIDEO_PHASE_PROGRESS: batch IN_PROGRESS",
                 )
             )
-        elif work_status == "human_review_required":
-            shot_id = str(next_work.get("shot_id") or "unknown")
-            error = str(next_work.get("error") or "目前鏡頭需要人工判斷")
-            text = "\n".join(
-                (
-                    f"故事影片 batch 需要處理目前鏡頭 {shot_id}：{error}",
-                    f"STORY_VIDEO_PHASE_ATTENTION: batch REVIEW_REQUIRED shot_id={shot_id}",
-                )
-            )
-        elif work_status == "complete":
+        else:
             from .tools import story_video_control
 
             validation = json.loads(

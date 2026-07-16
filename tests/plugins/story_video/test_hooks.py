@@ -559,12 +559,12 @@ def test_autopilot_context_requires_canonical_quality_tool_and_phase_loop(
         user_message="繼續",
     )
     assert "story_video_quality_control" in batch["context"]
-    assert "never edit shot_candidate_manifest.json manually" in batch["context"]
-    assert "candidate_id_hint" in batch["context"]
-    assert "strategy_reset=true" in batch["context"]
-    assert "one canonical bounded work group per LLM turn" in batch["context"]
-    assert "up to three fresh shots" in batch["context"]
-    assert "repair, rejudge_existing" in batch["context"]
+    assert "action=run_batch_chunk" in batch["context"]
+    assert "shot_candidate_manifest.json" in batch["context"]
+    assert "manually" in batch["context"]
+    assert "Do not call image_generate" in batch["context"]
+    assert "candidate_id_hint" not in batch["context"]
+    assert "one canonical bounded work group per LLM turn" not in batch["context"]
     assert "scene_ledger.json MUST use exact machine keys" not in batch["context"]
 
     store.update(context, phase="render")
@@ -677,7 +677,36 @@ def test_autopilot_rotates_before_continuation_history_bloats(
 
 def test_autopilot_context_budget_is_small_enough_for_batch_workers() -> None:
     assert hooks._AUTOPILOT_ROTATE_AFTER_CONTINUATIONS <= 3
+    assert hooks._AUTOPILOT_BATCH_ROTATE_AFTER_CONTINUATIONS >= 8
     assert hooks._AUTOPILOT_ROTATE_AFTER_MESSAGES <= 80
+
+
+def test_batch_autopilot_does_not_rotate_during_normal_native_chunks(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    start = hooks.pre_gateway_dispatch(
+        event=_event("故事影片：恐龍起源｜5分鐘｜真實照片。完整製作並出片。")
+    )
+    hooks.pre_llm_call(session_id="session-auto", user_message=start["text"])
+    context = store.for_session("session-auto")
+    assert context is not None
+    store.update(context, phase="batch", auto_mode=True)
+    monkeypatch.setattr(
+        hooks,
+        "_next_batch_work",
+        lambda _context: {"success": True, "work_status": "ready"},
+    )
+
+    continuation = hooks.auto_continue_llm_output(
+        session_id="session-auto",
+        response_text="STORY_VIDEO_PHASE_PROGRESS: batch IN_PROGRESS",
+        auto_continuation_count=3,
+    )
+
+    assert continuation is not None
+    assert continuation["action"] == "continue"
 
 
 def test_story_video_batch_parallelism_is_capped_at_three(monkeypatch) -> None:
@@ -687,6 +716,18 @@ def test_story_video_batch_parallelism_is_capped_at_three(monkeypatch) -> None:
     )
 
     assert hooks._batch_parallelism() == 3
+
+
+def test_story_video_batch_parallelism_respects_global_image_cap(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "story_video": {"batch_parallelism": 3},
+            "image_gen": {"max_parallel_requests": 2},
+        },
+    )
+
+    assert hooks._batch_parallelism() == 2
 
 
 def test_pre_llm_binds_rotated_child_to_parent_story_context(
@@ -908,10 +949,11 @@ def test_batch_autopilot_continuation_names_exact_next_quality_tool_call(
     )
 
     assert continuation is not None
-    assert "action=compile_prompt shot_id=S03_SH01" in continuation["message"]
-    assert "candidate_id_hint=S03_SH01_C02" in continuation["message"]
-    assert "provider=openai-codex" in continuation["message"]
-    assert "Do not generate another shot first" in continuation["message"]
+    assert "story_video_quality_control action=run_batch_chunk" in continuation[
+        "message"
+    ]
+    assert "shot_id=S03_SH01" not in continuation["message"]
+    assert "compile_prompt" in continuation["message"]
 
 
 def test_batch_autopilot_uses_image_edit_source_for_targeted_repair(
@@ -928,8 +970,8 @@ def test_batch_autopilot_uses_image_edit_source_for_targeted_repair(
     store.update(context, phase="batch", auto_mode=True)
     monkeypatch.setattr(
         hooks,
-        "_next_batch_work_group",
-        lambda _context, max_items: {
+        "_next_batch_work",
+        lambda _context: {
             "success": True,
             "work_status": "ready",
             "operation": "repair",
@@ -950,9 +992,9 @@ def test_batch_autopilot_uses_image_edit_source_for_targeted_repair(
 
     assert continuation is not None
     message = continuation["message"]
-    assert "image_url=/tmp/S03_SH01_C01.png" in message
-    assert "OpenAI image edit" in message
-    assert "Do not regenerate this repair from text alone" in message
+    assert "story_video_quality_control action=run_batch_chunk" in message
+    assert "image_url=/tmp/S03_SH01_C01.png" not in message
+    assert "Do not call image_generate" in message
 
 
 def test_batch_autopilot_continuation_batches_fresh_generation(
@@ -969,8 +1011,8 @@ def test_batch_autopilot_continuation_batches_fresh_generation(
     store.update(context, phase="batch", auto_mode=True)
     monkeypatch.setattr(
         hooks,
-        "_next_batch_work_group",
-        lambda _context, max_items: {
+        "_next_batch_work",
+        lambda _context: {
             "success": True,
             "work_status": "ready",
             "operation": "generate_batch",
@@ -995,13 +1037,41 @@ def test_batch_autopilot_continuation_batches_fresh_generation(
 
     assert continuation is not None
     message = continuation["message"]
-    assert "S00_SH00_C01" in message
-    assert "S00_SH01_C01" in message
-    assert "S00_SH02_C01" in message
-    assert "one parallel image_generate tool batch" in message
-    assert "provider=openai-codex" in message
-    assert "judge each successful result sequentially" in message
-    assert "Do not generate another shot first" not in message
+    assert "story_video_quality_control action=run_batch_chunk" in message
+    assert "S00_SH00_C01" not in message
+    assert "up to three parallel OpenAI image requests" in message
+
+
+def test_batch_autopilot_uses_native_chunk_instead_of_llm_shot_scheduler(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    start = hooks.pre_gateway_dispatch(
+        event=_event("故事影片：恐龍起源｜5分鐘｜真實照片。完整製作並出片。")
+    )
+    hooks.pre_llm_call(session_id="session-auto", user_message=start["text"])
+    context = store.for_session("session-auto")
+    assert context is not None
+    store.update(context, phase="batch", auto_mode=True)
+    monkeypatch.setattr(
+        hooks,
+        "_next_batch_work",
+        lambda _context: (_ for _ in ()).throw(
+            AssertionError("legacy shot scheduler must not run")
+        ),
+    )
+
+    continuation = hooks.auto_continue_llm_output(
+        session_id="session-auto",
+        response_text="STORY_VIDEO_PHASE_PROGRESS: batch IN_PROGRESS",
+    )
+
+    assert continuation is not None
+    assert "story_video_quality_control action=run_batch_chunk" in continuation[
+        "message"
+    ]
+    assert "work_items=" not in continuation["message"]
 
 
 def test_batch_autopilot_validates_when_canonical_work_is_complete(
@@ -1023,12 +1093,8 @@ def test_batch_autopilot_validates_when_canonical_work_is_complete(
     )
     monkeypatch.setattr(
         hooks,
-        "_next_batch_work_group",
-        lambda _context, max_items: {
-            "success": True,
-            "work_status": "complete",
-            "remaining_shot_count": 0,
-        },
+        "_batch_assets_complete",
+        lambda _context: True,
     )
 
     continuation = hooks.auto_continue_llm_output(
@@ -1060,8 +1126,8 @@ def test_batch_autopilot_does_not_repeat_human_review_required_work(
     )
     monkeypatch.setattr(
         hooks,
-        "_next_batch_work_group",
-        lambda _context, max_items: {
+        "_next_batch_work",
+        lambda _context: {
             "work_status": "human_review_required",
             "shot_id": "S00_SH01",
             "error": "all evidence-backed repairs exhausted",
@@ -1092,8 +1158,8 @@ def test_batch_autopilot_executes_bounded_shot_contract_replan(
     store.update(context, phase="batch", auto_mode=True)
     monkeypatch.setattr(
         hooks,
-        "_next_batch_work_group",
-        lambda _context, max_items: {
+        "_next_batch_work",
+        lambda _context: {
             "success": True,
             "work_status": "ready",
             "operation": "replan_shot_contract",
@@ -1126,10 +1192,9 @@ def test_batch_autopilot_executes_bounded_shot_contract_replan(
 
     assert continuation is not None
     message = continuation["message"]
-    assert "operation=replan_shot_contract" in message
-    assert "story_video_quality_control action=replan_shot_contract" in message
-    assert "Preserve immutable_contract exactly" in message
-    assert "Do not generate an image before the replan action succeeds" in message
+    assert "story_video_quality_control action=run_batch_chunk" in message
+    assert "operation=replan_shot_contract" not in message
+    assert "Do not call image_generate" in message
 
 
 def test_batch_autopilot_rejudges_existing_candidate_without_image_generation(
@@ -1225,12 +1290,10 @@ def test_batch_autopilot_rejudges_existing_candidate_without_image_generation(
 
     assert continuation is not None
     message = continuation["message"]
-    assert "action=judge_candidates" in message
-    assert "S03_SH04_C01_V3_REVIEW" in message
-    assert str(candidate_path) in message
-    assert "candidate_budget=0" in message
-    assert "action=compile_prompt" not in message
-    assert "image_generate" not in message
+    assert "story_video_quality_control action=run_batch_chunk" in message
+    assert "S03_SH04_C01_V3_REVIEW" not in message
+    assert str(candidate_path) not in message
+    assert "Do not call image_generate" in message
 
 
 def test_batch_transport_recovery_is_bounded_and_uses_current_next_work(
@@ -1278,7 +1341,7 @@ def test_batch_transport_recovery_is_bounded_and_uses_current_next_work(
 
     assert first is not None
     assert first["action"] == "rotate"
-    assert "shot_id=S03_SH02" in first["message"]
+    assert "story_video_quality_control action=run_batch_chunk" in first["message"]
     assert "S03_SH01.selected_asset" not in first["message"]
     assert second is not None
     assert second["action"] == "rotate"
@@ -1318,8 +1381,12 @@ def test_batch_autopilot_names_adaptive_repair_strategy(tmp_path, monkeypatch) -
     )
 
     assert continuation is not None
-    assert "candidate_id_hint=S03_SH03_EVIDENCE_C01" in continuation["message"]
-    assert "repair_strategy=evidence_reframe" in continuation["message"]
+    assert "story_video_quality_control action=run_batch_chunk" in continuation[
+        "message"
+    ]
+    assert "candidate_id_hint=S03_SH03_EVIDENCE_C01" not in continuation[
+        "message"
+    ]
 
 
 def test_direct_full_auto_resets_existing_stall_guard(tmp_path, monkeypatch) -> None:
@@ -1458,9 +1525,38 @@ def test_transform_output_reports_ready_batch_as_progress_not_phase_failure(
     )
 
     assert "STORY_VIDEO_PHASE_PROGRESS: batch IN_PROGRESS" in result
-    assert "shot_id=S05_SH01" in result
+    assert "shot_id=S05_SH01" not in result
     assert "STORY_VIDEO_PHASE_PROOF: batch BLOCKED" not in result
     assert ".selected_asset" not in result
+
+
+def test_transform_output_preserves_native_human_review_required(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    rewritten = hooks.pre_gateway_dispatch(
+        event=_event("故事影片：恐龍起源｜5分｜真實照片。完整製作並出片。")
+    )
+    hooks.pre_llm_call(session_id="session-auto", user_message=rewritten["text"])
+    context = store.for_session("session-auto")
+    assert context is not None
+    store.update(context, phase="batch", auto_mode=True)
+    hooks.pre_llm_call(session_id="session-auto", user_message="繼續")
+    response = (
+        "STORY_VIDEO_PHASE_ATTENTION: batch REVIEW_REQUIRED shot_id=S00_SH00"
+    )
+
+    result = hooks.transform_llm_output(
+        response_text=response,
+        session_id="session-auto",
+    )
+
+    assert result == response
+    assert hooks.auto_continue_llm_output(
+        session_id="session-auto",
+        response_text=result,
+    ) is None
 
 
 def test_transform_output_preserves_real_batch_setup_blocker(tmp_path, monkeypatch) -> None:

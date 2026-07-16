@@ -38,6 +38,7 @@ STORY_VIDEO_QUALITY_CONTROL_SCHEMA = {
                 "enum": [
                     "compile_prompt",
                     "judge_candidates",
+                    "run_batch_chunk",
                     "next_batch_work",
                     "replan_shot_contract",
                     "compile_release_art",
