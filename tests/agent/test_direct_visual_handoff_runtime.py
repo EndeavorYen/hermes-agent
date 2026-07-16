@@ -324,3 +324,79 @@ def test_gateway_attachment_context_reaches_visual_handoff_consumer():
         }
     ]
     assert get_visual_reference_context_entries() == []
+
+
+def test_gateway_recovers_original_thread_reference_for_visual_followup():
+    from gateway.run import _visual_reference_context_for_turn
+
+    prompt = """[Replying to: "用 xai imagine，locked ref 角色，給我 4 張挑選"]
+
+[Thread context — prior messages in this thread (not yet in conversation history):]
+[thread parent] user: 用 xai imagine，locked ref 角色，給我 4 張挑選
+[End of thread context]
+
+visual agent : 用原本的ref, 再產2張不同姿勢的圖"""
+    history = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "用這張原圖鎖定人物"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "/tmp/original-locked-ref.png"},
+                },
+            ],
+        },
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "visual-1",
+                    "function": {
+                        "name": "visual_agent_generate",
+                        "arguments": json.dumps(
+                            {
+                                "attachments": [
+                                    "/tmp/original-locked-ref.png",
+                                    "/tmp/generated-last-turn.png",
+                                ]
+                            }
+                        ),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "visual-1",
+            "content": json.dumps(
+                {
+                    "success": True,
+                    "images": ["/tmp/generated-last-turn.png"],
+                    "delivery_metadata": {
+                        "selected_visual_artifact_ids": ["selected-last"],
+                        "visual_artifacts": {
+                            "/tmp/generated-last-turn.png": {
+                                "artifact_id": "selected-last",
+                                "kind": "image",
+                            }
+                        },
+                    },
+                }
+            ),
+        },
+    ]
+
+    references = _visual_reference_context_for_turn(
+        prompt,
+        current_attachment_paths=[],
+        agent_history=history,
+    )
+
+    assert references == [
+        {
+            "uri": "/tmp/original-locked-ref.png",
+            "role_hint": "visual_reference",
+            "source": "previous_tool_reference",
+        }
+    ]

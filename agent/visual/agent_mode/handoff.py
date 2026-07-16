@@ -297,6 +297,8 @@ def _is_current_result_regenerate_request(prompt: str) -> bool:
         "重新生成",
         "重新产出",
         "再产出",
+        "再產",
+        "再产",
         "重新出图",
         "再生成",
         "重試",
