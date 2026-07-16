@@ -233,6 +233,21 @@ def _extract_grok_build_image(
                 re.IGNORECASE,
             )
         )
+        candidates.extend(
+            match.group(1)
+            for match in re.finditer(
+                r"(?:^|[`'\"\s:])((?:images?|outputs?)/[A-Za-z0-9._/-]+\.(?:png|jpe?g|webp))"
+                r"(?:$|[`'\"\s,)}\]])",
+                text,
+                re.IGNORECASE,
+            )
+        )
+        raw_text_candidates = _grok_build_image_path_candidates(text)
+        candidates.extend(
+            candidate
+            for candidate in raw_text_candidates
+            if candidate not in {text, unquote(text)}
+        )
     candidates = [
         path
         for candidate in candidates
@@ -242,8 +257,19 @@ def _extract_grok_build_image(
         path = Path(str(candidate).strip().strip("`'\"")).expanduser()
         if path.suffix.lower() in _IMAGE_SUFFIXES and path.is_file():
             return str(path.resolve())
-    if isinstance(parsed, dict) and workdir is not None:
-        session_id = str(parsed.get("sessionId") or parsed.get("session_id") or "").strip()
+    if workdir is not None:
+        session_id = (
+            str(parsed.get("sessionId") or parsed.get("session_id") or "").strip()
+            if isinstance(parsed, dict)
+            else ""
+        )
+        if not session_id:
+            session_match = re.search(
+                r"[\"']session(?:Id|_id)[\"']\s*:\s*[\"']([^\"']+)[\"']",
+                text,
+                re.IGNORECASE,
+            )
+            session_id = session_match.group(1).strip() if session_match else ""
         if session_id:
             cfg = config if isinstance(config, dict) else {}
             grok_home = Path(
