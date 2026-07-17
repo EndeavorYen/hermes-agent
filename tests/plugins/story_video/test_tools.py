@@ -698,6 +698,57 @@ def test_planning_validation_passes_and_advances_to_keyframes(tmp_path) -> None:
     assert result["next_call"] == "繼續"
 
 
+def test_explicit_autopilot_authorization_advances_a_planning_only_hold(
+    tmp_path,
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    start = parse_operator_call(
+        "故事影片：泡泡為什麼是圓的｜30秒｜電影感。只規劃。"
+    )
+    assert start is not None
+    context = store.create_or_load(
+        source_key="source-planning-hold",
+        session_id="session-planning",
+        call=start,
+        original_request="故事影片：泡泡為什麼是圓的｜30秒｜電影感。只規劃。",
+    )
+    _write_planning_fixture(context)
+
+    held = json.loads(
+        story_video_control(
+            {"action": "validate"},
+            session_id="session-planning",
+            store=store,
+        )
+    )
+    assert held["phase"] == "planning"
+    assert held["status"] == "complete"
+
+    authorize = parse_operator_call("全自動", has_active_project=True)
+    assert authorize is not None
+    resumed = store.create_or_load(
+        source_key="source-planning-hold",
+        session_id="session-production",
+        call=authorize,
+        original_request="全自動",
+    )
+    assert resumed.auto_mode is True
+    assert resumed.status == "active"
+
+    advanced = json.loads(
+        story_video_control(
+            {"action": "validate"},
+            session_id="session-production",
+            store=store,
+        )
+    )
+
+    assert advanced["success"] is True
+    assert advanced["phase"] == "keyframes"
+    assert advanced["status"] == "active"
+    assert store.for_session("session-production").phase == "keyframes"
+
+
 def test_planning_validation_rejects_missing_or_failed_script_quality(tmp_path) -> None:
     _store, context = _active_context(tmp_path)
     _write_planning_fixture(context, report_status="BLOCKED")

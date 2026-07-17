@@ -99,6 +99,24 @@ def test_stopped_and_complete_status_have_post_run_actions(tmp_path) -> None:
     assert "YouTube 審核包" in format_story_video_guide(complete, "status")
 
 
+def test_planning_hold_prompts_for_production_authorization_not_upload(tmp_path) -> None:
+    planning_hold = _context(
+        tmp_path,
+        original_request="故事影片：恐龍起源｜5分｜電影感。只規劃。",
+        phase="planning",
+        status="complete",
+        last_validated_phase="planning",
+    )
+
+    assert operator_next_call(planning_hold) == "全自動"
+    assert format_raphael_next_action(planning_hold) == (
+        "Raphael 下一步：回覆「全自動」。"
+    )
+    status = format_story_video_guide(planning_hold, "status")
+    assert "開始製作影像、旁白與影片" in status
+    assert "準備上架" not in status
+
+
 def test_examples_cover_creation_and_dubbing_modes() -> None:
     text = format_story_video_guide(None, "examples")
 

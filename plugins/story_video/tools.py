@@ -1394,7 +1394,12 @@ def story_video_control(
             payload["proof"] = proof.marker
             payload["missing"] = list(proof.missing)
             payload["violations"] = list(proof.violations)
-        if proof.ok and context.phase == "planning" and context.planning_only:
+        planning_hold = (
+            context.phase == "planning"
+            and context.planning_only
+            and state_store.autopilot_authorization(context) is None
+        )
+        if proof.ok and planning_hold:
             context = state_store.update(
                 context,
                 last_validated_phase=proof.phase,
