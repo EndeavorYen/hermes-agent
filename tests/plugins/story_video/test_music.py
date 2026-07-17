@@ -65,7 +65,7 @@ def _ledger() -> dict:
             "schema": "story_video_music_direction_v1",
             "moods": ["discovery", "wonder"],
             "instruments": ["marimba", "bells"],
-            "excluded_styles": ["aggressive_drums"],
+            "excluded_styles": ["aggressive drums"],
             "energy_curve": {
                 "opening": "high",
                 "body": "balanced",
