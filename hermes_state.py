@@ -2010,6 +2010,33 @@ class SessionDB:
             ).fetchone()
         return dict(row) if row else None
 
+    def find_previous_session_id_for_key(
+        self,
+        *,
+        session_key: str,
+        exclude_session_id: str,
+    ) -> Optional[str]:
+        """Return the latest prior transcript for the same gateway route."""
+        if not session_key or not exclude_session_id:
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT id FROM sessions
+                WHERE session_key = ?
+                  AND id != ?
+                  AND EXISTS (
+                      SELECT 1 FROM messages
+                      WHERE messages.session_id = sessions.id
+                      LIMIT 1
+                  )
+                ORDER BY started_at DESC
+                LIMIT 1
+                """,
+                (session_key, exclude_session_id),
+            ).fetchone()
+        return str(row["id"]) if row is not None else None
+
     def end_session(self, session_id: str, end_reason: str) -> None:
         """Mark a session as ended.
 

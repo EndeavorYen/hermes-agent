@@ -1650,12 +1650,14 @@ def _visual_reference_context_for_turn(
     *,
     current_attachment_paths: List[str],
     agent_history: List[Dict[str, Any]],
+    fallback_agent_history: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     """Bind current uploads plus explicitly requested thread references."""
     from agent.visual.session_references import (
         MAX_SESSION_VISUAL_REFERENCES,
         collect_recent_original_visual_reference_entries,
         collect_recent_visual_reference_entries,
+        filter_visual_reference_entries_for_prompt,
         prompt_requests_original_visual_references,
         prompt_requests_visual_reference_reuse,
     )
@@ -1682,13 +1684,28 @@ def _visual_reference_context_for_turn(
     if requests_original:
         historical = collect_recent_original_visual_reference_entries(
             agent_history,
-            limit=1,
+            limit=16,
         )
     else:
         historical = collect_recent_visual_reference_entries(
             agent_history,
-            limit=MAX_SESSION_VISUAL_REFERENCES,
+            limit=16,
         )
+    if not references and not historical and fallback_agent_history:
+        if requests_original:
+            historical = collect_recent_original_visual_reference_entries(
+                fallback_agent_history,
+                limit=16,
+            )
+        else:
+            historical = collect_recent_visual_reference_entries(
+                fallback_agent_history,
+                limit=16,
+            )
+    historical = filter_visual_reference_entries_for_prompt(
+        historical,
+        operator_request,
+    )
     seen = {str(entry.get("uri") or "") for entry in references}
     for entry in historical:
         uri = str(entry.get("uri") or "").strip()
@@ -19300,10 +19317,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _conversation_kwargs["moa_config"] = moa_config
                 if _persist_user_timestamp_override is not None:
                     _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
+                _fallback_visual_history: List[Dict[str, Any]] = []
+                try:
+                    from agent.visual.session_references import (
+                        prompt_requests_visual_reference_reuse,
+                    )
+                    from tools.story_video_provider_guard import (
+                        current_operator_request_text,
+                    )
+
+                    if not _native_imgs and prompt_requests_visual_reference_reuse(
+                        current_operator_request_text(_run_message)
+                    ):
+                        _fallback_visual_history = (
+                            self.session_store.load_previous_transcript_for_session_key(
+                                session_key,
+                                session_id,
+                            )
+                        )
+                except Exception:
+                    logger.debug(
+                        "Previous-session visual reference lookup failed",
+                        exc_info=True,
+                    )
                 _visual_references = _visual_reference_context_for_turn(
                     _run_message,
                     current_attachment_paths=_native_imgs,
                     agent_history=agent_history,
+                    fallback_agent_history=_fallback_visual_history,
                 )
                 result = _run_conversation_with_visual_reference_context(
                     agent,
