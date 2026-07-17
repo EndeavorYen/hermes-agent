@@ -12,6 +12,18 @@ def register(ctx) -> None:
         handler=tools.story_video_control,
     )
     ctx.register_tool(
+        name="story_video_voice_manager",
+        toolset="story_video",
+        schema=schemas.STORY_VIDEO_VOICE_MANAGER_SCHEMA,
+        handler=tools.story_video_voice_manager,
+    )
+    ctx.register_tool(
+        name="story_video_audio_director",
+        toolset="story_video",
+        schema=schemas.STORY_VIDEO_AUDIO_DIRECTOR_SCHEMA,
+        handler=tools.story_video_audio_director,
+    )
+    ctx.register_tool(
         name="story_video_quality_control",
         toolset="story_video",
         schema=schemas.STORY_VIDEO_QUALITY_CONTROL_SCHEMA,

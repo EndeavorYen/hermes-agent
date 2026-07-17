@@ -8,6 +8,13 @@ from pathlib import Path
 from typing import Any
 
 from .audit import ProviderAudit, normalize_provider
+from .dubbing import (
+    DubbingContractError,
+    bind_project_voice_cast,
+    compile_dubbing_project,
+    inspect_dubbing_project,
+    resolve_project_voice_cast,
+)
 from .engagement import engagement_contract_enabled
 from .quality import CLOSE_EVIDENCE_SCALES, QUALITY_THRESHOLD, validate_quality_ledger
 from .review_board import (
@@ -20,9 +27,13 @@ from .story_contract import story_contract_enabled, validate_story_script_bindin
 from .voice_profiles import (
     VOICE_BINDING_NAME,
     VoiceProfileError,
+    add_voice_profile,
+    archive_voice_profile,
     bind_project_voice_profile,
+    delete_voice_profile,
     inspect_project_voice_profile,
     list_voice_profiles,
+    tune_voice_profile,
 )
 
 
@@ -489,8 +500,10 @@ def _validate_voice(context: StoryVideoRunContext) -> PhaseProof:
         acoustic_contract = narration_schema in {
             "story_video_narration_manifest_v4",
             "story_video_narration_manifest_v5",
+            "story_video_narration_manifest_v6",
         }
         bound_voice_contract = narration_schema == "story_video_narration_manifest_v5"
+        cast_voice_contract = narration_schema == "story_video_narration_manifest_v6"
         sentence_chunk_contract = (
             str(manifest.get("voice_segmentation") or "")
             == "sentence_chunks_v1"
@@ -504,15 +517,104 @@ def _validate_voice(context: StoryVideoRunContext) -> PhaseProof:
         if not str(manifest.get("model") or "").strip():
             missing.append("local Qwen narration model")
         profile_path: Path | None = None
-        profile_value = str(manifest.get("voice_profile") or "").strip()
-        if not profile_value:
-            missing.append("local Qwen narration voice_profile")
+        cast_speakers: dict[str, dict[str, Any]] = {}
+        if cast_voice_contract:
+            binding_value = str(manifest.get("voice_cast_binding") or "").strip()
+            binding_path = Path(binding_value) if binding_value else None
+            if binding_path is None:
+                missing.append("local Qwen narration voice_cast_binding")
+            else:
+                if not binding_path.is_absolute():
+                    binding_path = context.project_dir / binding_path
+                if binding_path.resolve() != (
+                    context.project_dir / "voice_cast_binding.json"
+                ).resolve():
+                    violations.append("local Qwen voice cast binding is not project-local")
+                elif not _nonempty(binding_path):
+                    missing.append("local Qwen narration voice_cast_binding_file")
+                else:
+                    try:
+                        selection = resolve_project_voice_cast(context.project_dir)
+                    except DubbingContractError as exc:
+                        violations.append(f"local Qwen voice cast binding is invalid: {exc}")
+                    else:
+                        if str(manifest.get("voice_cast_binding_sha256") or "") != (
+                            selection.binding_sha256
+                        ):
+                            violations.append("local Qwen voice cast binding hash mismatch")
+                        cast_speakers = {
+                            str(row.get("speaker_id") or ""): row
+                            for row in selection.speakers
+                        }
+            dialogue_value = str(manifest.get("dialogue_ledger") or "").strip()
+            dialogue_path = Path(dialogue_value) if dialogue_value else None
+            if dialogue_path is None:
+                missing.append("local Qwen narration dialogue_ledger")
+            else:
+                if not dialogue_path.is_absolute():
+                    dialogue_path = context.project_dir / dialogue_path
+                if dialogue_path.resolve() != (
+                    context.project_dir / "dialogue_ledger.json"
+                ).resolve():
+                    violations.append("local Qwen dialogue ledger is not project-local")
+                elif not _nonempty(dialogue_path):
+                    missing.append("local Qwen narration dialogue_ledger_file")
+                elif str(manifest.get("dialogue_ledger_sha256") or "") != _sha256(
+                    dialogue_path
+                ):
+                    violations.append("local Qwen dialogue ledger hash mismatch")
+            if str(manifest.get("voice_role") or "") != "cast":
+                violations.append("local Qwen multi-character voice role is not cast")
+            if str(manifest.get("story_mode") or "") not in {
+                "creative",
+                "remake",
+                "read_aloud",
+            }:
+                violations.append("local Qwen multi-character story mode is invalid")
+            if str(manifest.get("speaker_routing_status") or "").upper() != "PASS":
+                violations.append("local Qwen speaker routing status is not PASS")
+            if (
+                str(manifest.get("speaker_similarity_status") or "").upper()
+                != "NOT_MEASURED"
+                or str(manifest.get("speaker_similarity_method") or "")
+                != "routing_integrity_only"
+            ):
+                violations.append(
+                    "local Qwen speaker similarity evidence is mislabeled or unsupported"
+                )
+            manifest_profiles = manifest.get("speaker_profiles")
+            if not isinstance(manifest_profiles, list) or not manifest_profiles:
+                missing.append("local Qwen narration speaker_profiles")
+            elif cast_speakers:
+                manifest_speakers = {
+                    str(row.get("speaker_id") or ""): row
+                    for row in manifest_profiles
+                    if isinstance(row, dict)
+                }
+                for speaker_id, bound in cast_speakers.items():
+                    recorded = manifest_speakers.get(speaker_id)
+                    if recorded is None:
+                        missing.append(
+                            f"local Qwen narration speaker_profiles[{speaker_id}]"
+                        )
+                        continue
+                    if any(
+                        str(recorded.get(key) or "") != str(bound.get(key) or "")
+                        for key in ("voice_id", "profile_id", "profile_sha256")
+                    ):
+                        violations.append(
+                            "local Qwen speaker profile evidence does not match cast binding"
+                        )
         else:
-            profile_path = Path(profile_value)
-            if not profile_path.is_absolute():
-                profile_path = context.project_dir / profile_path
-            if not _nonempty(profile_path):
-                missing.append("local Qwen narration voice_profile_file")
+            profile_value = str(manifest.get("voice_profile") or "").strip()
+            if not profile_value:
+                missing.append("local Qwen narration voice_profile")
+            else:
+                profile_path = Path(profile_value)
+                if not profile_path.is_absolute():
+                    profile_path = context.project_dir / profile_path
+                if not _nonempty(profile_path):
+                    missing.append("local Qwen narration voice_profile_file")
         if bound_voice_contract:
             binding_value = str(manifest.get("voice_profile_binding") or "").strip()
             binding_path: Path | None = None
@@ -721,6 +823,33 @@ def _validate_voice(context: StoryVideoRunContext) -> PhaseProof:
                                         missing.append(
                                             f"audio narration segment[{index}].segments[{segment_index}].voice_chunks[{chunk_index}].voice_chunk_id"
                                         )
+                                    if cast_voice_contract:
+                                        speaker_id = str(
+                                            chunk.get("speaker_id") or ""
+                                        ).strip()
+                                        bound = cast_speakers.get(speaker_id)
+                                        if bound is None:
+                                            missing.append(
+                                                f"audio narration segment[{index}].segments[{segment_index}].voice_chunks[{chunk_index}].speaker_id"
+                                            )
+                                        elif any(
+                                            str(chunk.get(key) or "")
+                                            != str(bound.get(key) or "")
+                                            for key in ("profile_id", "profile_sha256")
+                                        ):
+                                            violations.append(
+                                                "multi-character voice chunk profile does not match cast binding"
+                                            )
+                                        if (
+                                            str(
+                                                chunk.get("speaker_routing_status")
+                                                or ""
+                                            ).upper()
+                                            != "PASS"
+                                        ):
+                                            violations.append(
+                                                "multi-character voice chunk routing is not PASS"
+                                            )
                                     for gate in (
                                         "alignment_status",
                                         "pronunciation_status",
@@ -937,6 +1066,159 @@ def _context_payload(context: StoryVideoRunContext) -> dict[str, Any]:
         "next_call": context.next_call,
         "provider_policy": context.provider_policy,
     }
+
+
+def story_video_voice_manager(
+    args: dict[str, Any],
+    *,
+    voice_registry_path: str | Path | None = None,
+    voice_projects_root: str | Path | None = None,
+    **_: Any,
+) -> str:
+    action = str(args.get("action") or "list").strip().lower()
+    registry_kwargs: dict[str, Any] = {}
+    if voice_registry_path is not None:
+        registry_kwargs["registry_path"] = voice_registry_path
+    try:
+        if action == "list":
+            payload = list_voice_profiles(**registry_kwargs)
+        elif action == "add":
+            payload = add_voice_profile(
+                voice_id=str(args.get("voice_id") or ""),
+                display_name=str(args.get("display_name") or ""),
+                reference_audio=str(args.get("reference_audio") or ""),
+                reference_transcript=str(args.get("reference_transcript") or ""),
+                consent=str(args.get("consent") or ""),
+                tuning=args.get("tuning") if isinstance(args.get("tuning"), dict) else {},
+                **registry_kwargs,
+            )
+        elif action == "tune":
+            payload = tune_voice_profile(
+                voice_id=str(args.get("voice_id") or ""),
+                tuning=args.get("tuning") if isinstance(args.get("tuning"), dict) else {},
+                reference_audio=(
+                    str(args["reference_audio"]) if args.get("reference_audio") else None
+                ),
+                reference_transcript=(
+                    str(args["reference_transcript"])
+                    if args.get("reference_transcript")
+                    else None
+                ),
+                **registry_kwargs,
+            )
+        elif action == "archive":
+            payload = archive_voice_profile(
+                voice_id=str(args.get("voice_id") or ""), **registry_kwargs
+            )
+        elif action == "delete":
+            delete_kwargs = dict(registry_kwargs)
+            if voice_projects_root is not None:
+                delete_kwargs["projects_root"] = voice_projects_root
+            payload = delete_voice_profile(
+                voice_id=str(args.get("voice_id") or ""), **delete_kwargs
+            )
+        else:
+            return json.dumps(
+                {
+                    "success": False,
+                    "error_type": "voice_manager_action_invalid",
+                    "error": f"unsupported voice manager action: {action}",
+                },
+                ensure_ascii=False,
+            )
+    except (VoiceProfileError, OSError, ValueError) as exc:
+        return json.dumps(
+            {
+                "success": False,
+                "error_type": getattr(exc, "error_type", "voice_manager_failed"),
+                "error": str(exc),
+            },
+            ensure_ascii=False,
+        )
+    payload.update({"success": True, "action": action})
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def story_video_audio_director(
+    args: dict[str, Any],
+    *,
+    session_id: str = "",
+    store: StoryVideoStateStore | None = None,
+    voice_registry_path: str | Path | None = None,
+    **_: Any,
+) -> str:
+    state_store = store or StoryVideoStateStore()
+    context = state_store.for_session(session_id)
+    if context is None:
+        return json.dumps(
+            {
+                "success": False,
+                "error_type": "story_video_context_missing",
+                "error": "No active story-video context for this session.",
+            },
+            ensure_ascii=False,
+        )
+    action = str(args.get("action") or "status").strip().lower()
+    bind_kwargs: dict[str, Any] = {}
+    if voice_registry_path is not None:
+        bind_kwargs["registry_path"] = voice_registry_path
+    try:
+        if action == "compile":
+            payload = compile_dubbing_project(
+                context.project_dir,
+                mode=str(args.get("mode") or ""),
+                source_text=str(args.get("source_text") or ""),
+                speakers=args.get("speakers") if isinstance(args.get("speakers"), list) else [],
+                utterances=(
+                    args.get("utterances") if isinstance(args.get("utterances"), list) else []
+                ),
+            )
+            selection = bind_project_voice_cast(context.project_dir, **bind_kwargs)
+            payload.update(
+                {
+                    "bound": True,
+                    "binding_path": str(selection.binding_path),
+                    "binding_sha256": selection.binding_sha256,
+                }
+            )
+        elif action == "bind_cast":
+            selection = bind_project_voice_cast(context.project_dir, **bind_kwargs)
+            payload = inspect_dubbing_project(context.project_dir)
+            payload.update(
+                {
+                    "binding_path": str(selection.binding_path),
+                    "binding_sha256": selection.binding_sha256,
+                }
+            )
+        elif action == "status":
+            payload = inspect_dubbing_project(context.project_dir)
+        else:
+            return json.dumps(
+                {
+                    "success": False,
+                    "error_type": "audio_director_action_invalid",
+                    "error": f"unsupported audio director action: {action}",
+                },
+                ensure_ascii=False,
+            )
+    except (DubbingContractError, VoiceProfileError, OSError, ValueError) as exc:
+        return json.dumps(
+            {
+                "success": False,
+                "error_type": getattr(exc, "error_type", "audio_director_failed"),
+                "error": str(exc),
+            },
+            ensure_ascii=False,
+        )
+    payload.update(
+        {
+            "success": True,
+            "action": action,
+            "run_id": context.run_id,
+            "project_dir": str(context.project_dir),
+        }
+    )
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def story_video_control(

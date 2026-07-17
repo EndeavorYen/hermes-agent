@@ -182,6 +182,47 @@ def test_project_binding_is_stable_when_registry_default_changes(tmp_path) -> No
     assert resolved.binding_sha256 == initial.binding_sha256
 
 
+def test_stable_voice_id_selects_latest_concrete_version(tmp_path) -> None:
+    root = tmp_path / "voices"
+    root.mkdir()
+    first = _write_profile(root, "simon@v1")
+    second = _write_profile(root, "simon@v2")
+    registry = root / "registry.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "schema": "story_video_voice_profile_registry_v2",
+                "default_profile_id": "simon@v1",
+                "profiles": [
+                    {
+                        "voice_id": "simon",
+                        "profile_id": "simon@v1",
+                        "version": 1,
+                        "profile_path": str(first),
+                        "enabled": True,
+                    },
+                    {
+                        "voice_id": "simon",
+                        "profile_id": "simon@v2",
+                        "version": 2,
+                        "profile_path": str(second),
+                        "enabled": True,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    selected = bind_project_voice_profile(
+        tmp_path / "project", profile_id="simon", registry_path=registry
+    )
+
+    assert selected.profile_id == "simon@v2"
+    binding = json.loads(selected.binding_path.read_text(encoding="utf-8"))
+    assert binding["profile_id"] == "simon@v2"
+
+
 def test_bound_profile_hash_drift_fails_closed(tmp_path) -> None:
     root = tmp_path / "voices"
     root.mkdir()

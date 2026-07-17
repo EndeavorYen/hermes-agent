@@ -55,6 +55,8 @@ class TestModuleSurface:
 
         assert "story_video_control" in EXPOSED_TOOLS
         assert "story_video_quality_control" in EXPOSED_TOOLS
+        assert "story_video_voice_manager" in EXPOSED_TOOLS
+        assert "story_video_audio_director" in EXPOSED_TOOLS
 
     @pytest.mark.asyncio
     async def test_story_video_tools_advertise_authoritative_schema_and_accept_top_level_args(

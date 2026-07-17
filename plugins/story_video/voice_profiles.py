@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
+import shutil
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -11,11 +13,23 @@ from typing import Any
 
 
 VOICE_REGISTRY_SCHEMA = "story_video_voice_profile_registry_v1"
+VOICE_REGISTRY_SCHEMA_V2 = "story_video_voice_profile_registry_v2"
+VOICE_REGISTRY_SCHEMAS = {VOICE_REGISTRY_SCHEMA, VOICE_REGISTRY_SCHEMA_V2}
 VOICE_BINDING_SCHEMA = "story_video_voice_profile_binding_v1"
 DEFAULT_VOICE_PROFILE_ROOT = Path.home() / ".hermes" / "story_video_voice_profiles"
 DEFAULT_VOICE_REGISTRY = DEFAULT_VOICE_PROFILE_ROOT / "registry.json"
 DEFAULT_ACTIVE_PROFILE = DEFAULT_VOICE_PROFILE_ROOT / "active_narrator.json"
 VOICE_BINDING_NAME = "voice_profile_binding.json"
+DEFAULT_MODEL_ID = "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit"
+DEFAULT_MODEL_PATH = Path.home() / ".hermes" / "models" / "Qwen3-TTS-12Hz-1.7B-Base-8bit"
+DEFAULT_ASR_MODEL_PATH = Path.home() / ".hermes" / "models" / "Qwen3-ASR-0.6B-8bit"
+DEFAULT_ALIGNER_MODEL_PATH = (
+    Path.home() / ".hermes" / "models" / "Qwen3-ForcedAligner-0.6B-8bit"
+)
+DEFAULT_RUNTIME_PATH = (
+    Path.home() / ".hermes" / ".venvs" / "mlx-audio" / "bin" / "mlx_audio.tts.generate"
+)
+_VOICE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 
 class VoiceProfileError(RuntimeError):
@@ -116,11 +130,15 @@ def _profile_assessment(
 
     return {
         "profile_id": profile_id or expected_profile_id,
+        "voice_id": str(payload.get("voice_id") or profile_id or expected_profile_id),
+        "version": payload.get("version"),
         "display_name": str(payload.get("display_name") or profile_id or expected_profile_id),
         "profile_path": str(profile_path),
         "profile_sha256": _sha256(profile_path),
         "clone_mode": clone_mode,
         "language": str(payload.get("language") or ""),
+        "parent_profile_id": str(payload.get("parent_profile_id") or ""),
+        "tuning": payload.get("tuning") if isinstance(payload.get("tuning"), dict) else {},
         "selectable": not reasons,
         "reason": "; ".join(reasons),
     }
@@ -133,13 +151,15 @@ def _registry_catalog(
 ) -> dict[str, Any]:
     if registry_path.is_file():
         payload = _load_json(registry_path, error_type="voice_profile_registry_invalid")
-        if payload.get("schema") != VOICE_REGISTRY_SCHEMA:
+        if payload.get("schema") not in VOICE_REGISTRY_SCHEMAS:
             raise VoiceProfileError(
                 "voice_profile_registry_invalid",
                 f"unsupported voice profile registry schema: {registry_path}",
             )
         raw_profiles = payload.get("profiles")
-        if not isinstance(raw_profiles, list) or not raw_profiles:
+        if not isinstance(raw_profiles, list) or (
+            not raw_profiles and payload.get("schema") == VOICE_REGISTRY_SCHEMA
+        ):
             raise VoiceProfileError(
                 "voice_profile_registry_invalid",
                 f"voice profile registry has no profiles: {registry_path}",
@@ -170,10 +190,18 @@ def _registry_catalog(
                 assessment["selectable"] = False
                 assessment["reason"] = "profile is disabled"
             assessment["enabled"] = enabled
+            assessment["voice_id"] = str(
+                raw.get("voice_id") or assessment.get("voice_id") or profile_id
+            )
+            if raw.get("version") is not None:
+                assessment["version"] = raw.get("version")
+            assessment["lifecycle_status"] = str(
+                raw.get("lifecycle_status") or ("active" if enabled else "archived")
+            )
             rows.append(assessment)
         default_profile_id = str(payload.get("default_profile_id") or "").strip()
         return {
-            "schema": VOICE_REGISTRY_SCHEMA,
+            "schema": str(payload.get("schema")),
             "registry_path": str(registry_path),
             "source": "registry",
             "default_profile_id": default_profile_id,
@@ -194,6 +222,7 @@ def _registry_catalog(
     profile_path = _resolved_path(profile_value, relative_to=active_profile_path.parent)
     assessment = _profile_assessment(profile_path, expected_profile_id=profile_id)
     assessment["enabled"] = True
+    assessment["lifecycle_status"] = "active"
     return {
         "schema": VOICE_REGISTRY_SCHEMA,
         "registry_path": str(registry_path),
@@ -232,6 +261,16 @@ def _selectable_profile(
         None,
     )
     if row is None:
+        candidates = [
+            item
+            for item in catalog["profiles"]
+            if str(item.get("voice_id") or "") == profile_id
+        ]
+        selectable = [item for item in candidates if item.get("selectable")]
+        pool = selectable or candidates
+        if pool:
+            row = max(pool, key=lambda item: int(item.get("version") or 0))
+    if row is None:
         raise VoiceProfileError(
             "voice_profile_not_found",
             f"voice profile {profile_id!r} is not registered",
@@ -255,6 +294,406 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _validate_voice_id(voice_id: str) -> str:
+    normalized = str(voice_id or "").strip()
+    if not _VOICE_ID_PATTERN.fullmatch(normalized):
+        raise VoiceProfileError(
+            "voice_profile_id_invalid",
+            "voice_id must start with an ASCII letter or number and contain only letters, numbers, underscore, or hyphen",
+        )
+    return normalized
+
+
+def _mutable_registry(registry_path: Path) -> dict[str, Any]:
+    if not registry_path.is_file():
+        return {
+            "schema": VOICE_REGISTRY_SCHEMA_V2,
+            "default_profile_id": "",
+            "profiles": [],
+        }
+    payload = _load_json(registry_path, error_type="voice_profile_registry_invalid")
+    if payload.get("schema") not in VOICE_REGISTRY_SCHEMAS:
+        raise VoiceProfileError(
+            "voice_profile_registry_invalid",
+            f"unsupported voice profile registry schema: {registry_path}",
+        )
+    if not isinstance(payload.get("profiles"), list):
+        raise VoiceProfileError(
+            "voice_profile_registry_invalid",
+            f"voice profile registry profiles must be an array: {registry_path}",
+        )
+    payload["schema"] = VOICE_REGISTRY_SCHEMA_V2
+    return payload
+
+
+def _entry_identity(entry: dict[str, Any], registry_path: Path) -> tuple[str, int | None]:
+    voice_id = str(entry.get("voice_id") or "").strip()
+    version = entry.get("version")
+    profile_value = str(entry.get("profile_path") or "").strip()
+    if profile_value:
+        profile_path = _resolved_path(profile_value, relative_to=registry_path.parent)
+        if profile_path.is_file():
+            payload = _load_json(profile_path, error_type="voice_profile_invalid")
+            voice_id = voice_id or str(payload.get("voice_id") or payload.get("profile_id") or "")
+            version = version if version is not None else payload.get("version")
+    try:
+        parsed_version = int(version) if version is not None else None
+    except (TypeError, ValueError):
+        parsed_version = None
+    return voice_id, parsed_version
+
+
+def _normalized_voice_tuning(tuning: dict[str, Any] | None) -> dict[str, Any]:
+    value = dict(tuning or {})
+    allowed = {"speed", "pitch_shift_semitones", "expressiveness"}
+    if set(value) - allowed:
+        raise VoiceProfileError(
+            "voice_profile_tuning_invalid",
+            f"unsupported voice tuning fields: {sorted(set(value) - allowed)}",
+        )
+    if "speed" in value:
+        value["speed"] = float(value["speed"])
+        if not 0.85 <= value["speed"] <= 1.2:
+            raise VoiceProfileError(
+                "voice_profile_tuning_invalid", "voice speed must be between 0.85 and 1.2"
+            )
+    if "pitch_shift_semitones" in value:
+        value["pitch_shift_semitones"] = float(value["pitch_shift_semitones"])
+        if not -3.0 <= value["pitch_shift_semitones"] <= 3.0:
+            raise VoiceProfileError(
+                "voice_profile_tuning_invalid",
+                "voice pitch shift must be between -3 and 3 semitones",
+            )
+    if "expressiveness" in value and value["expressiveness"] not in {
+        "restrained",
+        "natural",
+        "lively",
+        "dramatic",
+    }:
+        raise VoiceProfileError(
+            "voice_profile_tuning_invalid",
+            f"unsupported expressiveness: {value['expressiveness']}",
+        )
+    return value
+
+
+def add_voice_profile(
+    *,
+    voice_id: str,
+    display_name: str,
+    reference_audio: str | Path,
+    reference_transcript: str,
+    registry_path: str | Path = DEFAULT_VOICE_REGISTRY,
+    consent: str,
+    model_id: str = DEFAULT_MODEL_ID,
+    tuning: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    voice_id = _validate_voice_id(voice_id)
+    if consent != "user_confirmed_self_recording":
+        raise VoiceProfileError(
+            "voice_profile_consent_required",
+            "voice profile creation requires confirmed self-recording consent",
+        )
+    transcript = str(reference_transcript or "").strip()
+    if not transcript:
+        raise VoiceProfileError(
+            "voice_profile_reference_invalid",
+            "reference transcript is required",
+        )
+    normalized_tuning = _normalized_voice_tuning(tuning)
+    source = Path(reference_audio).expanduser().resolve()
+    if not source.is_file() or source.stat().st_size == 0:
+        raise VoiceProfileError(
+            "voice_profile_reference_invalid",
+            f"reference audio is missing or empty: {source}",
+        )
+    registry = Path(registry_path).expanduser().resolve()
+    payload = _mutable_registry(registry)
+    runtime_settings: dict[str, Any] = {
+        "engine": "Qwen3-TTS via MLX-Audio",
+        "model_path": str(DEFAULT_MODEL_PATH),
+        "asr_model_path": str(DEFAULT_ASR_MODEL_PATH),
+        "aligner_model_path": str(DEFAULT_ALIGNER_MODEL_PATH),
+        "runtime_path": str(DEFAULT_RUNTIME_PATH),
+        "speed": 1.06,
+        "temperature": 0.7,
+        "top_p": 0.8,
+        "prosody_temperature": 0.8,
+        "prosody_top_p": 0.9,
+        "prosody": {
+            "segmentation": "sentence_voice_chunk_v1",
+            "pause_after_segment_sec": 0.18,
+            "speed_enforcement": "ffmpeg_atempo",
+            "pitch_span_min_semitones": 2.5,
+            "rms_span_min_db": 6.0,
+        },
+    }
+    default_profile_id = str(payload.get("default_profile_id") or "").strip()
+    default_entry = next(
+        (
+            entry
+            for entry in payload["profiles"]
+            if isinstance(entry, dict)
+            and str(entry.get("profile_id") or "") == default_profile_id
+        ),
+        None,
+    )
+    if default_entry is not None:
+        default_path = _resolved_path(
+            str(default_entry.get("profile_path") or ""), relative_to=registry.parent
+        )
+        default_payload = _load_json(default_path, error_type="voice_profile_invalid")
+        for key in runtime_settings:
+            if key in default_payload:
+                runtime_settings[key] = default_payload[key]
+    existing_versions = [
+        version
+        for entry in payload["profiles"]
+        if isinstance(entry, dict)
+        for entry_voice_id, version in [_entry_identity(entry, registry)]
+        if entry_voice_id == voice_id and version is not None
+    ]
+    if any(
+        _entry_identity(entry, registry)[0] == voice_id
+        and _entry_identity(entry, registry)[1] is None
+        for entry in payload["profiles"]
+        if isinstance(entry, dict)
+    ):
+        existing_versions.append(1)
+    version = max(existing_versions, default=0) + 1
+    profile_id = f"{voice_id}@v{version}"
+    profile_dir = registry.parent / profile_id
+    if profile_dir.exists():
+        raise VoiceProfileError(
+            "voice_profile_exists",
+            f"voice profile path already exists: {profile_dir}",
+        )
+    profile_dir.mkdir(parents=True)
+    suffix = source.suffix.lower() or ".wav"
+    copied_reference = profile_dir / f"reference{suffix}"
+    shutil.copy2(source, copied_reference)
+    parent_profile_id = ""
+    if existing_versions:
+        prior_version = max(existing_versions)
+        prior = next(
+            (
+                entry
+                for entry in payload["profiles"]
+                if isinstance(entry, dict)
+                and _entry_identity(entry, registry) == (voice_id, prior_version)
+            ),
+            None,
+        )
+        parent_profile_id = str((prior or {}).get("profile_id") or "")
+    profile_path = profile_dir / "profile.json"
+    profile_payload: dict[str, Any] = {
+        "schema": "story_video_local_voice_profile_v2",
+        "voice_id": voice_id,
+        "profile_id": profile_id,
+        "version": version,
+        "display_name": str(display_name or voice_id).strip(),
+        "status": "locked_by_user",
+        "provider": "local_qwen",
+        "model_id": model_id,
+        "reference_audio": str(copied_reference),
+        "reference_transcript": transcript,
+        "language": "zh-TW",
+        "clone_mode": "full_icl",
+        "inference_mode": "offline",
+        "network_fallback": "forbidden",
+        "consent": consent,
+        "tuning": normalized_tuning,
+        "created_at": _utc_now(),
+        **runtime_settings,
+    }
+    if "speed" in profile_payload["tuning"]:
+        profile_payload["speed"] = float(profile_payload["tuning"]["speed"])
+    if parent_profile_id:
+        profile_payload["parent_profile_id"] = parent_profile_id
+    _write_json_atomic(profile_path, profile_payload)
+    payload["profiles"].append(
+        {
+            "voice_id": voice_id,
+            "profile_id": profile_id,
+            "version": version,
+            "profile_path": str(profile_path),
+            "enabled": True,
+            "lifecycle_status": "active",
+        }
+    )
+    if not str(payload.get("default_profile_id") or "").strip():
+        payload["default_profile_id"] = profile_id
+    _write_json_atomic(registry, payload)
+    result = _profile_assessment(profile_path, expected_profile_id=profile_id)
+    result.update(
+        {
+            "voice_id": voice_id,
+            "version": version,
+            "lifecycle_status": "active",
+            "enabled": True,
+        }
+    )
+    return result
+
+
+def tune_voice_profile(
+    *,
+    voice_id: str,
+    tuning: dict[str, Any],
+    registry_path: str | Path = DEFAULT_VOICE_REGISTRY,
+    reference_audio: str | Path | None = None,
+    reference_transcript: str | None = None,
+) -> dict[str, Any]:
+    voice_id = _validate_voice_id(voice_id)
+    registry = Path(registry_path).expanduser().resolve()
+    payload = _mutable_registry(registry)
+    versions = [
+        (version, entry)
+        for entry in payload["profiles"]
+        if isinstance(entry, dict)
+        for entry_voice_id, version in [_entry_identity(entry, registry)]
+        if entry_voice_id == voice_id and version is not None
+    ]
+    if not versions:
+        raise VoiceProfileError(
+            "voice_profile_not_found",
+            f"voice {voice_id!r} is not registered",
+        )
+    _, latest_entry = max(versions, key=lambda row: row[0])
+    latest_path = _resolved_path(
+        str(latest_entry["profile_path"]), relative_to=registry.parent
+    )
+    latest = _load_json(latest_path, error_type="voice_profile_invalid")
+    source = reference_audio or latest.get("reference_audio")
+    transcript = reference_transcript or latest.get("reference_transcript")
+    merged_tuning = dict(latest.get("tuning") or {})
+    merged_tuning.update(dict(tuning or {}))
+    return add_voice_profile(
+        voice_id=voice_id,
+        display_name=str(latest.get("display_name") or voice_id),
+        reference_audio=str(source or ""),
+        reference_transcript=str(transcript or ""),
+        registry_path=registry,
+        consent="user_confirmed_self_recording",
+        model_id=str(latest.get("model_id") or DEFAULT_MODEL_ID),
+        tuning=merged_tuning,
+    )
+
+
+def archive_voice_profile(
+    *,
+    voice_id: str,
+    registry_path: str | Path = DEFAULT_VOICE_REGISTRY,
+) -> dict[str, Any]:
+    voice_id = _validate_voice_id(voice_id)
+    registry = Path(registry_path).expanduser().resolve()
+    payload = _mutable_registry(registry)
+    archived: list[str] = []
+    for entry in payload["profiles"]:
+        if not isinstance(entry, dict):
+            continue
+        entry_voice_id, _ = _entry_identity(entry, registry)
+        if entry_voice_id != voice_id:
+            continue
+        entry["voice_id"] = voice_id
+        entry["enabled"] = False
+        entry["lifecycle_status"] = "archived"
+        archived.append(str(entry.get("profile_id") or ""))
+    if not archived:
+        raise VoiceProfileError(
+            "voice_profile_not_found",
+            f"voice {voice_id!r} is not registered",
+        )
+    if payload.get("default_profile_id") in archived:
+        payload["default_profile_id"] = next(
+            (
+                str(entry.get("profile_id") or "")
+                for entry in payload["profiles"]
+                if isinstance(entry, dict) and entry.get("enabled") is not False
+            ),
+            "",
+        )
+    _write_json_atomic(registry, payload)
+    return {"voice_id": voice_id, "archived_profile_ids": archived}
+
+
+def _profile_references(projects_root: Path, profile_ids: set[str]) -> list[str]:
+    if not projects_root.is_dir():
+        return []
+    references: list[str] = []
+    for name in (VOICE_BINDING_NAME, "voice_cast_binding.json"):
+        for path in projects_root.rglob(name):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            referenced_ids: set[str] = set()
+            if isinstance(payload, dict):
+                direct = str(payload.get("profile_id") or "").strip()
+                if direct:
+                    referenced_ids.add(direct)
+                for row in payload.get("speakers") or []:
+                    if isinstance(row, dict):
+                        value = str(row.get("profile_id") or "").strip()
+                        if value:
+                            referenced_ids.add(value)
+            if profile_ids & referenced_ids:
+                references.append(str(path))
+    return sorted(set(references))
+
+
+def delete_voice_profile(
+    *,
+    voice_id: str,
+    registry_path: str | Path = DEFAULT_VOICE_REGISTRY,
+    projects_root: str | Path = Path.home() / ".hermes" / "story_videos",
+) -> dict[str, Any]:
+    voice_id = _validate_voice_id(voice_id)
+    registry = Path(registry_path).expanduser().resolve()
+    payload = _mutable_registry(registry)
+    targets = [
+        entry
+        for entry in payload["profiles"]
+        if isinstance(entry, dict) and _entry_identity(entry, registry)[0] == voice_id
+    ]
+    if not targets:
+        raise VoiceProfileError(
+            "voice_profile_not_found",
+            f"voice {voice_id!r} is not registered",
+        )
+    profile_ids = {str(entry.get("profile_id") or "") for entry in targets}
+    references = _profile_references(
+        Path(projects_root).expanduser().resolve(), profile_ids
+    )
+    if references:
+        raise VoiceProfileError(
+            "voice_profile_in_use",
+            "voice profile is referenced by project bindings: " + ", ".join(references),
+        )
+    target_paths = [
+        _resolved_path(str(entry["profile_path"]), relative_to=registry.parent)
+        for entry in targets
+    ]
+    payload["profiles"] = [entry for entry in payload["profiles"] if entry not in targets]
+    if payload.get("default_profile_id") in profile_ids:
+        payload["default_profile_id"] = next(
+            (
+                str(entry.get("profile_id") or "")
+                for entry in payload["profiles"]
+                if isinstance(entry, dict) and entry.get("enabled") is not False
+            ),
+            "",
+        )
+    _write_json_atomic(registry, payload)
+    for profile_path in target_paths:
+        profile_dir = profile_path.parent
+        if profile_dir.parent == registry.parent and profile_dir.is_dir():
+            shutil.rmtree(profile_dir)
+        else:
+            profile_path.unlink(missing_ok=True)
+    return {"voice_id": voice_id, "deleted_profile_ids": sorted(profile_ids)}
 
 
 def _selection_from_binding(binding_path: Path) -> VoiceProfileSelection:
@@ -322,6 +761,12 @@ def bind_project_voice_profile(
 ) -> VoiceProfileSelection:
     project = Path(project_dir).expanduser().resolve()
     project.mkdir(parents=True, exist_ok=True)
+    profile = _selectable_profile(
+        profile_id,
+        registry_path=registry_path,
+        active_profile_path=active_profile_path,
+    )
+    concrete_profile_id = str(profile["profile_id"])
     binding_path = project / VOICE_BINDING_NAME
     if binding_path.is_file():
         try:
@@ -333,7 +778,7 @@ def bind_project_voice_profile(
                     "cannot repair voice profile binding with existing narration; start an explicit revoice operation",
                 ) from None
             current = None
-        if current is not None and current.profile_id == profile_id:
+        if current is not None and current.profile_id == concrete_profile_id:
             return current
         if _has_narration(project):
             raise VoiceProfileError(
@@ -341,16 +786,11 @@ def bind_project_voice_profile(
                 "cannot change voice profile with existing narration; start an explicit revoice operation",
             )
 
-    profile = _selectable_profile(
-        profile_id,
-        registry_path=registry_path,
-        active_profile_path=active_profile_path,
-    )
     profile_path = Path(profile["profile_path"])
     payload = {
         "schema": VOICE_BINDING_SCHEMA,
         "voice_role": "narrator",
-        "profile_id": profile_id,
+        "profile_id": concrete_profile_id,
         "profile_path": str(profile_path),
         "profile_sha256": profile["profile_sha256"],
         "clone_mode": "full_icl",

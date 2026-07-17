@@ -6,6 +6,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from .dubbing import (
+    DIALOGUE_LEDGER_NAME,
+    VOICE_CAST_BINDING_NAME,
+    DubbingContractError,
+    VoiceCastSelection,
+    resolve_project_voice_cast,
+)
 from .voice_profiles import (
     VoiceProfileError,
     VoiceProfileSelection,
@@ -49,6 +56,10 @@ class VoiceRunSummary:
     binding_path: str = ""
     binding_sha256: str = ""
     clone_mode: str = ""
+    cast_binding_path: str = ""
+    cast_binding_sha256: str = ""
+    story_mode: str = ""
+    speaker_count: int = 0
 
 
 def _run_cancellable(
@@ -102,12 +113,16 @@ class StoryVideoVoiceExecutor:
         voice_profile_resolver: Callable[
             [Path], VoiceProfileSelection
         ] = resolve_project_voice_profile,
+        voice_cast_resolver: Callable[
+            [Path], VoiceCastSelection
+        ] = resolve_project_voice_cast,
         python_path: str | Path = DEFAULT_PYTHON,
         script_path: str | Path = DEFAULT_SCRIPT,
     ) -> None:
         self.phase_validator = phase_validator
         self.command_runner = command_runner
         self.voice_profile_resolver = voice_profile_resolver
+        self.voice_cast_resolver = voice_cast_resolver
         # Preserve venv launchers: resolving their symlink bypasses site-packages.
         self.python_path = Path(python_path).expanduser().absolute()
         self.script_path = Path(script_path).expanduser().resolve()
@@ -141,39 +156,69 @@ class StoryVideoVoiceExecutor:
             )
 
         project_dir = Path(context.project_dir).resolve()
-        try:
-            selection = self.voice_profile_resolver(project_dir)
-        except VoiceProfileError as exc:
-            return VoiceRunSummary(
-                work_status="setup_required",
-                error_type=exc.error_type,
-                error=str(exc),
-            )
-        except (OSError, ValueError) as exc:
-            return VoiceRunSummary(
-                work_status="setup_required",
-                error_type="voice_profile_invalid",
-                error=str(exc),
-            )
-
-        evidence = {
-            "profile_id": selection.profile_id,
-            "voice_profile": str(selection.profile_path),
-            "profile_sha256": selection.profile_sha256,
-            "binding_path": str(selection.binding_path),
-            "binding_sha256": selection.binding_sha256,
-            "clone_mode": selection.clone_mode,
-        }
-
-        command = [
-            str(self.python_path),
-            str(self.script_path),
-            str(project_dir),
-            "--voice-profile",
-            str(selection.profile_path),
-            "--voice-binding",
-            str(selection.binding_path),
-        ]
+        cast_binding_path = project_dir / VOICE_CAST_BINDING_NAME
+        if cast_binding_path.is_file():
+            try:
+                cast = self.voice_cast_resolver(project_dir)
+            except DubbingContractError as exc:
+                return VoiceRunSummary(
+                    work_status="setup_required",
+                    error_type=exc.error_type,
+                    error=str(exc),
+                )
+            except (OSError, ValueError) as exc:
+                return VoiceRunSummary(
+                    work_status="setup_required",
+                    error_type="voice_cast_binding_invalid",
+                    error=str(exc),
+                )
+            evidence = {
+                "cast_binding_path": str(cast.binding_path),
+                "cast_binding_sha256": cast.binding_sha256,
+                "story_mode": cast.story_mode,
+                "speaker_count": len(cast.speakers),
+            }
+            command = [
+                str(self.python_path),
+                str(self.script_path),
+                str(project_dir),
+                "--voice-cast-binding",
+                str(cast.binding_path),
+                "--dialogue-ledger",
+                str(project_dir / DIALOGUE_LEDGER_NAME),
+            ]
+        else:
+            try:
+                selection = self.voice_profile_resolver(project_dir)
+            except VoiceProfileError as exc:
+                return VoiceRunSummary(
+                    work_status="setup_required",
+                    error_type=exc.error_type,
+                    error=str(exc),
+                )
+            except (OSError, ValueError) as exc:
+                return VoiceRunSummary(
+                    work_status="setup_required",
+                    error_type="voice_profile_invalid",
+                    error=str(exc),
+                )
+            evidence = {
+                "profile_id": selection.profile_id,
+                "voice_profile": str(selection.profile_path),
+                "profile_sha256": selection.profile_sha256,
+                "binding_path": str(selection.binding_path),
+                "binding_sha256": selection.binding_sha256,
+                "clone_mode": selection.clone_mode,
+            }
+            command = [
+                str(self.python_path),
+                str(self.script_path),
+                str(project_dir),
+                "--voice-profile",
+                str(selection.profile_path),
+                "--voice-binding",
+                str(selection.binding_path),
+            ]
         transient_retries = 0
         for attempt in (1, 2):
             result = self.command_runner(command, cancelled)
