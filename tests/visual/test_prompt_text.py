@@ -1,6 +1,35 @@
 from __future__ import annotations
 
-from agent.visual.prompt_text import build_provider_facing_visual_prompt
+from agent.visual.prompt_text import (
+    build_provider_facing_visual_prompt,
+    strip_visual_prompt_metadata,
+    strip_visual_runtime_metadata,
+)
+
+
+def test_runtime_metadata_strip_preserves_thread_contract_but_drops_injected_context():
+    prompt = '''[Replying to: "故事影片 parent"]
+
+[Thread context — prior messages in this thread (not yet in conversation history):]
+[thread parent] simon: 請製作一部故事影片
+[End of thread context]
+
+以 G1 和 G4 為主要參考，幫我換個背景
+
+Raphael State Observer (ephemeral, internal):
+task_state: casual_or_direct
+
+Visual Arsenal default for Slack image work:
+- Example mentions G2 and G3 and story-video workflow.
+'''
+
+    runtime_text = strip_visual_runtime_metadata(prompt)
+    provider_text = strip_visual_prompt_metadata(prompt)
+
+    assert "[thread parent] simon: 請製作一部故事影片" in runtime_text
+    assert "以 G1 和 G4 為主要參考" in runtime_text
+    assert "Raphael State Observer" not in runtime_text
+    assert provider_text == "以 G1 和 G4 為主要參考，幫我換個背景"
 
 
 def test_provider_facing_prompt_strips_agent_context_blocks_but_keeps_current_intent():
