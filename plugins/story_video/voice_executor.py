@@ -6,6 +6,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from .voice_profiles import (
+    VoiceProfileError,
+    VoiceProfileSelection,
+    resolve_project_voice_profile,
+)
+
 
 DEFAULT_PYTHON = Path.home() / ".hermes" / ".venvs" / "mlx-audio" / "bin" / "python"
 DEFAULT_SCRIPT = (
@@ -37,6 +43,12 @@ class VoiceRunSummary:
     error: str = ""
     missing: tuple[str, ...] = ()
     violations: tuple[str, ...] = ()
+    profile_id: str = ""
+    voice_profile: str = ""
+    profile_sha256: str = ""
+    binding_path: str = ""
+    binding_sha256: str = ""
+    clone_mode: str = ""
 
 
 def _run_cancellable(
@@ -87,11 +99,15 @@ class StoryVideoVoiceExecutor:
         command_runner: Callable[
             [list[str], Callable[[], bool]], CommandResult
         ] = _run_cancellable,
+        voice_profile_resolver: Callable[
+            [Path], VoiceProfileSelection
+        ] = resolve_project_voice_profile,
         python_path: str | Path = DEFAULT_PYTHON,
         script_path: str | Path = DEFAULT_SCRIPT,
     ) -> None:
         self.phase_validator = phase_validator
         self.command_runner = command_runner
+        self.voice_profile_resolver = voice_profile_resolver
         # Preserve venv launchers: resolving their symlink bypasses site-packages.
         self.python_path = Path(python_path).expanduser().absolute()
         self.script_path = Path(script_path).expanduser().resolve()
@@ -124,10 +140,39 @@ class StoryVideoVoiceExecutor:
                 missing=tuple(missing_runtime),
             )
 
+        project_dir = Path(context.project_dir).resolve()
+        try:
+            selection = self.voice_profile_resolver(project_dir)
+        except VoiceProfileError as exc:
+            return VoiceRunSummary(
+                work_status="setup_required",
+                error_type=exc.error_type,
+                error=str(exc),
+            )
+        except (OSError, ValueError) as exc:
+            return VoiceRunSummary(
+                work_status="setup_required",
+                error_type="voice_profile_invalid",
+                error=str(exc),
+            )
+
+        evidence = {
+            "profile_id": selection.profile_id,
+            "voice_profile": str(selection.profile_path),
+            "profile_sha256": selection.profile_sha256,
+            "binding_path": str(selection.binding_path),
+            "binding_sha256": selection.binding_sha256,
+            "clone_mode": selection.clone_mode,
+        }
+
         command = [
             str(self.python_path),
             str(self.script_path),
-            str(Path(context.project_dir).resolve()),
+            str(project_dir),
+            "--voice-profile",
+            str(selection.profile_path),
+            "--voice-binding",
+            str(selection.binding_path),
         ]
         transient_retries = 0
         for attempt in (1, 2):
@@ -137,6 +182,7 @@ class StoryVideoVoiceExecutor:
                     work_status="stopped",
                     attempts=attempt,
                     transient_retries=transient_retries,
+                    **evidence,
                 )
             if result.returncode == 0:
                 proof = self.phase_validator(context)
@@ -145,6 +191,7 @@ class StoryVideoVoiceExecutor:
                         work_status="complete",
                         attempts=attempt,
                         transient_retries=transient_retries,
+                        **evidence,
                     )
                 return VoiceRunSummary(
                     work_status="human_review_required",
@@ -154,6 +201,7 @@ class StoryVideoVoiceExecutor:
                     error="Narration command completed but voice phase proof failed.",
                     missing=tuple(proof.missing),
                     violations=tuple(proof.violations),
+                    **evidence,
                 )
             if attempt == 1 and _transient_mlx_abort(result):
                 transient_retries += 1
@@ -172,5 +220,6 @@ class StoryVideoVoiceExecutor:
                 error=detail[-2000:],
                 missing=tuple(proof.missing),
                 violations=tuple(proof.violations),
+                **evidence,
             )
         raise AssertionError("bounded voice retry loop exhausted unexpectedly")

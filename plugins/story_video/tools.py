@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -16,6 +17,13 @@ from .review_board import (
 )
 from .state import PHASES, StoryVideoRunContext, StoryVideoStateStore
 from .story_contract import story_contract_enabled, validate_story_script_bindings
+from .voice_profiles import (
+    VOICE_BINDING_NAME,
+    VoiceProfileError,
+    bind_project_voice_profile,
+    inspect_project_voice_profile,
+    list_voice_profiles,
+)
 
 
 @dataclass(frozen=True)
@@ -36,6 +44,14 @@ def _nonempty(path: Path) -> bool:
         return path.is_file() and path.stat().st_size > 1
     except OSError:
         return False
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _load_json(path: Path) -> Any:
@@ -470,7 +486,11 @@ def _validate_voice(context: StoryVideoRunContext) -> PhaseProof:
         violations.append("production narration engine is not Azure AI Speech")
     if provider == "local-qwen":
         narration_schema = str(manifest.get("schema") or "")
-        acoustic_contract = narration_schema == "story_video_narration_manifest_v4"
+        acoustic_contract = narration_schema in {
+            "story_video_narration_manifest_v4",
+            "story_video_narration_manifest_v5",
+        }
+        bound_voice_contract = narration_schema == "story_video_narration_manifest_v5"
         sentence_chunk_contract = (
             str(manifest.get("voice_segmentation") or "")
             == "sentence_chunks_v1"
@@ -483,6 +503,7 @@ def _validate_voice(context: StoryVideoRunContext) -> PhaseProof:
             violations.append("local Qwen narration network fallback is not forbidden")
         if not str(manifest.get("model") or "").strip():
             missing.append("local Qwen narration model")
+        profile_path: Path | None = None
         profile_value = str(manifest.get("voice_profile") or "").strip()
         if not profile_value:
             missing.append("local Qwen narration voice_profile")
@@ -492,6 +513,70 @@ def _validate_voice(context: StoryVideoRunContext) -> PhaseProof:
                 profile_path = context.project_dir / profile_path
             if not _nonempty(profile_path):
                 missing.append("local Qwen narration voice_profile_file")
+        if bound_voice_contract:
+            binding_value = str(manifest.get("voice_profile_binding") or "").strip()
+            binding_path: Path | None = None
+            binding: dict[str, Any] | None = None
+            if not binding_value:
+                missing.append("local Qwen narration voice_profile_binding")
+            else:
+                binding_path = Path(binding_value)
+                if not binding_path.is_absolute():
+                    binding_path = context.project_dir / binding_path
+                binding_payload = _load_json(binding_path)
+                if not isinstance(binding_payload, dict):
+                    missing.append("local Qwen narration voice_profile_binding_file")
+                else:
+                    binding = binding_payload
+            if str(manifest.get("clone_mode") or "") != "full_icl":
+                violations.append("local Qwen narration clone mode is not full_icl")
+            if binding is not None and binding_path is not None:
+                if binding_path.resolve() != (
+                    context.project_dir / VOICE_BINDING_NAME
+                ).resolve():
+                    violations.append(
+                        "local Qwen voice profile binding is not project-local"
+                    )
+                if binding.get("schema") != "story_video_voice_profile_binding_v1":
+                    violations.append("local Qwen voice profile binding schema is invalid")
+                if (
+                    binding.get("status") != "locked"
+                    or binding.get("voice_role") != "narrator"
+                    or binding.get("language_policy") != "zh-TW"
+                    or binding.get("clone_mode") != "full_icl"
+                ):
+                    violations.append("local Qwen voice profile binding policy is invalid")
+                if str(manifest.get("voice_profile_binding_sha256") or "") != _sha256(
+                    binding_path
+                ):
+                    violations.append("local Qwen voice profile binding hash mismatch")
+                manifest_profile_id = str(
+                    manifest.get("voice_profile_id") or ""
+                ).strip()
+                if not manifest_profile_id:
+                    missing.append("local Qwen narration voice_profile_id")
+                elif manifest_profile_id != str(binding.get("profile_id") or ""):
+                    violations.append("local Qwen voice profile id does not match binding")
+                if profile_path is not None and _nonempty(profile_path):
+                    actual_profile_hash = _sha256(profile_path)
+                    if (
+                        str(manifest.get("voice_profile_sha256") or "")
+                        != actual_profile_hash
+                        or str(binding.get("profile_sha256") or "")
+                        != actual_profile_hash
+                    ):
+                        violations.append(
+                            "local Qwen voice profile hash does not match project binding"
+                        )
+                    bound_profile_path = Path(
+                        str(binding.get("profile_path") or "")
+                    ).expanduser()
+                    if not bound_profile_path.is_absolute():
+                        bound_profile_path = binding_path.parent / bound_profile_path
+                    if bound_profile_path.resolve() != profile_path.resolve():
+                        violations.append(
+                            "local Qwen voice profile path does not match project binding"
+                        )
         pronunciation_path = context.project_dir / "qc" / "pronunciation_qc_report.json"
         pronunciation_report = _load_json(pronunciation_path)
         if not isinstance(pronunciation_report, dict):
@@ -859,9 +944,31 @@ def story_video_control(
     *,
     session_id: str = "",
     store: StoryVideoStateStore | None = None,
+    voice_registry_path: str | Path | None = None,
+    voice_active_profile_path: str | Path | None = None,
     **_: Any,
 ) -> str:
     state_store = store or StoryVideoStateStore()
+    action = str(args.get("action") or "status").lower()
+    profile_kwargs: dict[str, Any] = {}
+    if voice_registry_path is not None:
+        profile_kwargs["registry_path"] = voice_registry_path
+    if voice_active_profile_path is not None:
+        profile_kwargs["active_profile_path"] = voice_active_profile_path
+
+    if action == "list_voices":
+        try:
+            payload = list_voice_profiles(**profile_kwargs)
+        except VoiceProfileError as exc:
+            payload = {
+                "success": False,
+                "error_type": exc.error_type,
+                "error": str(exc),
+            }
+        else:
+            payload.update({"success": True, "action": action})
+        return json.dumps(payload, ensure_ascii=False)
+
     context = state_store.for_session(session_id)
     if context is None:
         return json.dumps(
@@ -875,7 +982,60 @@ def story_video_control(
 
     _sync_candidate_manifest_phase(context)
 
-    action = str(args.get("action") or "status").lower()
+    if action == "select_voice":
+        voice_id = str(args.get("voice_id") or "").strip()
+        if not voice_id:
+            return json.dumps(
+                {
+                    "success": False,
+                    "error_type": "voice_profile_id_required",
+                    "error": "select_voice requires voice_id.",
+                },
+                ensure_ascii=False,
+            )
+        try:
+            selection = bind_project_voice_profile(
+                context.project_dir,
+                profile_id=voice_id,
+                **profile_kwargs,
+            )
+        except VoiceProfileError as exc:
+            return json.dumps(
+                {
+                    "success": False,
+                    "error_type": exc.error_type,
+                    "error": str(exc),
+                },
+                ensure_ascii=False,
+            )
+        payload = _context_payload(context)
+        payload.update(
+            {
+                "action": action,
+                "profile_id": selection.profile_id,
+                "voice_profile": str(selection.profile_path),
+                "profile_sha256": selection.profile_sha256,
+                "binding_path": str(selection.binding_path),
+                "binding_sha256": selection.binding_sha256,
+                "clone_mode": selection.clone_mode,
+            }
+        )
+        return json.dumps(payload, ensure_ascii=False)
+    if action == "voice_status":
+        try:
+            payload = inspect_project_voice_profile(
+                context.project_dir,
+                **profile_kwargs,
+            )
+        except VoiceProfileError as exc:
+            payload = {
+                "success": False,
+                "error_type": exc.error_type,
+                "error": str(exc),
+            }
+        else:
+            payload.update({"success": True, "action": action})
+        return json.dumps(payload, ensure_ascii=False)
     if action == "repair":
         issue = str(args.get("repair_request") or "目前問題").strip()
         context = state_store.update(

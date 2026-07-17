@@ -426,6 +426,11 @@ def pre_llm_call(
         "provider=openai-codex. Never call generic video_generate for the body, "
         "and never use xAI/Grok through terminal or delegation. Use local locked "
         "narration/render components only; generic text_to_speech is forbidden. "
+        "Narrator profiles are Qwen Base full voice clones selected by stable voice_id. "
+        "If the operator asks which voices exist, call story_video_control "
+        "action=list_voices. If the operator chooses a narrator, call "
+        "story_video_control action=select_voice voice_id=<voice_id> before voice "
+        "synthesis; one project keeps one hash-locked narrator. "
         "Complete the current phase in this turn; do not stop after announcing "
         "what you will do. "
     )

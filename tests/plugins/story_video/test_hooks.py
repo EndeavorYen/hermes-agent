@@ -627,6 +627,9 @@ def test_pre_llm_creates_context_and_injects_provider_policy(tmp_path, monkeypat
     assert context.topic == "恐龍起源"
     assert "provider=openai-codex" in result["context"]
     assert "story_video_control" in result["context"]
+    assert "story_video_control action=select_voice voice_id=<voice_id>" in result[
+        "context"
+    ]
     assert "Complete the current phase in this turn" in result["context"]
     assert "Do not inspect other story-video projects" in result["context"]
     assert "story-video-script-director" in result["context"]

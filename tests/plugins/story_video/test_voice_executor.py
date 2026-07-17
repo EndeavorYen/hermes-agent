@@ -19,6 +19,17 @@ def _proof(*, ok: bool, missing: tuple[str, ...] = ()):
     return SimpleNamespace(ok=ok, missing=missing, violations=())
 
 
+def _selection(tmp_path):
+    return SimpleNamespace(
+        profile_id="voice_b",
+        profile_path=tmp_path / "voices" / "voice_b" / "profile.json",
+        profile_sha256="profile-sha",
+        binding_path=tmp_path / "project" / "voice_profile_binding.json",
+        binding_sha256="binding-sha",
+        clone_mode="full_icl",
+    )
+
+
 def test_voice_executor_is_idempotent_when_current_manifest_passes(tmp_path) -> None:
     context = _context(tmp_path)
     calls: list[list[str]] = []
@@ -74,6 +85,7 @@ def test_voice_executor_retries_one_transient_mlx_abort_then_passes(tmp_path) ->
     executor = StoryVideoVoiceExecutor(
         command_runner=run,
         phase_validator=lambda _context: _proof(ok=passed),
+        voice_profile_resolver=lambda _project: _selection(tmp_path),
         python_path=python,
         script_path=script,
     )
@@ -83,7 +95,46 @@ def test_voice_executor_retries_one_transient_mlx_abort_then_passes(tmp_path) ->
     assert summary.work_status == "complete"
     assert summary.attempts == 2
     assert summary.transient_retries == 1
+    assert summary.profile_id == "voice_b"
+    assert summary.clone_mode == "full_icl"
+    assert calls[0][-4:] == [
+        "--voice-profile",
+        str(tmp_path / "voices" / "voice_b" / "profile.json"),
+        "--voice-binding",
+        str(tmp_path / "project" / "voice_profile_binding.json"),
+    ]
     assert calls[0] == calls[1]
+
+
+def test_voice_executor_fails_closed_when_profile_binding_is_invalid(tmp_path) -> None:
+    from plugins.story_video.voice_profiles import VoiceProfileError
+
+    context = _context(tmp_path)
+    python = tmp_path / "python"
+    script = tmp_path / "generate.py"
+    python.write_text("runtime", encoding="utf-8")
+    script.write_text("script", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    def fail_resolution(_project):
+        raise VoiceProfileError(
+            "voice_profile_binding_mismatch",
+            "bound voice profile hash mismatch",
+        )
+
+    executor = StoryVideoVoiceExecutor(
+        command_runner=lambda command, _cancel: calls.append(command),
+        phase_validator=lambda _context: _proof(ok=False),
+        voice_profile_resolver=fail_resolution,
+        python_path=python,
+        script_path=script,
+    )
+
+    summary = executor.run(context)
+
+    assert summary.work_status == "setup_required"
+    assert summary.error_type == "voice_profile_binding_mismatch"
+    assert calls == []
 
 
 def test_voice_executor_returns_bounded_qc_failure_without_rerunning(tmp_path) -> None:
@@ -108,6 +159,7 @@ def test_voice_executor_returns_bounded_qc_failure_without_rerunning(tmp_path) -
             ok=False,
             missing=("audio narration segment[S03_SH02]",),
         ),
+        voice_profile_resolver=lambda _project: _selection(tmp_path),
         python_path=python,
         script_path=script,
     )

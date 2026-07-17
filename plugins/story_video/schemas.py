@@ -9,12 +9,25 @@ STORY_VIDEO_CONTROL_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["status", "validate", "repair"],
+                "enum": [
+                    "status",
+                    "validate",
+                    "repair",
+                    "list_voices",
+                    "select_voice",
+                    "voice_status",
+                ],
                 "description": "Control action for the active story-video project.",
             },
             "repair_request": {
                 "type": "string",
                 "description": "Issue being repaired when action=repair.",
+            },
+            "voice_id": {
+                "type": "string",
+                "description": (
+                    "Registered narrator profile identifier when action=select_voice."
+                ),
             },
         },
         "required": ["action"],
