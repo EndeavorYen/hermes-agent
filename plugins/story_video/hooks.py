@@ -50,6 +50,30 @@ _AUTOPILOT_ROTATE_AFTER_MESSAGES = 80
 _DEFAULT_BATCH_PARALLELISM = 3
 _THREAD_CONTEXT_END = "[End of thread context]"
 _REPLY_PARENT_RE = re.compile(r'^\[Replying to: "(.*?)"\]', re.DOTALL)
+_VOICE_NOUN_RE = re.compile(
+    r"(?:聲線|声线|voice(?:\s+profiles?)?|voices?)",
+    re.IGNORECASE,
+)
+_VOICE_MANAGEMENT_ACTIONS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("delete", re.compile(r"(?:刪除|删除|移除|delete|remove)", re.IGNORECASE)),
+    ("archive", re.compile(r"(?:封存|歸檔|归档|archive)", re.IGNORECASE)),
+    (
+        "tune",
+        re.compile(r"(?:調整|调整|微調|微调|修改|tune|adjust|update)", re.IGNORECASE),
+    ),
+    (
+        "add",
+        re.compile(r"(?:新增|增加|加入|建立|註冊|注册|add|create|register)", re.IGNORECASE),
+    ),
+    (
+        "list",
+        re.compile(
+            r"(?:列出|列舉|列举|顯示|显示|查看|查詢|查询|有哪些|"
+            r"清單|清单|列表|可用|list|show|available)",
+            re.IGNORECASE,
+        ),
+    ),
+)
 
 
 def _has_operator_setup_blocker(*values: str) -> bool:
@@ -142,6 +166,29 @@ def _current_operator_text(text: Any) -> str:
 def _reply_parent_text(text: Any) -> str:
     match = _REPLY_PARENT_RE.match(str(text or "").strip())
     return match.group(1).strip() if match else ""
+
+
+def _voice_management_action(text: Any) -> str | None:
+    operator_text = _current_operator_text(text)
+    if _VOICE_NOUN_RE.search(operator_text) is None:
+        return None
+    for action, pattern in _VOICE_MANAGEMENT_ACTIONS:
+        if pattern.search(operator_text) is not None:
+            return action
+    return None
+
+
+def _voice_management_instruction(action: str) -> str:
+    return (
+        "VOICE_MANAGER_FAST_ROUTE. This request manages the global local voice "
+        "registry; it is not a story-video production phase. Call "
+        f"story_video_voice_manager action={action} exactly once, using only fields "
+        "explicitly present in the current operator request and attached recording. "
+        "Do not run shell commands, terminal tools, search, memory lookup, delegation, "
+        "or visual tools. Do not inspect story-video projects and do not create or bind "
+        "a story-video project. Return the manager result concisely; when required input "
+        "is missing, report only the concrete missing prerequisite."
+    )
 
 
 def _write_project_contract(context: StoryVideoRunContext) -> None:
@@ -241,6 +288,8 @@ def pre_gateway_dispatch(
 ) -> dict[str, Any] | None:
     text = str(getattr(event, "text", "") or "")
     operator_text = _current_operator_text(text)
+    if _voice_management_action(operator_text) is not None:
+        return None
     source_key = _source_key(event)
     context = _STORE.for_source(source_key)
     if context is None:
@@ -296,6 +345,14 @@ def pre_llm_call(
     **_: Any,
 ) -> dict[str, str] | None:
     from tools.story_video_provider_guard import explicit_visual_agent_request_detected
+
+    voice_action = _voice_management_action(user_message)
+    if voice_action is not None:
+        if session_id:
+            _VISUAL_AGENT_BYPASS_SESSIONS.add(session_id)
+            _SESSION_PHASE_AT_LLM_START.pop(session_id, None)
+            _SESSION_STATUS_AT_LLM_START.pop(session_id, None)
+        return {"context": _voice_management_instruction(voice_action)}
 
     if explicit_visual_agent_request_detected(user_message):
         if session_id:

@@ -36,6 +36,86 @@ def _event_with_identity(
     return event
 
 
+def test_voice_management_fast_route_avoids_story_project_and_shell_work(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+
+    assert hooks.pre_gateway_dispatch(event=_event("列出故事影片聲線")) is None
+
+    result = hooks.pre_llm_call(
+        session_id="voice-list-session",
+        user_message="列出故事影片聲線",
+    )
+
+    assert store.for_session("voice-list-session") is None
+    assert "story_video_voice_manager action=list exactly once" in result["context"]
+    assert "Do not run shell commands" in result["context"]
+    assert "Do not inspect story-video projects" in result["context"]
+
+
+def test_voice_management_fast_route_maps_lifecycle_actions_without_catching_casting(
+) -> None:
+    cases = {
+        "列出目前可用聲線": "list",
+        "新增聲線媽媽": "add",
+        "增加新的聲線": "add",
+        "調整聲線媽媽的速度": "tune",
+        "封存聲線媽媽": "archive",
+        "刪除聲線媽媽": "delete",
+    }
+
+    for prompt, expected_action in cases.items():
+        result = hooks.pre_llm_call(
+            session_id=f"voice-{expected_action}",
+            user_message=prompt,
+        )
+        assert (
+            f"story_video_voice_manager action={expected_action} exactly once"
+            in result["context"]
+        )
+
+    assert hooks._voice_management_action("旁白聲線用 simon") is None
+
+
+def test_voice_management_fast_route_bypasses_active_project_phase_guards(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    monkeypatch.setattr(hooks, "_VISUAL_AGENT_BYPASS_SESSIONS", set())
+    start = hooks.pre_gateway_dispatch(
+        event=_event("故事影片：恐龍起源｜5分｜電影感科普。只規劃。")
+    )
+    hooks.pre_llm_call(session_id="active-story", user_message=start["text"])
+    active = store.for_session("active-story")
+    assert active is not None
+
+    result = hooks.pre_llm_call(
+        session_id="active-story",
+        user_message="列出故事影片聲線",
+    )
+
+    assert "story_video_voice_manager action=list exactly once" in result["context"]
+    assert store.for_session("active-story").run_id == active.run_id
+    assert (
+        hooks.pre_tool_call(
+            session_id="active-story",
+            tool_name="story_video_voice_manager",
+            args={"action": "list"},
+        )
+        is None
+    )
+    assert (
+        hooks.transform_llm_output(
+            session_id="active-story",
+            response_text="聲線清單",
+        )
+        is None
+    )
+
+
 def test_project_contract_defaults_to_semantic_holds_and_cinematic_focus_push(
     tmp_path,
 ) -> None:
