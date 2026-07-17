@@ -3181,6 +3181,78 @@ def test_release_art_actions_compile_cinematic_prompt_and_compose_cards(
     assert manifest["run_id"] == context.run_id
 
 
+def test_release_art_v2_uses_distinct_opening_and_ending_sources(
+    tmp_path, monkeypatch
+) -> None:
+    store, context, _shot = _context(tmp_path)
+    (context.project_dir / "content_profile.json").write_text(
+        json.dumps({"review_profile_id": "family-review-board-v2"}), encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        "plugins.story_video.release_art._font",
+        lambda size, *, bold=False: ImageFont.load_default(size=size),
+    )
+
+    compiled = json.loads(
+        story_video_quality_control(
+            {"action": "compile_release_art"},
+            session_id="session-1",
+            store=store,
+        )
+    )
+
+    assert compiled["success"] is True
+    assert [item["role"] for item in compiled["candidates"]] == ["opening", "ending"]
+    assert compiled["candidates"][0]["prompt"] != compiled["candidates"][1]["prompt"]
+    assert "opening question" in compiled["candidates"][0]["prompt"].lower()
+    assert "resolved discovery" in compiled["candidates"][1]["prompt"].lower()
+
+    opening = context.project_dir / "images_candidates" / "RELEASE_OPENING_C01.png"
+    ending = context.project_dir / "images_candidates" / "RELEASE_ENDING_C01.png"
+    opening.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (1280, 720), (20, 50, 90)).save(opening)
+    Image.new("RGB", (1280, 720), (90, 65, 20)).save(ending)
+    registered = json.loads(
+        story_video_quality_control(
+            {
+                "action": "register_release_art",
+                "release_art_candidates": [
+                    {
+                        "role": "opening",
+                        "path": str(opening),
+                        "provider": "openai-codex",
+                        "model": "gpt-image-2-high",
+                        "response_id": "img_opening_01",
+                    },
+                    {
+                        "role": "ending",
+                        "path": str(ending),
+                        "provider": "openai-codex",
+                        "model": "gpt-image-2-high",
+                        "response_id": "img_ending_01",
+                    },
+                ],
+            },
+            session_id="session-1",
+            store=store,
+        )
+    )
+
+    assert registered["success"] is True
+    manifest = json.loads(
+        (context.project_dir / "manifests" / "release_art_manifest.json").read_text()
+    )
+    assert manifest["schema"] == "story_video_release_art_manifest_v2"
+    assert manifest["sources"]["opening"]["sha256"] != manifest["sources"]["ending"][
+        "sha256"
+    ]
+    assert manifest["artifacts"]["opening_card"]["sha256"] != manifest["artifacts"][
+        "ending_card"
+    ]["sha256"]
+    assert (context.project_dir / "release_art" / "opening_source.png").is_file()
+    assert (context.project_dir / "release_art" / "ending_source.png").is_file()
+
+
 def test_register_release_art_rejects_non_openai_source(tmp_path) -> None:
     store, context, _shot = _context(tmp_path)
     source = context.project_dir / "candidate.png"

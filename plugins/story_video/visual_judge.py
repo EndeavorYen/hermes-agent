@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .engagement import engagement_contract_enabled, is_camera_reveal_shot
+from .editorial_quality import EDITORIAL_PROFILE_ID
 from .repair_planner import (
     BLOCKER_CODES,
     apply_repair_strategy,
@@ -2449,6 +2450,11 @@ def _compile_release_art(context: StoryVideoRunContext) -> dict[str, Any]:
     if not isinstance(ledger, dict):
         raise ValueError("scene_ledger.json is missing or invalid")
     brief = compile_release_art_brief(context.topic, ledger)
+    content_profile = _load_json(context.project_dir / "content_profile.json") or {}
+    release_art_v2 = (
+        str(content_profile.get("review_profile_id") or "").strip()
+        == EDITORIAL_PROFILE_ID
+    )
     manifest = _load_json(
         context.project_dir / "manifests" / "shot_candidate_manifest.json"
     ) or {}
@@ -2458,34 +2464,60 @@ def _compile_release_art(context: StoryVideoRunContext) -> dict[str, Any]:
         manifest=manifest,
         current_shot_id="RELEASE_HERO",
     )
-    prompt_path = context.project_dir / "prompts" / "RELEASE_HERO.txt"
-    prompt_path.parent.mkdir(parents=True, exist_ok=True)
-    prompt_path.write_text(brief["prompt"] + "\n", encoding="utf-8")
-    brief_path = context.project_dir / "release_art" / "brief.json"
-    _write_json_atomic(
-        brief_path,
-        {
-            "schema": "story_video_release_art_brief_v1",
-            "run_id": context.run_id,
-            "title": brief["title"],
-            "subtitle": brief["subtitle"],
-            "ending_label": brief["ending_label"],
-            "ending_heading": brief["ending_heading"],
-            "ending_takeaway": brief["ending_takeaway"],
-            "prompt": brief["prompt"],
-            "provider": "openai-codex",
-            "candidate_id_hint": "RELEASE_HERO_C01",
-        },
+    opening_prompt_path = context.project_dir / "prompts" / (
+        "RELEASE_OPENING.txt" if release_art_v2 else "RELEASE_HERO.txt"
     )
+    opening_prompt_path.parent.mkdir(parents=True, exist_ok=True)
+    opening_prompt_path.write_text(brief["opening_prompt"] + "\n", encoding="utf-8")
+    ending_prompt_path = context.project_dir / "prompts" / "RELEASE_ENDING.txt"
+    if release_art_v2:
+        ending_prompt_path.write_text(brief["ending_prompt"] + "\n", encoding="utf-8")
+    brief_path = context.project_dir / "release_art" / "brief.json"
+    brief_payload = {
+        "schema": (
+            "story_video_release_art_brief_v2"
+            if release_art_v2
+            else "story_video_release_art_brief_v1"
+        ),
+        "run_id": context.run_id,
+        "title": brief["title"],
+        "subtitle": brief["subtitle"],
+        "ending_label": brief["ending_label"],
+        "ending_heading": brief["ending_heading"],
+        "ending_takeaway": brief["ending_takeaway"],
+        "prompt": brief["opening_prompt"],
+        "provider": "openai-codex",
+        "candidate_id_hint": (
+            "RELEASE_OPENING_C01" if release_art_v2 else "RELEASE_HERO_C01"
+        ),
+    }
+    if release_art_v2:
+        brief_payload["candidates"] = [
+            {
+                "role": "opening",
+                "candidate_id_hint": "RELEASE_OPENING_C01",
+                "prompt": brief["opening_prompt"],
+                "prompt_path": "prompts/RELEASE_OPENING.txt",
+            },
+            {
+                "role": "ending",
+                "candidate_id_hint": "RELEASE_ENDING_C01",
+                "prompt": brief["ending_prompt"],
+                "prompt_path": "prompts/RELEASE_ENDING.txt",
+            },
+        ]
+    _write_json_atomic(brief_path, brief_payload)
     result = {
         "success": True,
         "action": "compile_release_art",
         "provider": "openai-codex",
-        "candidate_id_hint": "RELEASE_HERO_C01",
-        "prompt": brief["prompt"],
-        "prompt_path": _relative(context, prompt_path),
+        "candidate_id_hint": brief_payload["candidate_id_hint"],
+        "prompt": brief["opening_prompt"],
+        "prompt_path": _relative(context, opening_prompt_path),
         "brief": _relative(context, brief_path),
     }
+    if release_art_v2:
+        result["candidates"] = brief_payload["candidates"]
     if style_anchor_path is not None:
         result.update({
             "reference_image_urls": [str(style_anchor_path)],
@@ -2497,15 +2529,52 @@ def _compile_release_art(context: StoryVideoRunContext) -> dict[str, Any]:
 def _register_release_art(
     context: StoryVideoRunContext,
     candidate: dict[str, Any],
+    candidates: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    if _provider(candidate.get("provider")) not in {"openai", "openai-codex"}:
-        raise ValueError("dedicated release art must come from OpenAI")
-    source = _project_path(context, candidate.get("path"))
-    if not source.is_file():
-        raise ValueError(f"release-art candidate file missing: {source}")
-    response_id = str(candidate.get("response_id") or "").strip()
-    if not response_id:
-        raise ValueError("release-art candidate requires an OpenAI response_id")
+    content_profile = _load_json(context.project_dir / "content_profile.json") or {}
+    release_art_v2 = (
+        str(content_profile.get("review_profile_id") or "").strip()
+        == EDITORIAL_PROFILE_ID
+    )
+    rows = [row for row in candidates or [] if isinstance(row, dict)]
+    if release_art_v2:
+        by_role = {
+            str(row.get("role") or "").strip().lower(): row for row in rows
+        }
+        if set(by_role) != {"opening", "ending"} or len(rows) != 2:
+            raise ValueError(
+                "release art v2 requires exactly one opening and one ending candidate"
+            )
+    else:
+        by_role = {"opening": candidate, "ending": candidate}
+
+    sources: dict[str, Path] = {}
+    source_evidence: dict[str, dict[str, str]] = {}
+    for role in ("opening", "ending"):
+        row = by_role[role]
+        if _provider(row.get("provider")) not in {"openai", "openai-codex"}:
+            raise ValueError("dedicated release art must come from OpenAI")
+        source = _project_path(context, row.get("path"))
+        if not source.is_file():
+            raise ValueError(f"release-art {role} candidate file missing: {source}")
+        response_id = str(row.get("response_id") or "").strip()
+        if not response_id:
+            raise ValueError(
+                f"release-art {role} candidate requires an OpenAI response_id"
+            )
+        sources[role] = source
+        source_evidence[role] = {
+            "provider": "openai-codex",
+            "model": str(row.get("model") or ""),
+            "response_id": response_id,
+            "sha256": _file_sha256(source),
+        }
+    if release_art_v2 and (
+        source_evidence["opening"]["sha256"]
+        == source_evidence["ending"]["sha256"]
+    ):
+        raise ValueError("release art v2 opening and ending sources must be distinct")
+
     brief_payload = _load_json(context.project_dir / "release_art" / "brief.json")
     if not isinstance(brief_payload, dict):
         compiled = _compile_release_art(context)
@@ -2513,7 +2582,8 @@ def _register_release_art(
     if not isinstance(brief_payload, dict):
         raise ValueError("release-art brief is missing or invalid")
     artifacts = compose_release_art(
-        source=source,
+        opening_source=sources["opening"],
+        ending_source=sources["ending"],
         output_dir=context.project_dir / "release_art",
         title=str(brief_payload.get("title") or context.topic),
         subtitle=str(brief_payload.get("subtitle") or ""),
@@ -2530,13 +2600,22 @@ def _register_release_art(
     _write_json_atomic(
         manifest_path,
         {
-            "schema": "story_video_release_art_manifest_v1",
+            "schema": (
+                "story_video_release_art_manifest_v2"
+                if release_art_v2
+                else "story_video_release_art_manifest_v1"
+            ),
             "run_id": context.run_id,
             "status": "PASS",
             "provider": "openai-codex",
-            "model": str(candidate.get("model") or ""),
-            "response_id": response_id,
-            "prompt_path": "prompts/RELEASE_HERO.txt",
+            "model": source_evidence["opening"]["model"],
+            "response_id": source_evidence["opening"]["response_id"],
+            "prompt_path": (
+                "prompts/RELEASE_OPENING.txt"
+                if release_art_v2
+                else "prompts/RELEASE_HERO.txt"
+            ),
+            "sources": source_evidence if release_art_v2 else None,
             "ending_copy": {
                 "label": str(brief_payload.get("ending_label") or ""),
                 "heading": str(brief_payload.get("ending_heading") or ""),
@@ -2570,7 +2649,18 @@ def _verified_release_art(context: StoryVideoRunContext) -> dict[str, str]:
         raise ValueError(
             "dedicated release art manifest is required before render"
         )
-    if str(manifest.get("schema") or "") != "story_video_release_art_manifest_v1":
+    content_profile = _load_json(context.project_dir / "content_profile.json") or {}
+    release_art_v2 = (
+        str(content_profile.get("review_profile_id") or "").strip()
+        == EDITORIAL_PROFILE_ID
+    )
+    schema = str(manifest.get("schema") or "")
+    expected_schema = (
+        "story_video_release_art_manifest_v2"
+        if release_art_v2
+        else "story_video_release_art_manifest_v1"
+    )
+    if schema != expected_schema:
         raise ValueError("dedicated release art manifest schema is invalid")
     if str(manifest.get("status") or "").upper() != "PASS":
         raise ValueError("dedicated release art manifest is not PASS")
@@ -2578,8 +2668,28 @@ def _verified_release_art(context: StoryVideoRunContext) -> dict[str, str]:
         raise ValueError("stale dedicated release art belongs to a different run")
     if _provider(manifest.get("provider")) not in {"openai", "openai-codex"}:
         raise ValueError("dedicated release art must come from OpenAI")
-    if not str(manifest.get("response_id") or "").strip():
+    if not release_art_v2 and not str(manifest.get("response_id") or "").strip():
         raise ValueError("dedicated release art lacks OpenAI response evidence")
+    if release_art_v2:
+        sources = manifest.get("sources")
+        if not isinstance(sources, dict):
+            raise ValueError("dedicated release art v2 source evidence is missing")
+        source_hashes: list[str] = []
+        for role in ("opening", "ending"):
+            evidence = sources.get(role)
+            if (
+                not isinstance(evidence, dict)
+                or _provider(evidence.get("provider"))
+                not in {"openai", "openai-codex"}
+                or not str(evidence.get("response_id") or "").strip()
+                or not str(evidence.get("sha256") or "").strip()
+            ):
+                raise ValueError(
+                    f"dedicated release art v2 {role} source evidence is invalid"
+                )
+            source_hashes.append(str(evidence["sha256"]))
+        if len(set(source_hashes)) != 2:
+            raise ValueError("dedicated release art v2 sources are not distinct")
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, dict):
         raise ValueError("dedicated release art artifact evidence is missing")
@@ -3171,6 +3281,7 @@ def story_video_quality_control(
             payload = _register_release_art(
                 context,
                 args.get("release_art_candidate") or {},
+                args.get("release_art_candidates") or [],
             )
         elif action == "next_batch_work":
             payload = _next_batch_work(context)

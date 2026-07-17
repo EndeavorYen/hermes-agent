@@ -241,7 +241,7 @@ def compile_release_art_brief(topic: str, ledger: dict[str, Any]) -> dict[str, s
     style = _text(ledger.get("visual_style")) or "cinematic factual reconstruction"
     style_directive = compile_style_directive(ledger)
     prompt = " ".join((
-        f"Create a premium 16:9 cinematic hero image for a story video titled {topic}.",
+        f"Create a premium 16:9 cinematic hero image for the opening question of a story video titled {topic}.",
         f"Hero subject: {subject}.",
         f"Hero action: {action}." if action else "",
         f"Decisive instant: {story_moment}." if story_moment else "",
@@ -254,23 +254,43 @@ def compile_release_art_brief(topic: str, ledger: dict[str, Any]) -> dict[str, s
         "Avoid empty landscapes, museum-catalog staging, generic documentary stock photography, passive centered subjects, collages, grids, and infographic layouts.",
         "No generated text, title, caption, label, logo, border, or watermark; typography will be composed locally.",
     ))
+    ending_heading = _text(story_engine.get("ending_echo")) or (
+        "原來，答案一直藏在線索裡。"
+    )
+    ending_takeaway = (
+        _text(story_engine.get("knowledge_payoff"))
+        or _text(last_scene.get("viewer_takeaway"))
+        or takeaway
+        or "帶著今天的線索，繼續問下一個好問題。"
+    )
+    ending_prompt = " ".join((
+        f"Create a distinct premium 16:9 cinematic ending image for a story video titled {topic}.",
+        f"Resolved discovery: {ending_takeaway}.",
+        f"Final emotional echo: {ending_heading}.",
+        "Show an earned visual resolution after the journey: the decisive evidence and its wider meaning coexist in one coherent scene, with calm forward momentum rather than a repeated opening pose.",
+        "Use a materially different composition from the opening hero: wider breathing room, warm motivated light after tension, layered depth, tactile factual detail, and one subtle visual path toward the next question.",
+        f"Visual direction: {style}, premium theatrical color separation and credible educational wonder.",
+        style_directive,
+        "Avoid generic calls to action, end-screen placeholders, empty landscapes, museum-catalog staging, collages, grids, and infographic layouts.",
+        "No generated text, title, caption, label, logo, border, buttons, or watermark; all typography will be composed locally.",
+    ))
     return {
         "prompt": prompt,
+        "opening_prompt": prompt,
+        "ending_prompt": ending_prompt,
         "title": topic,
         "subtitle": takeaway[:38] if takeaway else "從一個線索，看見完整故事",
         "ending_label": "今天帶走的發現",
-        "ending_heading": _text(story_engine.get("ending_echo"))
-        or "原來，答案一直藏在線索裡。",
-        "ending_takeaway": _text(story_engine.get("knowledge_payoff"))
-        or _text(last_scene.get("viewer_takeaway"))
-        or takeaway
-        or "帶著今天的線索，繼續問下一個好問題。",
+        "ending_heading": ending_heading,
+        "ending_takeaway": ending_takeaway,
     }
 
 
 def compose_release_art(
     *,
-    source: Path,
+    source: Path | None = None,
+    opening_source: Path | None = None,
+    ending_source: Path | None = None,
     output_dir: Path,
     title: str,
     subtitle: str,
@@ -279,10 +299,20 @@ def compose_release_art(
     ending_takeaway: str = "帶著今天的線索，繼續問下一個好問題。",
 ) -> dict[str, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    with Image.open(source) as opened:
+    opening_source = opening_source or source
+    if opening_source is None:
+        raise ValueError("release art requires an opening source image")
+    ending_source = ending_source or opening_source
+    with Image.open(opening_source) as opened:
         hero = opened.convert("RGB")
+    with Image.open(ending_source) as opened:
+        ending_hero = opened.convert("RGB")
     hero_source = output_dir / "hero_source.png"
     hero.save(hero_source, "PNG", optimize=True)
+    opening_source_path = output_dir / "opening_source.png"
+    hero.save(opening_source_path, "PNG", optimize=True)
+    ending_source_path = output_dir / "ending_source.png"
+    ending_hero.save(ending_source_path, "PNG", optimize=True)
 
     opening = _cover(hero, (1920, 1080))
     opening = ImageEnhance.Contrast(opening).enhance(1.08)
@@ -299,7 +329,7 @@ def compose_release_art(
     thumbnail_path = output_dir / "thumbnail.jpg"
     thumbnail.convert("RGB").save(thumbnail_path, "JPEG", quality=94, optimize=True)
 
-    ending = _cover(hero, (1920, 1080))
+    ending = _cover(ending_hero, (1920, 1080))
     ending = ImageEnhance.Color(ending).enhance(1.04)
     ending = ImageEnhance.Contrast(ending).enhance(1.10)
     ending = ImageEnhance.Brightness(ending).enhance(0.80)
@@ -355,6 +385,8 @@ def compose_release_art(
 
     return {
         "hero_source": hero_source,
+        "opening_source": opening_source_path,
+        "ending_source": ending_source_path,
         "opening_card": opening_path,
         "ending_card": ending_path,
         "thumbnail": thumbnail_path,

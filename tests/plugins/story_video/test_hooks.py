@@ -289,6 +289,9 @@ def test_runtime_context_requires_v6_review_board_and_reserved_content_profiles(
     assert "style_bible" in context
     assert "style reference" in context.lower()
     assert "educational ending" in context.lower()
+    assert "generate exactly two distinct text-free sources" in context
+    assert "RELEASE_OPENING_C01" in context
+    assert "RELEASE_ENDING_C01" in context
 
 
 def test_autopilot_runtime_context_exposes_verified_purpose_limited_authorization(
