@@ -10,6 +10,8 @@ from plugins.story_video.schemas import (
     STORY_VIDEO_CONTROL_SCHEMA,
     STORY_VIDEO_VOICE_MANAGER_SCHEMA,
 )
+from plugins.story_video.sequence_quality import write_sequence_quality_report
+from plugins.story_video.shot_contract import shot_contract_hash
 from plugins.story_video.state import StoryVideoStateStore, parse_operator_call
 from plugins.story_video.tools import (
     story_video_audio_director,
@@ -1310,6 +1312,52 @@ def test_batch_validation_accepts_scene_ledger_selected_asset_path(tmp_path) -> 
     proof = validate_phase(context)
 
     assert proof.ok is True
+
+
+def test_batch_editorial_v2_requires_current_sequence_quality_report(tmp_path) -> None:
+    store, context = _active_context(tmp_path)
+    context = store.update(context, phase="batch")
+    ledger = _write_planning_fixture(context, shot_count=8)
+    shots = ledger["scenes"][0]["shots"]
+    _write_candidate_manifest(context, shots)
+    (context.project_dir / "scene_ledger.json").write_text(
+        json.dumps(ledger), encoding="utf-8"
+    )
+    (context.project_dir / "content_profile.json").write_text(
+        json.dumps({"review_profile_id": "family-review-board-v2"}), encoding="utf-8"
+    )
+
+    missing = validate_phase(context)
+
+    assert "manifests/sequence_quality_report.json" in missing.missing
+
+    manifest_path = context.project_dir / "manifests" / "shot_candidate_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    shots_by_id = {shot["shot_id"]: shot for shot in shots}
+    for output in manifest["outputs"]:
+        shot = shots_by_id[output["shot_id"]]
+        image = context.project_dir / output["local_path"]
+        output.update(
+            {
+                "artifact_sha256": hashlib.sha256(image.read_bytes()).hexdigest(),
+                "shot_contract_hash": shot_contract_hash(shot),
+                "quality_dimensions": {
+                    "text_alignment": 90,
+                    "evidence_specificity": 90,
+                    "narrative_engagement": 90,
+                    "story_moment_clarity": 90,
+                    "cinematic_impact": 90,
+                    "professional_quality": 90,
+                    "style_consistency": 90,
+                },
+            }
+        )
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    write_sequence_quality_report(context.project_dir, ledger, manifest)
+
+    passed = validate_phase(context)
+
+    assert passed.ok is True
 
 
 def test_batch_autopilot_promotes_legacy_scale_repeat_reason_and_transitions(

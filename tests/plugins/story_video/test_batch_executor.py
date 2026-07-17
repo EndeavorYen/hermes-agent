@@ -161,6 +161,11 @@ def test_executor_runs_fresh_shots_before_one_bounded_repair_wave(tmp_path) -> N
     assert batch_manifest["budget"]["generated_by_shot"]["S01_SH00"] == 2
     assert batch_manifest["budget"]["generated_by_shot"]["S04_SH00"] == 2
     assert sum(batch_manifest["budget"]["generated_by_shot"].values()) == 8
+    sequence_report = json.loads(
+        (context.project_dir / "manifests" / "sequence_quality_report.json").read_text()
+    )
+    assert sequence_report["schema"] == "story_video_sequence_quality_v1"
+    assert sequence_report["metrics"]["shot_count"] == 6
 
 
 def test_executor_honors_stop_before_dispatch(tmp_path) -> None:

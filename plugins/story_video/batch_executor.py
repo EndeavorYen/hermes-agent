@@ -11,6 +11,7 @@ from agent.visual.generation_waves import GenerationWaveItem
 from agent.visual.generation_waves import GenerationWaveScheduler
 
 from .batch_policy import BatchBudget, BatchPolicy
+from .sequence_quality import write_sequence_quality_report
 
 
 _MANIFEST_LOCK = threading.RLock()
@@ -47,6 +48,12 @@ def _ordered_shots(context: Any) -> list[dict[str, Any]]:
         for shot in scene.get("shots") or []
         if isinstance(shot, dict) and str(shot.get("shot_id") or "").strip()
     ]
+
+
+def _write_sequence_report(context: Any, candidate_manifest: dict[str, Any]) -> None:
+    project_dir = Path(context.project_dir)
+    ledger = _load_json(project_dir / "scene_ledger.json")
+    write_sequence_quality_report(project_dir, ledger, candidate_manifest)
 
 
 @dataclass(frozen=True)
@@ -107,6 +114,7 @@ class StoryVideoBatchExecutor:
             if isinstance(row, dict) and row.get("selected") is True
         }
         if len(selected.intersection(shot_ids)) == len(shot_ids):
+            _write_sequence_report(context, candidate_manifest)
             return BatchRunSummary(
                 work_status="complete",
                 wave="none",
@@ -314,6 +322,8 @@ class StoryVideoBatchExecutor:
             if can_continue
             else "terminal_required"
         )
+        if work_status == "complete":
+            _write_sequence_report(context, candidate_manifest)
         with _MANIFEST_LOCK:
             self._save_budget(
                 batch_path,
