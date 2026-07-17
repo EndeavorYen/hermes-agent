@@ -41,6 +41,8 @@ def operator_next_call(context: StoryVideoRunContext) -> str | None:
         return None
     if context.status == "stopped":
         return "繼續"
+    if context.phase == "planning" and context.status == "complete":
+        return "全自動"
     if context.status == "complete" or context.phase == "complete":
         return "準備上架"
     return context.next_call
@@ -94,6 +96,8 @@ def _format_status(context: StoryVideoRunContext | None) -> str:
         lines.append("下一步：不需要操作；Hermes 會自動推進。要中止請回覆「停止」。")
     elif context.status == "stopped":
         lines.append("下一步：回覆「繼續」恢復手動；要全自動則回覆「全自動」。")
+    elif context.phase == "planning" and context.status == "complete":
+        lines.append("下一步：回覆「全自動」開始製作影像、旁白與影片。")
     elif context.status == "complete" or context.phase == "complete":
         lines.append("下一步：回覆「準備上架」建立 YouTube 審核包。")
     else:
