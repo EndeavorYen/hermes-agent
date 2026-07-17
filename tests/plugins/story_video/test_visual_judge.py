@@ -521,8 +521,13 @@ def test_plugin_registers_internal_quality_tool_and_binds_host_llm() -> None:
     }
     assert registered_tools["story_video_quality_control"]["toolset"] == "story_video"
     assert registered_tools["story_video_quality_control"]["schema"]["name"] == "story_video_quality_control"
+    assert "writing" in registered_tools["story_video_control"]["schema"][
+        "parameters"
+    ]["properties"]["section"]["enum"]
     assert registered_commands["story-video"]["handler"] is hooks.handle_story_video_command
-    assert registered_commands["story-video"]["args_hint"] == "[status|examples|voices]"
+    assert registered_commands["story-video"]["args_hint"] == (
+        "[status|examples|writing|voices]"
+    )
     assert registered_hooks["auto_continue_llm_output"] is hooks.auto_continue_llm_output
     provider = registered_tools["story_video_quality_control"]["schema"][
         "parameters"

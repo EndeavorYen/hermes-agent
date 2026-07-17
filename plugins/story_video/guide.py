@@ -5,7 +5,7 @@ from typing import Any
 from .state import StoryVideoRunContext
 
 
-_SECTIONS = {"help", "status", "examples", "voices"}
+_SECTIONS = {"help", "status", "examples", "voices", "writing"}
 
 
 def normalize_guide_section(value: str) -> str | None:
@@ -32,6 +32,15 @@ def normalize_guide_section(value: str) -> str | None:
         "voice": "voices",
         "聲線": "voices",
         "声线": "voices",
+        "writing": "writing",
+        "text": "writing",
+        "文本": "writing",
+        "寫作": "writing",
+        "写作": "writing",
+        "難度": "writing",
+        "难度": "writing",
+        "淺白": "writing",
+        "浅白": "writing",
     }
     return aliases.get(normalized)
 
@@ -67,6 +76,9 @@ def _format_help() -> str:
             "`/story-video status` 目前進度與下一步",
             "`/story-video examples` 可直接使用的 prompt",
             "`/story-video voices` 可用聲線",
+            "`/story-video writing` 文本難度與淺白化設定",
+            "",
+            "科普與解釋內容預設採用「淺顯但不幼稚」模式。",
             "",
             "Slack 也可輸入 `/hermes story-video status`。",
             "製作中要中止，直接回覆「停止」。",
@@ -127,6 +139,30 @@ def _format_examples() -> str:
             "",
             "說書模式",
             "`說書模式：旁白用 simon，完全照附件原文朗讀，不改字。`",
+            "",
+            "科普預設（淺顯但不幼稚）",
+            "`故事影片：凱因斯經濟學｜5 分鐘｜電影感科普。全自動`",
+            "",
+            "提高難度",
+            "`故事影片：凱因斯經濟學｜5 分鐘｜進階版。全自動`",
+            "`故事影片：凱因斯經濟學｜5 分鐘｜專業版，不要淺白化。全自動`",
+        )
+    )
+
+
+def _format_writing() -> str:
+    return "\n".join(
+        (
+            "故事影片文本難度",
+            "",
+            "預設：淺顯但不幼稚",
+            "先建立具體直覺與因果，再介紹正式名詞，並說清楚比喻的界線。",
+            "",
+            "提高難度",
+            "`進階版`：保留更多技術細節，仍照顧非本科觀眾。",
+            "`專業版` 或 `不要淺白化`：以領域讀者為主，不套用普及化改寫。",
+            "",
+            "範例：`故事影片：凱因斯經濟學｜5 分鐘｜進階版。全自動`",
         )
     )
 
@@ -170,4 +206,6 @@ def format_story_video_guide(
         return _format_examples()
     if normalized == "voices":
         return _format_voices(voices)
+    if normalized == "writing":
+        return _format_writing()
     return _format_help()

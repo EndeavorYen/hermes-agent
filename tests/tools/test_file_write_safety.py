@@ -86,6 +86,20 @@ class TestStaticDenyList:
 
         assert _is_write_denied(str(target)) is True
 
+    def test_story_video_explanation_profile_is_always_tool_owned(
+        self, monkeypatch, tmp_path
+    ):
+        hermes_home = tmp_path / ".hermes"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        target = (
+            hermes_home
+            / "story_videos"
+            / "project-1"
+            / "explanation_profile.json"
+        )
+
+        assert _is_write_denied(str(target)) is True
+
 
 class TestSafeWriteRoot:
     """HERMES_WRITE_SAFE_ROOT should sandbox writes to a specific subtree."""

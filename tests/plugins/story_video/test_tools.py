@@ -4,6 +4,10 @@ import hashlib
 import json
 from pathlib import Path
 
+from plugins.story_video.accessible_explainer import (
+    ACCESSIBLE_EXPLAINER_PROFILE_ID,
+    ensure_explanation_profile,
+)
 from plugins.story_video.audit import ProviderAudit, ProviderAuditEvent
 from plugins.story_video.schemas import (
     STORY_VIDEO_AUDIO_DIRECTOR_SCHEMA,
@@ -31,6 +35,7 @@ def _active_context(tmp_path):
         call=call,
         original_request="start",
     )
+    ensure_explanation_profile(context.project_dir, context.original_request)
     return store, context
 
 
@@ -89,7 +94,7 @@ def test_story_video_control_schema_exposes_voice_profile_actions() -> None:
     )
     assert STORY_VIDEO_CONTROL_SCHEMA["parameters"]["properties"]["section"][
         "enum"
-    ] == ["help", "status", "examples", "voices"]
+    ] == ["help", "status", "examples", "writing", "voices"]
 
 
 def test_story_video_control_guides_without_active_project(tmp_path) -> None:
@@ -332,6 +337,7 @@ def _quality_shots(count: int = 40) -> list[dict]:
 
 
 def _write_planning_fixture(context, *, report_status: str = "PASS", shot_count: int = 40) -> dict:
+    ensure_explanation_profile(context.project_dir, context.original_request)
     shots = _quality_shots(shot_count)
     ledger = {
         "schema": "story_video_scene_ledger_v2",
@@ -528,6 +534,9 @@ def _write_v6_review_fixture(context, *, include_review_artifacts: bool = True) 
             "writer_profile_id": "taiwan-childrens-story-writing-v1",
             "review_profile_id": "family-review-board-v1",
             "provider_capability_status": "available",
+            "explanation_profile_id": ACCESSIBLE_EXPLAINER_PROFILE_ID,
+            "explanation_mode": "accessible",
+            "supplemental_writer_profile_ids": [ACCESSIBLE_EXPLAINER_PROFILE_ID],
         }
         reviewers = [
             {
@@ -541,6 +550,14 @@ def _write_v6_review_fixture(context, *, include_review_artifacts: bool = True) 
             }
             for reviewer_id in _REVIEWER_IDS
         ]
+        reviewers.append(
+            {
+                "reviewer_id": "newcomer_comprehension_editor",
+                "status": "PASS",
+                "score": 92,
+                "findings": [],
+            }
+        )
         review_report = {
             "schema": "story_video_script_review_v1",
             "quality_contract_version": 6,
@@ -556,6 +573,22 @@ def _write_v6_review_fixture(context, *, include_review_artifacts: bool = True) 
             "final_verification": {
                 "status": "PASS",
                 "final_script_sha256": script_sha,
+            },
+            "accessibility_metrics": {
+                "schema": "story_video_accessibility_metrics_v1",
+                "status": "PASS",
+                "unexplained_jargon": [],
+                "baby_talk_detected": False,
+                "precision_loss_detected": False,
+                "concept_bridges": [
+                    {
+                        "term": "交叉證據",
+                        "segment_id": "S00",
+                        "concrete_anchor": "化石、骨骼與年代被放在一起比對",
+                        "plain_explanation": "不同線索互相支持，答案才更可靠",
+                        "precision_boundary": "新證據仍可能修正目前的結論",
+                    }
+                ],
             },
         }
         (context.project_dir / "content_profile.json").write_text(
@@ -696,6 +729,32 @@ def test_planning_validation_passes_and_advances_to_keyframes(tmp_path) -> None:
     assert result["proof"] == "STORY_VIDEO_PHASE_PROOF: planning PASS"
     assert store.for_session("session-1").phase == "keyframes"
     assert result["next_call"] == "繼續"
+
+
+def test_planning_validation_fails_closed_without_explanation_profile(tmp_path) -> None:
+    _store, context = _active_context(tmp_path)
+    _write_planning_fixture(context)
+    (context.project_dir / "explanation_profile.json").unlink()
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert "explanation_profile.json" in proof.missing
+
+
+def test_planning_validation_fails_closed_for_non_object_explanation_profile(
+    tmp_path,
+) -> None:
+    _store, context = _active_context(tmp_path)
+    _write_planning_fixture(context)
+    (context.project_dir / "explanation_profile.json").write_text(
+        "[]\n", encoding="utf-8"
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert "explanation_profile.json root is not an object" in proof.violations
 
 
 def test_explicit_autopilot_authorization_advances_a_planning_only_hold(
@@ -909,7 +968,12 @@ def test_v6_review_board_blocks_duplicate_and_missing_reviewers(tmp_path) -> Non
     _write_v6_review_fixture(context)
     path = context.project_dir / "script_review_report.json"
     report = json.loads(path.read_text(encoding="utf-8"))
-    report["reviewers"][-1] = dict(report["reviewers"][0])
+    performance_index = next(
+        index
+        for index, reviewer in enumerate(report["reviewers"])
+        if reviewer["reviewer_id"] == "performance_editor"
+    )
+    report["reviewers"][performance_index] = dict(report["reviewers"][0])
     path.write_text(json.dumps(report), encoding="utf-8")
 
     proof = validate_phase(context)

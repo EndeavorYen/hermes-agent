@@ -19,6 +19,7 @@ REQUIRED_REVIEWER_IDS = (
     "audience_safety_editor",
     "performance_editor",
 )
+OPTIONAL_REVIEWER_IDS = ("newcomer_comprehension_editor",)
 V6_QUALITY_CHECKS = (
     "language_fluency",
     "factual_integrity",
@@ -242,7 +243,8 @@ def validate_script_review_report(
     for reviewer_id in REQUIRED_REVIEWER_IDS:
         if reviewer_counts.get(reviewer_id, 0) == 0:
             violations.append(f"script_review_report missing reviewer: {reviewer_id}")
-    for reviewer_id in sorted(set(reviewer_counts) - set(REQUIRED_REVIEWER_IDS)):
+    allowed_reviewer_ids = set(REQUIRED_REVIEWER_IDS) | set(OPTIONAL_REVIEWER_IDS)
+    for reviewer_id in sorted(set(reviewer_counts) - allowed_reviewer_ids):
         violations.append(f"script_review_report unexpected reviewer: {reviewer_id}")
     for finding_id in unresolved_critical_ids:
         violations.append(f"script_review_report unresolved critical finding: {finding_id}")
@@ -362,6 +364,7 @@ def validate_v6_review_bundle(
 
 __all__ = [
     "REQUIRED_REVIEWER_IDS",
+    "OPTIONAL_REVIEWER_IDS",
     "REVIEW_CONTRACT_VERSION",
     "REVIEW_SCORE_THRESHOLD",
     "V6_QUALITY_CHECKS",
