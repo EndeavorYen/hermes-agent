@@ -292,6 +292,11 @@ def test_runtime_context_requires_v6_review_board_and_reserved_content_profiles(
     assert "generate exactly two distinct text-free sources" in context
     assert "RELEASE_OPENING_C01" in context
     assert "RELEASE_ENDING_C01" in context
+    assert "music_direction" in context
+    assert "story_video_music_direction_v1" in context
+    assert "min_cue_variants=3" in context
+    assert "narration_priority=true" in context
+    assert "story_video_music_library_v2" in context
 
 
 def test_autopilot_runtime_context_exposes_verified_purpose_limited_authorization(
