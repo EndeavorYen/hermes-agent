@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 
 from plugins.story_video.audit import ProviderAudit, ProviderAuditEvent
@@ -101,6 +102,169 @@ def _write_planning_fixture(context, *, report_status: str = "PASS", shot_count:
         ),
         encoding="utf-8",
     )
+    return ledger
+
+
+_REVIEWER_IDS = (
+    "language_editor",
+    "fact_checker",
+    "clarity_editor",
+    "engagement_editor",
+    "audience_safety_editor",
+    "performance_editor",
+)
+
+
+def _write_v6_review_fixture(context, *, include_review_artifacts: bool = True) -> dict:
+    ledger = _write_planning_fixture(context)
+    shots = ledger["scenes"][0]["shots"][:15]
+    roles = ("hook", "turn", "payoff", "close", "build", "reveal")
+    engagement_roles = ("hook", "build", "reveal", "reaction", "payoff", "breathe")
+    energies = ("curious", "tense", "awe", "kinetic", "curious", "calm")
+    for index, shot in enumerate(shots):
+        shot.update(
+            {
+                "narration_text": "先看見一個具體線索。再理解它代表的意義。",
+                "narrative_role": roles[index % len(roles)],
+                "engagement_role": engagement_roles[index % len(engagement_roles)],
+                "attention_hook": "先看結果，再追問原因",
+                "story_moment": "證據改變了觀眾原本的猜測",
+                "action_consequence": "可見線索帶出下一個問題",
+                "composition_energy": energies[index % len(energies)],
+                "viewer_emotion": "curiosity",
+                "engagement_criteria": ["the decisive evidence is readable"],
+                "visual_truth_mode": "direct_evidence",
+            }
+        )
+        if shot["engagement_role"] == "breathe":
+            shot["calm_reason"] = "讓觀眾消化剛揭示的知識"
+    opening = "恐龍最早是怎麼出現的？"
+    payoff = "答案藏在化石、骨骼與年代的交叉證據裡。"
+    ending = "每一塊化石，都可能讓起源故事再前進一步。"
+    script = f"### S00\n{opening}{payoff}{ending}"
+    (context.project_dir / "script.md").write_text(script, encoding="utf-8")
+    ledger.update(
+        {
+            "quality_contract_version": 6,
+            "target_duration_sec": 300,
+            "audience_profile": {
+                "age_band": "school_age",
+                "minimum_age_years": 5,
+                "knowledge_level": "newcomer",
+                "attention_style": "curious_explorer",
+                "safety_intensity": "gentle",
+            },
+            "engagement_profile": {
+                "mode": "young_explorer",
+                "energy": "high",
+                "humor": "light",
+                "sensationalism_forbidden": True,
+            },
+            "story_engine": {
+                "audience_promise": "把陌生科學變成一場可以跟上的發現",
+                "opening_question": opening,
+                "dramatic_question": "哪些證據能排除看似合理的猜測？",
+                "curiosity_gap": "最早期化石仍留下哪些空白？",
+                "escalation": ["先看年代", "再比骨骼", "最後交叉驗證"],
+                "knowledge_payoff": payoff,
+                "ending_echo": ending,
+                "humor_strategy": "用輕巧比喻舒緩資訊密度，不改寫事實",
+            },
+            "style_bible": {
+                "style_id": "cinematic-science-v1",
+                "anchor_shot_id": shots[0]["shot_id"],
+                "medium": "camera-real cinematic factual reconstruction",
+                "palette": "natural earth tones with selective vivid accents",
+                "lighting": "dramatic motivated natural light",
+                "lens_language": "layered depth with evidence-led close views",
+                "texture": "tactile rock, bone, skin, and atmosphere",
+                "atmosphere": "curious, urgent, and credible",
+                "subject_treatment": "hero evidence remains dominant and factual",
+                "forbidden_drift": ["flat museum catalog framing"],
+            },
+        }
+    )
+    ledger["scenes"][0]["shots"] = shots
+    (context.project_dir / "scene_ledger.json").write_text(
+        json.dumps(ledger, ensure_ascii=False), encoding="utf-8"
+    )
+    script_sha = hashlib.sha256(script.encode("utf-8")).hexdigest()
+    quality_report = {
+        "schema": "story_video_script_quality_v1",
+        "quality_contract_version": 6,
+        "status": "PASS",
+        "production_type": "science_explainer",
+        "shot_count": len(shots),
+        "final_script_sha256": script_sha,
+        "checks": {
+            "visual_evidence": "PASS",
+            "narrative_roles": "PASS",
+            "claim_confidence": "PASS",
+            "audience_engagement": "PASS",
+            "visual_truth": "PASS",
+            "child_curiosity": "PASS",
+            "dramatic_arc": "PASS",
+            "read_aloud_liveliness": "PASS",
+            "knowledge_integrity": "PASS",
+            "visual_causality": "PASS",
+            "style_consistency": "PASS",
+            "language_fluency": "PASS",
+            "factual_integrity": "PASS",
+            "clarity_concision": "PASS",
+            "engagement": "PASS",
+            "audience_fit": "PASS",
+            "read_aloud_performance": "PASS",
+        },
+    }
+    (context.project_dir / "script_quality_report.json").write_text(
+        json.dumps(quality_report), encoding="utf-8"
+    )
+    if include_review_artifacts:
+        content_profile = {
+            "schema": "story_video_content_profile_v1",
+            "rating": "family",
+            "activation_status": "active",
+            "minimum_viewer_age": 5,
+            "policy_profile_id": "family-safe-v1",
+            "writer_profile_id": "taiwan-childrens-story-writing-v1",
+            "review_profile_id": "family-review-board-v1",
+            "provider_capability_status": "available",
+        }
+        reviewers = [
+            {
+                "reviewer_id": reviewer_id,
+                "status": "PASS",
+                "score": 90,
+                "findings": [],
+                "evidence_source_ids": (
+                    ["nhm-dinosaur-origins"] if reviewer_id == "fact_checker" else []
+                ),
+            }
+            for reviewer_id in _REVIEWER_IDS
+        ]
+        review_report = {
+            "schema": "story_video_script_review_v1",
+            "quality_contract_version": 6,
+            "status": "PASS",
+            "execution_mode": "structured_board",
+            "revision_round_count": 1,
+            "reviewers": reviewers,
+            "adjudication": {
+                "status": "PASS",
+                "resolved_finding_ids": [],
+                "unresolved_finding_ids": [],
+            },
+            "final_verification": {
+                "status": "PASS",
+                "final_script_sha256": script_sha,
+            },
+        }
+        (context.project_dir / "content_profile.json").write_text(
+            json.dumps(content_profile), encoding="utf-8"
+        )
+        (context.project_dir / "script_review_report.json").write_text(
+            json.dumps(review_report), encoding="utf-8"
+        )
     return ledger
 
 
@@ -259,6 +423,134 @@ def test_planning_validation_requires_v5_script_report_for_v5_ledger(tmp_path) -
     proof = validate_phase(context)
 
     assert "script_quality_report.quality_contract_version<5" in proof.violations
+
+
+def test_v6_review_board_requires_new_planning_artifacts(tmp_path) -> None:
+    _store, context = _active_context(tmp_path)
+    _write_v6_review_fixture(context, include_review_artifacts=False)
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert "content_profile.json" in proof.missing
+    assert "script_review_report.json" in proof.missing
+
+
+def test_v6_review_board_accepts_complete_review_bundle(tmp_path) -> None:
+    _store, context = _active_context(tmp_path)
+    _write_v6_review_fixture(context)
+
+    proof = validate_phase(context)
+
+    assert proof.ok is True
+
+
+def test_v6_review_board_blocks_low_reviewer_score(tmp_path) -> None:
+    _store, context = _active_context(tmp_path)
+    _write_v6_review_fixture(context)
+    path = context.project_dir / "script_review_report.json"
+    report = json.loads(path.read_text(encoding="utf-8"))
+    report["reviewers"][0]["score"] = 84
+    path.write_text(json.dumps(report), encoding="utf-8")
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert "script_review_report reviewer language_editor score<85" in proof.violations
+
+
+def test_v6_review_board_blocks_duplicate_and_missing_reviewers(tmp_path) -> None:
+    _store, context = _active_context(tmp_path)
+    _write_v6_review_fixture(context)
+    path = context.project_dir / "script_review_report.json"
+    report = json.loads(path.read_text(encoding="utf-8"))
+    report["reviewers"][-1] = dict(report["reviewers"][0])
+    path.write_text(json.dumps(report), encoding="utf-8")
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert "script_review_report duplicate reviewer: language_editor" in proof.violations
+    assert "script_review_report missing reviewer: performance_editor" in proof.violations
+
+
+def test_v6_review_board_blocks_unresolved_critical_finding(tmp_path) -> None:
+    _store, context = _active_context(tmp_path)
+    _write_v6_review_fixture(context)
+    path = context.project_dir / "script_review_report.json"
+    report = json.loads(path.read_text(encoding="utf-8"))
+    report["reviewers"][1]["findings"] = [
+        {
+            "finding_id": "F001",
+            "severity": "critical",
+            "location": "S00",
+            "category": "factual_accuracy",
+            "evidence": "The claim overstates the available fossil evidence.",
+            "recommendation": "State the uncertainty explicitly.",
+            "resolution_status": "unresolved",
+        }
+    ]
+    report["adjudication"]["unresolved_finding_ids"] = ["F001"]
+    path.write_text(json.dumps(report), encoding="utf-8")
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert "script_review_report unresolved critical finding: F001" in proof.violations
+
+
+def test_v6_review_board_binds_review_to_final_script_bytes(tmp_path) -> None:
+    _store, context = _active_context(tmp_path)
+    _write_v6_review_fixture(context)
+    script_path = context.project_dir / "script.md"
+    script_path.write_text(
+        script_path.read_text(encoding="utf-8") + "\n未經審核的新句子。",
+        encoding="utf-8",
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert "script_review_report final_script_sha256 mismatch" in proof.violations
+    assert "script_quality_report final_script_sha256 mismatch" in proof.violations
+
+
+def test_v6_fact_checker_requires_sources_for_science_production(tmp_path) -> None:
+    _store, context = _active_context(tmp_path)
+    _write_v6_review_fixture(context)
+    path = context.project_dir / "script_review_report.json"
+    report = json.loads(path.read_text(encoding="utf-8"))
+    report["reviewers"][1]["evidence_source_ids"] = []
+    path.write_text(json.dumps(report), encoding="utf-8")
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert "script_review_report fact_checker evidence_source_ids are missing" in proof.violations
+
+
+def test_v6_adult_explicit_profile_is_reserved_setup_required(tmp_path) -> None:
+    _store, context = _active_context(tmp_path)
+    _write_v6_review_fixture(context)
+    path = context.project_dir / "content_profile.json"
+    profile = json.loads(path.read_text(encoding="utf-8"))
+    profile.update(
+        {
+            "rating": "adult_explicit",
+            "activation_status": "active",
+            "minimum_viewer_age": 18,
+            "policy_profile_id": "adult-reserved-v1",
+            "writer_profile_id": "adult-writer-reserved",
+            "review_profile_id": "adult-review-reserved",
+            "provider_capability_status": "available",
+        }
+    )
+    path.write_text(json.dumps(profile), encoding="utf-8")
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert "content_profile rating adult_explicit SETUP_REQUIRED" in proof.violations
 
 
 def test_planning_validation_requires_the_final_script_artifact(tmp_path) -> None:

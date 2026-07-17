@@ -9,6 +9,11 @@ from typing import Any
 from .audit import ProviderAudit, normalize_provider
 from .engagement import engagement_contract_enabled
 from .quality import CLOSE_EVIDENCE_SCALES, QUALITY_THRESHOLD, validate_quality_ledger
+from .review_board import (
+    V6_QUALITY_CHECKS,
+    content_profile_requires_child_curiosity,
+    validate_v6_review_bundle,
+)
 from .state import PHASES, StoryVideoRunContext, StoryVideoStateStore
 from .story_contract import story_contract_enabled, validate_story_script_bindings
 
@@ -94,9 +99,9 @@ def _validate_planning(context: StoryVideoRunContext) -> PhaseProof:
         "script_quality_report.json",
         "pronunciation_lexicon.json",
     )
-    missing = tuple(
+    missing = [
         name for name in required if not _nonempty(context.project_dir / name)
-    )
+    ]
     violations: list[str] = []
     script_text = ""
     if "script.md" not in missing:
@@ -124,9 +129,27 @@ def _validate_planning(context: StoryVideoRunContext) -> PhaseProof:
         else:
             parsed[name] = payload
     ledger = parsed.get("scene_ledger.json")
+    ledger_quality_version = 0
     if isinstance(ledger, dict):
+        try:
+            ledger_quality_version = int(
+                ledger.get("quality_contract_version") or 0
+            )
+        except (TypeError, ValueError):
+            ledger_quality_version = 0
         violations.extend(validate_quality_ledger(ledger).violations)
         violations.extend(validate_story_script_bindings(ledger, script_text))
+    if ledger_quality_version >= 6:
+        for name in ("content_profile.json", "script_review_report.json"):
+            path = context.project_dir / name
+            if not _nonempty(path):
+                missing.append(name)
+                continue
+            payload = _load_json(path)
+            if payload is None:
+                violations.append(f"{name} is not valid JSON")
+            else:
+                parsed[name] = payload
     report = parsed.get("script_quality_report.json")
     if isinstance(report, dict):
         status = str(report.get("status") or "").upper()
@@ -147,29 +170,45 @@ def _validate_planning(context: StoryVideoRunContext) -> PhaseProof:
         if isinstance(ledger, dict) and story_contract_enabled(ledger):
             if version < 4:
                 violations.append("script_quality_report.quality_contract_version<4")
-            required_checks.extend(
-                (
-                    "child_curiosity",
-                    "dramatic_arc",
-                    "read_aloud_liveliness",
-                    "knowledge_integrity",
-                    "visual_causality",
-                    "style_consistency",
-                )
-            )
-        if isinstance(ledger, dict):
-            try:
-                ledger_quality_version = int(
-                    ledger.get("quality_contract_version") or 0
-                )
-            except (TypeError, ValueError):
-                ledger_quality_version = 0
+            story_checks = [
+                "dramatic_arc",
+                "read_aloud_liveliness",
+                "knowledge_integrity",
+                "visual_causality",
+                "style_consistency",
+            ]
+            if ledger_quality_version < 6 or content_profile_requires_child_curiosity(
+                ledger, parsed.get("content_profile.json")
+            ):
+                story_checks.insert(0, "child_curiosity")
+            required_checks.extend(story_checks)
+        if ledger_quality_version >= 6:
+            if version < 6:
+                violations.append("script_quality_report.quality_contract_version<6")
+            required_checks.extend(V6_QUALITY_CHECKS)
+        elif isinstance(ledger, dict):
             if ledger_quality_version >= 5 and version < 5:
                 violations.append("script_quality_report.quality_contract_version<5")
         if not isinstance(checks, dict) or any(
             str(checks.get(name) or "").upper() != "PASS" for name in required_checks
         ):
             violations.append("script_quality_report required checks are not PASS")
+    if (
+        ledger_quality_version >= 6
+        and isinstance(ledger, dict)
+        and isinstance(report, dict)
+        and isinstance(parsed.get("content_profile.json"), dict)
+        and isinstance(parsed.get("script_review_report.json"), dict)
+    ):
+        violations.extend(
+            validate_v6_review_bundle(
+                context.project_dir,
+                ledger,
+                report,
+                parsed["content_profile.json"],
+                parsed["script_review_report.json"],
+            )
+        )
     pronunciation = parsed.get("pronunciation_lexicon.json")
     if isinstance(pronunciation, dict):
         if (
@@ -228,7 +267,7 @@ def _validate_planning(context: StoryVideoRunContext) -> PhaseProof:
     return PhaseProof(
         phase="planning",
         ok=not missing and not violations,
-        missing=missing,
+        missing=tuple(missing),
         violations=tuple(violations),
     )
 
