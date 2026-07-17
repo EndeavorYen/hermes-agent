@@ -12,7 +12,10 @@ from typing import Any
 
 from agent.visual.agent_mode.planner import _requests_visual_polish
 from agent.visual.agent_mode.planner import plan_visual_agent_request, planned_candidate_budget
-from agent.visual.prompt_text import strip_visual_prompt_metadata
+from agent.visual.prompt_text import (
+    strip_visual_prompt_metadata,
+    strip_visual_runtime_metadata,
+)
 from agent.visual.session_references import filter_visual_reference_entries_for_prompt
 from agent.visual.session_references import prompt_requests_visual_reference_reuse
 from gateway.session_context import get_visual_reference_context_entries
@@ -1658,7 +1661,8 @@ def _is_long_form_story_video_pipeline_request(raw_prompt: Any, prompt: str) -> 
     """
     from tools.story_video_provider_guard import story_video_request_detected
 
-    combined = f"{raw_prompt or ''}\n{prompt or ''}".strip()
+    thread_contract = strip_visual_runtime_metadata(raw_prompt)
+    combined = f"{thread_contract}\n{prompt or ''}".strip()
     return story_video_request_detected(combined, preserve_thread_context=True)
 
 

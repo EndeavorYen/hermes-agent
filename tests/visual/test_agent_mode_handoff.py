@@ -184,7 +184,13 @@ def test_direct_visual_handoff_skips_followup_in_long_form_story_video_thread():
 [thread parent] simon: 幫我做一部恐龍起源的科普影片 (可用之前故事影片的 skill 或流程)，圖片走真實照片風格，請開始，大概 5mins
 [End of thread context]
 
-請繼續產出影片"""
+請繼續產出影片
+
+Raphael State Observer (ephemeral, internal):
+task_state: casual_or_direct
+
+Visual Arsenal default for Slack image work:
+- Example mentions image generation and G1/G4 reuse."""
 
     handoff = build_direct_visual_agent_handoff(agent, prompt)
 
@@ -1516,6 +1522,59 @@ def test_direct_visual_handoff_routes_colloquial_chinese_reference_edit():
     assert handoff["arguments"]["attachments"] == ["/tmp/g1.png", "/tmp/g4.png"]
     assert handoff["arguments"]["include_image"] is True
     assert handoff["arguments"]["include_video"] is False
+
+
+def test_direct_visual_handoff_ignores_injected_runtime_metadata():
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+    from gateway.session_context import (
+        reset_visual_reference_context,
+        set_visual_reference_context,
+    )
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.6-sol",
+    )
+    token = set_visual_reference_context(
+        [
+            {
+                "uri": "/tmp/g1.png",
+                "role_hint": "visual_reference",
+                "source": "previous_visual_arsenal_output",
+                "user_ref_index": 1,
+            },
+            {
+                "uri": "/tmp/g4.png",
+                "role_hint": "visual_reference",
+                "source": "previous_visual_arsenal_output",
+                "user_ref_index": 4,
+            },
+        ]
+    )
+    message = '''[Thread context — prior messages in this thread (not yet in conversation history):]
+[thread parent] simon: 用 xAI 產四張圖片
+[End of thread context]
+
+以 G1 和 G4 為主要參考，幫我換個背景，然後把鞋脫了
+
+Raphael State Observer (ephemeral, internal):
+task_state: casual_or_direct
+
+Visual Arsenal default for Slack image work:
+- Example mentions story-video workflow, G2, and G3.
+
+Raphael Canonical Turn Decision (internal):
+next_action: call_visual_agent_generate
+'''
+    try:
+        handoff = build_direct_visual_agent_handoff(agent, message)
+    finally:
+        reset_visual_reference_context(token)
+
+    assert handoff is not None
+    assert handoff["tool_name"] == "visual_agent_generate"
+    assert handoff["arguments"]["attachments"] == ["/tmp/g1.png", "/tmp/g4.png"]
 
 
 def test_direct_visual_handoff_routes_grok_web_alias_followup_to_xai():

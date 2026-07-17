@@ -1661,6 +1661,7 @@ def _visual_reference_context_for_turn(
         prompt_requests_original_visual_references,
         prompt_requests_visual_reference_reuse,
     )
+    from agent.visual.prompt_text import strip_visual_prompt_metadata
     from tools.story_video_provider_guard import current_operator_request_text
 
     references: List[Dict[str, Any]] = [
@@ -1673,7 +1674,9 @@ def _visual_reference_context_for_turn(
         for index, path in enumerate(current_attachment_paths)
         if isinstance(path, str) and path.strip()
     ]
-    operator_request = current_operator_request_text(message)
+    operator_request = strip_visual_prompt_metadata(
+        current_operator_request_text(message)
+    )
     requests_original = prompt_requests_original_visual_references(operator_request)
     if not (
         requests_original

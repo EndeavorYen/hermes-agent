@@ -7,6 +7,9 @@ from typing import Any
 _VISUAL_METADATA_MARKERS = (
     "[Visual Arsenal source images]",
     "The current Slack message includes user-uploaded source/reference images cached on this machine.",
+    "Raphael State Observer (ephemeral, internal):",
+    "Visual Arsenal default for Slack image work:",
+    "Raphael Canonical Turn Decision (internal):",
 )
 
 _DROP_SECTION_MARKERS = {
@@ -61,7 +64,8 @@ _XAI_POSITIVE_LABELS = {
 }
 
 
-def strip_visual_prompt_metadata(value: Any) -> str:
+def strip_visual_runtime_metadata(value: Any) -> str:
+    """Drop injected runtime context while preserving reply/thread context."""
     text = str(value or "").strip()
     if not text:
         return ""
@@ -70,7 +74,13 @@ def strip_visual_prompt_metadata(value: Any) -> str:
         index = text.find(marker)
         if index >= 0:
             cut_at = min(cut_at, index)
-    text = text[:cut_at].strip()
+    return text[:cut_at].strip()
+
+
+def strip_visual_prompt_metadata(value: Any) -> str:
+    text = strip_visual_runtime_metadata(value)
+    if not text:
+        return ""
     text = _THREAD_CONTEXT_RE.sub("", text)
     text = _REPLYING_TO_RE.sub("", text).strip()
     return re.sub(r"\n{3,}", "\n\n", text)
