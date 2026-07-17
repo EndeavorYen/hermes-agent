@@ -43,6 +43,34 @@ def test_control_leaves_story_video_orchestration_to_story_video_phase_gates():
     assert decision.next_action == "continue_story_video_workflow"
 
 
+def test_control_recognizes_story_video_natural_prefix_variants():
+    decision = build_raphael_control_decision(
+        "故事影片測試：影子為什麼會跟著我，30 秒，給 5 歲以上小朋友。"
+        "只規劃，嚴禁產圖、語音或影片。"
+    )
+
+    assert decision.mode == "general_conversation"
+    assert decision.goal.target_artifact == "story_video_workflow"
+    assert decision.goal.phase == "story_video_orchestration"
+    assert decision.route.handoff_tool is None
+    assert decision.evidence.required_proofs == ("story_video_phase_proof",)
+
+
+def test_control_honors_explicit_no_media_intent_before_visual_fallback():
+    decision = build_raphael_control_decision(
+        "請規劃一段產品介紹影片腳本，先不要產圖、語音或影片。",
+        visual_plan={
+            "should_use_visual_package": True,
+            "confidence": 0.99,
+            "arguments": {"include_image": True, "include_video": True},
+        },
+    )
+
+    assert decision.mode == "general_conversation"
+    assert decision.route.handoff_tool is None
+    assert "artifact_quality_evidence" not in decision.evidence.required_proofs
+
+
 def test_control_recognizes_structured_story_video_runtime_context():
     decision = build_raphael_control_decision(
         "STORY_VIDEO_RUN_CONTEXT run_id=run-1 phase=planning "

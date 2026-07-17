@@ -399,6 +399,29 @@ def build_raphael_control_decision(
             confidence=0.86,
         )
 
+    if (
+        _explicitly_defers_media_generation(prompt)
+        and not _contains_any(prompt, _TOOL_TASK_MARKERS)
+    ):
+        return RaphaelControlDecision(
+            mode="general_conversation",
+            goal=RaphaelGoalDecision(
+                summary=_summary(prompt),
+                target_artifact="answer",
+                success_conditions=(
+                    "answer_matches_user_intent",
+                    "no_media_generation",
+                ),
+                phase="planning_only",
+            ),
+            route=RaphaelRouteDecision(),
+            evidence=RaphaelEvidenceDecision(
+                required_proofs=("answer_grounded_in_context",),
+            ),
+            next_action="answer_without_media_generation",
+            confidence=0.96,
+        )
+
     missing_reference = _missing_reference_index(prompt, len(attachment_list))
     if missing_reference is not None:
         question = (
@@ -848,27 +871,30 @@ def _fallback_visual_plan(
     attachments: list[str],
 ) -> dict[str, Any]:
     lowered = str(prompt or "").lower()
-    should_use_visual = bool(attachments) or any(
-        marker in lowered
-        for marker in (
-            "image",
-            "picture",
-            "photo",
-            "video",
-            "clip",
-            "motion",
-            "visual",
-            "圖片",
-            "照片",
-            "影像",
-            "影片",
-            "短片",
-            "動畫",
-            "動態",
-            "產圖",
-            "生成圖",
+    should_use_visual = (
+        bool(attachments)
+        or any(
+            marker in lowered
+            for marker in (
+                "image",
+                "picture",
+                "photo",
+                "video",
+                "clip",
+                "motion",
+                "visual",
+                "圖片",
+                "照片",
+                "影像",
+                "影片",
+                "短片",
+                "動畫",
+                "動態",
+                "產圖",
+                "生成圖",
+            )
         )
-    )
+    ) and not _explicitly_defers_media_generation(prompt)
     image_provider = "openai-codex" if "openai" in lowered or "image2" in lowered else VISUAL_MEDIA_PROVIDER_DEFAULT
     arguments: dict[str, Any] = {
         "include_image": should_use_visual,
@@ -931,10 +957,52 @@ def _looks_like_story_video_orchestration(prompt: str) -> bool:
         for marker in (
             "story_video_operator_context",
             "story_video_run_context",
-            "故事影片：",
-            "故事影片:",
-            "story-video:",
-            "story video:",
+            "故事影片",
+            "story-video",
+            "story video",
+        )
+    )
+
+
+def _explicitly_defers_media_generation(prompt: str) -> bool:
+    lowered = str(prompt or "").casefold()
+    compact = re.sub(r"\s+", "", lowered)
+    if any(
+        marker in lowered or marker in compact
+        for marker in (
+            "只規劃",
+            "僅規劃",
+            "仅规划",
+            "規劃模式",
+            "规划模式",
+            "planning-only",
+            "planning only",
+            "plan-only",
+            "plan only",
+            "no media",
+        )
+    ):
+        return True
+
+    no_image = re.search(
+        r"(?:先)?(?:不要|不產|不生成|不能|不得|不准|禁止|嚴禁|严禁)"
+        r"[^。！？!?\n]{0,24}(?:產圖|生圖|生成圖片|圖片|图像|image|images)",
+        compact,
+    )
+    no_video = re.search(
+        r"(?:先)?(?:不要|不產|不生成|不能|不得|不准|禁止|嚴禁|严禁)"
+        r"[^。！？!?\n]{0,36}(?:產影片|生成影片|影片|視頻|视频|video|videos)",
+        compact,
+    )
+    if no_image and no_video:
+        return True
+
+    return bool(
+        re.search(
+            r"(?:先)?(?:不要|不產|不生成|不能|不得|不准|禁止|嚴禁|严禁)"
+            r"[^。！？!?\n]{0,36}(?:產圖|生圖|生成圖片|圖片|图像|image|images)"
+            r"[^。！？!?\n]{0,36}(?:影片|視頻|视频|video|videos)",
+            compact,
         )
     )
 
