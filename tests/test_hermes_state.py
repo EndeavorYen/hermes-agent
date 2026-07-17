@@ -98,6 +98,26 @@ class TestSessionLifecycle:
     def test_get_nonexistent_session(self, db):
         assert db.get_session("nonexistent") is None
 
+    def test_find_previous_session_for_same_gateway_key(self, db):
+        session_key = "agent:main:slack:dm:D123:thread-1"
+        db.create_session(
+            "old-session",
+            source="slack",
+            session_key=session_key,
+        )
+        db.append_message("old-session", role="user", content="old visual turn")
+        db.end_session("old-session", "session_reset")
+        db.create_session(
+            "current-session",
+            source="slack",
+            session_key=session_key,
+        )
+
+        assert db.find_previous_session_id_for_key(
+            session_key=session_key,
+            exclude_session_id="current-session",
+        ) == "old-session"
+
     def test_create_session_enriches_null_metadata_on_conflict(self, db):
         """Gateway creates a bare row first; the agent's later create_session
         must backfill model/model_config/system_prompt without clobbering the

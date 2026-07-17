@@ -1475,6 +1475,49 @@ def test_direct_visual_handoff_uses_session_edit_anchor_for_followup_edit():
     }
 
 
+def test_direct_visual_handoff_routes_colloquial_chinese_reference_edit():
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+    from gateway.session_context import reset_visual_reference_context, set_visual_reference_context
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.6-sol",
+    )
+    token = set_visual_reference_context(
+        [
+            {
+                "uri": "/tmp/g1.png",
+                "role_hint": "edit_anchor",
+                "source": "previous_selected_artifact",
+                "user_ref_index": 1,
+            },
+            {
+                "uri": "/tmp/g4.png",
+                "role_hint": "visual_reference",
+                "source": "previous_tool_reference",
+                "user_ref_index": 4,
+            },
+        ]
+    )
+    try:
+        handoff = build_direct_visual_agent_handoff(
+            agent,
+            (
+                "G1 ~ G4 都不錯，其中 G1 和 G4 更棒。現在以 G1 和 G4 "
+                "為主要參考，幫我換個背景，然後把鞋給脫了露出絲襪腳底"
+            ),
+        )
+    finally:
+        reset_visual_reference_context(token)
+
+    assert handoff is not None
+    assert handoff["tool_name"] == "visual_agent_generate"
+    assert handoff["arguments"]["attachments"] == ["/tmp/g1.png", "/tmp/g4.png"]
+    assert handoff["arguments"]["include_image"] is True
+    assert handoff["arguments"]["include_video"] is False
+
+
 def test_direct_visual_handoff_routes_grok_web_alias_followup_to_xai():
     from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
     from gateway.session_context import reset_visual_reference_context, set_visual_reference_context

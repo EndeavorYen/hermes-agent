@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import re
 from typing import Any
 
@@ -195,6 +196,8 @@ def prompt_requests_visual_reference_reuse(prompt: Any) -> bool:
         "change",
         "variation",
         "reference",
+        "參考",
+        "参考",
         "上一張",
         "上張",
         "上回",
@@ -243,16 +246,29 @@ def prompt_requests_original_visual_references(prompt: Any) -> bool:
     if not text:
         return False
     compact = re.sub(r"\s+", "", text)
+    explicit_chinese_reference_markers = (
+        "原ref",
+        "原reference",
+        "原本ref",
+        "原本的ref",
+        "原本reference",
+        "原本的reference",
+        "原來ref",
+        "原來的ref",
+        "原來reference",
+        "原來的reference",
+        "原来ref",
+        "原来的ref",
+        "原来reference",
+        "原来的reference",
+    )
     return (
-        "reference" in text
-        or "ref" in text
-        or "參考" in text
-        or "参考" in text
+        "original reference" in text
+        or "original ref" in text
         or "原圖" in text
         or "原图" in text
         or "原始" in text
-        or "原ref" in compact
-        or "原reference" in compact
+        or any(marker in compact for marker in explicit_chinese_reference_markers)
     )
 
 
@@ -260,7 +276,12 @@ def entry_is_generated_visual_output(entry: dict[str, Any]) -> bool:
     if not isinstance(entry, dict):
         return False
     source = str(entry.get("source") or "").strip()
-    if source in {"previous_selected_artifact", "previous_tool_output", "generated_output"}:
+    if source in {
+        "previous_selected_artifact",
+        "previous_tool_output",
+        "previous_visual_arsenal_output",
+        "generated_output",
+    }:
         return True
     uri = str(entry.get("uri") or entry.get("path") or entry.get("attachment") or "").strip()
     if not uri:
@@ -279,14 +300,42 @@ def filter_visual_reference_entries_for_prompt(
     entries: list[dict[str, Any]],
     prompt: Any,
 ) -> list[dict[str, Any]]:
-    if not prompt_requests_original_visual_references(prompt):
-        return entries
-    return [entry for entry in entries if not entry_is_generated_visual_output(entry)]
+    filtered = list(entries)
+    if prompt_requests_original_visual_references(prompt):
+        filtered = [
+            entry for entry in filtered if not entry_is_generated_visual_output(entry)
+        ]
+    mentioned_indices = {
+        int(match)
+        for match in re.findall(
+            r"(?<![a-z0-9])g\s*([1-9][0-9]*)",
+            str(prompt or "").lower(),
+        )
+    }
+    if mentioned_indices:
+        named = [
+            entry
+            for entry in filtered
+            if _coerce_user_ref_index(entry.get("user_ref_index"))
+            in mentioned_indices
+        ]
+        if named:
+            return named
+    return filtered
 
 
 def _entries_from_tool_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
-    if not payload.get("success"):
+    library_root = str(payload.get("library_root") or "").strip()
+    output_paths = normalise_visual_reference_paths(
+        payload.get("absolute_output_image_paths")
+    )
+    is_visual_arsenal_payload = bool(
+        library_root
+        and output_paths
+        and Path(library_root).expanduser().name == "visual-arsenal"
+    )
+    if not payload.get("success") and not is_visual_arsenal_payload:
         return entries
 
     delivery = payload.get("delivery_metadata")
@@ -322,13 +371,41 @@ def _entries_from_tool_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 source="previous_tool_output",
             ),
         )
-    for field in ("images", "reference_image_urls", "attachments"):
+    for entry in normalise_visual_reference_entries(
+        payload.get("images"),
+        default_role_hint="edit_anchor",
+        default_source="previous_tool_output",
+    ):
+        _append_unique_entry(entries, entry)
+    for field in ("reference_image_urls", "attachments"):
         for entry in normalise_visual_reference_entries(
             payload.get(field),
             default_role_hint="visual_reference",
             default_source="previous_tool_reference",
         ):
             _append_unique_entry(entries, entry)
+    if is_visual_arsenal_payload:
+        try:
+            root = Path(library_root).expanduser().resolve(strict=False)
+        except Exception:
+            root = None
+        for index, output_path in enumerate(output_paths, start=1):
+            try:
+                resolved = Path(output_path).expanduser().resolve(strict=False)
+                if root is None:
+                    continue
+                resolved.relative_to(root)
+            except (OSError, ValueError):
+                continue
+            _append_unique_entry(
+                entries,
+                _make_entry(
+                    output_path,
+                    role_hint="visual_reference",
+                    source="previous_visual_arsenal_output",
+                    user_ref_index=index,
+                ),
+            )
     return entries
 
 
@@ -471,6 +548,20 @@ def collect_recent_original_visual_reference_entries(
     *,
     limit: int = MAX_SESSION_VISUAL_REFERENCES,
 ) -> list[dict[str, Any]]:
+    generated_output_uris: set[str] = set()
+    for msg in messages or []:
+        if not isinstance(msg, dict) or msg.get("role") not in {"tool", "function"}:
+            continue
+        payload = _as_json_object(msg.get("content"))
+        if not payload:
+            continue
+        for entry in _entries_from_tool_payload(payload):
+            if not entry_is_generated_visual_output(entry):
+                continue
+            uri = str(entry.get("uri") or "").strip()
+            if uri:
+                generated_output_uris.add(uri)
+
     entries: list[dict[str, Any]] = []
     for msg in reversed(messages or []):
         if not isinstance(msg, dict):
@@ -482,7 +573,8 @@ def collect_recent_original_visual_reference_entries(
         elif role == "user":
             candidate_entries = _entries_from_message_content(msg.get("content"))
         for entry in candidate_entries:
-            if entry_is_generated_visual_output(entry):
+            uri = str(entry.get("uri") or "").strip()
+            if entry_is_generated_visual_output(entry) or uri in generated_output_uris:
                 continue
             _append_unique_entry(entries, entry)
         if len(entries) >= limit:

@@ -2341,6 +2341,26 @@ class SessionStore:
             logger.debug("Could not load messages from DB: %s", e)
             return []
 
+    def load_previous_transcript_for_session_key(
+        self,
+        session_key: str,
+        current_session_id: str,
+    ) -> List[Dict[str, Any]]:
+        """Load the prior same-route transcript for explicit asset reuse."""
+        if not self._db:
+            return []
+        try:
+            previous_id = self._db.find_previous_session_id_for_key(
+                session_key=session_key,
+                exclude_session_id=current_session_id,
+            )
+            if not previous_id:
+                return []
+            return self._db.get_messages_as_conversation(previous_id)
+        except Exception as e:
+            logger.debug("Could not load prior gateway transcript: %s", e)
+            return []
+
     def rewind_session(self, session_id: str, n: int = 1) -> Optional[Dict[str, Any]]:
         """Back up ``n`` user turns via soft-delete, keeping rows for audit.
 
