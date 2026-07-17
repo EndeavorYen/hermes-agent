@@ -2349,6 +2349,32 @@ def get_plugin_command_handler(name: str) -> Optional[Callable]:
     return entry["handler"] if entry else None
 
 
+def invoke_plugin_command_handler(
+    handler: Callable,
+    raw_args: str,
+    *,
+    event: Any = None,
+) -> Any:
+    """Invoke a plugin command, passing gateway context only when supported."""
+    if event is None:
+        return handler(raw_args)
+    try:
+        parameters = inspect.signature(handler).parameters
+    except (TypeError, ValueError):
+        return handler(raw_args)
+    event_parameter = parameters.get("event")
+    if event_parameter is not None:
+        if event_parameter.kind is inspect.Parameter.POSITIONAL_ONLY:
+            return handler(raw_args, event)
+        return handler(raw_args, event=event)
+    if any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    ):
+        return handler(raw_args, event=event)
+    return handler(raw_args)
+
+
 _PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0
 
 

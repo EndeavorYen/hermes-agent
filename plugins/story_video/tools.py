@@ -1238,6 +1238,28 @@ def story_video_control(
     if voice_active_profile_path is not None:
         profile_kwargs["active_profile_path"] = voice_active_profile_path
 
+    if action == "guide":
+        from .guide import format_story_video_guide, normalize_guide_section
+
+        section = normalize_guide_section(str(args.get("section") or "help")) or "help"
+        context = state_store.for_session(session_id)
+        voices: dict[str, Any] | None = None
+        if section == "voices":
+            try:
+                voices = list_voice_profiles(**profile_kwargs)
+            except VoiceProfileError:
+                voices = None
+        payload: dict[str, Any] = {
+            "success": True,
+            "action": action,
+            "section": section,
+            "guide": format_story_video_guide(context, section, voices=voices),
+        }
+        if context is not None:
+            payload.update(_context_payload(context))
+            payload.update({"action": action, "section": section})
+        return json.dumps(payload, ensure_ascii=False)
+
     if action == "list_voices":
         try:
             payload = list_voice_profiles(**profile_kwargs)

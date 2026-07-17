@@ -74,6 +74,16 @@ _VOICE_MANAGEMENT_ACTIONS: tuple[tuple[str, re.Pattern[str]], ...] = (
         ),
     ),
 )
+_STORY_VIDEO_HELP_SUBJECT_RE = re.compile(
+    r"(?:故事影片|story[ -]?video)",
+    re.IGNORECASE,
+)
+_STORY_VIDEO_HELP_INTENT_RE = re.compile(
+    r"(?:怎麼用|怎么用|如何(?:使用|操作)|操作說明|操作说明|"
+    r"幫助|帮助|說明|说明|help|指令|command|prompt|範例|范例|example|"
+    r"目前狀態|目前状态|狀態|状态|進度|进度|有哪些聲線|有哪些声线)",
+    re.IGNORECASE,
+)
 
 
 def _has_operator_setup_blocker(*values: str) -> bool:
@@ -178,6 +188,21 @@ def _voice_management_action(text: Any) -> str | None:
     return None
 
 
+def _story_video_help_section(text: Any) -> str | None:
+    operator_text = _current_operator_text(text)
+    if _STORY_VIDEO_HELP_SUBJECT_RE.search(operator_text) is None:
+        return None
+    if _STORY_VIDEO_HELP_INTENT_RE.search(operator_text) is None:
+        return None
+    if re.search(r"(?:目前狀態|目前状态|狀態|状态|進度|进度|status)", operator_text, re.I):
+        return "status"
+    if re.search(r"(?:prompt|範例|范例|example)", operator_text, re.I):
+        return "examples"
+    if _VOICE_NOUN_RE.search(operator_text) is not None:
+        return "voices"
+    return "help"
+
+
 def _voice_management_instruction(action: str) -> str:
     return (
         "VOICE_MANAGER_FAST_ROUTE. This request manages the global local voice "
@@ -189,6 +214,53 @@ def _voice_management_instruction(action: str) -> str:
         "a story-video project. Return the manager result concisely; when required input "
         "is missing, report only the concrete missing prerequisite."
     )
+
+
+def _story_video_help_instruction(section: str) -> str:
+    return (
+        "STORY_VIDEO_HELP_FAST_ROUTE. This is a read-only operator-help request, "
+        "not a production action. Call story_video_control action=guide exactly "
+        f"once with section={section}. Do not run shell commands, terminal tools, "
+        "file inspection, search, memory lookup, delegation, media, or visual tools. "
+        "Do not create, bind, validate, or advance a story-video project. Do not "
+        "change auto mode or provider authorization. Return the guide text concisely."
+    )
+
+
+def _read_only_context_for_event(event: Any) -> StoryVideoRunContext | None:
+    if event is None:
+        return None
+    context = _STORE.for_source(_source_key(event))
+    if context is None:
+        context = _STORE.for_source(_legacy_source_key(event))
+    if context is None:
+        reply_parent = str(getattr(event, "reply_to_text", "") or "").strip()
+        if reply_parent:
+            context = _STORE.for_original_request(reply_parent)
+    return context
+
+
+def handle_story_video_command(raw_args: str, *, event: Any = None) -> str:
+    from .guide import format_story_video_guide, normalize_guide_section
+
+    section = normalize_guide_section(raw_args)
+    if section is None:
+        return (
+            f"不支援的故事影片子指令：{str(raw_args or '').strip()}\n\n"
+            + format_story_video_guide(None, "help")
+        )
+    context = _read_only_context_for_event(event)
+    voices: dict[str, Any] | None = None
+    if section == "voices":
+        from .tools import story_video_voice_manager
+
+        try:
+            payload = json.loads(story_video_voice_manager({"action": "list"}))
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            payload = {}
+        if isinstance(payload, dict) and payload.get("success") is True:
+            voices = payload
+    return format_story_video_guide(context, section, voices=voices)
 
 
 def _write_project_contract(context: StoryVideoRunContext) -> None:
@@ -290,6 +362,8 @@ def pre_gateway_dispatch(
     operator_text = _current_operator_text(text)
     if _voice_management_action(operator_text) is not None:
         return None
+    if _story_video_help_section(operator_text) is not None:
+        return None
     source_key = _source_key(event)
     context = _STORE.for_source(source_key)
     if context is None:
@@ -353,6 +427,14 @@ def pre_llm_call(
             _SESSION_PHASE_AT_LLM_START.pop(session_id, None)
             _SESSION_STATUS_AT_LLM_START.pop(session_id, None)
         return {"context": _voice_management_instruction(voice_action)}
+
+    help_section = _story_video_help_section(user_message)
+    if help_section is not None:
+        if session_id:
+            _VISUAL_AGENT_BYPASS_SESSIONS.add(session_id)
+            _SESSION_PHASE_AT_LLM_START.pop(session_id, None)
+            _SESSION_STATUS_AT_LLM_START.pop(session_id, None)
+        return {"context": _story_video_help_instruction(help_section)}
 
     if explicit_visual_agent_request_detected(user_message):
         if session_id:
@@ -1246,9 +1328,12 @@ def transform_llm_output(
                 ]
             ).rstrip()
     text = _guard_render_delivery(text, context)
-    if not context.next_call or context.auto_mode:
+    from .guide import format_raphael_next_action
+
+    next_line = format_raphael_next_action(context)
+    if not next_line:
         return text
-    return f"{text}\n\nRaphael 下一步：回覆「{context.next_call}」。"
+    return f"{text}\n\n{next_line}"
 
 
 _VIDEO_PATH_RE = re.compile(

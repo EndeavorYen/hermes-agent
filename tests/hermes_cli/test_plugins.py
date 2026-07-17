@@ -20,6 +20,7 @@ from hermes_cli.plugins import (
     get_pre_tool_call_block_message,
     get_pre_verify_continue_message,
     has_middleware,
+    invoke_plugin_command_handler,
     resolve_plugin_command_result,
 )
 from hermes_cli.middleware import (
@@ -1899,6 +1900,40 @@ class TestPluginCommands:
         mgr = PluginManager()
         with patch("hermes_cli.plugins._plugin_manager", mgr):
             assert get_plugin_command_handler("nonexistent") is None
+
+    def test_invoke_plugin_command_handler_passes_event_when_declared(self):
+        event = object()
+
+        def handler(raw_args, *, event=None):
+            return raw_args, event
+
+        assert invoke_plugin_command_handler(
+            handler,
+            "status",
+            event=event,
+        ) == ("status", event)
+
+    def test_invoke_plugin_command_handler_passes_event_to_kwargs_handler(self):
+        event = object()
+
+        def handler(raw_args, **kwargs):
+            return raw_args, kwargs
+
+        assert invoke_plugin_command_handler(
+            handler,
+            "status",
+            event=event,
+        ) == ("status", {"event": event})
+
+    def test_invoke_plugin_command_handler_preserves_legacy_signature(self):
+        assert (
+            invoke_plugin_command_handler(
+                lambda raw_args: raw_args,
+                "help",
+                event=object(),
+            )
+            == "help"
+        )
 
     def test_get_plugin_commands_returns_dict(self):
         """get_plugin_commands() returns the full commands dict."""

@@ -4,8 +4,9 @@ import json
 from types import SimpleNamespace
 
 from plugins.story_video import hooks
+from plugins.story_video import guide
 from plugins.story_video.audit import ProviderAudit
-from plugins.story_video.state import StoryVideoStateStore
+from plugins.story_video.state import StoryVideoStateStore, parse_operator_call
 from plugins.story_video.tools import story_video_control
 
 
@@ -114,6 +115,110 @@ def test_voice_management_fast_route_bypasses_active_project_phase_guards(
         )
         is None
     )
+
+
+def test_natural_help_fast_route_does_not_create_story_project(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    monkeypatch.setattr(hooks, "_VISUAL_AGENT_BYPASS_SESSIONS", set())
+
+    assert hooks.pre_gateway_dispatch(event=_event("故事影片怎麼用")) is None
+    result = hooks.pre_llm_call(
+        session_id="story-help-session",
+        user_message="故事影片怎麼用",
+    )
+
+    assert store.for_session("story-help-session") is None
+    assert "story_video_control action=guide exactly once" in result["context"]
+    assert "section=help" in result["context"]
+    assert "Do not run shell commands" in result["context"]
+    assert "Do not create, bind, validate, or advance" in result["context"]
+
+
+def test_natural_help_maps_status_examples_and_voices_without_catching_start() -> None:
+    cases = {
+        "故事影片目前狀態": "status",
+        "故事影片 prompt 範例": "examples",
+        "Raphael，故事影片有哪些聲線？": "voices",
+        "Raphael 故事影片幫助": "help",
+    }
+
+    for prompt, section in cases.items():
+        assert hooks._story_video_help_section(prompt) == section
+
+    assert hooks._story_video_help_section(
+        "故事影片：恐龍起源｜5 分鐘｜寫實電影感。全自動"
+    ) is None
+
+
+def test_natural_status_help_bypasses_active_project_phase_guards(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    monkeypatch.setattr(hooks, "_VISUAL_AGENT_BYPASS_SESSIONS", set())
+    start = hooks.pre_gateway_dispatch(
+        event=_event("故事影片：恐龍起源｜5分｜電影感科普。只規劃。")
+    )
+    hooks.pre_llm_call(session_id="active-help-story", user_message=start["text"])
+    active = store.for_session("active-help-story")
+    assert active is not None
+
+    result = hooks.pre_llm_call(
+        session_id="active-help-story",
+        user_message="故事影片目前狀態",
+    )
+
+    assert "section=status" in result["context"]
+    assert store.for_session("active-help-story").run_id == active.run_id
+    assert store.for_session("active-help-story").phase == active.phase
+    assert (
+        hooks.pre_tool_call(
+            session_id="active-help-story",
+            tool_name="story_video_control",
+            args={"action": "guide", "section": "status"},
+        )
+        is None
+    )
+    assert (
+        hooks.transform_llm_output(
+            session_id="active-help-story",
+            response_text="目前在 planning。",
+        )
+        is None
+    )
+
+
+def test_raphael_output_uses_canonical_next_action_formatter(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    monkeypatch.setattr(hooks, "_SESSION_PHASE_AT_LLM_START", {})
+    monkeypatch.setattr(hooks, "_SESSION_STATUS_AT_LLM_START", {})
+    monkeypatch.setattr(hooks, "_VISUAL_AGENT_BYPASS_SESSIONS", set())
+    call = parse_operator_call("故事影片：恐龍起源｜5分｜電影感")
+    assert call is not None
+    store.create_or_load(
+        source_key="source-raphael",
+        session_id="raphael-session",
+        call=call,
+        original_request="故事影片：恐龍起源｜5分｜電影感",
+    )
+    monkeypatch.setattr(
+        guide,
+        "format_raphael_next_action",
+        lambda _context: "CANONICAL_RAPHAEL_NEXT",
+    )
+
+    result = hooks.transform_llm_output(
+        session_id="raphael-session",
+        response_text="目前狀態",
+    )
+
+    assert result == "目前狀態\n\nCANONICAL_RAPHAEL_NEXT"
 
 
 def test_project_contract_defaults_to_semantic_holds_and_cinematic_focus_push(
