@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+from agent.raphael.finalization import enforce_raphael_completion
 from agent.raphael.kernel import prepare_raphael_turn, replay_raphael_turn
 from agent.raphael.mission import create_mission
 from agent.raphael.runtime_contract import (
@@ -51,6 +52,45 @@ def test_prepare_foreground_turn_records_canonical_decision(tmp_path):
     assert state.last_decision is not None
     assert state.last_decision["turn_id"] == "turn-1"
     assert state.last_decision["mode"] == "tool_task"
+
+
+def test_story_video_planning_turn_is_not_visual_finalization_work(tmp_path):
+    runtime_contract = resolve_raphael_runtime_contract(_enabled_config())
+    prompt = (
+        "故事影片測試：影子為什麼會跟著我，30 秒，給 5 歲以上小朋友。"
+        "只規劃，嚴禁產圖、語音或影片。"
+    )
+
+    with patch.dict("os.environ", {"HERMES_HOME": str(tmp_path)}):
+        decision = prepare_raphael_turn(
+            turn_id="turn-story-video-planning",
+            origin=RaphaelTurnOrigin.FOREGROUND,
+            runtime_contract=runtime_contract,
+            config=_enabled_config(),
+            user_message=prompt,
+            conversation_history=[],
+        )
+
+    assert decision is not None
+    assert decision.mode == "general_conversation"
+    assert decision.completion_policy == "informational"
+    assert decision.required_proofs == ("story_video_phase_proof",)
+
+    result = enforce_raphael_completion(
+        decision=decision.to_dict(),
+        final_response="規劃已完成。STORY_VIDEO_PHASE_PROOF: planning PASS",
+        messages=[
+            {"role": "user", "content": prompt},
+            {
+                "role": "assistant",
+                "content": "規劃已完成。STORY_VIDEO_PHASE_PROOF: planning PASS",
+            },
+        ],
+    )
+
+    assert result.status == "informational"
+    assert result.final_response.endswith("STORY_VIDEO_PHASE_PROOF: planning PASS")
+    assert "direct_handoff_metadata" not in result.required_proofs
 
 
 def test_observer_is_read_only_and_kernel_owns_canonical_mission(tmp_path):
