@@ -1191,6 +1191,36 @@ def test_pre_llm_binds_rotated_child_to_parent_story_context(
     assert rotation["detail"]["parent_session_id"] == "session-parent"
 
 
+def test_internal_autopilot_rotation_is_not_misrouted_as_status_help(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    start = hooks.pre_gateway_dispatch(
+        event=_event("故事影片：為什麼會發燒｜3分鐘｜電影感科普。全自動")
+    )
+    hooks.pre_llm_call(session_id="session-parent", user_message=start["text"])
+    autopilot_message = (
+        "STORY_VIDEO_AUTOPILOT run_id=run-1 phase=keyframes. "
+        "Execute the next action now: story_video_quality_control "
+        "action=run_batch_chunk project_dir=/tmp/story-video-fever-run. "
+        "The tool owns prompt compilation and bounded production. "
+        "Do not merely report status; complete the phase."
+    )
+
+    result = hooks.pre_llm_call(
+        session_id="session-child",
+        parent_session_id="session-parent",
+        user_message=autopilot_message,
+    )
+
+    child = store.for_session("session-child")
+    assert child is not None
+    assert child.run_id == store.for_session("session-parent").run_id
+    assert "STORY_VIDEO_RUN_CONTEXT" in result["context"]
+    assert "STORY_VIDEO_HELP_FAST_ROUTE" not in result["context"]
+
+
 def test_autopilot_stops_for_operator_setup_blocker(tmp_path, monkeypatch) -> None:
     store = StoryVideoStateStore(tmp_path)
     monkeypatch.setattr(hooks, "_STORE", store)

@@ -92,6 +92,10 @@ _STORY_VIDEO_WRITING_HELP_RE = re.compile(
     r"(?:文本|寫作|写作|難度|难度|淺白|浅白|科普))",
     re.IGNORECASE,
 )
+_INTERNAL_STORY_VIDEO_CONTROL_PREFIXES = (
+    "STORY_VIDEO_AUTOPILOT",
+    "STORY_VIDEO_PLANNING_COMPLETION",
+)
 
 
 def _has_operator_setup_blocker(*values: str) -> bool:
@@ -198,6 +202,8 @@ def _voice_management_action(text: Any) -> str | None:
 
 def _story_video_help_section(text: Any) -> str | None:
     operator_text = _current_operator_text(text)
+    if operator_text.lstrip().startswith(_INTERNAL_STORY_VIDEO_CONTROL_PREFIXES):
+        return None
     if _STORY_VIDEO_HELP_SUBJECT_RE.search(operator_text) is None:
         return None
     writing_help = _STORY_VIDEO_WRITING_HELP_RE.search(operator_text) is not None
