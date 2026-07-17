@@ -17,7 +17,8 @@
 - Current active ratings are `family` and `general` only.
 - No new image candidates or media generation are part of this change.
 - Use TDD: observe each focused test fail before adding production behavior.
-- Local runtime skill edits stay under `/Users/simon/.hermes/skills/creative`; private runtime artifacts are not committed.
+- `$REPO_ROOT` is the topic worktree; `$HERMES_ROOT` is the machine-local Hermes state root.
+- Local runtime skill edits stay under `$HERMES_ROOT/skills/creative`; private runtime artifacts are not committed.
 
 ---
 
@@ -43,7 +44,7 @@ computes the final script SHA. Assert `_validate_planning(context).ok is True`.
 Run:
 
 ```bash
-/Users/simon/.hermes/hermes-agent/.venv/bin/python -m pytest -q \
+$REPO_ROOT/.venv/bin/python -m pytest -q \
   tests/plugins/story_video/test_tools.py -k v6_review_board
 ```
 
@@ -161,7 +162,7 @@ profiles always produce one stable setup-required violation.
 - [ ] **Step 4: Verify GREEN and v5 regression**
 
 ```bash
-/Users/simon/.hermes/hermes-agent/.venv/bin/python -m pytest -q \
+$REPO_ROOT/.venv/bin/python -m pytest -q \
   tests/plugins/story_video/test_tools.py
 ```
 
@@ -207,7 +208,7 @@ profile, not unconditional for every project.
 Run:
 
 ```bash
-/Users/simon/.hermes/hermes-agent/.venv/bin/python -m pytest -q \
+$REPO_ROOT/.venv/bin/python -m pytest -q \
   tests/plugins/story_video/test_hooks.py -k planning
 ```
 
@@ -234,16 +235,16 @@ git commit -m "feat(story-video): route planning through v6 review"
 ### Task 4: Create The Standalone Runtime Review Skill
 
 **Files:**
-- Create: `/Users/simon/.hermes/skills/creative/story-video-script-review-board/SKILL.md`
-- Create: `/Users/simon/.hermes/skills/creative/story-video-script-review-board/references/review-contract.md`
-- Create: `/Users/simon/.hermes/skills/creative/story-video-script-review-board/templates/script_review_report.template.json`
-- Create: `/Users/simon/.hermes/skills/creative/story-video-script-review-board/evals/evals.json`
-- Create: `/Users/simon/.hermes/skills/creative/story-video-script-review-board/scripts/test_skill_contract.py`
-- Modify: `/Users/simon/.hermes/skills/creative/story-video-script-director/SKILL.md`
-- Modify: `/Users/simon/.hermes/skills/creative/story-video-script-director/references/script-quality-contract.md`
-- Modify: `/Users/simon/.hermes/skills/creative/story-video-script-director/scripts/test_skill_contract.py`
-- Modify: `/Users/simon/.hermes/skills/creative/story-video-production-pipeline/SKILL.md`
-- Modify: `/Users/simon/.hermes/skills/creative/story-video-production-pipeline/scripts/test_modular_story_quality_contracts.py`
+- Create: `$HERMES_ROOT/skills/creative/story-video-script-review-board/SKILL.md`
+- Create: `$HERMES_ROOT/skills/creative/story-video-script-review-board/references/review-contract.md`
+- Create: `$HERMES_ROOT/skills/creative/story-video-script-review-board/templates/script_review_report.template.json`
+- Create: `$HERMES_ROOT/skills/creative/story-video-script-review-board/evals/evals.json`
+- Create: `$HERMES_ROOT/skills/creative/story-video-script-review-board/scripts/test_skill_contract.py`
+- Modify: `$HERMES_ROOT/skills/creative/story-video-script-director/SKILL.md`
+- Modify: `$HERMES_ROOT/skills/creative/story-video-script-director/references/script-quality-contract.md`
+- Modify: `$HERMES_ROOT/skills/creative/story-video-script-director/scripts/test_skill_contract.py`
+- Modify: `$HERMES_ROOT/skills/creative/story-video-production-pipeline/SKILL.md`
+- Modify: `$HERMES_ROOT/skills/creative/story-video-production-pipeline/scripts/test_modular_story_quality_contracts.py`
 
 **Interfaces:**
 - Consumes: draft `script.md`, director planning artifacts, sources, content profile.
@@ -283,7 +284,7 @@ Run the three local skill contract test files. Expected: all pass.
 - [ ] **Step 1: Run focused and wider tests**
 
 ```bash
-/Users/simon/.hermes/hermes-agent/.venv/bin/python -m pytest -q \
+$REPO_ROOT/.venv/bin/python -m pytest -q \
   tests/plugins/story_video/test_tools.py \
   tests/plugins/story_video/test_hooks.py \
   tests/plugins/story_video/test_story_contract.py \
