@@ -8,6 +8,7 @@ Use the deterministic story-video command when you do not remember a prompt:
 /story-video
 /story-video status
 /story-video examples
+/story-video writing
 /story-video voices
 ```
 
@@ -24,6 +25,24 @@ loaded.
 
 Natural requests such as `故事影片怎麼用` and `Raphael 故事影片幫助` use the
 same guide, but the slash command is faster because it does not invoke the LLM.
+
+## Writing Depth
+
+Science, history, economics, technology, and other explanatory beats default to
+an accessible mode for curious newcomers age 5+ and non-specialist adults. It
+uses concrete intuition and a short causal chain before introducing the formal
+term, while preserving factual boundaries and forbidding baby talk.
+
+```text
+故事影片：凱因斯經濟學｜5分鐘｜電影感科普。全自動
+故事影片：凱因斯經濟學｜5分鐘｜進階版。全自動
+故事影片：凱因斯經濟學｜5分鐘｜專業版，不要淺白化。全自動
+```
+
+Use `/story-video writing` for the current controls. `進階版` keeps more
+technical detail for informed generalists. `專業版` or `不要淺白化` selects
+the expert-depth path. The selected mode is locked in
+`explanation_profile.json` when the project starts.
 
 ## Start
 

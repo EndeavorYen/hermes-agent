@@ -48,7 +48,9 @@ def test_help_is_compact_and_copy_ready() -> None:
 
     assert text.startswith("故事影片 Help")
     assert "/story-video status" in text
+    assert "/story-video writing" in text
     assert "故事影片：<主題>｜<時長>｜<風格>。全自動" in text
+    assert "淺顯但不幼稚" in text
     assert "story_video_control" not in text
 
 
@@ -125,6 +127,20 @@ def test_examples_cover_creation_and_dubbing_modes() -> None:
     assert "創作模式" in text
     assert "重製模式" in text
     assert "說書模式" in text
+    assert "凱因斯經濟學" in text
+    assert "進階版" in text
+    assert "專業版，不要淺白化" in text
+
+
+def test_writing_help_explains_default_and_opt_out() -> None:
+    text = format_story_video_guide(None, "writing")
+
+    assert "預設：淺顯但不幼稚" in text
+    assert "具體直覺" in text
+    assert "正式名詞" in text
+    assert "進階版" in text
+    assert "專業版" in text
+    assert "不要淺白化" in text
 
 
 def test_voice_guide_exposes_ids_without_private_paths() -> None:

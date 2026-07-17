@@ -8,8 +8,8 @@ def register(ctx) -> None:
     ctx.register_command(
         "story-video",
         hooks.handle_story_video_command,
-        description="Story-video help, status, examples, and voices.",
-        args_hint="[status|examples|voices]",
+        description="Story-video help, status, examples, writing, and voices.",
+        args_hint="[status|examples|writing|voices]",
     )
     ctx.register_tool(
         name="story_video_control",

@@ -122,7 +122,7 @@ def _story_video_project_write_is_denied(
             continue
         project_dir = os.path.join(story_root, parts[0])
         basename = parts[1]
-        if basename == "story_video_run_context.json":
+        if basename in {"story_video_run_context.json", "explanation_profile.json"}:
             return True
         if basename not in _STORY_VIDEO_PLANNING_ARTIFACTS:
             continue

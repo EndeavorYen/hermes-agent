@@ -142,6 +142,7 @@ def test_natural_help_maps_status_examples_and_voices_without_catching_start() -
         "故事影片目前狀態": "status",
         "故事影片 prompt 範例": "examples",
         "Raphael，故事影片有哪些聲線？": "voices",
+        "故事影片文本難度怎麼設定？": "writing",
         "Raphael 故事影片幫助": "help",
     }
 
@@ -150,6 +151,9 @@ def test_natural_help_maps_status_examples_and_voices_without_catching_start() -
 
     assert hooks._story_video_help_section(
         "故事影片：恐龍起源｜5 分鐘｜寫實電影感。全自動"
+    ) is None
+    assert hooks._story_video_help_section(
+        "故事影片：文本分析｜5 分鐘｜電影感科普。全自動"
     ) is None
 
 
@@ -236,11 +240,38 @@ def test_project_contract_defaults_to_semantic_holds_and_cinematic_focus_push(
     hooks._write_project_contract(context)
 
     contract = (tmp_path / "PROJECT_CONTRACT.md").read_text(encoding="utf-8")
+    explanation_profile = json.loads(
+        (tmp_path / "explanation_profile.json").read_text(encoding="utf-8")
+    )
     assert "cinematic focus push 1.0 -> 1.10" in contract
     assert "normally at least two complete sentences" in contract
     assert "one precise OpenAI candidate by default" in contract
+    assert "accessible-explainer-v1" in contract
+    assert explanation_profile["mode"] == "accessible"
+    assert explanation_profile["baby_talk_forbidden"] is True
     assert "stable center zoom" not in contract
     assert "40-60" not in contract
+
+
+def test_project_contract_locks_explicit_professional_explanation_mode(tmp_path) -> None:
+    context = SimpleNamespace(
+        project_dir=tmp_path,
+        run_id="run-professional",
+        topic="凱因斯經濟學",
+        duration="5mins",
+        visual_style="cinematic explainer",
+        original_request="故事影片：凱因斯經濟學｜專業版。全自動",
+    )
+
+    hooks._write_project_contract(context)
+
+    profile = json.loads(
+        (tmp_path / "explanation_profile.json").read_text(encoding="utf-8")
+    )
+    contract = (tmp_path / "PROJECT_CONTRACT.md").read_text(encoding="utf-8")
+    assert profile["mode"] == "professional"
+    assert profile["activation"] == "operator_override"
+    assert "Explanation mode: `professional`" in contract
 
 
 def test_runtime_context_requires_v6_review_board_and_reserved_content_profiles(
@@ -256,6 +287,12 @@ def test_runtime_context_requires_v6_review_board_and_reserved_content_profiles(
     context = runtime["context"]
 
     assert "quality_contract_version=6" in context
+    assert "explanation_profile.json" in context
+    assert "story-video-accessible-explainer" in context
+    assert "mode=accessible" in context
+    assert "newcomer_comprehension_editor" in context
+    assert "concrete intuition" in context
+    assert "baby talk" in context
     assert "content_profile.json" in context
     assert "script_review_report.json" in context
     assert "story-video-script-review-board" in context

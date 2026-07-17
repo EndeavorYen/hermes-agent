@@ -8,6 +8,10 @@ from pathlib import Path
 from typing import Any
 
 from .audit import ProviderAudit, normalize_provider
+from .accessible_explainer import (
+    validate_explanation_bundle,
+    validate_explanation_profile,
+)
 from .dubbing import (
     DubbingContractError,
     bind_project_voice_cast,
@@ -121,6 +125,7 @@ def _promote_legacy_scale_repeat_reasons(context: StoryVideoRunContext) -> None:
 def _validate_planning(context: StoryVideoRunContext) -> PhaseProof:
     required = (
         "PROJECT_CONTRACT.md",
+        "explanation_profile.json",
         "script.md",
         "storyboard.md",
         "scene_ledger.json",
@@ -144,6 +149,7 @@ def _validate_planning(context: StoryVideoRunContext) -> PhaseProof:
             violations.append("script.md requires ### S00-style narration headings")
     parsed: dict[str, Any] = {}
     for name in (
+        "explanation_profile.json",
         "scene_ledger.json",
         "production_checklist.json",
         "script_quality_report.json",
@@ -168,6 +174,12 @@ def _validate_planning(context: StoryVideoRunContext) -> PhaseProof:
             ledger_quality_version = 0
         violations.extend(validate_quality_ledger(ledger).violations)
         violations.extend(validate_story_script_bindings(ledger, script_text))
+    explanation_profile = parsed.get("explanation_profile.json")
+    if "explanation_profile.json" in parsed:
+        if not isinstance(explanation_profile, dict):
+            violations.append("explanation_profile.json root is not an object")
+        elif ledger_quality_version < 6:
+            violations.extend(validate_explanation_profile(explanation_profile))
     if ledger_quality_version >= 6:
         for name in ("content_profile.json", "script_review_report.json"):
             path = context.project_dir / name
@@ -238,6 +250,16 @@ def _validate_planning(context: StoryVideoRunContext) -> PhaseProof:
                 parsed["script_review_report.json"],
             )
         )
+        if isinstance(explanation_profile, dict):
+            violations.extend(
+                validate_explanation_bundle(
+                    profile=explanation_profile,
+                    content_profile=parsed["content_profile.json"],
+                    review_report=parsed["script_review_report.json"],
+                    ledger=ledger,
+                    script_text=script_text,
+                )
+            )
     pronunciation = parsed.get("pronunciation_lexicon.json")
     if isinstance(pronunciation, dict):
         if (

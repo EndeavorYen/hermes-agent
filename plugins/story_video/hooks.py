@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from .accessible_explainer import ensure_explanation_profile
 from .audit import ProviderAudit, ProviderAuditEvent
 from .policy import guard_tool_call
 from .state import OperatorCall, StoryVideoRunContext, StoryVideoStateStore, parse_operator_call
@@ -82,6 +83,13 @@ _STORY_VIDEO_HELP_INTENT_RE = re.compile(
     r"(?:怎麼用|怎么用|如何(?:使用|操作)|操作說明|操作说明|"
     r"幫助|帮助|說明|说明|help|指令|command|prompt|範例|范例|example|"
     r"目前狀態|目前状态|狀態|状态|進度|进度|有哪些聲線|有哪些声线)",
+    re.IGNORECASE,
+)
+_STORY_VIDEO_WRITING_HELP_RE = re.compile(
+    r"(?:(?:文本|寫作|写作|難度|难度|淺白|浅白|科普).{0,16}"
+    r"(?:怎麼|怎么|如何|設定|设定|調整|调整|選擇|选择|help)|"
+    r"(?:怎麼|怎么|如何|設定|设定|調整|调整|選擇|选择).{0,16}"
+    r"(?:文本|寫作|写作|難度|难度|淺白|浅白|科普))",
     re.IGNORECASE,
 )
 
@@ -192,7 +200,8 @@ def _story_video_help_section(text: Any) -> str | None:
     operator_text = _current_operator_text(text)
     if _STORY_VIDEO_HELP_SUBJECT_RE.search(operator_text) is None:
         return None
-    if _STORY_VIDEO_HELP_INTENT_RE.search(operator_text) is None:
+    writing_help = _STORY_VIDEO_WRITING_HELP_RE.search(operator_text) is not None
+    if _STORY_VIDEO_HELP_INTENT_RE.search(operator_text) is None and not writing_help:
         return None
     if re.search(r"(?:目前狀態|目前状态|狀態|状态|進度|进度|status)", operator_text, re.I):
         return "status"
@@ -200,6 +209,8 @@ def _story_video_help_section(text: Any) -> str | None:
         return "examples"
     if _VOICE_NOUN_RE.search(operator_text) is not None:
         return "voices"
+    if writing_help:
+        return "writing"
     return "help"
 
 
@@ -263,10 +274,14 @@ def handle_story_video_command(raw_args: str, *, event: Any = None) -> str:
     return format_story_video_guide(context, section, voices=voices)
 
 
-def _write_project_contract(context: StoryVideoRunContext) -> None:
+def _write_project_contract(context: StoryVideoRunContext) -> dict[str, Any]:
+    explanation_profile = ensure_explanation_profile(
+        context.project_dir,
+        context.original_request,
+    )
     path = context.project_dir / "PROJECT_CONTRACT.md"
     if path.exists():
-        return
+        return explanation_profile
     path.write_text(
         "\n".join(
             [
@@ -286,6 +301,9 @@ def _write_project_contract(context: StoryVideoRunContext) -> None:
                 "- Motion: cinematic focus push 1.0 -> 1.10; one eased focal target, no per-frame tracking",
                 "- Quality mode: quality-first shot-driven production",
                 "- Audience default: curious children age 5+; clear but never baby talk",
+                f"- Explanation profile: `{explanation_profile['profile_id']}`",
+                f"- Explanation mode: `{explanation_profile['mode']}`",
+                "- Explanation order: concrete intuition -> causal chain -> formal term -> precision boundary",
                 "- Story craft: Taiwan children's prose skill -> story-video script director -> production pipeline",
                 "- Visual continuity: one style bible and one approved style anchor across the full video",
                 "- Ending: cinematic educational payoff from the story's knowledge payoff and ending echo",
@@ -300,6 +318,7 @@ def _write_project_contract(context: StoryVideoRunContext) -> None:
         ),
         encoding="utf-8",
     )
+    return explanation_profile
 
 
 def _native_chunk_call(context: StoryVideoRunContext) -> str:
@@ -537,6 +556,8 @@ def pre_llm_call(
     if action == "stop":
         return None
 
+    explanation_profile = _write_project_contract(context)
+
     if session_id:
         _SESSION_PHASE_AT_LLM_START[session_id] = context.phase
         _SESSION_STATUS_AT_LLM_START[session_id] = context.status
@@ -588,6 +609,22 @@ def pre_llm_call(
         "script_quality_report.json, script_review_report.json, and "
         "pronunciation_lexicon.json in project_dir from the original request "
         "and a proactive zh-TW risk-term scan; PROJECT_CONTRACT.md already exists. "
+        "explanation_profile.json is a deterministic project contract and is already "
+        f"locked with mode={explanation_profile['mode']}. Do not rewrite it. Bind "
+        "content_profile.json explanation_profile_id and explanation_mode to that file. "
+        "For mode=accessible on explanatory content, include "
+        "story-video-accessible-explainer-v1 in supplemental_writer_profile_ids, apply "
+        "story-video-accessible-explainer before dramatic adaptation, and add exactly one "
+        "newcomer_comprehension_editor to the review board. Build each difficult idea in "
+        "this order: concrete intuition, short causal chain, formal term, then precision "
+        "boundary. Keep useful technical words, but explain them through observable actors, "
+        "actions, and consequences. Baby talk, fake simplicity, and lost factual nuance are "
+        "blocking defects. The reviewer MUST emit accessibility_metrics with schema="
+        "story_video_accessibility_metrics_v1, status=PASS, empty unexplained_jargon, "
+        "baby_talk_detected=false, precision_loss_detected=false, and evidence-bound "
+        "concept_bridges. In mode=advanced, keep the same binding while allowing denser "
+        "terminology. In mode=professional, preserve expert depth and do not require the "
+        "newcomer reviewer or accessibility metrics. "
         "content_profile.json MUST use schema=story_video_content_profile_v1. "
         "Default to rating=family, activation_status=active, minimum_viewer_age=5, "
         "policy_profile_id=family-safe-v1, "

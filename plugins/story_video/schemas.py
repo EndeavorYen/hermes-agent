@@ -22,7 +22,7 @@ STORY_VIDEO_CONTROL_SCHEMA = {
             },
             "section": {
                 "type": "string",
-                "enum": ["help", "status", "examples", "voices"],
+                "enum": ["help", "status", "examples", "writing", "voices"],
                 "description": "Read-only operator guide section when action=guide.",
             },
             "repair_request": {
