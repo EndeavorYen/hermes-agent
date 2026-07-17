@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .editorial_quality import EDITORIAL_PROFILE_ID, validate_editorial_profile_v2
+from .music import validate_music_direction
 
 
 REVIEW_CONTRACT_VERSION = 6
@@ -340,6 +341,11 @@ def validate_v6_review_bundle(
         )
     )
     if _text(content_profile.get("review_profile_id")) == EDITORIAL_PROFILE_ID:
+        music_direction = ledger.get("music_direction")
+        if not isinstance(music_direction, dict):
+            violations.append("music_direction is missing")
+        else:
+            violations.extend(validate_music_direction(music_direction))
         editorial_metrics = review_report.get("editorial_metrics")
         if not isinstance(editorial_metrics, dict):
             violations.append("script_review_report editorial_metrics is missing")

@@ -467,6 +467,20 @@ def _write_v6_review_fixture(context, *, include_review_artifacts: bool = True) 
                 "subject_treatment": "hero evidence remains dominant and factual",
                 "forbidden_drift": ["flat museum catalog framing"],
             },
+            "music_direction": {
+                "schema": "story_video_music_direction_v1",
+                "moods": ["discovery", "wonder", "mystery", "resolution"],
+                "instruments": ["marimba", "bells", "warm pads"],
+                "excluded_styles": ["aggressive drums", "trailer braam"],
+                "energy_curve": {
+                    "opening": "high",
+                    "body": "balanced",
+                    "payoff": "high",
+                    "ending": "gentle",
+                },
+                "narration_priority": True,
+                "min_cue_variants": 3,
+            },
         }
     )
     ledger["scenes"][0]["shots"] = shots
@@ -804,6 +818,25 @@ def test_v6_editorial_profile_accepts_complete_metrics(tmp_path) -> None:
     proof = validate_phase(context)
 
     assert proof.ok is True
+
+
+def test_v6_editorial_profile_requires_valid_music_direction(tmp_path) -> None:
+    _store, context = _active_context(tmp_path)
+    ledger = _write_v6_review_fixture(context)
+    profile_path = context.project_dir / "content_profile.json"
+    profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    profile["review_profile_id"] = "family-review-board-v2"
+    profile_path.write_text(json.dumps(profile), encoding="utf-8")
+    ledger["music_direction"]["narration_priority"] = False
+    ledger["music_direction"]["min_cue_variants"] = 1
+    (context.project_dir / "scene_ledger.json").write_text(
+        json.dumps(ledger), encoding="utf-8"
+    )
+
+    proof = validate_phase(context)
+
+    assert "music_direction narration_priority must be true" in proof.violations
+    assert "music_direction min_cue_variants<3" in proof.violations
 
 
 def test_v6_review_board_blocks_low_reviewer_score(tmp_path) -> None:

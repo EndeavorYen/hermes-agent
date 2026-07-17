@@ -6,6 +6,7 @@ import mimetypes
 import os
 import re
 import shutil
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -27,6 +28,7 @@ from .quality import (
     rank_candidate_assessments,
     validate_quality_ledger,
 )
+from .music import compile_music_bed, plan_music_cues
 from .release_art import compile_release_art_brief, compose_release_art
 from .shot_contract import (
     manifest_row_matches_shot_contract as _manifest_row_matches_shot_contract,
@@ -2780,6 +2782,7 @@ def _canonical_story_scene_id(value: str) -> str:
 def _select_background_music(
     context: StoryVideoRunContext,
     ledger: dict[str, Any],
+    scenes: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any] | None, str]:
     hermes_home = Path(
         os.environ.get("HERMES_HOME") or (Path.home() / ".hermes")
@@ -2788,6 +2791,76 @@ def _select_background_music(
     library = _load_json(library_path)
     if not isinstance(library, dict):
         return None, "NOT_CONFIGURED"
+    if str(library.get("schema") or "") == "story_video_music_library_v2":
+        ledger_scenes = {
+            str(scene.get("scene_id") or "").strip(): scene
+            for scene in ledger.get("scenes") or []
+            if isinstance(scene, dict) and str(scene.get("scene_id") or "").strip()
+        }
+        timeline: list[dict[str, Any]] = [
+            {
+                "scene_id": "RELEASE_OPENING",
+                "duration_sec": 3.0,
+                "narrative_role": "hook",
+            }
+        ]
+        for scene in scenes or []:
+            if not isinstance(scene, dict):
+                continue
+            scene_id = str(scene.get("scene_id") or "").strip()
+            duration = sum(
+                float(shot.get("timeline_duration_sec") or 0.0)
+                for shot in scene.get("shots") or []
+                if isinstance(shot, dict)
+            )
+            if duration <= 0:
+                duration = float(ledger.get("target_duration_sec") or 0.0) / max(
+                    1, len(scenes or [])
+                )
+            timeline.append(
+                {
+                    "scene_id": scene_id,
+                    "duration_sec": duration,
+                    "narrative_role": str(
+                        (ledger_scenes.get(scene_id) or {}).get("narrative_role") or ""
+                    ).strip(),
+                }
+            )
+        timeline.append(
+            {
+                "scene_id": "RELEASE_ENDING",
+                "duration_sec": 5.0,
+                "narrative_role": "close",
+            }
+        )
+        plan = plan_music_cues(ledger, library, timeline)
+        if plan.get("status") != "SELECTED":
+            return None, str(plan.get("status") or "INVALID_LIBRARY")
+        try:
+            compiled = compile_music_bed(context.project_dir, plan)
+        except (OSError, ValueError, subprocess.CalledProcessError):
+            return None, "COMPILE_FAILED"
+        ducking = plan.get("ducking") or {}
+        return (
+            {
+                "enabled": True,
+                "track_id": f"{plan['track_id']}-cued",
+                "path": str(compiled["path"]),
+                "rights_status": "approved",
+                "license": str(plan["license"]),
+                "source": str(plan["provenance"]),
+                "volume_db": float(plan.get("volume_db", -22.0)),
+                "fade_in_sec": float(plan.get("fade_in_sec", 2.0)),
+                "fade_out_sec": float(plan.get("fade_out_sec", 4.0)),
+                "ducking": {
+                    "threshold": float(ducking.get("threshold", 0.03)),
+                    "ratio": float(ducking.get("ratio", 10.0)),
+                    "attack_ms": int(ducking.get("attack_ms", 80)),
+                    "release_ms": int(ducking.get("release_ms", 800)),
+                },
+            },
+            "SELECTED_CUED",
+        )
     if str(library.get("schema") or "") != "story_video_music_library_v1":
         return None, "INVALID_LIBRARY"
 
@@ -3122,7 +3195,7 @@ def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
     ending_image = release_art["ending_card"]
 
     background_music, background_music_status = _select_background_music(
-        context, ledger
+        context, ledger, scenes
     )
     render_input = {
         "schema": "story_video_render_input_v2",
