@@ -246,14 +246,29 @@ def prompt_requests_original_visual_references(prompt: Any) -> bool:
     if not text:
         return False
     compact = re.sub(r"\s+", "", text)
+    explicit_chinese_reference_markers = (
+        "原ref",
+        "原reference",
+        "原本ref",
+        "原本的ref",
+        "原本reference",
+        "原本的reference",
+        "原來ref",
+        "原來的ref",
+        "原來reference",
+        "原來的reference",
+        "原来ref",
+        "原来的ref",
+        "原来reference",
+        "原来的reference",
+    )
     return (
         "original reference" in text
         or "original ref" in text
         or "原圖" in text
         or "原图" in text
         or "原始" in text
-        or "原ref" in compact
-        or "原reference" in compact
+        or any(marker in compact for marker in explicit_chinese_reference_markers)
     )
 
 
@@ -356,7 +371,13 @@ def _entries_from_tool_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 source="previous_tool_output",
             ),
         )
-    for field in ("images", "reference_image_urls", "attachments"):
+    for entry in normalise_visual_reference_entries(
+        payload.get("images"),
+        default_role_hint="edit_anchor",
+        default_source="previous_tool_output",
+    ):
+        _append_unique_entry(entries, entry)
+    for field in ("reference_image_urls", "attachments"):
         for entry in normalise_visual_reference_entries(
             payload.get(field),
             default_role_hint="visual_reference",
@@ -527,6 +548,20 @@ def collect_recent_original_visual_reference_entries(
     *,
     limit: int = MAX_SESSION_VISUAL_REFERENCES,
 ) -> list[dict[str, Any]]:
+    generated_output_uris: set[str] = set()
+    for msg in messages or []:
+        if not isinstance(msg, dict) or msg.get("role") not in {"tool", "function"}:
+            continue
+        payload = _as_json_object(msg.get("content"))
+        if not payload:
+            continue
+        for entry in _entries_from_tool_payload(payload):
+            if not entry_is_generated_visual_output(entry):
+                continue
+            uri = str(entry.get("uri") or "").strip()
+            if uri:
+                generated_output_uris.add(uri)
+
     entries: list[dict[str, Any]] = []
     for msg in reversed(messages or []):
         if not isinstance(msg, dict):
@@ -538,7 +573,8 @@ def collect_recent_original_visual_reference_entries(
         elif role == "user":
             candidate_entries = _entries_from_message_content(msg.get("content"))
         for entry in candidate_entries:
-            if entry_is_generated_visual_output(entry):
+            uri = str(entry.get("uri") or "").strip()
+            if entry_is_generated_visual_output(entry) or uri in generated_output_uris:
                 continue
             _append_unique_entry(entries, entry)
         if len(entries) >= limit:

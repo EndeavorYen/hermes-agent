@@ -13,6 +13,12 @@ def test_original_reference_request_requires_explicit_original_semantics():
     assert prompt_requests_original_visual_references(
         "請沿用原始 reference 的角色特徵"
     ) is True
+    assert prompt_requests_original_visual_references(
+        "用原本的 ref 再產兩張不同姿勢"
+    ) is True
+    assert prompt_requests_original_visual_references(
+        "請沿用原來的 reference"
+    ) is True
 
 
 def test_visual_arsenal_outputs_keep_candidate_indices_for_named_reuse():
