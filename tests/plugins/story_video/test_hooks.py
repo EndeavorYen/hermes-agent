@@ -259,6 +259,13 @@ def test_runtime_context_requires_v6_review_board_and_reserved_content_profiles(
     assert "content_profile.json" in context
     assert "script_review_report.json" in context
     assert "story-video-script-review-board" in context
+    assert "review_profile_id=family-review-board-v2" in context
+    assert "story_video_editorial_metrics_v1" in context
+    assert "concrete_scene_ratio>=0.80" in context
+    assert "long_sentence_ratio<=0.25" in context
+    assert "curiosity_loop_count>=max(2, ceil(runtime_minutes))" in context
+    assert "delight_beat_count>=max(1, floor(runtime_minutes/2))" in context
+    assert "no rhetorical template may appear in more than two segments" in context
     assert "at most two revision rounds" in context
     assert "final_script_sha256" in context
     assert "adult_explicit" in context
@@ -838,6 +845,10 @@ def test_pre_llm_creates_context_and_injects_provider_policy(tmp_path, monkeypat
     assert "content_profile.json" in result["context"]
     assert "script_review_report.json" in result["context"]
     assert "story-video-script-review-board" in result["context"]
+    assert "review_profile_id=family-review-board-v2" in result["context"]
+    assert "story_video_editorial_metrics_v1" in result["context"]
+    assert "concrete_scene_evidence" in result["context"]
+    assert "reported_read_aloud_metrics" in result["context"]
     assert "audience_profile" in result["context"]
     assert "engagement_profile" in result["context"]
     assert "mode=young_explorer, energy=high, humor=light" in result["context"]
