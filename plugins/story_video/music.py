@@ -272,7 +272,13 @@ def plan_music_cues(
 
 
 def _run(command: list[str]) -> None:
-    subprocess.run(command, check=True, capture_output=True, text=True)
+    subprocess.run(
+        command,
+        check=True,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+    )
 
 
 def compile_music_bed(project_dir: str | Path, plan: dict[str, Any]) -> dict[str, Any]:
