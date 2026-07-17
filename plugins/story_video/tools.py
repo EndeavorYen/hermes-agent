@@ -15,6 +15,7 @@ from .dubbing import (
     inspect_dubbing_project,
     resolve_project_voice_cast,
 )
+from .editorial_quality import EDITORIAL_PROFILE_ID
 from .engagement import engagement_contract_enabled
 from .quality import CLOSE_EVIDENCE_SCALES, QUALITY_THRESHOLD, validate_quality_ledger
 from .review_board import (
@@ -22,6 +23,7 @@ from .review_board import (
     content_profile_requires_child_curiosity,
     validate_v6_review_bundle,
 )
+from .sequence_quality import validate_sequence_quality_report
 from .state import PHASES, StoryVideoRunContext, StoryVideoStateStore
 from .story_contract import story_contract_enabled, validate_story_script_bindings
 from .voice_profiles import (
@@ -462,6 +464,25 @@ def _validate_batch(context: StoryVideoRunContext) -> PhaseProof:
                 violations.append(f"{shot_id} lacks exactly one selected candidate audit row")
     if len(selected_paths) != len(set(selected_paths)):
         violations.append("duplicate selected asset files")
+    content_profile = _load_json(context.project_dir / "content_profile.json")
+    if (
+        isinstance(content_profile, dict)
+        and str(content_profile.get("review_profile_id") or "").strip()
+        == EDITORIAL_PROFILE_ID
+    ):
+        report_rel = "manifests/sequence_quality_report.json"
+        sequence_report = _load_json(context.project_dir / report_rel)
+        if not isinstance(sequence_report, dict):
+            missing.append(report_rel)
+        else:
+            violations.extend(
+                validate_sequence_quality_report(
+                    context.project_dir,
+                    ledger if isinstance(ledger, dict) else {},
+                    manifest if isinstance(manifest, dict) else {},
+                    sequence_report,
+                )
+            )
     return PhaseProof(
         phase="batch",
         ok=not missing and not violations,
