@@ -5,6 +5,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from .editorial_quality import EDITORIAL_PROFILE_ID, validate_editorial_profile_v2
+
 
 REVIEW_CONTRACT_VERSION = 6
 REVIEW_SCORE_THRESHOLD = 85
@@ -337,6 +339,18 @@ def validate_v6_review_bundle(
             script_bytes=script_bytes,
         )
     )
+    if _text(content_profile.get("review_profile_id")) == EDITORIAL_PROFILE_ID:
+        editorial_metrics = review_report.get("editorial_metrics")
+        if not isinstance(editorial_metrics, dict):
+            violations.append("script_review_report editorial_metrics is missing")
+        else:
+            violations.extend(
+                validate_editorial_profile_v2(
+                    script_bytes.decode("utf-8"),
+                    editorial_metrics,
+                    ledger.get("target_duration_sec", 0),
+                )
+            )
     return tuple(violations)
 
 
