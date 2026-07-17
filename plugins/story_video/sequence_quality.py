@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -68,9 +69,10 @@ def _selected_by_shot(manifest: dict[str, Any]) -> dict[str, list[dict[str, Any]
 
 def _score(value: Any) -> float:
     try:
-        return float(value)
+        parsed = float(value)
     except (TypeError, ValueError):
         return 0.0
+    return parsed if math.isfinite(parsed) else 0.0
 
 
 def _dimension_score(dimensions: Any, names: tuple[str, ...]) -> float:
