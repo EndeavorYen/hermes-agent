@@ -508,7 +508,7 @@ def pre_llm_call(
         "quality_contract_version=6, status=PASS, production_type, shot_count, "
         "final_script_sha256, and "
         "checks. checks MUST be an object whose visual_evidence, narrative_roles, "
-        "claim_confidence, audience_engagement, visual_truth, child_curiosity, dramatic_arc, "
+        "claim_confidence, audience_engagement, visual_truth, dramatic_arc, "
         "read_aloud_liveliness, knowledge_integrity, visual_causality, and style_consistency "
         "values are PASS, not a list. For v6, language_fluency, factual_integrity, "
         "clarity_concision, engagement, audience_fit, and read_aloud_performance MUST "

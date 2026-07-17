@@ -192,6 +192,7 @@ def validate_script_review_report(
     reviewer_counts: dict[str, int] = {}
     reviewer_by_id: dict[str, dict[str, Any]] = {}
     seen_finding_ids: set[str] = set()
+    finding_resolution_by_id: dict[str, str] = {}
     unresolved_critical_ids: list[str] = []
     for index, reviewer in enumerate(reviewer_rows):
         if not isinstance(reviewer, dict):
@@ -224,6 +225,11 @@ def validate_script_review_report(
                 seen_finding_ids=seen_finding_ids,
             )
             violations.extend(finding_violations)
+            if finding_id and isinstance(finding, dict):
+                finding_resolution_by_id.setdefault(
+                    finding_id,
+                    _text(finding.get("resolution_status")).lower(),
+                )
             if unresolved_critical:
                 unresolved_critical_ids.append(finding_id or f"{reviewer_id}[{finding_index}]")
 
@@ -245,21 +251,48 @@ def validate_script_review_report(
             violations.append("script_review_report fact_checker evidence_source_ids are missing")
 
     adjudication = report.get("adjudication")
+    resolved_ids: list[str] = []
+    unresolved_ids: list[str] = []
     if not isinstance(adjudication, dict):
         violations.append("script_review_report adjudication is missing")
     else:
         if _upper(adjudication.get("status")) != "PASS":
             violations.append("script_review_report adjudication status is not PASS")
-        resolved_ids = _string_list(adjudication.get("resolved_finding_ids"))
-        unresolved_ids = _string_list(adjudication.get("unresolved_finding_ids"))
-        if resolved_ids is None:
+        parsed_resolved_ids = _string_list(adjudication.get("resolved_finding_ids"))
+        parsed_unresolved_ids = _string_list(adjudication.get("unresolved_finding_ids"))
+        if parsed_resolved_ids is None:
             violations.append("script_review_report resolved_finding_ids are not a list")
-        if unresolved_ids is None:
+        else:
+            resolved_ids = parsed_resolved_ids
+        if parsed_unresolved_ids is None:
             violations.append("script_review_report unresolved_finding_ids are not a list")
-        for finding_id in (resolved_ids or []) + (unresolved_ids or []):
+        else:
+            unresolved_ids = parsed_unresolved_ids
+        for finding_id in resolved_ids + unresolved_ids:
             if finding_id not in seen_finding_ids:
                 violations.append(
                     f"script_review_report adjudication references unknown finding: {finding_id}"
+                )
+        resolved_set = set(resolved_ids)
+        unresolved_set = set(unresolved_ids)
+        for finding_id, resolution in finding_resolution_by_id.items():
+            in_resolved = finding_id in resolved_set
+            in_unresolved = finding_id in unresolved_set
+            if not in_resolved and not in_unresolved:
+                violations.append(
+                    f"script_review_report adjudication omits finding: {finding_id}"
+                )
+            elif in_resolved and in_unresolved:
+                violations.append(
+                    f"script_review_report adjudication classifies finding twice: {finding_id}"
+                )
+            elif resolution == "resolved" and not in_resolved:
+                violations.append(
+                    f"script_review_report adjudication conflicts with finding: {finding_id}"
+                )
+            elif resolution in {"unresolved", "accepted_risk"} and not in_unresolved:
+                violations.append(
+                    f"script_review_report adjudication conflicts with finding: {finding_id}"
                 )
 
     actual_sha = hashlib.sha256(script_bytes).hexdigest()

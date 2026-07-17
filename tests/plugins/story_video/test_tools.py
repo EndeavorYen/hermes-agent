@@ -499,6 +499,30 @@ def test_v6_review_board_blocks_unresolved_critical_finding(tmp_path) -> None:
     assert "script_review_report unresolved critical finding: F001" in proof.violations
 
 
+def test_v6_review_board_requires_adjudication_for_every_finding(tmp_path) -> None:
+    _store, context = _active_context(tmp_path)
+    _write_v6_review_fixture(context)
+    path = context.project_dir / "script_review_report.json"
+    report = json.loads(path.read_text(encoding="utf-8"))
+    report["reviewers"][0]["findings"] = [
+        {
+            "finding_id": "LANG-001",
+            "severity": "moderate",
+            "location": "S00",
+            "category": "fluency",
+            "evidence": "The transition is grammatically valid but unnatural.",
+            "recommendation": "Replace it with natural Taiwan usage.",
+            "resolution_status": "resolved",
+        }
+    ]
+    path.write_text(json.dumps(report), encoding="utf-8")
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert "script_review_report adjudication omits finding: LANG-001" in proof.violations
+
+
 def test_v6_review_board_binds_review_to_final_script_bytes(tmp_path) -> None:
     _store, context = _active_context(tmp_path)
     _write_v6_review_fixture(context)
