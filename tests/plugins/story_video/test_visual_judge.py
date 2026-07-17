@@ -20,6 +20,7 @@ from plugins.story_video.visual_judge import (
     _review_instructions,
     _shot_contract_hash,
     _source_image_qc_blockers,
+    _verified_release_art,
     configure_plugin_llm,
     story_video_quality_control,
 )
@@ -733,6 +734,7 @@ def test_compile_prompt_allows_one_sequence_rescue_after_normal_strategies_exhau
     assert payload["sequence_rescue"] is True
     assert "Sequence-level QC rescue" in payload["prompt"]
     assert payload["repair_strategy"] == "story_reframe"
+    assert payload["candidate_id_hint"] == "S00_SH00_SEQUENCE_RESCUE_C01"
 
 
 def test_source_image_qc_ignores_subtitle_packaging_blockers() -> None:
@@ -3246,11 +3248,19 @@ def test_release_art_v2_uses_distinct_opening_and_ending_sources(
     assert manifest["sources"]["opening"]["sha256"] != manifest["sources"]["ending"][
         "sha256"
     ]
+    assert manifest["sources"]["opening"]["path"] == (
+        "images_candidates/RELEASE_OPENING_C01.png"
+    )
     assert manifest["artifacts"]["opening_card"]["sha256"] != manifest["artifacts"][
         "ending_card"
     ]["sha256"]
     assert (context.project_dir / "release_art" / "opening_source.png").is_file()
     assert (context.project_dir / "release_art" / "ending_source.png").is_file()
+
+    opening.write_bytes(b"changed-after-registration")
+
+    with pytest.raises(ValueError, match="opening source hash mismatch"):
+        _verified_release_art(context)
 
 
 def test_register_release_art_rejects_non_openai_source(tmp_path) -> None:

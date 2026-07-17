@@ -713,7 +713,11 @@ def _compile_prompt(
         )
     prompt += f" Adaptive repair strategy: {repair_plan.strategy}. {repair_plan.directive}"
     revision = f"{contract_hash[:8].upper()}_" if contract_reset else ""
-    candidate_id_hint = f"{shot_id}_{revision}{repair_plan.candidate_suffix}"
+    candidate_id_hint = (
+        f"{shot_id}_SEQUENCE_RESCUE_C01"
+        if sequence_pending is not None
+        else f"{shot_id}_{revision}{repair_plan.candidate_suffix}"
+    )
     prompt_path = context.project_dir / "prompts" / f"{shot_id}.txt"
     prompt_path.parent.mkdir(parents=True, exist_ok=True)
     prompt_path.write_text(prompt + "\n", encoding="utf-8")
@@ -2569,6 +2573,7 @@ def _register_release_art(
             "provider": "openai-codex",
             "model": str(row.get("model") or ""),
             "response_id": response_id,
+            "path": _relative(context, source),
             "sha256": _file_sha256(source),
         }
     if release_art_v2 and (
@@ -2684,12 +2689,28 @@ def _verified_release_art(context: StoryVideoRunContext) -> dict[str, str]:
                 or _provider(evidence.get("provider"))
                 not in {"openai", "openai-codex"}
                 or not str(evidence.get("response_id") or "").strip()
+                or not str(evidence.get("path") or "").strip()
                 or not str(evidence.get("sha256") or "").strip()
             ):
                 raise ValueError(
                     f"dedicated release art v2 {role} source evidence is invalid"
                 )
             source_hashes.append(str(evidence["sha256"]))
+            source_path = _project_path(context, evidence.get("path")).resolve()
+            try:
+                source_path.relative_to(context.project_dir.resolve())
+            except ValueError as exc:
+                raise ValueError(
+                    f"dedicated release art v2 {role} source is outside project"
+                ) from exc
+            if not source_path.is_file():
+                raise ValueError(
+                    f"dedicated release art v2 {role} source file is missing"
+                )
+            if _file_sha256(source_path) != str(evidence["sha256"]):
+                raise ValueError(
+                    f"dedicated release art v2 {role} source hash mismatch"
+                )
         if len(set(source_hashes)) != 2:
             raise ValueError("dedicated release art v2 sources are not distinct")
     artifacts = manifest.get("artifacts")
