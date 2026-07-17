@@ -741,3 +741,36 @@ def test_parse_operator_call_requires_explicit_youtube_upload_approval() -> None
 
     assert call is not None
     assert call.action == "approve_upload"
+
+
+@pytest.mark.parametrize(
+    "message",
+    (
+        "請發佈到 YouTube",
+        "請發布到YouTube讓我 review",
+        "上傳到 YouTube",
+        "upload to YouTube",
+        "publish to YouTube",
+    ),
+)
+def test_parse_operator_call_routes_natural_youtube_publish_requests_to_api_upload(
+    message: str,
+) -> None:
+    call = parse_operator_call(message, has_active_project=True)
+
+    assert call is not None
+    assert call.action == "approve_upload"
+
+
+@pytest.mark.parametrize(
+    "message",
+    (
+        "先不要上傳到 YouTube",
+        "不要發佈到 YouTube",
+        "do not upload to YouTube",
+    ),
+)
+def test_parse_operator_call_does_not_treat_negated_youtube_upload_as_approval(
+    message: str,
+) -> None:
+    assert parse_operator_call(message, has_active_project=True) is None
