@@ -728,6 +728,82 @@ def test_v6_review_board_accepts_complete_review_bundle(tmp_path) -> None:
     assert proof.ok is True
 
 
+def test_v6_editorial_profile_requires_evidence_bound_metrics(tmp_path) -> None:
+    _store, context = _active_context(tmp_path)
+    _write_v6_review_fixture(context)
+    profile_path = context.project_dir / "content_profile.json"
+    profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    profile["review_profile_id"] = "family-review-board-v2"
+    profile_path.write_text(json.dumps(profile), encoding="utf-8")
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert "script_review_report editorial_metrics is missing" in proof.violations
+
+
+def test_v6_editorial_profile_accepts_complete_metrics(tmp_path) -> None:
+    _store, context = _active_context(tmp_path)
+    _write_v6_review_fixture(context)
+    profile_path = context.project_dir / "content_profile.json"
+    profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    profile["review_profile_id"] = "family-review-board-v2"
+    profile_path.write_text(json.dumps(profile), encoding="utf-8")
+    report_path = context.project_dir / "script_review_report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["editorial_metrics"] = {
+        "schema": "story_video_editorial_metrics_v1",
+        "concrete_scene_evidence": [
+            {
+                "segment_id": "S00",
+                "subject": "化石證據",
+                "action": "線索被逐項比對",
+                "sensory_detail": "骨骼與岩層清楚可見",
+                "stakes_or_question": "哪些證據能排除猜測",
+            }
+        ],
+        "abstract_only_segment_ids": [],
+        "curiosity_loop_evidence": [
+            {
+                "loop_id": f"Q{index}",
+                "opening_segment_id": "S00",
+                "payoff_segment_id": "S00",
+                "question": "一個具體問題",
+                "payoff": "一個具體答案",
+                "status": "resolved",
+            }
+            for index in range(1, 6)
+        ],
+        "delight_beat_evidence": [
+            {"segment_id": "S00", "beat_type": "surprise", "text": "意外線索"},
+            {"segment_id": "S00", "beat_type": "reveal", "text": "知識揭曉"},
+        ],
+        "emotional_turn_evidence": [
+            {
+                "segment_id": "S00",
+                "from_state": before,
+                "to_state": after,
+                "cause": "新證據改變理解",
+            }
+            for before, after in (
+                ("curiosity", "surprise"),
+                ("surprise", "doubt"),
+                ("doubt", "awe"),
+            )
+        ],
+        "rhetorical_template_evidence": [],
+        "reported_read_aloud_metrics": {
+            "sentence_count": 3,
+            "long_sentence_ratio": 0.0,
+        },
+    }
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    proof = validate_phase(context)
+
+    assert proof.ok is True
+
+
 def test_v6_review_board_blocks_low_reviewer_score(tmp_path) -> None:
     _store, context = _active_context(tmp_path)
     _write_v6_review_fixture(context)
