@@ -136,3 +136,16 @@ def test_sequence_quality_requires_all_story_dimensions_at_threshold(tmp_path) -
 
     assert report["status"] == "REPAIR_REQUIRED"
     assert "S00_SH00 cinematic evidence score<80" in report["violations"]
+
+
+def test_sequence_quality_rejects_non_finite_model_scores(tmp_path) -> None:
+    ledger, manifest = _fixture(tmp_path)
+    manifest["outputs"][0]["quality_score"] = float("nan")
+    manifest["outputs"][0]["quality_dimensions"]["style_consistency"] = float(
+        "inf"
+    )
+
+    report = build_sequence_quality_report(tmp_path, ledger, manifest)
+
+    assert "S00_SH00 overall quality score<80" in report["violations"]
+    assert "S00_SH00 style evidence score<80" in report["violations"]

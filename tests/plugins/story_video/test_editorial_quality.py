@@ -128,3 +128,9 @@ def test_editorial_profile_v2_rejects_unbound_or_repeated_evidence() -> None:
 
     assert "editorial_metrics evidence references unknown segment: S99" in violations
     assert "editorial_metrics rhetorical template question_then_reveal used>2" in violations
+
+
+def test_editorial_profile_v2_rejects_non_finite_runtime_without_crashing() -> None:
+    violations = validate_editorial_profile_v2(SCRIPT, _valid_report(), float("inf"))
+
+    assert "editorial_metrics target_duration_sec is invalid" in violations

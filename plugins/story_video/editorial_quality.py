@@ -128,7 +128,13 @@ def validate_editorial_profile_v2(
     if abstract_ids:
         violations.append("editorial_metrics.abstract_only_segment_count>0")
 
-    duration = max(0.0, float(target_duration_sec or 0))
+    try:
+        duration = float(target_duration_sec or 0)
+    except (TypeError, ValueError):
+        duration = 0.0
+    if not math.isfinite(duration) or duration <= 0:
+        violations.append("editorial_metrics target_duration_sec is invalid")
+        duration = 0.0
     runtime_minutes = duration / 60.0
     required_loops = max(2, math.ceil(runtime_minutes))
     loop_rows = _complete_rows(
