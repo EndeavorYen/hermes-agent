@@ -286,6 +286,9 @@ def test_runtime_context_requires_v6_review_board_and_reserved_content_profiles(
     assert "adjudication object" in context
     assert "minimum_age_years=5" in context
     assert "story_engine" in context
+    assert "MUST NOT create empty scenes just to satisfy arc roles" in context
+    assert "scene narrative_role=hook and its shot narrative_role=turn" in context
+    assert "split immediately after sentence-ending punctuation plus any closing quotes" in context
     assert "style_bible" in context
     assert "style reference" in context.lower()
     assert "educational ending" in context.lower()

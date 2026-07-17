@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from plugins.story_video.editorial_quality import validate_editorial_profile_v2
+from plugins.story_video.editorial_quality import (
+    compute_read_aloud_metrics,
+    validate_editorial_profile_v2,
+)
 
 
 SCRIPT = """### S00
@@ -134,3 +137,15 @@ def test_editorial_profile_v2_rejects_non_finite_runtime_without_crashing() -> N
     violations = validate_editorial_profile_v2(SCRIPT, _valid_report(), float("inf"))
 
     assert "editorial_metrics target_duration_sec is invalid" in violations
+
+
+def test_read_aloud_metrics_keep_sentence_closing_quote_with_sentence() -> None:
+    script = """### S00
+雨滴落在葉子上。下次抬頭想一想：「原來，是地球把水滴拉回來。」
+"""
+
+    assert compute_read_aloud_metrics(script) == {
+        "sentence_count": 2,
+        "long_sentence_count": 0,
+        "long_sentence_ratio": 0.0,
+    }
