@@ -324,12 +324,56 @@ class StoryVideoBatchExecutor:
             compiled.append(prompt_info)
 
         if not compiled:
+            if sequence_rescue_wave:
+                with _MANIFEST_LOCK:
+                    restored = _restore_sequence_originals(
+                        candidate_path,
+                        _load_json(candidate_path),
+                        sequence_originals,
+                        set(requested),
+                    )
+                    _write_sequence_report(context, restored)
+                    if not cancelled():
+                        attempted_rescues = {
+                            _text(value)
+                            for value in batch_manifest.get(
+                                "sequence_rescue_attempted_shot_ids"
+                            )
+                            or []
+                            if _text(value)
+                        }
+                        attempted_rescues.update(compile_failures)
+                        batch_manifest["sequence_rescue_attempted_shot_ids"] = [
+                            shot_id for shot_id in shot_ids if shot_id in attempted_rescues
+                        ]
+                        self._save_budget(
+                            batch_path,
+                            batch_manifest,
+                            context=context,
+                            budget=budget,
+                            event={
+                                "stage": "compile_failed",
+                                "wave": wave,
+                                "shot_ids": compile_failures,
+                                "work_status": "terminal_required",
+                                "timestamp": _utc_now(),
+                            },
+                        )
             return BatchRunSummary(
                 work_status="stopped" if cancelled() else "terminal_required",
                 wave=wave,
                 failed_shots=tuple(compile_failures),
             )
         if cancelled():
+            if sequence_rescue_wave:
+                with _MANIFEST_LOCK:
+                    restored = _restore_sequence_originals(
+                        candidate_path,
+                        _load_json(candidate_path),
+                        sequence_originals,
+                        set(requested),
+                    )
+                    _write_sequence_report(context, restored)
             return BatchRunSummary(work_status="stopped", wave=wave)
 
         with _MANIFEST_LOCK:
