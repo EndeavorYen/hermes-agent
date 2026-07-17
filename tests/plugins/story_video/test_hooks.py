@@ -79,6 +79,9 @@ def test_runtime_context_requires_v6_review_board_and_reserved_content_profiles(
     assert "adult_explicit" in context
     assert "SETUP_REQUIRED" in context
     assert "family/child profile" in context
+    assert "engagement_role=hook|build|reveal|reaction|payoff|breathe" in context
+    assert "composition_energy=calm|curious|tense|kinetic|awe" in context
+    assert "engagement_criteria MUST be a non-empty JSON array of strings" in context
     assert "minimum_age_years=5" in context
     assert "story_engine" in context
     assert "style_bible" in context
