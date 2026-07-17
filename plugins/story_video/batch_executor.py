@@ -11,7 +11,8 @@ from agent.visual.generation_waves import GenerationWaveItem
 from agent.visual.generation_waves import GenerationWaveScheduler
 
 from .batch_policy import BatchBudget, BatchPolicy
-from .sequence_quality import write_sequence_quality_report
+from .editorial_quality import EDITORIAL_PROFILE_ID
+from .sequence_quality import build_sequence_quality_report, write_sequence_quality_report
 
 
 _MANIFEST_LOCK = threading.RLock()
@@ -54,6 +55,111 @@ def _write_sequence_report(context: Any, candidate_manifest: dict[str, Any]) -> 
     project_dir = Path(context.project_dir)
     ledger = _load_json(project_dir / "scene_ledger.json")
     write_sequence_quality_report(project_dir, ledger, candidate_manifest)
+
+
+def _sequence_quality_enabled(context: Any) -> bool:
+    profile = _load_json(Path(context.project_dir) / "content_profile.json")
+    return _text(profile.get("review_profile_id")) == EDITORIAL_PROFILE_ID
+
+
+def _text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _sequence_blocker_codes(violations: list[str]) -> list[str]:
+    joined = " ".join(violations).lower()
+    codes: list[str] = []
+    mappings = (
+        ("duplicate", "continuity_redundancy"),
+        ("style", "style_drift"),
+        ("cinematic", "flat_composition"),
+        ("story", "missing_story_moment"),
+        ("semantic", "audience_mismatch"),
+    )
+    for marker, code in mappings:
+        if marker in joined and code not in codes:
+            codes.append(code)
+    return codes or ["other"]
+
+
+def _prepare_sequence_rescue_manifest(
+    path: Path,
+    manifest: dict[str, Any],
+    report: dict[str, Any],
+    shot_ids: list[str],
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    requested = set(shot_ids)
+    violations_by_shot = {
+        _text(entry.get("shot_id")): [
+            _text(value) for value in entry.get("violations") or [] if _text(value)
+        ]
+        for entry in report.get("entries") or []
+        if isinstance(entry, dict)
+    }
+    originals: dict[str, dict[str, Any]] = {}
+    outputs: list[dict[str, Any]] = []
+    history = [row for row in manifest.get("attempt_history") or [] if isinstance(row, dict)]
+    history_keys = {
+        (_text(row.get("shot_id")), _text(row.get("candidate_id"))) for row in history
+    }
+    for row in manifest.get("outputs") or []:
+        if not isinstance(row, dict):
+            continue
+        shot_id = _text(row.get("shot_id"))
+        if shot_id not in requested or row.get("selected") is not True:
+            outputs.append(row)
+            continue
+        originals[shot_id] = dict(row)
+        key = (shot_id, _text(row.get("candidate_id")))
+        if key not in history_keys:
+            history.append(dict(row))
+            history_keys.add(key)
+        shot_violations = violations_by_shot.get(shot_id) or [
+            "sequence-level visual quality did not pass"
+        ]
+        outputs.append(
+            {
+                **row,
+                "selected": False,
+                "status": "repair_required",
+                "sequence_rescue_pending": True,
+                "hard_blockers": shot_violations,
+                "blocker_codes": _sequence_blocker_codes(shot_violations),
+            }
+        )
+    updated = {**manifest, "outputs": outputs, "attempt_history": history}
+    _write_json_atomic(path, updated)
+    return updated, originals
+
+
+def _restore_sequence_originals(
+    path: Path,
+    manifest: dict[str, Any],
+    originals: dict[str, dict[str, Any]],
+    failed_shot_ids: set[str],
+) -> dict[str, Any]:
+    if not failed_shot_ids:
+        return manifest
+    retained = [
+        row
+        for row in manifest.get("outputs") or []
+        if isinstance(row, dict) and _text(row.get("shot_id")) not in failed_shot_ids
+    ]
+    restored = []
+    for shot_id in sorted(failed_shot_ids):
+        original = originals.get(shot_id)
+        if original is not None:
+            restored.append(
+                {
+                    **original,
+                    "selected": True,
+                    "status": "selected_current",
+                    "sequence_rescue_pending": False,
+                }
+            )
+    updated = {**manifest, "outputs": [*retained, *restored]}
+    _write_json_atomic(path, updated)
+    return updated
 
 
 @dataclass(frozen=True)
@@ -108,6 +214,8 @@ class StoryVideoBatchExecutor:
                 candidate_manifest=candidate_manifest,
             )
 
+        sequence_rescue_wave = False
+        sequence_originals: dict[str, dict[str, Any]] = {}
         selected = {
             str(row.get("shot_id") or "")
             for row in candidate_manifest.get("outputs") or []
@@ -115,49 +223,86 @@ class StoryVideoBatchExecutor:
         }
         if len(selected.intersection(shot_ids)) == len(shot_ids):
             _write_sequence_report(context, candidate_manifest)
-            return BatchRunSummary(
-                work_status="complete",
-                wave="none",
-                selected_shots=tuple(shot_id for shot_id in shot_ids if shot_id in selected),
+            sequence_report = build_sequence_quality_report(
+                context.project_dir,
+                _load_json(Path(context.project_dir) / "scene_ledger.json"),
+                candidate_manifest,
             )
-
-        fresh = [
-            shot_id
-            for shot_id in shot_ids
-            if shot_id not in selected and budget.generated_for(shot_id) == 0
-        ]
-        pending_anchor = next(
-            (
-                shot_id
-                for shot_id in shot_ids
-                if shot_id in critical_ids and shot_id not in selected
-            ),
-            "",
-        )
-        if pending_anchor and budget.can_generate(pending_anchor, critical=True):
-            wave = "anchor"
-            requested = [pending_anchor]
-        elif pending_anchor:
-            wave = "terminal"
-            requested = []
-        elif fresh:
-            wave = "initial"
-            requested = fresh[: self.max_workers]
-        else:
-            wave = "repair"
-            remaining_budget = max(
-                0,
-                budget.policy.max_total_candidates - budget.total_generated,
-            )
+            if not _sequence_quality_enabled(context) or sequence_report["status"] == "PASS":
+                return BatchRunSummary(
+                    work_status="complete",
+                    wave="none",
+                    selected_shots=tuple(
+                        shot_id for shot_id in shot_ids if shot_id in selected
+                    ),
+                )
+            attempted_rescues = {
+                _text(value)
+                for value in batch_manifest.get("sequence_rescue_attempted_shot_ids") or []
+                if _text(value)
+            }
             requested = [
                 shot_id
-                for shot_id in shot_ids
-                if shot_id not in selected
-                and budget.can_generate(
-                    shot_id,
-                    critical=shot_id in critical_ids,
+                for shot_id in sequence_report.get("repair_shot_ids") or []
+                if shot_id not in attempted_rescues
+            ][: self.max_workers]
+            if not requested:
+                return BatchRunSummary(
+                    work_status="terminal_required",
+                    wave="sequence_rescue",
+                    selected_shots=tuple(
+                        shot_id for shot_id in shot_ids if shot_id in selected
+                    ),
+                    failed_shots=tuple(sequence_report.get("repair_shot_ids") or ()),
+                    error_type="sequence_quality_rescue_exhausted",
                 )
-            ][: min(self.max_workers, remaining_budget)]
+            sequence_rescue_wave = True
+            wave = "sequence_rescue"
+            with _MANIFEST_LOCK:
+                candidate_manifest, sequence_originals = _prepare_sequence_rescue_manifest(
+                    candidate_path,
+                    candidate_manifest,
+                    sequence_report,
+                    requested,
+                )
+        else:
+            fresh = [
+                shot_id
+                for shot_id in shot_ids
+                if shot_id not in selected and budget.generated_for(shot_id) == 0
+            ]
+            pending_anchor = next(
+                (
+                    shot_id
+                    for shot_id in shot_ids
+                    if shot_id in critical_ids and shot_id not in selected
+                ),
+                "",
+            )
+            if pending_anchor and budget.can_generate(pending_anchor, critical=True):
+                wave = "anchor"
+                requested = [pending_anchor]
+            elif pending_anchor:
+                wave = "terminal"
+                requested = []
+            elif fresh:
+                wave = "initial"
+                requested = fresh[: self.max_workers]
+            else:
+                wave = "repair"
+                remaining_budget = max(
+                    0,
+                    budget.policy.max_total_candidates - budget.total_generated,
+                )
+                requested = [
+                    shot_id
+                    for shot_id in shot_ids
+                    if shot_id not in selected
+                    and budget.can_generate(
+                        shot_id,
+                        critical=shot_id in critical_ids,
+                    )
+                ][: min(self.max_workers, remaining_budget)]
 
         if not requested:
             return BatchRunSummary(
@@ -188,13 +333,14 @@ class StoryVideoBatchExecutor:
             return BatchRunSummary(work_status="stopped", wave=wave)
 
         with _MANIFEST_LOCK:
-            for item in compiled:
-                shot_id = str(item["shot_id"])
-                budget.record_generation(
-                    shot_id,
-                    str(item.get("shot_contract_hash") or ""),
-                    critical=shot_id in critical_ids,
-                )
+            if not sequence_rescue_wave:
+                for item in compiled:
+                    shot_id = str(item["shot_id"])
+                    budget.record_generation(
+                        shot_id,
+                        str(item.get("shot_contract_hash") or ""),
+                        critical=shot_id in critical_ids,
+                    )
             batch_manifest = self._save_budget(
                 batch_path,
                 batch_manifest,
@@ -258,7 +404,7 @@ class StoryVideoBatchExecutor:
         }
         for item in compiled:
             shot_id = str(item["shot_id"])
-            if shot_id not in generated_shot_ids:
+            if not sequence_rescue_wave and shot_id not in generated_shot_ids:
                 budget.release_generation(
                     shot_id,
                     str(item.get("shot_contract_hash") or ""),
@@ -288,7 +434,7 @@ class StoryVideoBatchExecutor:
                 context,
                 shot_id=shot_id,
                 candidate=candidate,
-                repair_round=budget.generated_for(shot_id),
+                repair_round=min(3, max(1, budget.generated_for(shot_id))),
             )
             if judged.get("success"):
                 selected_now.append(shot_id)
@@ -296,6 +442,15 @@ class StoryVideoBatchExecutor:
                 failed_now.append(shot_id)
 
         candidate_manifest = _load_json(candidate_path)
+        if sequence_rescue_wave:
+            failed_rescues = set(requested) - set(selected_now)
+            with _MANIFEST_LOCK:
+                candidate_manifest = _restore_sequence_originals(
+                    candidate_path,
+                    candidate_manifest,
+                    sequence_originals,
+                    failed_rescues,
+                )
         selected = {
             str(row.get("shot_id") or "")
             for row in candidate_manifest.get("outputs") or []
@@ -313,17 +468,48 @@ class StoryVideoBatchExecutor:
             if "authentication_required" in provider_failure_classes
             else ""
         )
-        work_status = (
-            "setup_required"
-            if setup_error_type
-            else "complete"
-            if not pending
-            else "in_progress"
-            if can_continue
-            else "terminal_required"
-        )
-        if work_status == "complete":
+        if sequence_rescue_wave:
+            attempted_rescues = {
+                _text(value)
+                for value in batch_manifest.get("sequence_rescue_attempted_shot_ids") or []
+                if _text(value)
+            }
+            attempted_rescues.update(generated_shot_ids)
+            batch_manifest["sequence_rescue_attempted_shot_ids"] = [
+                shot_id for shot_id in shot_ids if shot_id in attempted_rescues
+            ]
+            sequence_report = build_sequence_quality_report(
+                context.project_dir,
+                _load_json(Path(context.project_dir) / "scene_ledger.json"),
+                candidate_manifest,
+            )
             _write_sequence_report(context, candidate_manifest)
+            remaining_repairs = list(sequence_report.get("repair_shot_ids") or [])
+            can_rescue_more = any(
+                shot_id not in attempted_rescues for shot_id in remaining_repairs
+            )
+            work_status = (
+                "setup_required"
+                if setup_error_type
+                else "complete"
+                if not remaining_repairs
+                else "in_progress"
+                if can_rescue_more or not generated_shot_ids
+                else "terminal_required"
+            )
+            pending = remaining_repairs
+        else:
+            work_status = (
+                "setup_required"
+                if setup_error_type
+                else "complete"
+                if not pending
+                else "in_progress"
+                if can_continue
+                else "terminal_required"
+            )
+            if work_status == "complete":
+                _write_sequence_report(context, candidate_manifest)
         with _MANIFEST_LOCK:
             self._save_budget(
                 batch_path,

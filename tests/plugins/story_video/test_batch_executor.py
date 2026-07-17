@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
 
 from plugins.story_video.batch_executor import StoryVideoBatchExecutor
+from plugins.story_video.shot_contract import shot_contract_hash
 
 
 def _context(tmp_path: Path, shot_count: int = 6) -> SimpleNamespace:
@@ -166,6 +168,127 @@ def test_executor_runs_fresh_shots_before_one_bounded_repair_wave(tmp_path) -> N
     )
     assert sequence_report["schema"] == "story_video_sequence_quality_v1"
     assert sequence_report["metrics"]["shot_count"] == 6
+
+
+def test_executor_runs_one_parallel_sequence_rescue_then_stops(tmp_path) -> None:
+    context = _context(tmp_path, shot_count=2)
+    (context.project_dir / "content_profile.json").write_text(
+        json.dumps({"review_profile_id": "family-review-board-v2"}), encoding="utf-8"
+    )
+    ledger = json.loads(
+        (context.project_dir / "scene_ledger.json").read_text(encoding="utf-8")
+    )
+    shots = ledger["scenes"][0]["shots"]
+    duplicate = context.project_dir / "images" / "duplicate.png"
+    duplicate.parent.mkdir(parents=True, exist_ok=True)
+    duplicate.write_bytes(b"duplicate-sequence-frame")
+    duplicate_sha = hashlib.sha256(duplicate.read_bytes()).hexdigest()
+    outputs = [
+        {
+            "shot_id": shot["shot_id"],
+            "candidate_id": f"{shot['shot_id']}_INITIAL",
+            "selected": True,
+            "status": "selected_current",
+            "local_path": str(duplicate.relative_to(context.project_dir)),
+            "artifact_sha256": duplicate_sha,
+            "shot_contract_hash": shot_contract_hash(shot),
+            "provider": "openai-codex",
+            "judge_provider": "openai-codex",
+            "quality_score": 90,
+            "quality_dimensions": {
+                "text_alignment": 90,
+                "evidence_specificity": 90,
+                "narrative_engagement": 90,
+                "story_moment_clarity": 90,
+                "cinematic_impact": 90,
+                "professional_quality": 90,
+                "style_consistency": 90,
+            },
+            "hard_blockers": [],
+            "vision_evidence": {"status": "PASS", "response_id": "initial-qc"},
+        }
+        for shot in shots
+    ]
+    manifest_path = context.project_dir / "manifests" / "shot_candidate_manifest.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(
+        json.dumps({"outputs": outputs, "attempt_history": outputs}), encoding="utf-8"
+    )
+
+    def compiler(_context, *, shot_id: str) -> dict:
+        shot = next(item for item in shots if item["shot_id"] == shot_id)
+        return {
+            "success": True,
+            "shot_id": shot_id,
+            "prompt": f"sequence rescue for {shot_id}",
+            "candidate_id_hint": f"{shot_id}_SEQUENCE_RESCUE",
+            "shot_contract_hash": shot_contract_hash(shot),
+            "repair_strategy": "story_reframe",
+            "reference_image_urls": [],
+        }
+
+    def judge(_context, *, shot_id: str, candidate: dict, repair_round: int) -> dict:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        destination = _context.project_dir / "images" / f"{shot_id}-rescue.png"
+        destination.write_bytes(Path(candidate["path"]).read_bytes())
+        shot = next(item for item in shots if item["shot_id"] == shot_id)
+        row = {
+            **candidate,
+            "shot_id": shot_id,
+            "selected": True,
+            "status": "selected_current",
+            "local_path": str(destination.relative_to(_context.project_dir)),
+            "artifact_sha256": hashlib.sha256(destination.read_bytes()).hexdigest(),
+            "shot_contract_hash": shot_contract_hash(shot),
+            "judge_provider": "openai-codex",
+            "quality_score": 92,
+            "quality_dimensions": {
+                "text_alignment": 92,
+                "evidence_specificity": 92,
+                "narrative_engagement": 92,
+                "story_moment_clarity": 92,
+                "cinematic_impact": 92,
+                "professional_quality": 92,
+                "style_consistency": 92,
+            },
+            "hard_blockers": [],
+            "vision_evidence": {"status": "PASS", "response_id": f"rescue-{shot_id}"},
+            "repair_round": repair_round,
+        }
+        manifest["outputs"] = [
+            output for output in manifest["outputs"] if output["shot_id"] != shot_id
+        ] + [row]
+        manifest.setdefault("attempt_history", []).append(row)
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        return {"success": True, "status": "selected", "best_score": 92}
+
+    generator = FakeGenerator(tmp_path)
+    executor = StoryVideoBatchExecutor(
+        prompt_compiler=compiler,
+        image_generator=generator,
+        candidate_judge=judge,
+        max_workers=3,
+    )
+
+    rescued = executor.run_chunk(context)
+    complete = executor.run_chunk(context)
+
+    assert rescued.wave == "sequence_rescue"
+    assert rescued.attempted_shots == ("S00_SH00", "S01_SH00")
+    assert rescued.work_status == "complete"
+    assert complete.work_status == "complete"
+    assert len(generator.calls) == 2
+    batch_manifest = json.loads(
+        (context.project_dir / "manifests" / "batch_run_manifest.json").read_text()
+    )
+    assert batch_manifest["sequence_rescue_attempted_shot_ids"] == [
+        "S00_SH00",
+        "S01_SH00",
+    ]
+    sequence_report = json.loads(
+        (context.project_dir / "manifests" / "sequence_quality_report.json").read_text()
+    )
+    assert sequence_report["status"] == "PASS"
 
 
 def test_executor_honors_stop_before_dispatch(tmp_path) -> None:

@@ -679,6 +679,62 @@ def test_compile_prompt_writes_traceable_prompt_and_budget(tmp_path) -> None:
     assert (context.project_dir / payload["prompt_path"]).is_file()
 
 
+def test_compile_prompt_allows_one_sequence_rescue_after_normal_strategies_exhausted(
+    tmp_path,
+) -> None:
+    store, context, shot = _context(tmp_path)
+    contract_hash = _shot_contract_hash(shot)
+    strategies = (
+        "initial",
+        "targeted_repair",
+        "story_reframe",
+        "audience_reframe",
+        "truth_reframe",
+        "contextual_replan",
+        "documentary_context",
+    )
+    history = [
+        {
+            "shot_id": "S00_SH00",
+            "candidate_id": f"S00_SH00_{index}",
+            "status": "quality_budget_exhausted",
+            "repair_strategy": strategy,
+            "hard_blockers": ["flat composition"],
+            "blocker_codes": ["flat_composition"],
+            "shot_contract_hash": contract_hash,
+            "repair_round": min(index + 1, 3),
+        }
+        for index, strategy in enumerate(strategies)
+    ]
+    pending = {
+        **history[-1],
+        "candidate_id": "S00_SH00_SEQUENCE_PENDING",
+        "status": "repair_required",
+        "sequence_rescue_pending": True,
+        "hard_blockers": ["cinematic evidence score<80"],
+        "blocker_codes": ["flat_composition"],
+    }
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps({"outputs": [pending], "attempt_history": history}),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        story_video_quality_control(
+            {"action": "compile_prompt", "shot_id": "S00_SH00"},
+            session_id="session-1",
+            store=store,
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["sequence_rescue"] is True
+    assert "Sequence-level QC rescue" in payload["prompt"]
+    assert payload["repair_strategy"] == "story_reframe"
+
+
 def test_source_image_qc_ignores_subtitle_packaging_blockers() -> None:
     blockers, codes = _source_image_qc_blockers(
         ["subtitle-safe area is occupied", "the fossil anatomy is malformed"],

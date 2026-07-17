@@ -666,13 +666,17 @@ def _compile_prompt(
         if str(row.get("candidate_id") or "") not in known_candidates
     )
     attempts.sort(key=lambda row: str(row.get("reviewed_at") or ""))
-    previous = attempts[-1] if attempts else None
+    sequence_pending = next(
+        (row for row in reversed(current_rows) if row.get("sequence_rescue_pending") is True),
+        None,
+    )
+    previous = sequence_pending or (attempts[-1] if attempts else None)
     blockers = [
         str(item).strip()
         for item in (previous or {}).get("hard_blockers") or []
         if str(item).strip()
     ]
-    repair_plan = plan_repair(attempts)
+    repair_plan = plan_repair([sequence_pending] if sequence_pending is not None else attempts)
     if repair_plan.exhausted:
         return {
             "success": False,
@@ -698,6 +702,11 @@ def _compile_prompt(
             " Prior QC blocker(s): "
             + "; ".join(blockers)
             + "."
+        )
+    if sequence_pending is not None:
+        prompt += (
+            " Sequence-level QC rescue: create a materially distinct current artifact "
+            "that fixes the listed sequence defect while preserving the shot contract."
         )
     prompt += f" Adaptive repair strategy: {repair_plan.strategy}. {repair_plan.directive}"
     revision = f"{contract_hash[:8].upper()}_" if contract_reset else ""
@@ -741,6 +750,7 @@ def _compile_prompt(
         "contract_reset": contract_reset,
         "effective_shot_contract": effective_shot,
         "generation_mode": "image_edit" if source_image_url else "text_to_image",
+        "sequence_rescue": sequence_pending is not None,
     }
     style_anchor_path = _style_anchor_source(
         context,
