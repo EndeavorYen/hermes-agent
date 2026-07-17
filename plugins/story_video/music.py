@@ -21,7 +21,11 @@ def _text(value: Any) -> str:
 def _tags(value: Any) -> set[str]:
     if not isinstance(value, list):
         return set()
-    return {_text(item).lower() for item in value if _text(item)}
+    return {
+        "_".join(_text(item).lower().replace("-", " ").split())
+        for item in value
+        if _text(item)
+    }
 
 
 def _duration(value: Any) -> float:
