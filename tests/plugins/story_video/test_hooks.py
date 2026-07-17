@@ -82,6 +82,16 @@ def test_runtime_context_requires_v6_review_board_and_reserved_content_profiles(
     assert "engagement_role=hook|build|reveal|reaction|payoff|breathe" in context
     assert "composition_energy=calm|curious|tense|kinetic|awe" in context
     assert "engagement_criteria MUST be a non-empty JSON array of strings" in context
+    assert "a top-level shots array on that scene item" in context
+    assert "never nest shots under a scene object" in context
+    assert "revision_round_count=1 or 2" in context
+    assert (
+        "finding_id, severity, location, category, evidence, recommendation, and "
+        "resolution_status"
+    ) in context
+    assert "severity=minor|moderate|major|critical" in context
+    assert "resolution_status=resolved|unresolved|accepted_risk" in context
+    assert "adjudication object" in context
     assert "minimum_age_years=5" in context
     assert "story_engine" in context
     assert "style_bible" in context
@@ -644,7 +654,8 @@ def test_pre_llm_creates_context_and_injects_provider_policy(tmp_path, monkeypat
     assert "audience_engagement" in result["context"]
     assert "visual_truth" in result["context"]
     assert "checks MUST be an object" in result["context"]
-    assert "scene.shots array" in result["context"]
+    assert "a top-level shots array on that scene item" in result["context"]
+    assert "never nest shots under a scene object" in result["context"]
     assert "### S00" in result["context"]
     assert "never write spoken aliases into script.md" in result["context"]
     assert "acceptance_criteria MUST be a non-empty JSON array of strings" in result["context"]
