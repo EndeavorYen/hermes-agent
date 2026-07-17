@@ -316,6 +316,18 @@ def parse_operator_call(
         "批准上传 youtube",
     }:
         return OperatorCall(action="approve_upload") if has_active_project else None
+    if has_active_project and "youtube" in lowered:
+        negated_upload = re.search(
+            r"(?:先?不要|請勿|请勿|禁止|do\s+not|don't|dont)"
+            r".{0,24}(?:上傳|上传|發佈|發布|发布|upload|publish)",
+            lowered,
+            re.I,
+        )
+        if not negated_upload:
+            if re.search(r"(?:準備|准备|prepare).{0,24}(?:上傳|上传|發佈|發布|发布|upload|publish)", lowered, re.I):
+                return OperatorCall(action="package")
+            if re.search(r"(?:上傳|上传|發佈|發布|发布|upload|publish).{0,24}youtube", lowered, re.I):
+                return OperatorCall(action="approve_upload")
 
     repair = re.match(
         r"^\s*(?:(?:故事影片|產影片|story\s*video|story-video)\s*)?"

@@ -616,18 +616,30 @@ def pre_llm_call(
     if action == "package":
         instruction += (
             " The operator requested a YouTube review package. Do not upload. Use the "
-            "story-video-production-pipeline release packaging scripts to create one "
+            "story-video-youtube-release skill and its release packaging scripts to create one "
             "dedicated OpenAI/openai-codex release-art source with no baked-in text, "
             "then compose exact Traditional Chinese thumbnail/opening/ending typography "
-            "locally. Produce polished title, description, tags, pinned comment, and a "
+            "locally. Public title and description are audience-facing editorial copy: "
+            "package the subject, question, discovery, viewer payoff, and reason to watch. "
+            "Never expose the production brief, internal visual style, image prompt, provider, "
+            "model, TTS, render/QC labels, or generation workflow in public metadata. Record "
+            "non-public production_brief_terms in youtube_package_input.json so the builder "
+            "can reject leaks. Produce polished title, description, tags, pinned comment, and a "
             "REVIEW_REQUIRED manifest bound to artifact hashes. If release cards changed, "
             "rerender and rerun render QC before reporting the review package."
         )
     elif action == "approve_upload":
         instruction += (
             " The operator explicitly approved YouTube upload, but not public release. "
-            "Verify the current review package hashes, create the approval record, upload "
-            "with privacy=private, and verify the persisted YouTube record. Never infer "
+            "This is an API-only operation. Verify the current review package hashes, create "
+            "the approval record, then use the YouTube Data API through "
+            "~/.hermes/skills/creative/story-video-production-pipeline/scripts/"
+            "youtube_publish_from_manifest.py with privacy=private and authenticated "
+            "videos.list verification. Do not open YouTube Studio, youtube.com, Chrome, "
+            "computer-use, or any browser for upload, metadata, thumbnail, or status work. "
+            "If OAuth credentials, API scopes, or the API call are unavailable, return "
+            "SETUP_REQUIRED with the missing prerequisite; never fall back to web upload. "
+            "Never infer "
             "public visibility from this command; public release requires a separate "
             "explicit approval."
         )

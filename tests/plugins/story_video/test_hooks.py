@@ -370,8 +370,15 @@ def test_youtube_package_and_upload_approval_are_distinct_active_project_actions
 
     assert '"action": "package"' in package["text"]
     assert "Do not upload" in package_context["context"]
+    assert "audience-facing" in package_context["context"]
+    assert "production brief" in package_context["context"]
+    assert "internal visual style" in package_context["context"]
     assert '"action": "approve_upload"' in approval["text"]
     assert "privacy=private" in approval_context["context"]
+    assert "YouTube Data API" in approval_context["context"]
+    assert "youtube_publish_from_manifest.py" in approval_context["context"]
+    assert "Do not open YouTube Studio" in approval_context["context"]
+    assert "SETUP_REQUIRED" in approval_context["context"]
     assert "public release requires a separate" in approval_context["context"]
 
 
