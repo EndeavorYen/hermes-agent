@@ -305,6 +305,29 @@ STORY_VIDEO_QUALITY_CONTROL_SCHEMA = {
                 },
                 "required": ["path", "provider", "response_id"],
             },
+            "release_art_candidates": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "description": (
+                    "Distinct text-free opening and ending sources returned by OpenAI "
+                    "image generation for release-art v2."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "role": {"type": "string", "enum": ["opening", "ending"]},
+                        "path": {"type": "string"},
+                        "provider": {
+                            "type": "string",
+                            "enum": ["openai-codex"],
+                        },
+                        "model": {"type": "string"},
+                        "response_id": {"type": "string"},
+                    },
+                    "required": ["role", "path", "provider", "response_id"],
+                },
+            },
             "redesigned_shot": {
                 "type": "object",
                 "description": (

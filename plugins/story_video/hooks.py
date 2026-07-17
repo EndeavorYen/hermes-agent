@@ -711,7 +711,10 @@ def pre_llm_call(
         "### S01, and so on for the local voice parser. Preserve correct display "
         "spelling in all narration and never write spoken aliases into script.md; "
         "aliases belong only in pronunciation_lexicon.json and are compiled at voice time. "
-        "The ending_echo MUST support a cinematic educational ending. "
+        "The ending_echo MUST support a cinematic educational ending. At render time, "
+        "generate exactly two distinct text-free sources identified as "
+        "RELEASE_OPENING_C01 and RELEASE_ENDING_C01; never reuse the opening source for "
+        "the ending. "
         )
     if context.phase == "batch":
         instruction += (
@@ -751,12 +754,14 @@ def pre_llm_call(
     if context.phase == "render":
         instruction += (
         "During render, create dedicated release art before prepare_render. First call "
-        "story_video_quality_control action=compile_release_art, generate exactly one "
-        "text-free hero with image_generate provider=openai-codex using the returned "
-        "prompt, candidate_id_hint, and every returned reference_image_urls value, then "
-        "call action=register_release_art with the "
-        "returned local path, provider, model, and response_id. The registration action "
-        "composes the thumbnail, opening, and a cinematic educational ending locally. "
+        "story_video_quality_control action=compile_release_art, then generate exactly two "
+        "distinct text-free sources with image_generate provider=openai-codex using each "
+        "returned candidates item: RELEASE_OPENING_C01 for the opening question and "
+        "RELEASE_ENDING_C01 for the resolved discovery. Apply every returned "
+        "reference_image_urls value to both as style-only references. Then call "
+        "action=register_release_art once with release_art_candidates containing both "
+        "returned local paths, roles, provider, model, and response_id. The registration "
+        "action composes the thumbnail, opening, and cinematic educational ending locally. "
         "The ending MUST present story_engine ending_echo and knowledge_payoff as a beautiful "
         "final discovery, not a generic CTA or a blurred placeholder. Never substitute "
         "the first or last body shot for missing release art. During render, call "
@@ -783,8 +788,8 @@ def pre_llm_call(
     if action == "package":
         instruction += (
             " The operator requested a YouTube review package. Do not upload. Use the "
-            "story-video-youtube-release skill and its release packaging scripts to create one "
-            "dedicated OpenAI/openai-codex release-art source with no baked-in text, "
+            "story-video-youtube-release skill and its release packaging scripts to use the "
+            "distinct OpenAI/openai-codex opening and ending release-art sources with no baked-in text, "
             "then compose exact Traditional Chinese thumbnail/opening/ending typography "
             "locally. Public title and description are audience-facing editorial copy: "
             "package the subject, question, discovery, viewer payoff, and reason to watch. "
