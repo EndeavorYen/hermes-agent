@@ -4,6 +4,7 @@ import hashlib
 import json
 
 from plugins.story_video.audit import ProviderAudit, ProviderAuditEvent
+from plugins.story_video.schemas import STORY_VIDEO_CONTROL_SCHEMA
 from plugins.story_video.state import StoryVideoStateStore, parse_operator_call
 from plugins.story_video.tools import story_video_control, validate_phase
 
@@ -19,6 +20,127 @@ def _active_context(tmp_path):
         original_request="start",
     )
     return store, context
+
+
+def _voice_registry(tmp_path, *profile_ids: str, default: str | None = None):
+    root = tmp_path / "voice_profiles"
+    root.mkdir(exist_ok=True)
+    rows = []
+    for profile_id in profile_ids:
+        directory = root / profile_id
+        directory.mkdir()
+        reference = directory / "reference.wav"
+        reference.write_bytes(b"clean reference")
+        profile = directory / "profile.json"
+        profile.write_text(
+            json.dumps(
+                {
+                    "profile_id": profile_id,
+                    "display_name": profile_id,
+                    "status": "locked_by_user",
+                    "provider": "local_qwen",
+                    "model_id": "Qwen3-TTS-12Hz-1.7B-Base-8bit",
+                    "reference_audio": str(reference),
+                    "reference_transcript": "這是本人授權的參考錄音。",
+                    "language": "zh-TW",
+                    "clone_mode": "full_icl",
+                    "inference_mode": "offline",
+                    "network_fallback": "forbidden",
+                    "consent": "user_confirmed_self_recording",
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        rows.append(
+            {"profile_id": profile_id, "profile_path": str(profile), "enabled": True}
+        )
+    registry = root / "registry.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "schema": "story_video_voice_profile_registry_v1",
+                "default_profile_id": default or profile_ids[0],
+                "profiles": rows,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return registry
+
+
+def test_story_video_control_schema_exposes_voice_profile_actions() -> None:
+    action = STORY_VIDEO_CONTROL_SCHEMA["parameters"]["properties"]["action"]
+
+    assert {"list_voices", "select_voice", "voice_status"}.issubset(action["enum"])
+    assert "voice_id" in STORY_VIDEO_CONTROL_SCHEMA["parameters"]["properties"]
+
+
+def test_story_video_control_lists_voices_without_active_project(tmp_path) -> None:
+    registry = _voice_registry(tmp_path, "voice_a", "voice_b", default="voice_b")
+
+    payload = json.loads(
+        story_video_control(
+            {"action": "list_voices"},
+            session_id="no-project",
+            store=StoryVideoStateStore(tmp_path / "state"),
+            voice_registry_path=registry,
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["default_profile_id"] == "voice_b"
+    assert [row["profile_id"] for row in payload["profiles"]] == [
+        "voice_a",
+        "voice_b",
+    ]
+
+
+def test_story_video_control_selects_and_reports_project_voice(tmp_path) -> None:
+    store, context = _active_context(tmp_path)
+    registry = _voice_registry(tmp_path, "voice_a", "voice_b")
+
+    selected = json.loads(
+        story_video_control(
+            {"action": "select_voice", "voice_id": "voice_b"},
+            session_id="session-1",
+            store=store,
+            voice_registry_path=registry,
+        )
+    )
+    status = json.loads(
+        story_video_control(
+            {"action": "voice_status"},
+            session_id="session-1",
+            store=store,
+            voice_registry_path=registry,
+        )
+    )
+
+    assert selected["success"] is True
+    assert selected["profile_id"] == "voice_b"
+    assert selected["clone_mode"] == "full_icl"
+    assert status["bound"] is True
+    assert status["integrity"] == "PASS"
+    assert status["profile_id"] == "voice_b"
+    assert (context.project_dir / "voice_profile_binding.json").is_file()
+
+
+def test_story_video_control_requires_voice_id_for_selection(tmp_path) -> None:
+    store, _context = _active_context(tmp_path)
+    registry = _voice_registry(tmp_path, "voice_a")
+
+    payload = json.loads(
+        story_video_control(
+            {"action": "select_voice"},
+            session_id="session-1",
+            store=store,
+            voice_registry_path=registry,
+        )
+    )
+
+    assert payload["success"] is False
+    assert payload["error_type"] == "voice_profile_id_required"
 
 
 def _quality_shots(count: int = 40) -> list[dict]:
@@ -1057,7 +1179,7 @@ def test_voice_validation_rejects_local_macos_timing_draft(tmp_path) -> None:
     assert "production narration provider is local, expected local-qwen" in proof.violations
 
 
-def test_voice_validation_requires_complete_v4_acoustic_contract(tmp_path) -> None:
+def test_voice_validation_accepts_v4_and_verifies_v5_voice_binding(tmp_path) -> None:
     store, context = _active_context(tmp_path)
     context = store.update(context, phase="voice")
     audio = context.project_dir / "audio" / "qwen" / "S00.wav"
@@ -1172,6 +1294,62 @@ def test_voice_validation_requires_complete_v4_acoustic_contract(tmp_path) -> No
     proof = validate_phase(context)
 
     assert proof.ok is True
+
+    binding = context.project_dir / "voice_profile_binding.json"
+    binding.write_text(
+        json.dumps(
+            {
+                "schema": "story_video_voice_profile_binding_v1",
+                "voice_role": "narrator",
+                "profile_id": "simon_primary",
+                "profile_path": str(profile),
+                "profile_sha256": hashlib.sha256(profile.read_bytes()).hexdigest(),
+                "clone_mode": "full_icl",
+                "language_policy": "zh-TW",
+                "status": "locked",
+            }
+        ),
+        encoding="utf-8",
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.update(
+        {
+            "schema": "story_video_narration_manifest_v5",
+            "voice_profile_id": "simon_primary",
+            "voice_profile_sha256": hashlib.sha256(profile.read_bytes()).hexdigest(),
+            "voice_profile_binding": str(binding),
+            "voice_profile_binding_sha256": hashlib.sha256(
+                binding.read_bytes()
+            ).hexdigest(),
+            "clone_mode": "full_icl",
+        }
+    )
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    assert validate_phase(context).ok is True
+
+    external_binding = tmp_path / "external_voice_profile_binding.json"
+    external_binding.write_bytes(binding.read_bytes())
+    manifest["voice_profile_binding"] = str(external_binding)
+    manifest["voice_profile_binding_sha256"] = hashlib.sha256(
+        external_binding.read_bytes()
+    ).hexdigest()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    external = validate_phase(context)
+    assert external.ok is False
+    assert "local Qwen voice profile binding is not project-local" in external.violations
+
+    manifest["voice_profile_binding"] = str(binding)
+    manifest["voice_profile_binding_sha256"] = hashlib.sha256(
+        binding.read_bytes()
+    ).hexdigest()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    profile.write_text('{"profile_id":"changed"}', encoding="utf-8")
+    drifted = validate_phase(context)
+
+    assert drifted.ok is False
+    assert "local Qwen voice profile hash does not match project binding" in drifted.violations
 
     pronunciation_report = json.loads(pronunciation_path.read_text(encoding="utf-8"))
     pronunciation_report["method"] = "sentence_chunk_lexicon_plus_independent_asr"
