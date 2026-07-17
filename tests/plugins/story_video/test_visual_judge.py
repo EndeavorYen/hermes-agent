@@ -510,6 +510,8 @@ def test_plugin_registers_internal_quality_tool_and_binds_host_llm() -> None:
 
     assert set(registered_tools) == {
         "story_video_control",
+        "story_video_voice_manager",
+        "story_video_audio_director",
         "story_video_quality_control",
     }
     assert registered_tools["story_video_quality_control"]["toolset"] == "story_video"

@@ -2,11 +2,21 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 
 from plugins.story_video.audit import ProviderAudit, ProviderAuditEvent
-from plugins.story_video.schemas import STORY_VIDEO_CONTROL_SCHEMA
+from plugins.story_video.schemas import (
+    STORY_VIDEO_AUDIO_DIRECTOR_SCHEMA,
+    STORY_VIDEO_CONTROL_SCHEMA,
+    STORY_VIDEO_VOICE_MANAGER_SCHEMA,
+)
 from plugins.story_video.state import StoryVideoStateStore, parse_operator_call
-from plugins.story_video.tools import story_video_control, validate_phase
+from plugins.story_video.tools import (
+    story_video_audio_director,
+    story_video_control,
+    story_video_voice_manager,
+    validate_phase,
+)
 
 
 def _active_context(tmp_path):
@@ -73,6 +83,117 @@ def test_story_video_control_schema_exposes_voice_profile_actions() -> None:
     action = STORY_VIDEO_CONTROL_SCHEMA["parameters"]["properties"]["action"]
 
     assert {"list_voices", "select_voice", "voice_status"}.issubset(action["enum"])
+
+
+def test_story_video_specialist_tool_schemas_are_narrow_and_complete() -> None:
+    manager_actions = STORY_VIDEO_VOICE_MANAGER_SCHEMA["parameters"]["properties"][
+        "action"
+    ]["enum"]
+    director_actions = STORY_VIDEO_AUDIO_DIRECTOR_SCHEMA["parameters"]["properties"][
+        "action"
+    ]["enum"]
+
+    assert manager_actions == ["list", "add", "tune", "archive", "delete"]
+    assert director_actions == ["compile", "bind_cast", "status"]
+    assert STORY_VIDEO_AUDIO_DIRECTOR_SCHEMA["parameters"]["properties"]["mode"][
+        "enum"
+    ] == ["creative", "remake", "read_aloud"]
+
+
+def test_voice_manager_adds_tunes_and_archives_local_voice(tmp_path) -> None:
+    registry = tmp_path / "voices" / "registry.json"
+    source = tmp_path / "mom.wav"
+    source.write_bytes(b"clean-mom-reference")
+
+    added = json.loads(
+        story_video_voice_manager(
+            {
+                "action": "add",
+                "voice_id": "mom",
+                "display_name": "Mom",
+                "reference_audio": str(source),
+                "reference_transcript": "這是媽媽本人授權的乾淨錄音。",
+                "consent": "user_confirmed_self_recording",
+            },
+            voice_registry_path=registry,
+        )
+    )
+    tuned = json.loads(
+        story_video_voice_manager(
+            {
+                "action": "tune",
+                "voice_id": "mom",
+                "tuning": {"speed": 1.08, "expressiveness": "lively"},
+            },
+            voice_registry_path=registry,
+        )
+    )
+    archived = json.loads(
+        story_video_voice_manager(
+            {"action": "archive", "voice_id": "mom"},
+            voice_registry_path=registry,
+        )
+    )
+
+    assert added["success"] is True
+    assert added["profile_id"] == "mom@v1"
+    assert tuned["profile_id"] == "mom@v2"
+    assert archived["archived_profile_ids"] == ["mom@v1", "mom@v2"]
+
+
+def test_audio_director_compiles_and_binds_active_story_project(tmp_path) -> None:
+    store, context = _active_context(tmp_path)
+    registry = _voice_registry(tmp_path, "voice_a", "voice_b", default="voice_a")
+
+    payload = json.loads(
+        story_video_audio_director(
+            {
+                "action": "compile",
+                "mode": "creative",
+                "source_text": "",
+                "speakers": [
+                    {
+                        "speaker_id": "narrator",
+                        "display_name": "旁白",
+                        "role": "narrator",
+                        "voice_id": "voice_a",
+                    },
+                    {
+                        "speaker_id": "hero",
+                        "display_name": "主角",
+                        "role": "lead",
+                        "voice_id": "voice_b",
+                    },
+                ],
+                "utterances": [
+                    {
+                        "utterance_id": "U001",
+                        "scene_id": "S01",
+                        "shot_id": "S01_SH01",
+                        "speaker_id": "narrator",
+                        "display_text": "故事開始。",
+                    },
+                    {
+                        "utterance_id": "U002",
+                        "scene_id": "S01",
+                        "shot_id": "S01_SH01",
+                        "speaker_id": "hero",
+                        "display_text": "出發吧！",
+                    },
+                ],
+            },
+            session_id="session-1",
+            store=store,
+            voice_registry_path=registry,
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["mode"] == "creative"
+    assert payload["speaker_count"] == 2
+    assert payload["bound"] is True
+    assert Path(payload["binding_path"]) == context.project_dir / "voice_cast_binding.json"
+
     assert "voice_id" in STORY_VIDEO_CONTROL_SCHEMA["parameters"]["properties"]
 
 
@@ -1392,6 +1513,179 @@ def test_voice_validation_accepts_v4_and_verifies_v5_voice_binding(tmp_path) -> 
         "audio narration segment[0].segments[0] prosody is not PASS"
         in failed.violations
     )
+
+
+def test_voice_validation_verifies_v6_multi_character_routing_and_hashes(
+    tmp_path,
+) -> None:
+    store, context = _active_context(tmp_path)
+    context = store.update(context, phase="voice")
+    audio = context.project_dir / "audio" / "qwen" / "S00.wav"
+    audio.parent.mkdir(parents=True)
+    audio.write_bytes(b"multi-character-production-audio")
+    profiles = []
+    for profile_id in ("simon@v1", "hero@v1"):
+        profile = context.project_dir / "voice_profiles" / profile_id / "profile.json"
+        profile.parent.mkdir(parents=True)
+        profile.write_text(
+            json.dumps(
+                {
+                    "profile_id": profile_id,
+                    "status": "locked_by_user",
+                    "provider": "local_qwen",
+                    "model_id": "Qwen3-TTS-1.7B-Base",
+                    "reference_audio": str(profile.parent / "reference.wav"),
+                    "reference_transcript": "本人授權參考錄音。",
+                    "language": "zh-TW",
+                    "clone_mode": "full_icl",
+                    "inference_mode": "offline",
+                    "network_fallback": "forbidden",
+                    "consent": "user_confirmed_self_recording",
+                }
+            ),
+            encoding="utf-8",
+        )
+        (profile.parent / "reference.wav").write_bytes(b"reference")
+        profiles.append(profile)
+    cast_bible = context.project_dir / "cast_bible.json"
+    cast_bible.write_text('{"schema":"story_video_cast_bible_v1"}', encoding="utf-8")
+    story_mode = context.project_dir / "story_mode.json"
+    story_mode.write_text(
+        '{"schema":"story_video_story_mode_v1","mode":"creative"}',
+        encoding="utf-8",
+    )
+    dialogue = context.project_dir / "dialogue_ledger.json"
+    dialogue.write_text(
+        '{"schema":"story_video_dialogue_ledger_v1","mode":"creative"}',
+        encoding="utf-8",
+    )
+    binding = context.project_dir / "voice_cast_binding.json"
+    binding.write_text(
+        json.dumps(
+            {
+                "schema": "story_video_voice_cast_binding_v1",
+                "status": "locked",
+                "language_policy": "zh-TW",
+                "story_mode": "creative",
+                "story_mode_path": str(story_mode),
+                "story_mode_sha256": hashlib.sha256(story_mode.read_bytes()).hexdigest(),
+                "cast_bible_path": str(cast_bible),
+                "cast_bible_sha256": hashlib.sha256(cast_bible.read_bytes()).hexdigest(),
+                "dialogue_ledger_path": str(dialogue),
+                "dialogue_ledger_sha256": hashlib.sha256(dialogue.read_bytes()).hexdigest(),
+                "speakers": [
+                    {
+                        "speaker_id": speaker_id,
+                        "voice_id": profile.stem,
+                        "profile_id": profile.parent.name,
+                        "profile_path": str(profile),
+                        "profile_sha256": hashlib.sha256(profile.read_bytes()).hexdigest(),
+                        "clone_mode": "full_icl",
+                        "variant": {},
+                    }
+                    for speaker_id, profile in zip(("narrator", "hero"), profiles)
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    pronunciation = context.project_dir / "qc" / "pronunciation_qc_report.json"
+    pronunciation.parent.mkdir(parents=True)
+    pronunciation.write_text(
+        json.dumps(
+            {
+                "schema": "story_video_pronunciation_qc_v3",
+                "status": "PASS",
+                "language": "zh-TW",
+                "method": "sentence_chunk_plus_forced_alignment_isolated_term_asr",
+                "checked_unit": "voice_chunk",
+                "applied_entries": [],
+                "acoustic_evidence": [
+                    {
+                        "shot_id": "U001__C01",
+                        "alignment_status": "PASS",
+                        "pronunciation_status": "PASS",
+                        "prosody_status": "PASS",
+                        "term_checks": [],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    chunk = {
+        "voice_chunk_id": "U001__C01",
+        "speaker_id": "narrator",
+        "profile_id": "simon@v1",
+        "profile_sha256": hashlib.sha256(profiles[0].read_bytes()).hexdigest(),
+        "speaker_routing_status": "PASS",
+        "display_text": "故事開始。",
+        "start_sec": 0.0,
+        "speech_end_sec": 1.0,
+        "alignment_status": "PASS",
+        "pronunciation_status": "PASS",
+        "prosody_status": "PASS",
+    }
+    manifest_path = context.project_dir / "manifests" / "narration_manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest = {
+        "schema": "story_video_narration_manifest_v6",
+        "provider": "local_qwen",
+        "engine": "Qwen3-TTS via MLX-Audio",
+        "language": "zh-TW",
+        "voice_role": "cast",
+        "voice": "multi_character",
+        "rate": "per_speaker",
+        "profile_status": "locked_by_user",
+        "voice_contract_status": "PASS",
+        "model": "Qwen3-TTS-1.7B-Base",
+        "inference_mode": "offline",
+        "network_fallback": "forbidden",
+        "pronunciation_status": "PASS",
+        "alignment_status": "PASS",
+        "prosody_status": "PASS",
+        "voice_segmentation": "sentence_chunks_v1",
+        "story_mode": "creative",
+        "speaker_routing_status": "PASS",
+        "speaker_similarity_status": "NOT_MEASURED",
+        "speaker_similarity_method": "routing_integrity_only",
+        "voice_cast_binding": str(binding),
+        "voice_cast_binding_sha256": hashlib.sha256(binding.read_bytes()).hexdigest(),
+        "dialogue_ledger": str(dialogue),
+        "dialogue_ledger_sha256": hashlib.sha256(dialogue.read_bytes()).hexdigest(),
+        "speaker_profiles": json.loads(binding.read_text(encoding="utf-8"))["speakers"],
+        "outputs": [
+            {
+                "scene_id": "S00",
+                "audio": str(audio),
+                "display_text": "故事開始。",
+                "spoken_text": "故事開始。",
+                "pronunciation_status": "PASS",
+                "segments": [
+                    {
+                        "shot_id": "S00_SH00",
+                        "timeline_duration_sec": 1.18,
+                        "alignment_status": "PASS",
+                        "pronunciation_status": "PASS",
+                        "prosody_status": "PASS",
+                        "voice_chunks": [chunk],
+                    }
+                ],
+            }
+        ],
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    assert validate_phase(context).ok is True
+
+    manifest["outputs"][0]["segments"][0]["voice_chunks"][0][
+        "profile_id"
+    ] = "hero@v1"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    drifted = validate_phase(context)
+
+    assert drifted.ok is False
+    assert "multi-character voice chunk profile does not match cast binding" in drifted.violations
 
 
 def test_voice_validation_blocks_local_qwen_without_pronunciation_proof(tmp_path) -> None:

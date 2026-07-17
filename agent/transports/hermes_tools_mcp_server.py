@@ -20,8 +20,10 @@ Scope (what we expose):
   - image_generate                       — image generation
   - skill_view, skills_list              — Hermes' skill library
   - text_to_speech                       — TTS
-  - story_video_control /                — stateful story-video phase proof
-    story_video_quality_control             and OpenAI vision selection
+  - story_video_control /                — stateful story-video phase proof,
+    story_video_voice_manager /             versioned local voices, character
+    story_video_audio_director /            casting, and OpenAI vision selection
+    story_video_quality_control
   - kanban_* (complete/block/comment/    — kanban worker + orchestrator
     heartbeat/show/list/create/            handoff (stateless: read env var,
     unblock/link)                          write ~/.hermes/kanban.db)
@@ -86,6 +88,8 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "skills_list",
     "text_to_speech",
     "story_video_control",
+    "story_video_voice_manager",
+    "story_video_audio_director",
     "story_video_quality_control",
     # Kanban worker handoff tools — gated on HERMES_KANBAN_TASK env var
     # (set by the kanban dispatcher when spawning a worker). Without these

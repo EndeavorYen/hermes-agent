@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from plugins.story_video.voice_executor import (
     CommandResult,
     StoryVideoVoiceExecutor,
@@ -27,6 +29,18 @@ def _selection(tmp_path):
         binding_path=tmp_path / "project" / "voice_profile_binding.json",
         binding_sha256="binding-sha",
         clone_mode="full_icl",
+    )
+
+
+def _cast_selection(tmp_path):
+    return SimpleNamespace(
+        binding_path=tmp_path / "project" / "voice_cast_binding.json",
+        binding_sha256="cast-binding-sha",
+        story_mode="creative",
+        speakers=(
+            {"speaker_id": "narrator", "profile_id": "voice_a"},
+            {"speaker_id": "hero", "profile_id": "voice_b"},
+        ),
     )
 
 
@@ -104,6 +118,87 @@ def test_voice_executor_retries_one_transient_mlx_abort_then_passes(tmp_path) ->
         str(tmp_path / "project" / "voice_profile_binding.json"),
     ]
     assert calls[0] == calls[1]
+
+
+def test_voice_executor_dispatches_locked_multi_character_cast(tmp_path) -> None:
+    context = _context(tmp_path)
+    python = tmp_path / "python"
+    script = tmp_path / "generate.py"
+    python.write_text("runtime", encoding="utf-8")
+    script.write_text("script", encoding="utf-8")
+    cast_binding = context.project_dir / "voice_cast_binding.json"
+    cast_binding.write_text("{}", encoding="utf-8")
+    dialogue = context.project_dir / "dialogue_ledger.json"
+    dialogue.write_text("{}", encoding="utf-8")
+    passed = False
+    calls: list[list[str]] = []
+
+    def run(command, _cancel):
+        nonlocal passed
+        calls.append(command)
+        passed = True
+        return CommandResult(returncode=0)
+
+    executor = StoryVideoVoiceExecutor(
+        command_runner=run,
+        phase_validator=lambda _context: _proof(ok=passed),
+        voice_profile_resolver=lambda _project: pytest.fail(
+            "single narrator resolver must not run for cast projects"
+        ),
+        voice_cast_resolver=lambda _project: _cast_selection(tmp_path),
+        python_path=python,
+        script_path=script,
+    )
+
+    summary = executor.run(context)
+
+    assert summary.work_status == "complete"
+    assert summary.story_mode == "creative"
+    assert summary.speaker_count == 2
+    assert summary.cast_binding_path == str(cast_binding)
+    assert summary.cast_binding_sha256 == "cast-binding-sha"
+    assert calls == [
+        [
+            str(python),
+            str(script.resolve()),
+            str(context.project_dir),
+            "--voice-cast-binding",
+            str(cast_binding),
+            "--dialogue-ledger",
+            str(dialogue),
+        ]
+    ]
+
+
+def test_voice_executor_fails_closed_when_cast_binding_is_invalid(tmp_path) -> None:
+    from plugins.story_video.dubbing import DubbingContractError
+
+    context = _context(tmp_path)
+    python = tmp_path / "python"
+    script = tmp_path / "generate.py"
+    python.write_text("runtime", encoding="utf-8")
+    script.write_text("script", encoding="utf-8")
+    (context.project_dir / "voice_cast_binding.json").write_text("{}", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    def fail_cast(_project):
+        raise DubbingContractError(
+            "voice_cast_binding_mismatch", "bound voice profile hash mismatch"
+        )
+
+    executor = StoryVideoVoiceExecutor(
+        command_runner=lambda command, _cancel: calls.append(command),
+        phase_validator=lambda _context: _proof(ok=False),
+        voice_cast_resolver=fail_cast,
+        python_path=python,
+        script_path=script,
+    )
+
+    summary = executor.run(context)
+
+    assert summary.work_status == "setup_required"
+    assert summary.error_type == "voice_cast_binding_mismatch"
+    assert calls == []
 
 
 def test_voice_executor_fails_closed_when_profile_binding_is_invalid(tmp_path) -> None:

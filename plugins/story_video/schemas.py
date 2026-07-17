@@ -35,6 +35,126 @@ STORY_VIDEO_CONTROL_SCHEMA = {
 }
 
 
+STORY_VIDEO_VOICE_MANAGER_SCHEMA = {
+    "name": "story_video_voice_manager",
+    "description": (
+        "Manage local versioned Qwen Base voice-clone profiles. Tuning creates a "
+        "new immutable version; archiving preserves existing project bindings; "
+        "deletion fails when a project still references the voice."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["list", "add", "tune", "archive", "delete"],
+            },
+            "voice_id": {
+                "type": "string",
+                "description": "Stable operator-facing voice identity.",
+            },
+            "display_name": {"type": "string"},
+            "reference_audio": {
+                "type": "string",
+                "description": "Absolute path to a clean, authorized local recording.",
+            },
+            "reference_transcript": {
+                "type": "string",
+                "description": "Exact transcript of the reference recording.",
+            },
+            "consent": {
+                "type": "string",
+                "enum": ["user_confirmed_self_recording"],
+            },
+            "tuning": {
+                "type": "object",
+                "properties": {
+                    "speed": {"type": "number", "minimum": 0.85, "maximum": 1.2},
+                    "pitch_shift_semitones": {
+                        "type": "number",
+                        "minimum": -3,
+                        "maximum": 3,
+                    },
+                    "expressiveness": {
+                        "type": "string",
+                        "enum": ["restrained", "natural", "lively", "dramatic"],
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
+        "required": ["action"],
+    },
+}
+
+
+STORY_VIDEO_AUDIO_DIRECTOR_SCHEMA = {
+    "name": "story_video_audio_director",
+    "description": (
+        "Compile and inspect a story-video character dubbing contract. Supports "
+        "creative, remake, and exact read-aloud modes and locks each speaker to "
+        "one concrete local voice profile before synthesis."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["compile", "bind_cast", "status"],
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["creative", "remake", "read_aloud"],
+            },
+            "source_text": {"type": "string"},
+            "speakers": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "speaker_id": {"type": "string"},
+                        "display_name": {"type": "string"},
+                        "role": {
+                            "type": "string",
+                            "enum": ["narrator", "lead", "supporting", "extra"],
+                        },
+                        "voice_id": {"type": "string"},
+                        "variant": {"type": "object"},
+                    },
+                    "required": ["speaker_id", "display_name", "role", "voice_id"],
+                },
+            },
+            "utterances": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "utterance_id": {"type": "string"},
+                        "scene_id": {"type": "string"},
+                        "shot_id": {"type": "string"},
+                        "speaker_id": {"type": "string"},
+                        "display_text": {"type": "string"},
+                        "emotion": {"type": "string"},
+                        "pace": {"type": "string"},
+                        "source_start": {"type": "integer"},
+                        "source_end": {"type": "integer"},
+                        "source_refs": {"type": "array", "items": {"type": "object"}},
+                    },
+                    "required": [
+                        "utterance_id",
+                        "scene_id",
+                        "shot_id",
+                        "speaker_id",
+                        "display_text",
+                    ],
+                },
+            },
+        },
+        "required": ["action"],
+    },
+}
+
+
 STORY_VIDEO_QUALITY_CONTROL_SCHEMA = {
     "name": "story_video_quality_control",
     "description": (
