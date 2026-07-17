@@ -10,6 +10,7 @@ STORY_VIDEO_CONTROL_SCHEMA = {
             "action": {
                 "type": "string",
                 "enum": [
+                    "guide",
                     "status",
                     "validate",
                     "repair",
@@ -18,6 +19,11 @@ STORY_VIDEO_CONTROL_SCHEMA = {
                     "voice_status",
                 ],
                 "description": "Control action for the active story-video project.",
+            },
+            "section": {
+                "type": "string",
+                "enum": ["help", "status", "examples", "voices"],
+                "description": "Read-only operator guide section when action=guide.",
             },
             "repair_request": {
                 "type": "string",

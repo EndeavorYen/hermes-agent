@@ -1,5 +1,30 @@
 # Story Video Operator Guide
 
+## Help
+
+Use the deterministic story-video command when you do not remember a prompt:
+
+```text
+/story-video
+/story-video status
+/story-video examples
+/story-video voices
+```
+
+In Slack, the same command is available through the shared command router:
+
+```text
+/hermes story-video status
+```
+
+`status` is read-only. It shows the project bound to the current thread, its
+phase, manual/auto state, and the exact next operator response. It never starts
+or advances production. `/help` also lists `/story-video` once the plugin is
+loaded.
+
+Natural requests such as `故事影片怎麼用` and `Raphael 故事影片幫助` use the
+same guide, but the slash command is faster because it does not invoke the LLM.
+
 ## Start
 
 Use one short request:
@@ -18,6 +43,27 @@ Planning-only remains explicit:
 
 ```text
 故事影片：恐龍起源｜5分鐘｜電影感寫實重建。只規劃，不產媒體。
+```
+
+## Dubbing Modes And Voices
+
+Use `/story-video voices` or `列出故事影片聲線` to see stable voice IDs. A
+project binds those stable IDs to immutable concrete profile versions before
+synthesis.
+
+```text
+創作模式：依這個主題寫成多角色故事；旁白用 simon，其他角色自動選擇可用聲線。
+重製模式：保留附件故事的核心情節，改寫成 5 歲以上會好奇的繁中故事；旁白用 simon。
+說書模式：旁白用 simon，完全照附件原文朗讀，不改字。
+```
+
+Voice management remains separate from production:
+
+```text
+新增故事影片聲線
+調整故事影片聲線 simon 的速度
+封存故事影片聲線 simon
+刪除故事影片聲線 simon
 ```
 
 ## Batch Behavior

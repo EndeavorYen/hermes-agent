@@ -82,7 +82,47 @@ def _voice_registry(tmp_path, *profile_ids: str, default: str | None = None):
 def test_story_video_control_schema_exposes_voice_profile_actions() -> None:
     action = STORY_VIDEO_CONTROL_SCHEMA["parameters"]["properties"]["action"]
 
-    assert {"list_voices", "select_voice", "voice_status"}.issubset(action["enum"])
+    assert {"guide", "list_voices", "select_voice", "voice_status"}.issubset(
+        action["enum"]
+    )
+    assert STORY_VIDEO_CONTROL_SCHEMA["parameters"]["properties"]["section"][
+        "enum"
+    ] == ["help", "status", "examples", "voices"]
+
+
+def test_story_video_control_guides_without_active_project(tmp_path) -> None:
+    store = StoryVideoStateStore(tmp_path)
+
+    payload = json.loads(
+        story_video_control(
+            {"action": "guide", "section": "status"},
+            session_id="no-project",
+            store=store,
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["action"] == "guide"
+    assert payload["section"] == "status"
+    assert "沒有綁定故事影片" in payload["guide"]
+    assert store.for_session("no-project") is None
+
+
+def test_story_video_control_guides_active_project_without_advancing(tmp_path) -> None:
+    store, context = _active_context(tmp_path)
+
+    payload = json.loads(
+        story_video_control(
+            {"action": "guide", "section": "status"},
+            session_id="session-1",
+            store=store,
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["phase"] == "planning"
+    assert "恐龍起源" in payload["guide"]
+    assert store.for_session("session-1").phase == context.phase
 
 
 def test_story_video_specialist_tool_schemas_are_narrow_and_complete() -> None:

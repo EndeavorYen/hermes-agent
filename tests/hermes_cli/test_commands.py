@@ -2120,6 +2120,23 @@ class TestPluginCommandEnumeration:
         names = {name for name, _desc in telegram_bot_commands()}
         assert "metricas" in names
 
+    def test_plugin_command_appears_in_gateway_help(self, monkeypatch):
+        self._patch_plugin_commands(monkeypatch, {
+            "story-video": {
+                "handler": lambda _a: "ok",
+                "description": "Story-video help, status, examples, and voices.",
+                "args_hint": "[status|examples|voices]",
+                "plugin": "story-video",
+            }
+        })
+
+        lines = gateway_help_lines()
+
+        assert (
+            "`/story-video [status|examples|voices]` -- "
+            "Story-video help, status, examples, and voices."
+        ) in lines
+
     def test_plugin_command_with_required_args_excluded_from_telegram_menu(self, monkeypatch):
         """Telegram BotCommand selections cannot supply required arguments."""
         self._patch_plugin_commands(monkeypatch, {

@@ -371,3 +371,76 @@ async def test_command_hook_rewrite_routes_to_plugin(monkeypatch):
     # First emit_collect fires on the original command; after rewrite the
     # dispatcher does NOT re-fire for the new command (one decision per turn).
     assert call_log == ["command:status"]
+
+
+@pytest.mark.asyncio
+async def test_plugin_command_receives_current_gateway_event(monkeypatch):
+    """Context-aware plugin commands receive the event without entering the LLM."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("plugin command leaked to the agent")
+    )
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+    from hermes_cli import plugins as _plugins_mod
+
+    seen = {}
+
+    def handler(raw_args, *, event=None):
+        seen["raw_args"] = raw_args
+        seen["event"] = event
+        return "thread-aware"
+
+    monkeypatch.setattr(
+        _plugins_mod,
+        "get_plugin_commands",
+        lambda: {
+            "story-video": {
+                "description": "Story video help",
+                "args_hint": "[status]",
+            }
+        },
+    )
+    monkeypatch.setattr(
+        _plugins_mod,
+        "get_plugin_command_handler",
+        lambda name: handler if name == "story-video" else None,
+    )
+
+    event = _make_event("/story-video status")
+    result = await runner._handle_message(event)
+
+    assert result == "thread-aware"
+    assert seen == {"raw_args": "status", "event": event}
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_gateway_preserves_legacy_plugin_command_signature(monkeypatch):
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+    from hermes_cli import plugins as _plugins_mod
+
+    monkeypatch.setattr(
+        _plugins_mod,
+        "get_plugin_commands",
+        lambda: {"legacy": {"description": "Legacy", "args_hint": ""}},
+    )
+    monkeypatch.setattr(
+        _plugins_mod,
+        "get_plugin_command_handler",
+        lambda name: (lambda raw_args: f"legacy:{raw_args}")
+        if name == "legacy"
+        else None,
+    )
+
+    result = await runner._handle_message(_make_event("/legacy ok"))
+
+    assert result == "legacy:ok"

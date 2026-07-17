@@ -5,6 +5,12 @@ from . import hooks, schemas, tools, visual_judge
 
 def register(ctx) -> None:
     visual_judge.configure_plugin_llm(ctx.llm)
+    ctx.register_command(
+        "story-video",
+        hooks.handle_story_video_command,
+        description="Story-video help, status, examples, and voices.",
+        args_hint="[status|examples|voices]",
+    )
     ctx.register_tool(
         name="story_video_control",
         toolset="story_video",
