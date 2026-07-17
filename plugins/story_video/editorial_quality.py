@@ -12,7 +12,7 @@ MAX_LONG_SENTENCE_RATIO = 0.25
 MIN_CONCRETE_SCENE_RATIO = 0.80
 
 _SEGMENT_HEADING_RE = re.compile(r"^###\s+(S\d+)\b.*$", re.MULTILINE)
-_SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？!?])")
+_SENTENCE_RE = re.compile(r'.+?(?:[。！？!?]+[」』”’"]*|$)', re.DOTALL)
 
 
 def _text(value: Any) -> str:
@@ -35,7 +35,7 @@ def compute_read_aloud_metrics(script_text: str) -> dict[str, float | int]:
     for body in segments.values():
         sentences.extend(
             sentence.strip()
-            for sentence in _SENTENCE_SPLIT_RE.split(body)
+            for sentence in _SENTENCE_RE.findall(body)
             if sentence.strip()
         )
     long_sentences = [
