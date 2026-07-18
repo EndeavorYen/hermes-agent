@@ -1018,6 +1018,21 @@ def _batch_review_attention(
     shot_id = str(attention.get("shot_id") or "").strip()
     if not shot_id:
         return None
+    selected_shot_ids = {
+        str(row.get("shot_id") or "").strip()
+        for row in manifest.get("outputs") or []
+        if isinstance(row, dict) and row.get("selected") is True
+    }
+    if shot_id in selected_shot_ids:
+        return None
+    recorded_at = str(attention.get("recorded_at") or "").strip()
+    if recorded_at and any(
+        isinstance(row, dict)
+        and str(row.get("shot_id") or "").strip() == shot_id
+        and str(row.get("replanned_at") or "").strip() > recorded_at
+        for row in manifest.get("contract_replans") or []
+    ):
+        return None
     error = str(
         attention.get("error") or "Visual repair budget exhausted."
     ).strip()
