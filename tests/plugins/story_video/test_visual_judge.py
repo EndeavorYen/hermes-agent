@@ -4393,6 +4393,120 @@ def test_prepare_render_copies_verified_segment_timing_to_matching_shot(tmp_path
     ]
 
 
+def test_prepare_render_preserves_shot_bound_v5_audio_across_parent_scenes(
+    tmp_path,
+) -> None:
+    store, context, first_shot = _context(tmp_path)
+    _release_cards(context)
+    first_shot = {**first_shot, "shot_id": "S00"}
+    second_shot = {
+        **first_shot,
+        "shot_id": "S01",
+        "narration_text": "第二段旁白必須使用自己的音訊。",
+    }
+    ledger_path = context.project_dir / "scene_ledger.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    ledger["scenes"] = [
+        {"scene_id": "SC01", "shots": [first_shot, second_shot]}
+    ]
+    ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    candidate_outputs = []
+    narration_outputs = []
+    for index, shot in enumerate((first_shot, second_shot)):
+        shot_id = shot["shot_id"]
+        image = context.project_dir / "images" / f"{shot_id}.png"
+        image.parent.mkdir(parents=True, exist_ok=True)
+        image.write_bytes(f"image-{shot_id}".encode())
+        audio = context.project_dir / "audio" / "qwen" / f"{shot_id}.wav"
+        audio.parent.mkdir(parents=True, exist_ok=True)
+        audio.write_bytes(f"audio-{shot_id}".encode())
+        candidate_outputs.append(
+            {
+                "shot_id": shot_id,
+                "selected": True,
+                "local_path": f"images/{shot_id}.png",
+                "provider": "openai-codex",
+            }
+        )
+        display_text = str(shot["narration_text"])
+        duration = 12.0 + index
+        narration_outputs.append(
+            {
+                "scene_id": shot_id,
+                "audio": str(audio),
+                "display_text": display_text,
+                "segments": [
+                    {
+                        "shot_id": shot_id,
+                        "display_text": display_text,
+                        "timeline_duration_sec": duration,
+                        "speech_end_sec": duration - 0.18,
+                        "alignment_status": "PASS",
+                        "pronunciation_status": "PASS",
+                        "prosody_status": "PASS",
+                        "voice_chunks": [
+                            {
+                                "voice_chunk_id": f"{shot_id}__C01",
+                                "display_text": display_text,
+                                "start_sec": 0.0,
+                                "speech_end_sec": duration - 0.18,
+                                "alignment_status": "PASS",
+                                "pronunciation_status": "PASS",
+                                "prosody_status": "PASS",
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps({"outputs": candidate_outputs}), encoding="utf-8"
+    )
+    (manifests / "narration_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema": "story_video_narration_manifest_v5",
+                "provider": "local_qwen",
+                "outputs": narration_outputs,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        story_video_quality_control(
+            {"action": "prepare_render"}, session_id="session-1", store=store
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["scene_count"] == 2
+    assert payload["selected_shot_count"] == 2
+    render_input = json.loads(
+        (context.project_dir / "render_input.json").read_text(encoding="utf-8")
+    )
+    assert [scene["scene_id"] for scene in render_input["scenes"]] == [
+        "S00",
+        "S01",
+    ]
+    assert [scene["audio"] for scene in render_input["scenes"]] == [
+        "audio/qwen/S00.wav",
+        "audio/qwen/S01.wav",
+    ]
+    assert [scene["shots"][0]["shot_id"] for scene in render_input["scenes"]] == [
+        "S00",
+        "S01",
+    ]
+    assert [
+        scene["shots"][0]["subtitle_timing_source"]
+        for scene in render_input["scenes"]
+    ] == ["measured_voice_chunks", "measured_voice_chunks"]
+
+
 def test_prepare_render_uses_verified_semantic_shot_groups(tmp_path) -> None:
     store, context, first_shot = _context(tmp_path)
     _release_cards(context)
