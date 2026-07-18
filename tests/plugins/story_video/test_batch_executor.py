@@ -242,6 +242,85 @@ def test_executor_grants_one_candidate_for_legacy_strategy_pivot_migration(
     assert saved["budget"]["policy"]["legacy_strategy_pivot_candidate_cap"] == 1
 
 
+def test_executor_funds_one_candidate_for_new_replanned_contract(tmp_path) -> None:
+    context = _context(tmp_path, shot_count=1)
+    shot = json.loads(
+        (context.project_dir / "scene_ledger.json").read_text(encoding="utf-8")
+    )["scenes"][0]["shots"][0]
+    shot_id = shot["shot_id"]
+    new_hash = shot_contract_hash(shot)
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    old_attempt = {
+        "shot_id": shot_id,
+        "candidate_id": f"{shot_id}_OLD",
+        "selected": False,
+        "status": "quality_budget_exhausted",
+        "shot_contract_hash": "contract-old",
+        "hard_blockers": ["semantic evidence score<80"],
+    }
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps(
+            {
+                "outputs": [old_attempt],
+                "attempt_history": [old_attempt],
+                "contract_replans": [
+                    {
+                        "shot_id": shot_id,
+                        "revision": 1,
+                        "new_shot_contract_hash": new_hash,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    budget = BatchBudget(
+        BatchPolicy(
+            initial_candidate_cap=1,
+            repair_candidate_cap=0,
+            max_candidates_per_shot=2,
+            critical_max_candidates_per_shot=5,
+            semantic_pivot_candidate_cap=0,
+        )
+    )
+    budget.record_generation(shot_id, "contract-old", critical=True)
+    (manifests / "batch_run_manifest.json").write_text(
+        json.dumps({"budget": budget.to_dict(), "events": []}),
+        encoding="utf-8",
+    )
+
+    def compiler(_context, *, shot_id: str) -> dict:
+        return {
+            "success": True,
+            "shot_id": shot_id,
+            "prompt": f"replanned prompt for {shot_id}",
+            "candidate_id_hint": f"{shot_id}_REPLANNED",
+            "shot_contract_hash": new_hash,
+            "repair_strategy": "initial",
+            "reference_image_urls": [],
+        }
+
+    generator = FakeGenerator(tmp_path)
+    executor = StoryVideoBatchExecutor(
+        prompt_compiler=compiler,
+        image_generator=generator,
+        candidate_judge=FakeJudge(set()),
+        max_workers=3,
+    )
+
+    result = executor.run_chunk(context)
+
+    assert result.wave == "anchor"
+    assert result.attempted_shots == (shot_id,)
+    assert result.generated_candidates == 1
+    saved = json.loads((manifests / "batch_run_manifest.json").read_text())
+    assert saved["budget"]["policy"]["contract_replan_candidate_cap"] == 1
+    assert saved["budget"]["contract_replan_hashes_granted"] == [
+        f"{shot_id}:{new_hash}"
+    ]
+
+
 def test_executor_runs_one_parallel_sequence_rescue_then_stops(tmp_path) -> None:
     context = _context(tmp_path, shot_count=2)
     (context.project_dir / "content_profile.json").write_text(

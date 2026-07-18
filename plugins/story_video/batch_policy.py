@@ -17,6 +17,7 @@ class BatchPolicy:
     critical_max_candidates_per_shot: int = 5
     semantic_pivot_candidate_cap: int = 0
     legacy_strategy_pivot_candidate_cap: int = 0
+    contract_replan_candidate_cap: int = 0
 
     @classmethod
     def for_run(cls, shot_count: int) -> "BatchPolicy":
@@ -34,6 +35,7 @@ class BatchPolicy:
             self.base_total_candidates
             + self.semantic_pivot_candidate_cap
             + self.legacy_strategy_pivot_candidate_cap
+            + self.contract_replan_candidate_cap
         )
 
     @property
@@ -46,6 +48,7 @@ class BatchBudget:
     policy: BatchPolicy
     _generated_by_shot: dict[str, int] = field(default_factory=dict)
     _contract_hashes_by_shot: dict[str, list[str]] = field(default_factory=dict)
+    _contract_replan_hashes_granted: set[str] = field(default_factory=set)
 
     @property
     def total_generated(self) -> int:
@@ -56,6 +59,32 @@ class BatchBudget:
 
     def contract_hashes_for(self, shot_id: str) -> tuple[str, ...]:
         return tuple(self._contract_hashes_by_shot.get(str(shot_id), ()))
+
+    @property
+    def contract_replan_hashes_granted(self) -> tuple[str, ...]:
+        return tuple(sorted(self._contract_replan_hashes_granted))
+
+    def grant_contract_replan_slots(
+        self, replans: list[tuple[str, str]]
+    ) -> None:
+        for shot_id, contract_hash in replans:
+            normalized_shot_id = str(shot_id).strip()
+            normalized_hash = str(contract_hash).strip()
+            if (
+                not normalized_shot_id
+                or not normalized_hash
+                or normalized_hash in self.contract_hashes_for(normalized_shot_id)
+            ):
+                continue
+            self._contract_replan_hashes_granted.add(
+                f"{normalized_shot_id}:{normalized_hash}"
+            )
+        granted = len(self._contract_replan_hashes_granted)
+        if granted > self.policy.contract_replan_candidate_cap:
+            self.policy = replace(
+                self.policy,
+                contract_replan_candidate_cap=granted,
+            )
 
     def _base_critical_candidate_cap(self) -> int:
         return max(
@@ -92,7 +121,10 @@ class BatchBudget:
         )
 
     def _active_total_candidate_cap(self) -> int:
-        cap = self.policy.base_total_candidates
+        cap = (
+            self.policy.base_total_candidates
+            + self.policy.contract_replan_candidate_cap
+        )
         if self._semantic_pivot_consumed():
             cap += self.policy.semantic_pivot_candidate_cap
         if self._legacy_strategy_pivot_consumed():
@@ -113,6 +145,7 @@ class BatchBudget:
             cap = max(
                 cap,
                 self.policy.base_total_candidates
+                + self.policy.contract_replan_candidate_cap
                 + self.policy.semantic_pivot_candidate_cap,
             )
         legacy_threshold = (
@@ -193,6 +226,9 @@ class BatchBudget:
                 shot_id: list(values)
                 for shot_id, values in self._contract_hashes_by_shot.items()
             },
+            "contract_replan_hashes_granted": sorted(
+                self._contract_replan_hashes_granted
+            ),
         }
 
     @classmethod
@@ -258,6 +294,10 @@ class BatchBudget:
             1,
             int(policy_values.get("semantic_pivot_candidate_cap") or 0),
         )
+        policy_values["contract_replan_candidate_cap"] = max(
+            0,
+            int(policy_values.get("contract_replan_candidate_cap") or 0),
+        )
         policy = BatchPolicy(**policy_values)
         generated = {
             str(shot_id): int(count)
@@ -272,6 +312,11 @@ class BatchBudget:
             policy=policy,
             _generated_by_shot=generated,
             _contract_hashes_by_shot=contracts,
+            _contract_replan_hashes_granted={
+                str(value)
+                for value in payload.get("contract_replan_hashes_granted") or []
+                if str(value).strip()
+            },
         )
 
 

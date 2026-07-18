@@ -135,3 +135,27 @@ def test_batch_budget_releases_failed_provider_reservation() -> None:
     assert budget.generated_for("S00_SH00") == 0
     assert budget.contract_hashes_for("S00_SH00") == ()
     assert budget.can_generate("S00_SH00") is True
+
+
+def test_replanned_contract_gets_one_persisted_candidate_entitlement() -> None:
+    policy = BatchPolicy(
+        initial_candidate_cap=1,
+        repair_candidate_cap=0,
+        max_candidates_per_shot=2,
+        critical_max_candidates_per_shot=5,
+        semantic_pivot_candidate_cap=0,
+    )
+    budget = BatchBudget(policy)
+    budget.record_generation("S04", "contract-old", critical=True)
+
+    assert budget.can_generate("S04", critical=True) is False
+    budget.grant_contract_replan_slots([("S04", "contract-new")])
+    assert budget.policy.contract_replan_candidate_cap == 1
+    assert budget.can_generate("S04", critical=True) is True
+    budget.record_generation("S04", "contract-new", critical=True)
+    assert budget.can_generate("S04", critical=True) is False
+
+    restored = BatchBudget.from_dict(budget.to_dict())
+    restored.grant_contract_replan_slots([("S04", "contract-new")])
+    assert restored.policy.contract_replan_candidate_cap == 1
+    assert restored.contract_replan_hashes_granted == ("S04:contract-new",)
