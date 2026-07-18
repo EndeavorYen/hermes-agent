@@ -13,6 +13,12 @@ from .shot_contract import shot_contract_hash
 SEQUENCE_QUALITY_SCHEMA = "story_video_sequence_quality_v1"
 SEQUENCE_QUALITY_THRESHOLD = 80.0
 _OPENAI_PROVIDERS = frozenset({"openai", "openai-codex"})
+_DIMENSION_GROUPS = {
+    "semantic": ("text_alignment", "evidence_specificity"),
+    "story": ("narrative_engagement", "story_moment_clarity"),
+    "cinematic": ("cinematic_impact", "professional_quality"),
+    "style": ("style_consistency",),
+}
 _BOUND_FIELDS = (
     "schema",
     "status",
@@ -79,6 +85,14 @@ def _dimension_score(dimensions: Any, names: tuple[str, ...]) -> float:
     if not isinstance(dimensions, dict):
         return 0.0
     return min((_score(dimensions.get(name)) for name in names), default=0.0)
+
+
+def sequence_dimension_violations(dimensions: Any) -> tuple[str, ...]:
+    return tuple(
+        f"{group} evidence score<80"
+        for group, names in _DIMENSION_GROUPS.items()
+        if _dimension_score(dimensions, names) < SEQUENCE_QUALITY_THRESHOLD
+    )
 
 
 def _append_once(values: list[str], value: str) -> None:
@@ -176,19 +190,14 @@ def build_sequence_quality_report(
             shot_violations.append(f"{shot_id} has unresolved visual blockers")
 
         dimensions = row.get("quality_dimensions")
-        dimension_groups = {
-            "semantic": ("text_alignment", "evidence_specificity"),
-            "story": ("narrative_engagement", "story_moment_clarity"),
-            "cinematic": ("cinematic_impact", "professional_quality"),
-            "style": ("style_consistency",),
-        }
         evidence_scores = {
             group: _dimension_score(dimensions, names)
-            for group, names in dimension_groups.items()
+            for group, names in _DIMENSION_GROUPS.items()
         }
-        for group, score in evidence_scores.items():
-            if score < SEQUENCE_QUALITY_THRESHOLD:
-                shot_violations.append(f"{shot_id} {group} evidence score<80")
+        shot_violations.extend(
+            f"{shot_id} {violation}"
+            for violation in sequence_dimension_violations(dimensions)
+        )
 
         if shot_violations:
             repair_shot_ids.append(shot_id)
@@ -277,6 +286,7 @@ __all__ = [
     "SEQUENCE_QUALITY_SCHEMA",
     "SEQUENCE_QUALITY_THRESHOLD",
     "build_sequence_quality_report",
+    "sequence_dimension_violations",
     "validate_sequence_quality_report",
     "write_sequence_quality_report",
 ]

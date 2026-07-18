@@ -798,6 +798,51 @@ def test_candidate_judge_forces_openai_provider_before_inference(tmp_path) -> No
     assert llm.calls[0]["provider"] == "openai-codex"
 
 
+def test_editorial_candidate_judge_rejects_sequence_dimension_failure(tmp_path) -> None:
+    store, context, _shot = _context(tmp_path)
+    (context.project_dir / "content_profile.json").write_text(
+        json.dumps({"review_profile_id": "family-review-board-v2"}),
+        encoding="utf-8",
+    )
+    candidate = _candidate(context, "S00_SH00_C01")
+    dimensions = _dimensions(90)
+    dimensions["evidence_specificity"] = 70
+    llm = FakeLlm(
+        [
+            {
+                "candidate_id": candidate["candidate_id"],
+                "hard_blockers": [],
+                "blocker_codes": [],
+                "dimensions": dimensions,
+                "evidence": ["the main subject is visible but the mechanism is ambiguous"],
+            }
+        ]
+    )
+
+    result = json.loads(
+        story_video_quality_control(
+            {
+                "action": "judge_candidates",
+                "shot_id": "S00_SH00",
+                "repair_round": 1,
+                "candidates": [candidate],
+            },
+            session_id="session-1",
+            store=store,
+            llm=llm,
+        )
+    )
+
+    assert result["best_score"] >= 80
+    assert result["success"] is False
+    assert result["status"] == "repair_required"
+    manifest = json.loads(
+        (context.project_dir / "manifests" / "shot_candidate_manifest.json").read_text()
+    )
+    assert manifest["outputs"][0]["selected"] is False
+    assert "semantic evidence score<80" in manifest["outputs"][0]["hard_blockers"]
+
+
 def test_candidate_judge_refreshes_legacy_manifest_summary_from_outputs(tmp_path) -> None:
     store, context, _shot = _context(tmp_path)
     manifest_path = context.project_dir / "manifests" / "shot_candidate_manifest.json"
