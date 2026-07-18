@@ -410,6 +410,148 @@ def test_native_batch_chunk_automatically_replans_exhausted_sequence_qc(
     assert event["blocker_codes"] == ["audience_mismatch"]
 
 
+def test_auto_replan_retries_once_with_canonical_validation_feedback(
+    tmp_path, monkeypatch
+) -> None:
+    from plugins.story_video import visual_judge
+
+    _store, context, shot = _context(tmp_path)
+    next_work = {
+        "work_status": "ready",
+        "operation": "replan_shot_contract",
+        "shot_id": shot["shot_id"],
+        "replan_revision": 1,
+        "immutable_contract": {
+            field: shot[field]
+            for field in (
+                "shot_id",
+                "narration_text",
+                "narrative_role",
+                "viewer_takeaway",
+                "risk_class",
+            )
+        },
+        "current_mutable_contract": {
+            "subject": shot["subject"],
+            "action": shot["action"],
+            "shot_scale": shot["shot_scale"],
+        },
+        "hard_blockers": ["semantic evidence score<80"],
+        "blocker_codes": ["audience_mismatch"],
+    }
+    requests: list[dict] = []
+
+    class RetryLLM:
+        def complete_structured(self, **kwargs):
+            requests.append(kwargs)
+            return SimpleNamespace(
+                provider="openai-codex",
+                model="gpt-5.6-sol",
+                parsed={
+                    "redesigned_shot": {
+                        "subject": "one caregiver checking a child's forehead",
+                        "action": "the caregiver compares touch with a thermometer",
+                        "evidence_detail": "one hand and one readable thermometer",
+                        "shot_scale": "medium",
+                        "camera_angle": "eye-level three-quarter view",
+                        "focal_point": "the hand and thermometer",
+                        "subtitle_safe_area": "bottom 20 percent clear",
+                        "acceptance_criteria": [
+                            "the checking action is immediately readable"
+                        ],
+                    }
+                },
+                audit={"response_id": f"replan-{len(requests)}"},
+            )
+
+    apply_calls = 0
+
+    def fake_apply(*_args, **_kwargs):
+        nonlocal apply_calls
+        apply_calls += 1
+        if apply_calls == 1:
+            raise ValueError(
+                "redesigned_shot introduces ledger quality violations: "
+                "repeated_shot_scale_without_reason:medium:3"
+            )
+        return {"success": True, "replan_revision": 1}
+
+    monkeypatch.setattr(visual_judge, "_apply_shot_contract_replan", fake_apply)
+
+    payload = visual_judge._auto_replan_shot_contract(
+        context,
+        next_work=next_work,
+        llm=RetryLLM(),
+    )
+
+    assert payload["success"] is True
+    assert payload["replan_response_id"] == "replan-2"
+    assert len(requests) == 2
+    retry_input = requests[1]["input"][0]["text"]
+    assert "repeated_shot_scale_without_reason:medium:3" in retry_input
+    assert "canonical ledger validation" in requests[1]["instructions"]
+
+
+def test_auto_replan_stops_after_second_canonical_validation_rejection(
+    tmp_path, monkeypatch
+) -> None:
+    from plugins.story_video import visual_judge
+
+    _store, context, shot = _context(tmp_path)
+    next_work = {
+        "work_status": "ready",
+        "operation": "replan_shot_contract",
+        "shot_id": shot["shot_id"],
+        "replan_revision": 1,
+        "immutable_contract": {"shot_id": shot["shot_id"]},
+        "current_mutable_contract": {"shot_scale": shot["shot_scale"]},
+        "hard_blockers": ["semantic evidence score<80"],
+        "blocker_codes": ["audience_mismatch"],
+    }
+    call_count = 0
+
+    class InvalidLLM:
+        def complete_structured(self, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            return SimpleNamespace(
+                provider="openai-codex",
+                model="gpt-5.6-sol",
+                parsed={
+                    "redesigned_shot": {
+                        "subject": "one child in bed",
+                        "action": "the child pulls a blanket closer",
+                        "evidence_detail": "hands and blanket edge are visible",
+                        "shot_scale": "medium",
+                        "camera_angle": "eye-level side view",
+                        "focal_point": "the child's hands",
+                        "subtitle_safe_area": "bottom 20 percent clear",
+                        "acceptance_criteria": ["the blanket pull is visible"],
+                    }
+                },
+                audit={"response_id": f"invalid-{call_count}"},
+            )
+
+    monkeypatch.setattr(
+        visual_judge,
+        "_apply_shot_contract_replan",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ValueError("repeated_shot_scale_without_reason:medium:3")
+        ),
+    )
+
+    payload = visual_judge._auto_replan_shot_contract(
+        context,
+        next_work=next_work,
+        llm=InvalidLLM(),
+    )
+
+    assert payload["success"] is False
+    assert payload["work_status"] == "human_review_required"
+    assert call_count == 2
+    assert "repeated_shot_scale_without_reason:medium:3" in payload["error"]
+
+
 def test_second_native_contract_replan_forces_visual_strategy_pivot(
     tmp_path, monkeypatch
 ) -> None:
