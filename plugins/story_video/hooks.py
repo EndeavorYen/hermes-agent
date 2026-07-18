@@ -995,6 +995,35 @@ def _batch_assets_complete(context: StoryVideoRunContext) -> bool:
         return False
 
 
+def _batch_review_attention(
+    context: StoryVideoRunContext,
+) -> tuple[str, str] | None:
+    if context.phase not in {"keyframes", "batch"}:
+        return None
+    try:
+        manifest = json.loads(
+            (
+                context.project_dir
+                / "manifests"
+                / "shot_candidate_manifest.json"
+            ).read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        return None
+    attention = manifest.get("terminal_attention")
+    if not isinstance(attention, dict):
+        return None
+    if attention.get("work_status") != "human_review_required":
+        return None
+    shot_id = str(attention.get("shot_id") or "").strip()
+    if not shot_id:
+        return None
+    error = str(
+        attention.get("error") or "Visual repair budget exhausted."
+    ).strip()
+    return shot_id, error
+
+
 def auto_continue_llm_output(
     *,
     session_id: str = "",
@@ -1019,6 +1048,8 @@ def auto_continue_llm_output(
     if not context.auto_mode and not planning_completion:
         return None
     if _has_operator_setup_blocker(response_text, turn_error):
+        return None
+    if _batch_review_attention(context) is not None:
         return None
     if context.phase in {"batch", "voice"} and _PHASE_REVIEW_REQUIRED_RE.search(
         str(response_text or "")
@@ -1353,8 +1384,21 @@ def transform_llm_output(
     )
     phase_at_start = _SESSION_PHASE_AT_LLM_START.pop(session_id, None)
     _SESSION_STATUS_AT_LLM_START.pop(session_id, None)
+    attention = (
+        _batch_review_attention(context)
+        if phase_at_start == context.phase
+        else None
+    )
     if _has_operator_setup_blocker(text):
         pass
+    elif attention is not None:
+        shot_id, error = attention
+        text = "\n".join(
+            (
+                f"故事影片 {context.phase} 需要處理目前鏡頭 {shot_id}：{error}",
+                f"STORY_VIDEO_PHASE_ATTENTION: batch REVIEW_REQUIRED shot_id={shot_id}",
+            )
+        )
     elif phase_at_start == context.phase == "voice" and _PHASE_REVIEW_REQUIRED_RE.search(
         text
     ):

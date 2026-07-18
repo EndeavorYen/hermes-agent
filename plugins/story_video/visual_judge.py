@@ -134,6 +134,53 @@ CANDIDATE_REVIEW_SCHEMA = {
     },
 }
 
+SHOT_CONTRACT_REPLAN_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["redesigned_shot"],
+    "properties": {
+        "redesigned_shot": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": list(_REPLAN_REQUIRED_FIELDS),
+            "properties": {
+                "subject": {"type": "string", "minLength": 1},
+                "action": {"type": "string", "minLength": 1},
+                "evidence_detail": {"type": "string", "minLength": 1},
+                "shot_scale": {"type": "string", "enum": sorted(_SHOT_SCALES)},
+                "camera_angle": {"type": "string", "minLength": 1},
+                "focal_point": {"type": "string", "minLength": 1},
+                "subtitle_safe_area": {"type": "string", "minLength": 1},
+                "acceptance_criteria": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                    "minItems": 1,
+                    "maxItems": 3,
+                },
+                **{
+                    field: {"type": "string", "minLength": 1}
+                    for field in (
+                        "attention_hook",
+                        "story_moment",
+                        "action_consequence",
+                        "composition_energy",
+                        "viewer_emotion",
+                        "calm_reason",
+                        "evidence_bridge",
+                        "intentional_scale_repeat_reason",
+                    )
+                },
+                "engagement_criteria": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                    "minItems": 1,
+                    "maxItems": 3,
+                },
+            },
+        }
+    },
+}
+
 
 def configure_plugin_llm(llm: Any) -> None:
     global _PLUGIN_LLM
@@ -206,6 +253,26 @@ def _write_candidate_manifest_atomic(path: Path, payload: dict[str, Any]) -> Non
             "status": "PASS",
         }
     _write_json_atomic(path, updated)
+
+
+def _persist_terminal_attention(
+    context: StoryVideoRunContext,
+    *,
+    shot_id: str = "",
+    error: str = "",
+) -> None:
+    path = context.project_dir / "manifests" / "shot_candidate_manifest.json"
+    manifest = _load_json(path) or {}
+    if shot_id:
+        manifest["terminal_attention"] = {
+            "work_status": "human_review_required",
+            "shot_id": shot_id,
+            "error": error or "Visual repair budget exhausted.",
+            "recorded_at": _utc_now(),
+        }
+    else:
+        manifest.pop("terminal_attention", None)
+    _write_candidate_manifest_atomic(path, manifest)
 
 
 def _provider(value: Any) -> str:
@@ -542,6 +609,170 @@ def _apply_shot_contract_replan(
     )
     next_work = _next_batch_work(context)
     return {**next_work, "replan_revision": revision}
+
+
+def _auto_replan_shot_contract(
+    context: StoryVideoRunContext,
+    *,
+    next_work: dict[str, Any],
+    llm: Any,
+) -> dict[str, Any]:
+    shot_id = str(next_work.get("shot_id") or "").strip()
+    if (
+        not shot_id
+        or next_work.get("work_status") != "ready"
+        or next_work.get("operation") != "replan_shot_contract"
+    ):
+        return {
+            "success": False,
+            "work_status": "human_review_required",
+            "shot_id": shot_id,
+            "error": "No bounded shot-contract replan is available.",
+        }
+    if llm is None:
+        return {
+            "success": False,
+            "work_status": "human_review_required",
+            "shot_id": shot_id,
+            "error": "Story-video contract replanner is unavailable.",
+        }
+    ledger, scene, _shot = _find_shot(context, shot_id)
+    request = {
+        "immutable_contract": next_work.get("immutable_contract") or {},
+        "current_mutable_contract": next_work.get("current_mutable_contract") or {},
+        "hard_blockers": next_work.get("hard_blockers") or [],
+        "blocker_codes": next_work.get("blocker_codes") or [],
+        "replan_directive": next_work.get("replan_directive") or "",
+        "scene_context": scene,
+        "style_bible": ledger.get("style_bible") or {},
+    }
+    try:
+        result = llm.complete_structured(
+            instructions=(
+                "Redesign one story-video source-image shot contract after bounded visual "
+                "repairs failed. Preserve every immutable field. Make one decisive visible "
+                "action and one focal subject readable in a single still image. The image "
+                "only needs to support the primary viewer takeaway; secondary comparisons, "
+                "caveats, and later causal steps remain in narration or adjacent shots. "
+                "Do not require text labels, split-screen comparisons, UI, multiple time "
+                "states, or one frame to prove every sentence. For scientific or medical "
+                "reconstruction, separate literal anatomy from symbolic light or particles "
+                "and keep acceptance criteria directly observable. Return only the schema."
+            ),
+            input=[
+                {
+                    "type": "text",
+                    "text": json.dumps(request, ensure_ascii=False, sort_keys=True),
+                }
+            ],
+            json_schema=SHOT_CONTRACT_REPLAN_SCHEMA,
+            json_mode=True,
+            schema_name="story_video_shot_contract_replan",
+            provider="openai-codex",
+            temperature=0,
+            max_tokens=1800,
+            timeout=180,
+            purpose="story_video_shot_contract_replan",
+        )
+    except Exception as exc:
+        return {
+            "success": False,
+            "work_status": "human_review_required",
+            "shot_id": shot_id,
+            "error": (
+                "Automatic shot-contract replan failed: "
+                f"{exc.__class__.__name__}: {exc}"
+            ),
+        }
+    provider = _provider(getattr(result, "provider", ""))
+    parsed = getattr(result, "parsed", None)
+    redesigned = parsed.get("redesigned_shot") if isinstance(parsed, dict) else None
+    if provider not in {"openai", "openai-codex"} or not isinstance(redesigned, dict):
+        return {
+            "success": False,
+            "work_status": "human_review_required",
+            "shot_id": shot_id,
+            "error": "Automatic shot-contract replanner returned invalid OpenAI evidence.",
+        }
+    try:
+        applied = _apply_shot_contract_replan(
+            context,
+            shot_id=shot_id,
+            redesigned_shot=redesigned,
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        return {
+            "success": False,
+            "work_status": "human_review_required",
+            "shot_id": shot_id,
+            "error": f"Automatic shot-contract replan was rejected: {exc}",
+        }
+    if applied.get("success") is not True:
+        return {
+            **applied,
+            "success": False,
+            "work_status": "human_review_required",
+            "shot_id": shot_id,
+            "error": str(
+                applied.get("error")
+                or "Automatic shot-contract replan did not produce runnable work."
+            ),
+        }
+    return {
+        **applied,
+        "success": True,
+        "work_status": "in_progress",
+        "shot_id": shot_id,
+        "replan_provider": provider,
+        "replan_model": str(getattr(result, "model", "") or ""),
+        "replan_response_id": str(
+            (getattr(result, "audit", {}) or {}).get("response_id") or ""
+        ),
+    }
+
+
+def _auto_replan_chunk_payload(
+    context: StoryVideoRunContext,
+    *,
+    next_work: dict[str, Any],
+    llm: Any,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    replanned = _auto_replan_shot_contract(
+        context,
+        next_work=next_work,
+        llm=llm,
+    )
+    if replanned.get("success") is True:
+        return {
+            **payload,
+            "success": True,
+            "action": "run_batch_chunk",
+            "work_status": "in_progress",
+            "wave": "contract_replan",
+            "failed_shots": [],
+            "replanned_shot_id": str(replanned.get("shot_id") or ""),
+            "replan_revision": int(replanned.get("replan_revision") or 0),
+            "replan_provider": str(replanned.get("replan_provider") or ""),
+            "replan_model": str(replanned.get("replan_model") or ""),
+            "replan_response_id": str(
+                replanned.get("replan_response_id") or ""
+            ),
+        }
+    failed = {
+        **payload,
+        "success": False,
+        "action": "run_batch_chunk",
+        "work_status": "human_review_required",
+        "review_shot_id": str(next_work.get("shot_id") or ""),
+        "error": str(replanned.get("error") or "automatic replan failed"),
+    }
+    _persist_terminal_attention(
+        context,
+        shot_id=str(failed.get("review_shot_id") or ""),
+        error=str(failed.get("error") or ""),
+    )
+    return failed
 
 
 def _reconcile_manifest_contracts(
@@ -2028,6 +2259,32 @@ def _run_batch_chunk(
                 "action": "run_batch_chunk",
             }
 
+    if context.auto_mode:
+        preflight = _next_batch_work(context)
+        if preflight.get("operation") == "replan_shot_contract":
+            return _auto_replan_chunk_payload(
+                context,
+                next_work=preflight,
+                llm=llm,
+                payload={
+                    "generated_candidates": 0,
+                    "attempted_shots": [],
+                    "selected_shots": [],
+                },
+            )
+        if preflight.get("work_status") == "human_review_required":
+            shot_id = str(preflight.get("shot_id") or "")
+            error = str(
+                preflight.get("error") or "Visual repair budget exhausted."
+            )
+            _persist_terminal_attention(context, shot_id=shot_id, error=error)
+            return {
+                **preflight,
+                "success": False,
+                "action": "run_batch_chunk",
+                "review_shot_id": shot_id,
+            }
+
     def judge(
         current: StoryVideoRunContext,
         *,
@@ -2057,6 +2314,7 @@ def _run_batch_chunk(
         max_workers=_batch_parallelism(),
     )
     summary = executor.run_chunk(context, cancel_check=cancelled)
+    _persist_terminal_attention(context)
     payload = asdict(summary)
     payload["success"] = summary.work_status not in {
         "human_review_required",
@@ -2064,6 +2322,15 @@ def _run_batch_chunk(
         "terminal_required",
     }
     payload["action"] = "run_batch_chunk"
+    if context.auto_mode and summary.work_status in {"in_progress", "terminal_required"}:
+        next_work = _next_batch_work(context)
+        if next_work.get("operation") == "replan_shot_contract":
+            return _auto_replan_chunk_payload(
+                context,
+                next_work=next_work,
+                llm=llm,
+                payload=payload,
+            )
     if summary.work_status != "terminal_required":
         return payload
 
@@ -2086,6 +2353,13 @@ def _run_batch_chunk(
         if isinstance(row, dict) and row.get("selected") is True
     }
     remaining = [shot_id for shot_id in shot_ids if shot_id not in selected]
+    attention_work = _next_batch_work(context) if remaining else {}
+    review_shot_id = str(attention_work.get("shot_id") or "").strip()
+    if not review_shot_id and remaining:
+        review_shot_id = remaining[0]
+    review_error = str(
+        attention_work.get("error") or "Visual repair budget exhausted."
+    ).strip()
     payload.update(
         {
             "success": not remaining,
@@ -2096,8 +2370,16 @@ def _run_batch_chunk(
                 if shot_id in selected
             ],
             "failed_shots": remaining,
+            "review_shot_id": review_shot_id,
+            "error": review_error if remaining else "",
         }
     )
+    if remaining:
+        _persist_terminal_attention(
+            context,
+            shot_id=review_shot_id,
+            error=review_error,
+        )
     return payload
 
 
@@ -2222,6 +2504,27 @@ def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
             if _contract_replan_count(manifest, shot_id)
             else MAX_REPAIR_ROUNDS
         )
+        current_output = by_shot.get(shot_id, {})
+        if (
+            str(current_output.get("status") or "") == "quality_budget_exhausted"
+            and max(
+                len(current_attempts),
+                int(current_output.get("repair_round") or 0),
+            )
+            >= 2
+        ):
+            return {
+                **_contract_replan_work(
+                    context,
+                    shot_id=shot_id,
+                    manifest=manifest,
+                    output=current_output,
+                    remaining_shot_count=len(unresolved),
+                ),
+                "candidate_budget_exhausted": True,
+                "attempt_count_for_contract": len(current_attempts),
+                "max_candidates_per_contract": max_candidates,
+            }
         if len(current_attempts) >= max_candidates:
             return {
                 **_contract_replan_work(

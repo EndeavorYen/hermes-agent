@@ -1603,6 +1603,41 @@ def test_batch_autopilot_does_not_repeat_human_review_required_work(
     assert continuation is None
 
 
+def test_batch_autopilot_stops_from_persisted_review_state_when_text_is_generic(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    hooks.pre_llm_call(
+        session_id="session-auto",
+        user_message="故事影片：恐龍起源｜5分鐘｜真實照片。完整製作並出片。",
+    )
+    context = store.for_session("session-auto")
+    assert context is not None
+    store.update(context, phase="keyframes", auto_mode=True)
+    manifest = context.project_dir / "manifests" / "shot_candidate_manifest.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(
+        json.dumps(
+            {
+                "terminal_attention": {
+                    "work_status": "human_review_required",
+                    "shot_id": "S03",
+                    "error": "Automatic shot-contract replanning exhausted.",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    continuation = hooks.auto_continue_llm_output(
+        session_id="session-auto",
+        response_text="STORY_VIDEO_PHASE_PROOF: keyframes BLOCKED",
+    )
+
+    assert continuation is None
+
+
 def test_batch_autopilot_executes_bounded_shot_contract_replan(
     tmp_path, monkeypatch
 ) -> None:
@@ -2016,6 +2051,48 @@ def test_transform_output_preserves_native_human_review_required(
         session_id="session-auto",
         response_text=result,
     ) is None
+
+
+def test_transform_output_surfaces_persisted_keyframe_review_shot(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    hooks.pre_llm_call(
+        session_id="session-auto",
+        user_message="故事影片：恐龍起源｜5分｜真實照片。完整製作並出片。",
+    )
+    context = store.for_session("session-auto")
+    assert context is not None
+    store.update(context, phase="keyframes", auto_mode=True)
+    hooks.pre_llm_call(session_id="session-auto", user_message="繼續")
+    manifest = context.project_dir / "manifests" / "shot_candidate_manifest.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(
+        json.dumps(
+            {
+                "terminal_attention": {
+                    "work_status": "human_review_required",
+                    "shot_id": "S03",
+                    "error": "Automatic shot-contract replanning exhausted.",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = hooks.transform_llm_output(
+        response_text="工具已完成。",
+        session_id="session-auto",
+    )
+
+    assert result == "\n".join(
+        (
+            "故事影片 keyframes 需要處理目前鏡頭 S03："
+            "Automatic shot-contract replanning exhausted.",
+            "STORY_VIDEO_PHASE_ATTENTION: batch REVIEW_REQUIRED shot_id=S03",
+        )
+    )
 
 
 def test_transform_output_preserves_real_batch_setup_blocker(tmp_path, monkeypatch) -> None:

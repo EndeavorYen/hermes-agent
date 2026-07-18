@@ -39,6 +39,38 @@ def test_critical_shot_gets_third_attempt_without_expanding_run_cap() -> None:
     assert budget.can_generate("S00_SH00", critical=False) is False
 
 
+def test_critical_shot_reserves_one_post_replan_candidate_within_run_cap() -> None:
+    budget = BatchBudget(BatchPolicy.for_run(10))
+
+    budget.record_generation("S03", "contract-a", critical=True)
+    budget.record_generation("S03", "contract-a", critical=True)
+    budget.record_generation("S03", "contract-a", critical=True)
+
+    assert budget.can_generate("S03", critical=True) is True
+    budget.record_generation("S03", "contract-b", critical=True)
+    assert budget.can_generate("S03", critical=True) is False
+    assert budget.total_generated == 4
+    assert budget.policy.max_total_candidates == 13
+
+
+def test_old_serialized_budget_migrates_critical_replan_slot() -> None:
+    restored = BatchBudget.from_dict(
+        {
+            "policy": {
+                "initial_candidate_cap": 10,
+                "repair_candidate_cap": 3,
+                "max_candidates_per_shot": 2,
+                "critical_max_candidates_per_shot": 3,
+            },
+            "generated_by_shot": {"S03": 3},
+            "contract_hashes_by_shot": {"S03": ["contract-a"] * 3},
+        }
+    )
+
+    assert restored.can_generate("S03", critical=True) is True
+    assert restored.policy.critical_max_candidates_per_shot == 4
+
+
 def test_budget_round_trip_preserves_counts_across_contract_hashes() -> None:
     original = BatchBudget(BatchPolicy.for_run(6))
     original.record_generation("S01_SH00", "contract-a")
