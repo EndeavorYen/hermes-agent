@@ -8783,7 +8783,10 @@ def test_package_error_describes_reference_role_gate_without_internal_label():
                 "allowed": False,
                 "reason": "active_learning_review_required",
                 "quality_issues": ["reference_identity_drift"],
-                "repair_attempted": True,
+                "quality_loop": {
+                    "rounds_attempted": 1,
+                    "stop_reason": "no_progress",
+                },
             }
         },
     )
@@ -8816,7 +8819,10 @@ def test_delivery_recovery_summary_tracks_blocked_candidate_without_delivery(tmp
                 "allowed": False,
                 "reason": "active_learning_review_required",
                 "quality_issues": ["reference_identity_drift"],
-                "repair_attempted": True,
+                "quality_loop": {
+                    "rounds_attempted": 1,
+                    "stop_reason": "no_progress",
+                },
             }
         },
     )
@@ -8830,12 +8836,40 @@ def test_delivery_recovery_summary_tracks_blocked_candidate_without_delivery(tmp
             "reason": "active_learning_review_required",
             "quality_issues": ["reference_identity_drift"],
             "repair_attempted": True,
+            "repair_rounds_attempted": 1,
             "candidate_budget_escalated": False,
             "polish_pass_attempted": False,
-            "recommended_action": "rerun_reference_repair_or_grok_web_polish",
+            "provider": "xai",
+            "quality_loop_stop_reason": "no_progress",
+            "recommended_action": "rerun_reference_repair_with_current_provider",
         }
     ]
     assert summary["deliver_rejected_artifact"] is False
+
+
+def test_quality_repair_prompt_audits_each_missing_required_detail():
+    from tools import visual_package_tool
+
+    prompt = visual_package_tool._quality_repair_prompt(
+        "Required details: uniform stockings; visible waist; subtle steam",
+        {"quality_issues": ["required_detail_missing"]},
+    )
+
+    assert "audit each explicit user requirement" in prompt
+    assert "visibly satisfy every missing required detail" in prompt
+
+
+def test_pose_diversity_lane_does_not_invent_shoes():
+    from tools import visual_package_tool
+
+    prompt = visual_package_tool._single_candidate_generation_prompt(
+        "Generate four different poses while preserving the wardrobe",
+        candidate_index=3,
+        candidate_budget=4,
+    )
+
+    assert "both feet visible" in prompt
+    assert "shoes" not in prompt
 
 
 def test_visual_package_inline_vision_changes_ranked_image_selection(monkeypatch, tmp_path):

@@ -33,6 +33,19 @@ def test_default_repair_budget_stops_after_one_generated_repair():
     assert plan.reason == "generated_repair_budget_exhausted"
 
 
+def test_second_artifact_repair_uses_constraint_rebuild_within_budget():
+    plan = plan_visual_repair(
+        ("artifact_defect",),
+        prior_generated_repairs=("targeted_repair",),
+        max_generated_repairs=2,
+    )
+
+    assert plan.strategy == "constraint_rebuild"
+    assert plan.should_generate is True
+    assert plan.should_switch_provider is False
+    assert "each explicit user requirement" in plan.directive
+
+
 def test_provider_failure_requests_switch_instead_of_prompt_tuning():
     plan = plan_visual_repair(
         ("provider_failure",),

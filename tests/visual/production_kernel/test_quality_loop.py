@@ -135,3 +135,25 @@ def test_bounded_loop_rejects_challenger_that_introduces_a_new_blocker():
     assert loop.to_record()["history"][0]["introduced_blocker_codes"] == [
         "truth_or_evidence_risk"
     ]
+
+
+def test_bounded_loop_allows_one_distinct_retry_after_near_equal_challenger_adds_blocker():
+    loop = BoundedQualityLoop(
+        _snapshot("champion", score=0.6876, blockers=("artifact_defect",)),
+        max_rounds=2,
+    )
+
+    first = loop.observe(
+        _snapshot(
+            "challenger",
+            score=0.6787,
+            blockers=("artifact_defect", "composition_weak"),
+        ),
+        repair_fingerprint="targeted_repair:artifact_defect",
+    )
+    second_decision = loop.can_attempt("constraint_rebuild:artifact_defect")
+
+    assert first.accepted is False
+    assert first.champion.artifact_id == "champion"
+    assert first.stop_reason is None
+    assert second_decision.allowed is True
