@@ -14,7 +14,7 @@ class BatchPolicy:
     initial_candidate_cap: int
     repair_candidate_cap: int
     max_candidates_per_shot: int = 2
-    critical_max_candidates_per_shot: int = 3
+    critical_max_candidates_per_shot: int = 4
 
     @classmethod
     def for_run(cls, shot_count: int) -> "BatchPolicy":
@@ -163,7 +163,12 @@ class BatchBudget:
         raw_policy = payload.get("policy") if isinstance(payload, dict) else None
         if not isinstance(raw_policy, dict):
             raise ValueError("batch budget policy is required")
-        policy = BatchPolicy(**raw_policy)
+        policy_values = dict(raw_policy)
+        policy_values["critical_max_candidates_per_shot"] = max(
+            4,
+            int(policy_values.get("critical_max_candidates_per_shot") or 0),
+        )
+        policy = BatchPolicy(**policy_values)
         generated = {
             str(shot_id): int(count)
             for shot_id, count in (payload.get("generated_by_shot") or {}).items()

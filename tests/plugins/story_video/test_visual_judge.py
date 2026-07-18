@@ -253,6 +253,146 @@ def test_native_batch_chunk_rejudges_legacy_selection_without_generation(
     assert captured["shot_id"] == "S00_SH00"
 
 
+def test_native_batch_chunk_automatically_replans_exhausted_anchor(
+    tmp_path, monkeypatch
+) -> None:
+    from plugins.story_video import batch_executor, visual_judge
+
+    store, context, shot = _context(tmp_path)
+    context = store.update(context, phase="keyframes", auto_mode=True)
+    contract_hash = _shot_contract_hash(shot)
+    attempts = [
+        {
+            "shot_id": shot["shot_id"],
+            "candidate_id": f"{shot['shot_id']}_C0{index}",
+            "status": "quality_budget_exhausted" if index == 3 else "repair_required",
+            "selected": False,
+            "repair_strategy": "targeted_repair",
+            "hard_blockers": ["the image asks one frame to prove too many ideas"],
+            "blocker_codes": ["missing_story_moment"],
+            "shot_contract_hash": contract_hash,
+        }
+        for index in range(1, 4)
+    ]
+    manifest_path = context.project_dir / "manifests" / "shot_candidate_manifest.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(
+        json.dumps({"outputs": [attempts[-1]], "attempt_history": attempts}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        batch_executor.StoryVideoBatchExecutor,
+        "run_chunk",
+        lambda *_args, **_kwargs: batch_executor.BatchRunSummary(
+            work_status="terminal_required",
+            wave="terminal",
+            failed_shots=(shot["shot_id"],),
+        ),
+    )
+
+    class ReplanLLM:
+        def complete_structured(self, **kwargs):
+            assert kwargs["provider"] == "openai-codex"
+            assert kwargs["purpose"] == "story_video_shot_contract_replan"
+            return SimpleNamespace(
+                provider="openai-codex",
+                model="gpt-5.6-sol",
+                parsed={
+                    "redesigned_shot": {
+                        "subject": "one directly readable control center",
+                        "action": "one amber set-point marker rises by one step",
+                        "evidence_detail": "one highlighted control region and one marker",
+                        "shot_scale": "close_up",
+                        "camera_angle": "clean side cutaway",
+                        "focal_point": "the single rising set-point marker",
+                        "subtitle_safe_area": "lower center clear",
+                        "acceptance_criteria": [
+                            "the single set-point change is immediately readable"
+                        ],
+                    }
+                },
+                audit={"response_id": "replan-response-1"},
+            )
+
+    payload = visual_judge._run_batch_chunk(
+        context,
+        state_store=store,
+        llm=ReplanLLM(),
+    )
+
+    assert payload["success"] is True
+    assert payload["work_status"] == "in_progress"
+    assert payload["wave"] == "contract_replan"
+    assert payload["replanned_shot_id"] == shot["shot_id"]
+    repaired = json.loads(
+        (context.project_dir / "scene_ledger.json").read_text(encoding="utf-8")
+    )["scenes"][0]["shots"][0]
+    assert repaired["viewer_takeaway"] == shot["viewer_takeaway"]
+    assert repaired["action"] == "one amber set-point marker rises by one step"
+
+
+def test_native_batch_chunk_persists_exact_terminal_attention(
+    tmp_path, monkeypatch
+) -> None:
+    from plugins.story_video import batch_executor, visual_judge
+
+    store, context, shot = _context(tmp_path)
+    context = store.update(context, phase="keyframes", auto_mode=True)
+    contract_hash = _shot_contract_hash(shot)
+    blocked = {
+        "shot_id": shot["shot_id"],
+        "candidate_id": f"{shot['shot_id']}_C03",
+        "status": "quality_budget_exhausted",
+        "selected": False,
+        "repair_round": 3,
+        "repair_strategy": "audience_reframe",
+        "hard_blockers": ["the decisive visual action is still missing"],
+        "blocker_codes": ["missing_story_moment"],
+        "shot_contract_hash": contract_hash,
+        "provider": "openai-codex",
+        "vision_evidence": {"status": "PASS"},
+    }
+    manifest_path = context.project_dir / "manifests" / "shot_candidate_manifest.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "outputs": [blocked],
+                "attempt_history": [blocked],
+                "contract_replans": [
+                    {"shot_id": shot["shot_id"], "revision": 1},
+                    {"shot_id": shot["shot_id"], "revision": 2},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        batch_executor.StoryVideoBatchExecutor,
+        "run_chunk",
+        lambda *_args, **_kwargs: batch_executor.BatchRunSummary(
+            work_status="terminal_required",
+            wave="terminal",
+            failed_shots=(shot["shot_id"],),
+        ),
+    )
+
+    payload = visual_judge._run_batch_chunk(
+        context,
+        state_store=store,
+        llm=object(),
+    )
+
+    assert payload["work_status"] == "human_review_required"
+    assert payload["review_shot_id"] == shot["shot_id"]
+    attention = json.loads(manifest_path.read_text(encoding="utf-8"))[
+        "terminal_attention"
+    ]
+    assert attention["shot_id"] == shot["shot_id"]
+    assert attention["error"] == "Automatic shot-contract replanning exhausted."
+
+
 def _context(tmp_path):
     store = StoryVideoStateStore(tmp_path)
     call = parse_operator_call("故事影片：恐龍起源｜30秒｜真實照片")
