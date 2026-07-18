@@ -198,11 +198,15 @@ def validate_factual_evidence(
                 for source in known_sources
             )
             domains = {
-                urlparse(_text(source.get("url"))).hostname
+                urlparse(_text(source.get("url"))).hostname.removeprefix("www.")
                 for source in known_sources
                 if _valid_https_url(source.get("url"))
+                and urlparse(_text(source.get("url"))).hostname
             }
-            if not has_authoritative and len(domains) < 2:
+            publishers = {
+                _text(source.get("publisher")).casefold() for source in known_sources
+            }
+            if not has_authoritative and (len(domains) < 2 or len(publishers) < 2):
                 violations.append(
                     f"factual_evidence central claim {claim_id or index} lacks authoritative or corroborated support"
                 )
@@ -250,6 +254,9 @@ def validate_factual_evidence(
     else:
         verified_claim_ids = _string_list(fact_checker.get("verified_claim_ids"))
         evidence_source_ids = _string_list(fact_checker.get("evidence_source_ids"))
+        coverage_segment_ids = _string_list(
+            fact_checker.get("coverage_verified_segment_ids")
+        )
         if verified_claim_ids is None or set(verified_claim_ids) != seen_claim_ids:
             violations.append("script_review_report fact_checker verified_claim_ids mismatch")
         if not evidence_source_ids:
@@ -258,4 +265,12 @@ def validate_factual_evidence(
             )
         if evidence_source_ids is None or set(evidence_source_ids) != referenced_source_ids:
             violations.append("script_review_report fact_checker evidence_source_ids mismatch")
+        if _text(fact_checker.get("claim_coverage_status")).upper() != "PASS":
+            violations.append(
+                "script_review_report fact_checker claim_coverage_status is not PASS"
+            )
+        if coverage_segment_ids is None or set(coverage_segment_ids) != set(script_segments):
+            violations.append(
+                "script_review_report fact_checker coverage_verified_segment_ids mismatch"
+            )
     return tuple(violations)
