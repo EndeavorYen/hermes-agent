@@ -3630,6 +3630,46 @@ def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
     raw_scenes = ledger.get("scenes")
     if not isinstance(raw_scenes, list) or not raw_scenes:
         raise ValueError("scene_ledger.json has no scenes")
+    if narration_schema in {
+        "story_video_narration_manifest_v5",
+        "story_video_narration_manifest_v6",
+    }:
+        ledger_shots = {
+            str(shot.get("shot_id") or "").strip(): (scene, shot)
+            for scene in raw_scenes
+            if isinstance(scene, dict)
+            for shot in scene.get("shots") or []
+            if isinstance(shot, dict) and str(shot.get("shot_id") or "").strip()
+        }
+        shot_bound_outputs: dict[str, dict[str, Any]] = {}
+        for output in narration_manifest.get("outputs") or []:
+            segments = output.get("segments") if isinstance(output, dict) else None
+            if not isinstance(segments, list) or len(segments) != 1:
+                shot_bound_outputs = {}
+                break
+            segment = segments[0]
+            shot_id = (
+                str(segment.get("shot_id") or "").strip()
+                if isinstance(segment, dict)
+                else ""
+            )
+            if not shot_id or shot_id in shot_bound_outputs:
+                shot_bound_outputs = {}
+                break
+            shot_bound_outputs[shot_id] = output
+        if ledger_shots and set(shot_bound_outputs) == set(ledger_shots):
+            raw_scenes = [
+                {
+                    "scene_id": shot_id,
+                    "source_scene_id": str(parent.get("scene_id") or "").strip(),
+                    "shots": [shot],
+                }
+                for shot_id, (parent, shot) in ledger_shots.items()
+            ]
+            narration_by_scene = {
+                _canonical_story_scene_id(shot_id): output
+                for shot_id, output in shot_bound_outputs.items()
+            }
 
     scenes: list[dict[str, Any]] = []
     selected_images: list[str] = []
@@ -3650,7 +3690,11 @@ def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
         if not display_text:
             raise ValueError(f"missing display_text for scene {scene_id}")
         segment_by_shot: dict[str, dict[str, Any]] = {}
-        if narration_schema == "story_video_narration_manifest_v4":
+        if narration_schema in {
+            "story_video_narration_manifest_v4",
+            "story_video_narration_manifest_v5",
+            "story_video_narration_manifest_v6",
+        }:
             raw_segments = narration.get("segments")
             if not isinstance(raw_segments, list) or not raw_segments:
                 raise ValueError(f"missing verified narration segments for scene {scene_id}")
