@@ -1288,10 +1288,22 @@ def auto_continue_llm_output(
 
         proof = validate_phase(context)
         if proof.ok:
-            next_action = "story_video_control action=validate"
+            from .tools import story_video_control
+
+            result = json.loads(
+                story_video_control(
+                    {"action": "validate"},
+                    session_id=session_id,
+                    store=_STORE,
+                )
+            )
+            if result.get("success") is True:
+                return None
+            next_action = "repair and validate the story-video planning bundle"
             next_work_instruction = (
-                " The complete planning bundle is present. Validate planning now and "
-                "persist planning / complete without advancing to keyframes."
+                " Direct planning validation failed: "
+                + json.dumps(result, ensure_ascii=False)
+                + ". Repair the reported gate failure without generating media."
             )
         else:
             details = [*proof.missing, *proof.violations]
