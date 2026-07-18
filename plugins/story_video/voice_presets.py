@@ -32,51 +32,81 @@ MAX_SAMPLE_TEXT_LENGTH = 160
 MAX_RETAINED_PREVIEW_RUNS = 20
 _PREVIEW_DIR_PREFIX = "qwen-custom-voice-"
 
-PRESET_VOICES: dict[str, dict[str, str]] = {
+PRESET_VOICES: dict[str, dict[str, Any]] = {
     "vivian": {
         "speaker": "Vivian",
         "gender_style": "女，明亮年輕",
         "native_language": "中文",
+        "catalog_voice_id": "qwen_custom_vivian",
+        "locale": "zh-CN",
+        "traits": {
+            "gender_presentation": "female",
+            "age_impression": "young",
+            "styles": ["bright", "clear"],
+        },
+        "character_dubbing": True,
     },
     "serena": {
         "speaker": "Serena",
         "gender_style": "女，溫暖柔和",
         "native_language": "中文",
+        "catalog_voice_id": "qwen_custom_serena",
+        "locale": "zh-CN",
+        "traits": {
+            "gender_presentation": "female",
+            "age_impression": "adult",
+            "styles": ["warm", "soft"],
+        },
+        "character_dubbing": True,
     },
     "uncle_fu": {
         "speaker": "Uncle_Fu",
         "gender_style": "男，低沉成熟",
         "native_language": "中文",
+        "catalog_voice_id": "qwen_custom_uncle_fu",
+        "locale": "zh-CN",
+        "traits": {
+            "gender_presentation": "male",
+            "age_impression": "older",
+            "styles": ["deep", "mature"],
+        },
+        "character_dubbing": True,
     },
     "ryan": {
         "speaker": "Ryan",
         "gender_style": "男，節奏鮮明",
         "native_language": "英文",
+        "character_dubbing": False,
     },
     "aiden": {
         "speaker": "Aiden",
         "gender_style": "男，陽光清晰",
         "native_language": "英文",
+        "character_dubbing": False,
     },
     "ono_anna": {
         "speaker": "Ono_Anna",
         "gender_style": "女，輕快俏皮",
         "native_language": "日文",
+        "character_dubbing": False,
     },
     "sohee": {
         "speaker": "Sohee",
         "gender_style": "女，溫暖有情感",
         "native_language": "韓文",
+        "character_dubbing": False,
     },
     "eric": {
         "speaker": "Eric",
         "gender_style": "男，活潑略沙啞",
         "native_language": "四川話",
+        "character_dubbing": False,
     },
     "dylan": {
         "speaker": "Dylan",
         "gender_style": "男，年輕自然",
         "native_language": "北京話",
+        "character_dubbing": False,
     },
 }
 
