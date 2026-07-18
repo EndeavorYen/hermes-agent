@@ -21,6 +21,7 @@ from .policy import guard_tool_call
 from .sequence_quality import validate_sequence_quality_report
 from .state import OperatorCall, StoryVideoRunContext, StoryVideoStateStore, parse_operator_call
 from .visual_judge import _next_batch_work
+from .voice_presets import PRESET_VOICES
 
 
 _STORE = StoryVideoStateStore()
@@ -29,6 +30,7 @@ _MARKER_RE = re.compile(rf"{_MARKER}\s+(\{{.*\}})\s*$", re.DOTALL)
 _SESSION_PHASE_AT_LLM_START: dict[str, str] = {}
 _SESSION_STATUS_AT_LLM_START: dict[str, str] = {}
 _VISUAL_AGENT_BYPASS_SESSIONS: set[str] = set()
+_VOICE_PREVIEW_MEDIA_BY_SESSION: dict[str, list[str]] = {}
 _SETUP_BLOCKER_RE = re.compile(
     r"(?:(?:quota|rate.?limit|配額|額度).{0,32}"
     r"(?:exhausted|exceeded|blocked|required|耗盡|用完|不足)|"
@@ -65,6 +67,15 @@ _VOICE_NOUN_RE = re.compile(
     r"(?:聲線|声线|voice(?:\s+profiles?)?|voices?)",
     re.IGNORECASE,
 )
+_VOICE_PRESET_RESERVED_NAMES = {
+    "qwen3",
+    "tts",
+    "customvoice",
+    "sample",
+    "preview",
+    "voice",
+    "voices",
+}
 _VOICE_MANAGEMENT_ACTIONS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("delete", re.compile(r"(?:刪除|删除|移除|delete|remove)", re.IGNORECASE)),
     ("archive", re.compile(r"(?:封存|歸檔|归档|archive)", re.IGNORECASE)),
@@ -75,6 +86,13 @@ _VOICE_MANAGEMENT_ACTIONS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "add",
         re.compile(r"(?:新增|增加|加入|建立|註冊|注册|add|create|register)", re.IGNORECASE),
+    ),
+    (
+        "preview_preset",
+        re.compile(
+            r"(?:試聽|试听|聽看看|听看看|聽聽|听听|preview|sample)",
+            re.IGNORECASE,
+        ),
     ),
     (
         "list",
@@ -214,6 +232,48 @@ def _voice_management_action(text: Any) -> str | None:
     return None
 
 
+def _voice_preset_names(text: Any) -> list[str]:
+    operator_text = _current_operator_text(text)
+    requested: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(r"(?<![A-Za-z0-9_])[A-Za-z][A-Za-z0-9_]*", operator_text):
+        raw_name = match.group(0)
+        key = raw_name.casefold()
+        preset = PRESET_VOICES.get(key)
+        if preset is not None:
+            name = preset["speaker"]
+        else:
+            if key in _VOICE_PRESET_RESERVED_NAMES:
+                continue
+            before = operator_text[max(0, match.start() - 16) : match.start()]
+            after = operator_text[match.end() : match.end() + 24]
+            line_start = operator_text.rfind("\n", 0, match.start()) + 1
+            line_prefix = operator_text[line_start : match.start()]
+            explicit = any(
+                (
+                    re.search(
+                        r"(?:試聽|试听|聽看看|听看看|聽聽|听听|preview)\s*$",
+                        before,
+                        re.IGNORECASE,
+                    ),
+                    re.match(r"\s*(?:聲線|声线|voices?)", after, re.IGNORECASE),
+                    re.search(r"(?:和|與|与|、|,)\s*$", before),
+                    (
+                        re.fullmatch(r"\s*(?:[-*|`]\s*)*", line_prefix)
+                        and re.search(r"(?:男|女|中文|英文|日文|韓文|韩文)", after)
+                    ),
+                )
+            )
+            if not explicit:
+                continue
+            name = raw_name
+        identity = name.casefold()
+        if identity not in seen:
+            requested.append(name)
+            seen.add(identity)
+    return requested
+
+
 def _story_video_help_section(text: Any) -> str | None:
     operator_text = _current_operator_text(text)
     if operator_text.lstrip().startswith(_INTERNAL_STORY_VIDEO_CONTROL_PREFIXES):
@@ -234,12 +294,25 @@ def _story_video_help_section(text: Any) -> str | None:
     return "help"
 
 
-def _voice_management_instruction(action: str) -> str:
+def _voice_management_instruction(
+    action: str,
+    *,
+    preset_names: list[str] | None = None,
+) -> str:
+    preview_instruction = ""
+    if action == "preview_preset":
+        names = json.dumps(preset_names or [], ensure_ascii=False)
+        preview_instruction = (
+            f" Pass speakers={names}. Do not require an attachment or reference "
+            "recording; these are built-in Qwen CustomVoice presets. On success, "
+            "preserve every MEDIA:<absolute path> line from the manager result."
+        )
     return (
         "VOICE_MANAGER_FAST_ROUTE. This request manages the global local voice "
         "registry; it is not a story-video production phase. Call "
         f"story_video_voice_manager action={action} exactly once, using only fields "
         "explicitly present in the current operator request and attached recording. "
+        f"{preview_instruction} "
         "Do not run shell commands, terminal tools, search, memory lookup, delegation, "
         "or visual tools. Do not inspect story-video projects and do not create or bind "
         "a story-video project. Return the manager result concisely; when required input "
@@ -465,7 +538,12 @@ def pre_llm_call(
             _VISUAL_AGENT_BYPASS_SESSIONS.add(session_id)
             _SESSION_PHASE_AT_LLM_START.pop(session_id, None)
             _SESSION_STATUS_AT_LLM_START.pop(session_id, None)
-        return {"context": _voice_management_instruction(voice_action)}
+        return {
+            "context": _voice_management_instruction(
+                voice_action,
+                preset_names=_voice_preset_names(user_message),
+            )
+        }
 
     help_section = _story_video_help_section(user_message)
     if help_section is not None:
@@ -1392,6 +1470,31 @@ def post_tool_call(
     tool_call_id: str = "",
     **_: Any,
 ) -> None:
+    if tool_name == "story_video_voice_manager":
+        parsed: dict[str, Any] = {}
+        if isinstance(result, dict):
+            parsed = result
+        elif isinstance(result, str):
+            try:
+                candidate = json.loads(result)
+                parsed = candidate if isinstance(candidate, dict) else {}
+            except json.JSONDecodeError:
+                parsed = {}
+        if (
+            session_id
+            and parsed.get("success") is True
+            and parsed.get("action") == "preview_preset"
+        ):
+            media = [
+                str(item)
+                for item in parsed.get("media") or []
+                if isinstance(item, str)
+                and item.startswith("MEDIA:/")
+                and item.casefold().endswith(".wav")
+            ]
+            if media:
+                _VOICE_PREVIEW_MEDIA_BY_SESSION[session_id] = media
+        return
     if session_id in _VISUAL_AGENT_BYPASS_SESSIONS:
         return
     context = _STORE.for_session(session_id)
@@ -1448,6 +1551,12 @@ def transform_llm_output(
     if session_id in _VISUAL_AGENT_BYPASS_SESSIONS:
         _SESSION_PHASE_AT_LLM_START.pop(session_id, None)
         _SESSION_STATUS_AT_LLM_START.pop(session_id, None)
+        media = _VOICE_PREVIEW_MEDIA_BY_SESSION.pop(session_id, [])
+        if media:
+            text = str(response_text or "").rstrip()
+            missing = [item for item in media if item not in text]
+            if missing:
+                return f"{text}\n\n" + "\n".join(missing)
         return None
     context = _STORE.for_session(session_id)
     if context is None:
