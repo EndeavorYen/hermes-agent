@@ -46,6 +46,7 @@ from .voice_profiles import (
     list_voice_profiles,
     tune_voice_profile,
 )
+from .voice_presets import VoicePresetError
 
 
 @dataclass(frozen=True)
@@ -1305,6 +1306,7 @@ def story_video_voice_manager(
     *,
     voice_registry_path: str | Path | None = None,
     voice_projects_root: str | Path | None = None,
+    preset_previewer: Any = None,
     **_: Any,
 ) -> str:
     action = str(args.get("action") or "list").strip().lower()
@@ -1314,6 +1316,20 @@ def story_video_voice_manager(
     try:
         if action == "list":
             payload = list_voice_profiles(**registry_kwargs)
+        elif action == "preview_preset":
+            previewer = preset_previewer
+            if previewer is None:
+                from .voice_presets import preview_custom_voice_presets
+
+                previewer = preview_custom_voice_presets
+            payload = previewer(
+                speakers=(
+                    args.get("speakers")
+                    if isinstance(args.get("speakers"), list)
+                    else []
+                ),
+                sample_text=str(args.get("sample_text") or ""),
+            )
         elif action == "add":
             payload = add_voice_profile(
                 voice_id=str(args.get("voice_id") or ""),
@@ -1358,7 +1374,7 @@ def story_video_voice_manager(
                 },
                 ensure_ascii=False,
             )
-    except (VoiceProfileError, OSError, ValueError) as exc:
+    except (VoicePresetError, VoiceProfileError, OSError, ValueError) as exc:
         return json.dumps(
             {
                 "success": False,

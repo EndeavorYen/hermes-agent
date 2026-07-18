@@ -140,7 +140,20 @@ def test_story_video_specialist_tool_schemas_are_narrow_and_complete() -> None:
         "action"
     ]["enum"]
 
-    assert manager_actions == ["list", "add", "tune", "archive", "delete"]
+    assert manager_actions == [
+        "list",
+        "preview_preset",
+        "add",
+        "tune",
+        "archive",
+        "delete",
+    ]
+    assert STORY_VIDEO_VOICE_MANAGER_SCHEMA["parameters"]["properties"]["speakers"][
+        "maxItems"
+    ] == 3
+    assert "CustomVoice preset previews" in STORY_VIDEO_VOICE_MANAGER_SCHEMA[
+        "description"
+    ]
     assert director_actions == ["compile", "bind_cast", "status"]
     assert STORY_VIDEO_AUDIO_DIRECTOR_SCHEMA["parameters"]["properties"]["mode"][
         "enum"
@@ -186,6 +199,58 @@ def test_voice_manager_adds_tunes_and_archives_local_voice(tmp_path) -> None:
     assert added["profile_id"] == "mom@v1"
     assert tuned["profile_id"] == "mom@v2"
     assert archived["archived_profile_ids"] == ["mom@v1", "mom@v2"]
+
+
+def test_voice_manager_previews_named_custom_voice_presets(tmp_path) -> None:
+    calls = []
+
+    def previewer(*, speakers, sample_text):
+        calls.append((speakers, sample_text))
+        paths = [tmp_path / f"{speaker}.wav" for speaker in speakers]
+        for path in paths:
+            path.write_bytes(b"audio")
+        return {
+            "speakers": speakers,
+            "sample_text": sample_text,
+            "samples": [
+                {"speaker": speaker, "path": str(path)}
+                for speaker, path in zip(speakers, paths)
+            ],
+            "media": [f"MEDIA:{path}" for path in paths],
+        }
+
+    payload = json.loads(
+        story_video_voice_manager(
+            {
+                "action": "preview_preset",
+                "speakers": ["Vivian", "Serena", "Uncle_Fu"],
+                "sample_text": "這是一段聲線試聽。",
+            },
+            preset_previewer=previewer,
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["action"] == "preview_preset"
+    assert payload["media"] == [
+        f"MEDIA:{tmp_path / 'Vivian.wav'}",
+        f"MEDIA:{tmp_path / 'Serena.wav'}",
+        f"MEDIA:{tmp_path / 'Uncle_Fu.wav'}",
+    ]
+    assert calls == [
+        (["Vivian", "Serena", "Uncle_Fu"], "這是一段聲線試聽。")
+    ]
+
+
+def test_voice_manager_returns_structured_error_when_preview_names_are_missing() -> None:
+    payload = json.loads(
+        story_video_voice_manager(
+            {"action": "preview_preset", "speakers": []},
+        )
+    )
+
+    assert payload["success"] is False
+    assert payload["error_type"] == "voice_preset_speakers_required"
 
 
 def test_audio_director_compiles_and_binds_active_story_project(tmp_path) -> None:
