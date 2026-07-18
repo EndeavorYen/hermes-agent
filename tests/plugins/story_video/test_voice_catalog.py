@@ -105,6 +105,34 @@ def test_catalog_alias_resolution_is_case_insensitive(tmp_path) -> None:
         resolve_catalog_voice("missing_actor", catalog)
 
 
+def test_catalog_resolves_latest_selectable_clone_version(tmp_path) -> None:
+    from plugins.story_video.voice_catalog import (
+        list_voice_catalog,
+        resolve_catalog_voice,
+    )
+
+    registry, model, runtime = _catalog_setup(tmp_path)
+    newer_reference = tmp_path / "simon-newer.wav"
+    newer_reference.write_bytes(b"authorized-simon-newer-reference")
+    newer = add_voice_profile(
+        voice_id="simon_clean_v2",
+        display_name="Simon clean narrator v2 tuned",
+        reference_audio=newer_reference,
+        reference_transcript="這是 Simon 本人授權的新版乾淨錄音。",
+        consent="user_confirmed_self_recording",
+        registry_path=registry,
+    )
+    catalog = list_voice_catalog(
+        registry_path=registry,
+        preset_model_path=model,
+        preset_runtime_path=runtime,
+    )
+
+    selected = resolve_catalog_voice("simon_clean_v2", catalog)
+
+    assert selected["engine_binding"]["profile_id"] == newer["profile_id"]
+
+
 def test_engine_binding_validates_clone_and_preset_evidence(tmp_path) -> None:
     from plugins.story_video.voice_catalog import (
         build_engine_binding,

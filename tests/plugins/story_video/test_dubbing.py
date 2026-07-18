@@ -64,6 +64,63 @@ def _utterance(
     }
 
 
+def _preset_cast_project(
+    tmp_path,
+    *,
+    narrator_voice: str,
+    hero_voice: str,
+) -> tuple[Path, dict]:
+    from plugins.story_video.voice_catalog import list_voice_catalog
+
+    registry = tmp_path / "voices" / "registry.json"
+    _add_voice(registry.parent, "simon_clean_v2")
+    model = tmp_path / "custom-voice-model"
+    model.mkdir()
+    (model / "config.json").write_text(
+        json.dumps(
+            {
+                "tts_model_type": "custom_voice",
+                "talker_config": {
+                    "spk_id": {"vivian": 1, "serena": 2, "uncle_fu": 3}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime = tmp_path / "mlx-python"
+    runtime.write_text("runtime", encoding="utf-8")
+    catalog = list_voice_catalog(
+        registry_path=registry,
+        preset_model_path=model,
+        preset_runtime_path=runtime,
+    )
+    project = tmp_path / "story"
+    compile_dubbing_project(
+        project,
+        mode="creative",
+        source_text="",
+        speakers=[
+            {
+                "speaker_id": "narrator",
+                "display_name": "旁白",
+                "role": "narrator",
+                "voice_id": narrator_voice,
+            },
+            {
+                "speaker_id": "hero",
+                "display_name": "主角",
+                "role": "lead",
+                "voice_id": hero_voice,
+            },
+        ],
+        utterances=[
+            _utterance("U001", "narrator", "故事開始。"),
+            _utterance("U002", "hero", "出發吧！"),
+        ],
+    )
+    return project, catalog
+
+
 def test_creative_mode_compiles_three_project_contracts(tmp_path) -> None:
     project = tmp_path / "story"
 
@@ -235,6 +292,74 @@ def test_cast_binding_resolves_latest_concrete_profiles_and_variants(tmp_path) -
     status = inspect_dubbing_project(project)
     assert status["integrity"] == "PASS"
     assert status["speaker_count"] == 2
+
+
+def test_cast_binding_accepts_qwen_preset_aliases(tmp_path) -> None:
+    project, catalog = _preset_cast_project(
+        tmp_path,
+        narrator_voice="Vivian",
+        hero_voice="Uncle_Fu",
+    )
+
+    selection = bind_project_voice_cast(project, voice_catalog=catalog)
+
+    rows = {row["speaker_id"]: row for row in selection.speakers}
+    assert rows["narrator"]["voice_id"] == "qwen_custom_vivian"
+    assert rows["narrator"]["engine"] == "qwen_custom_voice"
+    assert rows["narrator"]["engine_binding"]["preset_speaker"] == "Vivian"
+    assert rows["hero"]["engine_binding"]["preset_speaker"] == "Uncle_Fu"
+    binding = json.loads(selection.binding_path.read_text(encoding="utf-8"))
+    assert binding["schema"] == "story_video_voice_cast_binding_v2"
+    assert binding["catalog_sha256"] == catalog["catalog_sha256"]
+
+
+def test_preset_binding_fails_closed_on_model_config_drift(tmp_path) -> None:
+    project, catalog = _preset_cast_project(
+        tmp_path,
+        narrator_voice="Serena",
+        hero_voice="Vivian",
+    )
+    selection = bind_project_voice_cast(project, voice_catalog=catalog)
+    model_config = Path(
+        selection.speakers[0]["engine_binding"]["model_config_path"]
+    )
+    payload = json.loads(model_config.read_text(encoding="utf-8"))
+    payload["talker_config"]["spk_id"].pop("serena")
+    model_config.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(DubbingContractError) as error:
+        resolve_project_voice_cast(project)
+
+    assert error.value.error_type == "voice_cast_binding_mismatch"
+
+
+def test_v1_clone_binding_remains_readable_after_v2_upgrade(tmp_path) -> None:
+    voices = tmp_path / "voices"
+    _add_voice(voices, "simon")
+    _add_voice(voices, "young_male")
+    project = tmp_path / "story"
+    compile_dubbing_project(
+        project,
+        mode="creative",
+        source_text="",
+        speakers=_speakers(),
+        utterances=[_utterance("U001", "narrator", "故事開始。")],
+    )
+    selection = bind_project_voice_cast(
+        project,
+        registry_path=voices / "registry.json",
+    )
+    payload = json.loads(selection.binding_path.read_text(encoding="utf-8"))
+    assert payload["schema"] == "story_video_voice_cast_binding_v2"
+    payload["schema"] = "story_video_voice_cast_binding_v1"
+    selection.binding_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    resolved = resolve_project_voice_cast(project)
+
+    assert {row["profile_id"] for row in resolved.speakers} == {
+        "simon@v1",
+        "young_male@v1",
+    }
 
 
 def test_cast_binding_fails_closed_on_profile_hash_drift(tmp_path) -> None:

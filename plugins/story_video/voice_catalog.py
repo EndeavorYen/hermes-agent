@@ -64,6 +64,7 @@ def _profile_voice(profile: dict[str, Any]) -> dict[str, Any]:
         "voice_id": voice_id,
         "display_name": str(profile.get("display_name") or profile["profile_id"]),
         "aliases": [str(profile["profile_id"]), voice_id],
+        "version": profile.get("version"),
         "engine": "qwen_full_icl",
         "source_kind": "clone_profile",
         "language": str(profile.get("language") or "zh-TW"),
@@ -209,12 +210,14 @@ def resolve_catalog_voice(selector: str, catalog: dict[str, Any]) -> dict[str, A
             "voice_catalog_not_found",
             f"voice {selector!r} is not registered",
         )
-    row = matches[0]
-    if not row.get("selectable"):
+    selectable = [row for row in matches if row.get("selectable")]
+    if not selectable:
+        row = matches[0]
         raise VoiceCatalogError(
             "voice_catalog_not_selectable",
             f"voice {selector!r} is not selectable: {row['availability']['reason']}",
         )
+    row = max(selectable, key=lambda item: int(item.get("version") or 0))
     return dict(row)
 
 

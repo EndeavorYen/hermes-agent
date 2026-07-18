@@ -5,6 +5,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .voice_catalog import (
+    VoiceCatalogError,
+    build_engine_binding,
+    list_voice_catalog,
+    resolve_catalog_voice,
+    validate_engine_binding,
+)
 from .voice_profiles import (
     DEFAULT_VOICE_REGISTRY,
     VoiceProfileError,
@@ -13,14 +20,19 @@ from .voice_profiles import (
     _resolved_path,
     _sha256,
     _write_json_atomic,
-    list_voice_profiles,
 )
 
 
 STORY_MODE_SCHEMA = "story_video_story_mode_v1"
 CAST_BIBLE_SCHEMA = "story_video_cast_bible_v1"
 DIALOGUE_LEDGER_SCHEMA = "story_video_dialogue_ledger_v1"
-VOICE_CAST_BINDING_SCHEMA = "story_video_voice_cast_binding_v1"
+VOICE_CAST_BINDING_SCHEMA_V1 = "story_video_voice_cast_binding_v1"
+VOICE_CAST_BINDING_SCHEMA_V2 = "story_video_voice_cast_binding_v2"
+VOICE_CAST_BINDING_SCHEMAS = {
+    VOICE_CAST_BINDING_SCHEMA_V1,
+    VOICE_CAST_BINDING_SCHEMA_V2,
+}
+VOICE_CAST_BINDING_SCHEMA = VOICE_CAST_BINDING_SCHEMA_V1
 
 STORY_MODE_NAME = "story_mode.json"
 CAST_BIBLE_NAME = "cast_bible.json"
@@ -365,31 +377,6 @@ def _validate_variant(speaker_id: str, variant: Any) -> dict[str, Any]:
     return result
 
 
-def _select_profile(selector: str, catalog: dict[str, Any]) -> dict[str, Any]:
-    exact = next(
-        (row for row in catalog["profiles"] if row["profile_id"] == selector), None
-    )
-    candidates = [
-        row for row in catalog["profiles"] if str(row.get("voice_id")) == selector
-    ]
-    row = exact or (
-        max(candidates, key=lambda item: int(item.get("version") or 0))
-        if candidates
-        else None
-    )
-    if row is None:
-        raise DubbingContractError(
-            "voice_cast_profile_unresolved",
-            f"voice selector {selector!r} is not registered",
-        )
-    if not row.get("selectable"):
-        raise DubbingContractError(
-            "voice_cast_profile_unresolved",
-            f"voice selector {selector!r} is not selectable: {row.get('reason')}",
-        )
-    return row
-
-
 def _has_narration(project: Path) -> bool:
     if (project / "manifests" / "narration_manifest.json").is_file():
         return True
@@ -401,6 +388,7 @@ def bind_project_voice_cast(
     project_dir: str | Path,
     *,
     registry_path: str | Path = DEFAULT_VOICE_REGISTRY,
+    voice_catalog: dict[str, Any] | None = None,
 ) -> VoiceCastSelection:
     project = Path(project_dir).expanduser().resolve()
     cast_path = project / CAST_BIBLE_NAME
@@ -423,34 +411,56 @@ def bind_project_voice_cast(
                 ) from None
         else:
             return current
-    try:
-        catalog = list_voice_profiles(registry_path=registry_path)
-    except VoiceProfileError as exc:
-        raise DubbingContractError("voice_cast_profile_unresolved", str(exc)) from exc
+    catalog = voice_catalog
+    if catalog is None:
+        try:
+            catalog = list_voice_catalog(registry_path=registry_path)
+        except (VoiceCatalogError, VoiceProfileError) as exc:
+            raise DubbingContractError(
+                "voice_cast_profile_unresolved", str(exc)
+            ) from exc
     cast = _load_json(cast_path, error_type="dubbing_cast_invalid")
     mode = _load_json(mode_path, error_type="story_mode_invalid")
     resolved: list[dict[str, Any]] = []
     for speaker in cast.get("speakers") or []:
         speaker_id = str(speaker.get("speaker_id") or "")
         variant = _validate_variant(speaker_id, speaker.get("variant"))
-        profile = _select_profile(str(speaker.get("voice_id") or ""), catalog)
-        resolved.append(
-            {
-                "speaker_id": speaker_id,
-                "display_name": str(speaker.get("display_name") or speaker_id),
-                "role": str(speaker.get("role") or "supporting"),
-                "voice_id": str(profile.get("voice_id") or speaker.get("voice_id")),
-                "profile_id": str(profile["profile_id"]),
-                "profile_path": str(profile["profile_path"]),
-                "profile_sha256": str(profile["profile_sha256"]),
-                "clone_mode": "full_icl",
-                "variant": variant,
-            }
-        )
+        try:
+            voice = resolve_catalog_voice(
+                str(speaker.get("voice_id") or ""),
+                catalog,
+            )
+            engine_binding = build_engine_binding(voice)
+        except VoiceCatalogError as exc:
+            raise DubbingContractError(
+                "voice_cast_profile_unresolved", str(exc)
+            ) from exc
+        row = {
+            "speaker_id": speaker_id,
+            "display_name": str(speaker.get("display_name") or speaker_id),
+            "role": str(speaker.get("role") or "supporting"),
+            "voice_id": str(voice["voice_id"]),
+            "engine": str(voice["engine"]),
+            "source_kind": str(voice["source_kind"]),
+            "assignment_origin": "manual",
+            "engine_binding": engine_binding,
+            "variant": variant,
+        }
+        if voice["engine"] == "qwen_full_icl":
+            row.update(
+                {
+                    "profile_id": str(engine_binding["profile_id"]),
+                    "profile_path": str(engine_binding["profile_path"]),
+                    "profile_sha256": str(engine_binding["profile_sha256"]),
+                    "clone_mode": "full_icl",
+                }
+            )
+        resolved.append(row)
     payload = {
-        "schema": VOICE_CAST_BINDING_SCHEMA,
+        "schema": VOICE_CAST_BINDING_SCHEMA_V2,
         "status": "locked",
         "language_policy": "zh-TW",
+        "catalog_sha256": str(catalog.get("catalog_sha256") or ""),
         "story_mode": str(mode.get("mode") or ""),
         "story_mode_path": str(mode_path),
         "story_mode_sha256": _sha256(mode_path),
@@ -469,12 +479,20 @@ def resolve_project_voice_cast(project_dir: str | Path) -> VoiceCastSelection:
     binding_path = project / VOICE_CAST_BINDING_NAME
     binding = _load_json(binding_path, error_type="voice_cast_binding_invalid")
     if (
-        binding.get("schema") != VOICE_CAST_BINDING_SCHEMA
+        binding.get("schema") not in VOICE_CAST_BINDING_SCHEMAS
         or binding.get("status") != "locked"
         or binding.get("language_policy") != "zh-TW"
     ):
         raise DubbingContractError(
             "voice_cast_binding_invalid", f"invalid voice cast binding: {binding_path}"
+        )
+    schema = str(binding["schema"])
+    if schema == VOICE_CAST_BINDING_SCHEMA_V2 and not str(
+        binding.get("catalog_sha256") or ""
+    ):
+        raise DubbingContractError(
+            "voice_cast_binding_invalid",
+            f"v2 voice cast binding has no catalog hash: {binding_path}",
         )
     for key, name in (
         ("story_mode_sha256", STORY_MODE_NAME),
@@ -498,22 +516,50 @@ def resolve_project_voice_cast(project_dir: str | Path) -> VoiceCastSelection:
             "voice_cast_binding_invalid", "voice cast binding has no speakers"
         )
     for row in speakers:
-        profile_path = _resolved_path(
-            str(row.get("profile_path") or ""), relative_to=binding_path.parent
-        )
-        assessment = _profile_assessment(
-            profile_path, expected_profile_id=str(row.get("profile_id") or "")
-        )
-        if not assessment["selectable"]:
+        if not isinstance(row, dict):
             raise DubbingContractError(
-                "voice_cast_binding_mismatch",
-                f"bound voice profile is invalid: {assessment['reason']}",
+                "voice_cast_binding_invalid",
+                "voice cast binding speaker rows must be objects",
             )
-        if assessment["profile_sha256"] != str(row.get("profile_sha256") or ""):
-            raise DubbingContractError(
-                "voice_cast_binding_mismatch",
-                f"bound voice profile hash mismatch: {profile_path}",
+        if schema == VOICE_CAST_BINDING_SCHEMA_V1:
+            profile_path = _resolved_path(
+                str(row.get("profile_path") or ""),
+                relative_to=binding_path.parent,
             )
+            assessment = _profile_assessment(
+                profile_path,
+                expected_profile_id=str(row.get("profile_id") or ""),
+            )
+            if not assessment["selectable"]:
+                raise DubbingContractError(
+                    "voice_cast_binding_mismatch",
+                    f"bound voice profile is invalid: {assessment['reason']}",
+                )
+            if assessment["profile_sha256"] != str(
+                row.get("profile_sha256") or ""
+            ):
+                raise DubbingContractError(
+                    "voice_cast_binding_mismatch",
+                    f"bound voice profile hash mismatch: {profile_path}",
+                )
+        else:
+            engine_binding = row.get("engine_binding")
+            if (
+                not isinstance(engine_binding, dict)
+                or not str(row.get("voice_id") or "")
+                or str(row.get("engine") or "")
+                != str(engine_binding.get("engine") or "")
+            ):
+                raise DubbingContractError(
+                    "voice_cast_binding_invalid",
+                    "v2 voice cast speaker has inconsistent engine evidence",
+                )
+            try:
+                validate_engine_binding(engine_binding)
+            except VoiceCatalogError as exc:
+                raise DubbingContractError(
+                    "voice_cast_binding_mismatch", str(exc)
+                ) from exc
         _validate_variant(str(row.get("speaker_id") or ""), row.get("variant"))
     return VoiceCastSelection(
         binding_path=binding_path,
