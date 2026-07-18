@@ -141,6 +141,11 @@ def test_writing_help_explains_default_and_opt_out() -> None:
     assert "進階版" in text
     assert "專業版" in text
     assert "不要淺白化" in text
+    assert "敘事主軸" in text
+    assert "冷開場" in text
+    assert "跨場懸念" in text
+    assert "因果接棒" in text
+    assert "回扣結尾" in text
 
 
 def test_voice_guide_exposes_ids_without_private_paths() -> None:

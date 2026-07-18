@@ -5,7 +5,12 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .editorial_quality import EDITORIAL_PROFILE_ID, validate_editorial_profile_v2
+from .editorial_quality import (
+    EDITORIAL_PROFILE_ID,
+    NARRATIVE_EDITORIAL_PROFILE_ID,
+    validate_editorial_profile_v2,
+    validate_narrative_dynamics_v3,
+)
 from .music import validate_music_direction
 
 
@@ -342,7 +347,8 @@ def validate_v6_review_bundle(
             script_bytes=script_bytes,
         )
     )
-    if _text(content_profile.get("review_profile_id")) == EDITORIAL_PROFILE_ID:
+    review_profile_id = _text(content_profile.get("review_profile_id"))
+    if review_profile_id in {EDITORIAL_PROFILE_ID, NARRATIVE_EDITORIAL_PROFILE_ID}:
         music_direction = ledger.get("music_direction")
         if not isinstance(music_direction, dict):
             violations.append("music_direction is missing")
@@ -359,6 +365,18 @@ def validate_v6_review_bundle(
                     ledger.get("target_duration_sec", 0),
                 )
             )
+        if review_profile_id == NARRATIVE_EDITORIAL_PROFILE_ID:
+            narrative_dynamics = review_report.get("narrative_dynamics")
+            if not isinstance(narrative_dynamics, dict):
+                violations.append("script_review_report narrative_dynamics is missing")
+            else:
+                violations.extend(
+                    validate_narrative_dynamics_v3(
+                        script_bytes.decode("utf-8"),
+                        narrative_dynamics,
+                        ledger.get("target_duration_sec", 0),
+                    )
+                )
     return tuple(violations)
 
 
