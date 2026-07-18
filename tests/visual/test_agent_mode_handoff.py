@@ -155,6 +155,22 @@ def test_direct_visual_handoff_routes_attached_chinese_edit_candidates_to_xai():
     assert handoff["arguments"]["include_image"] is True
     assert handoff["arguments"]["include_video"] is False
     assert handoff["arguments"]["attachments"] == ["/tmp/ref.png"]
+    assert handoff["arguments"]["reference_binding"]["reference_order"] == [
+        {
+            "index": 1,
+            "role_hint": "edit_anchor",
+            "attachment": "/tmp/ref.png",
+            "source": "current_visual_context",
+            "user_ref_index": "previous_selected_output",
+        }
+    ]
+    assert handoff["arguments"]["reference_conditioning_policy"] == "role_locked_originals"
+    assert handoff["arguments"]["reference_strategy"] == {
+        "mode": "direct_edit_anchor",
+        "source": "visual_agent_handoff",
+        "requires_new_composition": False,
+        "edit_anchor": True,
+    }
 
 
 def test_direct_visual_handoff_preserves_compact_s_suffix_video_duration():
@@ -1883,7 +1899,11 @@ def test_direct_visual_handoff_formats_recovery_summary_for_blocked_candidate():
                     "actions": [
                         {
                             "modality": "image",
-                            "recommended_action": "rerun_reference_repair_or_grok_web_polish",
+                            "quality_issues": ["reference_identity_drift"],
+                            "provider": "xai",
+                            "repair_rounds_attempted": 1,
+                            "quality_loop_stop_reason": "no_progress",
+                            "recommended_action": "rerun_reference_repair_with_current_provider",
                         }
                     ],
                 },
@@ -1891,4 +1911,7 @@ def test_direct_visual_handoff_formats_recovery_summary_for_blocked_candidate():
         )
     )
 
-    assert response == "視覺生成暫停交付：已產生候選圖，但參考圖對應仍未通過品質檢查；下一步會重新修復或改用 Grok Web polish。"
+    assert response == (
+        "視覺生成未交付：xAI 已產生候選圖並執行 1 次有界修復，但仍未通過品質檢查"
+        "（reference_identity_drift；停止原因 no_progress）。未切換 provider。"
+    )

@@ -59,6 +59,17 @@ def plan_visual_repair(
             directive="Stop generation and surface the current blocker evidence for review.",
             reason="generated_repair_budget_exhausted",
         )
+    if prior and prior[-1] == "targeted_repair" and "artifact_defect" in blockers:
+        return _plan(
+            "constraint_rebuild",
+            blockers,
+            should_generate=True,
+            directive=(
+                "Rebuild from the bound reference and audit each explicit user requirement as a visible "
+                "constraint. Preserve details that already pass while correcting every missing or defective "
+                "detail; do not repeat the prior targeted repair composition."
+            ),
+        )
     if "provider_failure" in blockers or capability_mismatch or repeated.intersection(blockers):
         return _plan(
             "provider_switch",

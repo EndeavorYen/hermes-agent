@@ -3001,7 +3001,7 @@ def _single_candidate_generation_prompt(
             "a grounded three-quarter standing pose with one hand visibly supported on a nearby surface and both feet separated",
             "a supported seated or perched pose with both hands visible, both feet clearly supported, and no crossed or overlapping legs",
             "a controlled mid-step or turning pose with one hand touching a scene element and every limb clearly separated",
-            "a supported lean against a scene element with uncrossed arms and legs, complete hands, and both shoes visible",
+            "a supported lean against a scene element with uncrossed arms and legs, complete hands, and both feet visible",
         )
         directive += (
             f" Pose diversity lane: {pose_lanes[candidate_index % len(pose_lanes)]}; "
@@ -3201,14 +3201,20 @@ def _delivery_recovery_summary(
         if modality not in blocked_modalities:
             blocked_modalities.append(modality)
         quality_issues = _string_list(gate.get("quality_issues"))
+        quality_loop = gate.get("quality_loop") if isinstance(gate.get("quality_loop"), dict) else {}
+        repair_rounds_attempted = _coerce_int(quality_loop.get("rounds_attempted")) or 0
+        provider = _delivery_recovery_provider(generation_payloads, modality)
         actions.append(
             {
                 "modality": modality,
                 "reason": str(gate.get("reason") or ""),
                 "quality_issues": quality_issues,
-                "repair_attempted": bool(gate.get("repair_attempted")),
+                "repair_attempted": bool(gate.get("repair_attempted")) or repair_rounds_attempted > 0,
+                "repair_rounds_attempted": repair_rounds_attempted,
                 "candidate_budget_escalated": bool(gate.get("candidate_budget_escalated")),
                 "polish_pass_attempted": bool(gate.get("polish_pass_attempted")),
+                "provider": provider,
+                "quality_loop_stop_reason": str(quality_loop.get("stop_reason") or ""),
                 "recommended_action": _delivery_recovery_recommended_action(
                     modality=modality,
                     reason=str(gate.get("reason") or ""),
@@ -3254,10 +3260,22 @@ def _delivery_recovery_recommended_action(
     if modality == "video":
         return "rerun_video_repair_with_selected_source"
     if any(issue in {"reference_identity_drift", "reference_role_evidence_missing"} for issue in quality_issues):
-        return "rerun_reference_repair_or_grok_web_polish"
+        return "rerun_reference_repair_with_current_provider"
     if reason in {"active_learning_fail_closed", "active_learning_review_required", "pre_slack_preference_dimension_low"}:
-        return "rerun_quality_repair_or_grok_web_polish"
+        return "rerun_quality_repair_with_current_provider"
     return "inspect_delivery_gate_and_retry"
+
+
+def _delivery_recovery_provider(generation_payloads: dict[str, Any], modality: str) -> str:
+    value = generation_payloads.get(modality)
+    payloads = value if isinstance(value, list) else [value]
+    providers = [
+        str(payload.get("provider") or "").strip()
+        for payload in payloads
+        if isinstance(payload, dict) and str(payload.get("provider") or "").strip()
+    ]
+    unique = list(dict.fromkeys(providers))
+    return unique[0] if len(unique) == 1 else ""
 
 
 def _generated_candidate_available(
@@ -6321,6 +6339,10 @@ def _quality_repair_prompt(
         instructions.append("make wardrobe and legwear texture clean, refined, and realistic")
     if "reference_identity_drift" in issues:
         instructions.append("preserve the reference identity and recognizable facial structure")
+    if "required_detail_missing" in issues:
+        instructions.append(
+            "audit each explicit user requirement and visibly satisfy every missing required detail"
+        )
     if not instructions:
         instructions.append("improve visual quality while preserving the original intent")
     repair = "; ".join(instructions)

@@ -121,7 +121,13 @@ class BoundedQualityLoop:
         if self.champion.deliverable:
             self.stop_reason = "quality_gate_passed"
         elif not accepted:
-            self.stop_reason = "no_progress"
+            retryable_near_equal = (
+                challenger.artifact_valid
+                and score_improvement >= -self.score_regression_tolerance
+                and self.rounds_attempted < self.max_rounds
+            )
+            if not retryable_near_equal:
+                self.stop_reason = "no_progress"
         elif self.rounds_attempted >= self.max_rounds:
             self.stop_reason = "budget_exhausted"
 

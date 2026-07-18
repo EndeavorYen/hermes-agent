@@ -81,7 +81,7 @@ def build_direct_visual_agent_handoff(
         if polish_request:
             session_reference_entries = _promote_first_reference_to_edit_anchor(session_reference_entries)
         attachments = [str(entry["uri"]) for entry in session_reference_entries]
-    elif attachments and polish_request:
+    elif attachments and (followup_request or polish_request):
         session_reference_entries = _current_attachment_polish_entries(attachments)
     if not prompt or not (
         explicit_generation_request
@@ -146,6 +146,14 @@ def build_direct_visual_agent_handoff(
                 arguments["candidate_budget_source"] = "thread_context"
         arguments["reference_binding"] = _session_reference_binding(session_reference_entries)
         arguments["prompt"] = _prompt_with_session_edit_context(prompt, session_reference_entries)
+        if followup_request or polish_request:
+            arguments["reference_conditioning_policy"] = "role_locked_originals"
+            arguments["reference_strategy"] = {
+                "mode": "direct_edit_anchor",
+                "source": "visual_agent_handoff",
+                "requires_new_composition": False,
+                "edit_anchor": True,
+            }
     contract = dict(plan.get("provider_contract") or {})
     control_route = (
         raphael_control.get("route")
@@ -1451,19 +1459,40 @@ def _format_delivery_recovery_detail(value: Any) -> str:
     actions = value.get("actions")
     if not isinstance(actions, list):
         return ""
-    recommended_actions = {
-        str(action.get("recommended_action") or "")
-        for action in actions
-        if isinstance(action, dict)
-    }
     blocked_modalities = set(_string_list(value.get("blocked_modalities")))
     if "image" in blocked_modalities:
-        if "rerun_reference_repair_or_grok_web_polish" in recommended_actions:
-            return "視覺生成暫停交付：已產生候選圖，但參考圖對應仍未通過品質檢查；下一步會重新修復或改用 Grok Web polish。"
-        return "視覺生成暫停交付：已產生候選圖，但品質檢查未通過；下一步會重新修復或改用 Grok Web polish。"
+        action = next(
+            (
+                item
+                for item in actions
+                if isinstance(item, dict) and str(item.get("modality") or "") == "image"
+            ),
+            {},
+        )
+        provider = str(action.get("provider") or "").strip()
+        provider_label = "xAI" if provider.lower() == "xai" else provider
+        generation = f"{provider_label} 已產生候選圖" if provider_label else "已產生候選圖"
+        repair_rounds = _coerce_nonnegative_int(action.get("repair_rounds_attempted"))
+        repair = f"並執行 {repair_rounds} 次有界修復" if repair_rounds else ""
+        details: list[str] = []
+        quality_issues = _string_list(action.get("quality_issues"))
+        if quality_issues:
+            details.append(", ".join(quality_issues))
+        stop_reason = str(action.get("quality_loop_stop_reason") or "").strip()
+        if stop_reason:
+            details.append(f"停止原因 {stop_reason}")
+        detail = f"（{'；'.join(details)}）" if details else ""
+        return f"視覺生成未交付：{generation}{repair}，但仍未通過品質檢查{detail}。未切換 provider。"
     if "video" in blocked_modalities:
         return "視覺生成暫停交付：已產生候選影片，但品質檢查未通過；下一步會用選中來源重新修復影片。"
     return ""
+
+
+def _coerce_nonnegative_int(value: Any) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _disabled_by_env() -> bool:
