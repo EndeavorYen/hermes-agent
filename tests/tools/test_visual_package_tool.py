@@ -874,6 +874,28 @@ def test_visual_package_singularizes_production_batch_prompt_per_provider_call()
     assert "different camera height and limb layout from the references" in result
 
 
+def test_visual_package_candidate_diversity_never_changes_locked_reference_identity():
+    from tools import visual_package_tool
+
+    conditioned_prompt = (
+        "Preserve the exact person and face from the edit anchor. "
+        "The attached image is also labeled as a pose/composition reference by the system."
+    )
+
+    result = visual_package_tool._single_candidate_generation_prompt(
+        conditioned_prompt,
+        candidate_index=1,
+        candidate_budget=4,
+        pose_variation_requested=False,
+        preserve_reference_identity=True,
+    )
+
+    assert "distinct from the references" not in result
+    assert "distinct from the other batch candidates" in result
+    assert "Pose diversity lane" not in result
+    assert "Preserve the exact person and face" in result
+
+
 def test_visual_package_category_treats_openai_composition_as_composition_guide():
     from tools import visual_package_tool
 
@@ -2260,6 +2282,8 @@ def test_visual_package_grok_web_polish_alias_uses_xai_image_edit(monkeypatch, t
             "model": "grok-web-imagine",
             "vision_observation": {
                 "reference_adherence": 0.95,
+                "edit_anchor_adherence": 0.95,
+                "character_identity_adherence": 0.95,
                 "subject_quality": 0.95,
                 "face_quality": 0.95,
                 "visual_appeal": 0.95,
@@ -2321,6 +2345,8 @@ def test_visual_package_grok_web_polish_prompt_routes_current_anchor_to_xai(monk
             "model": "grok-web-imagine",
             "vision_observation": {
                 "reference_adherence": 0.95,
+                "edit_anchor_adherence": 0.95,
+                "character_identity_adherence": 0.95,
                 "subject_quality": 0.95,
                 "face_quality": 0.95,
                 "visual_appeal": 0.95,
@@ -2414,6 +2440,7 @@ def test_visual_package_followup_uses_previous_selected_image_as_edit_anchor(mon
             "model": "grok-imagine-image-quality",
             "vision_observation": {
                 "reference_adherence": 0.92,
+                "edit_anchor_adherence": 0.93,
                 "character_identity_adherence": 0.92,
                 "pose_composition_adherence": 0.9,
                 "wardrobe_adherence": 0.9,
