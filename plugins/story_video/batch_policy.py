@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
 
@@ -16,6 +16,7 @@ class BatchPolicy:
     max_candidates_per_shot: int = 2
     critical_max_candidates_per_shot: int = 5
     semantic_pivot_candidate_cap: int = 0
+    legacy_strategy_pivot_candidate_cap: int = 0
 
     @classmethod
     def for_run(cls, shot_count: int) -> "BatchPolicy":
@@ -32,6 +33,7 @@ class BatchPolicy:
         return (
             self.base_total_candidates
             + self.semantic_pivot_candidate_cap
+            + self.legacy_strategy_pivot_candidate_cap
         )
 
     @property
@@ -55,24 +57,78 @@ class BatchBudget:
     def contract_hashes_for(self, shot_id: str) -> tuple[str, ...]:
         return tuple(self._contract_hashes_by_shot.get(str(shot_id), ()))
 
-    def _semantic_pivot_consumed(self) -> bool:
-        base_critical_cap = max(
+    def _base_critical_candidate_cap(self) -> int:
+        return max(
             self.policy.max_candidates_per_shot,
             self.policy.critical_max_candidates_per_shot
-            - self.policy.semantic_pivot_candidate_cap,
+            - self.policy.semantic_pivot_candidate_cap
+            - self.policy.legacy_strategy_pivot_candidate_cap,
         )
+
+    def _semantic_pivot_consumed(self) -> bool:
+        base_critical_cap = self._base_critical_candidate_cap()
         return any(
             count > base_critical_cap for count in self._generated_by_shot.values()
         )
 
+    def _legacy_strategy_pivot_consumed(self) -> bool:
+        base_critical_cap = self._base_critical_candidate_cap()
+        legacy_threshold = (
+            base_critical_cap + self.policy.semantic_pivot_candidate_cap
+        )
+        return any(
+            count > legacy_threshold for count in self._generated_by_shot.values()
+        )
+
+    def grant_legacy_strategy_pivot_slot(self) -> None:
+        if self.policy.legacy_strategy_pivot_candidate_cap > 0:
+            return
+        self.policy = replace(
+            self.policy,
+            critical_max_candidates_per_shot=(
+                self.policy.critical_max_candidates_per_shot + 1
+            ),
+            legacy_strategy_pivot_candidate_cap=1,
+        )
+
+    def _active_total_candidate_cap(self) -> int:
+        cap = self.policy.base_total_candidates
+        if self._semantic_pivot_consumed():
+            cap += self.policy.semantic_pivot_candidate_cap
+        if self._legacy_strategy_pivot_consumed():
+            cap += self.policy.legacy_strategy_pivot_candidate_cap
+        return cap
+
+    def _eligible_total_candidate_cap(self, shot_id: str, critical: bool) -> int:
+        cap = self._active_total_candidate_cap()
+        if not critical:
+            return cap
+        base_critical_cap = max(
+            self.policy.max_candidates_per_shot,
+            self._base_critical_candidate_cap(),
+        )
+        generated = self.generated_for(shot_id)
+        distinct_contracts = len(set(self.contract_hashes_for(shot_id)))
+        if generated >= base_critical_cap and distinct_contracts >= 2:
+            cap = max(
+                cap,
+                self.policy.base_total_candidates
+                + self.policy.semantic_pivot_candidate_cap,
+            )
+        legacy_threshold = (
+            base_critical_cap + self.policy.semantic_pivot_candidate_cap
+        )
+        if (
+            self.policy.legacy_strategy_pivot_candidate_cap > 0
+            and generated >= legacy_threshold
+            and distinct_contracts >= 3
+        ):
+            cap = self.policy.max_total_candidates
+        return cap
+
     @property
     def remaining_candidates(self) -> int:
-        run_cap = (
-            self.policy.max_total_candidates
-            if self._semantic_pivot_consumed()
-            else self.policy.base_total_candidates
-        )
-        return max(0, run_cap - self.total_generated)
+        return max(0, self._active_total_candidate_cap() - self.total_generated)
 
     def can_generate(self, shot_id: str, critical: bool = False) -> bool:
         per_shot_cap = (
@@ -81,23 +137,7 @@ class BatchBudget:
             else self.policy.max_candidates_per_shot
         )
         generated_for_shot = self.generated_for(shot_id)
-        base_critical_cap = max(
-            self.policy.max_candidates_per_shot,
-            self.policy.critical_max_candidates_per_shot
-            - self.policy.semantic_pivot_candidate_cap,
-        )
-        pivot_consumed = self._semantic_pivot_consumed()
-        pivot_eligible = bool(
-            critical
-            and self.policy.semantic_pivot_candidate_cap > 0
-            and generated_for_shot >= base_critical_cap
-            and len(set(self.contract_hashes_for(shot_id))) >= 2
-        )
-        run_cap = (
-            self.policy.max_total_candidates
-            if pivot_consumed or pivot_eligible
-            else self.policy.base_total_candidates
-        )
+        run_cap = self._eligible_total_candidate_cap(shot_id, critical)
         return self.total_generated < run_cap and generated_for_shot < per_shot_cap
 
     def record_generation(

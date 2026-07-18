@@ -448,7 +448,11 @@ def test_native_batch_chunk_persists_exact_terminal_attention(
                 "attempt_history": [blocked],
                 "contract_replans": [
                     {"shot_id": shot["shot_id"], "revision": 1},
-                    {"shot_id": shot["shot_id"], "revision": 2},
+                    {
+                        "shot_id": shot["shot_id"],
+                        "revision": 2,
+                        "strategy_pivot": True,
+                    },
                 ],
             }
         ),
@@ -1726,7 +1730,7 @@ def test_next_batch_work_stops_after_bounded_contract_replans(tmp_path) -> None:
     ]
     replans = [
         {"shot_id": "S00_SH00", "revision": 1},
-        {"shot_id": "S00_SH00", "revision": 2},
+        {"shot_id": "S00_SH00", "revision": 2, "strategy_pivot": True},
     ]
     manifests = context.project_dir / "manifests"
     manifests.mkdir(parents=True, exist_ok=True)
@@ -1748,6 +1752,51 @@ def test_next_batch_work_stops_after_bounded_contract_replans(tmp_path) -> None:
     assert payload["shot_id"] == "S00_SH00"
     assert payload["replan_revision"] == 2
     assert payload["error"] == "Automatic shot-contract replanning exhausted."
+
+
+def test_next_batch_work_migrates_legacy_second_replan_to_real_strategy_pivot(
+    tmp_path,
+) -> None:
+    store, context, shot = _context(tmp_path)
+    contract_hash = _shot_contract_hash(shot)
+    exhausted = {
+        "shot_id": "S00_SH00",
+        "candidate_id": "S00_SH00_LEGACY_REPLAN_C01",
+        "status": "quality_budget_exhausted",
+        "selected": False,
+        "repair_round": 3,
+        "repair_strategy": "initial",
+        "hard_blockers": ["the same failed symbol was rendered again"],
+        "blocker_codes": ["scientific_identity"],
+        "shot_contract_hash": contract_hash,
+    }
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps(
+            {
+                "outputs": [exhausted],
+                "attempt_history": [exhausted],
+                "contract_replans": [
+                    {"shot_id": "S00_SH00", "revision": 1},
+                    {"shot_id": "S00_SH00", "revision": 2},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        story_video_quality_control(
+            {"action": "next_batch_work"}, session_id="session-1", store=store
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["operation"] == "replan_shot_contract"
+    assert payload["replan_revision"] == 3
+    assert payload["strategy_pivot"] is True
+    assert payload["legacy_strategy_pivot_migration"] is True
 
 
 def test_auto_mode_uses_continuity_hold_after_contract_replans_exhausted(
@@ -1815,7 +1864,11 @@ def test_auto_mode_uses_continuity_hold_after_contract_replans_exhausted(
             "attempt_history": attempts,
             "contract_replans": [
                 {"shot_id": "S00_SH00", "revision": 1},
-                {"shot_id": "S00_SH00", "revision": 2},
+                {
+                    "shot_id": "S00_SH00",
+                    "revision": 2,
+                    "strategy_pivot": True,
+                },
             ],
         }),
         encoding="utf-8",
@@ -1875,7 +1928,11 @@ def test_auto_mode_uses_best_available_draft_when_no_continuity_source(
             ],
             "contract_replans": [
                 {"shot_id": "S00_SH00", "revision": 1},
-                {"shot_id": "S00_SH00", "revision": 2},
+                {
+                    "shot_id": "S00_SH00",
+                    "revision": 2,
+                    "strategy_pivot": True,
+                },
             ],
         }),
         encoding="utf-8",
@@ -2624,7 +2681,11 @@ def test_next_batch_work_ignores_subtitle_layout_at_replanned_contract_cap(
             "attempt_history": attempts,
             "contract_replans": [
                 {"shot_id": "S00_SH00", "revision": 1},
-                {"shot_id": "S00_SH00", "revision": 2},
+                {
+                    "shot_id": "S00_SH00",
+                    "revision": 2,
+                    "strategy_pivot": True,
+                },
             ],
         }),
         encoding="utf-8",

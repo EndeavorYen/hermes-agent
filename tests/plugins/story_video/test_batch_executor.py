@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from plugins.story_video.batch_executor import StoryVideoBatchExecutor
+from plugins.story_video.batch_policy import BatchBudget, BatchPolicy
 from plugins.story_video.shot_contract import shot_contract_hash
 
 
@@ -168,6 +169,77 @@ def test_executor_runs_fresh_shots_before_one_bounded_repair_wave(tmp_path) -> N
     )
     assert sequence_report["schema"] == "story_video_sequence_quality_v1"
     assert sequence_report["metrics"]["shot_count"] == 6
+
+
+def test_executor_grants_one_candidate_for_legacy_strategy_pivot_migration(
+    tmp_path,
+) -> None:
+    context = _context(tmp_path, shot_count=10)
+    shot_id = "S03_SH00"
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    attempts = [
+        {
+            "shot_id": shot_id,
+            "candidate_id": f"{shot_id}_C0{index}",
+            "selected": False,
+            "status": "quality_budget_exhausted",
+            "shot_contract_hash": contract_hash,
+            "hard_blockers": ["legacy contract still failed"],
+        }
+        for index, contract_hash in enumerate(
+            ("contract-a", "contract-a", "contract-a", "contract-b", "contract-c"),
+            start=1,
+        )
+    ]
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps(
+            {
+                "outputs": [attempts[-1]],
+                "attempt_history": attempts,
+                "contract_replans": [
+                    {"shot_id": shot_id, "revision": 1},
+                    {"shot_id": shot_id, "revision": 2},
+                    {
+                        "shot_id": shot_id,
+                        "revision": 3,
+                        "strategy_pivot": True,
+                        "legacy_strategy_pivot_migration": True,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    budget = BatchBudget(BatchPolicy.for_run(10))
+    for contract_hash in (
+        "contract-a",
+        "contract-a",
+        "contract-a",
+        "contract-b",
+        "contract-c",
+    ):
+        budget.record_generation(shot_id, contract_hash, critical=True)
+    (manifests / "batch_run_manifest.json").write_text(
+        json.dumps({"budget": budget.to_dict(), "events": []}),
+        encoding="utf-8",
+    )
+    generator = FakeGenerator(tmp_path)
+    judge = FakeJudge(set())
+    executor = StoryVideoBatchExecutor(
+        prompt_compiler=_compiler,
+        image_generator=generator,
+        candidate_judge=judge,
+        max_workers=3,
+    )
+
+    result = executor.run_chunk(context)
+
+    assert result.wave == "anchor"
+    assert result.attempted_shots == (shot_id,)
+    saved = json.loads((manifests / "batch_run_manifest.json").read_text())
+    assert saved["budget"]["generated_by_shot"][shot_id] == 6
+    assert saved["budget"]["policy"]["legacy_strategy_pivot_candidate_cap"] == 1
 
 
 def test_executor_runs_one_parallel_sequence_rescue_then_stops(tmp_path) -> None:

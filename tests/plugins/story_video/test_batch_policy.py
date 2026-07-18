@@ -76,6 +76,27 @@ def test_old_serialized_budget_migrates_critical_replan_slot() -> None:
     assert restored.policy.max_total_candidates == 14
 
 
+def test_legacy_strategy_pivot_migration_grants_exactly_one_candidate() -> None:
+    budget = BatchBudget(BatchPolicy.for_run(10))
+    for contract_hash in (
+        "contract-a",
+        "contract-a",
+        "contract-a",
+        "contract-b",
+        "contract-c",
+    ):
+        budget.record_generation("S03", contract_hash, critical=True)
+
+    assert budget.can_generate("S03", critical=True) is False
+    budget.grant_legacy_strategy_pivot_slot()
+    assert budget.policy.legacy_strategy_pivot_candidate_cap == 1
+    assert budget.can_generate("S03", critical=True) is True
+    budget.record_generation("S03", "contract-d", critical=True)
+    assert budget.can_generate("S03", critical=True) is False
+    assert budget.total_generated == 6
+    assert budget.policy.max_total_candidates == 15
+
+
 def test_budget_round_trip_preserves_counts_across_contract_hashes() -> None:
     original = BatchBudget(BatchPolicy.for_run(6))
     original.record_generation("S01_SH00", "contract-a")
