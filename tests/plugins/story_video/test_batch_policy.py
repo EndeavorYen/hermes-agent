@@ -14,8 +14,9 @@ def test_eighteen_shot_run_caps_repairs_at_four() -> None:
 
     assert policy.initial_candidate_cap == 18
     assert policy.repair_candidate_cap == 4
-    assert policy.max_total_candidates == 22
+    assert policy.max_total_candidates == 23
     assert policy.max_candidates_per_shot == 2
+    assert policy.semantic_pivot_candidate_cap == 1
 
 
 def test_replan_does_not_reset_end_to_end_shot_budget() -> None:
@@ -39,7 +40,7 @@ def test_critical_shot_gets_third_attempt_without_expanding_run_cap() -> None:
     assert budget.can_generate("S00_SH00", critical=False) is False
 
 
-def test_critical_shot_reserves_one_post_replan_candidate_within_run_cap() -> None:
+def test_critical_shot_reserves_bounded_semantic_pivot_candidate() -> None:
     budget = BatchBudget(BatchPolicy.for_run(10))
 
     budget.record_generation("S03", "contract-a", critical=True)
@@ -48,9 +49,11 @@ def test_critical_shot_reserves_one_post_replan_candidate_within_run_cap() -> No
 
     assert budget.can_generate("S03", critical=True) is True
     budget.record_generation("S03", "contract-b", critical=True)
+    assert budget.can_generate("S03", critical=True) is True
+    budget.record_generation("S03", "contract-c", critical=True)
     assert budget.can_generate("S03", critical=True) is False
-    assert budget.total_generated == 4
-    assert budget.policy.max_total_candidates == 13
+    assert budget.total_generated == 5
+    assert budget.policy.max_total_candidates == 14
 
 
 def test_old_serialized_budget_migrates_critical_replan_slot() -> None:
@@ -68,7 +71,9 @@ def test_old_serialized_budget_migrates_critical_replan_slot() -> None:
     )
 
     assert restored.can_generate("S03", critical=True) is True
-    assert restored.policy.critical_max_candidates_per_shot == 4
+    assert restored.policy.critical_max_candidates_per_shot == 5
+    assert restored.policy.semantic_pivot_candidate_cap == 1
+    assert restored.policy.max_total_candidates == 14
 
 
 def test_budget_round_trip_preserves_counts_across_contract_hashes() -> None:

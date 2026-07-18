@@ -14,16 +14,28 @@ class BatchPolicy:
     initial_candidate_cap: int
     repair_candidate_cap: int
     max_candidates_per_shot: int = 2
-    critical_max_candidates_per_shot: int = 4
+    critical_max_candidates_per_shot: int = 5
+    semantic_pivot_candidate_cap: int = 0
 
     @classmethod
     def for_run(cls, shot_count: int) -> "BatchPolicy":
         initial = max(1, int(shot_count or 0))
         repairs = min(4, max(1, math.ceil(initial * 0.25)))
-        return cls(initial_candidate_cap=initial, repair_candidate_cap=repairs)
+        return cls(
+            initial_candidate_cap=initial,
+            repair_candidate_cap=repairs,
+            semantic_pivot_candidate_cap=1,
+        )
 
     @property
     def max_total_candidates(self) -> int:
+        return (
+            self.base_total_candidates
+            + self.semantic_pivot_candidate_cap
+        )
+
+    @property
+    def base_total_candidates(self) -> int:
         return self.initial_candidate_cap + self.repair_candidate_cap
 
 
@@ -43,16 +55,50 @@ class BatchBudget:
     def contract_hashes_for(self, shot_id: str) -> tuple[str, ...]:
         return tuple(self._contract_hashes_by_shot.get(str(shot_id), ()))
 
+    def _semantic_pivot_consumed(self) -> bool:
+        base_critical_cap = max(
+            self.policy.max_candidates_per_shot,
+            self.policy.critical_max_candidates_per_shot
+            - self.policy.semantic_pivot_candidate_cap,
+        )
+        return any(
+            count > base_critical_cap for count in self._generated_by_shot.values()
+        )
+
+    @property
+    def remaining_candidates(self) -> int:
+        run_cap = (
+            self.policy.max_total_candidates
+            if self._semantic_pivot_consumed()
+            else self.policy.base_total_candidates
+        )
+        return max(0, run_cap - self.total_generated)
+
     def can_generate(self, shot_id: str, critical: bool = False) -> bool:
         per_shot_cap = (
             self.policy.critical_max_candidates_per_shot
             if critical
             else self.policy.max_candidates_per_shot
         )
-        return (
-            self.total_generated < self.policy.max_total_candidates
-            and self.generated_for(shot_id) < per_shot_cap
+        generated_for_shot = self.generated_for(shot_id)
+        base_critical_cap = max(
+            self.policy.max_candidates_per_shot,
+            self.policy.critical_max_candidates_per_shot
+            - self.policy.semantic_pivot_candidate_cap,
         )
+        pivot_consumed = self._semantic_pivot_consumed()
+        pivot_eligible = bool(
+            critical
+            and self.policy.semantic_pivot_candidate_cap > 0
+            and generated_for_shot >= base_critical_cap
+            and len(set(self.contract_hashes_for(shot_id))) >= 2
+        )
+        run_cap = (
+            self.policy.max_total_candidates
+            if pivot_consumed or pivot_eligible
+            else self.policy.base_total_candidates
+        )
+        return self.total_generated < run_cap and generated_for_shot < per_shot_cap
 
     def record_generation(
         self,
@@ -165,8 +211,12 @@ class BatchBudget:
             raise ValueError("batch budget policy is required")
         policy_values = dict(raw_policy)
         policy_values["critical_max_candidates_per_shot"] = max(
-            4,
+            5,
             int(policy_values.get("critical_max_candidates_per_shot") or 0),
+        )
+        policy_values["semantic_pivot_candidate_cap"] = max(
+            1,
+            int(policy_values.get("semantic_pivot_candidate_cap") or 0),
         )
         policy = BatchPolicy(**policy_values)
         generated = {

@@ -11,7 +11,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from .engagement import engagement_contract_enabled, is_camera_reveal_shot
+from .engagement import (
+    VISUAL_TRUTH_MODES,
+    engagement_contract_enabled,
+    is_camera_reveal_shot,
+)
 from .editorial_quality import EDITORIAL_PROFILE_ID
 from .repair_planner import (
     BLOCKER_CODES,
@@ -56,6 +60,7 @@ _REPLAN_REQUIRED_FIELDS = (
 )
 _REPLAN_MUTABLE_FIELDS = (
     *_REPLAN_REQUIRED_FIELDS,
+    "visual_truth_mode",
     "attention_hook",
     "story_moment",
     "action_consequence",
@@ -71,7 +76,6 @@ _REPLAN_IMMUTABLE_FIELDS = (
     "narration_text",
     "narrative_role",
     "viewer_takeaway",
-    "visual_truth_mode",
     "risk_class",
 )
 _SHOT_SCALES = {"establishing", "wide", "medium", "close_up", "macro", "insert"}
@@ -156,6 +160,10 @@ SHOT_CONTRACT_REPLAN_SCHEMA = {
                     "items": {"type": "string", "minLength": 1},
                     "minItems": 1,
                     "maxItems": 3,
+                },
+                "visual_truth_mode": {
+                    "type": "string",
+                    "enum": sorted(VISUAL_TRUTH_MODES),
                 },
                 **{
                     field: {"type": "string", "minLength": 1}
@@ -445,6 +453,8 @@ def _contract_replan_work(
 ) -> dict[str, Any]:
     _ledger, _scene, shot = _find_shot(context, shot_id)
     revision = _contract_replan_count(manifest, shot_id)
+    next_revision = revision + 1
+    strategy_pivot = next_revision >= MAX_CONTRACT_REPLANS
     blockers, normalized_codes = _source_image_qc_blockers(
         output.get("hard_blockers") or (),
         output.get("blocker_codes") or (),
@@ -470,8 +480,9 @@ def _contract_replan_work(
         "shot_id": shot_id,
         "work_status": "ready",
         "operation": "replan_shot_contract",
-        "replan_revision": revision + 1,
+        "replan_revision": next_revision,
         "max_replan_revisions": MAX_CONTRACT_REPLANS,
+        "strategy_pivot": strategy_pivot,
         "immutable_contract": {
             field: shot.get(field) for field in _REPLAN_IMMUTABLE_FIELDS
         },
@@ -482,11 +493,25 @@ def _contract_replan_work(
         "hard_blockers": blockers,
         "blocker_codes": blocker_codes,
         "replan_directive": (
-            "Preserve the approved narration, takeaway, truth mode, and risk. "
-            "Replace the visual design with one coherent, directly readable moment "
-            "whose visible evidence supports the same takeaway, avoids every listed "
-            "blocker. Judge the clean source image edge to edge; subtitle layout is a "
-            "separate post-composite QC stage."
+            (
+                "This is the final bounded visual-strategy pivot. Preserve the approved "
+                "narration, takeaway, and risk, but switch to a different representational "
+                "family. Do not reuse the failed subject, symbol, geometry, composition, "
+                "or medium. You may change visual_truth_mode when an honest physical-world "
+                "analogy, inference, or directly observable consequence communicates the "
+                "same fact more clearly than another literal reconstruction. Make the "
+                "evidence bridge explicit and avoid invented anatomy or medical devices. "
+            )
+            if strategy_pivot
+            else (
+                "Preserve the approved narration, takeaway, truth mode, and risk. Replace "
+                "the visual design with one coherent, directly readable moment whose "
+                "visible evidence supports the same takeaway and avoids every listed "
+                "blocker. "
+            )
+        ) + (
+            "Judge the clean source image edge to edge; subtitle layout is a separate "
+            "post-composite QC stage."
         ),
         "remaining_shot_count": remaining_shot_count,
     }
@@ -549,6 +574,10 @@ def _apply_shot_contract_replan(
             isinstance(value, str) and value.strip() for value in engagement
         ):
             raise ValueError("redesigned_shot.engagement_criteria must be strings")
+    if "visual_truth_mode" in redesigned_shot:
+        truth_mode = str(redesigned_shot.get("visual_truth_mode") or "").strip()
+        if truth_mode not in VISUAL_TRUTH_MODES:
+            raise ValueError("redesigned_shot.visual_truth_mode is invalid")
 
     old_hash = _shot_contract_hash(shot)
     replanned = dict(shot)
@@ -600,6 +629,7 @@ def _apply_shot_contract_replan(
             "blocker_codes": [
                 str(value) for value in current_output.get("blocker_codes") or [] if value
             ],
+            "strategy_pivot": revision >= MAX_CONTRACT_REPLANS,
             "replanned_at": _utc_now(),
         }
     )
@@ -608,7 +638,11 @@ def _apply_shot_contract_replan(
         {**manifest, "contract_replans": replans, "updated_at": _utc_now()},
     )
     next_work = _next_batch_work(context)
-    return {**next_work, "replan_revision": revision}
+    return {
+        **next_work,
+        "replan_revision": revision,
+        "strategy_pivot": revision >= MAX_CONTRACT_REPLANS,
+    }
 
 
 def _auto_replan_shot_contract(
@@ -638,6 +672,8 @@ def _auto_replan_shot_contract(
         }
     ledger, scene, _shot = _find_shot(context, shot_id)
     request = {
+        "replan_revision": int(next_work.get("replan_revision") or 0),
+        "strategy_pivot": bool(next_work.get("strategy_pivot")),
         "immutable_contract": next_work.get("immutable_contract") or {},
         "current_mutable_contract": next_work.get("current_mutable_contract") or {},
         "hard_blockers": next_work.get("hard_blockers") or [],
@@ -646,6 +682,15 @@ def _auto_replan_shot_contract(
         "scene_context": scene,
         "style_bible": ledger.get("style_bible") or {},
     }
+    strategy_pivot = bool(next_work.get("strategy_pivot"))
+    pivot_instruction = (
+        " This is the final bounded pivot: use a different representational family "
+        "from the failed contract. Do not reuse its subject, symbol, geometry, "
+        "composition, or medium. visual_truth_mode may change when the evidence bridge "
+        "makes an analogy or inference explicit."
+        if strategy_pivot
+        else " Preserve the current visual_truth_mode for this first replan."
+    )
     try:
         result = llm.complete_structured(
             instructions=(
@@ -657,7 +702,9 @@ def _auto_replan_shot_contract(
                 "Do not require text labels, split-screen comparisons, UI, multiple time "
                 "states, or one frame to prove every sentence. For scientific or medical "
                 "reconstruction, separate literal anatomy from symbolic light or particles "
-                "and keep acceptance criteria directly observable. Return only the schema."
+                "and keep acceptance criteria directly observable."
+                + pivot_instruction
+                + " Return only the schema."
             ),
             input=[
                 {
@@ -728,6 +775,7 @@ def _auto_replan_shot_contract(
         "replan_response_id": str(
             (getattr(result, "audit", {}) or {}).get("response_id") or ""
         ),
+        "strategy_pivot": strategy_pivot,
     }
 
 
@@ -758,6 +806,7 @@ def _auto_replan_chunk_payload(
             "replan_response_id": str(
                 replanned.get("replan_response_id") or ""
             ),
+            "strategy_pivot": bool(replanned.get("strategy_pivot")),
         }
     failed = {
         **payload,

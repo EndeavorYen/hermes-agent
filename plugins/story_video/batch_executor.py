@@ -290,10 +290,7 @@ class StoryVideoBatchExecutor:
                 requested = fresh[: self.max_workers]
             else:
                 wave = "repair"
-                remaining_budget = max(
-                    0,
-                    budget.policy.max_total_candidates - budget.total_generated,
-                )
+                remaining_budget = budget.remaining_candidates
                 requested = [
                     shot_id
                     for shot_id in shot_ids
