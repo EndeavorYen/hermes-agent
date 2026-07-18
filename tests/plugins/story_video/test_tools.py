@@ -201,6 +201,37 @@ def test_voice_manager_adds_tunes_and_archives_local_voice(tmp_path) -> None:
     assert archived["archived_profile_ids"] == ["mom@v1", "mom@v2"]
 
 
+def test_voice_manager_list_returns_normalized_selectable_actors(tmp_path) -> None:
+    catalog = {
+        "schema": "story_video_voice_profile_registry_v2",
+        "profiles": [],
+        "catalog_schema": "story_video_voice_catalog_v1",
+        "catalog_sha256": "catalog-hash",
+        "voices": [
+            {
+                "voice_id": "qwen_custom_vivian",
+                "display_name": "Vivian",
+                "engine": "qwen_custom_voice",
+                "source_kind": "preset",
+                "selectable": True,
+                "availability": {"status": "ready", "reason": ""},
+            }
+        ],
+    }
+
+    payload = json.loads(
+        story_video_voice_manager(
+            {"action": "list"},
+            voice_catalog_builder=lambda **kwargs: catalog,
+            voice_registry_path=tmp_path / "registry.json",
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["profiles"] == []
+    assert payload["voices"][0]["voice_id"] == "qwen_custom_vivian"
+
+
 def test_voice_manager_previews_named_custom_voice_presets(tmp_path) -> None:
     calls = []
 

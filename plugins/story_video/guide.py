@@ -172,7 +172,36 @@ def _format_writing() -> str:
 
 
 def _format_voices(voices: dict[str, Any] | None) -> str:
-    profiles = voices.get("profiles") if isinstance(voices, dict) else None
+    payload = voices if isinstance(voices, dict) else {}
+    catalog_rows = payload.get("voices")
+    if isinstance(catalog_rows, list):
+        enabled = [
+            row
+            for row in catalog_rows
+            if isinstance(row, dict) and row.get("selectable") is not False
+        ]
+        default_voice = str(
+            payload.get("default_voice_id")
+            or payload.get("default_profile_id")
+            or ""
+        )
+        lines = ["故事影片聲線"]
+        for row in enabled:
+            voice_id = str(row.get("voice_id") or "").strip()
+            display_name = str(row.get("display_name") or voice_id).strip()
+            engine = str(row.get("engine") or "")
+            engine_label = (
+                "Qwen CustomVoice"
+                if engine == "qwen_custom_voice"
+                else "完整聲線克隆"
+            )
+            marker = "（預設）" if voice_id == default_voice else ""
+            lines.append(f"- `{voice_id}`：{display_name}｜{engine_label}{marker}")
+        if enabled:
+            lines.append("角色分配範例：`旁白用 simon_clean_v2，安安用 Vivian。`")
+            return "\n".join(lines)
+
+    profiles = payload.get("profiles")
     rows = profiles if isinstance(profiles, list) else []
     enabled = [
         row
@@ -183,7 +212,7 @@ def _format_voices(voices: dict[str, Any] | None) -> str:
     ]
     if not enabled:
         return "故事影片聲線\n目前沒有可用聲線。使用 `新增故事影片聲線` 加入錄音。"
-    default_profile = str((voices or {}).get("default_profile_id") or "")
+    default_profile = str(payload.get("default_profile_id") or "")
     lines = ["故事影片聲線"]
     for row in enabled:
         voice_id = str(row.get("voice_id") or row.get("profile_id") or "").strip()

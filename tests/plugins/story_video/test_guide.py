@@ -180,6 +180,34 @@ def test_voice_guide_exposes_ids_without_private_paths() -> None:
     assert "simon" in text
     assert "simon_clean_v2" in text
     assert "old_v1" not in text
+
+
+def test_voice_guide_formats_clone_and_preset_catalog_rows() -> None:
+    text = format_story_video_guide(
+        None,
+        "voices",
+        voices={
+            "default_voice_id": "simon_clean_v2",
+            "voices": [
+                {
+                    "voice_id": "simon_clean_v2",
+                    "display_name": "Simon clean narrator v2",
+                    "engine": "qwen_full_icl",
+                    "selectable": True,
+                },
+                {
+                    "voice_id": "qwen_custom_vivian",
+                    "display_name": "Vivian",
+                    "engine": "qwen_custom_voice",
+                    "selectable": True,
+                },
+            ],
+        },
+    )
+
+    assert "simon_clean_v2" in text
+    assert "Vivian" in text
+    assert "Qwen CustomVoice" in text
     assert "/private/voice" not in text
 
 
