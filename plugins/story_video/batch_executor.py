@@ -41,6 +41,25 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+def _write_candidate_manifest_atomic(
+    path: Path, payload: dict[str, Any]
+) -> dict[str, Any]:
+    outputs = [row for row in payload.get("outputs") or [] if isinstance(row, dict)]
+    history = [
+        row for row in payload.get("attempt_history") or [] if isinstance(row, dict)
+    ]
+    selected_shot_ids = {
+        _text(row.get("shot_id")) for row in outputs if row.get("selected") is True
+    } - {""}
+    updated = {
+        **payload,
+        "selected_shot_count": len(selected_shot_ids),
+        "generated_candidate_count": len(history) if history else len(outputs),
+    }
+    _write_json_atomic(path, updated)
+    return updated
+
+
 def _ordered_shots(context: Any) -> list[dict[str, Any]]:
     ledger = _load_json(Path(context.project_dir) / "scene_ledger.json")
     return [
@@ -148,8 +167,10 @@ def _prepare_sequence_rescue_manifest(
                 "blocker_codes": _sequence_blocker_codes(shot_violations),
             }
         )
-    updated = {**manifest, "outputs": outputs, "attempt_history": history}
-    _write_json_atomic(path, updated)
+    updated = _write_candidate_manifest_atomic(
+        path,
+        {**manifest, "outputs": outputs, "attempt_history": history},
+    )
     return updated, originals
 
 
@@ -178,8 +199,10 @@ def _restore_sequence_originals(
                     "sequence_rescue_pending": False,
                 }
             )
-    updated = {**manifest, "outputs": [*retained, *restored]}
-    _write_json_atomic(path, updated)
+    updated = _write_candidate_manifest_atomic(
+        path,
+        {**manifest, "outputs": [*retained, *restored]},
+    )
     return updated
 
 

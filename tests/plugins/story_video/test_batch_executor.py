@@ -486,6 +486,7 @@ def test_sequence_rescue_compile_failure_restores_last_selected_artifact(tmp_pat
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["outputs"][0]["selected"] is True
     assert manifest["outputs"][0]["status"] == "selected_current"
+    assert manifest["selected_shot_count"] == 1
 
 
 def test_executor_honors_stop_before_dispatch(tmp_path) -> None:
