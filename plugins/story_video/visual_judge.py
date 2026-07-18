@@ -731,6 +731,50 @@ def _auto_replan_shot_contract(
     }
 
 
+def _auto_replan_chunk_payload(
+    context: StoryVideoRunContext,
+    *,
+    next_work: dict[str, Any],
+    llm: Any,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    replanned = _auto_replan_shot_contract(
+        context,
+        next_work=next_work,
+        llm=llm,
+    )
+    if replanned.get("success") is True:
+        return {
+            **payload,
+            "success": True,
+            "action": "run_batch_chunk",
+            "work_status": "in_progress",
+            "wave": "contract_replan",
+            "failed_shots": [],
+            "replanned_shot_id": str(replanned.get("shot_id") or ""),
+            "replan_revision": int(replanned.get("replan_revision") or 0),
+            "replan_provider": str(replanned.get("replan_provider") or ""),
+            "replan_model": str(replanned.get("replan_model") or ""),
+            "replan_response_id": str(
+                replanned.get("replan_response_id") or ""
+            ),
+        }
+    failed = {
+        **payload,
+        "success": False,
+        "action": "run_batch_chunk",
+        "work_status": "human_review_required",
+        "review_shot_id": str(next_work.get("shot_id") or ""),
+        "error": str(replanned.get("error") or "automatic replan failed"),
+    }
+    _persist_terminal_attention(
+        context,
+        shot_id=str(failed.get("review_shot_id") or ""),
+        error=str(failed.get("error") or ""),
+    )
+    return failed
+
+
 def _reconcile_manifest_contracts(
     context: StoryVideoRunContext,
     ledger: dict[str, Any],
@@ -2215,6 +2259,32 @@ def _run_batch_chunk(
                 "action": "run_batch_chunk",
             }
 
+    if context.auto_mode:
+        preflight = _next_batch_work(context)
+        if preflight.get("operation") == "replan_shot_contract":
+            return _auto_replan_chunk_payload(
+                context,
+                next_work=preflight,
+                llm=llm,
+                payload={
+                    "generated_candidates": 0,
+                    "attempted_shots": [],
+                    "selected_shots": [],
+                },
+            )
+        if preflight.get("work_status") == "human_review_required":
+            shot_id = str(preflight.get("shot_id") or "")
+            error = str(
+                preflight.get("error") or "Visual repair budget exhausted."
+            )
+            _persist_terminal_attention(context, shot_id=shot_id, error=error)
+            return {
+                **preflight,
+                "success": False,
+                "action": "run_batch_chunk",
+                "review_shot_id": shot_id,
+            }
+
     def judge(
         current: StoryVideoRunContext,
         *,
@@ -2255,46 +2325,12 @@ def _run_batch_chunk(
     if context.auto_mode and summary.work_status in {"in_progress", "terminal_required"}:
         next_work = _next_batch_work(context)
         if next_work.get("operation") == "replan_shot_contract":
-            replanned = _auto_replan_shot_contract(
+            return _auto_replan_chunk_payload(
                 context,
                 next_work=next_work,
                 llm=llm,
+                payload=payload,
             )
-            if replanned.get("success") is True:
-                payload.update(
-                    {
-                        "success": True,
-                        "work_status": "in_progress",
-                        "wave": "contract_replan",
-                        "failed_shots": [],
-                        "replanned_shot_id": str(replanned.get("shot_id") or ""),
-                        "replan_revision": int(
-                            replanned.get("replan_revision") or 0
-                        ),
-                        "replan_provider": str(
-                            replanned.get("replan_provider") or ""
-                        ),
-                        "replan_model": str(replanned.get("replan_model") or ""),
-                        "replan_response_id": str(
-                            replanned.get("replan_response_id") or ""
-                        ),
-                    }
-                )
-                return payload
-            payload.update(
-                {
-                    "success": False,
-                    "work_status": "human_review_required",
-                    "review_shot_id": str(next_work.get("shot_id") or ""),
-                    "error": str(replanned.get("error") or "automatic replan failed"),
-                }
-            )
-            _persist_terminal_attention(
-                context,
-                shot_id=str(payload.get("review_shot_id") or ""),
-                error=str(payload.get("error") or ""),
-            )
-            return payload
     if summary.work_status != "terminal_required":
         return payload
 

@@ -284,10 +284,8 @@ def test_native_batch_chunk_automatically_replans_exhausted_anchor(
     monkeypatch.setattr(
         batch_executor.StoryVideoBatchExecutor,
         "run_chunk",
-        lambda *_args, **_kwargs: batch_executor.BatchRunSummary(
-            work_status="terminal_required",
-            wave="terminal",
-            failed_shots=(shot["shot_id"],),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("exhausted contract must replan before image generation")
         ),
     )
 
