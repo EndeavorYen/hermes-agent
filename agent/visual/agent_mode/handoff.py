@@ -61,6 +61,11 @@ def build_direct_visual_agent_handoff(
     raw_prompt = _extract_raw_text(source) or _extract_raw_text(user_message)
     prompt = strip_visual_prompt_metadata(raw_prompt) or _extract_text(source) or _extract_text(user_message)
     attachments = _extract_attachments(source) or _extract_attachments(user_message)
+    if not prompt and attachments:
+        recovered_prompt = _attachment_only_thread_visual_request(raw_prompt)
+        if recovered_prompt:
+            prompt = recovered_prompt
+            raw_prompt = recovered_prompt
     if _is_long_form_story_video_pipeline_request(raw_prompt, prompt):
         return None
     if (
@@ -1497,6 +1502,62 @@ def _coerce_nonnegative_int(value: Any) -> int:
 
 def _disabled_by_env() -> bool:
     return os.environ.get("HERMES_VISUAL_AGENT_DIRECT_HANDOFF", "").strip().lower() in _FALSE_ENV_VALUES
+
+
+def _attachment_only_thread_visual_request(raw_prompt: str) -> str:
+    """Recover the latest explicit visual request when the current turn only adds a ref."""
+    blocks = re.findall(
+        r"\[Thread context[^\]]*\](.*?)(?:\[End of thread context\]|$)",
+        str(raw_prompt or ""),
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    candidates: list[str] = []
+    for block in blocks:
+        current_lines: list[str] = []
+        current_is_user = False
+
+        def flush_current() -> None:
+            nonlocal current_lines
+            if current_is_user and current_lines:
+                candidate = "\n".join(current_lines).strip()
+                if candidate:
+                    candidates.append(candidate)
+            current_lines = []
+
+        for line in block.splitlines():
+            match = re.match(
+                r"^\s*(?:\[thread parent\]\s*)?([^:\n]{1,80}):\s*(.+?)\s*$",
+                line,
+                flags=re.IGNORECASE,
+            )
+            if not match:
+                if current_is_user and line.strip():
+                    current_lines.append(line.strip())
+                continue
+            flush_current()
+            speaker = match.group(1).strip().lower()
+            current_is_user = speaker not in {
+                "assistant",
+                "hermes agent",
+                "newhermes agent",
+                "agent",
+            }
+            current_lines = [match.group(2).strip()] if current_is_user else []
+        flush_current()
+
+    for candidate in reversed(candidates):
+        if (
+            _is_explicit_visual_generation_request(candidate)
+            or _is_visual_polish_request(candidate)
+        ):
+            return candidate
+    for candidate in reversed(candidates):
+        if (
+            _is_visual_followup_edit_request(candidate)
+            or _is_current_result_regenerate_request(candidate)
+        ):
+            return candidate
+    return ""
 
 
 def _extract_text(value: Any) -> str:

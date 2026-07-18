@@ -263,6 +263,7 @@ Evaluate this generated visual artifact for automated quality ranking.
 Return only a JSON object with numeric values from 0.0 to 1.0:
 {
   "reference_adherence": 0.5,
+  "edit_anchor_adherence": 0.5,
   "character_identity_adherence": 0.5,
   "pose_composition_adherence": 0.5,
   "wardrobe_adherence": 0.5,
@@ -278,6 +279,7 @@ Return only a JSON object with numeric values from 0.0 to 1.0:
   "artifact_defects": []
 }
 Use character_identity_adherence for whether the output preserves the intended character/person identity from the identity reference.
+Use edit_anchor_adherence for whether the output preserves the locked identity and unchanged traits of the edit-anchor image.
 Use pose_composition_adherence for whether the output follows the intended pose, camera angle, and composition reference.
 If the output copies identity, face, hair, wardrobe, or character traits from a pose/composition-only reference, include "reference_identity_drift" in artifact_defects.
 If pose/composition is weak, include "pose_composition_weak" in artifact_defects.
@@ -294,6 +296,7 @@ the requested role transfer.
 Return only a JSON object with numeric values from 0.0 to 1.0:
 {
   "reference_adherence": 0.5,
+  "edit_anchor_adherence": 0.5,
   "character_identity_adherence": 0.5,
   "pose_composition_adherence": 0.5,
   "wardrobe_adherence": 0.5,
@@ -310,6 +313,8 @@ Return only a JSON object with numeric values from 0.0 to 1.0:
 }
 For a character_identity reference, compare the candidate's character identity, hair, eye color, face,
 signature outfit, silhouette, and distinctive accessories against that reference.
+For an edit_anchor reference, score edit_anchor_adherence and preserve the same person; also score
+character_identity_adherence whenever a person is present.
 For a pose_composition reference, compare pose, camera angle, framing, body orientation, and scene layout.
 Use each reference only for its labeled role. If the candidate copies identity, face, hair, wardrobe,
 or character traits from a pose/composition-only reference, include "reference_identity_drift" in
@@ -1448,6 +1453,12 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 image_generation_prompt,
                 candidate_index=candidate_index,
                 candidate_budget=effective_candidate_budget,
+                pose_variation_requested=bool(
+                    re.search(r"\bposes?\b|姿勢|姿势|動作|动作", prompt, re.IGNORECASE)
+                ),
+                preserve_reference_identity=_reference_binding_locks_identity(
+                    reference_binding
+                ),
             )
             provider_image_generation_prompt = build_provider_facing_visual_prompt(
                 image_generation_prompt,
@@ -2966,6 +2977,8 @@ def _single_candidate_generation_prompt(
     *,
     candidate_index: int,
     candidate_budget: int,
+    pose_variation_requested: bool | None = None,
+    preserve_reference_identity: bool = False,
 ) -> str:
     if candidate_budget <= 1:
         return prompt
@@ -2993,10 +3006,19 @@ def _single_candidate_generation_prompt(
         "Generate exactly ONE image in this call. The orchestration layer generates "
         "the other candidates separately. Do not generate multiple images, multiple "
         "files, a grid, a collage, a contact sheet, or a variant set in this call. "
-        "Make this one candidate visually distinct from the references and other batch "
-        "candidates while preserving every subject and safety constraint."
+        "Make this one candidate visually distinct from the other batch candidates "
+        "while preserving every reference role, subject, and safety constraint."
     )
-    if re.search(r"\bposes?\b|姿勢|姿势|動作|动作", singular, re.IGNORECASE):
+    if preserve_reference_identity:
+        directive += (
+            " Preserve the exact person and face from the identity/edit anchor; "
+            "candidate diversity must not alter identity-defining traits."
+        )
+    if pose_variation_requested is None:
+        pose_variation_requested = bool(
+            re.search(r"\bposes?\b|姿勢|姿势|動作|动作", singular, re.IGNORECASE)
+        )
+    if pose_variation_requested:
         pose_lanes = (
             "a grounded three-quarter standing pose with one hand visibly supported on a nearby surface and both feet separated",
             "a supported seated or perched pose with both hands visible, both feet clearly supported, and no crossed or overlapping legs",
@@ -3008,6 +3030,17 @@ def _single_candidate_generation_prompt(
             "use a different camera height and limb layout from the references."
         )
     return f"{directive}\n\n{singular}".strip()
+
+
+def _reference_binding_locks_identity(reference_binding: dict[str, Any] | None) -> bool:
+    if not isinstance(reference_binding, dict):
+        return False
+    return any(
+        isinstance(item, dict)
+        and str(item.get("role_hint") or "").strip()
+        in {"edit_anchor", "character_identity"}
+        for item in reference_binding.get("reference_order") or []
+    )
 
 
 def _should_apply_arsenal_prompt_variants(

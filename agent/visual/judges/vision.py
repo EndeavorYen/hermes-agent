@@ -88,6 +88,7 @@ def build_vision_judge_observation(raw: dict[str, Any]) -> dict[str, Any]:
 def _role_dimensions(source: dict[str, Any]) -> dict[str, float]:
     dimensions: dict[str, float] = {}
     for key in (
+        "edit_anchor_adherence",
         "character_identity_adherence",
         "identity_adherence",
         "character_adherence",

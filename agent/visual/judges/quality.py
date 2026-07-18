@@ -7,6 +7,7 @@ from agent.visual.judges.vision_observation import normalize_vision_observation
 
 VERSION = "visual_quality_judge.v0.1"
 ROLE_ADHERENCE_THRESHOLD = 0.5
+IDENTITY_LOCK_THRESHOLD = 0.9
 
 
 def judge_visual_quality(
@@ -322,6 +323,11 @@ def _reference_adherence_with_role_scores(
     weakest = min(values)
     if weakest < ROLE_ADHERENCE_THRESHOLD:
         adjusted = min(adjusted, weakest)
+    if _strict_identity_lock_context(request_context):
+        identity_score = _role_evidence_score(vision, "character_identity")
+        edit_anchor_score = _role_evidence_score(vision, "edit_anchor")
+        if identity_score is not None and edit_anchor_score is not None:
+            adjusted = min(adjusted, identity_score, edit_anchor_score)
     return _clamp(adjusted)
 
 
@@ -330,6 +336,11 @@ def _reference_role_quality_issues(vision: dict[str, Any], request_context: dict
     role_scores = _reference_role_scores(vision, request_context)
     if role_scores.get("character_identity", 1.0) < ROLE_ADHERENCE_THRESHOLD:
         issues.append("reference_identity_drift")
+    if _strict_identity_lock_context(request_context):
+        identity_score = _role_evidence_score(vision, "character_identity")
+        if identity_score is not None and identity_score < IDENTITY_LOCK_THRESHOLD:
+            if "reference_identity_drift" not in issues:
+                issues.append("reference_identity_drift")
     if role_scores.get("pose_composition", 1.0) < ROLE_ADHERENCE_THRESHOLD:
         issues.append("composition_bad")
     return issues
@@ -386,7 +397,25 @@ def _reference_role_evidence_missing(vision: dict[str, Any], request_context: di
         role_hints.discard("pose_composition")
     if not role_hints:
         return False
+    if _strict_identity_lock_context(request_context):
+        if not _has_vision_dimension(vision, "edit_anchor_adherence"):
+            return True
+        if _role_evidence_score(vision, "character_identity") is None:
+            return True
     return not all(_has_role_evidence(vision, role_hint) for role_hint in role_hints)
+
+
+def _strict_identity_lock_context(request_context: dict[str, Any]) -> bool:
+    if not _portrait_like_context(request_context):
+        return False
+    binding = request_context.get("reference_binding")
+    if not isinstance(binding, dict):
+        return False
+    return any(
+        isinstance(item, dict)
+        and str(item.get("role_hint") or "").strip() == "edit_anchor"
+        for item in binding.get("reference_order") or []
+    )
 
 
 def _pose_composition_is_guidance_only(request_context: dict[str, Any]) -> bool:
