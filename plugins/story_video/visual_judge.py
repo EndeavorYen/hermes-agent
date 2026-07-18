@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .engagement import (
+    COMPOSITION_ENERGIES,
     VISUAL_TRUTH_MODES,
     engagement_contract_enabled,
     is_camera_reveal_shot,
@@ -168,13 +169,16 @@ SHOT_CONTRACT_REPLAN_SCHEMA = {
                     "type": "string",
                     "enum": sorted(VISUAL_TRUTH_MODES),
                 },
+                "composition_energy": {
+                    "type": "string",
+                    "enum": sorted(COMPOSITION_ENERGIES),
+                },
                 **{
                     field: {"type": "string", "minLength": 1}
                     for field in (
                         "attention_hook",
                         "story_moment",
                         "action_consequence",
-                        "composition_energy",
                         "viewer_emotion",
                         "calm_reason",
                         "evidence_bridge",
@@ -718,6 +722,12 @@ def _apply_shot_contract_replan(
         truth_mode = str(redesigned_shot.get("visual_truth_mode") or "").strip()
         if truth_mode not in VISUAL_TRUTH_MODES:
             raise ValueError("redesigned_shot.visual_truth_mode is invalid")
+    if "composition_energy" in redesigned_shot:
+        composition_energy = str(
+            redesigned_shot.get("composition_energy") or ""
+        ).strip()
+        if composition_energy not in COMPOSITION_ENERGIES:
+            raise ValueError("redesigned_shot.composition_energy is invalid")
 
     old_hash = _shot_contract_hash(shot)
     replanned = dict(shot)

@@ -128,6 +128,30 @@ def test_sequence_quality_report_is_bound_to_current_files(tmp_path) -> None:
     assert "sequence_quality_report is stale or does not match current artifacts" in violations
 
 
+def test_sequence_quality_binding_ignores_operational_manifest_metadata(tmp_path) -> None:
+    ledger, manifest = _fixture(tmp_path)
+    path = write_sequence_quality_report(tmp_path, ledger, manifest)
+    report = json.loads(path.read_text(encoding="utf-8"))
+    manifest.update(
+        {
+            "terminal_attention": {
+                "work_status": "human_review_required",
+                "shot_id": "S00_SH00",
+            },
+            "updated_at": "2026-07-18T09:54:05+00:00",
+            "selected_shot_count": 2,
+        }
+    )
+
+    assert validate_sequence_quality_report(tmp_path, ledger, manifest, report) == ()
+
+    manifest["outputs"][0]["quality_score"] = 79
+    violations = validate_sequence_quality_report(tmp_path, ledger, manifest, report)
+
+    assert "sequence_quality_report is stale or does not match current artifacts" in violations
+    assert "S00_SH00 overall quality score<80" in violations
+
+
 def test_sequence_quality_requires_all_story_dimensions_at_threshold(tmp_path) -> None:
     ledger, manifest = _fixture(tmp_path)
     manifest["outputs"][0]["quality_dimensions"]["cinematic_impact"] = 79

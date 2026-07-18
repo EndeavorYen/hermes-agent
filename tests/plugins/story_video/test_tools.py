@@ -1544,6 +1544,120 @@ def test_batch_autopilot_promotes_legacy_scale_repeat_reason_and_transitions(
     ] == shots[3]["scale_repetition_reason"]
 
 
+def test_legacy_replan_composition_energy_normalization_is_bounded_and_audited(
+    tmp_path,
+) -> None:
+    from plugins.story_video.sequence_quality import validate_sequence_quality_report
+    from plugins.story_video.tools import _promote_legacy_replan_composition_energies
+
+    _store, context = _active_context(tmp_path)
+    context = _store.update(context, phase="batch")
+    ledger = _write_planning_fixture(context, shot_count=8)
+    shot = ledger["scenes"][0]["shots"][3]
+    shot.update(
+        {
+            "engagement_role": "reveal",
+            "composition_energy": "果斷、緊迫但受控",
+        }
+    )
+    ledger_path = context.project_dir / "scene_ledger.json"
+    ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+    old_hash = shot_contract_hash(shot)
+    row = {
+        "shot_id": shot["shot_id"],
+        "candidate_id": f"{shot['shot_id']}_C01",
+        "selected": True,
+        "status": "selected_current",
+        "shot_contract_hash": old_hash,
+    }
+    manifest = {
+        "outputs": [dict(row)],
+        "attempt_history": [dict(row)],
+        "contract_replans": [
+            {
+                "event": "shot_contract_replanned",
+                "shot_id": shot["shot_id"],
+                "new_shot_contract_hash": old_hash,
+            }
+        ],
+    }
+    manifest_path = context.project_dir / "manifests" / "shot_candidate_manifest.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    write_sequence_quality_report(context.project_dir, ledger, manifest)
+
+    migrated = _promote_legacy_replan_composition_energies(context)
+
+    assert migrated == (shot["shot_id"],)
+    repaired_ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    repaired_shot = repaired_ledger["scenes"][0]["shots"][3]
+    assert repaired_shot["composition_energy"] == "tense"
+    new_hash = shot_contract_hash(repaired_shot)
+    assert new_hash != old_hash
+    repaired_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert repaired_manifest["outputs"][0]["shot_contract_hash"] == new_hash
+    assert repaired_manifest["attempt_history"][0]["shot_contract_hash"] == new_hash
+    replan = repaired_manifest["contract_replans"][0]
+    assert replan["new_shot_contract_hash"] == new_hash
+    assert replan["legacy_generated_shot_contract_hash"] == old_hash
+    event = repaired_manifest["contract_events"][-1]
+    assert event["event"] == "legacy_composition_energy_normalized"
+    assert event["old_composition_energy"] == "果斷、緊迫但受控"
+    assert event["new_composition_energy"] == "tense"
+    assert event["old_shot_contract_hash"] == old_hash
+    assert event["new_shot_contract_hash"] == new_hash
+    report = json.loads(
+        (context.project_dir / "manifests" / "sequence_quality_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    report_violations = validate_sequence_quality_report(
+        context.project_dir,
+        repaired_ledger,
+        repaired_manifest,
+        report,
+    )
+    assert "sequence_quality_report is stale or does not match current artifacts" not in (
+        report_violations
+    )
+    assert _promote_legacy_replan_composition_energies(context) == ()
+
+
+def test_legacy_replan_energy_normalizer_covers_observed_free_text_shapes() -> None:
+    from plugins.story_video.tools import _canonical_legacy_composition_energy
+
+    observed = {
+        "precise_lock_in": "tense",
+        "由左下向右上的單一強勁動線，能量集中在蜂鳥的振翅爬升": "kinetic",
+        "視線由汗濕髮際沿臉部集中到嘴邊水杯，形成克制而明確的單一動作動線": "calm",
+        "果斷、緊迫但受控": "tense",
+    }
+
+    assert {
+        value: _canonical_legacy_composition_energy(value, engagement_role="reveal")
+        for value in observed
+    } == observed
+
+
+def test_legacy_composition_energy_without_matching_replan_is_not_rewritten(
+    tmp_path,
+) -> None:
+    from plugins.story_video.tools import _promote_legacy_replan_composition_energies
+
+    _store, context = _active_context(tmp_path)
+    ledger = _write_planning_fixture(context, shot_count=8)
+    shot = ledger["scenes"][0]["shots"][3]
+    shot["composition_energy"] = "user-authored custom energy"
+    ledger_path = context.project_dir / "scene_ledger.json"
+    ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+
+    assert _promote_legacy_replan_composition_energies(context) == ()
+    unchanged = json.loads(ledger_path.read_text(encoding="utf-8"))
+    assert unchanged["scenes"][0]["shots"][3]["composition_energy"] == (
+        "user-authored custom energy"
+    )
+
+
 def test_batch_validation_rejects_selected_asset_from_superseded_shot_contract(
     tmp_path,
 ) -> None:
