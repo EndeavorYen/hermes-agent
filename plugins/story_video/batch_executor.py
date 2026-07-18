@@ -16,6 +16,7 @@ from .sequence_quality import build_sequence_quality_report, write_sequence_qual
 
 
 _MANIFEST_LOCK = threading.RLock()
+_SEQUENCE_QUALITY_GATE_VERSION = 2
 
 
 def _utc_now() -> str:
@@ -38,6 +39,25 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
         encoding="utf-8",
     )
     tmp.replace(path)
+
+
+def _write_candidate_manifest_atomic(
+    path: Path, payload: dict[str, Any]
+) -> dict[str, Any]:
+    outputs = [row for row in payload.get("outputs") or [] if isinstance(row, dict)]
+    history = [
+        row for row in payload.get("attempt_history") or [] if isinstance(row, dict)
+    ]
+    selected_shot_ids = {
+        _text(row.get("shot_id")) for row in outputs if row.get("selected") is True
+    } - {""}
+    updated = {
+        **payload,
+        "selected_shot_count": len(selected_shot_ids),
+        "generated_candidate_count": len(history) if history else len(outputs),
+    }
+    _write_json_atomic(path, updated)
+    return updated
 
 
 def _ordered_shots(context: Any) -> list[dict[str, Any]]:
@@ -147,8 +167,10 @@ def _prepare_sequence_rescue_manifest(
                 "blocker_codes": _sequence_blocker_codes(shot_violations),
             }
         )
-    updated = {**manifest, "outputs": outputs, "attempt_history": history}
-    _write_json_atomic(path, updated)
+    updated = _write_candidate_manifest_atomic(
+        path,
+        {**manifest, "outputs": outputs, "attempt_history": history},
+    )
     return updated, originals
 
 
@@ -177,8 +199,10 @@ def _restore_sequence_originals(
                     "sequence_rescue_pending": False,
                 }
             )
-    updated = {**manifest, "outputs": [*retained, *restored]}
-    _write_json_atomic(path, updated)
+    updated = _write_candidate_manifest_atomic(
+        path,
+        {**manifest, "outputs": [*retained, *restored]},
+    )
     return updated
 
 
@@ -266,6 +290,26 @@ class StoryVideoBatchExecutor:
                 for value in batch_manifest.get("sequence_rescue_attempted_shot_ids") or []
                 if _text(value)
             }
+            try:
+                sequence_gate_version = int(
+                    batch_manifest.get("sequence_quality_gate_version") or 0
+                )
+            except (TypeError, ValueError):
+                sequence_gate_version = 0
+            if sequence_gate_version < _SEQUENCE_QUALITY_GATE_VERSION:
+                migrated_attempts = [
+                    shot_id for shot_id in shot_ids if shot_id in attempted_rescues
+                ]
+                attempted_rescues.clear()
+                batch_manifest.update(
+                    {
+                        "sequence_quality_gate_version": _SEQUENCE_QUALITY_GATE_VERSION,
+                        "sequence_quality_gate_migrated_attempted_shot_ids": (
+                            migrated_attempts
+                        ),
+                        "sequence_rescue_attempted_shot_ids": [],
+                    }
+                )
             requested = [
                 shot_id
                 for shot_id in sequence_report.get("repair_shot_ids") or []

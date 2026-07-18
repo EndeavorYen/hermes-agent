@@ -34,6 +34,7 @@ from .quality import (
 )
 from .music import compile_music_bed, plan_music_cues
 from .release_art import compile_release_art_brief, compose_release_art
+from .sequence_quality import sequence_dimension_violations
 from .shot_contract import (
     manifest_row_matches_shot_contract as _manifest_row_matches_shot_contract,
 )
@@ -1539,6 +1540,17 @@ def _judge_candidates(
     response_id = str(
         (getattr(result, "audit", {}) or {}).get("response_id") or ""
     ).strip()
+    content_profile = _load_json(context.project_dir / "content_profile.json") or {}
+    require_sequence_dimensions = (
+        str(content_profile.get("review_profile_id") or "").strip()
+        == EDITORIAL_PROFILE_ID
+    )
+    dimension_blocker_codes = {
+        "semantic": "audience_mismatch",
+        "story": "missing_story_moment",
+        "cinematic": "flat_composition",
+        "style": "style_drift",
+    }
     assessments: list[dict[str, Any]] = []
     for row in rows:
         candidate_id = str(row.get("candidate_id") or "")
@@ -1547,6 +1559,12 @@ def _judge_candidates(
             row.get("hard_blockers") or (),
             row.get("blocker_codes") or (),
         )
+        if require_sequence_dimensions:
+            for violation in sequence_dimension_violations(row.get("dimensions")):
+                if violation not in hard_blockers:
+                    hard_blockers.append(violation)
+                group = violation.split(" ", 1)[0]
+                blocker_codes.add(dimension_blocker_codes[group])
         assessments.append(
             {
                 **row,

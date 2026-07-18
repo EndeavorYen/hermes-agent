@@ -363,6 +363,73 @@ def test_executor_runs_one_parallel_sequence_rescue_then_stops(tmp_path) -> None
     assert sequence_report["status"] == "PASS"
 
 
+def test_executor_migrates_pre_alignment_sequence_rescue_once(tmp_path) -> None:
+    context = _context(tmp_path, shot_count=1)
+    (context.project_dir / "content_profile.json").write_text(
+        json.dumps({"review_profile_id": "family-review-board-v2"}), encoding="utf-8"
+    )
+    ledger = json.loads(
+        (context.project_dir / "scene_ledger.json").read_text(encoding="utf-8")
+    )
+    shot = ledger["scenes"][0]["shots"][0]
+    image = context.project_dir / "images" / "selected.png"
+    image.parent.mkdir(parents=True, exist_ok=True)
+    image.write_bytes(b"pre-alignment-selected-artifact")
+    row = {
+        "shot_id": shot["shot_id"],
+        "candidate_id": "S00_SH00_PRE_ALIGNMENT",
+        "selected": True,
+        "status": "selected_current",
+        "local_path": str(image.relative_to(context.project_dir)),
+        "artifact_sha256": hashlib.sha256(image.read_bytes()).hexdigest(),
+        "shot_contract_hash": shot_contract_hash(shot),
+        "provider": "openai-codex",
+        "judge_provider": "openai-codex",
+        "quality_score": 88,
+        "quality_dimensions": {
+            "text_alignment": 90,
+            "evidence_specificity": 70,
+            "narrative_engagement": 90,
+            "story_moment_clarity": 90,
+            "cinematic_impact": 90,
+            "professional_quality": 90,
+            "style_consistency": 90,
+        },
+        "hard_blockers": [],
+        "vision_evidence": {"status": "PASS", "response_id": "pre-alignment-qc"},
+    }
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps({"outputs": [row], "attempt_history": [row]}), encoding="utf-8"
+    )
+    (manifests / "batch_run_manifest.json").write_text(
+        json.dumps({"sequence_rescue_attempted_shot_ids": [shot["shot_id"]]}),
+        encoding="utf-8",
+    )
+    generator = FakeGenerator(tmp_path)
+    executor = StoryVideoBatchExecutor(
+        prompt_compiler=_compiler,
+        image_generator=generator,
+        candidate_judge=FakeJudge(set()),
+        max_workers=3,
+    )
+
+    summary = executor.run_chunk(context)
+    bounded = executor.run_chunk(context)
+
+    assert summary.wave == "sequence_rescue"
+    assert summary.attempted_shots == (shot["shot_id"],)
+    assert bounded.work_status == "terminal_required"
+    assert bounded.attempted_shots == ()
+    assert len(generator.calls) == 1
+    saved = json.loads((manifests / "batch_run_manifest.json").read_text())
+    assert saved["sequence_quality_gate_version"] == 2
+    assert saved["sequence_quality_gate_migrated_attempted_shot_ids"] == [
+        shot["shot_id"]
+    ]
+
+
 def test_sequence_rescue_compile_failure_restores_last_selected_artifact(tmp_path) -> None:
     context = _context(tmp_path, shot_count=1)
     (context.project_dir / "content_profile.json").write_text(
@@ -419,6 +486,7 @@ def test_sequence_rescue_compile_failure_restores_last_selected_artifact(tmp_pat
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["outputs"][0]["selected"] is True
     assert manifest["outputs"][0]["status"] == "selected_current"
+    assert manifest["selected_shot_count"] == 1
 
 
 def test_executor_honors_stop_before_dispatch(tmp_path) -> None:

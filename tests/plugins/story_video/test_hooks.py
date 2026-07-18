@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from types import SimpleNamespace
 
@@ -1564,6 +1565,99 @@ def test_batch_autopilot_validates_when_canonical_work_is_complete(
     assert continuation is not None
     assert "story_video_control action=validate" in continuation["message"]
     assert "Execute the next action now: None" not in continuation["message"]
+
+
+def _write_sequence_quality_fixture(tmp_path, *, evidence_specificity: int):
+    from plugins.story_video.sequence_quality import write_sequence_quality_report
+    from plugins.story_video.shot_contract import shot_contract_hash
+
+    project_dir = tmp_path / "project"
+    image = project_dir / "images" / "S00.png"
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b"selected-current-artifact")
+    shot = {
+        "shot_id": "S00",
+        "subject": "child resting in bed",
+        "action": "caregiver checks temperature",
+    }
+    ledger = {"scenes": [{"scene_id": "SC00", "shots": [shot]}]}
+    manifest = {
+        "outputs": [
+            {
+                "shot_id": "S00",
+                "candidate_id": "S00_C01",
+                "selected": True,
+                "status": "selected_current",
+                "local_path": "images/S00.png",
+                "artifact_sha256": hashlib.sha256(image.read_bytes()).hexdigest(),
+                "shot_contract_hash": shot_contract_hash(shot),
+                "provider": "openai-codex",
+                "judge_provider": "openai-codex",
+                "quality_score": 90,
+                "quality_dimensions": {
+                    "text_alignment": 90,
+                    "evidence_specificity": evidence_specificity,
+                    "narrative_engagement": 90,
+                    "story_moment_clarity": 90,
+                    "cinematic_impact": 90,
+                    "professional_quality": 90,
+                    "style_consistency": 90,
+                },
+                "hard_blockers": [],
+                "vision_evidence": {"status": "PASS", "response_id": "qc-S00"},
+            }
+        ]
+    }
+    (project_dir / "scene_ledger.json").write_text(json.dumps(ledger))
+    manifests = project_dir / "manifests"
+    manifests.mkdir()
+    (manifests / "shot_candidate_manifest.json").write_text(json.dumps(manifest))
+    (project_dir / "content_profile.json").write_text(
+        json.dumps({"review_profile_id": "family-review-board-v2"})
+    )
+    write_sequence_quality_report(project_dir, ledger, manifest)
+    return (
+        SimpleNamespace(project_dir=project_dir),
+        manifests / "shot_candidate_manifest.json",
+        manifest,
+    )
+
+
+def test_batch_assets_complete_requires_sequence_quality_pass(
+    tmp_path, monkeypatch
+) -> None:
+    context, _manifest_path, _manifest = _write_sequence_quality_fixture(
+        tmp_path,
+        evidence_specificity=70,
+    )
+    monkeypatch.setattr(
+        hooks,
+        "_next_batch_work",
+        lambda _context: {"success": True, "work_status": "complete"},
+    )
+
+    assert hooks._batch_assets_complete(context) is False
+
+
+def test_batch_assets_complete_rejects_stale_sequence_quality_pass(
+    tmp_path, monkeypatch
+) -> None:
+    context, manifest_path, manifest = _write_sequence_quality_fixture(
+        tmp_path,
+        evidence_specificity=90,
+    )
+    monkeypatch.setattr(
+        hooks,
+        "_next_batch_work",
+        lambda _context: {"success": True, "work_status": "complete"},
+    )
+
+    assert hooks._batch_assets_complete(context) is True
+
+    manifest["outputs"][0]["quality_dimensions"]["evidence_specificity"] = 70
+    manifest_path.write_text(json.dumps(manifest))
+
+    assert hooks._batch_assets_complete(context) is False
 
 
 def test_batch_autopilot_does_not_repeat_human_review_required_work(

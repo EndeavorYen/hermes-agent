@@ -8,7 +8,9 @@ from typing import Any
 
 from .accessible_explainer import ensure_explanation_profile
 from .audit import ProviderAudit, ProviderAuditEvent
+from .editorial_quality import EDITORIAL_PROFILE_ID
 from .policy import guard_tool_call
+from .sequence_quality import validate_sequence_quality_report
 from .state import OperatorCall, StoryVideoRunContext, StoryVideoStateStore, parse_operator_call
 from .visual_judge import _next_batch_work
 
@@ -989,6 +991,30 @@ def _batch_assets_complete(context: StoryVideoRunContext) -> bool:
     }
     if not shot_ids or not shot_ids.issubset(selected):
         return False
+    try:
+        profile = json.loads(
+            (context.project_dir / "content_profile.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        profile = {}
+    if str(profile.get("review_profile_id") or "").strip() == EDITORIAL_PROFILE_ID:
+        try:
+            report = json.loads(
+                (
+                    context.project_dir
+                    / "manifests"
+                    / "sequence_quality_report.json"
+                ).read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError):
+            return False
+        if validate_sequence_quality_report(
+            context.project_dir,
+            ledger,
+            manifest,
+            report,
+        ):
+            return False
     try:
         return _next_batch_work(context).get("work_status") == "complete"
     except (OSError, TypeError, ValueError):
