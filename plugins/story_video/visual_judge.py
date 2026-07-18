@@ -46,6 +46,7 @@ MAX_REPAIR_ROUNDS = 3
 MAX_CONTRACT_REPLANS = 2
 MAX_REPLANNED_CONTRACT_CANDIDATES = 2
 MAX_AUTO_REPLAN_VALIDATION_ATTEMPTS = 2
+MAX_EMPTY_RESPONSES_PER_CONTRACT = 2
 QUALITY_CONTRACT_VERSION = 4
 BEST_EFFORT_QUALITY_FLOOR = 75.0
 _PLUGIN_LLM: Any = None
@@ -611,6 +612,49 @@ def _sequence_quality_replan_work(
     }
 
 
+def _current_contract_empty_response_count(
+    context: StoryVideoRunContext,
+    *,
+    manifest: dict[str, Any],
+    shot_id: str,
+) -> int:
+    latest_replan = max(
+        (
+            str(row.get("replanned_at") or "").strip()
+            for row in manifest.get("contract_replans") or []
+            if isinstance(row, dict)
+            and str(row.get("shot_id") or "").strip() == shot_id
+        ),
+        default="",
+    )
+    batch_manifest = _load_json(
+        context.project_dir / "manifests" / "batch_run_manifest.json"
+    ) or {}
+    count = 0
+    for event in batch_manifest.get("events") or []:
+        if not isinstance(event, dict) or event.get("stage") != "complete":
+            continue
+        if shot_id not in {
+            str(value).strip() for value in event.get("shot_ids") or []
+        }:
+            continue
+        if "empty_response" not in {
+            str(value).strip()
+            for value in event.get("provider_failure_classes") or []
+        }:
+            continue
+        event_at = str(
+            event.get("timestamp")
+            or event.get("completed_at")
+            or event.get("recorded_at")
+            or ""
+        ).strip()
+        if latest_replan and (not event_at or event_at <= latest_replan):
+            continue
+        count += 1
+    return count
+
+
 def _apply_shot_contract_replan(
     context: StoryVideoRunContext,
     *,
@@ -728,6 +772,15 @@ def _apply_shot_contract_replan(
             "sequence_quality_replan": bool(
                 next_work.get("sequence_quality_replan")
             ),
+            "provider_failure_replan": bool(
+                next_work.get("provider_failure_replan")
+            ),
+            "provider_failure_class": str(
+                next_work.get("provider_failure_class") or ""
+            ),
+            "provider_failure_attempt_count": int(
+                next_work.get("provider_failure_attempt_count") or 0
+            ),
             "strategy_pivot": revision >= MAX_CONTRACT_REPLANS,
             "legacy_strategy_pivot_migration": legacy_strategy_pivot_migration,
             "replanned_at": _utc_now(),
@@ -782,6 +835,15 @@ def _auto_replan_shot_contract(
         "current_mutable_contract": next_work.get("current_mutable_contract") or {},
         "hard_blockers": next_work.get("hard_blockers") or [],
         "blocker_codes": next_work.get("blocker_codes") or [],
+        "provider_failure_replan": bool(
+            next_work.get("provider_failure_replan")
+        ),
+        "provider_failure_class": str(
+            next_work.get("provider_failure_class") or ""
+        ),
+        "provider_failure_attempt_count": int(
+            next_work.get("provider_failure_attempt_count") or 0
+        ),
         "replan_directive": next_work.get("replan_directive") or "",
         "scene_context": scene,
         "style_bible": ledger.get("style_bible") or {},
@@ -2867,6 +2929,33 @@ def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
 
     shot_id = unresolved[0]
     previous = by_shot.get(shot_id, {})
+    empty_response_count = _current_contract_empty_response_count(
+        context,
+        manifest=manifest,
+        shot_id=shot_id,
+    )
+    if empty_response_count >= MAX_EMPTY_RESPONSES_PER_CONTRACT:
+        provider_failure = {
+            **previous,
+            "hard_blockers": [
+                "OpenAI returned no image_generation_call result twice for this "
+                "shot contract; redesign it as one simpler, policy-safe, directly "
+                "renderable visual while preserving the viewer takeaway"
+            ],
+            "blocker_codes": [],
+        }
+        return {
+            **_contract_replan_work(
+                context,
+                shot_id=shot_id,
+                manifest=manifest,
+                output=provider_failure,
+                remaining_shot_count=len(unresolved),
+            ),
+            "provider_failure_replan": True,
+            "provider_failure_class": "empty_response",
+            "provider_failure_attempt_count": empty_response_count,
+        }
     prompt_info = _compile_prompt(context, shot_id=shot_id)
     if not prompt_info.get("success"):
         return {
