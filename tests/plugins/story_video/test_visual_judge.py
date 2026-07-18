@@ -79,6 +79,17 @@ def test_quality_tool_schema_exposes_native_voice_phase() -> None:
     assert "run_voice_phase" in actions
 
 
+def test_replan_schema_restricts_composition_energy_to_canonical_values() -> None:
+    from plugins.story_video.engagement import COMPOSITION_ENERGIES
+    from plugins.story_video.visual_judge import SHOT_CONTRACT_REPLAN_SCHEMA
+
+    properties = SHOT_CONTRACT_REPLAN_SCHEMA["properties"]["redesigned_shot"][
+        "properties"
+    ]
+
+    assert properties["composition_energy"]["enum"] == sorted(COMPOSITION_ENERGIES)
+
+
 def test_auto_native_batch_requires_matching_scoped_authorization(
     tmp_path, monkeypatch
 ) -> None:
@@ -550,6 +561,48 @@ def test_auto_replan_stops_after_second_canonical_validation_rejection(
     assert payload["work_status"] == "human_review_required"
     assert call_count == 2
     assert "repeated_shot_scale_without_reason:medium:3" in payload["error"]
+
+
+def test_apply_replan_rejects_noncanonical_composition_energy(
+    tmp_path, monkeypatch
+) -> None:
+    from plugins.story_video import visual_judge
+
+    _store, context, shot = _context(tmp_path)
+    manifest_path = context.project_dir / "manifests" / "shot_candidate_manifest.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(json.dumps({"outputs": []}), encoding="utf-8")
+    monkeypatch.setattr(
+        visual_judge,
+        "_next_batch_work",
+        lambda _context: {
+            "work_status": "ready",
+            "operation": "replan_shot_contract",
+            "shot_id": shot["shot_id"],
+            "hard_blockers": ["semantic evidence score<80"],
+            "blocker_codes": ["audience_mismatch"],
+        },
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="redesigned_shot.composition_energy is invalid",
+    ):
+        visual_judge._apply_shot_contract_replan(
+            context,
+            shot_id=shot["shot_id"],
+            redesigned_shot={
+                "subject": "one child resting under a light blanket",
+                "action": "the child reaches for a glass of water",
+                "evidence_detail": "one hand, one glass, and a damp hairline",
+                "shot_scale": "medium",
+                "camera_angle": "eye-level three-quarter view",
+                "focal_point": "the reaching hand and water glass",
+                "subtitle_safe_area": "bottom 20 percent clear",
+                "acceptance_criteria": ["the reaching action is readable"],
+                "composition_energy": "果斷、緊迫但受控",
+            },
+        )
 
 
 def test_next_batch_work_retries_one_empty_provider_response_for_current_contract(

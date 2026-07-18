@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -20,14 +21,18 @@ from .dubbing import (
     resolve_project_voice_cast,
 )
 from .editorial_quality import EDITORIAL_PROFILE_ID
-from .engagement import engagement_contract_enabled
+from .engagement import COMPOSITION_ENERGIES, engagement_contract_enabled
 from .quality import CLOSE_EVIDENCE_SCALES, QUALITY_THRESHOLD, validate_quality_ledger
 from .review_board import (
     V6_QUALITY_CHECKS,
     content_profile_requires_child_curiosity,
     validate_v6_review_bundle,
 )
-from .sequence_quality import validate_sequence_quality_report
+from .sequence_quality import (
+    validate_sequence_quality_report,
+    write_sequence_quality_report,
+)
+from .shot_contract import shot_contract_hash
 from .state import PHASES, StoryVideoRunContext, StoryVideoStateStore
 from .story_contract import story_contract_enabled, validate_story_script_bindings
 from .voice_profiles import (
@@ -120,6 +125,190 @@ def _promote_legacy_scale_repeat_reasons(context: StoryVideoRunContext) -> None:
         encoding="utf-8",
     )
     tmp.replace(path)
+
+
+_LEGACY_COMPOSITION_ENERGY_MARKERS = {
+    "tense": (
+        "precise_lock_in",
+        "lock_in",
+        "urgent",
+        "tense",
+        "緊迫",
+        "緊張",
+        "焦慮",
+        "果斷",
+        "危機",
+    ),
+    "kinetic": (
+        "kinetic",
+        "dynamic",
+        "強勁",
+        "振翅",
+        "爬升",
+        "疾速",
+        "動線",
+    ),
+    "calm": (
+        "calm",
+        "quiet",
+        "controlled",
+        "克制",
+        "平靜",
+        "安靜",
+        "舒緩",
+        "受控",
+    ),
+    "awe": ("awe", "wonder", "宏大", "驚嘆", "壯闊", "震撼", "奇觀"),
+    "curious": ("curious", "discovery", "好奇", "探索", "發現"),
+}
+_ENGAGEMENT_ROLE_ENERGY_FALLBACK = {
+    "hook": "tense",
+    "build": "curious",
+    "reveal": "awe",
+    "reaction": "tense",
+    "payoff": "awe",
+    "breathe": "calm",
+}
+
+
+def _canonical_legacy_composition_energy(
+    value: Any,
+    *,
+    engagement_role: Any = "",
+) -> str:
+    text = str(value or "").strip().lower()
+    if text in COMPOSITION_ENERGIES:
+        return text
+    matches: list[tuple[int, int, str]] = []
+    for energy_order, (energy, markers) in enumerate(
+        _LEGACY_COMPOSITION_ENERGY_MARKERS.items()
+    ):
+        for marker in markers:
+            position = text.find(marker)
+            if position >= 0:
+                matches.append((position, energy_order, energy))
+    if matches:
+        return min(matches)[2]
+    return _ENGAGEMENT_ROLE_ENERGY_FALLBACK.get(
+        str(engagement_role or "").strip().lower(),
+        "",
+    )
+
+
+def _promote_legacy_replan_composition_energies(
+    context: StoryVideoRunContext,
+) -> tuple[str, ...]:
+    """Repair selected contracts from the retired free-text replan schema.
+
+    Remove this shim after all persisted runs created before the enum gate have
+    either completed or passed this idempotent migration.
+    """
+    ledger_path = context.project_dir / "scene_ledger.json"
+    manifest_path = (
+        context.project_dir / "manifests" / "shot_candidate_manifest.json"
+    )
+    ledger = _load_json(ledger_path)
+    manifest = _load_json(manifest_path)
+    if not isinstance(ledger, dict) or not isinstance(manifest, dict):
+        return ()
+    replan_hashes = {
+        (
+            str(row.get("shot_id") or "").strip(),
+            str(row.get("new_shot_contract_hash") or "").strip(),
+        )
+        for row in manifest.get("contract_replans") or []
+        if isinstance(row, dict)
+        and row.get("event") == "shot_contract_replanned"
+        and str(row.get("shot_id") or "").strip()
+        and str(row.get("new_shot_contract_hash") or "").strip()
+    }
+    selected_contracts = {
+        (
+            str(row.get("shot_id") or "").strip(),
+            str(row.get("shot_contract_hash") or "").strip(),
+        )
+        for row in manifest.get("outputs") or []
+        if isinstance(row, dict)
+        and row.get("selected") is True
+        and str(row.get("shot_id") or "").strip()
+        and str(row.get("shot_contract_hash") or "").strip()
+    }
+    migrated: list[str] = []
+    events = [
+        dict(row)
+        for row in manifest.get("contract_events") or []
+        if isinstance(row, dict)
+    ]
+    now = datetime.now(timezone.utc).isoformat()
+    for scene in ledger.get("scenes") or []:
+        if not isinstance(scene, dict):
+            continue
+        for shot in scene.get("shots") or []:
+            if not isinstance(shot, dict):
+                continue
+            shot_id = str(shot.get("shot_id") or "").strip()
+            raw_energy = str(shot.get("composition_energy") or "").strip()
+            if not shot_id or not raw_energy or raw_energy in COMPOSITION_ENERGIES:
+                continue
+            old_hash = shot_contract_hash(shot)
+            if (shot_id, old_hash) not in replan_hashes or (
+                shot_id,
+                old_hash,
+            ) not in selected_contracts:
+                continue
+            canonical = _canonical_legacy_composition_energy(
+                raw_energy,
+                engagement_role=shot.get("engagement_role"),
+            )
+            if canonical not in COMPOSITION_ENERGIES:
+                continue
+            shot["composition_energy"] = canonical
+            new_hash = shot_contract_hash(shot)
+            for collection_name in ("outputs", "attempt_history"):
+                for row in manifest.get(collection_name) or []:
+                    if (
+                        isinstance(row, dict)
+                        and str(row.get("shot_id") or "").strip() == shot_id
+                        and str(row.get("shot_contract_hash") or "").strip()
+                        == old_hash
+                    ):
+                        row["shot_contract_hash"] = new_hash
+            for row in manifest.get("contract_replans") or []:
+                if (
+                    isinstance(row, dict)
+                    and str(row.get("shot_id") or "").strip() == shot_id
+                    and str(row.get("new_shot_contract_hash") or "").strip()
+                    == old_hash
+                ):
+                    row["legacy_generated_shot_contract_hash"] = old_hash
+                    row["new_shot_contract_hash"] = new_hash
+            events.append(
+                {
+                    "event": "legacy_composition_energy_normalized",
+                    "shot_id": shot_id,
+                    "old_composition_energy": raw_energy,
+                    "new_composition_energy": canonical,
+                    "old_shot_contract_hash": old_hash,
+                    "new_shot_contract_hash": new_hash,
+                    "normalized_at": now,
+                }
+            )
+            migrated.append(shot_id)
+    if not migrated:
+        return ()
+    manifest["contract_events"] = events
+    manifest["updated_at"] = now
+    for path, payload in ((ledger_path, ledger), (manifest_path, manifest)):
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        tmp.replace(path)
+    report_path = context.project_dir / "manifests" / "sequence_quality_report.json"
+    if report_path.is_file():
+        write_sequence_quality_report(context.project_dir, ledger, manifest)
+    return tuple(migrated)
 
 
 def _validate_planning(context: StoryVideoRunContext) -> PhaseProof:
@@ -1394,6 +1583,7 @@ def story_video_control(
     if action == "validate":
         if context.phase == "batch":
             _promote_legacy_scale_repeat_reasons(context)
+            _promote_legacy_replan_composition_energies(context)
         proof = validate_phase(context)
         payload = _context_payload(context)
         payload.update(

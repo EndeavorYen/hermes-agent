@@ -28,6 +28,25 @@ _BOUND_FIELDS = (
     "violations",
     "entries",
 )
+_MANIFEST_OUTPUT_BINDING_FIELDS = (
+    "shot_id",
+    "candidate_id",
+    "selected",
+    "local_path",
+    "artifact_sha256",
+    "shot_contract_hash",
+    "status",
+    "provider",
+    "judge_provider",
+    "quality_score_origin",
+    "vision_evidence_applies_to_shot_id",
+    "final_qc_review_required",
+    "auto_terminal_fallback",
+    "vision_evidence",
+    "quality_score",
+    "hard_blockers",
+    "quality_dimensions",
+)
 
 
 def _text(value: Any) -> str:
@@ -71,6 +90,25 @@ def _selected_by_shot(manifest: dict[str, Any]) -> dict[str, list[dict[str, Any]
         if shot_id:
             selected.setdefault(shot_id, []).append(row)
     return selected
+
+
+def _candidate_manifest_binding(manifest: dict[str, Any]) -> dict[str, Any]:
+    outputs = [
+        {
+            field: row.get(field)
+            for field in _MANIFEST_OUTPUT_BINDING_FIELDS
+            if field in row
+        }
+        for row in manifest.get("outputs") or []
+        if isinstance(row, dict) and row.get("selected") is True
+    ]
+    outputs.sort(
+        key=lambda row: (
+            _text(row.get("shot_id")),
+            _text(row.get("candidate_id")),
+        )
+    )
+    return {"selected_outputs": outputs}
 
 
 def _score(value: Any) -> float:
@@ -232,7 +270,9 @@ def build_sequence_quality_report(
         "status": "PASS" if not violations else "REPAIR_REQUIRED",
         "source_binding": {
             "ledger_sha256": _canonical_sha256(ledger),
-            "candidate_manifest_sha256": _canonical_sha256(manifest),
+            "candidate_manifest_sha256": _canonical_sha256(
+                _candidate_manifest_binding(manifest)
+            ),
         },
         "metrics": {
             "shot_count": len(entries),
