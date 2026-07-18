@@ -300,6 +300,10 @@ def test_runtime_context_requires_v6_review_board_and_reserved_content_profiles(
     assert "review_profile_id=story-video-review-board-v3" in context
     assert "story_video_editorial_metrics_v1" in context
     assert "story_video_narrative_dynamics_v1" in context
+    assert (
+        "retention_beats entries MUST contain beat_id, role, segment_id, "
+        "quote, and change"
+    ) in context
     assert "cross_segment_loops" in context
     assert "causal_handoffs" in context
     assert "exposition_only_segment_ids" in context
