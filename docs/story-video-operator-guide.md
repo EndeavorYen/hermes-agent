@@ -44,6 +44,13 @@ technical detail for informed generalists. `專業版` or `不要淺白化` sele
 the expert-depth path. The selected mode is locked in
 `explanation_profile.json` when the project starts.
 
+All new projects also default to a topic-appropriate narrative spine: mystery,
+discovery, transformation, choice and consequence, character lens, pattern
+reveal, or calm wonder. The script uses a cold open, delayed cross-scene
+questions, evidence-based turns, causal scene handoffs, and an ending echo.
+These controls do not require extra prompt syntax. They add no fictional danger,
+conflict, or certainty to factual work.
+
 ## Start
 
 Use one short request:

@@ -6,10 +6,28 @@ from typing import Any
 
 
 EDITORIAL_PROFILE_ID = "family-review-board-v2"
+NARRATIVE_EDITORIAL_PROFILE_ID = "story-video-review-board-v3"
 EDITORIAL_METRICS_SCHEMA = "story_video_editorial_metrics_v1"
+NARRATIVE_DYNAMICS_SCHEMA = "story_video_narrative_dynamics_v1"
 LONG_SENTENCE_CHAR_LIMIT = 46
 MAX_LONG_SENTENCE_RATIO = 0.25
 MIN_CONCRETE_SCENE_RATIO = 0.80
+MIN_CAUSAL_HANDOFF_RATIO = 0.70
+
+NARRATIVE_MODES = frozenset(
+    {
+        "guided_mystery",
+        "discovery_quest",
+        "transformation",
+        "choice_and_consequence",
+        "character_lens",
+        "pattern_reveal",
+        "calm_wonder",
+    }
+)
+RETENTION_ROLES = frozenset(
+    {"cold_open", "expectation", "reversal", "payoff", "ending_echo"}
+)
 
 _SEGMENT_HEADING_RE = re.compile(r"^###\s+(S\d+)\b.*$", re.MULTILINE)
 _SENTENCE_RE = re.compile(r'.+?(?:[。！？!?]+[」』”’"]*|$)', re.DOTALL)
@@ -86,6 +104,195 @@ def _complete_rows(rows: list[Any], fields: tuple[str, ...]) -> list[dict[str, A
         for row in rows
         if isinstance(row, dict) and all(_text(row.get(field_name)) for field_name in fields)
     ]
+
+
+def _script_quote_exists(segments: dict[str, str], segment_id: str, quote: str) -> bool:
+    return bool(segment_id in segments and quote and quote in segments[segment_id])
+
+
+def _positive_duration_minutes(
+    target_duration_sec: int | float,
+    violations: list[str],
+    prefix: str,
+) -> float:
+    try:
+        duration = float(target_duration_sec or 0)
+    except (TypeError, ValueError):
+        duration = 0.0
+    if not math.isfinite(duration) or duration <= 0:
+        violations.append(f"{prefix} target_duration_sec is invalid")
+        return 0.0
+    return duration / 60.0
+
+
+def validate_narrative_dynamics_v3(
+    script_text: str,
+    dynamics: dict[str, Any],
+    target_duration_sec: int | float,
+) -> tuple[str, ...]:
+    """Validate that declared story momentum is bound to the spoken script.
+
+    The contract intentionally checks evidence and sequence rather than trying
+    to score literary quality from keywords. Model judgment still owns taste;
+    this gate prevents a metadata-only PASS from bypassing that judgment.
+    """
+    violations: list[str] = []
+    if _text(dynamics.get("schema")) != NARRATIVE_DYNAMICS_SCHEMA:
+        violations.append("narrative_dynamics schema is invalid")
+
+    segments = parse_script_segments(script_text)
+    if not segments:
+        return tuple(violations + ["narrative_dynamics script has no Sxx segments"])
+    segment_ids = list(segments)
+    segment_order = {segment_id: index for index, segment_id in enumerate(segment_ids)}
+
+    narrative_mode = _text(dynamics.get("narrative_mode"))
+    if narrative_mode not in NARRATIVE_MODES:
+        violations.append(
+            f"narrative_dynamics narrative_mode is invalid: {narrative_mode or '<missing>'}"
+        )
+    if not _text(dynamics.get("central_lens")):
+        violations.append("narrative_dynamics central_lens is missing")
+
+    beat_rows = _list(dynamics.get("retention_beats"))
+    seen_beat_ids: set[str] = set()
+    present_roles: set[str] = set()
+    for index, row in enumerate(beat_rows):
+        if not isinstance(row, dict):
+            violations.append(f"narrative_dynamics beat[{index}] is not an object")
+            continue
+        beat_id = _text(row.get("beat_id")) or f"beat[{index}]"
+        role = _text(row.get("role"))
+        segment_id = _text(row.get("segment_id"))
+        quote = _text(row.get("quote"))
+        for field_name in ("beat_id", "role", "segment_id", "quote", "change"):
+            if not _text(row.get(field_name)):
+                violations.append(f"narrative_dynamics beat {beat_id} {field_name} is missing")
+        if beat_id in seen_beat_ids:
+            violations.append(f"narrative_dynamics duplicate beat_id: {beat_id}")
+        seen_beat_ids.add(beat_id)
+        if role and role not in RETENTION_ROLES:
+            violations.append(f"narrative_dynamics beat {beat_id} role is invalid: {role}")
+        if role in RETENTION_ROLES:
+            present_roles.add(role)
+        if segment_id not in segments:
+            violations.append(
+                f"narrative_dynamics beat {beat_id} references unknown segment: {segment_id or '<missing>'}"
+            )
+        elif quote and not _script_quote_exists(segments, segment_id, quote):
+            violations.append(
+                f"narrative_dynamics beat {beat_id} quote is not in {segment_id}"
+            )
+    for role in sorted(RETENTION_ROLES - present_roles):
+        violations.append(f"narrative_dynamics missing retention role: {role}")
+
+    runtime_minutes = _positive_duration_minutes(
+        target_duration_sec, violations, "narrative_dynamics"
+    )
+    required_loops = max(1, min(2, math.ceil(runtime_minutes / 2)))
+    loop_rows = _list(dynamics.get("cross_segment_loops"))
+    valid_loop_ids: set[str] = set()
+    for index, row in enumerate(loop_rows):
+        if not isinstance(row, dict):
+            violations.append(f"narrative_dynamics loop[{index}] is not an object")
+            continue
+        loop_id = _text(row.get("loop_id")) or f"loop[{index}]"
+        opening_id = _text(row.get("opening_segment_id"))
+        payoff_id = _text(row.get("payoff_segment_id"))
+        opening_quote = _text(row.get("opening_quote"))
+        payoff_quote = _text(row.get("payoff_quote"))
+        complete = all(
+            _text(row.get(field_name))
+            for field_name in (
+                "loop_id",
+                "opening_segment_id",
+                "opening_quote",
+                "payoff_segment_id",
+                "payoff_quote",
+            )
+        )
+        if not complete:
+            violations.append(f"narrative_dynamics loop {loop_id} is incomplete")
+            continue
+        if loop_id in valid_loop_ids:
+            violations.append(f"narrative_dynamics duplicate loop_id: {loop_id}")
+        if opening_id == payoff_id:
+            violations.append(
+                f"narrative_dynamics loop {loop_id} is resolved in the opening segment"
+            )
+        elif opening_id not in segment_order or payoff_id not in segment_order:
+            violations.append(f"narrative_dynamics loop {loop_id} references unknown segment")
+        elif segment_order[payoff_id] <= segment_order[opening_id]:
+            violations.append(f"narrative_dynamics loop {loop_id} payoff is not later")
+        else:
+            valid_loop_ids.add(loop_id)
+        if opening_id in segments and not _script_quote_exists(
+            segments, opening_id, opening_quote
+        ):
+            violations.append(
+                f"narrative_dynamics loop {loop_id} opening_quote is not in {opening_id}"
+            )
+        if payoff_id in segments and not _script_quote_exists(
+            segments, payoff_id, payoff_quote
+        ):
+            violations.append(
+                f"narrative_dynamics loop {loop_id} payoff_quote is not in {payoff_id}"
+            )
+    if len(valid_loop_ids) < required_loops:
+        violations.append(
+            f"narrative_dynamics.cross_segment_loop_count<{required_loops}"
+        )
+
+    valid_handoffs: set[tuple[str, str]] = set()
+    for index, row in enumerate(_list(dynamics.get("causal_handoffs"))):
+        if not isinstance(row, dict):
+            violations.append(f"narrative_dynamics handoff[{index}] is not an object")
+            continue
+        from_id = _text(row.get("from_segment_id"))
+        to_id = _text(row.get("to_segment_id"))
+        from_quote = _text(row.get("from_quote"))
+        to_quote = _text(row.get("to_quote"))
+        if not all((from_id, to_id, from_quote, to_quote)):
+            violations.append(f"narrative_dynamics handoff[{index}] is incomplete")
+            continue
+        adjacent = (
+            from_id in segment_order
+            and to_id in segment_order
+            and segment_order[to_id] == segment_order[from_id] + 1
+        )
+        if not adjacent:
+            violations.append(
+                f"narrative_dynamics handoff {from_id}->{to_id} is not adjacent"
+            )
+            continue
+        if not _script_quote_exists(segments, from_id, from_quote):
+            violations.append(
+                f"narrative_dynamics handoff {from_id}->{to_id} from_quote is not in {from_id}"
+            )
+            continue
+        if not _script_quote_exists(segments, to_id, to_quote):
+            violations.append(
+                f"narrative_dynamics handoff {from_id}->{to_id} to_quote is not in {to_id}"
+            )
+            continue
+        valid_handoffs.add((from_id, to_id))
+    transition_count = max(1, len(segment_ids) - 1)
+    handoff_ratio = len(valid_handoffs) / transition_count
+    if handoff_ratio < MIN_CAUSAL_HANDOFF_RATIO:
+        violations.append("narrative_dynamics.causal_handoff_ratio<0.70")
+
+    exposition_only_ids = {
+        _text(value)
+        for value in _list(dynamics.get("exposition_only_segment_ids"))
+        if _text(value)
+    }
+    for segment_id in sorted(exposition_only_ids - set(segments)):
+        violations.append(
+            f"narrative_dynamics exposition evidence references unknown segment: {segment_id}"
+        )
+    if exposition_only_ids:
+        violations.append("narrative_dynamics.exposition_only_segment_count>0")
+    return tuple(violations)
 
 
 def validate_editorial_profile_v2(
@@ -213,7 +420,11 @@ __all__ = [
     "LONG_SENTENCE_CHAR_LIMIT",
     "MAX_LONG_SENTENCE_RATIO",
     "MIN_CONCRETE_SCENE_RATIO",
+    "NARRATIVE_DYNAMICS_SCHEMA",
+    "NARRATIVE_EDITORIAL_PROFILE_ID",
+    "NARRATIVE_MODES",
     "compute_read_aloud_metrics",
     "parse_script_segments",
     "validate_editorial_profile_v2",
+    "validate_narrative_dynamics_v3",
 ]

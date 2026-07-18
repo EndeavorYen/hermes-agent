@@ -297,8 +297,12 @@ def test_runtime_context_requires_v6_review_board_and_reserved_content_profiles(
     assert "content_profile.json" in context
     assert "script_review_report.json" in context
     assert "story-video-script-review-board" in context
-    assert "review_profile_id=family-review-board-v2" in context
+    assert "review_profile_id=story-video-review-board-v3" in context
     assert "story_video_editorial_metrics_v1" in context
+    assert "story_video_narrative_dynamics_v1" in context
+    assert "cross_segment_loops" in context
+    assert "causal_handoffs" in context
+    assert "exposition_only_segment_ids" in context
     assert "concrete_scene_ratio>=0.80" in context
     assert "long_sentence_ratio<=0.25" in context
     assert "curiosity_loop_count>=max(2, ceil(runtime_minutes))" in context
@@ -894,8 +898,9 @@ def test_pre_llm_creates_context_and_injects_provider_policy(tmp_path, monkeypat
     assert "content_profile.json" in result["context"]
     assert "script_review_report.json" in result["context"]
     assert "story-video-script-review-board" in result["context"]
-    assert "review_profile_id=family-review-board-v2" in result["context"]
+    assert "review_profile_id=story-video-review-board-v3" in result["context"]
     assert "story_video_editorial_metrics_v1" in result["context"]
+    assert "story_video_narrative_dynamics_v1" in result["context"]
     assert "concrete_scene_evidence" in result["context"]
     assert "reported_read_aloud_metrics" in result["context"]
     assert "audience_profile" in result["context"]

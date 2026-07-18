@@ -868,6 +868,23 @@ def test_v6_editorial_profile_requires_evidence_bound_metrics(tmp_path) -> None:
     assert "script_review_report editorial_metrics is missing" in proof.violations
 
 
+def test_v6_editorial_profile_v3_requires_script_bound_narrative_dynamics(
+    tmp_path,
+) -> None:
+    _store, context = _active_context(tmp_path)
+    _write_v6_review_fixture(context)
+    profile_path = context.project_dir / "content_profile.json"
+    profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    profile["review_profile_id"] = "story-video-review-board-v3"
+    profile_path.write_text(json.dumps(profile), encoding="utf-8")
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert "script_review_report editorial_metrics is missing" in proof.violations
+    assert "script_review_report narrative_dynamics is missing" in proof.violations
+
+
 def test_v6_editorial_profile_accepts_complete_metrics(tmp_path) -> None:
     _store, context = _active_context(tmp_path)
     _write_v6_review_fixture(context)
