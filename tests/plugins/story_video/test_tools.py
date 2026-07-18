@@ -612,6 +612,15 @@ def _write_v6_review_fixture(context, *, include_review_artifacts: bool = True) 
                 "evidence_source_ids": (
                     ["nhm-dinosaur-origins"] if reviewer_id == "fact_checker" else []
                 ),
+                "verified_claim_ids": (
+                    ["C001"] if reviewer_id == "fact_checker" else []
+                ),
+                "claim_coverage_status": (
+                    "PASS" if reviewer_id == "fact_checker" else ""
+                ),
+                "coverage_verified_segment_ids": (
+                    ["S00"] if reviewer_id == "fact_checker" else []
+                ),
             }
             for reviewer_id in _REVIEWER_IDS
         ]
@@ -661,6 +670,38 @@ def _write_v6_review_fixture(context, *, include_review_artifacts: bool = True) 
         )
         (context.project_dir / "script_review_report.json").write_text(
             json.dumps(review_report), encoding="utf-8"
+        )
+        (context.project_dir / "factual_evidence.json").write_text(
+            json.dumps(
+                {
+                    "schema": "story_video_factual_evidence_v1",
+                    "status": "PASS",
+                    "sources": [
+                        {
+                            "source_id": "nhm-dinosaur-origins",
+                            "title": "What were the first dinosaurs?",
+                            "publisher": "Natural History Museum",
+                            "url": "https://www.nhm.ac.uk/discover/what-were-the-first-dinosaurs.html",
+                            "source_type": "official",
+                            "accessed_at": "2026-07-19",
+                        }
+                    ],
+                    "claims": [
+                        {
+                            "claim_id": "C001",
+                            "segment_id": "S00",
+                            "quote": payoff,
+                            "importance": "central",
+                            "confidence": "established",
+                            "source_ids": ["nhm-dinosaur-origins"],
+                            "verification_status": "verified",
+                            "verification_note": "The source describes fossil, skeletal, and dating evidence.",
+                        }
+                    ],
+                    "nonfactual_segments": [],
+                }
+            ),
+            encoding="utf-8",
         )
     return ledger
 
@@ -917,6 +958,49 @@ def test_v6_review_board_accepts_complete_review_bundle(tmp_path) -> None:
     proof = validate_phase(context)
 
     assert proof.ok is True
+
+
+def test_v6_factual_review_requires_factual_evidence_artifact(tmp_path) -> None:
+    _store, context = _active_context(tmp_path)
+    _write_v6_review_fixture(context)
+    (context.project_dir / "factual_evidence.json").unlink()
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert "factual_evidence.json is missing" in proof.violations
+
+
+def test_v6_factual_review_rejects_unbound_source_ids(tmp_path) -> None:
+    _store, context = _active_context(tmp_path)
+    _write_v6_review_fixture(context)
+    path = context.project_dir / "factual_evidence.json"
+    evidence = json.loads(path.read_text(encoding="utf-8"))
+    evidence["claims"][0]["source_ids"] = ["invented-source"]
+    path.write_text(json.dumps(evidence), encoding="utf-8")
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert (
+        "factual_evidence claim C001 references unknown source: invented-source"
+        in proof.violations
+    )
+
+
+def test_v6_factual_review_handles_nonlist_reviewers_without_crashing(tmp_path) -> None:
+    _store, context = _active_context(tmp_path)
+    _write_v6_review_fixture(context)
+    path = context.project_dir / "script_review_report.json"
+    report = json.loads(path.read_text(encoding="utf-8"))
+    report["reviewers"] = None
+    path.write_text(json.dumps(report), encoding="utf-8")
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert "script_review_report reviewers are not a list" in proof.violations
+    assert "script_review_report fact_checker is missing" in proof.violations
 
 
 def test_v6_editorial_profile_requires_evidence_bound_metrics(tmp_path) -> None:

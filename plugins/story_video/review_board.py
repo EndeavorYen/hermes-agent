@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ from .editorial_quality import (
     validate_editorial_profile_v2,
     validate_narrative_dynamics_v3,
 )
+from .factual_accuracy import factual_accuracy_required, validate_factual_evidence
 from .music import validate_music_direction
 
 
@@ -43,17 +45,6 @@ _EXECUTION_MODES = frozenset({"structured_board", "independent_agents"})
 _FINDING_SEVERITIES = frozenset({"minor", "moderate", "major", "critical"})
 _FINDING_RESOLUTIONS = frozenset({"resolved", "unresolved", "accepted_risk"})
 _CHILD_AGE_BANDS = frozenset({"early_childhood", "school_age"})
-_FACTUAL_PRODUCTION_TYPES = frozenset(
-    {
-        "science_explainer",
-        "science_documentary",
-        "documentary",
-        "natural_history_documentary",
-        "history",
-        "historical_documentary",
-        "biography",
-    }
-)
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _FINDING_FIELDS = (
     "finding_id",
@@ -254,12 +245,6 @@ def validate_script_review_report(
     for finding_id in unresolved_critical_ids:
         violations.append(f"script_review_report unresolved critical finding: {finding_id}")
 
-    production_type = _text(ledger.get("production_type")).lower()
-    fact_checker = reviewer_by_id.get("fact_checker")
-    if production_type in _FACTUAL_PRODUCTION_TYPES and isinstance(fact_checker, dict):
-        if not _string_list(fact_checker.get("evidence_source_ids")):
-            violations.append("script_review_report fact_checker evidence_source_ids are missing")
-
     adjudication = report.get("adjudication")
     resolved_ids: list[str] = []
     unresolved_ids: list[str] = []
@@ -347,6 +332,34 @@ def validate_v6_review_bundle(
             script_bytes=script_bytes,
         )
     )
+    if factual_accuracy_required(ledger):
+        factual_path = project_dir / "factual_evidence.json"
+        try:
+            factual_evidence = json.loads(factual_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            factual_evidence = None
+        if not isinstance(factual_evidence, dict):
+            violations.append("factual_evidence.json is missing")
+        else:
+            reviewers = review_report.get("reviewers")
+            reviewer_rows = reviewers if isinstance(reviewers, list) else []
+            fact_checker = next(
+                (
+                    reviewer
+                    for reviewer in reviewer_rows
+                    if isinstance(reviewer, dict)
+                    and _text(reviewer.get("reviewer_id")) == "fact_checker"
+                ),
+                None,
+            )
+            violations.extend(
+                validate_factual_evidence(
+                    factual_evidence,
+                    ledger=ledger,
+                    script_text=script_bytes.decode("utf-8"),
+                    fact_checker=fact_checker,
+                )
+            )
     review_profile_id = _text(content_profile.get("review_profile_id"))
     if review_profile_id in {EDITORIAL_PROFILE_ID, NARRATIVE_EDITORIAL_PROFILE_ID}:
         music_direction = ledger.get("music_direction")
