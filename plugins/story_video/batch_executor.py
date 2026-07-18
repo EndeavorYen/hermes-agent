@@ -62,6 +62,26 @@ def _sequence_quality_enabled(context: Any) -> bool:
     return _text(profile.get("review_profile_id")) == EDITORIAL_PROFILE_ID
 
 
+def _replanned_shot_ids(candidate_manifest: dict[str, Any]) -> set[str]:
+    return {
+        _text(row.get("shot_id"))
+        for row in candidate_manifest.get("contract_replans") or []
+        if isinstance(row, dict) and _text(row.get("shot_id"))
+    }
+
+
+def _legacy_strategy_pivot_migration_shot_ids(
+    candidate_manifest: dict[str, Any],
+) -> set[str]:
+    return {
+        _text(row.get("shot_id"))
+        for row in candidate_manifest.get("contract_replans") or []
+        if isinstance(row, dict)
+        and _text(row.get("shot_id"))
+        and row.get("legacy_strategy_pivot_migration") is True
+    }
+
+
 def _text(value: Any) -> str:
     return str(value or "").strip()
 
@@ -208,11 +228,16 @@ class StoryVideoBatchExecutor:
         with _MANIFEST_LOCK:
             batch_manifest = _load_json(batch_path)
             candidate_manifest = _load_json(candidate_path)
+            critical_ids.update(_replanned_shot_ids(candidate_manifest))
             budget = self._load_budget(
                 batch_manifest,
                 len(shot_ids),
                 candidate_manifest=candidate_manifest,
             )
+            if critical_ids.intersection(
+                _legacy_strategy_pivot_migration_shot_ids(candidate_manifest)
+            ):
+                budget.grant_legacy_strategy_pivot_slot()
 
         sequence_rescue_wave = False
         sequence_originals: dict[str, dict[str, Any]] = {}

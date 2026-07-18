@@ -443,6 +443,15 @@ def _contract_replan_count(manifest: dict[str, Any], shot_id: str) -> int:
     )
 
 
+def _strategy_pivot_completed(manifest: dict[str, Any], shot_id: str) -> bool:
+    return any(
+        isinstance(row, dict)
+        and str(row.get("shot_id") or "") == shot_id
+        and row.get("strategy_pivot") is True
+        for row in manifest.get("contract_replans") or []
+    )
+
+
 def _contract_replan_work(
     context: StoryVideoRunContext,
     *,
@@ -454,13 +463,17 @@ def _contract_replan_work(
     _ledger, _scene, shot = _find_shot(context, shot_id)
     revision = _contract_replan_count(manifest, shot_id)
     next_revision = revision + 1
-    strategy_pivot = next_revision >= MAX_CONTRACT_REPLANS
+    strategy_pivot_completed = _strategy_pivot_completed(manifest, shot_id)
+    strategy_pivot = not strategy_pivot_completed and next_revision >= MAX_CONTRACT_REPLANS
+    legacy_strategy_pivot_migration = bool(
+        strategy_pivot and revision >= MAX_CONTRACT_REPLANS
+    )
     blockers, normalized_codes = _source_image_qc_blockers(
         output.get("hard_blockers") or (),
         output.get("blocker_codes") or (),
     )
     blocker_codes = sorted(normalized_codes)
-    if revision >= MAX_CONTRACT_REPLANS:
+    if strategy_pivot_completed:
         return {
             "success": False,
             "action": "next_batch_work",
@@ -469,7 +482,7 @@ def _contract_replan_work(
             "status": "human_review_required",
             "error": "Automatic shot-contract replanning exhausted.",
             "replan_revision": revision,
-            "max_replan_revisions": MAX_CONTRACT_REPLANS,
+            "max_replan_revisions": max(MAX_CONTRACT_REPLANS, revision),
             "hard_blockers": blockers,
             "blocker_codes": blocker_codes,
             "remaining_shot_count": remaining_shot_count,
@@ -481,8 +494,9 @@ def _contract_replan_work(
         "work_status": "ready",
         "operation": "replan_shot_contract",
         "replan_revision": next_revision,
-        "max_replan_revisions": MAX_CONTRACT_REPLANS,
+        "max_replan_revisions": max(MAX_CONTRACT_REPLANS, next_revision),
         "strategy_pivot": strategy_pivot,
+        "legacy_strategy_pivot_migration": legacy_strategy_pivot_migration,
         "immutable_contract": {
             field: shot.get(field) for field in _REPLAN_IMMUTABLE_FIELDS
         },
@@ -547,8 +561,10 @@ def _apply_shot_contract_replan(
             "strategies are exhausted"
         )
     revision = _contract_replan_count(manifest, shot_id) + 1
-    if revision > MAX_CONTRACT_REPLANS:
+    strategy_pivot_completed = _strategy_pivot_completed(manifest, shot_id)
+    if strategy_pivot_completed or revision > MAX_CONTRACT_REPLANS + 1:
         raise ValueError("automatic shot-contract replanning is exhausted")
+    legacy_strategy_pivot_migration = revision > MAX_CONTRACT_REPLANS
 
     missing = [
         field
@@ -630,6 +646,7 @@ def _apply_shot_contract_replan(
                 str(value) for value in current_output.get("blocker_codes") or [] if value
             ],
             "strategy_pivot": revision >= MAX_CONTRACT_REPLANS,
+            "legacy_strategy_pivot_migration": legacy_strategy_pivot_migration,
             "replanned_at": _utc_now(),
         }
     )
@@ -642,6 +659,7 @@ def _apply_shot_contract_replan(
         **next_work,
         "replan_revision": revision,
         "strategy_pivot": revision >= MAX_CONTRACT_REPLANS,
+        "legacy_strategy_pivot_migration": legacy_strategy_pivot_migration,
     }
 
 
@@ -674,6 +692,9 @@ def _auto_replan_shot_contract(
     request = {
         "replan_revision": int(next_work.get("replan_revision") or 0),
         "strategy_pivot": bool(next_work.get("strategy_pivot")),
+        "legacy_strategy_pivot_migration": bool(
+            next_work.get("legacy_strategy_pivot_migration")
+        ),
         "immutable_contract": next_work.get("immutable_contract") or {},
         "current_mutable_contract": next_work.get("current_mutable_contract") or {},
         "hard_blockers": next_work.get("hard_blockers") or [],
@@ -776,6 +797,9 @@ def _auto_replan_shot_contract(
             (getattr(result, "audit", {}) or {}).get("response_id") or ""
         ),
         "strategy_pivot": strategy_pivot,
+        "legacy_strategy_pivot_migration": bool(
+            next_work.get("legacy_strategy_pivot_migration")
+        ),
     }
 
 
@@ -807,6 +831,9 @@ def _auto_replan_chunk_payload(
                 replanned.get("replan_response_id") or ""
             ),
             "strategy_pivot": bool(replanned.get("strategy_pivot")),
+            "legacy_strategy_pivot_migration": bool(
+                replanned.get("legacy_strategy_pivot_migration")
+            ),
         }
     failed = {
         **payload,
@@ -2133,7 +2160,7 @@ def _promote_auto_terminal_fallbacks(
             not in {"repair_required", "quality_budget_exhausted"}
             or (
                 shot_id not in forced
-                and _contract_replan_count(manifest, shot_id) < MAX_CONTRACT_REPLANS
+                and not _strategy_pivot_completed(manifest, shot_id)
             )
         ):
             continue
