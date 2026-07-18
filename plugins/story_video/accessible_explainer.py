@@ -29,7 +29,7 @@ _EXPLANATORY_PRODUCTION_RE = re.compile(
     re.IGNORECASE,
 )
 _SEGMENT_RE = re.compile(r"(?m)^###\s+(S\d+)\s*$")
-_BRIDGE_FIELDS = (
+ACCESSIBILITY_CONCEPT_BRIDGE_FIELDS = (
     "term",
     "segment_id",
     "concrete_anchor",
@@ -175,7 +175,7 @@ def _validate_accessibility_metrics(
                 f"accessibility_metrics concept_bridges[{index}] is invalid"
             )
             continue
-        for field_name in _BRIDGE_FIELDS:
+        for field_name in ACCESSIBILITY_CONCEPT_BRIDGE_FIELDS:
             if not _text(bridge.get(field_name)):
                 violations.append(
                     f"accessibility_metrics concept_bridges[{index}].{field_name} is missing"

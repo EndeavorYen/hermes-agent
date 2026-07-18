@@ -6,9 +6,17 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .accessible_explainer import ensure_explanation_profile
+from .accessible_explainer import (
+    ACCESSIBILITY_CONCEPT_BRIDGE_FIELDS,
+    ensure_explanation_profile,
+)
 from .audit import ProviderAudit, ProviderAuditEvent
-from .editorial_quality import EDITORIAL_PROFILE_ID
+from .editorial_quality import (
+    EDITORIAL_PROFILE_ID,
+    NARRATIVE_CAUSAL_HANDOFF_FIELDS,
+    NARRATIVE_CROSS_SEGMENT_LOOP_FIELDS,
+    NARRATIVE_RETENTION_BEAT_FIELDS,
+)
 from .policy import guard_tool_call
 from .sequence_quality import validate_sequence_quality_report
 from .state import OperatorCall, StoryVideoRunContext, StoryVideoStateStore, parse_operator_call
@@ -98,6 +106,10 @@ _INTERNAL_STORY_VIDEO_CONTROL_PREFIXES = (
     "STORY_VIDEO_AUTOPILOT",
     "STORY_VIDEO_PLANNING_COMPLETION",
 )
+
+
+def _prompt_field_list(fields: tuple[str, ...]) -> str:
+    return f"{', '.join(fields[:-1])}, and {fields[-1]}"
 
 
 def _has_operator_setup_blocker(*values: str) -> bool:
@@ -630,7 +642,9 @@ def pre_llm_call(
         "blocking defects. The reviewer MUST emit accessibility_metrics with schema="
         "story_video_accessibility_metrics_v1, status=PASS, empty unexplained_jargon, "
         "baby_talk_detected=false, precision_loss_detected=false, and evidence-bound "
-        "concept_bridges. In mode=advanced, keep the same binding while allowing denser "
+        f"concept_bridges. concept_bridges entries MUST contain "
+        f"{_prompt_field_list(ACCESSIBILITY_CONCEPT_BRIDGE_FIELDS)}. In mode=advanced, "
+        "keep the same binding while allowing denser "
         "terminology. In mode=professional, preserve expert depth and do not require the "
         "newcomer reviewer or accessibility metrics. "
         "content_profile.json MUST use schema=story_video_content_profile_v1. "
@@ -768,14 +782,17 @@ def pre_llm_call(
         "with schema=story_video_narrative_dynamics_v1. Select one narrative_mode from "
         "guided_mystery|discovery_quest|transformation|choice_and_consequence|"
         "character_lens|pattern_reveal|calm_wonder and declare one concrete central_lens "
-        "that can recur across the film. retention_beats entries MUST contain beat_id, "
-        "role, segment_id, quote, and change. They MUST bind cold_open, "
+        f"that can recur across the film. retention_beats entries MUST contain "
+        f"{_prompt_field_list(NARRATIVE_RETENTION_BEAT_FIELDS)}. They MUST bind cold_open, "
         "expectation, reversal, payoff, and ending_echo to exact quotes in script.md; "
         "expectation is a clearly framed viewer guess, prediction, or intuition to test, "
-        "never a fabricated fact. cross_segment_loops MUST bind exact opening_quote and later payoff_quote, "
+        f"never a fabricated fact. cross_segment_loops entries MUST contain "
+        f"{_prompt_field_list(NARRATIVE_CROSS_SEGMENT_LOOP_FIELDS)}. They MUST bind exact "
+        "opening_quote and later payoff_quote, "
         "and cannot open and resolve in the same segment. Require one such delayed loop for "
-        "short work and two for productions of two minutes or longer. causal_handoffs MUST "
-        "bind exact quotes across at least 70 percent of adjacent segment transitions so "
+        "short work and two for productions of two minutes or longer. causal_handoffs "
+        f"entries MUST contain {_prompt_field_list(NARRATIVE_CAUSAL_HANDOFF_FIELDS)}. "
+        "They MUST bind exact quotes across at least 70 percent of adjacent segment transitions so "
         "the next scene grows from the previous consequence instead of restarting a topic "
         "outline. exposition_only_segment_ids MUST be empty. Each retention beat also names "
         "the change in the viewer's model; metadata labels without verbatim script evidence "

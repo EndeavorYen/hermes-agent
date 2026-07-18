@@ -28,6 +28,26 @@ NARRATIVE_MODES = frozenset(
 RETENTION_ROLES = frozenset(
     {"cold_open", "expectation", "reversal", "payoff", "ending_echo"}
 )
+NARRATIVE_RETENTION_BEAT_FIELDS = (
+    "beat_id",
+    "role",
+    "segment_id",
+    "quote",
+    "change",
+)
+NARRATIVE_CROSS_SEGMENT_LOOP_FIELDS = (
+    "loop_id",
+    "opening_segment_id",
+    "opening_quote",
+    "payoff_segment_id",
+    "payoff_quote",
+)
+NARRATIVE_CAUSAL_HANDOFF_FIELDS = (
+    "from_segment_id",
+    "to_segment_id",
+    "from_quote",
+    "to_quote",
+)
 
 _SEGMENT_HEADING_RE = re.compile(r"^###\s+(S\d+)\b.*$", re.MULTILINE)
 _SENTENCE_RE = re.compile(r'.+?(?:[。！？!?]+[」』”’"]*|$)', re.DOTALL)
@@ -165,7 +185,7 @@ def validate_narrative_dynamics_v3(
         role = _text(row.get("role"))
         segment_id = _text(row.get("segment_id"))
         quote = _text(row.get("quote"))
-        for field_name in ("beat_id", "role", "segment_id", "quote", "change"):
+        for field_name in NARRATIVE_RETENTION_BEAT_FIELDS:
             if not _text(row.get(field_name)):
                 violations.append(f"narrative_dynamics beat {beat_id} {field_name} is missing")
         if beat_id in seen_beat_ids:
@@ -203,13 +223,7 @@ def validate_narrative_dynamics_v3(
         payoff_quote = _text(row.get("payoff_quote"))
         complete = all(
             _text(row.get(field_name))
-            for field_name in (
-                "loop_id",
-                "opening_segment_id",
-                "opening_quote",
-                "payoff_segment_id",
-                "payoff_quote",
-            )
+            for field_name in NARRATIVE_CROSS_SEGMENT_LOOP_FIELDS
         )
         if not complete:
             violations.append(f"narrative_dynamics loop {loop_id} is incomplete")
@@ -252,7 +266,10 @@ def validate_narrative_dynamics_v3(
         to_id = _text(row.get("to_segment_id"))
         from_quote = _text(row.get("from_quote"))
         to_quote = _text(row.get("to_quote"))
-        if not all((from_id, to_id, from_quote, to_quote)):
+        if not all(
+            _text(row.get(field_name))
+            for field_name in NARRATIVE_CAUSAL_HANDOFF_FIELDS
+        ):
             violations.append(f"narrative_dynamics handoff[{index}] is incomplete")
             continue
         adjacent = (
