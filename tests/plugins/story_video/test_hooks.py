@@ -1638,6 +1638,83 @@ def test_batch_autopilot_stops_from_persisted_review_state_when_text_is_generic(
     assert continuation is None
 
 
+def test_batch_review_attention_ignores_stale_pointer_after_shot_selected(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    hooks.pre_llm_call(
+        session_id="session-auto",
+        user_message="故事影片：恐龍起源｜5分鐘｜真實照片。完整製作並出片。",
+    )
+    context = store.for_session("session-auto")
+    assert context is not None
+    context = store.update(context, phase="keyframes", auto_mode=True)
+    manifest = context.project_dir / "manifests" / "shot_candidate_manifest.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(
+        json.dumps(
+            {
+                "outputs": [
+                    {
+                        "shot_id": "S03",
+                        "candidate_id": "S03_PIVOT_C01",
+                        "selected": True,
+                        "status": "selected_current",
+                    }
+                ],
+                "terminal_attention": {
+                    "work_status": "human_review_required",
+                    "shot_id": "S03",
+                    "error": "Automatic shot-contract replanning exhausted.",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert hooks._batch_review_attention(context) is None
+
+
+def test_batch_review_attention_ignores_pointer_superseded_by_contract_replan(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    hooks.pre_llm_call(
+        session_id="session-auto",
+        user_message="故事影片：恐龍起源｜5分鐘｜真實照片。完整製作並出片。",
+    )
+    context = store.for_session("session-auto")
+    assert context is not None
+    context = store.update(context, phase="keyframes", auto_mode=True)
+    manifest = context.project_dir / "manifests" / "shot_candidate_manifest.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(
+        json.dumps(
+            {
+                "outputs": [],
+                "contract_replans": [
+                    {
+                        "shot_id": "S03",
+                        "revision": 3,
+                        "replanned_at": "2026-07-18T04:40:29+00:00",
+                    }
+                ],
+                "terminal_attention": {
+                    "work_status": "human_review_required",
+                    "shot_id": "S03",
+                    "error": "Automatic shot-contract replanning exhausted.",
+                    "recorded_at": "2026-07-18T04:10:52+00:00",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert hooks._batch_review_attention(context) is None
+
+
 def test_batch_autopilot_executes_bounded_shot_contract_replan(
     tmp_path, monkeypatch
 ) -> None:
