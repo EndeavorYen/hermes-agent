@@ -45,6 +45,7 @@ from .state import StoryVideoRunContext, StoryVideoStateStore
 MAX_REPAIR_ROUNDS = 3
 MAX_CONTRACT_REPLANS = 2
 MAX_REPLANNED_CONTRACT_CANDIDATES = 2
+MAX_AUTO_REPLAN_VALIDATION_ATTEMPTS = 2
 QUALITY_CONTRACT_VERSION = 4
 BEST_EFFORT_QUALITY_FLOOR = 75.0
 _PLUGIN_LLM: Any = None
@@ -794,95 +795,131 @@ def _auto_replan_shot_contract(
         if strategy_pivot
         else " Preserve the current visual_truth_mode for this first replan."
     )
-    try:
-        result = llm.complete_structured(
-            instructions=(
-                "Redesign one story-video source-image shot contract after bounded visual "
-                "repairs failed. Preserve every immutable field. Make one decisive visible "
-                "action and one focal subject readable in a single still image. The image "
-                "only needs to support the primary viewer takeaway; secondary comparisons, "
-                "caveats, and later causal steps remain in narration or adjacent shots. "
-                "Do not require text labels, split-screen comparisons, UI, multiple time "
-                "states, or one frame to prove every sentence. For scientific or medical "
-                "reconstruction, separate literal anatomy from symbolic light or particles "
-                "and keep acceptance criteria directly observable."
-                + pivot_instruction
-                + " Return only the schema."
-            ),
-            input=[
-                {
-                    "type": "text",
-                    "text": json.dumps(request, ensure_ascii=False, sort_keys=True),
-                }
-            ],
-            json_schema=SHOT_CONTRACT_REPLAN_SCHEMA,
-            json_mode=True,
-            schema_name="story_video_shot_contract_replan",
-            provider="openai-codex",
-            temperature=0,
-            max_tokens=1800,
-            timeout=180,
-            purpose="story_video_shot_contract_replan",
+    base_instructions = (
+        "Redesign one story-video source-image shot contract after bounded visual "
+        "repairs failed. Preserve every immutable field. Make one decisive visible "
+        "action and one focal subject readable in a single still image. The image "
+        "only needs to support the primary viewer takeaway; secondary comparisons, "
+        "caveats, and later causal steps remain in narration or adjacent shots. "
+        "Do not require text labels, split-screen comparisons, UI, multiple time "
+        "states, or one frame to prove every sentence. For scientific or medical "
+        "reconstruction, separate literal anatomy from symbolic light or particles "
+        "and keep acceptance criteria directly observable."
+        + pivot_instruction
+    )
+    validation_rejection = ""
+    for attempt in range(1, MAX_AUTO_REPLAN_VALIDATION_ATTEMPTS + 1):
+        attempt_request = dict(request)
+        instructions = base_instructions
+        if validation_rejection:
+            attempt_request["canonical_validation_rejection"] = validation_rejection
+            instructions += (
+                " The previous proposal was rejected by canonical ledger validation. "
+                "Correct that exact violation while preserving the immutable contract; "
+                "do not repeat the rejected design."
+            )
+        try:
+            result = llm.complete_structured(
+                instructions=instructions + " Return only the schema.",
+                input=[
+                    {
+                        "type": "text",
+                        "text": json.dumps(
+                            attempt_request,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        ),
+                    }
+                ],
+                json_schema=SHOT_CONTRACT_REPLAN_SCHEMA,
+                json_mode=True,
+                schema_name="story_video_shot_contract_replan",
+                provider="openai-codex",
+                temperature=0,
+                max_tokens=1800,
+                timeout=180,
+                purpose="story_video_shot_contract_replan",
+            )
+        except Exception as exc:
+            return {
+                "success": False,
+                "work_status": "human_review_required",
+                "shot_id": shot_id,
+                "error": (
+                    "Automatic shot-contract replan failed: "
+                    f"{exc.__class__.__name__}: {exc}"
+                ),
+            }
+        provider = _provider(getattr(result, "provider", ""))
+        parsed = getattr(result, "parsed", None)
+        redesigned = (
+            parsed.get("redesigned_shot") if isinstance(parsed, dict) else None
         )
-    except Exception as exc:
-        return {
-            "success": False,
-            "work_status": "human_review_required",
-            "shot_id": shot_id,
-            "error": (
-                "Automatic shot-contract replan failed: "
-                f"{exc.__class__.__name__}: {exc}"
-            ),
-        }
-    provider = _provider(getattr(result, "provider", ""))
-    parsed = getattr(result, "parsed", None)
-    redesigned = parsed.get("redesigned_shot") if isinstance(parsed, dict) else None
-    if provider not in {"openai", "openai-codex"} or not isinstance(redesigned, dict):
-        return {
-            "success": False,
-            "work_status": "human_review_required",
-            "shot_id": shot_id,
-            "error": "Automatic shot-contract replanner returned invalid OpenAI evidence.",
-        }
-    try:
-        applied = _apply_shot_contract_replan(
-            context,
-            shot_id=shot_id,
-            redesigned_shot=redesigned,
-        )
-    except (OSError, TypeError, ValueError) as exc:
-        return {
-            "success": False,
-            "work_status": "human_review_required",
-            "shot_id": shot_id,
-            "error": f"Automatic shot-contract replan was rejected: {exc}",
-        }
-    if applied.get("success") is not True:
+        if provider not in {"openai", "openai-codex"} or not isinstance(
+            redesigned, dict
+        ):
+            return {
+                "success": False,
+                "work_status": "human_review_required",
+                "shot_id": shot_id,
+                "error": (
+                    "Automatic shot-contract replanner returned invalid OpenAI "
+                    "evidence."
+                ),
+            }
+        try:
+            applied = _apply_shot_contract_replan(
+                context,
+                shot_id=shot_id,
+                redesigned_shot=redesigned,
+            )
+        except (TypeError, ValueError) as exc:
+            validation_rejection = str(exc)
+            if attempt < MAX_AUTO_REPLAN_VALIDATION_ATTEMPTS:
+                continue
+            return {
+                "success": False,
+                "work_status": "human_review_required",
+                "shot_id": shot_id,
+                "error": (
+                    "Automatic shot-contract replan was rejected: "
+                    f"{validation_rejection}"
+                ),
+            }
+        except OSError as exc:
+            return {
+                "success": False,
+                "work_status": "human_review_required",
+                "shot_id": shot_id,
+                "error": f"Automatic shot-contract replan was rejected: {exc}",
+            }
+        if applied.get("success") is not True:
+            return {
+                **applied,
+                "success": False,
+                "work_status": "human_review_required",
+                "shot_id": shot_id,
+                "error": str(
+                    applied.get("error")
+                    or "Automatic shot-contract replan did not produce runnable work."
+                ),
+            }
         return {
             **applied,
-            "success": False,
-            "work_status": "human_review_required",
+            "success": True,
+            "work_status": "in_progress",
             "shot_id": shot_id,
-            "error": str(
-                applied.get("error")
-                or "Automatic shot-contract replan did not produce runnable work."
+            "replan_provider": provider,
+            "replan_model": str(getattr(result, "model", "") or ""),
+            "replan_response_id": str(
+                (getattr(result, "audit", {}) or {}).get("response_id") or ""
+            ),
+            "strategy_pivot": strategy_pivot,
+            "legacy_strategy_pivot_migration": bool(
+                next_work.get("legacy_strategy_pivot_migration")
             ),
         }
-    return {
-        **applied,
-        "success": True,
-        "work_status": "in_progress",
-        "shot_id": shot_id,
-        "replan_provider": provider,
-        "replan_model": str(getattr(result, "model", "") or ""),
-        "replan_response_id": str(
-            (getattr(result, "audit", {}) or {}).get("response_id") or ""
-        ),
-        "strategy_pivot": strategy_pivot,
-        "legacy_strategy_pivot_migration": bool(
-            next_work.get("legacy_strategy_pivot_migration")
-        ),
-    }
+    raise AssertionError("auto replan validation loop exited unexpectedly")
 
 
 def _auto_replan_chunk_payload(
