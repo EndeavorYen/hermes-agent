@@ -1399,6 +1399,7 @@ def story_video_audio_director(
     session_id: str = "",
     store: StoryVideoStateStore | None = None,
     voice_registry_path: str | Path | None = None,
+    voice_catalog_builder: Any = None,
     **_: Any,
 ) -> str:
     state_store = store or StoryVideoStateStore()
@@ -1417,6 +1418,11 @@ def story_video_audio_director(
     if voice_registry_path is not None:
         bind_kwargs["registry_path"] = voice_registry_path
     try:
+        if action in {"compile", "bind_cast"} and voice_catalog_builder is not None:
+            catalog_kwargs: dict[str, Any] = {}
+            if voice_registry_path is not None:
+                catalog_kwargs["registry_path"] = voice_registry_path
+            bind_kwargs["voice_catalog"] = voice_catalog_builder(**catalog_kwargs)
         if action == "compile":
             payload = compile_dubbing_project(
                 context.project_dir,

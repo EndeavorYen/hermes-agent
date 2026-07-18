@@ -86,6 +86,36 @@ def _voice_registry(tmp_path, *profile_ids: str, default: str | None = None):
     return registry
 
 
+def _ready_voice_catalog(tmp_path) -> dict:
+    from plugins.story_video.voice_catalog import list_voice_catalog
+
+    registry = _voice_registry(
+        tmp_path,
+        "simon_clean_v2",
+        default="simon_clean_v2",
+    )
+    model = tmp_path / "custom-voice-model"
+    model.mkdir()
+    (model / "config.json").write_text(
+        json.dumps(
+            {
+                "tts_model_type": "custom_voice",
+                "talker_config": {
+                    "spk_id": {"vivian": 1, "serena": 2, "uncle_fu": 3}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime = tmp_path / "mlx-python"
+    runtime.write_text("runtime", encoding="utf-8")
+    return list_voice_catalog(
+        registry_path=registry,
+        preset_model_path=model,
+        preset_runtime_path=runtime,
+    )
+
+
 def test_story_video_control_schema_exposes_voice_profile_actions() -> None:
     action = STORY_VIDEO_CONTROL_SCHEMA["parameters"]["properties"]["action"]
 
@@ -155,6 +185,7 @@ def test_story_video_specialist_tool_schemas_are_narrow_and_complete() -> None:
         "description"
     ]
     assert director_actions == ["compile", "bind_cast", "status"]
+    assert "catalog voice" in STORY_VIDEO_AUDIO_DIRECTOR_SCHEMA["description"]
     assert STORY_VIDEO_AUDIO_DIRECTOR_SCHEMA["parameters"]["properties"]["mode"][
         "enum"
     ] == ["creative", "remake", "read_aloud"]
@@ -338,6 +369,88 @@ def test_audio_director_compiles_and_binds_active_story_project(tmp_path) -> Non
     assert Path(payload["binding_path"]) == context.project_dir / "voice_cast_binding.json"
 
     assert "voice_id" in STORY_VIDEO_CONTROL_SCHEMA["parameters"]["properties"]
+
+
+def test_audio_director_binds_three_qwen_voice_actors(tmp_path) -> None:
+    store, context = _active_context(tmp_path)
+    catalog = _ready_voice_catalog(tmp_path)
+    catalog_calls = []
+
+    def catalog_builder(**kwargs):
+        catalog_calls.append(kwargs)
+        return catalog
+
+    payload = json.loads(
+        story_video_audio_director(
+            {
+                "action": "compile",
+                "mode": "creative",
+                "source_text": "",
+                "speakers": [
+                    {
+                        "speaker_id": "girl",
+                        "display_name": "安安",
+                        "role": "lead",
+                        "voice_id": "Vivian",
+                    },
+                    {
+                        "speaker_id": "mother",
+                        "display_name": "媽媽",
+                        "role": "supporting",
+                        "voice_id": "Serena",
+                    },
+                    {
+                        "speaker_id": "captain",
+                        "display_name": "老船長",
+                        "role": "supporting",
+                        "voice_id": "Uncle_Fu",
+                    },
+                ],
+                "utterances": [
+                    {
+                        "utterance_id": "U001",
+                        "scene_id": "S01",
+                        "shot_id": "S01_SH01",
+                        "speaker_id": "girl",
+                        "display_text": "我們出發吧！",
+                    },
+                    {
+                        "utterance_id": "U002",
+                        "scene_id": "S01",
+                        "shot_id": "S01_SH01",
+                        "speaker_id": "mother",
+                        "display_text": "路上要小心。",
+                    },
+                    {
+                        "utterance_id": "U003",
+                        "scene_id": "S01",
+                        "shot_id": "S01_SH01",
+                        "speaker_id": "captain",
+                        "display_text": "風向變了。",
+                    },
+                ],
+            },
+            session_id="session-1",
+            store=store,
+            voice_catalog_builder=catalog_builder,
+        )
+    )
+
+    assert catalog_calls == [{}]
+    assert payload["success"] is True
+    assert payload["bound"] is True
+    binding = json.loads(
+        (context.project_dir / "voice_cast_binding.json").read_text(encoding="utf-8")
+    )
+    assert binding["catalog_sha256"] == catalog["catalog_sha256"]
+    rows = {row["speaker_id"]: row for row in binding["speakers"]}
+    assert rows["girl"]["voice_id"] == "qwen_custom_vivian"
+    assert rows["mother"]["voice_id"] == "qwen_custom_serena"
+    assert rows["captain"]["voice_id"] == "qwen_custom_uncle_fu"
+    assert (
+        rows["girl"]["engine_binding"]["model_config_path"]
+        == catalog["voices"][1]["engine_binding"]["model_config_path"]
+    )
 
 
 def test_story_video_control_lists_voices_without_active_project(tmp_path) -> None:
