@@ -16,6 +16,7 @@ from .sequence_quality import build_sequence_quality_report, write_sequence_qual
 
 
 _MANIFEST_LOCK = threading.RLock()
+_SEQUENCE_QUALITY_GATE_VERSION = 2
 
 
 def _utc_now() -> str:
@@ -266,6 +267,26 @@ class StoryVideoBatchExecutor:
                 for value in batch_manifest.get("sequence_rescue_attempted_shot_ids") or []
                 if _text(value)
             }
+            try:
+                sequence_gate_version = int(
+                    batch_manifest.get("sequence_quality_gate_version") or 0
+                )
+            except (TypeError, ValueError):
+                sequence_gate_version = 0
+            if sequence_gate_version < _SEQUENCE_QUALITY_GATE_VERSION:
+                migrated_attempts = [
+                    shot_id for shot_id in shot_ids if shot_id in attempted_rescues
+                ]
+                attempted_rescues.clear()
+                batch_manifest.update(
+                    {
+                        "sequence_quality_gate_version": _SEQUENCE_QUALITY_GATE_VERSION,
+                        "sequence_quality_gate_migrated_attempted_shot_ids": (
+                            migrated_attempts
+                        ),
+                        "sequence_rescue_attempted_shot_ids": [],
+                    }
+                )
             requested = [
                 shot_id
                 for shot_id in sequence_report.get("repair_shot_ids") or []
