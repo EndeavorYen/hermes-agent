@@ -34,7 +34,7 @@ from .quality import (
 )
 from .music import compile_music_bed, plan_music_cues
 from .release_art import compile_release_art_brief, compose_release_art
-from .sequence_quality import sequence_dimension_violations
+from .sequence_quality import build_sequence_quality_report, sequence_dimension_violations
 from .shot_contract import (
     manifest_row_matches_shot_contract as _manifest_row_matches_shot_contract,
 )
@@ -532,6 +532,84 @@ def _contract_replan_work(
     }
 
 
+def _sequence_replan_blocker_codes(violations: Iterable[Any]) -> list[str]:
+    joined = " ".join(str(value) for value in violations).lower()
+    mappings = (
+        ("duplicate", "continuity_redundancy"),
+        ("style", "style_drift"),
+        ("cinematic", "flat_composition"),
+        ("story", "missing_story_moment"),
+        ("semantic", "audience_mismatch"),
+    )
+    codes = [code for marker, code in mappings if marker in joined]
+    return codes or ["other"]
+
+
+def _sequence_quality_replan_work(
+    context: StoryVideoRunContext,
+    *,
+    ledger: dict[str, Any],
+    manifest: dict[str, Any],
+    by_shot: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    profile = _load_json(context.project_dir / "content_profile.json") or {}
+    if str(profile.get("review_profile_id") or "").strip() != EDITORIAL_PROFILE_ID:
+        return None
+    report = build_sequence_quality_report(context.project_dir, ledger, manifest)
+    repair_shot_ids = [
+        str(value).strip()
+        for value in report.get("repair_shot_ids") or []
+        if str(value).strip()
+    ]
+    if report.get("status") != "REPAIR_REQUIRED" or not repair_shot_ids:
+        return None
+    batch_manifest = _load_json(
+        context.project_dir / "manifests" / "batch_run_manifest.json"
+    ) or {}
+    attempted = {
+        str(value).strip()
+        for value in batch_manifest.get("sequence_rescue_attempted_shot_ids") or []
+        if str(value).strip()
+    }
+    if any(shot_id not in attempted for shot_id in repair_shot_ids):
+        return None
+    entries = {
+        str(entry.get("shot_id") or "").strip(): entry
+        for entry in report.get("entries") or []
+        if isinstance(entry, dict) and str(entry.get("shot_id") or "").strip()
+    }
+    shot_id = next(
+        (
+            value
+            for value in repair_shot_ids
+            if not _strategy_pivot_completed(manifest, value)
+        ),
+        repair_shot_ids[0],
+    )
+    prefix = f"{shot_id} "
+    violations = [
+        str(value)[len(prefix):] if str(value).startswith(prefix) else str(value)
+        for value in entries.get(shot_id, {}).get("violations") or []
+        if str(value).strip()
+    ]
+    output = {
+        **by_shot.get(shot_id, {}),
+        "hard_blockers": violations,
+        "blocker_codes": _sequence_replan_blocker_codes(violations),
+    }
+    return {
+        **_contract_replan_work(
+            context,
+            shot_id=shot_id,
+            manifest=manifest,
+            output=output,
+            remaining_shot_count=len(repair_shot_ids),
+        ),
+        "sequence_quality_replan": True,
+        "sequence_quality_violations": violations,
+    }
+
+
 def _apply_shot_contract_replan(
     context: StoryVideoRunContext,
     *,
@@ -641,11 +719,14 @@ def _apply_shot_contract_replan(
             "new_shot_contract_hash": new_hash,
             "superseded_candidate_id": str(current_output.get("candidate_id") or ""),
             "hard_blockers": [
-                str(value) for value in current_output.get("hard_blockers") or [] if value
+                str(value) for value in next_work.get("hard_blockers") or [] if value
             ],
             "blocker_codes": [
-                str(value) for value in current_output.get("blocker_codes") or [] if value
+                str(value) for value in next_work.get("blocker_codes") or [] if value
             ],
+            "sequence_quality_replan": bool(
+                next_work.get("sequence_quality_replan")
+            ),
             "strategy_pivot": revision >= MAX_CONTRACT_REPLANS,
             "legacy_strategy_pivot_migration": legacy_strategy_pivot_migration,
             "replanned_at": _utc_now(),
@@ -2728,6 +2809,16 @@ def _next_batch_work(context: StoryVideoRunContext) -> dict[str, Any]:
             "remaining_review_count": len(stale_reviews),
             "remaining_shot_count": len(unresolved),
         }
+
+    if not unresolved:
+        sequence_replan = _sequence_quality_replan_work(
+            context,
+            ledger=ledger,
+            manifest=manifest,
+            by_shot=by_shot,
+        )
+        if sequence_replan is not None:
+            return sequence_replan
 
     if not unresolved:
         return {

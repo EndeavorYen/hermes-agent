@@ -330,6 +330,86 @@ def test_native_batch_chunk_automatically_replans_exhausted_anchor(
     assert repaired["action"] == "one amber set-point marker rises by one step"
 
 
+def test_native_batch_chunk_automatically_replans_exhausted_sequence_qc(
+    tmp_path, monkeypatch
+) -> None:
+    from plugins.story_video import batch_executor, visual_judge
+
+    store, context, shot = _context(tmp_path)
+    context = store.update(context, phase="keyframes", auto_mode=True)
+    (context.project_dir / "content_profile.json").write_text(
+        json.dumps({"review_profile_id": "family-review-board-v2"}),
+        encoding="utf-8",
+    )
+    selected = _selected_sequence_failure(context, shot)
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    manifest_path = manifests / "shot_candidate_manifest.json"
+    manifest_path.write_text(
+        json.dumps({"outputs": [selected], "attempt_history": [selected]}),
+        encoding="utf-8",
+    )
+    (manifests / "batch_run_manifest.json").write_text(
+        json.dumps(
+            {
+                "sequence_quality_gate_version": 2,
+                "sequence_rescue_attempted_shot_ids": [shot["shot_id"]],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        batch_executor.StoryVideoBatchExecutor,
+        "run_chunk",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("exhausted sequence QC must replan before image generation")
+        ),
+    )
+
+    class SequenceReplanLLM:
+        def complete_structured(self, **kwargs):
+            assert kwargs["provider"] == "openai-codex"
+            assert kwargs["purpose"] == "story_video_shot_contract_replan"
+            assert "semantic evidence score<80" in kwargs["input"][0]["text"]
+            return SimpleNamespace(
+                provider="openai-codex",
+                model="gpt-5.6-sol",
+                parsed={
+                    "redesigned_shot": {
+                        "subject": "one footprint beside a moving hind limb",
+                        "action": "the foot lifts and reveals the compact track beneath it",
+                        "evidence_detail": (
+                            "upright leg alignment and one fresh track are visible"
+                        ),
+                        "shot_scale": "close_up",
+                        "camera_angle": "low side angle",
+                        "focal_point": "the lifted foot and fresh track",
+                        "subtitle_safe_area": "bottom 20 percent clear",
+                        "acceptance_criteria": [
+                            "one leg and one track form a readable cause and effect"
+                        ],
+                    }
+                },
+                audit={"response_id": "sequence-replan-response-1"},
+            )
+
+    payload = visual_judge._run_batch_chunk(
+        context,
+        state_store=store,
+        llm=SequenceReplanLLM(),
+    )
+
+    assert payload["success"] is True
+    assert payload["work_status"] == "in_progress"
+    assert payload["wave"] == "contract_replan"
+    assert payload["replanned_shot_id"] == shot["shot_id"]
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    event = manifest["contract_replans"][0]
+    assert event["sequence_quality_replan"] is True
+    assert event["hard_blockers"] == ["semantic evidence score<80"]
+    assert event["blocker_codes"] == ["audience_mismatch"]
+
+
 def test_second_native_contract_replan_forces_visual_strategy_pivot(
     tmp_path, monkeypatch
 ) -> None:
@@ -1463,6 +1543,143 @@ def test_next_batch_work_replans_contract_after_visual_strategies_exhausted(
     assert payload["hard_blockers"] == []
     assert payload["blocker_codes"] == []
     assert "post-composite QC stage" in payload["replan_directive"]
+
+
+def _selected_sequence_failure(context, shot: dict) -> dict:
+    image = context.project_dir / "images" / "selected.png"
+    image.parent.mkdir(parents=True, exist_ok=True)
+    image.write_bytes(b"selected-sequence-failure")
+    return {
+        "shot_id": shot["shot_id"],
+        "candidate_id": "S00_SH00_SEQUENCE_FAIL",
+        "selected": True,
+        "status": "selected_current",
+        "local_path": str(image.relative_to(context.project_dir)),
+        "artifact_sha256": hashlib.sha256(image.read_bytes()).hexdigest(),
+        "shot_contract_hash": _shot_contract_hash(shot),
+        "provider": "openai-codex",
+        "judge_provider": "openai-codex",
+        "quality_score": 88,
+        "quality_contract_version": 4,
+        "quality_dimensions": {
+            "text_alignment": 90,
+            "evidence_specificity": 70,
+            "narrative_engagement": 90,
+            "story_moment_clarity": 90,
+            "cinematic_impact": 90,
+            "professional_quality": 90,
+            "style_consistency": 90,
+        },
+        "focal_point_normalized": {"x": 0.5, "y": 0.5},
+        "hard_blockers": [],
+        "vision_evidence": {"status": "PASS", "response_id": "sequence-qc"},
+    }
+
+
+def test_next_batch_work_defers_sequence_replan_until_rescue_is_exhausted(
+    tmp_path,
+) -> None:
+    store, context, shot = _context(tmp_path)
+    (context.project_dir / "content_profile.json").write_text(
+        json.dumps({"review_profile_id": "family-review-board-v2"}),
+        encoding="utf-8",
+    )
+    selected = _selected_sequence_failure(context, shot)
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps({"outputs": [selected], "attempt_history": [selected]}),
+        encoding="utf-8",
+    )
+    (manifests / "batch_run_manifest.json").write_text(
+        json.dumps(
+            {
+                "sequence_quality_gate_version": 2,
+                "sequence_rescue_attempted_shot_ids": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        story_video_quality_control(
+            {"action": "next_batch_work"}, session_id="session-1", store=store
+        )
+    )
+
+    assert payload["work_status"] == "complete"
+    assert "operation" not in payload
+
+
+def test_next_batch_work_replans_after_sequence_rescue_is_exhausted(
+    tmp_path,
+) -> None:
+    store, context, shot = _context(tmp_path)
+    (context.project_dir / "content_profile.json").write_text(
+        json.dumps({"review_profile_id": "family-review-board-v2"}),
+        encoding="utf-8",
+    )
+    selected = _selected_sequence_failure(context, shot)
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    manifest_path = manifests / "shot_candidate_manifest.json"
+    manifest_path.write_text(
+        json.dumps({"outputs": [selected], "attempt_history": [selected]}),
+        encoding="utf-8",
+    )
+    (manifests / "batch_run_manifest.json").write_text(
+        json.dumps(
+            {
+                "sequence_quality_gate_version": 2,
+                "sequence_rescue_attempted_shot_ids": [shot["shot_id"]],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        story_video_quality_control(
+            {"action": "next_batch_work"}, session_id="session-1", store=store
+        )
+    )
+
+    assert payload["work_status"] == "ready"
+    assert payload["operation"] == "replan_shot_contract"
+    assert payload["shot_id"] == shot["shot_id"]
+    assert payload["sequence_quality_replan"] is True
+    assert payload["hard_blockers"] == ["semantic evidence score<80"]
+    assert payload["blocker_codes"] == ["audience_mismatch"]
+
+    redesigned = {
+        "subject": "one footprint beside a moving hind limb",
+        "action": "the foot lifts and reveals the compact track beneath it",
+        "evidence_detail": "upright leg alignment and one fresh track are visible",
+        "shot_scale": "close_up",
+        "camera_angle": "low side angle",
+        "focal_point": "the lifted foot and fresh track",
+        "subtitle_safe_area": "bottom 20 percent clear",
+        "acceptance_criteria": ["one leg and one track form a readable cause and effect"],
+    }
+    applied = json.loads(
+        story_video_quality_control(
+            {
+                "action": "replan_shot_contract",
+                "shot_id": shot["shot_id"],
+                "redesigned_shot": redesigned,
+            },
+            session_id="session-1",
+            store=store,
+        )
+    )
+
+    assert applied["success"] is True
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["contract_replans"][0]["hard_blockers"] == [
+        "semantic evidence score<80"
+    ]
+    assert manifest["contract_replans"][0]["blocker_codes"] == [
+        "audience_mismatch"
+    ]
 
 
 def test_replan_shot_contract_preserves_truth_fields_and_resets_generation(
