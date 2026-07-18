@@ -111,6 +111,52 @@ def test_direct_visual_handoff_keeps_prompt_provider_over_runtime_default():
     assert handoff["arguments"]["image_provider_source"] == "prompt_override"
 
 
+def test_direct_visual_handoff_routes_attached_chinese_edit_candidates_to_xai():
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.6-sol",
+    )
+    decision = {
+        "mode": "visual_agent_generation",
+        "route": {
+            "visual_media_provider": "xai",
+            "visual_media_model": "grok-imagine-image-quality",
+            "visual_media_provider_source": "visual_agent_default",
+        },
+        "runtime_contract": {
+            "image_provider": "xai",
+            "image_model": "grok-imagine-image-quality",
+        },
+    }
+    message = [
+        {
+            "type": "text",
+            "text": (
+                "根據這張 Ref，幫我改進絲襪材質與構圖，"
+                "大概 4 張讓我挑選，要嚴格 QC"
+            ),
+        },
+        {"type": "image_url", "image_url": {"url": "/tmp/ref.png"}},
+    ]
+
+    handoff = build_direct_visual_agent_handoff(
+        agent,
+        message,
+        raphael_decision=decision,
+    )
+
+    assert handoff is not None
+    assert handoff["tool_name"] == "visual_agent_generate"
+    assert handoff["arguments"]["image_provider"] == "xai"
+    assert handoff["arguments"]["candidate_budget"] == 4
+    assert handoff["arguments"]["include_image"] is True
+    assert handoff["arguments"]["include_video"] is False
+    assert handoff["arguments"]["attachments"] == ["/tmp/ref.png"]
+
+
 def test_direct_visual_handoff_preserves_compact_s_suffix_video_duration():
     from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
 

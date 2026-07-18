@@ -72,6 +72,7 @@ def build_direct_visual_agent_handoff(
     session_reference_entries: list[dict[str, Any]] = []
     polish_request = _is_visual_polish_request(prompt)
     followup_request = _is_visual_followup_edit_request(prompt) or _is_current_result_regenerate_request(prompt)
+    candidate_output_request = _requests_visual_candidate_output(prompt)
     explicit_generation_request = _is_explicit_visual_generation_request(prompt)
     if not attachments and (
         followup_request or polish_request or explicit_generation_request
@@ -92,7 +93,7 @@ def build_direct_visual_agent_handoff(
     plan = plan_visual_agent_request(
         raw_prompt or prompt,
         attachments=attachments,
-        force_image_output=bool(session_reference_entries),
+        force_image_output=bool(session_reference_entries or candidate_output_request),
     )
     if not plan.get("should_use_visual_package"):
         return None
@@ -1609,6 +1610,8 @@ def _is_explicit_visual_generation_request(prompt: str) -> bool:
         return False
     if explicit_visual_agent_request_detected(prompt):
         return True
+    if _requests_visual_candidate_output(prompt):
+        return True
 
     english_generation = (
         "create ",
@@ -1649,6 +1652,33 @@ def _is_explicit_visual_generation_request(prompt: str) -> bool:
     if any(token in lowered for token in english_generation):
         return True
     return any(token in compact for token in chinese_generation)
+
+
+def _requests_visual_candidate_output(prompt: str) -> bool:
+    """Return True when the user explicitly asks for image options to choose from."""
+    lowered = str(prompt or "").lower()
+    compact = re.sub(r"\s+", "", lowered)
+    chinese_count = re.search(r"(?:[2-4]|[二兩两三四])(?:張|张)(?:圖|图|圖片|图片)?", compact)
+    chinese_selection = any(
+        marker in compact
+        for marker in (
+            "讓我挑",
+            "让我挑",
+            "讓我選",
+            "让我选",
+            "供我挑",
+            "供我選",
+            "供我选",
+            "給我",
+            "给我",
+        )
+    )
+    if chinese_count and chinese_selection:
+        return True
+
+    english_count = re.search(r"\b[2-4]\s+(?:image|picture|option|candidate)s?\b", lowered)
+    english_selection = re.search(r"\b(?:choose|pick|select|compare|give|show|provide)\b", lowered)
+    return bool(english_count and english_selection)
 
 
 def _is_long_form_story_video_pipeline_request(raw_prompt: Any, prompt: str) -> bool:
