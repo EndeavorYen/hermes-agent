@@ -372,6 +372,18 @@ def test_runtime_context_requires_v6_review_board_and_reserved_content_profiles(
         "retention_beats entries MUST contain beat_id, role, segment_id, "
         "quote, and change"
     ) in context
+    assert (
+        "cross_segment_loops entries MUST contain loop_id, opening_segment_id, "
+        "opening_quote, payoff_segment_id, and payoff_quote"
+    ) in context
+    assert (
+        "causal_handoffs entries MUST contain from_segment_id, to_segment_id, "
+        "from_quote, and to_quote"
+    ) in context
+    assert (
+        "concept_bridges entries MUST contain term, segment_id, concrete_anchor, "
+        "plain_explanation, and precision_boundary"
+    ) in context
     assert "cross_segment_loops" in context
     assert "causal_handoffs" in context
     assert "exposition_only_segment_ids" in context
