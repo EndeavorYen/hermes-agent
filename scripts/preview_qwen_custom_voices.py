@@ -6,8 +6,6 @@ import json
 from pathlib import Path
 from typing import Any, Callable
 
-import numpy as np
-
 
 def generate_previews(
     *,
@@ -17,7 +15,8 @@ def generate_previews(
     speakers: list[str],
     language: str,
     model_loader: Callable[[str], Any] | None = None,
-    audio_writer: Callable[[Path, np.ndarray, int], Any] | None = None,
+    array_module: Any | None = None,
+    audio_writer: Callable[[Path, Any, int], Any] | None = None,
 ) -> list[Path]:
     if model_loader is None:
         from mlx_audio.tts.utils import load_model
@@ -27,6 +26,8 @@ def generate_previews(
         from mlx_audio.audio_io import write
 
         audio_writer = write
+    if array_module is None:
+        import numpy as array_module
 
     model = model_loader(model_path)
     supported = {
@@ -55,8 +56,11 @@ def generate_previews(
         sample_rates = {int(chunk.sample_rate) for chunk in chunks}
         if len(sample_rates) != 1:
             raise RuntimeError(f"Qwen returned mixed sample rates for {speaker}")
-        audio = np.concatenate(
-            [np.asarray(chunk.audio, dtype=np.float32) for chunk in chunks]
+        audio = array_module.concatenate(
+            [
+                array_module.asarray(chunk.audio, dtype=array_module.float32)
+                for chunk in chunks
+            ]
         )
         path = destination / f"{speaker}.wav"
         audio_writer(path, audio, sample_rates.pop())

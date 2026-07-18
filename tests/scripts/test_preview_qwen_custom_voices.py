@@ -2,11 +2,21 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import numpy as np
-
 
 def test_generate_previews_loads_model_once_and_writes_each_speaker(tmp_path) -> None:
     from scripts.preview_qwen_custom_voices import generate_previews
+
+    class FakeArrayModule:
+        float32 = object()
+
+        @staticmethod
+        def asarray(values, *, dtype):
+            assert dtype is FakeArrayModule.float32
+            return list(values)
+
+        @staticmethod
+        def concatenate(chunks):
+            return [value for chunk in chunks for value in chunk]
 
     class FakeModel:
         def __init__(self):
@@ -18,7 +28,7 @@ def test_generate_previews_loads_model_once_and_writes_each_speaker(tmp_path) ->
         def generate_custom_voice(self, **kwargs):
             self.calls.append(kwargs)
             yield SimpleNamespace(
-                audio=np.array([0.1, -0.1], dtype=np.float32),
+                audio=[0.1, -0.1],
                 sample_rate=24000,
             )
 
@@ -33,8 +43,9 @@ def test_generate_previews_loads_model_once_and_writes_each_speaker(tmp_path) ->
         speakers=["Vivian", "Serena"],
         language="chinese",
         model_loader=lambda path: load_calls.append(path) or model,
+        array_module=FakeArrayModule,
         audio_writer=lambda path, audio, sample_rate: write_calls.append(
-            (path, audio.tolist(), sample_rate)
+            (path, audio, sample_rate)
         ),
     )
 
