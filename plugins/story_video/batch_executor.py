@@ -258,6 +258,16 @@ class StoryVideoBatchExecutor:
                 len(shot_ids),
                 candidate_manifest=candidate_manifest,
             )
+            budget.grant_contract_replan_slots(
+                [
+                    (
+                        _text(row.get("shot_id")),
+                        _text(row.get("new_shot_contract_hash")),
+                    )
+                    for row in candidate_manifest.get("contract_replans") or []
+                    if isinstance(row, dict)
+                ]
+            )
             if critical_ids.intersection(
                 _legacy_strategy_pivot_migration_shot_ids(candidate_manifest)
             ):
