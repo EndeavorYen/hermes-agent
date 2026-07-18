@@ -330,6 +330,94 @@ def test_native_batch_chunk_automatically_replans_exhausted_anchor(
     assert repaired["action"] == "one amber set-point marker rises by one step"
 
 
+def test_second_native_contract_replan_forces_visual_strategy_pivot(
+    tmp_path, monkeypatch
+) -> None:
+    from plugins.story_video import batch_executor, visual_judge
+
+    store, context, shot = _context(tmp_path)
+    context = store.update(context, phase="keyframes", auto_mode=True)
+    contract_hash = _shot_contract_hash(shot)
+    blocked = {
+        "shot_id": shot["shot_id"],
+        "candidate_id": f"{shot['shot_id']}_REPLAN_C01",
+        "status": "quality_budget_exhausted",
+        "selected": False,
+        "repair_round": 2,
+        "repair_strategy": "targeted_repair",
+        "hard_blockers": ["the glowing marker still looks like a medical device"],
+        "blocker_codes": ["scientific_identity"],
+        "shot_contract_hash": contract_hash,
+    }
+    manifest_path = context.project_dir / "manifests" / "shot_candidate_manifest.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "outputs": [blocked],
+                "attempt_history": [blocked],
+                "contract_replans": [
+                    {"shot_id": shot["shot_id"], "revision": 1}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        batch_executor.StoryVideoBatchExecutor,
+        "run_chunk",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("second replan must happen before image generation")
+        ),
+    )
+    captured: dict = {}
+
+    class PivotLLM:
+        def complete_structured(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                provider="openai-codex",
+                model="gpt-5.6-sol",
+                parsed={
+                    "redesigned_shot": {
+                        "subject": "a real brass home thermostat in a dark room",
+                        "action": "one hand turns the physical dial upward",
+                        "evidence_detail": "the single mechanical movement is visible",
+                        "shot_scale": "close_up",
+                        "camera_angle": "cinematic three-quarter macro",
+                        "focal_point": "the fingertips and moving brass dial",
+                        "subtitle_safe_area": "lower center clear",
+                        "acceptance_criteria": [
+                            "one hand and one physical dial are the only focal action"
+                        ],
+                        "visual_truth_mode": "inference",
+                        "evidence_bridge": (
+                            "the thermostat is an explicit analogy for the narrated "
+                            "hypothalamic set point, not literal anatomy"
+                        ),
+                    }
+                },
+                audit={"response_id": "pivot-response-2"},
+            )
+
+    payload = visual_judge._run_batch_chunk(
+        context,
+        state_store=store,
+        llm=PivotLLM(),
+    )
+
+    assert payload["success"] is True
+    assert payload["wave"] == "contract_replan"
+    assert payload["replan_revision"] == 2
+    assert payload["strategy_pivot"] is True
+    assert "different representational family" in captured["instructions"]
+    repaired = json.loads(
+        (context.project_dir / "scene_ledger.json").read_text(encoding="utf-8")
+    )["scenes"][0]["shots"][0]
+    assert repaired["visual_truth_mode"] == "inference"
+    assert repaired["viewer_takeaway"] == shot["viewer_takeaway"]
+
+
 def test_native_batch_chunk_persists_exact_terminal_attention(
     tmp_path, monkeypatch
 ) -> None:
