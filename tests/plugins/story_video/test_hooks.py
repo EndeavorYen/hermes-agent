@@ -1159,27 +1159,16 @@ def test_planning_only_request_auto_completes_bundle_then_holds_before_media(
         response_text="規劃檔已建立。",
     )
 
-    assert ready is not None
-    assert "story_video_control action=validate" in ready["message"]
-
-    validated = json.loads(
-        story_video_control(
-            {"action": "validate"},
-            session_id="session-plan",
-            store=store,
-        )
-    )
+    assert ready is None
     held = store.for_session("session-plan")
 
-    assert validated["success"] is True
-    assert validated["proof"] == "STORY_VIDEO_PHASE_PROOF: planning PASS"
     assert held is not None
     assert held.phase == "planning"
     assert held.status == "complete"
     assert held.last_validated_phase == "planning"
     assert hooks.auto_continue_llm_output(
         session_id="session-plan",
-        response_text=validated["proof"],
+        response_text="STORY_VIDEO_PHASE_PROOF: planning PASS",
     ) is None
 
 
