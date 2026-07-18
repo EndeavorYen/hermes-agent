@@ -393,6 +393,17 @@ def test_runtime_context_requires_v6_review_board_and_reserved_content_profiles(
     assert "delight_beat_count>=max(1, floor(runtime_minutes/2))" in context
     assert "no rhetorical template may appear in more than two segments" in context
     assert "at most two revision rounds" in context
+    assert "factual_evidence.json" in context
+    assert "story_video_factual_evidence_v1" in context
+    assert "Never invent source IDs or URLs" in context
+    assert "Use web search and open each selected source" in context
+    assert "exact quote from script.md" in context
+    assert "verified_claim_ids" in context
+    assert "claim_coverage_status=PASS" in context
+    assert "coverage_verified_segment_ids" in context
+    assert "A PASS reviewer with no actionable defect MUST return findings=[]" in context
+    assert "Do not run round two merely because round one found issues" in context
+    assert "Research once before drafting and reuse factual_evidence.json" in context
     assert "final_script_sha256" in context
     assert "adult_explicit" in context
     assert "SETUP_REQUIRED" in context

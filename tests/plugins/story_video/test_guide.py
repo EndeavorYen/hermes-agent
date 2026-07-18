@@ -136,6 +136,8 @@ def test_writing_help_explains_default_and_opt_out() -> None:
     text = format_story_video_guide(None, "writing")
 
     assert "預設：淺顯但不幼稚" in text
+    assert "逐項綁定可核驗來源" in text
+    assert "不會為了加速省略內容正確性審稿" in text
     assert "具體直覺" in text
     assert "正式名詞" in text
     assert "進階版" in text

@@ -17,6 +17,12 @@ from .editorial_quality import (
     NARRATIVE_CROSS_SEGMENT_LOOP_FIELDS,
     NARRATIVE_RETENTION_BEAT_FIELDS,
 )
+from .factual_accuracy import (
+    FACTUAL_CLAIM_FIELDS,
+    FACTUAL_EVIDENCE_SCHEMA,
+    FACTUAL_SOURCE_FIELDS,
+    NONFACTUAL_SEGMENT_FIELDS,
+)
 from .policy import guard_tool_call
 from .sequence_quality import validate_sequence_quality_report
 from .state import OperatorCall, StoryVideoRunContext, StoryVideoStateStore, parse_operator_call
@@ -817,10 +823,29 @@ def pre_llm_call(
         "clarity_concision, engagement, audience_fit, and read_aloud_performance MUST "
         "also be PASS. child_curiosity is required only when the content profile or "
         "audience age band includes children. "
+        "For science, history, documentary, biography, educational, or other factual "
+        f"work, apply story-video-factual-research and create factual_evidence.json with "
+        f"schema={FACTUAL_EVIDENCE_SCHEMA} before the final draft. Research once before "
+        "drafting and reuse factual_evidence.json throughout the review; browse again only "
+        "when a contradiction or missing support is found. Prefer primary, official, and "
+        "peer-reviewed sources. Use web search and open each selected source before citing "
+        "it. Never invent source IDs or URLs. sources entries MUST "
+        f"contain {_prompt_field_list(FACTUAL_SOURCE_FIELDS)}. claims entries MUST contain "
+        f"{_prompt_field_list(FACTUAL_CLAIM_FIELDS)}, including an exact quote from script.md "
+        "in the named segment. nonfactual_segments entries MUST contain "
+        f"{_prompt_field_list(NONFACTUAL_SEGMENT_FIELDS)}. Every ### Sxx segment MUST be "
+        "covered by a verified claim or explicitly classified as nonfactual. A central "
+        "claim needs one primary, official, or peer-reviewed source, or corroboration from "
+        "two different source domains. "
         "Apply story-video-script-review-board after the director draft. "
         "script_review_report.json MUST use schema=story_video_script_review_v1, "
         "quality_contract_version=6, status=PASS, execution_mode=structured_board, "
-        "revision_round_count=1 or 2, and at most two revision rounds. It MUST contain "
+        "revision_round_count=1 or 2, and at most two revision rounds. One full board plus "
+        "one adjudicator revision is revision_round_count=1. A PASS reviewer with no "
+        "actionable defect MUST return findings=[]; never invent a finding to prove review. "
+        "Run round two only when post-adjudication verification still has a reviewer score "
+        "below 85 or an unresolved major or critical finding. Do not run round two merely "
+        "because round one found issues that the adjudicator already resolved. It MUST contain "
         "exactly one record for each "
         "reviewer_id: language_editor, fact_checker, clarity_editor, engagement_editor, "
         "audience_safety_editor, and performance_editor. Reviewers emit structured "
@@ -833,8 +858,9 @@ def pre_llm_call(
         "The adjudicator writes the only revised full script. The report MUST contain an "
         "adjudication object with status=PASS plus resolved_finding_ids and "
         "unresolved_finding_ids arrays that classify every finding exactly once. For "
-        "science, history, documentary, or factual work, "
-        "fact_checker evidence_source_ids MUST cite the research evidence. After the "
+        "science, history, documentary, or factual work, fact_checker evidence_source_ids "
+        "MUST exactly match the sources used by current claims and verified_claim_ids MUST "
+        "exactly match all current claim IDs. After the "
         "review board finishes, script_review_report.json MUST include editorial_metrics "
         "with schema=story_video_editorial_metrics_v1. Bind every qualitative claim to "
         "real ### Sxx sections: concrete_scene_evidence entries require segment_id, "
