@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -131,6 +132,49 @@ def test_catalog_resolves_latest_selectable_clone_version(tmp_path) -> None:
     selected = resolve_catalog_voice("simon_clean_v2", catalog)
 
     assert selected["engine_binding"]["profile_id"] == newer["profile_id"]
+
+
+def test_catalog_preserves_legacy_clone_profile_id_as_operator_voice_id(
+    tmp_path,
+) -> None:
+    from plugins.story_video.voice_catalog import (
+        list_voice_catalog,
+        resolve_catalog_voice,
+    )
+
+    registry, model, runtime = _catalog_setup(tmp_path)
+    registry_payload = json.loads(registry.read_text(encoding="utf-8"))
+    entry = registry_payload["profiles"][0]
+    profile_path = Path(entry["profile_path"])
+    profile_payload = json.loads(profile_path.read_text(encoding="utf-8"))
+    profile_payload.update(
+        {
+            "profile_id": "simon_clean_v2",
+            "voice_id": "simon",
+            "version": 2,
+        }
+    )
+    profile_path.write_text(json.dumps(profile_payload), encoding="utf-8")
+    entry.update(
+        {
+            "profile_id": "simon_clean_v2",
+            "voice_id": "simon",
+            "version": 2,
+        }
+    )
+    registry_payload["default_profile_id"] = "simon_clean_v2"
+    registry.write_text(json.dumps(registry_payload), encoding="utf-8")
+
+    catalog = list_voice_catalog(
+        registry_path=registry,
+        preset_model_path=model,
+        preset_runtime_path=runtime,
+    )
+
+    clone = next(row for row in catalog["voices"] if row["source_kind"] == "clone_profile")
+    assert clone["voice_id"] == "simon_clean_v2"
+    assert catalog["default_voice_id"] == "simon_clean_v2"
+    assert resolve_catalog_voice("simon", catalog)["voice_id"] == "simon_clean_v2"
 
 
 def test_engine_binding_validates_clone_and_preset_evidence(tmp_path) -> None:

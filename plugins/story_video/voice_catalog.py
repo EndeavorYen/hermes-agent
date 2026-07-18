@@ -59,11 +59,13 @@ def _supported_presets(model: Path) -> tuple[set[str], str]:
 
 
 def _profile_voice(profile: dict[str, Any]) -> dict[str, Any]:
-    voice_id = str(profile.get("voice_id") or profile["profile_id"])
+    profile_id = str(profile["profile_id"])
+    source_voice_id = str(profile.get("voice_id") or profile_id)
+    voice_id = source_voice_id if "@" in profile_id else profile_id
     return {
         "voice_id": voice_id,
-        "display_name": str(profile.get("display_name") or profile["profile_id"]),
-        "aliases": [str(profile["profile_id"]), voice_id],
+        "display_name": str(profile.get("display_name") or profile_id),
+        "aliases": list(dict.fromkeys((profile_id, source_voice_id, voice_id))),
         "version": profile.get("version"),
         "engine": "qwen_full_icl",
         "source_kind": "clone_profile",
@@ -82,7 +84,7 @@ def _profile_voice(profile: dict[str, Any]) -> dict[str, Any]:
         },
         "selectable": bool(profile.get("selectable")),
         "engine_binding": {
-            "profile_id": str(profile["profile_id"]),
+            "profile_id": profile_id,
             "profile_path": str(profile["profile_path"]),
             "profile_sha256": str(profile["profile_sha256"]),
         },
@@ -177,11 +179,13 @@ def list_voice_catalog(
         for row in voices
     ]
     default_profile_id = str(profile_catalog.get("default_profile_id") or "")
-    default_profile = next(
+    default_voice = next(
         (
             row
-            for row in profile_catalog["profiles"]
-            if str(row.get("profile_id") or "") == default_profile_id
+            for row in voices
+            if row["source_kind"] == "clone_profile"
+            and str(row["engine_binding"].get("profile_id") or "")
+            == default_profile_id
         ),
         None,
     )
@@ -190,7 +194,7 @@ def list_voice_catalog(
         "catalog_schema": VOICE_CATALOG_SCHEMA,
         "catalog_sha256": _canonical_sha256(snapshot),
         "default_voice_id": str(
-            (default_profile or {}).get("voice_id") or default_profile_id
+            (default_voice or {}).get("voice_id") or default_profile_id
         ),
         "voices": voices,
         "voice_count": len(voices),
