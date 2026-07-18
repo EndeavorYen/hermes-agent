@@ -66,6 +66,7 @@ def test_voice_management_fast_route_maps_lifecycle_actions_without_catching_cas
         "調整聲線媽媽的速度": "tune",
         "封存聲線媽媽": "archive",
         "刪除聲線媽媽": "delete",
+        "刪除 sample 聲線": "delete",
     }
 
     for prompt, expected_action in cases.items():
@@ -79,6 +80,73 @@ def test_voice_management_fast_route_maps_lifecycle_actions_without_catching_cas
         )
 
     assert hooks._voice_management_action("旁白聲線用 simon") is None
+
+
+def test_voice_management_fast_route_extracts_named_custom_voice_preview() -> None:
+    prompt = """可以讓我聽看看 Qwen3-TTS CustomVoice 中的這三個聲線嗎？給一小段 sample
+
+Vivian 女，明亮年輕 中文
+Serena 女，溫暖柔和 中文
+Uncle_Fu 男，低沉成熟 中文
+"""
+
+    result = hooks.pre_llm_call(
+        session_id="voice-preview",
+        user_message=prompt,
+    )
+
+    assert "story_video_voice_manager action=preview_preset exactly once" in result[
+        "context"
+    ]
+    assert 'speakers=["Vivian", "Serena", "Uncle_Fu"]' in result["context"]
+    assert "Do not require an attachment" in result["context"]
+
+
+def test_voice_management_fast_route_preserves_unknown_requested_preset_names() -> None:
+    mixed = hooks.pre_llm_call(
+        session_id="voice-preview-mixed",
+        user_message="試聽 Vivian 和 Mia 聲線 sample",
+    )
+    unsupported = hooks.pre_llm_call(
+        session_id="voice-preview-unsupported",
+        user_message="試聽 Mia 聲線 sample",
+    )
+
+    assert 'speakers=["Vivian", "Mia"]' in mixed["context"]
+    assert 'speakers=["Mia"]' in unsupported["context"]
+
+
+def test_voice_preview_fast_route_appends_generated_media_to_final_output(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(hooks, "_VISUAL_AGENT_BYPASS_SESSIONS", set())
+    monkeypatch.setattr(hooks, "_VOICE_PREVIEW_MEDIA_BY_SESSION", {})
+    hooks.pre_llm_call(
+        session_id="voice-preview-media",
+        user_message="試聽 Vivian 和 Serena 聲線 sample",
+    )
+    hooks.post_tool_call(
+        session_id="voice-preview-media",
+        tool_name="story_video_voice_manager",
+        status="ok",
+        result=json.dumps(
+            {
+                "success": True,
+                "action": "preview_preset",
+                "media": ["MEDIA:/tmp/Vivian.wav", "MEDIA:/tmp/Serena.wav"],
+            }
+        ),
+    )
+
+    transformed = hooks.transform_llm_output(
+        session_id="voice-preview-media",
+        response_text="已產生兩個聲線試聽。",
+    )
+
+    assert transformed == (
+        "已產生兩個聲線試聽。\n\n"
+        "MEDIA:/tmp/Vivian.wav\nMEDIA:/tmp/Serena.wav"
+    )
 
 
 def test_voice_management_fast_route_bypasses_active_project_phase_guards(

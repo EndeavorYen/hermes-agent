@@ -44,16 +44,40 @@ STORY_VIDEO_CONTROL_SCHEMA = {
 STORY_VIDEO_VOICE_MANAGER_SCHEMA = {
     "name": "story_video_voice_manager",
     "description": (
-        "Manage local versioned Qwen Base voice-clone profiles. Tuning creates a "
-        "new immutable version; archiving preserves existing project bindings; "
-        "deletion fails when a project still references the voice."
+        "Manage local versioned Qwen Base voice-clone profiles and generate short "
+        "CustomVoice preset previews. Tuning creates a new immutable version; "
+        "archiving preserves existing project bindings; deletion fails when a "
+        "project still references the voice."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["list", "add", "tune", "archive", "delete"],
+                "enum": [
+                    "list",
+                    "preview_preset",
+                    "add",
+                    "tune",
+                    "archive",
+                    "delete",
+                ],
+            },
+            "speakers": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 1,
+                "maxItems": 3,
+                "description": (
+                    "Qwen CustomVoice preset names when action=preview_preset."
+                ),
+            },
+            "sample_text": {
+                "type": "string",
+                "maxLength": 160,
+                "description": (
+                    "Optional short text shared by every preset preview."
+                ),
             },
             "voice_id": {
                 "type": "string",
