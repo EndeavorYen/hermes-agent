@@ -552,6 +552,140 @@ def test_auto_replan_stops_after_second_canonical_validation_rejection(
     assert "repeated_shot_scale_without_reason:medium:3" in payload["error"]
 
 
+def test_next_batch_work_retries_one_empty_provider_response_for_current_contract(
+    tmp_path,
+) -> None:
+    from plugins.story_video import visual_judge
+
+    _store, context, shot = _context(tmp_path)
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps(
+            {
+                "outputs": [],
+                "contract_replans": [
+                    {
+                        "shot_id": shot["shot_id"],
+                        "revision": 1,
+                        "replanned_at": "2026-07-18T09:00:00+00:00",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (manifests / "batch_run_manifest.json").write_text(
+        json.dumps(
+            {
+                "events": [
+                    {
+                        "stage": "complete",
+                        "shot_ids": [shot["shot_id"]],
+                        "provider_failure_classes": ["empty_response"],
+                        "timestamp": "2026-07-18T09:01:00+00:00",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = visual_judge._next_batch_work(context)
+
+    assert payload["work_status"] == "ready"
+    assert payload["operation"] == "generate"
+    assert payload.get("provider_failure_replan") is not True
+
+
+def test_next_batch_work_replans_after_two_current_contract_empty_responses(
+    tmp_path,
+) -> None:
+    from plugins.story_video import visual_judge
+
+    _store, context, shot = _context(tmp_path)
+    manifests = context.project_dir / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    (manifests / "shot_candidate_manifest.json").write_text(
+        json.dumps(
+            {
+                "outputs": [],
+                "contract_replans": [
+                    {
+                        "shot_id": shot["shot_id"],
+                        "revision": 1,
+                        "replanned_at": "2026-07-18T09:00:00+00:00",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (manifests / "batch_run_manifest.json").write_text(
+        json.dumps(
+            {
+                "events": [
+                    {
+                        "stage": "complete",
+                        "shot_ids": [shot["shot_id"]],
+                        "provider_failure_classes": ["empty_response"],
+                        "timestamp": "2026-07-18T08:59:00+00:00",
+                    },
+                    {
+                        "stage": "complete",
+                        "shot_ids": [shot["shot_id"]],
+                        "provider_failure_classes": ["empty_response"],
+                        "timestamp": "2026-07-18T09:01:00+00:00",
+                    },
+                    {
+                        "stage": "complete",
+                        "shot_ids": [shot["shot_id"]],
+                        "provider_failure_classes": ["empty_response"],
+                        "timestamp": "2026-07-18T09:02:00+00:00",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = visual_judge._next_batch_work(context)
+
+    assert payload["work_status"] == "ready"
+    assert payload["operation"] == "replan_shot_contract"
+    assert payload["shot_id"] == shot["shot_id"]
+    assert payload["provider_failure_replan"] is True
+    assert payload["provider_failure_class"] == "empty_response"
+    assert payload["provider_failure_attempt_count"] == 2
+    assert "no image_generation_call" in payload["hard_blockers"][0]
+
+    applied = visual_judge._apply_shot_contract_replan(
+        context,
+        shot_id=shot["shot_id"],
+        redesigned_shot={
+            "subject": "one hand opening a bedroom curtain at sunrise",
+            "action": "morning light reaches the resting child's blanket",
+            "evidence_detail": "one relaxed hand and one warm beam are visible",
+            "shot_scale": "wide",
+            "camera_angle": "quiet doorway view",
+            "focal_point": "the hand opening the curtain",
+            "subtitle_safe_area": "bottom 20 percent clear",
+            "acceptance_criteria": [
+                "one curtain-opening action is immediately readable"
+            ],
+        },
+    )
+
+    assert applied["success"] is True
+    updated = json.loads(
+        (manifests / "shot_candidate_manifest.json").read_text(encoding="utf-8")
+    )
+    event = updated["contract_replans"][-1]
+    assert event["provider_failure_replan"] is True
+    assert event["provider_failure_class"] == "empty_response"
+    assert event["provider_failure_attempt_count"] == 2
+
+
 def test_second_native_contract_replan_forces_visual_strategy_pivot(
     tmp_path, monkeypatch
 ) -> None:
