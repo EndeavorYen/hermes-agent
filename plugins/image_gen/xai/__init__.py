@@ -23,6 +23,8 @@ import os
 import re
 import shutil
 import subprocess
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
@@ -30,6 +32,8 @@ from urllib.parse import unquote
 from urllib.parse import urlparse
 
 import requests
+
+from hermes_constants import get_hermes_home
 
 from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
@@ -408,8 +412,20 @@ def _generate_with_grok_build(
             aspect_ratio=aspect,
         )
 
+    try:
+        staged_image = _stage_grok_build_image(image, config=config)
+    except (OSError, ValueError) as exc:
+        return error_response(
+            error=f"Could not stage xAI Grok Build image for delivery: {exc}",
+            error_type="artifact_staging_failed",
+            provider="xai",
+            model=GROK_BUILD_MODEL,
+            prompt=prompt,
+            aspect_ratio=aspect,
+        )
+
     return success_response(
-        image=image,
+        image=staged_image,
         model=GROK_BUILD_MODEL,
         prompt=prompt,
         aspect_ratio=aspect,
@@ -419,8 +435,35 @@ def _generate_with_grok_build(
             "transport": GROK_BUILD_TRANSPORT,
             "reference_conditioning": "native_image_edit" if source_images else "none",
             "reference_image_count": len(source_images),
+            "provider_source_image": image,
         },
     )
+
+
+def _stage_grok_build_image(image: str, *, config: Dict[str, Any]) -> str:
+    source = Path(image).expanduser().resolve()
+    if not source.is_file():
+        raise ValueError(f"generated image does not exist: {source}")
+    suffix = source.suffix.lower()
+    if suffix not in _IMAGE_SUFFIXES:
+        raise ValueError(f"unsupported generated image extension: {suffix or '<none>'}")
+    output_dir = Path(
+        str(config.get("output_dir") or get_hermes_home() / "visual" / "outputs" / "xai")
+    ).expanduser()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    for _ in range(4):
+        filename = (
+            f"xai-{GROK_BUILD_MODEL}_{timestamp}_{uuid.uuid4().hex[:8]}{suffix}"
+        )
+        destination = output_dir / filename
+        try:
+            with source.open("rb") as source_file, destination.open("xb") as output_file:
+                shutil.copyfileobj(source_file, output_file)
+            return str(destination.resolve())
+        except FileExistsError:
+            continue
+    raise OSError("could not allocate a unique delivery filename")
 
 
 def _xai_image_field(source: str) -> Dict[str, str]:

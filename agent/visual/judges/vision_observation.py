@@ -7,6 +7,7 @@ NUMERIC_KEYS = {
     "subject_quality",
     "face_quality",
     "reference_adherence",
+    "edit_anchor_adherence",
     "character_identity_adherence",
     "identity_adherence",
     "character_adherence",

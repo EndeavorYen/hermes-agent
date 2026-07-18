@@ -95,6 +95,7 @@ def _merge_observations(
         "pose_composition",
         "pose_novelty",
         "fashion_material_quality",
+        "edit_anchor_adherence",
         "character_identity_adherence",
         "identity_adherence",
         "character_adherence",

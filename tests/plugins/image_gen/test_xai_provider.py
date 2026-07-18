@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -296,7 +297,11 @@ class TestGenerate:
         assert result["success"] is True
         assert result["provider"] == "xai"
         assert result["transport"] == "grok-build"
-        assert result["image"] == str(image)
+        assert Path(result["image"]).is_file()
+        assert Path(result["image"]).name.startswith(
+            "xai-grok-build-native-image_"
+        )
+        assert result["provider_source_image"] == str(image)
         command = captured["command"]
         assert "--disable-web-search" in command
         assert "--tools" not in command
@@ -309,6 +314,52 @@ class TestGenerate:
         assert "--no-subagents" in command
         assert "--no-memory" in command
         assert captured["kwargs"]["shell"] is False
+
+    def test_grok_build_stages_unique_readable_delivery_filename(
+        self, monkeypatch, tmp_path
+    ):
+        from plugins.image_gen import xai as xai_module
+
+        source = tmp_path / "session" / "images" / "1.jpg"
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"generated-image")
+        output_dir = tmp_path / "delivery"
+
+        def fake_run(command, **_kwargs):
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps({"image_path": str(source)}),
+                stderr="",
+            )
+
+        monkeypatch.setattr(
+            xai_module,
+            "_load_xai_config",
+            lambda: {
+                "transport": "grok-build",
+                "grok_binary": "grok",
+                "output_dir": str(output_dir),
+            },
+        )
+        monkeypatch.setattr(xai_module, "_grok_build_available", lambda _cfg=None: True)
+        monkeypatch.setattr(xai_module.subprocess, "run", fake_run)
+
+        first = xai_module.XAIImageGenProvider().generate(prompt="portrait")
+        second = xai_module.XAIImageGenProvider().generate(prompt="portrait")
+
+        pattern = re.compile(
+            r"^xai-grok-build-native-image_\d{8}T\d{6}Z_[0-9a-f]{8}\.jpg$"
+        )
+        first_path = Path(first["image"])
+        second_path = Path(second["image"])
+        assert pattern.fullmatch(first_path.name)
+        assert pattern.fullmatch(second_path.name)
+        assert first_path.parent == output_dir
+        assert first_path.read_bytes() == b"generated-image"
+        assert second_path.read_bytes() == b"generated-image"
+        assert first_path != second_path
+        assert first["provider_source_image"] == str(source)
 
     def test_grok_build_transport_instructs_native_edit_for_reference(
         self, monkeypatch, tmp_path

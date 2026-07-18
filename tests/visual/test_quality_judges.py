@@ -202,6 +202,66 @@ def test_quality_judge_accepts_edit_anchor_reference_adherence_evidence():
     assert "reference_role_evidence_missing" not in result["quality_issues"]
 
 
+def test_quality_judge_requires_explicit_identity_evidence_for_portrait_edit_anchor():
+    from agent.visual.judges.quality import judge_visual_quality
+
+    result = judge_visual_quality(
+        {
+            "artifact_id": "var_demo",
+            "kind": "image",
+            "hard_gate": {"passed": True, "delivery_possible": True},
+            "scores": {"aspect_match": 0.9, "resolution": 0.8, "final_score": 0.8},
+        },
+        request_context={
+            "has_reference_image": True,
+            "category": "portrait",
+            "reference_binding": {
+                "reference_order": [{"index": 1, "role_hint": "edit_anchor"}]
+            },
+        },
+        vision_observation={
+            "reference_adherence": 0.96,
+            "edit_anchor_adherence": 0.95,
+            "visual_appeal": 0.9,
+            "composition": 0.9,
+            "confidence": 0.9,
+        },
+    )
+
+    assert "reference_role_evidence_missing" in result["quality_issues"]
+
+
+def test_quality_judge_blocks_portrait_edit_anchor_below_identity_lock_threshold():
+    from agent.visual.judges.quality import judge_visual_quality
+
+    result = judge_visual_quality(
+        {
+            "artifact_id": "var_demo",
+            "kind": "image",
+            "hard_gate": {"passed": True, "delivery_possible": True},
+            "scores": {"aspect_match": 0.9, "resolution": 0.8, "final_score": 0.8},
+        },
+        request_context={
+            "has_reference_image": True,
+            "category": "portrait",
+            "reference_binding": {
+                "reference_order": [{"index": 1, "role_hint": "edit_anchor"}]
+            },
+        },
+        vision_observation={
+            "reference_adherence": 0.96,
+            "edit_anchor_adherence": 0.94,
+            "character_identity_adherence": 0.82,
+            "visual_appeal": 0.9,
+            "composition": 0.9,
+            "confidence": 0.9,
+        },
+    )
+
+    assert "reference_identity_drift" in result["quality_issues"]
+    assert result["scores"]["reference_adherence"] <= 0.82
+
+
 def test_quality_judge_flags_low_character_identity_adherence():
     from agent.visual.judges.quality import judge_visual_quality
 

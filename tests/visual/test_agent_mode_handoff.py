@@ -173,6 +173,47 @@ def test_direct_visual_handoff_routes_attached_chinese_edit_candidates_to_xai():
     }
 
 
+def test_direct_visual_handoff_recovers_attachment_only_identity_lock_continuation():
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.6-sol",
+    )
+    message = [
+        {
+            "type": "text",
+            "text": """[Thread context — prior messages in this thread (not yet in conversation history):]
+[thread parent] simon: 用 xAI 依這張 ref 產出 4 張，必須鎖定同一人物與臉部 identity
+1. 保留原本臉部、髮型與服裝
+2. 只調整材質和構圖
+simon: 這次完全沒有參考我提供的 ref，人物跑掉了
+assistant: 請重新附上原始 ref，我會依同一人物重做
+[End of thread context]
+
+Visual Arsenal default for Slack image work:
+- Internal routing metadata only.""",
+        },
+        {"type": "image_url", "image_url": {"url": "/tmp/ref.png"}},
+    ]
+
+    handoff = build_direct_visual_agent_handoff(agent, message)
+
+    assert handoff is not None
+    assert handoff["tool_name"] == "visual_agent_generate"
+    args = handoff["arguments"]
+    assert args["attachments"] == ["/tmp/ref.png"]
+    assert args["image_provider"] == "xai"
+    assert args["candidate_budget"] == 4
+    assert args["reference_binding"]["reference_order"][0]["role_hint"] == "edit_anchor"
+    assert "鎖定同一人物" in args["prompt"]
+    assert "保留原本臉部、髮型與服裝" in args["prompt"]
+    assert "只調整材質和構圖" in args["prompt"]
+    assert "Thread context" not in args["prompt"]
+    assert "Visual Arsenal" not in args["prompt"]
+
+
 def test_direct_visual_handoff_preserves_compact_s_suffix_video_duration():
     from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
 
