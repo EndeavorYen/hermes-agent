@@ -43,6 +43,9 @@ def test_runner_resumes_at_render_and_marks_artifact_ready(tmp_path) -> None:
         context.project_dir,
         store=store,
         voice_runner=lambda _context: calls.append("voice"),
+        voice_validator=lambda _context: SimpleNamespace(
+            ok=True, missing=(), violations=()
+        ),
         render_preparer=lambda _context: calls.append("prepare"),
         renderer=renderer,
         render_validator=lambda _context: SimpleNamespace(ok=True, missing=(), violations=()),
@@ -65,6 +68,9 @@ def test_runner_records_render_failure_without_claiming_media(tmp_path) -> None:
         context.run_id,
         context.project_dir,
         store=store,
+        voice_validator=lambda _context: SimpleNamespace(
+            ok=True, missing=(), violations=()
+        ),
         render_preparer=lambda _context: None,
         renderer=lambda _context: {"success": False, "error": "ffmpeg exited 1"},
         render_validator=lambda _context: SimpleNamespace(ok=False, missing=(), violations=()),
@@ -75,3 +81,28 @@ def test_runner_records_render_failure_without_claiming_media(tmp_path) -> None:
     assert result["error_type"] == "render_failed"
     assert "media" not in result
     assert ProductionJobStore(context.project_dir).load()["status"] == "failed"
+
+
+def test_runner_blocks_render_resume_without_current_voice_qc(tmp_path) -> None:
+    from plugins.story_video.production_runner import run_production
+
+    store, context = _render_context(tmp_path)
+    rendered = []
+
+    result = run_production(
+        context.run_id,
+        context.project_dir,
+        store=store,
+        voice_validator=lambda _context: SimpleNamespace(
+            ok=False,
+            missing=("qc/pronunciation_qc_report.json",),
+            violations=("local Qwen pronunciation QC is not PASS",),
+        ),
+        render_preparer=lambda _context: None,
+        renderer=lambda _context: rendered.append(True),
+    )
+
+    assert result["success"] is False
+    assert result["error_type"] == "voice_qc_failed"
+    assert "pronunciation_qc_report.json" in result["error"]
+    assert rendered == []
