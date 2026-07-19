@@ -196,6 +196,9 @@ def start_production(
             command=command,
         )
         return {**failed, "success": False, "work_status": "failed"}
+    latest = jobs.load() or {}
+    if latest.get("status") in {"artifact_ready", "delivered", "failed", "stopped"}:
+        return production_status(context)
     process_session_id = str(
         launched.get("session_id") or launched.get("process_session_id") or ""
     ).strip()

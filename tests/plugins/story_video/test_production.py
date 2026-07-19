@@ -73,6 +73,29 @@ def test_start_production_does_not_launch_twice_while_running(tmp_path) -> None:
     assert calls == 1
 
 
+def test_fast_worker_terminal_state_is_not_overwritten_by_launcher(tmp_path) -> None:
+    context = _context(tmp_path)
+    module = _production()
+    final = context.project_dir / "video" / "final.mp4"
+    final.parent.mkdir(parents=True)
+    final.write_bytes(b"video")
+
+    def fast_terminal(**_kwargs):
+        module.ProductionJobStore(context.project_dir).transition(
+            run_id=context.run_id,
+            visual_mode=context.visual_mode,
+            status="artifact_ready",
+            selected_mp4=str(final),
+        )
+        return json.dumps({"status": "running", "session_id": "proc-fast"})
+
+    payload = module.start_production(context, terminal_runner=fast_terminal)
+
+    assert payload["work_status"] == "artifact_ready"
+    assert payload["media"] == [f"MEDIA:{final}"]
+    assert module.ProductionJobStore(context.project_dir).load()["status"] == "artifact_ready"
+
+
 def test_ready_job_returns_only_existing_project_mp4_without_relaunch(tmp_path) -> None:
     context = _context(tmp_path)
     module = _production()
