@@ -109,6 +109,37 @@ def test_voice_executor_retries_one_transient_mlx_abort_then_passes(tmp_path) ->
     assert summary.work_status == "complete"
     assert summary.attempts == 2
     assert summary.transient_retries == 1
+
+
+def test_voice_executor_retries_no_metal_device_as_transient_failure(tmp_path) -> None:
+    context = _context(tmp_path)
+    selection = _selection(tmp_path)
+    python = tmp_path / "python"
+    script = tmp_path / "generate.py"
+    python.write_text("runtime", encoding="utf-8")
+    script.write_text("script", encoding="utf-8")
+    calls = []
+    proofs = iter((_proof(ok=False), _proof(ok=True)))
+
+    def runner(command, _cancel):
+        calls.append(command)
+        if len(calls) == 1:
+            return CommandResult(returncode=1, stderr="No Metal device available")
+        return CommandResult(returncode=0, stdout='{"success": true}')
+
+    executor = StoryVideoVoiceExecutor(
+        phase_validator=lambda _context: next(proofs),
+        command_runner=runner,
+        voice_profile_resolver=lambda _project: selection,
+        python_path=python,
+        script_path=script,
+    )
+
+    summary = executor.run(context)
+
+    assert len(calls) == 2
+    assert summary.work_status == "complete"
+    assert summary.transient_retries == 1
     assert summary.profile_id == "voice_b"
     assert summary.clone_mode == "full_icl"
     assert calls[0][-4:] == [

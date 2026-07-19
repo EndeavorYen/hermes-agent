@@ -33,7 +33,7 @@ from .sequence_quality import (
     write_sequence_quality_report,
 )
 from .shot_contract import shot_contract_hash
-from .state import PHASES, StoryVideoRunContext, StoryVideoStateStore
+from .state import StoryVideoRunContext, StoryVideoStateStore
 from .story_contract import story_contract_enabled, validate_story_script_bindings
 from .voice_profiles import (
     VOICE_BINDING_NAME,
@@ -1231,6 +1231,10 @@ def _render_artifact_violations(
 
 
 def _validate_render(context: StoryVideoRunContext) -> PhaseProof:
+    if context.visual_mode == "black_subtitle":
+        from .render_modes import validate_black_subtitle_render
+
+        return validate_black_subtitle_render(context)
     missing: list[str] = []
     violations: list[str] = []
     manifest_path = _render_manifest_path(context)
@@ -1282,9 +1286,10 @@ def validate_phase(context: StoryVideoRunContext) -> PhaseProof:
     return validators[context.phase](context)
 
 
-def _next_phase(phase: str) -> str:
-    index = PHASES.index(phase)
-    return PHASES[min(index + 1, len(PHASES) - 1)]
+def _next_phase(context: StoryVideoRunContext) -> str:
+    phases = context.phase_order
+    index = phases.index(context.phase)
+    return phases[min(index + 1, len(phases) - 1)]
 
 
 def _context_payload(context: StoryVideoRunContext) -> dict[str, Any]:
@@ -1455,6 +1460,20 @@ def story_video_audio_director(
         elif action == "status":
             payload = inspect_dubbing_project(context.project_dir)
         elif action == "start_production":
+            if context.phase not in {"voice", "render"}:
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error_type": "production_phase_invalid",
+                        "error": (
+                            "start_production is available only during voice or render; "
+                            f"current phase is {context.phase}"
+                        ),
+                        "run_id": context.run_id,
+                        "project_dir": str(context.project_dir),
+                    },
+                    ensure_ascii=False,
+                )
             if production_starter is None:
                 from .production import start_production
 
@@ -1670,13 +1689,14 @@ def story_video_control(
             payload.update(_context_payload(context))
             payload["proof"] = proof.marker
         elif proof.ok and context.phase != "complete":
+            next_phase = _next_phase(context)
             context = state_store.update(
                 context,
-                phase=_next_phase(context.phase),
+                phase=next_phase,
                 last_validated_phase=proof.phase,
                 repair_request="",
                 repair_phase="",
-                status="complete" if _next_phase(context.phase) == "complete" else "active",
+                status="complete" if next_phase == "complete" else "active",
             )
             _sync_candidate_manifest_phase(context)
             payload.update(_context_payload(context))

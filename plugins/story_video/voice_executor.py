@@ -98,7 +98,13 @@ def _run_cancellable(
 def _transient_mlx_abort(result: CommandResult) -> bool:
     detail = f"{result.stdout}\n{result.stderr}".lower()
     return result.returncode in {-6, 134} or any(
-        marker in detail for marker in ("abort trap: 6", "sigabrt", "signal 6")
+        marker in detail
+        for marker in (
+            "abort trap: 6",
+            "sigabrt",
+            "signal 6",
+            "no metal device available",
+        )
     )
 
 

@@ -18,6 +18,7 @@ from plugins.story_video.sequence_quality import write_sequence_quality_report
 from plugins.story_video.shot_contract import shot_contract_hash
 from plugins.story_video.state import StoryVideoStateStore, parse_operator_call
 from plugins.story_video.tools import (
+    _next_phase,
     story_video_audio_director,
     story_video_control,
     story_video_voice_manager,
@@ -143,6 +144,21 @@ def test_story_video_control_guides_without_active_project(tmp_path) -> None:
     assert payload["section"] == "status"
     assert "沒有綁定故事影片" in payload["guide"]
     assert store.for_session("no-project") is None
+
+
+def test_black_subtitle_planning_skips_image_phases(tmp_path) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    text = "故事影片：夜班故事｜1分｜全黑背景加字幕。"
+    call = parse_operator_call(text)
+    assert call is not None
+    context = store.create_or_load(
+        source_key="source-1",
+        session_id="session-1",
+        call=call,
+        original_request=text,
+    )
+
+    assert _next_phase(context) == "voice"
 
 
 def test_story_video_control_guides_active_project_without_advancing(tmp_path) -> None:
@@ -380,6 +396,7 @@ def test_audio_director_compiles_and_binds_active_story_project(tmp_path) -> Non
 
 def test_audio_director_starts_bound_production_with_canonical_context(tmp_path) -> None:
     store, context = _active_context(tmp_path)
+    context = store.update(context, phase="voice")
     calls = []
 
     def starter(active_context):
@@ -405,8 +422,27 @@ def test_audio_director_starts_bound_production_with_canonical_context(tmp_path)
     assert payload["process_session_id"] == "proc-1"
 
 
-def test_audio_director_default_production_rejects_uncompiled_project(tmp_path) -> None:
+def test_audio_director_does_not_launch_production_during_planning(tmp_path) -> None:
     store, _context = _active_context(tmp_path)
+    calls = []
+
+    payload = json.loads(
+        story_video_audio_director(
+            {"action": "start_production"},
+            session_id="session-1",
+            store=store,
+            production_starter=lambda context: calls.append(context),
+        )
+    )
+
+    assert calls == []
+    assert payload["success"] is False
+    assert payload["error_type"] == "production_phase_invalid"
+
+
+def test_audio_director_default_production_rejects_uncompiled_project(tmp_path) -> None:
+    store, context = _active_context(tmp_path)
+    store.update(context, phase="voice")
 
     payload = json.loads(
         story_video_audio_director(
