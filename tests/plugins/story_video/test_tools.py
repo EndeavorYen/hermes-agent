@@ -9,6 +9,7 @@ from plugins.story_video.accessible_explainer import (
     ensure_explanation_profile,
 )
 from plugins.story_video.audit import ProviderAudit, ProviderAuditEvent
+from plugins.story_video.dubbing import DubbingContractError
 from plugins.story_video.schemas import (
     STORY_VIDEO_AUDIO_DIRECTOR_SCHEMA,
     STORY_VIDEO_CONTROL_SCHEMA,
@@ -457,6 +458,45 @@ def test_audio_director_default_production_rejects_uncompiled_project(tmp_path) 
         "story_mode_invalid",
         "dubbing_contract_incomplete",
     }
+
+
+def test_audio_director_render_resume_does_not_require_dubbing_contract(
+    tmp_path, monkeypatch
+) -> None:
+    store, context = _active_context(tmp_path)
+    context = store.update(context, phase="render")
+
+    def forbidden_inspection(_project_dir):
+        raise DubbingContractError(
+            "story_mode_invalid",
+            "render resume must not inspect the completed voice contract",
+        )
+
+    monkeypatch.setattr(
+        "plugins.story_video.tools.inspect_dubbing_project",
+        forbidden_inspection,
+    )
+    monkeypatch.setattr(
+        "plugins.story_video.production.start_production",
+        lambda active_context: {
+            "success": True,
+            "work_status": "running",
+            "process_session_id": "render-proc",
+            "run_id": active_context.run_id,
+        },
+    )
+
+    payload = json.loads(
+        story_video_audio_director(
+            {"action": "start_production"},
+            session_id="session-1",
+            store=store,
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["work_status"] == "running"
+    assert payload["run_id"] == context.run_id
 
 
 def test_audio_director_preserves_failed_production_status(tmp_path) -> None:

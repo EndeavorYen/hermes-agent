@@ -1477,12 +1477,13 @@ def story_video_audio_director(
             if production_starter is None:
                 from .production import start_production
 
-                dubbing = inspect_dubbing_project(context.project_dir)
-                if context.phase == "voice" and dubbing.get("bound") is not True:
-                    raise DubbingContractError(
-                        "dubbing_contract_incomplete",
-                        "start_production requires a compiled and bound voice cast",
-                    )
+                if context.phase == "voice":
+                    dubbing = inspect_dubbing_project(context.project_dir)
+                    if dubbing.get("bound") is not True:
+                        raise DubbingContractError(
+                            "dubbing_contract_incomplete",
+                            "start_production requires a compiled and bound voice cast",
+                        )
                 production_starter = start_production
             payload = production_starter(context)
         elif action in {"production_status", "retry_delivery"}:
