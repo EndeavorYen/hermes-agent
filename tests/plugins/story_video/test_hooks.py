@@ -57,6 +57,64 @@ def test_voice_management_fast_route_avoids_story_project_and_shell_work(
     assert "Do not inspect story-video projects" in result["context"]
 
 
+def test_background_production_completion_fast_routes_to_status_once(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    context = store.create_or_load(
+        source_key="session:completion-session",
+        session_id="completion-session",
+        call=hooks.OperatorCall(
+            action="start",
+            topic="多角色短片",
+            duration="1分",
+            visual_style="全黑背景字幕",
+            visual_mode="black_subtitle",
+        ),
+        original_request="做一支全黑背景字幕的多角色短片",
+    )
+
+    result = hooks.pre_llm_call(
+        session_id="completion-session",
+        user_message=(
+            "[IMPORTANT: Background process completed. Output: "
+            f"STORY_VIDEO_PRODUCTION_COMPLETE run_id={context.run_id}]"
+        ),
+    )
+
+    assert "STORY_VIDEO_PRODUCTION_COMPLETION_FAST_ROUTE" in result["context"]
+    assert "story_video_audio_director action=production_status exactly once" in result[
+        "context"
+    ]
+    assert "Do not run shell commands" in result["context"]
+    assert "preserve every MEDIA:" in result["context"]
+
+
+def test_background_production_completion_ignores_another_run(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    store.create_or_load(
+        source_key="session:completion-mismatch",
+        session_id="completion-mismatch",
+        call=hooks.OperatorCall(action="start", topic="目前短片"),
+        original_request="做目前短片",
+    )
+
+    result = hooks.pre_llm_call(
+        session_id="completion-mismatch",
+        user_message=(
+            "[IMPORTANT: Background process completed. Output: "
+            "STORY_VIDEO_PRODUCTION_COMPLETE run_id=story-video-other-run]"
+        ),
+    )
+
+    assert result is not None
+    assert "STORY_VIDEO_PRODUCTION_COMPLETION_FAST_ROUTE" not in result["context"]
+
+
 def test_voice_management_fast_route_maps_lifecycle_actions_without_catching_casting(
 ) -> None:
     cases = {

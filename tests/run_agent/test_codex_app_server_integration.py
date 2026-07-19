@@ -848,6 +848,67 @@ class TestCodexToolProgressBridge:
 
         assert captured_timeout == [1200.0]
 
+    def test_story_video_workflow_uses_bounded_thirty_minute_timeout(self):
+        from agent.codex_runtime import _codex_turn_timeout_for_target
+
+        assert _codex_turn_timeout_for_target(
+            None,
+            {"goal": {"target_artifact": "story_video_workflow"}},
+        ) == 1800.0
+
+    def test_incomplete_story_video_turn_prefers_completed_mp4_over_stale_status(
+        self, monkeypatch, tmp_path
+    ):
+        video = tmp_path / "finished.mp4"
+        video.write_bytes(b"mp4")
+
+        def fake_run_turn(self, user_input, **kwargs):
+            return TurnResult(
+                final_text="Still checking quality.",
+                projected_messages=[
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{
+                            "id": "story-status",
+                            "type": "function",
+                            "function": {
+                                "name": "story_video_audio_director",
+                                "arguments": "{}",
+                            },
+                        }],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "story-status",
+                        "content": (
+                            '{"success": true, "action": "production_status", '
+                            f'"media": ["MEDIA:{video}"]}}'
+                        ),
+                    },
+                    {"role": "assistant", "content": "Still checking quality."},
+                ],
+                turn_id="t-story",
+                thread_id="th-story",
+                should_retire=True,
+                incomplete_turn_recovered=True,
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "th-story"
+        )
+
+        agent = _make_codex_agent()
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("故事影片繼續")
+
+        assert result["final_response"] == (
+            "故事影片已完成；已保留可交付的 MP4 成品。\n"
+            f"MEDIA:{video}"
+        )
+        assert agent._codex_session is None
+
     def test_completed_image_emits_generated_artifact_event(
         self,
         monkeypatch,

@@ -130,6 +130,10 @@ _INTERNAL_STORY_VIDEO_CONTROL_PREFIXES = (
     "STORY_VIDEO_AUTOPILOT",
     "STORY_VIDEO_PLANNING_COMPLETION",
 )
+_PRODUCTION_COMPLETION_RE = re.compile(
+    r"STORY_VIDEO_PRODUCTION_(?:COMPLETE|FAILED)\s+run_id=([A-Za-z0-9._-]+)",
+    re.IGNORECASE,
+)
 
 
 def _prompt_field_list(fields: tuple[str, ...]) -> str:
@@ -538,6 +542,25 @@ def pre_llm_call(
     **_: Any,
 ) -> dict[str, str] | None:
     from tools.story_video_provider_guard import explicit_visual_agent_request_detected
+
+    completion = _PRODUCTION_COMPLETION_RE.search(str(user_message or ""))
+    if completion is not None:
+        context = _STORE.for_session(session_id)
+        if context is None and parent_session_id:
+            context = _STORE.for_session(parent_session_id)
+        if context is not None and completion.group(1) == context.run_id:
+            return {
+                "context": (
+                    "STORY_VIDEO_PRODUCTION_COMPLETION_FAST_ROUTE. "
+                    "Call story_video_audio_director action=production_status exactly once "
+                    f"with run_id={context.run_id} project_dir={context.project_dir}. "
+                    "Do not run shell commands, repeat synthesis/rendering, or launch another "
+                    "background job. Report the persisted terminal state; on success preserve "
+                    "every MEDIA: MP4 tag from the tool result verbatim so the gateway uploads "
+                    "the finished video in this thread. On failure report the stored error and "
+                    "the retry_delivery recovery action."
+                )
+            }
 
     voice_action = _voice_management_action(user_message)
     if voice_action is not None:
