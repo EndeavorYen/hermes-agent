@@ -96,6 +96,31 @@ def test_fast_worker_terminal_state_is_not_overwritten_by_launcher(tmp_path) -> 
     assert module.ProductionJobStore(context.project_dir).load()["status"] == "artifact_ready"
 
 
+def test_artifact_ready_job_cannot_regress_to_running(tmp_path) -> None:
+    context = _context(tmp_path)
+    store = _production().ProductionJobStore(context.project_dir)
+    final = context.project_dir / "video" / "final.mp4"
+    final.parent.mkdir(parents=True)
+    final.write_bytes(b"video")
+    store.transition(
+        run_id=context.run_id,
+        visual_mode=context.visual_mode,
+        status="artifact_ready",
+        selected_mp4=str(final),
+    )
+
+    payload = store.transition(
+        run_id=context.run_id,
+        visual_mode=context.visual_mode,
+        status="running",
+        process_session_id="proc-late-launcher",
+    )
+
+    assert payload["status"] == "artifact_ready"
+    assert payload["selected_mp4"] == str(final)
+    assert store.load()["status"] == "artifact_ready"
+
+
 def test_ready_job_returns_only_existing_project_mp4_without_relaunch(tmp_path) -> None:
     context = _context(tmp_path)
     module = _production()

@@ -53,6 +53,14 @@ class ProductionJobStore:
         current_run_id = str(current.get("run_id") or "")
         if current_run_id and current_run_id != run_id:
             raise ValueError("Production job belongs to another story-video run")
+        current_status = str(current.get("status") or "")
+        if current_status == "delivered" and status != "delivered":
+            return current
+        if current_status == "artifact_ready" and status not in {
+            "artifact_ready",
+            "delivered",
+        }:
+            return current
         now = _utc_now()
         attempts = int(evidence.pop("attempts", current.get("attempts") or 1))
         payload = {
