@@ -277,6 +277,60 @@ def test_legacy_complete_job_runs_revalidation_only_through_launcher(
     assert rendered == []
 
 
+def test_failed_legacy_speech_revalidation_can_retry_without_rerendering(
+    tmp_path,
+) -> None:
+    from plugins.story_video.production_runner import run_production
+
+    context = _context(tmp_path)
+    state_store = StoryVideoStateStore(tmp_path)
+    context = state_store.update(context, phase="voice")
+    context = state_store.update(context, phase="render")
+    context = state_store.update(context, phase="complete", status="complete")
+    module = _production()
+    final = context.project_dir / "video" / "final.mp4"
+    final.parent.mkdir(parents=True)
+    final.write_bytes(b"legacy-speech-video")
+    module.ProductionJobStore(context.project_dir).transition(
+        run_id=context.run_id,
+        visual_mode=context.visual_mode,
+        status="artifact_ready",
+        selected_mp4=str(final),
+    )
+    rendered = []
+    revalidation_attempts = 0
+
+    def synchronous_terminal(**_kwargs):
+        nonlocal revalidation_attempts
+        revalidation_attempts += 1
+        passes = revalidation_attempts == 2
+        run_production(
+            context.run_id,
+            context.project_dir,
+            store=state_store,
+            renderer=lambda _context: rendered.append(True),
+            delivery_speech_validator=lambda _context, video: (
+                {
+                    "success": True,
+                    "qc_report": "qc/final_speech_qc_report.json",
+                    "video_sha256": hashlib.sha256(video.read_bytes()).hexdigest(),
+                }
+                if passes
+                else {"success": False, "error": "temporary ASR failure"}
+            ),
+        )
+        return json.dumps({"status": "running", "session_id": "proc-revalidate"})
+
+    first = module.start_production(context, terminal_runner=synchronous_terminal)
+    second = module.start_production(context, terminal_runner=synchronous_terminal)
+
+    assert first["work_status"] == "failed"
+    assert first["error_type"] == "final_speech_qc_failed"
+    assert second["work_status"] == "artifact_ready"
+    assert revalidation_attempts == 2
+    assert rendered == []
+
+
 def test_status_rejects_selected_mp4_outside_current_project(tmp_path) -> None:
     context = _context(tmp_path)
     module = _production()

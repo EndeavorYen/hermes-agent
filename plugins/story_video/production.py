@@ -194,8 +194,11 @@ def start_production(
 
     revalidation_only = bool(
         current is not None
-        and current.get("error_type") == "final_speech_qc_stale"
         and context.phase == "complete"
+        and (
+            current.get("revalidation_only") is True
+            or current.get("error_type") == "final_speech_qc_stale"
+        )
     )
     attempts = int((current or {}).get("attempts") or 0) + 1
     jobs.transition(
