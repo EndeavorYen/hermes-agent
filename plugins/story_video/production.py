@@ -54,12 +54,21 @@ class ProductionJobStore:
         if current_run_id and current_run_id != run_id:
             raise ValueError("Production job belongs to another story-video run")
         current_status = str(current.get("status") or "")
-        if current_status == "delivered" and status != "delivered":
+        invalidating_stale_speech_qc = (
+            status == "failed"
+            and str(evidence.get("error_type") or "") == "final_speech_qc_stale"
+        )
+        if (
+            current_status == "delivered"
+            and status != "delivered"
+            and not invalidating_stale_speech_qc
+        ):
             return current
-        if current_status == "artifact_ready" and status not in {
-            "artifact_ready",
-            "delivered",
-        }:
+        if (
+            current_status == "artifact_ready"
+            and status not in {"artifact_ready", "delivered"}
+            and not invalidating_stale_speech_qc
+        ):
             return current
         now = _utc_now()
         attempts = int(evidence.pop("attempts", current.get("attempts") or 1))
@@ -133,8 +142,23 @@ def production_status(context: StoryVideoRunContext) -> dict[str, Any]:
             )
             result.pop("media", None)
         else:
-            result["selected_mp4"] = str(selected)
-            result["media"] = [f"MEDIA:{selected}"]
+            from .delivery_speech import load_current_final_speech_report
+
+            _report, speech_proof = load_current_final_speech_report(
+                context, selected
+            )
+            if not speech_proof.ok:
+                result.update(
+                    {
+                        "success": False,
+                        "error_type": "final_speech_qc_stale",
+                        "error": "; ".join(speech_proof.violations),
+                    }
+                )
+                result.pop("media", None)
+            else:
+                result["selected_mp4"] = str(selected)
+                result["media"] = [f"MEDIA:{selected}"]
     return result
 
 
@@ -147,8 +171,19 @@ def start_production(
     current = jobs.load()
     if current is not None and current.get("status") in {"artifact_ready", "delivered"}:
         result = production_status(context)
-        result["already_complete"] = result.get("success") is True
-        return result
+        if result.get("success") is True:
+            result["already_complete"] = True
+            return result
+        jobs.transition(
+            run_id=context.run_id,
+            visual_mode=context.visual_mode,
+            status="failed",
+            attempts=int(current.get("attempts") or 1),
+            phase=context.phase,
+            error_type="final_speech_qc_stale",
+            error=str(result.get("error") or "final speech QC is stale"),
+        )
+        current = jobs.load()
     if current is not None and current.get("status") == "running":
         return {
             **current,

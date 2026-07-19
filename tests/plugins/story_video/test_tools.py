@@ -2521,7 +2521,7 @@ def test_voice_validation_verifies_v6_multi_character_routing_and_hashes(
         "voice_role": "cast",
         "voice": "multi_character",
         "rate": "per_speaker",
-        "profile_status": "locked_by_user",
+        "profile_status": "cast_bound",
         "voice_contract_status": "PASS",
         "model": "Qwen3-TTS-1.7B-Base",
         "inference_mode": "offline",

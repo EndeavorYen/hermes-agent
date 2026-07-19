@@ -326,21 +326,24 @@ def prepare_black_subtitle_render(context: StoryVideoRunContext) -> dict[str, An
 
 
 def _ffprobe_metadata(path: Path) -> dict[str, Any]:
-    process = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-show_entries",
-            "format=format_name,duration:stream=codec_type,codec_name",
-            "-of",
-            "json",
-            str(path),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        process = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=format_name,duration:stream=codec_type,codec_name",
+                "-of",
+                "json",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return {}
     if process.returncode != 0:
         return {}
     try:
@@ -370,28 +373,31 @@ def _ffprobe_metadata(path: Path) -> dict[str, Any]:
 
 
 def _top_frame_max_luminance(path: Path) -> float:
-    process = subprocess.run(
-        [
-            "ffmpeg",
-            "-v",
-            "error",
-            "-ss",
-            "0.5",
-            "-i",
-            str(path),
-            "-vf",
-            "crop=iw:floor(ih*0.25):0:0",
-            "-frames:v",
-            "1",
-            "-f",
-            "image2pipe",
-            "-vcodec",
-            "png",
-            "-",
-        ],
-        capture_output=True,
-        check=False,
-    )
+    try:
+        process = subprocess.run(
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-ss",
+                "0.5",
+                "-i",
+                str(path),
+                "-vf",
+                "crop=iw:floor(ih*0.25):0:0",
+                "-frames:v",
+                "1",
+                "-f",
+                "image2pipe",
+                "-vcodec",
+                "png",
+                "-",
+            ],
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return 255.0
     if process.returncode != 0 or not process.stdout:
         return 255.0
     with Image.open(io.BytesIO(process.stdout)) as image:
@@ -400,25 +406,28 @@ def _top_frame_max_luminance(path: Path) -> float:
 
 
 def _ffmpeg_audio_loudness(path: Path) -> dict[str, float | None]:
-    process = subprocess.run(
-        [
-            "ffmpeg",
-            "-hide_banner",
-            "-nostats",
-            "-i",
-            str(path),
-            "-map",
-            "0:a:0",
-            "-af",
-            "volumedetect",
-            "-f",
-            "null",
-            "-",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        process = subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-nostats",
+                "-i",
+                str(path),
+                "-map",
+                "0:a:0",
+                "-af",
+                "volumedetect",
+                "-f",
+                "null",
+                "-",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return {"mean_volume_db": None, "max_volume_db": None}
     output = process.stderr or ""
 
     def value(label: str) -> float | None:
@@ -446,10 +455,17 @@ def probe_narration_speech_evidence(
     except ValueError:
         manifest = {}
         report = {}
-    try:
-        expected_count = int(manifest.get("voice_chunk_count") or 0)
-    except (TypeError, ValueError):
-        expected_count = 0
+    expected_count_raw = manifest.get("voice_chunk_count")
+    expected_count = expected_count_raw if type(expected_count_raw) is int else 0
+    expected_ids = [
+        str(chunk.get("voice_chunk_id") or "").strip()
+        for output in manifest.get("outputs") or []
+        if isinstance(output, dict)
+        for segment in output.get("segments") or []
+        if isinstance(segment, dict)
+        for chunk in segment.get("voice_chunks") or []
+        if isinstance(chunk, dict)
+    ]
     evidence = report.get("acoustic_evidence")
     rows = evidence if isinstance(evidence, list) else []
     verified: list[dict[str, Any]] = []
@@ -457,11 +473,11 @@ def probe_narration_speech_evidence(
     for row in rows:
         if not isinstance(row, dict):
             continue
-        try:
-            similarity = float(row.get("transcript_similarity") or 0.0)
-        except (TypeError, ValueError):
+        similarity_raw = row.get("transcript_similarity")
+        if type(similarity_raw) not in {int, float}:
             continue
-        if not math.isfinite(similarity) or similarity <= 0.0:
+        similarity = float(similarity_raw)
+        if not math.isfinite(similarity) or not 0.0 < similarity <= 1.0:
             continue
         if not (
             str(row.get("voice_chunk_id") or "").strip()
@@ -485,13 +501,18 @@ def probe_narration_speech_evidence(
         and str(report.get("status") or "").upper() == "PASS"
         and report.get("method") == QWEN_SPEECH_QC_METHOD
         and report.get("checked_unit") == "voice_chunk"
+        and str(manifest.get("run_id") or "") == context.run_id
+        and str(report.get("run_id") or "") == context.run_id
         and expected_count > 0
+        and expected_count == len(expected_ids)
+        and all(expected_ids)
+        and len(set(expected_ids)) == expected_count
         and len(rows) == expected_count
         and len(verified) == expected_count
-        and len({str(row["voice_chunk_id"]) for row in verified}) == expected_count
+        and {str(row["voice_chunk_id"]) for row in verified} == set(expected_ids)
     )
     return {
-        "speech_content_status": "PASS" if valid_contract else "FAIL",
+        "source_speech_evidence_status": "PASS" if valid_contract else "FAIL",
         "speech_qc_method": str(report.get("method") or ""),
         "asr_verified_chunk_count": len(verified),
         "minimum_transcript_similarity": (
@@ -520,6 +541,10 @@ def probe_black_subtitle_media(
     audible = (
         isinstance(mean_volume, (int, float))
         and isinstance(max_volume, (int, float))
+        and not isinstance(mean_volume, bool)
+        and not isinstance(max_volume, bool)
+        and math.isfinite(float(mean_volume))
+        and math.isfinite(float(max_volume))
         and float(mean_volume) >= BLACK_SUBTITLE_MIN_MEAN_VOLUME_DB
         and float(max_volume) >= BLACK_SUBTITLE_MIN_PEAK_VOLUME_DB
     )
@@ -559,6 +584,7 @@ def finalize_black_subtitle_render(
     *,
     media_probe: Any = probe_black_subtitle_media,
     speech_evidence_probe: Any = probe_narration_speech_evidence,
+    final_speech_probe: Any = None,
 ) -> dict[str, Any]:
     selected, selected_relative = _project_file(
         context,
@@ -567,7 +593,14 @@ def finalize_black_subtitle_render(
     )
     expected_duration = float(renderer_result.get("duration_sec") or 0.0)
     media = media_probe(selected, expected_duration)
-    speech = speech_evidence_probe(context)
+    source_speech = speech_evidence_probe(context)
+    if final_speech_probe is None:
+        from .delivery_speech import verify_final_video_speech
+
+        final_speech_probe = verify_final_video_speech
+    final_speech = final_speech_probe(context, selected)
+    if not isinstance(final_speech, dict):
+        final_speech = {"success": False}
     subtitle_qc_path = Path(str(renderer_result.get("subtitle_qc_report") or ""))
     if not subtitle_qc_path.is_absolute():
         subtitle_qc_path = context.project_dir / subtitle_qc_path
@@ -583,7 +616,14 @@ def finalize_black_subtitle_render(
             "coverage_status": subtitle_status or "FAIL",
         },
         **media,
-        **speech,
+        **source_speech,
+        "speech_content_status": (
+            "PASS" if final_speech.get("success") is True else "FAIL"
+        ),
+        "final_speech_qc_report": str(final_speech.get("qc_report") or ""),
+        "final_speech_video_sha256": str(
+            final_speech.get("video_sha256") or ""
+        ),
     }
     proof_passes = (
         subtitle_status == "PASS"
@@ -592,6 +632,7 @@ def finalize_black_subtitle_render(
             for field in (
                 "container_status",
                 "audio_status",
+                "source_speech_evidence_status",
                 "speech_content_status",
                 "duration_match_status",
                 "black_background_status",
@@ -652,6 +693,7 @@ def validate_black_subtitle_render(context: StoryVideoRunContext):
         for field in (
             "container_status",
             "audio_status",
+            "source_speech_evidence_status",
             "speech_content_status",
             "duration_match_status",
             "black_background_status",
