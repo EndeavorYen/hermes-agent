@@ -55,18 +55,53 @@ _BUNDLE_USER_INSTRUCTION = "\nUser instruction: "
 _BUNDLE_FIRST_SKILL_BLOCK = "\n\n[Loaded as part of the "
 
 
-def _skill_goal_mode(frontmatter: dict[str, Any]) -> bool:
-    """Return whether a skill requires a durable Hermes goal."""
+def _skill_durable_goal_policy(frontmatter: dict[str, Any]) -> tuple[bool, list[str]]:
+    """Parse the runtime-neutral durable-goal contract from skill metadata."""
     metadata = frontmatter.get("metadata")
     if not isinstance(metadata, dict):
-        return False
-    hermes = metadata.get("hermes")
-    if not isinstance(hermes, dict):
-        return False
-    value = hermes.get("goal_mode", False)
-    if isinstance(value, bool):
-        return value
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+        return False, []
+    execution = metadata.get("execution")
+    if not isinstance(execution, dict):
+        return False, []
+    durable_goal = execution.get("durable_goal")
+    if isinstance(durable_goal, bool):
+        return durable_goal, []
+    if not isinstance(durable_goal, dict):
+        return False, []
+    required = durable_goal.get("required", False)
+    if not isinstance(required, bool):
+        required = str(required).strip().lower() in {"1", "true", "yes", "on"}
+    raw_constraints = durable_goal.get("constraints")
+    constraints = (
+        [str(value).strip() for value in raw_constraints if str(value).strip()]
+        if isinstance(raw_constraints, list)
+        else []
+    )
+    return required, constraints
+
+
+def build_durable_skill_goal(
+    cmd_keys: list[str],
+    objective: str,
+    *,
+    commands: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> str:
+    """Compose a stored goal from the objective and declared skill constraints."""
+    commands = commands if commands is not None else get_skill_commands()
+    constraints: list[str] = []
+    seen: set[str] = set()
+    for cmd_key in cmd_keys:
+        for value in commands.get(cmd_key, {}).get("goal_constraints", []):
+            constraint = str(value).strip()
+            if constraint and constraint not in seen:
+                constraints.append(constraint)
+                seen.add(constraint)
+    objective = (objective or "").strip()
+    if not constraints:
+        return objective
+    lines = [objective, "", "Required execution discipline:"]
+    lines.extend(f"- {constraint}" for constraint in constraints)
+    return "\n".join(lines)
 
 
 def extract_user_instruction_from_skill_message(content: Any) -> Optional[str]:
@@ -391,12 +426,14 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     cmd_name = _SKILL_MULTI_HYPHEN.sub('-', cmd_name).strip('-')
                     if not cmd_name:
                         continue
+                    goal_mode, goal_constraints = _skill_durable_goal_policy(frontmatter)
                     _skill_commands[f"/{cmd_name}"] = {
                         "name": name,
                         "description": description or f"Invoke the {name} skill",
                         "skill_md_path": str(skill_md),
                         "skill_dir": str(skill_md.parent),
-                        "goal_mode": _skill_goal_mode(frontmatter),
+                        "goal_mode": goal_mode,
+                        "goal_constraints": goal_constraints,
                     }
                 except Exception:
                     continue

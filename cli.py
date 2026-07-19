@@ -8928,6 +8928,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 # loads every leading skill (up to 5), not just the first.
                 # Inspired by Claude Code v2.1.199.
                 from agent.skill_commands import (
+                    build_durable_skill_goal,
                     build_stacked_skill_invocation_message,
                     split_stacked_skill_commands,
                 )
@@ -8946,7 +8947,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         )
                         return True
                     try:
-                        goal_runtime_note = self._bootstrap_skill_goal(user_instruction)
+                        durable_goal = build_durable_skill_goal(
+                            invoked_skill_keys,
+                            user_instruction,
+                            commands=skill_commands,
+                        )
+                        goal_runtime_note = self._bootstrap_skill_goal(durable_goal)
                     except Exception as exc:
                         self._console_print(
                             f"[bold red]Could not start {base_cmd} because Hermes could "
