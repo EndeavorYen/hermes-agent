@@ -337,7 +337,9 @@ def _story_video_help_instruction(section: str) -> str:
         f"once with section={section}. Do not run shell commands, terminal tools, "
         "file inspection, search, memory lookup, delegation, media, or visual tools. "
         "Do not create, bind, validate, or advance a story-video project. Do not "
-        "change auto mode or provider authorization. Return the guide text concisely."
+        "change auto mode or provider authorization. Return the guide field verbatim "
+        "as the entire user-facing answer; do not summarize, omit, reorder, translate, "
+        "or add text."
     )
 
 

@@ -402,6 +402,8 @@ def test_natural_help_fast_route_does_not_create_story_project(
     assert "section=help" in result["context"]
     assert "Do not run shell commands" in result["context"]
     assert "Do not create, bind, validate, or advance" in result["context"]
+    assert "Return the guide field verbatim" in result["context"]
+    assert "do not summarize, omit, reorder, translate, or add text" in result["context"]
 
 
 def test_natural_help_maps_status_examples_and_voices_without_catching_start() -> None:
