@@ -21,6 +21,51 @@ def test_parse_short_start_call_uses_operator_fields() -> None:
     assert call.auto_mode is False
 
 
+def test_parse_explicit_black_subtitle_mode_wins() -> None:
+    call = parse_operator_call(
+        "故事影片：夜班故事｜1分｜全黑背景加字幕。多角色配音。"
+    )
+
+    assert call is not None
+    assert call.visual_mode == "black_subtitle"
+
+
+def test_auto_adult_video_fails_closed_without_image_scope(tmp_path) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    text = "故事影片：成人夜班故事。NSFW，全自動完整製作並出片。"
+    call = parse_operator_call(text)
+
+    assert call is not None
+    context = store.create_or_load(
+        source_key="slack:thread",
+        session_id="session-1",
+        call=call,
+        original_request=text,
+    )
+
+    assert context.visual_mode == "black_subtitle"
+    assert context.phase_order == ("planning", "voice", "render", "complete")
+    assert "openai_image_generation" not in context.provider_policy["scopes"]
+
+
+def test_legacy_context_defaults_to_story_visual(tmp_path) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    call = parse_operator_call("故事影片：雲為什麼會下雨")
+    assert call is not None
+    context = store.create_or_load(
+        source_key="source-1",
+        session_id="session-1",
+        call=call,
+        original_request="故事影片：雲為什麼會下雨",
+    )
+    payload = context.to_dict()
+    payload.pop("visual_mode")
+
+    restored = type(context).from_dict(payload)
+
+    assert restored.visual_mode == "story_visual"
+
+
 def test_unspecified_visual_style_uses_generic_cinematic_default() -> None:
     call = parse_operator_call("故事影片：雲為什麼會下雨")
 

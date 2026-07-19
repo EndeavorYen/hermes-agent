@@ -162,6 +162,74 @@ caption
         assert tags == ["MEDIA:/tmp/voice.ogg"]
         assert voice is True
 
+    def test_gateway_auto_append_story_video_completed_mp4(self, tmp_path):
+        from gateway.run import _collect_auto_append_media_tags
+
+        video = tmp_path / "final.mp4"
+        video.write_bytes(b"mp4")
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [{
+                    "id": "call_story_video",
+                    "function": {"name": "story_video_audio_director"},
+                }],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_story_video",
+                "content": (
+                    '{"success": true, "action": "production_status", '
+                    f'"media": ["MEDIA:{video}"]}}'
+                ),
+            },
+            {"role": "assistant", "content": "影片完成。"},
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+
+        assert tags == [f"MEDIA:{video}"]
+        assert voice is False
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            '{"success": false, "action": "production_status", "media": ["MEDIA:{path}"]}',
+            '{"success": true, "action": "status", "media": ["MEDIA:{path}"]}',
+            '{"success": true, "action": "production_status", "media": ["MEDIA:{path}.wav"]}',
+            '{"success": true, "action": "production_status", "media": ["MEDIA:{missing}"]}',
+        ],
+    )
+    def test_gateway_auto_append_story_video_rejects_non_deliverables(
+        self, tmp_path, payload
+    ):
+        from gateway.run import _collect_auto_append_media_tags
+
+        video = tmp_path / "final.mp4"
+        video.write_bytes(b"mp4")
+        content = payload.replace("{path}", str(video)).replace(
+            "{missing}", str(tmp_path / "missing.mp4")
+        )
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [{
+                    "id": "call_story_video",
+                    "function": {"name": "story_video_audio_director"},
+                }],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_story_video",
+                "content": content,
+            },
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+
+        assert tags == []
+        assert voice is False
+
     def test_gateway_auto_append_image_generate_json_path(self):
         """image_generate returns a local path in JSON (no MEDIA: tag); it is
         auto-appended so delivery doesn't depend on the model restating it."""

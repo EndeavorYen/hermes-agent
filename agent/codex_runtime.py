@@ -16,6 +16,7 @@ compatibility.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -435,6 +436,59 @@ def _codex_turn_timeout_for_image_target(target: int | None) -> float:
     if not isinstance(target, int) or target <= 1:
         return 600.0
     return float(min(1800, 600 + ((target - 1) * 300)))
+
+
+def _codex_turn_timeout_for_target(
+    image_target: int | None,
+    raphael_decision: Mapping[str, Any] | None,
+) -> float:
+    """Use a bounded long-work deadline for the story-video workflow."""
+    if _is_story_video_workflow(raphael_decision):
+        return 1800.0
+    return _codex_turn_timeout_for_image_target(image_target)
+
+
+def _completed_story_video_media(
+    projected_messages: List[Dict[str, Any]],
+) -> list[str]:
+    """Return current-turn, persisted story-video MP4 deliverables."""
+    tool_names: dict[str, str] = {}
+    for message in projected_messages:
+        if message.get("role") != "assistant":
+            continue
+        for call in message.get("tool_calls") or []:
+            call_id = str(call.get("id") or call.get("call_id") or "")
+            function = call.get("function") or {}
+            name = str(function.get("name") or call.get("name") or "")
+            if call_id and name:
+                tool_names[call_id] = name
+
+    media: list[str] = []
+    for message in projected_messages:
+        if message.get("role") not in {"tool", "function"}:
+            continue
+        call_id = str(message.get("tool_call_id") or message.get("call_id") or "")
+        if tool_names.get(call_id) != "story_video_audio_director":
+            continue
+        try:
+            payload = json.loads(str(message.get("content") or ""))
+        except Exception:
+            continue
+        if not (
+            isinstance(payload, dict)
+            and payload.get("success") is True
+            and payload.get("action") in {"production_status", "retry_delivery"}
+            and isinstance(payload.get("media"), list)
+        ):
+            continue
+        for value in payload["media"]:
+            if not isinstance(value, str) or not value.startswith("MEDIA:"):
+                continue
+            path = value.removeprefix("MEDIA:").strip()
+            candidate = Path(path).expanduser()
+            if candidate.suffix.lower() == ".mp4" and candidate.is_file():
+                media.append(f"MEDIA:{path}")
+    return list(dict.fromkeys(media))
 
 
 def _completed_codex_image_path(note: Mapping[str, Any]) -> Path | None:
@@ -871,7 +925,10 @@ def run_codex_app_server_turn(
     try:
         turn = agent._codex_session.run_turn(
             user_input=user_message,
-            turn_timeout=_codex_turn_timeout_for_image_target(image_target),
+            turn_timeout=_codex_turn_timeout_for_target(
+                image_target,
+                raphael_decision,
+            ),
         )
     except Exception as exc:
         logger.exception("codex app-server turn failed")
@@ -928,18 +985,27 @@ def run_codex_app_server_turn(
         getattr(turn, "incomplete_turn_recovered", False)
         and turn.error is None
     ):
+        completed_story_media = _completed_story_video_media(
+            turn.projected_messages
+        )
         progress = getattr(agent, "_codex_image_progress", None)
-        if isinstance(progress, dict) and (
+        stale_text = turn.final_text
+        if completed_story_media:
+            turn.final_text = (
+                "故事影片已完成；已保留可交付的 MP4 成品。\n"
+                + "\n".join(completed_story_media)
+            )
+        elif isinstance(progress, dict) and (
             int(progress.get("succeeded") or 0)
             or int(progress.get("failed") or 0)
         ):
-            stale_text = turn.final_text
             turn.final_text = (
                 f"{_format_image_progress(progress)} "
                 "The Codex turn reached its time limit. Completed outputs "
                 "were preserved, and the session was reset so the next "
                 "message can continue safely."
             )
+        if turn.final_text != stale_text:
             for message in reversed(turn.projected_messages):
                 if (
                     message.get("role") == "assistant"

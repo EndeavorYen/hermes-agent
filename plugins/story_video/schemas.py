@@ -122,7 +122,8 @@ STORY_VIDEO_VOICE_MANAGER_SCHEMA = {
 STORY_VIDEO_AUDIO_DIRECTOR_SCHEMA = {
     "name": "story_video_audio_director",
     "description": (
-        "Compile and inspect a story-video character dubbing contract. Supports "
+        "Compile, inspect, produce, and deliver a story-video character dubbing "
+        "contract. Supports "
         "creative, remake, and exact read-aloud modes and locks each speaker to "
         "one concrete catalog voice with locked engine evidence before synthesis."
     ),
@@ -131,7 +132,14 @@ STORY_VIDEO_AUDIO_DIRECTOR_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["compile", "bind_cast", "status"],
+                "enum": [
+                    "compile",
+                    "bind_cast",
+                    "status",
+                    "start_production",
+                    "production_status",
+                    "retry_delivery",
+                ],
             },
             "mode": {
                 "type": "string",

@@ -57,6 +57,199 @@ def test_voice_management_fast_route_avoids_story_project_and_shell_work(
     assert "Do not inspect story-video projects" in result["context"]
 
 
+def test_background_production_completion_fast_routes_to_status_once(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    context = store.create_or_load(
+        source_key="session:completion-session",
+        session_id="completion-session",
+        call=hooks.OperatorCall(
+            action="start",
+            topic="多角色短片",
+            duration="1分",
+            visual_style="全黑背景字幕",
+            visual_mode="black_subtitle",
+        ),
+        original_request="做一支全黑背景字幕的多角色短片",
+    )
+
+    result = hooks.pre_llm_call(
+        session_id="completion-session",
+        user_message=(
+            "[IMPORTANT: Background process completed. Output: "
+            f"STORY_VIDEO_PRODUCTION_COMPLETE run_id={context.run_id}]"
+        ),
+    )
+
+    assert "STORY_VIDEO_PRODUCTION_COMPLETION_FAST_ROUTE" in result["context"]
+    assert "story_video_audio_director action=production_status exactly once" in result[
+        "context"
+    ]
+    assert "Do not run shell commands" in result["context"]
+    assert "preserve every MEDIA:" in result["context"]
+
+
+def test_background_production_completion_ignores_another_run(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    store.create_or_load(
+        source_key="session:completion-mismatch",
+        session_id="completion-mismatch",
+        call=hooks.OperatorCall(action="start", topic="目前短片"),
+        original_request="做目前短片",
+    )
+
+    result = hooks.pre_llm_call(
+        session_id="completion-mismatch",
+        user_message=(
+            "[IMPORTANT: Background process completed. Output: "
+            "STORY_VIDEO_PRODUCTION_COMPLETE run_id=story-video-other-run]"
+        ),
+    )
+
+    assert result is not None
+    assert "STORY_VIDEO_PRODUCTION_COMPLETION_FAST_ROUTE" not in result["context"]
+
+
+def test_black_subtitle_planning_forbids_image_generation(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    context = store.create_or_load(
+        source_key="session:black-planning",
+        session_id="black-planning",
+        call=hooks.OperatorCall(
+            action="start",
+            topic="黑底對話短片",
+            visual_mode="black_subtitle",
+        ),
+        original_request="多角色配音影片，全黑背景加字幕，不要產圖",
+    )
+
+    result = hooks.pre_llm_call(
+        session_id="black-planning",
+        user_message="繼續",
+    )
+
+    assert f"run_id={context.run_id}" in result["context"]
+    assert "visual_mode=black_subtitle" in result["context"]
+    assert "Image generation and release art are forbidden" in result["context"]
+    assert "Every image_generate call MUST" not in result["context"]
+    assert "RELEASE_OPENING_C01" not in result["context"]
+
+
+def test_black_subtitle_bound_cast_starts_background_production(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    monkeypatch.setattr(hooks, "_has_bound_voice_cast", lambda _context: True)
+    context = store.create_or_load(
+        source_key="session:black-voice",
+        session_id="black-voice",
+        call=hooks.OperatorCall(
+            action="start",
+            topic="黑底對話短片",
+            visual_mode="black_subtitle",
+        ),
+        original_request="多角色配音影片，全黑背景加字幕，不要產圖",
+    )
+    store.update(context, phase="voice", auto_mode=True)
+
+    result = hooks.pre_llm_call(session_id="black-voice", user_message="繼續")
+
+    assert "story_video_audio_director action=start_production" in result["context"]
+    assert "story_video_quality_control action=run_voice_phase" not in result["context"]
+    assert "background" in result["context"]
+
+
+def test_multirole_voice_without_binding_compiles_cast_before_synthesis(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    monkeypatch.setattr(hooks, "_has_bound_voice_cast", lambda _context: False)
+    context = store.create_or_load(
+        source_key="session:cast-first",
+        session_id="cast-first",
+        call=hooks.OperatorCall(action="start", topic="角色故事"),
+        original_request=(
+            "多角色配音：旁白用 simon_clean_v2，安安用 Vivian，媽媽用 Serena"
+        ),
+    )
+    store.update(context, phase="voice", auto_mode=True)
+
+    result = hooks.pre_llm_call(session_id="cast-first", user_message="繼續")
+
+    assert "story_video_audio_director action=compile exactly once" in result["context"]
+    assert "story_video_quality_control action=run_voice_phase" not in result["context"]
+
+
+def test_running_background_production_is_not_phase_failed_or_auto_relaunched(
+    tmp_path, monkeypatch
+) -> None:
+    from plugins.story_video.production import ProductionJobStore
+
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    context = store.create_or_load(
+        source_key="session:background-running",
+        session_id="background-running",
+        call=hooks.OperatorCall(
+            action="start",
+            topic="黑底對話短片",
+            visual_mode="black_subtitle",
+        ),
+        original_request="多角色黑底字幕影片，全自動",
+    )
+    context = store.update(context, phase="voice", auto_mode=True)
+    ProductionJobStore(context.project_dir).transition(
+        run_id=context.run_id,
+        visual_mode=context.visual_mode,
+        status="running",
+        phase="voice",
+    )
+    hooks.pre_llm_call(session_id="background-running", user_message="繼續")
+
+    transformed = hooks.transform_llm_output(
+        session_id="background-running",
+        response_text="背景工作已啟動。",
+    )
+    continuation = hooks.auto_continue_llm_output(
+        session_id="background-running",
+        response_text=transformed,
+    )
+
+    assert "STORY_VIDEO_PRODUCTION_PROGRESS: running" in transformed
+    assert "尚未通過 phase proof" not in transformed
+    assert continuation is None
+
+
+def test_story_visual_render_launches_background_renderer(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    context = store.create_or_load(
+        source_key="session:story-render",
+        session_id="story-render",
+        call=hooks.OperatorCall(action="start", topic="圖片故事"),
+        original_request="故事影片：圖片故事｜1 分鐘｜插畫。全自動",
+    )
+    store.update(context, phase="render", auto_mode=True)
+
+    result = hooks.pre_llm_call(session_id="story-render", user_message="繼續")
+
+    assert "story_video_audio_director action=start_production" in result["context"]
+    assert "render_story_video.py" not in result["context"]
+    assert "background" in result["context"]
+
+
 def test_voice_management_fast_route_maps_lifecycle_actions_without_catching_casting(
 ) -> None:
     cases = {
@@ -616,6 +809,23 @@ def test_gateway_rewrites_short_start_with_structured_context(tmp_path, monkeypa
     assert '"action": "start"' in result["text"]
 
 
+def test_gateway_rewrites_multirole_short_video_with_visual_mode(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(hooks, "_STORE", StoryVideoStateStore(tmp_path))
+
+    result = hooks.pre_gateway_dispatch(
+        event=_event(
+            "請把以下故事做成短片，全黑背景加字幕，多角色配音："
+            "旁白用 simon_clean_v2，安安用 Vivian。"
+        )
+    )
+
+    assert result is not None
+    assert result["action"] == "rewrite"
+    assert '"visual_mode": "black_subtitle"' in result["text"]
+
+
 def test_gateway_only_rewrites_continue_when_source_is_active(tmp_path, monkeypatch) -> None:
     store = StoryVideoStateStore(tmp_path)
     monkeypatch.setattr(hooks, "_STORE", store)
@@ -1100,9 +1310,9 @@ def test_autopilot_context_requires_canonical_quality_tool_and_phase_loop(
     )
     assert "compile_release_art" in render["context"]
     assert "register_release_art" in render["context"]
-    assert "before prepare_render" in render["context"]
-    assert "--refresh-qc" in render["context"]
-    assert "without re-encoding" in render["context"]
+    assert "before background production" in render["context"]
+    assert "action=start_production" in render["context"]
+    assert "--refresh-qc" not in render["context"]
     assert "approved story-video music library" in render["context"]
     assert "must never download random or unlicensed music" in render["context"]
     assert "During batch, first call" not in render["context"]

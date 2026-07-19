@@ -130,6 +130,10 @@ _INTERNAL_STORY_VIDEO_CONTROL_PREFIXES = (
     "STORY_VIDEO_AUTOPILOT",
     "STORY_VIDEO_PLANNING_COMPLETION",
 )
+_PRODUCTION_COMPLETION_RE = re.compile(
+    r"STORY_VIDEO_PRODUCTION_(?:COMPLETE|FAILED)\s+run_id=([A-Za-z0-9._-]+)",
+    re.IGNORECASE,
+)
 
 
 def _prompt_field_list(fields: tuple[str, ...]) -> str:
@@ -374,6 +378,7 @@ def handle_story_video_command(raw_args: str, *, event: Any = None) -> str:
 
 
 def _write_project_contract(context: StoryVideoRunContext) -> dict[str, Any]:
+    visual_mode = str(getattr(context, "visual_mode", "story_visual"))
     explanation_profile = ensure_explanation_profile(
         context.project_dir,
         context.original_request,
@@ -390,14 +395,23 @@ def _write_project_contract(context: StoryVideoRunContext) -> dict[str, Any]:
                 f"- Topic: {context.topic}",
                 f"- Duration: {context.duration}",
                 f"- Visual style: {context.visual_style}",
+                f"- Visual mode: `{visual_mode}`",
                 "- Workflow: `story-video-production-pipeline`",
                 "- LLM provider: `openai-codex`",
-                "- Source image provider: `openai-codex`",
+                (
+                    "- Source image provider: forbidden"
+                    if visual_mode == "black_subtitle"
+                    else "- Source image provider: `openai-codex`"
+                ),
                 "- Generic video provider: forbidden",
                 "- Render provider: local deterministic renderer",
                 "- TTS provider: locked local Qwen narration; no network, Edge, or xAI fallback",
                 "- Timeline: image changes only on narration-segment boundaries; never cut a spoken sentence",
-                "- Motion: cinematic focus push 1.0 -> 1.10; one eased focal target, no per-frame tracking",
+                (
+                    "- Motion: static pure-black frame"
+                    if visual_mode == "black_subtitle"
+                    else "- Motion: cinematic focus push 1.0 -> 1.10; one eased focal target, no per-frame tracking"
+                ),
                 "- Quality mode: quality-first shot-driven production",
                 "- Audience default: curious children age 5+; clear but never baby talk",
                 f"- Explanation profile: `{explanation_profile['profile_id']}`",
@@ -448,6 +462,34 @@ def _native_voice_call(context: StoryVideoRunContext) -> str:
     )
 
 
+def _needs_bound_voice_cast(context: StoryVideoRunContext) -> bool:
+    text = str(context.original_request or "")
+    return context.visual_mode == "black_subtitle" or bool(
+        re.search(r"(?:多角色|角色配音|multi[ -]?role)", text, re.IGNORECASE)
+        or len(re.findall(r"\S+\s*用\s*[A-Za-z][\w-]*", text)) >= 2
+    )
+
+
+def _has_bound_voice_cast(context: StoryVideoRunContext) -> bool:
+    try:
+        from .dubbing import inspect_dubbing_project
+        from .voice_profiles import VoiceProfileError
+
+        return inspect_dubbing_project(context.project_dir).get("bound") is True
+    except (OSError, TypeError, ValueError, VoiceProfileError):
+        return False
+
+
+def _production_job_status(context: StoryVideoRunContext) -> str:
+    try:
+        from .production import ProductionJobStore
+
+        payload = ProductionJobStore(context.project_dir).load() or {}
+    except (OSError, TypeError, ValueError):
+        return ""
+    return str(payload.get("status") or "").strip().lower()
+
+
 def _autopilot_authorization_instruction(
     context: StoryVideoRunContext,
 ) -> str:
@@ -455,16 +497,24 @@ def _autopilot_authorization_instruction(
     if authorization is None:
         return ""
     scopes = ",".join(str(scope) for scope in authorization["scopes"])
-    return (
-        " VERIFIED_STORY_VIDEO_AUTHORIZATION "
-        f"authorization_id={authorization['authorization_id']} "
-        f"run_id={context.run_id} project_dir={context.project_dir} "
-        f"provider={authorization['provider']} scopes={scopes}. "
+    purpose = (
+        "This black-subtitle authorization permits only project-local writes, offline "
+        "local Qwen narration and QC, and deterministic local rendering; image generation "
+        "and external visual QC are not authorized. "
+        if context.visual_mode == "black_subtitle"
+        else
         "This authorization was persisted from the operator's full-auto story-video "
         "request and is purpose-limited to sending purpose-created story prompts and "
         "generated source art to OpenAI for image generation and vision QC, plus writes "
         "inside this project directory and offline local Qwen narration with local voice "
         "QC; unrelated workspace data is not authorized. "
+    )
+    return (
+        " VERIFIED_STORY_VIDEO_AUTHORIZATION "
+        f"authorization_id={authorization['authorization_id']} "
+        f"run_id={context.run_id} project_dir={context.project_dir} "
+        f"provider={authorization['provider']} scopes={scopes}. "
+        f"{purpose}"
         "The native tool verifies the authorization ID, run, project, provider, and "
         "scopes before dispatch; a stop command revokes it. "
     )
@@ -522,6 +572,7 @@ def pre_gateway_dispatch(
         "repair_request": call.repair_request,
         "auto_mode": call.auto_mode,
         "new_project": call.new_project,
+        "visual_mode": call.visual_mode,
         "source_key": source_key,
         "original_request": operator_text,
     }
@@ -537,6 +588,25 @@ def pre_llm_call(
     **_: Any,
 ) -> dict[str, str] | None:
     from tools.story_video_provider_guard import explicit_visual_agent_request_detected
+
+    completion = _PRODUCTION_COMPLETION_RE.search(str(user_message or ""))
+    if completion is not None:
+        context = _STORE.for_session(session_id)
+        if context is None and parent_session_id:
+            context = _STORE.for_session(parent_session_id)
+        if context is not None and completion.group(1) == context.run_id:
+            return {
+                "context": (
+                    "STORY_VIDEO_PRODUCTION_COMPLETION_FAST_ROUTE. "
+                    "Call story_video_audio_director action=production_status exactly once "
+                    f"with run_id={context.run_id} project_dir={context.project_dir}. "
+                    "Do not run shell commands, repeat synthesis/rendering, or launch another "
+                    "background job. Report the persisted terminal state; on success preserve "
+                    "every MEDIA: MP4 tag from the tool result verbatim so the gateway uploads "
+                    "the finished video in this thread. On failure report the stored error and "
+                    "the retry_delivery recovery action."
+                )
+            }
 
     voice_action = _voice_management_action(user_message)
     if voice_action is not None:
@@ -647,6 +717,7 @@ def pre_llm_call(
             repair_request=str(payload.get("repair_request") or ""),
             auto_mode=payload.get("auto_mode") is True,
             new_project=payload.get("new_project") is True,
+            visual_mode=str(payload.get("visual_mode") or "auto"),
         )
         context = _STORE.create_or_load(
             source_key=str(payload.get("source_key") or f"session:{session_id}"),
@@ -677,17 +748,25 @@ def pre_llm_call(
             "render from the revision source. "
         )
 
+    visual_policy = (
+        "Visual mode is black_subtitle. Image generation and release art are forbidden; "
+        "use a pure black 1920x1080 background with hard subtitles and local audio only. "
+        if context.visual_mode == "black_subtitle"
+        else
+        "Visual mode is story_visual. Every image_generate call MUST pass "
+        "provider=openai-codex. "
+    )
     instruction = (
         f"STORY_VIDEO_RUN_CONTEXT run_id={context.run_id} phase={context.phase} "
-        f"project_dir={context.project_dir}. Operator action={action}. "
+        f"visual_mode={context.visual_mode} project_dir={context.project_dir}. "
+        f"Operator action={action}. "
         f"{revision_boundary}"
         "This structured session is authoritative even when individual scene prompts "
         "do not mention story video. The original_request is historical and must not "
         "revoke a later operator autopilot authorization; never edit "
         "story_video_run_context.json and never edit production_checklist.json phase directly; "
         "phase transitions belong to story_video_control and the state store. "
-        "Every image_generate call MUST pass "
-        "provider=openai-codex. Never call generic video_generate for the body, "
+        f"{visual_policy}Never call generic video_generate for the body, "
         "and never use xAI/Grok through terminal or delegation. Use local locked "
         "narration/render components only; generic text_to_speech is forbidden. "
         "Narrator profiles are Qwen Base full voice clones selected by stable voice_id. "
@@ -912,11 +991,19 @@ def pre_llm_call(
         "### S01, and so on for the local voice parser. Preserve correct display "
         "spelling in all narration and never write spoken aliases into script.md; "
         "aliases belong only in pronunciation_lexicon.json and are compiled at voice time. "
-        "The ending_echo MUST support a cinematic educational ending. At render time, "
-        "generate exactly two distinct text-free sources identified as "
-        "RELEASE_OPENING_C01 and RELEASE_ENDING_C01; never reuse the opening source for "
-        "the ending. "
+        "The ending_echo MUST support a cinematic educational ending. "
         )
+        if context.visual_mode == "story_visual":
+            instruction += (
+                "At render time, generate exactly two distinct text-free sources identified "
+                "as RELEASE_OPENING_C01 and RELEASE_ENDING_C01; never reuse the opening "
+                "source for the ending. "
+            )
+        else:
+            instruction += (
+                "Do not create shot prompts, keyframes, release cards, thumbnails, image "
+                "manifests, or provider image audit events for this black-subtitle run. "
+            )
     if context.phase == "batch":
         instruction += (
         f"During batch, call {_native_chunk_call(context)} exactly "
@@ -943,18 +1030,42 @@ def pre_llm_call(
         "validate keyframes and schedule the next authorized chunk. "
         )
     if context.phase == "voice":
-        instruction += (
-        f"During voice, call {_native_voice_call(context)} exactly once per turn. "
-        "This is exactly one native voice phase call: it owns pronunciation compilation, "
-        "offline local Qwen synthesis, acoustic QC, one bounded transient MLX retry, and "
-        "stop/resume. Do not call generic text_to_speech, run shell commands, edit the "
-        "pronunciation lexicon, regenerate individual segments, or hand-write narration "
-        "manifests yourself. Return brief progress after the native call so internal "
-        "autopilot can validate voice and advance to render. "
-        )
+        if _needs_bound_voice_cast(context) and not _has_bound_voice_cast(context):
+            instruction += (
+                "During voice, call story_video_audio_director action=compile exactly once. "
+                "Derive ordered speakers, voice_id mappings, and utterances from the approved "
+                "story text and the operator's explicit casting. Do not synthesize until the "
+                "returned immutable cast binding is valid. "
+            )
+        elif context.visual_mode == "black_subtitle":
+            instruction += (
+                "During voice, call story_video_audio_director action=start_production "
+                f"run_id={context.run_id} project_dir={context.project_dir} exactly once. "
+                "It launches offline Qwen voice synthesis, QC, black-subtitle rendering, and "
+                "MP4 validation in the background. Return brief background progress; do not "
+                "poll, validate the voice phase, or relaunch it in this turn. "
+            )
+        else:
+            instruction += (
+                f"During voice, call {_native_voice_call(context)} exactly once per turn. "
+                "This is exactly one native voice phase call: it owns pronunciation "
+                "compilation, offline local Qwen synthesis, acoustic QC, one bounded transient "
+                "MLX retry, and stop/resume. Do not call generic text_to_speech, run shell "
+                "commands, edit the pronunciation lexicon, regenerate individual segments, "
+                "or hand-write narration manifests yourself. Return brief progress after the "
+                "native call so internal autopilot can validate voice and advance to render. "
+            )
     if context.phase == "render":
-        instruction += (
-        "During render, create dedicated release art before prepare_render. First call "
+        if context.visual_mode == "black_subtitle":
+            instruction += (
+                "During render, call story_video_audio_director action=start_production "
+                f"run_id={context.run_id} project_dir={context.project_dir} exactly once. "
+                "The deterministic black-subtitle renderer runs in the background. Do not "
+                "generate images, run shell commands, or poll in this turn. "
+            )
+        else:
+            instruction += (
+        "During render, create dedicated release art before background production. First call "
         "story_video_quality_control action=compile_release_art, then generate exactly two "
         "distinct text-free sources with image_generate provider=openai-codex using each "
         "returned candidates item: RELEASE_OPENING_C01 for the opening question and "
@@ -965,21 +1076,19 @@ def pre_llm_call(
         "action composes the thumbnail, opening, and cinematic educational ending locally. "
         "The ending MUST present story_engine ending_echo and knowledge_payoff as a beautiful "
         "final discovery, not a generic CTA or a blurred placeholder. Never substitute "
-        "the first or last body shot for missing release art. During render, call "
-        "story_video_quality_control action=prepare_render; it is "
-        "the only writer of render_input.json. Never hand-edit render_input.json or "
-        "invent renderer aliases. prepare_render may select only from the approved "
+        "the first or last body shot for missing release art. After registering both "
+        "release-art sources, call story_video_audio_director action=start_production "
+        f"run_id={context.run_id} project_dir={context.project_dir} exactly once. The "
+        "background worker is the only writer of render_input.json; never hand-edit it. "
+        "Render preparation may select only from the approved "
         "story-video music library. story_video_music_library_v2 requires at least three "
         "compatible rights-approved cue variants and compiles one project-local cue bed; "
         "it must never download random or unlicensed music. "
         "The renderer mixes approved BGM after visual encoding with narration-first "
         "sidechain ducking, and absence of an approved track must be reported as "
-        "NOT_CONFIGURED rather than silently substituting media. Then run the story-video production pipeline's "
-        "render_story_video.py for project_dir and validate render. If the selected "
-        "final MP4 already exists and only manifest or QC proof is blocked, run "
-        "render_story_video.py project_dir --refresh-qc to recompute evidence without "
-        "re-encoding the video. "
-        )
+        "NOT_CONFIGURED rather than silently substituting media. Do not run the renderer "
+        "through shell and do not poll in this turn. "
+            )
     instruction += (
         "Do not inspect other story-video projects, source code, memory, or unrelated "
         "skills, and do not "
@@ -1020,8 +1129,8 @@ def pre_llm_call(
         )
     if context.auto_mode:
         instruction += (
-            " STORY_VIDEO AUTOPILOT is enabled. Continue autonomously through planning, "
-            "keyframes, batch, voice, render, and complete. Call story_video_control "
+            " STORY_VIDEO AUTOPILOT is enabled. Continue autonomously through the persisted "
+            f"phase order {', '.join(context.phase_order)}. Call story_video_control "
             "action=validate after finishing each phase. If validation is BLOCKED, "
             "execute the exact repair_request immediately and validate again. Do not ask "
             "the operator to reply with continue or repair. Stop only for an operator "
@@ -1222,6 +1331,8 @@ def auto_continue_llm_output(
     context = _STORE.for_session(session_id)
     if context is None or not context.next_call:
         return None
+    if _production_job_status(context) in {"queued", "running"}:
+        return None
     planning_completion = (
         context.planning_only
         and context.phase == "planning"
@@ -1328,13 +1439,29 @@ def auto_continue_llm_output(
             native_work_complete = _batch_assets_complete(context)
         if not native_work_complete:
             if context.phase == "voice":
-                next_action = _native_voice_call(context)
-                next_work_instruction = (
-                    " Run exactly one native voice phase call. The tool owns offline local "
-                    "Qwen synthesis, pronunciation/alignment/prosody QC, bounded retry, "
-                    "and stop/resume behavior. Generic text_to_speech is forbidden; do not "
-                    "run shell commands or edit voice artifacts yourself."
-                )
+                if _needs_bound_voice_cast(context) and not _has_bound_voice_cast(context):
+                    next_action = "story_video_audio_director action=compile"
+                    next_work_instruction = (
+                        " Compile and hash-lock the explicit character-to-voice mapping and "
+                        "ordered utterances exactly once; do not synthesize yet."
+                    )
+                elif context.visual_mode == "black_subtitle":
+                    next_action = (
+                        "story_video_audio_director action=start_production "
+                        f"run_id={context.run_id} project_dir={context.project_dir}"
+                    )
+                    next_work_instruction = (
+                        " Launch exactly one background production job and then stop this "
+                        "turn without polling or phase validation."
+                    )
+                else:
+                    next_action = _native_voice_call(context)
+                    next_work_instruction = (
+                        " Run exactly one native voice phase call. The tool owns offline local "
+                        "Qwen synthesis, pronunciation/alignment/prosody QC, bounded retry, "
+                        "and stop/resume behavior. Generic text_to_speech is forbidden; do not "
+                        "run shell commands or edit voice artifacts yourself."
+                    )
             else:
                 next_action = _native_chunk_call(context)
                 next_work_instruction = (
@@ -1609,6 +1736,14 @@ def transform_llm_output(
     )
     phase_at_start = _SESSION_PHASE_AT_LLM_START.pop(session_id, None)
     _SESSION_STATUS_AT_LLM_START.pop(session_id, None)
+    production_status = _production_job_status(context)
+    if production_status in {"queued", "running"}:
+        return "\n".join(
+            (
+                "故事影片已在背景進行多角色配音、渲染與品質檢查。",
+                f"STORY_VIDEO_PRODUCTION_PROGRESS: {production_status}",
+            )
+        )
     attention = (
         _batch_review_attention(context)
         if phase_at_start == context.phase
@@ -1622,6 +1757,18 @@ def transform_llm_output(
             (
                 f"故事影片 {context.phase} 需要處理目前鏡頭 {shot_id}：{error}",
                 f"STORY_VIDEO_PHASE_ATTENTION: batch REVIEW_REQUIRED shot_id={shot_id}",
+            )
+        )
+    elif (
+        phase_at_start == context.phase == "voice"
+        and _needs_bound_voice_cast(context)
+        and _has_bound_voice_cast(context)
+        and not (context.project_dir / "manifests" / "narration_manifest.json").is_file()
+    ):
+        text = "\n".join(
+            (
+                "多角色聲線 mapping 已鎖定，等待下一個原生製作步驟。",
+                "STORY_VIDEO_CAST_BINDING: PASS",
             )
         )
     elif phase_at_start == context.phase == "voice" and _PHASE_REVIEW_REQUIRED_RE.search(

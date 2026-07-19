@@ -999,6 +999,7 @@ _AUTO_APPEND_MEDIA_TOOL_NAMES = {
     "image_generate",
     "visual_agent_generate",
     "visual_package_generate",
+    "story_video_audio_director",
 }
 
 # ---- helpers: detect interrupted tool tails & auto-continue noise ----------
@@ -1466,6 +1467,33 @@ def _collect_auto_append_media_tags(
             continue
         content = str(msg.get("content") or "")
         tool_name = tool_name_by_call_id.get(call_id)
+        if tool_name == "story_video_audio_director":
+            try:
+                payload = json.loads(content)
+            except Exception:
+                payload = None
+            if not (
+                isinstance(payload, dict)
+                and payload.get("success") is True
+                and payload.get("action") in {"production_status", "retry_delivery"}
+                and isinstance(payload.get("media"), list)
+            ):
+                continue
+            for media_ref in payload["media"]:
+                if not isinstance(media_ref, str):
+                    continue
+                match = _TOOL_MEDIA_RE.fullmatch(media_ref.strip())
+                if match is None:
+                    continue
+                path = match.group(1).strip().rstrip('",}')
+                candidate = Path(path).expanduser()
+                if (
+                    candidate.suffix.lower() == ".mp4"
+                    and candidate.is_file()
+                    and path not in history_media_paths
+                ):
+                    media_tags.append(f"MEDIA:{path}")
+            continue
         # JSON-payload tools (image_generate) return a local-file path in a
         # known field rather than a MEDIA: tag. Extract it so delivery is
         # deterministic even when the model omits the path from its reply.
