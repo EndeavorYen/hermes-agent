@@ -75,12 +75,25 @@ Planning-only remains explicit:
 
 Use `/story-video voices` or `列出故事影片聲線` to see stable voice IDs. A
 project binds those stable IDs to immutable concrete profile versions before
-synthesis.
+synthesis. Phase 1 uses an explicit workflow:
+
+1. Run `/story-video voices` to inspect the available voices.
+2. Provide the story text or describe the story you want.
+3. Explicitly assign a voice to every character; Phase 1 does not automatically
+   cast unassigned characters.
+
+Copy-ready example:
 
 ```text
-創作模式：依這個主題寫成多角色故事；旁白用 simon，其他角色自動選擇可用聲線。
-重製模式：保留附件故事的核心情節，改寫成 5 歲以上會好奇的繁中故事；旁白用 simon。
-說書模式：旁白用 simon，完全照附件原文朗讀，不改字。
+多角色配音：旁白用 simon_clean_v2，安安用 Vivian，媽媽用 Serena，船長用 Uncle_Fu。
+```
+
+The same explicit mapping can be included in each dubbing mode:
+
+```text
+創作模式：依這個主題寫成多角色故事。旁白用 simon_clean_v2，安安用 Vivian，媽媽用 Serena，船長用 Uncle_Fu。
+重製模式：保留附件故事的核心情節，改寫成 5 歲以上會好奇的繁中故事；旁白用 simon_clean_v2。
+說書模式：旁白用 simon_clean_v2，完全照附件原文朗讀，不改字。
 ```
 
 Voice management remains separate from production:
