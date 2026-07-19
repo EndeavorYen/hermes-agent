@@ -522,6 +522,7 @@ def pre_gateway_dispatch(
         "repair_request": call.repair_request,
         "auto_mode": call.auto_mode,
         "new_project": call.new_project,
+        "visual_mode": call.visual_mode,
         "source_key": source_key,
         "original_request": operator_text,
     }
@@ -647,6 +648,7 @@ def pre_llm_call(
             repair_request=str(payload.get("repair_request") or ""),
             auto_mode=payload.get("auto_mode") is True,
             new_project=payload.get("new_project") is True,
+            visual_mode=str(payload.get("visual_mode") or "auto"),
         )
         context = _STORE.create_or_load(
             source_key=str(payload.get("source_key") or f"session:{session_id}"),

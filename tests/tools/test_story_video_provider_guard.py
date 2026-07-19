@@ -126,6 +126,24 @@ def test_single_long_form_structure_signal_routes_video_to_story_video():
         assert story_video_request_detected(prompt, {}) is True
 
 
+def test_multi_role_video_routes_to_story_video() -> None:
+    from tools.story_video_provider_guard import story_video_request_detected
+
+    assert story_video_request_detected(
+        "請把以下故事做成短片，旁白用 simon_clean_v2，安安用 Vivian，多角色配音。",
+        {},
+    ) is True
+
+
+def test_audio_only_multi_role_dubbing_does_not_force_video_route() -> None:
+    from tools.story_video_provider_guard import story_video_request_detected
+
+    assert story_video_request_detected(
+        "請把這段文字做成多角色配音，旁白用 simon_clean_v2，安安用 Vivian。",
+        {},
+    ) is False
+
+
 def test_negated_structure_terms_keep_seconds_scale_clips_on_visual_route():
     from tools.story_video_provider_guard import story_video_request_detected
 

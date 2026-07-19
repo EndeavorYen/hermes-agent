@@ -16,6 +16,9 @@ from typing import Any
 DEFAULT_DURATION = "60-120s"
 DEFAULT_STYLE = "Cinematic topic-appropriate visual storytelling"
 PHASES = ("planning", "keyframes", "batch", "voice", "render", "complete")
+VISUAL_MODES = {"auto", "story_visual", "black_subtitle"}
+STORY_VISUAL_PHASES = PHASES
+BLACK_SUBTITLE_PHASES = ("planning", "voice", "render", "complete")
 AUTOPILOT_AUTHORIZATION_SCHEMA = "story_video_autopilot_authorization_v3"
 LEGACY_AUTOPILOT_AUTHORIZATION_SCHEMAS = {
     "story_video_autopilot_authorization_v1",
@@ -36,6 +39,7 @@ DEFAULT_PROVIDER_POLICY: dict[str, Any] = {
     "forbidden": ["xai", "xai-oauth", "grok", "grok_web_imagine"],
     "generic_video_body": "forbidden",
     "fallback": "fail_closed",
+    "scopes": list(AUTOPILOT_AUTHORIZATION_SCOPES),
 }
 
 _LOCK = threading.RLock()
@@ -47,6 +51,70 @@ def _utc_now() -> str:
 
 def _compact(text: str) -> str:
     return re.sub(r"\s+", " ", str(text or "").strip())
+
+
+def _requested_visual_mode(text: str) -> str:
+    compact = re.sub(r"[\s_\-.]+", "", str(text or "").casefold())
+    if any(
+        marker in compact
+        for marker in (
+            "全黑背景",
+            "黑底字幕",
+            "純黑背景",
+            "纯黑背景",
+            "blacksubtitle",
+            "blackbackground",
+        )
+    ):
+        return "black_subtitle"
+    if any(
+        marker in compact
+        for marker in (
+            "storyvisual",
+            "故事圖片",
+            "故事图片",
+            "圖片加字幕",
+            "图片加字幕",
+        )
+    ):
+        return "story_visual"
+    return "auto"
+
+
+def resolve_visual_mode(text: str, requested: str = "auto") -> str:
+    normalized = str(requested or "auto").strip().lower()
+    if normalized not in VISUAL_MODES:
+        raise ValueError(f"Unknown story-video visual mode: {requested}")
+    if normalized != "auto":
+        return normalized
+    compact = re.sub(r"\s+", "", str(text or "").casefold())
+    if any(
+        marker in compact
+        for marker in (
+            "nsfw",
+            "成人內容",
+            "成人内容",
+            "色情",
+            "性愛",
+            "性爱",
+        )
+    ):
+        return "black_subtitle"
+    return "story_visual"
+
+
+def _provider_policy_for_visual_mode(visual_mode: str) -> dict[str, Any]:
+    policy = json.loads(json.dumps(DEFAULT_PROVIDER_POLICY))
+    scopes = list(AUTOPILOT_AUTHORIZATION_SCOPES)
+    if visual_mode == "black_subtitle":
+        scopes = [
+            scope
+            for scope in scopes
+            if scope not in {"openai_image_generation", "openai_vision_qc"}
+        ]
+        policy["image"] = []
+    policy["scopes"] = scopes
+    return policy
 
 
 def _planning_only_requested(text: str) -> bool:
@@ -250,6 +318,7 @@ class OperatorCall:
     repair_request: str = ""
     auto_mode: bool = False
     new_project: bool = False
+    visual_mode: str = "auto"
 
 
 def parse_operator_call(
@@ -369,11 +438,30 @@ def parse_operator_call(
                 _autopilot_command(raw) and not _planning_only_requested(raw)
             ),
             new_project=explicit_new_project,
+            visual_mode=_requested_visual_mode(raw),
         )
 
     long_form = _parse_explicit_long_form_start(raw)
     if long_form is not None:
-        return long_form
+        return replace(long_form, visual_mode=_requested_visual_mode(raw))
+    from tools.story_video_provider_guard import story_video_request_detected
+
+    if (
+        story_video_request_detected(raw)
+        and re.search(r"(?:多角色配音|多角色聲音|多角色声音|multi[ -]?role)", raw, re.I)
+        and re.search(r"(?:短片|影片|視頻|视频|出片|mp4|video)", raw, re.I)
+    ):
+        return OperatorCall(
+            action="start",
+            topic="多角色故事",
+            duration=DEFAULT_DURATION,
+            visual_style=DEFAULT_STYLE,
+            auto_mode=(
+                not _planning_only_requested(raw)
+                and bool(re.search(r"(?:做成|製作|制作|生成|出片|mp4|produce|make)", raw, re.I))
+            ),
+            visual_mode=_requested_visual_mode(raw),
+        )
     return None
 
 
@@ -388,6 +476,7 @@ class StoryVideoRunContext:
     topic: str
     duration: str
     visual_style: str
+    visual_mode: str = "story_visual"
     parent_run_id: str = ""
     source_project_dir: Path | None = None
     auto_mode: bool = False
@@ -407,6 +496,12 @@ class StoryVideoRunContext:
     @property
     def planning_only(self) -> bool:
         return _planning_only_requested(self.original_request)
+
+    @property
+    def phase_order(self) -> tuple[str, ...]:
+        if self.visual_mode == "black_subtitle":
+            return BLACK_SUBTITLE_PHASES
+        return STORY_VISUAL_PHASES
 
     @property
     def next_call(self) -> str | None:
@@ -443,6 +538,11 @@ class StoryVideoRunContext:
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "StoryVideoRunContext":
         data = dict(payload)
+        data.setdefault("visual_mode", "story_visual")
+        data.setdefault(
+            "provider_policy",
+            _provider_policy_for_visual_mode(str(data["visual_mode"])),
+        )
         data["project_dir"] = Path(data["project_dir"])
         if data.get("source_project_dir"):
             data["source_project_dir"] = Path(data["source_project_dir"])
@@ -561,6 +661,16 @@ class StoryVideoStateStore:
                     parent_run_id=existing.run_id,
                     source_project_dir=existing.project_dir,
                     auto_mode=call.auto_mode,
+                    visual_mode=(
+                        existing.visual_mode
+                        if call.visual_mode == "auto"
+                        else resolve_visual_mode(original_request, call.visual_mode)
+                    ),
+                    provider_policy=_provider_policy_for_visual_mode(
+                        existing.visual_mode
+                        if call.visual_mode == "auto"
+                        else resolve_visual_mode(original_request, call.visual_mode)
+                    ),
                 )
             elif existing is not None and (
                 call.action != "start"
@@ -584,6 +694,13 @@ class StoryVideoStateStore:
                     duration=call.duration,
                     visual_style=call.visual_style,
                     auto_mode=call.auto_mode,
+                    visual_mode=resolve_visual_mode(
+                        original_request,
+                        call.visual_mode,
+                    ),
+                    provider_policy=_provider_policy_for_visual_mode(
+                        resolve_visual_mode(original_request, call.visual_mode)
+                    ),
                 )
 
             sessions = tuple(dict.fromkeys((*context.session_ids, session_id)))
@@ -682,9 +799,9 @@ class StoryVideoStateStore:
                     context = latest
 
             next_phase = changes.get("phase", context.phase)
-            if next_phase not in PHASES:
+            if next_phase not in context.phase_order:
                 raise ValueError(f"Unknown story-video phase: {next_phase}")
-            if PHASES.index(next_phase) < PHASES.index(context.phase):
+            if context.phase_order.index(next_phase) < context.phase_order.index(context.phase):
                 raise ValueError(
                     f"Story-video phase regression is forbidden: "
                     f"{context.phase} -> {next_phase}"
@@ -750,7 +867,7 @@ class StoryVideoStateStore:
             project_dir = str(context.project_dir.expanduser().resolve())
         except (OSError, RuntimeError):
             return None
-        expected_scopes = set(AUTOPILOT_AUTHORIZATION_SCOPES)
+        expected_scopes = set(context.provider_policy.get("scopes") or ())
         actual_scopes = {
             str(scope) for scope in payload.get("scopes") or [] if str(scope).strip()
         }
@@ -852,7 +969,7 @@ class StoryVideoStateStore:
                 "run_id": context.run_id,
                 "project_dir": str(context.project_dir.expanduser().resolve()),
                 "provider": "openai-codex",
-                "scopes": list(AUTOPILOT_AUTHORIZATION_SCOPES),
+                "scopes": list(context.provider_policy.get("scopes") or ()),
                 "authorization_id": authorization_id,
                 "original_request_sha256": hashlib.sha256(
                     context.original_request.encode("utf-8")

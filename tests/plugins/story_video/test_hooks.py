@@ -616,6 +616,23 @@ def test_gateway_rewrites_short_start_with_structured_context(tmp_path, monkeypa
     assert '"action": "start"' in result["text"]
 
 
+def test_gateway_rewrites_multirole_short_video_with_visual_mode(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(hooks, "_STORE", StoryVideoStateStore(tmp_path))
+
+    result = hooks.pre_gateway_dispatch(
+        event=_event(
+            "請把以下故事做成短片，全黑背景加字幕，多角色配音："
+            "旁白用 simon_clean_v2，安安用 Vivian。"
+        )
+    )
+
+    assert result is not None
+    assert result["action"] == "rewrite"
+    assert '"visual_mode": "black_subtitle"' in result["text"]
+
+
 def test_gateway_only_rewrites_continue_when_source_is_active(tmp_path, monkeypatch) -> None:
     store = StoryVideoStateStore(tmp_path)
     monkeypatch.setattr(hooks, "_STORE", store)
