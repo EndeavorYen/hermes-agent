@@ -104,11 +104,13 @@ def _visual_subtitle_text(
     speaker_id: str,
     display_name: str,
     emotion: str,
+    action: str,
 ) -> str:
     if speaker_id.casefold() in {"narrator", "旁白"}:
         return text
     emotion_label = BLACK_SUBTITLE_EMOTION_LABELS.get(emotion, "")
-    suffix = f"（{emotion_label}）" if emotion_label else ""
+    direction = action or emotion_label
+    suffix = f"（{direction}）" if direction else ""
     return f"{display_name or speaker_id}{suffix}\n「{text}」"
 
 
@@ -156,6 +158,7 @@ def _subtitle_cues(
                 raise ValueError("voice chunk requires display text and measured timing")
             speaker_id = _speaker_key(chunk)
             emotion = str(chunk.get("emotion") or "").strip()
+            action = str(chunk.get("action") or "").strip()
             cues.append(
                 {
                     "text": text,
@@ -164,6 +167,7 @@ def _subtitle_cues(
                         speaker_id=speaker_id,
                         display_name=speaker_display_names.get(speaker_id, speaker_id),
                         emotion=emotion,
+                        action=action,
                     ),
                     "start_sec": round(start, 4),
                     "end_sec": round(end, 4),
@@ -171,6 +175,7 @@ def _subtitle_cues(
                     "speaker_id": speaker_id,
                     "voice_id": str(chunk.get("voice_id") or "").strip(),
                     "emotion": emotion,
+                    "action": action,
                     "color": role_colors.get(
                         speaker_id, BLACK_SUBTITLE_NARRATOR_COLOR
                     ),
@@ -193,6 +198,7 @@ def _subtitle_cues(
                 "speaker_id": "narrator",
                 "voice_id": str(output.get("voice_id") or "").strip(),
                 "emotion": "",
+                "action": "",
                 "color": BLACK_SUBTITLE_NARRATOR_COLOR,
             }
         ]

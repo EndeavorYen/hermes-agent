@@ -174,6 +174,7 @@ STORY_VIDEO_AUDIO_DIRECTOR_SCHEMA = {
                         "speaker_id": {"type": "string"},
                         "display_text": {"type": "string"},
                         "emotion": {"type": "string"},
+                        "action": {"type": "string"},
                         "pace": {"type": "string"},
                         "source_start": {"type": "integer"},
                         "source_end": {"type": "integer"},

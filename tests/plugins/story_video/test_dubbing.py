@@ -14,6 +14,7 @@ from plugins.story_video.dubbing import (
     resolve_project_voice_cast,
 )
 from plugins.story_video.voice_profiles import add_voice_profile
+from plugins.story_video.schemas import STORY_VIDEO_AUDIO_DIRECTOR_SCHEMA
 
 
 def _add_voice(root: Path, voice_id: str, *, tuning=None) -> dict:
@@ -131,7 +132,13 @@ def test_creative_mode_compiles_three_project_contracts(tmp_path) -> None:
         speakers=_speakers(),
         utterances=[
             _utterance("U001", "narrator", "森林裡傳來一聲巨響。", emotion="wonder"),
-            _utterance("U002", "hero", "那是什麼？", pace="quick"),
+            _utterance(
+                "U002",
+                "hero",
+                "那是什麼？",
+                action="驚訝地看向森林深處",
+                pace="quick",
+            ),
         ],
     )
 
@@ -143,6 +150,17 @@ def test_creative_mode_compiles_three_project_contracts(tmp_path) -> None:
     ledger = json.loads((project / "dialogue_ledger.json").read_text(encoding="utf-8"))
     assert ledger["schema"] == "story_video_dialogue_ledger_v1"
     assert [row["order"] for row in ledger["utterances"]] == [1, 2]
+    assert ledger["utterances"][1]["action"] == "驚訝地看向森林深處"
+    assert ledger["utterances"][1]["display_text"] == "那是什麼？"
+
+
+def test_audio_director_schema_exposes_optional_action() -> None:
+    utterance = STORY_VIDEO_AUDIO_DIRECTOR_SCHEMA["parameters"]["properties"][
+        "utterances"
+    ]["items"]
+
+    assert utterance["properties"]["action"] == {"type": "string"}
+    assert "action" not in utterance["required"]
 
 
 def test_read_aloud_requires_exact_ordered_gap_free_source_coverage(tmp_path) -> None:

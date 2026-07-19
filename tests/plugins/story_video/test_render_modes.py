@@ -214,6 +214,28 @@ def test_black_render_input_uses_project_local_black_frame_and_voice_cues(tmp_pa
     assert not (context.project_dir / "manifests/shot_candidate_manifest.json").exists()
 
 
+def test_black_subtitle_prefers_action_without_changing_spoken_text(
+    tmp_path,
+) -> None:
+    _store, context = _black_context(tmp_path)
+    _write_narration(context)
+    manifest_path = context.project_dir / "manifests" / "narration_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    character = manifest["outputs"][0]["segments"][0]["voice_chunks"][1]
+    character["action"] = "走到小王面前"
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+    _module().prepare_black_subtitle_render(context)
+
+    render_input = json.loads(
+        (context.project_dir / "render_input.json").read_text(encoding="utf-8")
+    )
+    cue = render_input["scenes"][0]["shots"][0]["subtitle_cues"][1]
+    assert cue["visual_text"] == "小美（走到小王面前）\n「出發吧！」"
+    assert cue["text"] == "出發吧！"
+    assert cue["action"] == "走到小王面前"
+
+
 def test_black_frames_for_multiple_scenes_have_identical_content(tmp_path) -> None:
     _store, context = _black_context(tmp_path)
     _write_narration(context)

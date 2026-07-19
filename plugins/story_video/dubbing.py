@@ -199,6 +199,7 @@ def _validate_utterances(
             "display_text": display_text,
         }
         emotion = str(raw.get("emotion") or "").strip()
+        action = str(raw.get("action") or "").strip()
         pace = str(raw.get("pace") or "").strip()
         if emotion:
             if emotion not in EMOTIONS:
@@ -207,6 +208,8 @@ def _validate_utterances(
                     f"unsupported emotion {emotion!r}: {utterance_id}",
                 )
             row["emotion"] = emotion
+        if action:
+            row["action"] = action
         if pace:
             if pace not in PACES:
                 raise DubbingContractError(
