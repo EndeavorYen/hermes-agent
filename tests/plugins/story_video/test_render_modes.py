@@ -61,6 +61,7 @@ def _write_narration(context) -> None:
                                         "display_text": "故事開始。",
                                         "speaker_id": "narrator",
                                         "voice_id": "simon_clean_v2",
+                                        "emotion": "warmth",
                                         "scene_start_sec": 0.0,
                                         "scene_speech_end_sec": 1.4,
                                     },
@@ -68,6 +69,7 @@ def _write_narration(context) -> None:
                                         "display_text": "出發吧！",
                                         "speaker_id": "xiaomei",
                                         "voice_id": "qwen_custom_vivian",
+                                        "emotion": "joy",
                                         "scene_start_sec": 1.6,
                                         "scene_speech_end_sec": 3.0,
                                     },
@@ -75,6 +77,30 @@ def _write_narration(context) -> None:
                             }
                         ],
                     }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (context.project_dir / "voice_cast_binding.json").write_text(
+        json.dumps(
+            {
+                "schema": "story_video_voice_cast_binding_v2",
+                "status": "locked",
+                "speakers": [
+                    {
+                        "speaker_id": "narrator",
+                        "display_name": "旁白",
+                        "role": "narrator",
+                        "voice_id": "simon_clean_v2",
+                    },
+                    {
+                        "speaker_id": "xiaomei",
+                        "display_name": "小美",
+                        "role": "lead",
+                        "voice_id": "qwen_custom_vivian",
+                    },
                 ],
             },
             ensure_ascii=False,
@@ -155,12 +181,23 @@ def test_black_render_input_uses_project_local_black_frame_and_voice_cues(tmp_pa
     assert shot["subtitle_position"] == "center"
     assert render_input["subtitle"]["font_size"] == 72
     assert render_input["subtitle"]["max_chars_per_line"] == 22
+    assert render_input["subtitle"]["max_lines"] == 3
     assert render_input["subtitle"]["position"] == "center"
     assert render_input["subtitle"]["center_y_ratio"] == 0.55
     assert [cue["text"] for cue in shot["subtitle_cues"]] == [
         "故事開始。",
         "出發吧！",
     ]
+    assert [cue["visual_text"] for cue in shot["subtitle_cues"]] == [
+        "故事開始。",
+        "小美（開心）\n「出發吧！」",
+    ]
+    assert [cue["emotion"] for cue in shot["subtitle_cues"]] == [
+        "warmth",
+        "joy",
+    ]
+    assert shot["narration"] == "故事開始。出發吧！"
+    assert render_input["scenes"][0]["narration"] == "故事開始。出發吧！"
     assert [cue["speaker_id"] for cue in shot["subtitle_cues"]] == [
         "narrator",
         "xiaomei",

@@ -20,6 +20,17 @@ BLACK_SUBTITLE_ROLE_PALETTE = (
     "#B8F2A2",
     "#CDB4FF",
 )
+BLACK_SUBTITLE_EMOTION_LABELS = {
+    "wonder": "驚奇",
+    "curious": "疑惑",
+    "joy": "開心",
+    "sadness": "難過",
+    "fear": "害怕",
+    "tension": "緊張",
+    "surprise": "驚訝",
+    "humor": "幽默",
+    "warmth": "溫暖",
+}
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -70,6 +81,37 @@ def _speaker_key(chunk: dict[str, Any]) -> str:
     ).strip()
 
 
+def _speaker_display_names(context: StoryVideoRunContext) -> dict[str, str]:
+    path = context.project_dir / "voice_cast_binding.json"
+    if not path.is_file():
+        return {}
+    payload = _load_json(path)
+    speakers = payload.get("speakers")
+    if not isinstance(speakers, list):
+        return {}
+    return {
+        str(row.get("speaker_id") or "").strip(): str(
+            row.get("display_name") or row.get("speaker_id") or ""
+        ).strip()
+        for row in speakers
+        if isinstance(row, dict) and str(row.get("speaker_id") or "").strip()
+    }
+
+
+def _visual_subtitle_text(
+    text: str,
+    *,
+    speaker_id: str,
+    display_name: str,
+    emotion: str,
+) -> str:
+    if speaker_id.casefold() in {"narrator", "旁白"}:
+        return text
+    emotion_label = BLACK_SUBTITLE_EMOTION_LABELS.get(emotion, "")
+    suffix = f"（{emotion_label}）" if emotion_label else ""
+    return f"{display_name or speaker_id}{suffix}\n「{text}」"
+
+
 def _black_subtitle_role_colors(outputs: list[dict[str, Any]]) -> dict[str, str]:
     speakers: list[str] = []
     for output in outputs:
@@ -96,7 +138,9 @@ def _black_subtitle_role_colors(outputs: list[dict[str, Any]]) -> dict[str, str]
 
 
 def _subtitle_cues(
-    output: dict[str, Any], role_colors: dict[str, str]
+    output: dict[str, Any],
+    role_colors: dict[str, str],
+    speaker_display_names: dict[str, str],
 ) -> tuple[str, list[dict[str, Any]]]:
     cues: list[dict[str, Any]] = []
     for segment in output.get("segments") or []:
@@ -111,14 +155,22 @@ def _subtitle_cues(
             if not text or end <= start:
                 raise ValueError("voice chunk requires display text and measured timing")
             speaker_id = _speaker_key(chunk)
+            emotion = str(chunk.get("emotion") or "").strip()
             cues.append(
                 {
                     "text": text,
+                    "visual_text": _visual_subtitle_text(
+                        text,
+                        speaker_id=speaker_id,
+                        display_name=speaker_display_names.get(speaker_id, speaker_id),
+                        emotion=emotion,
+                    ),
                     "start_sec": round(start, 4),
                     "end_sec": round(end, 4),
                     "sentence_count": 1,
                     "speaker_id": speaker_id,
                     "voice_id": str(chunk.get("voice_id") or "").strip(),
+                    "emotion": emotion,
                     "color": role_colors.get(
                         speaker_id, BLACK_SUBTITLE_NARRATOR_COLOR
                     ),
@@ -134,11 +186,13 @@ def _subtitle_cues(
         cues = [
             {
                 "text": expected,
+                "visual_text": expected,
                 "start_sec": 0.0,
                 "end_sec": round(duration, 4),
                 "sentence_count": 1,
                 "speaker_id": "narrator",
                 "voice_id": str(output.get("voice_id") or "").strip(),
+                "emotion": "",
                 "color": BLACK_SUBTITLE_NARRATOR_COLOR,
             }
         ]
@@ -161,6 +215,7 @@ def prepare_black_subtitle_render(context: StoryVideoRunContext) -> dict[str, An
 
     normalized_outputs = [output for output in outputs if isinstance(output, dict)]
     role_colors = _black_subtitle_role_colors(normalized_outputs)
+    speaker_display_names = _speaker_display_names(context)
     scenes: list[dict[str, Any]] = []
     assets = context.project_dir / "assets" / "black"
     assets.mkdir(parents=True, exist_ok=True)
@@ -173,7 +228,11 @@ def prepare_black_subtitle_render(context: StoryVideoRunContext) -> dict[str, An
             output.get("audio"),
             label=f"audio for {scene_id}",
         )
-        display_text, cues = _subtitle_cues(output, role_colors)
+        display_text, cues = _subtitle_cues(
+            output,
+            role_colors,
+            speaker_display_names,
+        )
         duration = float(output.get("duration_sec") or 0.0)
         if duration <= 0 or cues[-1]["end_sec"] > duration + 0.25:
             raise ValueError(f"invalid narration duration for {scene_id}")
@@ -215,7 +274,7 @@ def prepare_black_subtitle_render(context: StoryVideoRunContext) -> dict[str, An
         "zoom_max": 1.0,
         "subtitle": {
             "font_size": 72,
-            "max_lines": 2,
+            "max_lines": 3,
             "max_chars_per_line": 22,
             "preferred_sentences_per_cue": 1,
             "max_sentences_per_cue": 2,
