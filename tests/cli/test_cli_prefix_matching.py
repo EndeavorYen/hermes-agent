@@ -115,6 +115,9 @@ class TestSlashCommandPrefixMatching:
                 "name": "Deep Fix",
                 "description": "test",
                 "goal_mode": True,
+                "goal_constraints": [
+                    "Check goal drift and over-design after each meaningful phase."
+                ],
             }
         }
         manager = MagicMock()
@@ -127,7 +130,9 @@ class TestSlashCommandPrefixMatching:
              patch.object(cli_mod, "build_skill_invocation_message", return_value="loaded") as build:
             cli_obj.process_command("/deep-fix repair routing")
 
-        manager.ensure.assert_called_once_with("repair routing")
+        goal_text = manager.ensure.call_args.args[0]
+        assert goal_text.startswith("repair routing")
+        assert "Check goal drift and over-design" in goal_text
         assert build.call_args.kwargs["runtime_note"].startswith("Goal bootstrap PASS")
         cli_obj._pending_input.put.assert_called_once_with("loaded")
 
@@ -138,6 +143,7 @@ class TestSlashCommandPrefixMatching:
                 "name": "Deep Fix",
                 "description": "test",
                 "goal_mode": True,
+                "goal_constraints": [],
             }
         }
 

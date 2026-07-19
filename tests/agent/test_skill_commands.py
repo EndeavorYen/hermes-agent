@@ -58,11 +58,40 @@ class TestScanSkillCommands:
         assert "/my-skill" in result
         assert result["/my-skill"]["name"] == "my-skill"
 
-    def test_exposes_declared_hermes_goal_mode(self, tmp_path):
+    def test_exposes_declared_portable_durable_goal(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(
                 tmp_path,
                 "deep-fix",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  execution:\n"
+                    "    durable_goal:\n"
+                    "      required: true\n"
+                    "      constraints:\n"
+                    "        - Check goal drift and over-design after each meaningful phase.\n"
+                ),
+            )
+            result = scan_skill_commands()
+
+        assert result["/deep-fix"]["goal_mode"] is True
+        assert result["/deep-fix"]["goal_constraints"] == [
+            "Check goal drift and over-design after each meaningful phase."
+        ]
+
+    def test_goal_mode_defaults_off(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "ordinary-skill")
+            result = scan_skill_commands()
+
+        assert result["/ordinary-skill"]["goal_mode"] is False
+        assert result["/ordinary-skill"]["goal_constraints"] == []
+
+    def test_hermes_specific_goal_metadata_is_not_a_public_contract(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "legacy-coupled-skill",
                 frontmatter_extra=(
                     "metadata:\n"
                     "  hermes:\n"
@@ -71,14 +100,33 @@ class TestScanSkillCommands:
             )
             result = scan_skill_commands()
 
-        assert result["/deep-fix"]["goal_mode"] is True
+        assert result["/legacy-coupled-skill"]["goal_mode"] is False
 
-    def test_goal_mode_defaults_off(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            _make_skill(tmp_path, "ordinary-skill")
-            result = scan_skill_commands()
+    def test_builds_goal_text_with_unique_execution_constraints(self):
+        from agent.skill_commands import build_durable_skill_goal
 
-        assert result["/ordinary-skill"]["goal_mode"] is False
+        commands = {
+            "/deep-fix": {
+                "goal_constraints": [
+                    "Check goal drift and over-design after each meaningful phase.",
+                    "Park minor work.",
+                ]
+            },
+            "/review": {"goal_constraints": ["Park minor work."]},
+        }
+
+        goal = build_durable_skill_goal(
+            ["/deep-fix", "/review"],
+            "Repair provider routing",
+            commands=commands,
+        )
+
+        assert goal == (
+            "Repair provider routing\n\n"
+            "Required execution discipline:\n"
+            "- Check goal drift and over-design after each meaningful phase.\n"
+            "- Park minor work."
+        )
 
     def test_empty_dir(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):

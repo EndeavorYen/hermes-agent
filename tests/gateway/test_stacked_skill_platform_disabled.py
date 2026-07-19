@@ -175,8 +175,11 @@ async def test_goal_mode_skill_bootstraps_goal_before_loading(monkeypatch, skill
         body="DEEP FIX BODY",
         frontmatter_extra=(
             "metadata:\n"
-            "  hermes:\n"
-            "    goal_mode: true\n"
+            "  execution:\n"
+            "    durable_goal:\n"
+            "      required: true\n"
+            "      constraints:\n"
+            "        - Check goal drift and over-design after each meaningful phase.\n"
         ),
     )
     monkeypatch.setattr(
@@ -195,9 +198,9 @@ async def test_goal_mode_skill_bootstraps_goal_before_loading(monkeypatch, skill
     result = await runner._handle_message(event)
 
     assert result is None or "Unknown command" not in result
-    runner._bootstrap_skill_goal.assert_awaited_once_with(
-        event, "repair provider routing"
-    )
+    goal_text = runner._bootstrap_skill_goal.await_args.args[1]
+    assert goal_text.startswith("repair provider routing")
+    assert "Check goal drift and over-design" in goal_text
     assert "DEEP FIX BODY" in event.text
     assert "Goal bootstrap PASS: active" in event.text
 
@@ -212,8 +215,9 @@ async def test_goal_mode_skill_without_objective_fails_closed(monkeypatch, skill
         "deep-fix",
         frontmatter_extra=(
             "metadata:\n"
-            "  hermes:\n"
-            "    goal_mode: true\n"
+            "  execution:\n"
+            "    durable_goal:\n"
+            "      required: true\n"
         ),
     )
     monkeypatch.setattr(

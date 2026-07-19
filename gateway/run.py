@@ -10703,6 +10703,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if command and not locals().get("_bundle_handled", False):
             try:
                 from agent.skill_commands import (
+                    build_durable_skill_goal,
                     get_skill_commands,
                     build_skill_invocation_message,
                     resolve_skill_command_key,
@@ -10775,8 +10776,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 f"Use `/{command} <what must be completed>`."
                             )
                         try:
+                            _durable_goal = build_durable_skill_goal(
+                                _invoked_skill_keys,
+                                _effective_instruction,
+                                commands=skill_cmds,
+                            )
                             _goal_runtime_note = await self._bootstrap_skill_goal(
-                                event, _effective_instruction
+                                event, _durable_goal
                             )
                         except Exception as exc:
                             logger.warning(
