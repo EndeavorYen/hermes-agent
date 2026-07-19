@@ -44,10 +44,11 @@ STORY_VIDEO_CONTROL_SCHEMA = {
 STORY_VIDEO_VOICE_MANAGER_SCHEMA = {
     "name": "story_video_voice_manager",
     "description": (
-        "Manage local versioned Qwen Base voice-clone profiles and generate short "
-        "CustomVoice preset previews. Tuning creates a new immutable version; "
-        "archiving preserves existing project bindings; deletion fails when a "
-        "project still references the voice."
+        "List selectable voice actors from local Qwen Base voice-clone profiles "
+        "and approved Qwen CustomVoice presets, manage clone profiles, and generate "
+        "short CustomVoice preset previews. Tuning creates a new immutable version; "
+        "archiving preserves existing project bindings; deletion fails when a project "
+        "still references the voice."
     ),
     "parameters": {
         "type": "object",
@@ -123,7 +124,7 @@ STORY_VIDEO_AUDIO_DIRECTOR_SCHEMA = {
     "description": (
         "Compile and inspect a story-video character dubbing contract. Supports "
         "creative, remake, and exact read-aloud modes and locks each speaker to "
-        "one concrete local voice profile before synthesis."
+        "one concrete catalog voice with locked engine evidence before synthesis."
     ),
     "parameters": {
         "type": "object",

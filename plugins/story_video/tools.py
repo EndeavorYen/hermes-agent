@@ -1307,6 +1307,7 @@ def story_video_voice_manager(
     voice_registry_path: str | Path | None = None,
     voice_projects_root: str | Path | None = None,
     preset_previewer: Any = None,
+    voice_catalog_builder: Any = None,
     **_: Any,
 ) -> str:
     action = str(args.get("action") or "list").strip().lower()
@@ -1315,7 +1316,12 @@ def story_video_voice_manager(
         registry_kwargs["registry_path"] = voice_registry_path
     try:
         if action == "list":
-            payload = list_voice_profiles(**registry_kwargs)
+            builder = voice_catalog_builder
+            if builder is None:
+                from .voice_catalog import list_voice_catalog
+
+                builder = list_voice_catalog
+            payload = builder(**registry_kwargs)
         elif action == "preview_preset":
             previewer = preset_previewer
             if previewer is None:
@@ -1393,6 +1399,7 @@ def story_video_audio_director(
     session_id: str = "",
     store: StoryVideoStateStore | None = None,
     voice_registry_path: str | Path | None = None,
+    voice_catalog_builder: Any = None,
     **_: Any,
 ) -> str:
     state_store = store or StoryVideoStateStore()
@@ -1411,6 +1418,11 @@ def story_video_audio_director(
     if voice_registry_path is not None:
         bind_kwargs["registry_path"] = voice_registry_path
     try:
+        if action in {"compile", "bind_cast"} and voice_catalog_builder is not None:
+            catalog_kwargs: dict[str, Any] = {}
+            if voice_registry_path is not None:
+                catalog_kwargs["registry_path"] = voice_registry_path
+            bind_kwargs["voice_catalog"] = voice_catalog_builder(**catalog_kwargs)
         if action == "compile":
             payload = compile_dubbing_project(
                 context.project_dir,

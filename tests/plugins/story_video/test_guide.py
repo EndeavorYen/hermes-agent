@@ -51,6 +51,13 @@ def test_help_is_compact_and_copy_ready() -> None:
     assert "/story-video writing" in text
     assert "故事影片：<主題>｜<時長>｜<風格>。全自動" in text
     assert "淺顯但不幼稚" in text
+    assert "多角色配音" in text
+    assert "/story-video voices" in text
+    assert (
+        "多角色配音：旁白用 simon_clean_v2，安安用 Vivian，媽媽用 Serena，"
+        "船長用 Uncle_Fu。"
+    ) in text
+    assert "每個角色都要明確指定聲線" in text
     assert "story_video_control" not in text
 
 
@@ -130,6 +137,11 @@ def test_examples_cover_creation_and_dubbing_modes() -> None:
     assert "凱因斯經濟學" in text
     assert "進階版" in text
     assert "專業版，不要淺白化" in text
+    assert (
+        "旁白用 simon_clean_v2，安安用 Vivian，媽媽用 Serena，船長用 Uncle_Fu"
+        in text
+    )
+    assert "自動選擇可用聲線" not in text
 
 
 def test_writing_help_explains_default_and_opt_out() -> None:
@@ -180,6 +192,34 @@ def test_voice_guide_exposes_ids_without_private_paths() -> None:
     assert "simon" in text
     assert "simon_clean_v2" in text
     assert "old_v1" not in text
+
+
+def test_voice_guide_formats_clone_and_preset_catalog_rows() -> None:
+    text = format_story_video_guide(
+        None,
+        "voices",
+        voices={
+            "default_voice_id": "simon_clean_v2",
+            "voices": [
+                {
+                    "voice_id": "simon_clean_v2",
+                    "display_name": "Simon clean narrator v2",
+                    "engine": "qwen_full_icl",
+                    "selectable": True,
+                },
+                {
+                    "voice_id": "qwen_custom_vivian",
+                    "display_name": "Vivian",
+                    "engine": "qwen_custom_voice",
+                    "selectable": True,
+                },
+            ],
+        },
+    )
+
+    assert "simon_clean_v2" in text
+    assert "Vivian" in text
+    assert "Qwen CustomVoice" in text
     assert "/private/voice" not in text
 
 
@@ -211,6 +251,31 @@ def test_slash_status_is_read_only_and_thread_aware(tmp_path, monkeypatch) -> No
 
     assert "恐龍起源" in result
     assert "階段：planning" in result
+    assert state_path.read_bytes() == before
+
+
+def test_slash_help_routes_to_updated_guide_without_mutating_state(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    event = _event("/story-video help")
+    source_key = hooks._source_key(event)
+    call = parse_operator_call("故事影片：恐龍起源｜5分｜電影感")
+    assert call is not None
+    context = store.create_or_load(
+        source_key=source_key,
+        session_id="session-1",
+        call=call,
+        original_request="故事影片：恐龍起源｜5分｜電影感",
+    )
+    monkeypatch.setattr(hooks, "_STORE", store)
+    state_path = store.run_state_root / f"{context.run_id}.json"
+    before = state_path.read_bytes()
+
+    result = hooks.handle_story_video_command("help", event=event)
+
+    assert "多角色配音" in result
+    assert "simon_clean_v2" in result
     assert state_path.read_bytes() == before
 
 

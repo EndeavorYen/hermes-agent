@@ -78,6 +78,12 @@ def _format_help() -> str:
             "`/story-video voices` 可用聲線",
             "`/story-video writing` 文本難度與淺白化設定",
             "",
+            "多角色配音",
+            "1. 先用 `/story-video voices` 查看可用聲線。",
+            "2. 提供故事文本或故事需求。",
+            "3. 每個角色都要明確指定聲線（Phase 1 不會自動選角）。",
+            "`多角色配音：旁白用 simon_clean_v2，安安用 Vivian，媽媽用 Serena，船長用 Uncle_Fu。`",
+            "",
             "科普與解釋內容預設採用「淺顯但不幼稚」模式。",
             "",
             "Slack 也可輸入 `/hermes story-video status`。",
@@ -132,13 +138,13 @@ def _format_examples() -> str:
             "`故事影片：恐龍起源｜5 分鐘｜寫實電影感。只規劃`",
             "",
             "創作模式",
-            "`創作模式：依這個主題寫成多角色故事；旁白用 simon，其他角色自動選擇可用聲線。`",
+            "`創作模式：依這個主題寫成多角色故事。旁白用 simon_clean_v2，安安用 Vivian，媽媽用 Serena，船長用 Uncle_Fu。`",
             "",
             "重製模式",
-            "`重製模式：保留附件故事的核心情節，改寫成 5 歲以上會好奇的繁中故事；旁白用 simon。`",
+            "`重製模式：保留附件故事的核心情節，改寫成 5 歲以上會好奇的繁中故事；旁白用 simon_clean_v2。`",
             "",
             "說書模式",
-            "`說書模式：旁白用 simon，完全照附件原文朗讀，不改字。`",
+            "`說書模式：旁白用 simon_clean_v2，完全照附件原文朗讀，不改字。`",
             "",
             "科普預設（淺顯但不幼稚）",
             "`故事影片：凱因斯經濟學｜5 分鐘｜電影感科普。全自動`",
@@ -172,7 +178,36 @@ def _format_writing() -> str:
 
 
 def _format_voices(voices: dict[str, Any] | None) -> str:
-    profiles = voices.get("profiles") if isinstance(voices, dict) else None
+    payload = voices if isinstance(voices, dict) else {}
+    catalog_rows = payload.get("voices")
+    if isinstance(catalog_rows, list):
+        enabled = [
+            row
+            for row in catalog_rows
+            if isinstance(row, dict) and row.get("selectable") is not False
+        ]
+        default_voice = str(
+            payload.get("default_voice_id")
+            or payload.get("default_profile_id")
+            or ""
+        )
+        lines = ["故事影片聲線"]
+        for row in enabled:
+            voice_id = str(row.get("voice_id") or "").strip()
+            display_name = str(row.get("display_name") or voice_id).strip()
+            engine = str(row.get("engine") or "")
+            engine_label = (
+                "Qwen CustomVoice"
+                if engine == "qwen_custom_voice"
+                else "完整聲線克隆"
+            )
+            marker = "（預設）" if voice_id == default_voice else ""
+            lines.append(f"- `{voice_id}`：{display_name}｜{engine_label}{marker}")
+        if enabled:
+            lines.append("角色分配範例：`旁白用 simon_clean_v2，安安用 Vivian。`")
+            return "\n".join(lines)
+
+    profiles = payload.get("profiles")
     rows = profiles if isinstance(profiles, list) else []
     enabled = [
         row
@@ -183,7 +218,7 @@ def _format_voices(voices: dict[str, Any] | None) -> str:
     ]
     if not enabled:
         return "故事影片聲線\n目前沒有可用聲線。使用 `新增故事影片聲線` 加入錄音。"
-    default_profile = str((voices or {}).get("default_profile_id") or "")
+    default_profile = str(payload.get("default_profile_id") or "")
     lines = ["故事影片聲線"]
     for row in enabled:
         voice_id = str(row.get("voice_id") or row.get("profile_id") or "").strip()
