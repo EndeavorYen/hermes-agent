@@ -81,7 +81,9 @@ def _speaker_key(chunk: dict[str, Any]) -> str:
     ).strip()
 
 
-def _speaker_display_names(context: StoryVideoRunContext) -> dict[str, str]:
+def _speaker_cast_metadata(
+    context: StoryVideoRunContext,
+) -> dict[str, dict[str, str]]:
     path = context.project_dir / "voice_cast_binding.json"
     if not path.is_file():
         return {}
@@ -90,9 +92,12 @@ def _speaker_display_names(context: StoryVideoRunContext) -> dict[str, str]:
     if not isinstance(speakers, list):
         return {}
     return {
-        str(row.get("speaker_id") or "").strip(): str(
-            row.get("display_name") or row.get("speaker_id") or ""
-        ).strip()
+        str(row.get("speaker_id") or "").strip(): {
+            "display_name": str(
+                row.get("display_name") or row.get("speaker_id") or ""
+            ).strip(),
+            "role": str(row.get("role") or "").strip().casefold(),
+        }
         for row in speakers
         if isinstance(row, dict) and str(row.get("speaker_id") or "").strip()
     }
@@ -104,15 +109,20 @@ def _visual_subtitle_text(
     speaker_id: str,
     display_name: str,
     emotion: str,
+    action: str,
+    is_narrator: bool,
 ) -> str:
-    if speaker_id.casefold() in {"narrator", "旁白"}:
+    if is_narrator or speaker_id.casefold() in {"narrator", "旁白"}:
         return text
     emotion_label = BLACK_SUBTITLE_EMOTION_LABELS.get(emotion, "")
-    suffix = f"（{emotion_label}）" if emotion_label else ""
+    direction = action or emotion_label
+    suffix = f"（{direction}）" if direction else ""
     return f"{display_name or speaker_id}{suffix}\n「{text}」"
 
 
-def _black_subtitle_role_colors(outputs: list[dict[str, Any]]) -> dict[str, str]:
+def _black_subtitle_role_colors(
+    outputs: list[dict[str, Any]], narrator_ids: set[str]
+) -> dict[str, str]:
     speakers: list[str] = []
     for output in outputs:
         for segment in output.get("segments") or []:
@@ -127,7 +137,7 @@ def _black_subtitle_role_colors(outputs: list[dict[str, Any]]) -> dict[str, str]
     colors: dict[str, str] = {}
     palette_index = 0
     for speaker in speakers or ["narrator"]:
-        if speaker.casefold() in {"narrator", "旁白"}:
+        if speaker in narrator_ids or speaker.casefold() in {"narrator", "旁白"}:
             colors[speaker] = BLACK_SUBTITLE_NARRATOR_COLOR
             continue
         colors[speaker] = BLACK_SUBTITLE_ROLE_PALETTE[
@@ -140,7 +150,7 @@ def _black_subtitle_role_colors(outputs: list[dict[str, Any]]) -> dict[str, str]
 def _subtitle_cues(
     output: dict[str, Any],
     role_colors: dict[str, str],
-    speaker_display_names: dict[str, str],
+    speaker_cast_metadata: dict[str, dict[str, str]],
 ) -> tuple[str, list[dict[str, Any]]]:
     cues: list[dict[str, Any]] = []
     for segment in output.get("segments") or []:
@@ -155,15 +165,19 @@ def _subtitle_cues(
             if not text or end <= start:
                 raise ValueError("voice chunk requires display text and measured timing")
             speaker_id = _speaker_key(chunk)
+            speaker = speaker_cast_metadata.get(speaker_id, {})
             emotion = str(chunk.get("emotion") or "").strip()
+            action = str(chunk.get("action") or "").strip()
             cues.append(
                 {
                     "text": text,
                     "visual_text": _visual_subtitle_text(
                         text,
                         speaker_id=speaker_id,
-                        display_name=speaker_display_names.get(speaker_id, speaker_id),
+                        display_name=speaker.get("display_name", speaker_id),
                         emotion=emotion,
+                        action=action,
+                        is_narrator=speaker.get("role") == "narrator",
                     ),
                     "start_sec": round(start, 4),
                     "end_sec": round(end, 4),
@@ -171,6 +185,7 @@ def _subtitle_cues(
                     "speaker_id": speaker_id,
                     "voice_id": str(chunk.get("voice_id") or "").strip(),
                     "emotion": emotion,
+                    "action": action,
                     "color": role_colors.get(
                         speaker_id, BLACK_SUBTITLE_NARRATOR_COLOR
                     ),
@@ -193,6 +208,7 @@ def _subtitle_cues(
                 "speaker_id": "narrator",
                 "voice_id": str(output.get("voice_id") or "").strip(),
                 "emotion": "",
+                "action": "",
                 "color": BLACK_SUBTITLE_NARRATOR_COLOR,
             }
         ]
@@ -214,8 +230,13 @@ def prepare_black_subtitle_render(context: StoryVideoRunContext) -> dict[str, An
         raise ValueError("narration manifest has no outputs")
 
     normalized_outputs = [output for output in outputs if isinstance(output, dict)]
-    role_colors = _black_subtitle_role_colors(normalized_outputs)
-    speaker_display_names = _speaker_display_names(context)
+    speaker_cast_metadata = _speaker_cast_metadata(context)
+    narrator_ids = {
+        speaker_id
+        for speaker_id, metadata in speaker_cast_metadata.items()
+        if metadata.get("role") == "narrator"
+    }
+    role_colors = _black_subtitle_role_colors(normalized_outputs, narrator_ids)
     scenes: list[dict[str, Any]] = []
     assets = context.project_dir / "assets" / "black"
     assets.mkdir(parents=True, exist_ok=True)
@@ -231,7 +252,7 @@ def prepare_black_subtitle_render(context: StoryVideoRunContext) -> dict[str, An
         display_text, cues = _subtitle_cues(
             output,
             role_colors,
-            speaker_display_names,
+            speaker_cast_metadata,
         )
         duration = float(output.get("duration_sec") or 0.0)
         if duration <= 0 or cues[-1]["end_sec"] > duration + 0.25:

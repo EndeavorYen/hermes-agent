@@ -187,6 +187,11 @@ def test_multirole_voice_without_binding_compiles_cast_before_synthesis(
     result = hooks.pre_llm_call(session_id="cast-first", user_message="繼續")
 
     assert "story_video_audio_director action=compile exactly once" in result["context"]
+    assert "Keep display_text as spoken dialogue only" in result["context"]
+    assert "supported emotion in emotion" in result["context"]
+    assert "physical stage direction in the optional action" in result["context"]
+    assert "action takes visual precedence" in result["context"]
+    assert "optional action" in result["context"]
     assert "story_video_quality_control action=run_voice_phase" not in result["context"]
 
 
