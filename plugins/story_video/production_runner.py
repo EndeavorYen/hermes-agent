@@ -178,7 +178,7 @@ def run_production(
 
     if (
         context.phase == "complete"
-        and str(current_job.get("error_type") or "") == "final_speech_qc_stale"
+        and current_job.get("revalidation_only") is True
     ):
         selected = _resolve_selected_mp4(context, current_job)
         if selected is None:
@@ -217,6 +217,7 @@ def run_production(
             final_speech_video_sha256=str(
                 speech_result.get("video_sha256") or ""
             ),
+            revalidation_only=False,
             error_type="",
             error="",
         )

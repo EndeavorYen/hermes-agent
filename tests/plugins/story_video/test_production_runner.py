@@ -193,6 +193,7 @@ def test_runner_revalidates_stale_complete_artifact_without_rerendering(
         visual_mode=context.visual_mode,
         status="failed",
         error_type="final_speech_qc_stale",
+        revalidation_only=True,
         selected_mp4=str(final),
     )
     rendered = []

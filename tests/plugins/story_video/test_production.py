@@ -225,6 +225,58 @@ def test_legacy_ready_job_without_final_speech_qc_is_relaunched(tmp_path) -> Non
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize("legacy_status", ["artifact_ready", "delivered"])
+def test_legacy_complete_job_runs_revalidation_only_through_launcher(
+    tmp_path, legacy_status
+) -> None:
+    from plugins.story_video.production_runner import run_production
+
+    context = _context(tmp_path)
+    state_store = StoryVideoStateStore(tmp_path)
+    context = state_store.update(context, phase="voice")
+    context = state_store.update(context, phase="render")
+    context = state_store.update(context, phase="complete", status="complete")
+    module = _production()
+    final = context.project_dir / "video" / "final.mp4"
+    final.parent.mkdir(parents=True)
+    final.write_bytes(b"legacy-speech-video")
+    jobs = module.ProductionJobStore(context.project_dir)
+    jobs.transition(
+        run_id=context.run_id,
+        visual_mode=context.visual_mode,
+        status="artifact_ready",
+        selected_mp4=str(final),
+    )
+    if legacy_status == "delivered":
+        jobs.transition(
+            run_id=context.run_id,
+            visual_mode=context.visual_mode,
+            status="delivered",
+            selected_mp4=str(final),
+        )
+    rendered = []
+
+    def synchronous_terminal(**_kwargs):
+        run_production(
+            context.run_id,
+            context.project_dir,
+            store=state_store,
+            renderer=lambda _context: rendered.append(True),
+            delivery_speech_validator=lambda _context, video: {
+                "success": True,
+                "qc_report": "qc/final_speech_qc_report.json",
+                "video_sha256": hashlib.sha256(video.read_bytes()).hexdigest(),
+            },
+        )
+        return json.dumps({"status": "running", "session_id": "proc-revalidate"})
+
+    payload = module.start_production(context, terminal_runner=synchronous_terminal)
+
+    assert payload["work_status"] == "artifact_ready"
+    assert payload["selected_mp4"] == str(final.resolve())
+    assert rendered == []
+
+
 def test_status_rejects_selected_mp4_outside_current_project(tmp_path) -> None:
     context = _context(tmp_path)
     module = _production()

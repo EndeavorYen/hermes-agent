@@ -192,6 +192,11 @@ def start_production(
             "already_running": True,
         }
 
+    revalidation_only = bool(
+        current is not None
+        and current.get("error_type") == "final_speech_qc_stale"
+        and context.phase == "complete"
+    )
     attempts = int((current or {}).get("attempts") or 0) + 1
     jobs.transition(
         run_id=context.run_id,
@@ -199,6 +204,7 @@ def start_production(
         status="queued",
         attempts=attempts,
         phase=context.phase,
+        revalidation_only=revalidation_only,
         error_type="",
         error="",
     )
