@@ -58,6 +58,10 @@ def test_help_is_compact_and_copy_ready() -> None:
         "船長用 Uncle_Fu。"
     ) in text
     assert "每個角色都要明確指定聲線" in text
+    assert "圖片故事影片" in text
+    assert "全黑字幕影片" in text
+    assert "MP4" in text
+    assert "NSFW" in text
     assert "story_video_control" not in text
 
 
@@ -93,6 +97,15 @@ def test_auto_status_requires_no_operator_action(tmp_path) -> None:
     assert "模式：全自動" in text
     assert "不需要操作" in text
     assert "停止" in text
+
+
+def test_black_subtitle_status_names_the_mp4_output_mode(tmp_path) -> None:
+    text = format_story_video_guide(
+        _context(tmp_path, visual_mode="black_subtitle"),
+        "status",
+    )
+
+    assert "輸出：全黑字幕 MP4" in text
 
 
 def test_stopped_and_complete_status_have_post_run_actions(tmp_path) -> None:
@@ -134,6 +147,11 @@ def test_examples_cover_creation_and_dubbing_modes() -> None:
     assert "創作模式" in text
     assert "重製模式" in text
     assert "說書模式" in text
+    assert "圖片故事影片" in text
+    assert "全黑字幕影片" in text
+    assert "Vivian" in text
+    assert "Serena" in text
+    assert "Uncle_Fu" in text
     assert "凱因斯經濟學" in text
     assert "進階版" in text
     assert "專業版，不要淺白化" in text

@@ -1478,7 +1478,7 @@ def story_video_audio_director(
                 from .production import start_production
 
                 dubbing = inspect_dubbing_project(context.project_dir)
-                if dubbing.get("bound") is not True:
+                if context.phase == "voice" and dubbing.get("bound") is not True:
                     raise DubbingContractError(
                         "dubbing_contract_incomplete",
                         "start_production requires a compiled and bound voice cast",

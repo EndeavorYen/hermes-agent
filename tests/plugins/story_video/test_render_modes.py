@@ -4,7 +4,13 @@ import hashlib
 import importlib
 import importlib.util
 import json
+import math
+import shutil
+import wave
+from array import array
+from pathlib import Path
 
+import pytest
 from PIL import Image
 
 from plugins.story_video.audit import ProviderAudit, ProviderAuditEvent
@@ -77,8 +83,53 @@ def _module():
     return importlib.import_module("plugins.story_video.render_modes")
 
 
+def _write_real_pcm_wav(path: Path, duration_sec: float = 3.2) -> None:
+    sample_rate = 16_000
+    samples = array(
+        "h",
+        (
+            int(1_200 * math.sin(2 * math.pi * 220 * index / sample_rate))
+            for index in range(int(sample_rate * duration_sec))
+        ),
+    )
+    with wave.open(str(path), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(sample_rate)
+        output.writeframes(samples.tobytes())
+
+
 def test_render_modes_module_exists() -> None:
     assert importlib.util.find_spec("plugins.story_video.render_modes") is not None
+
+
+@pytest.mark.skipif(
+    not shutil.which("ffmpeg")
+    or not shutil.which("ffprobe")
+    or not (
+        Path.home()
+        / ".hermes/skills/creative/story-video-production-pipeline/scripts/render_story_video.py"
+    ).is_file(),
+    reason="local story-video renderer with ffmpeg is required",
+)
+def test_real_black_subtitle_renderer_produces_valid_mp4(tmp_path) -> None:
+    from plugins.story_video.production_runner import _default_renderer
+
+    _store, context = _black_context(tmp_path)
+    _write_narration(context)
+    _write_real_pcm_wav(context.project_dir / "audio" / "S01.wav")
+    _module().prepare_black_subtitle_render(context)
+
+    payload = _default_renderer(context)
+
+    assert payload["success"] is True
+    final = Path(payload["video"])
+    assert final.is_file()
+    assert final.suffix == ".mp4"
+    qc = json.loads(Path(payload["qc_report"]).read_text(encoding="utf-8"))
+    assert qc["output"]["container_status"] == "PASS"
+    assert qc["output"]["audio_status"] == "PASS"
+    assert qc["output"]["black_background_status"] == "PASS"
 
 
 def test_black_render_input_uses_project_local_black_frame_and_voice_cues(tmp_path) -> None:
