@@ -715,6 +715,7 @@ def _validate_voice(context: StoryVideoRunContext) -> PhaseProof:
 
     missing: list[str] = []
     violations: list[str] = []
+    cast_voice_contract = False
     provider = normalize_provider(str(manifest.get("provider") or ""))
     allowed_providers = tuple(
         normalize_provider(value)
@@ -988,8 +989,11 @@ def _validate_voice(context: StoryVideoRunContext) -> PhaseProof:
                     violations.append(f"local Qwen narration {gate} is not PASS")
     if str(manifest.get("language") or "") != "zh-TW":
         violations.append("production narration language is not zh-TW")
-    if str(manifest.get("profile_status") or "") != "locked_by_user":
-        violations.append("production narration profile is not locked_by_user")
+    expected_profile_status = "cast_bound" if cast_voice_contract else "locked_by_user"
+    if str(manifest.get("profile_status") or "") != expected_profile_status:
+        violations.append(
+            f"production narration profile is not {expected_profile_status}"
+        )
     if str(manifest.get("voice_contract_status") or "").upper() != "PASS":
         violations.append("production narration voice contract is not PASS")
     if not str(manifest.get("voice") or "").strip():

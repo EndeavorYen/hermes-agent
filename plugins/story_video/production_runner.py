@@ -141,6 +141,7 @@ def run_production(
     render_preparer: Any = None,
     renderer: Any = None,
     render_validator: Any = None,
+    delivery_speech_validator: Any = None,
 ) -> dict[str, Any]:
     project = Path(project_dir).expanduser().resolve()
     state_store = store or StoryVideoStateStore(project.parent)
@@ -174,6 +175,58 @@ def run_production(
             error="Production was stopped by the operator.",
         )
         return {**stopped, "success": False, "work_status": "stopped"}
+
+    if (
+        context.phase == "complete"
+        and current_job.get("revalidation_only") is True
+    ):
+        selected = _resolve_selected_mp4(context, current_job)
+        if selected is None:
+            return _error_payload(
+                jobs,
+                context,
+                error_type="production_artifact_invalid",
+                error="stale production job has no current-project MP4 to revalidate",
+            )
+        if delivery_speech_validator is None:
+            from .delivery_speech import verify_final_video_speech
+
+            delivery_speech_validator = verify_final_video_speech
+        speech_result = delivery_speech_validator(context, selected)
+        if (
+            not isinstance(speech_result, dict)
+            or speech_result.get("success") is not True
+        ):
+            return _error_payload(
+                jobs,
+                context,
+                error_type="final_speech_qc_failed",
+                error=str(
+                    (speech_result or {}).get("error")
+                    or "final MP4 did not pass speech-content QC"
+                ),
+            )
+        ready = jobs.transition(
+            run_id=context.run_id,
+            visual_mode=context.visual_mode,
+            status="artifact_ready",
+            phase="complete",
+            selected_mp4=str(selected),
+            qc_report=str(current_job.get("qc_report") or ""),
+            final_speech_qc_report=str(speech_result.get("qc_report") or ""),
+            final_speech_video_sha256=str(
+                speech_result.get("video_sha256") or ""
+            ),
+            revalidation_only=False,
+            error_type="",
+            error="",
+        )
+        return {
+            **ready,
+            "success": True,
+            "work_status": "artifact_ready",
+            "media": [f"MEDIA:{selected}"],
+        }
 
     if context.phase == "voice":
         voice_result = (
@@ -278,6 +331,21 @@ def run_production(
             error_type="production_artifact_invalid",
             error="renderer did not return a current-project MP4",
         )
+    if delivery_speech_validator is None:
+        from .delivery_speech import verify_final_video_speech
+
+        delivery_speech_validator = verify_final_video_speech
+    speech_result = delivery_speech_validator(context, selected)
+    if not isinstance(speech_result, dict) or speech_result.get("success") is not True:
+        return _error_payload(
+            jobs,
+            context,
+            error_type="final_speech_qc_failed",
+            error=str(
+                (speech_result or {}).get("error")
+                or "final MP4 did not pass speech-content QC"
+            ),
+        )
     context = state_store.update(
         context,
         phase="complete",
@@ -291,6 +359,8 @@ def run_production(
         phase="complete",
         selected_mp4=str(selected),
         qc_report=str(render_result.get("qc_report") or ""),
+        final_speech_qc_report=str(speech_result.get("qc_report") or ""),
+        final_speech_video_sha256=str(speech_result.get("video_sha256") or ""),
         error_type="",
         error="",
     )

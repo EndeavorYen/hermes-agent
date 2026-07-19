@@ -45,6 +45,7 @@ def _write_narration(context) -> None:
                 "provider": "local_qwen",
                 "voice": "multi_character",
                 "speaker_routing_status": "PASS",
+                "voice_chunk_count": 2,
                 "outputs": [
                     {
                         "scene_id": "S01",
@@ -58,6 +59,7 @@ def _write_narration(context) -> None:
                                 "timeline_duration_sec": 3.2,
                                 "voice_chunks": [
                                     {
+                                        "voice_chunk_id": "S01_SH01__C01",
                                         "display_text": "故事開始。",
                                         "speaker_id": "narrator",
                                         "voice_id": "simon_clean_v2",
@@ -66,6 +68,7 @@ def _write_narration(context) -> None:
                                         "scene_speech_end_sec": 1.4,
                                     },
                                     {
+                                        "voice_chunk_id": "S01_SH01__C02",
                                         "display_text": "出發吧！",
                                         "speaker_id": "xiaomei",
                                         "voice_id": "qwen_custom_vivian",
@@ -142,7 +145,9 @@ def test_render_modes_module_exists() -> None:
     ).is_file(),
     reason="local story-video renderer with ffmpeg is required",
 )
-def test_real_black_subtitle_renderer_produces_valid_mp4(tmp_path) -> None:
+def test_real_black_subtitle_renderer_rejects_tone_without_speech_evidence(
+    tmp_path,
+) -> None:
     from plugins.story_video.production_runner import _default_renderer
 
     _store, context = _black_context(tmp_path)
@@ -152,13 +157,14 @@ def test_real_black_subtitle_renderer_produces_valid_mp4(tmp_path) -> None:
 
     payload = _default_renderer(context)
 
-    assert payload["success"] is True
+    assert payload["success"] is False
     final = Path(payload["video"])
     assert final.is_file()
     assert final.suffix == ".mp4"
     qc = json.loads(Path(payload["qc_report"]).read_text(encoding="utf-8"))
     assert qc["output"]["container_status"] == "PASS"
-    assert qc["output"]["audio_status"] == "PASS"
+    assert qc["output"]["audio_status"] == "FAIL"
+    assert qc["output"]["speech_content_status"] == "FAIL"
     assert qc["output"]["black_background_status"] == "PASS"
 
 
@@ -302,9 +308,11 @@ def test_black_render_proof_accepts_zero_image_events_and_rejects_image_event(tm
                 "output": {
                     "path": "video/final.mp4",
                     "subtitles": {"hard_burned": True, "coverage_status": "PASS"},
-                    "container_status": "PASS",
-                    "audio_status": "PASS",
-                    "duration_match_status": "PASS",
+                        "container_status": "PASS",
+                        "audio_status": "PASS",
+                        "source_speech_evidence_status": "PASS",
+                        "speech_content_status": "PASS",
+                        "duration_match_status": "PASS",
                     "black_background_status": "PASS",
                 },
                 "qc_report": "render_qc.json",
@@ -349,9 +357,11 @@ def test_generic_phase_validator_uses_black_mode_proof(tmp_path) -> None:
                 "output": {
                     "path": "video/final.mp4",
                     "subtitles": {"hard_burned": True, "coverage_status": "PASS"},
-                    "container_status": "PASS",
-                    "audio_status": "PASS",
-                    "duration_match_status": "PASS",
+                        "container_status": "PASS",
+                        "audio_status": "PASS",
+                        "source_speech_evidence_status": "PASS",
+                        "speech_content_status": "PASS",
+                        "duration_match_status": "PASS",
                     "black_background_status": "PASS",
                 },
                 "qc_report": "qc/black_subtitle_render_qc.json",
@@ -388,6 +398,17 @@ def test_finalize_black_render_writes_mode_specific_proof(tmp_path) -> None:
             "black_background_status": "PASS",
             "duration_sec": 3.2,
         },
+        speech_evidence_probe=lambda _context: {
+            "source_speech_evidence_status": "PASS",
+            "speech_qc_method": "sentence_chunk_plus_forced_alignment_isolated_term_asr",
+            "asr_verified_chunk_count": 2,
+            "minimum_transcript_similarity": 0.94,
+        },
+        final_speech_probe=lambda _context, _video: {
+            "success": True,
+            "qc_report": "qc/final_speech_qc_report.json",
+            "video_sha256": "a" * 64,
+        },
     )
 
     manifest = json.loads(
@@ -397,7 +418,120 @@ def test_finalize_black_render_writes_mode_specific_proof(tmp_path) -> None:
     assert manifest["visual_mode"] == "black_subtitle"
     assert manifest["output"]["path"] == "video/final.mp4"
     assert manifest["output"]["black_background_status"] == "PASS"
+    assert manifest["output"]["source_speech_evidence_status"] == "PASS"
+    assert manifest["output"]["speech_content_status"] == "PASS"
     assert _module().validate_black_subtitle_render(context).ok is True
+
+
+def test_finalize_black_render_rejects_missing_qwen_asr_speech_evidence(
+    tmp_path,
+) -> None:
+    _store, context = _black_context(tmp_path)
+    _write_narration(context)
+    final = context.project_dir / "video" / "final.mp4"
+    final.parent.mkdir(parents=True)
+    final.write_bytes(b"video")
+    subtitle_qc = context.project_dir / "qc" / "subtitle_qc_report.json"
+    subtitle_qc.parent.mkdir(parents=True, exist_ok=True)
+    subtitle_qc.write_text(json.dumps({"status": "PASS"}), encoding="utf-8")
+
+    payload = _module().finalize_black_subtitle_render(
+        context,
+        {
+            "video": str(final),
+            "duration_sec": 3.2,
+            "subtitle_qc_report": str(subtitle_qc),
+        },
+        media_probe=lambda _path, _duration: {
+            "container_status": "PASS",
+            "audio_status": "PASS",
+            "duration_match_status": "PASS",
+            "black_background_status": "PASS",
+            "duration_sec": 3.2,
+        },
+    )
+
+    qc = json.loads(Path(payload["qc_report"]).read_text(encoding="utf-8"))
+    assert payload["success"] is False
+    assert qc["status"] == "FAIL"
+    assert qc["output"]["speech_content_status"] == "FAIL"
+    assert _module().validate_black_subtitle_render(context).ok is False
+
+
+def test_finalize_black_render_rejects_loud_audio_when_final_asr_finds_no_speech(
+    tmp_path,
+) -> None:
+    _store, context = _black_context(tmp_path)
+    final = context.project_dir / "video" / "final.mp4"
+    final.parent.mkdir(parents=True)
+    final.write_bytes(b"loud-tone-video")
+    subtitle_qc = context.project_dir / "qc" / "subtitle_qc_report.json"
+    subtitle_qc.parent.mkdir(parents=True)
+    subtitle_qc.write_text(json.dumps({"status": "PASS"}), encoding="utf-8")
+
+    payload = _module().finalize_black_subtitle_render(
+        context,
+        {
+            "video": str(final),
+            "duration_sec": 3.2,
+            "subtitle_qc_report": str(subtitle_qc),
+        },
+        media_probe=lambda _path, _duration: {
+            "container_status": "PASS",
+            "audio_status": "PASS",
+            "duration_match_status": "PASS",
+            "black_background_status": "PASS",
+            "duration_sec": 3.2,
+        },
+        speech_evidence_probe=lambda _context: {
+            "source_speech_evidence_status": "PASS",
+            "asr_verified_chunk_count": 2,
+        },
+        final_speech_probe=lambda _context, _video: {
+            "success": False,
+            "error": "final MP4 ASR transcript is empty",
+        },
+    )
+
+    qc = json.loads(Path(payload["qc_report"]).read_text(encoding="utf-8"))
+    assert payload["success"] is False
+    assert qc["output"]["audio_status"] == "PASS"
+    assert qc["output"]["source_speech_evidence_status"] == "PASS"
+    assert qc["output"]["speech_content_status"] == "FAIL"
+
+
+def test_finalize_black_render_fails_closed_for_malformed_final_speech_result(
+    tmp_path,
+) -> None:
+    _store, context = _black_context(tmp_path)
+    final = context.project_dir / "video" / "final.mp4"
+    final.parent.mkdir(parents=True)
+    final.write_bytes(b"video")
+    subtitle_qc = context.project_dir / "qc" / "subtitle_qc_report.json"
+    subtitle_qc.parent.mkdir(parents=True)
+    subtitle_qc.write_text(json.dumps({"status": "PASS"}), encoding="utf-8")
+
+    payload = _module().finalize_black_subtitle_render(
+        context,
+        {
+            "video": str(final),
+            "duration_sec": 3.2,
+            "subtitle_qc_report": str(subtitle_qc),
+        },
+        media_probe=lambda _path, _duration: {
+            "container_status": "PASS",
+            "audio_status": "PASS",
+            "duration_match_status": "PASS",
+            "black_background_status": "PASS",
+            "duration_sec": 3.2,
+        },
+        speech_evidence_probe=lambda _context: {
+            "source_speech_evidence_status": "PASS"
+        },
+        final_speech_probe=lambda _context, _video: None,
+    )
+
+    assert payload["success"] is False
 
 
 def test_black_media_probe_requires_mp4_video_audio_duration_and_black_top_frame(
@@ -415,14 +549,244 @@ def test_black_media_probe_requires_mp4_video_audio_duration_and_black_top_frame
             "video_codec": "h264",
             "audio_codec": "aac",
         },
+        audio_loudness_probe=lambda _path: {
+            "mean_volume_db": -26.9,
+            "max_volume_db": -7.7,
+        },
         top_frame_luminance_probe=lambda _path: 0.0,
     )
 
     assert payload == {
         "container_status": "PASS",
         "audio_status": "PASS",
+        "audio_mean_volume_db": -26.9,
+        "audio_max_volume_db": -7.7,
         "duration_match_status": "PASS",
         "black_background_status": "PASS",
         "duration_sec": 3.21,
         "top_frame_max_luminance": 0.0,
+    }
+
+
+def test_black_media_probe_rejects_quiet_audio_track(tmp_path) -> None:
+    final = tmp_path / "final.mp4"
+    final.write_bytes(b"video")
+
+    payload = _module().probe_black_subtitle_media(
+        final,
+        3.2,
+        metadata_probe=lambda _path: {
+            "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+            "duration_sec": 3.2,
+            "video_codec": "h264",
+            "audio_codec": "aac",
+        },
+        audio_loudness_probe=lambda _path: {
+            "mean_volume_db": -52.0,
+            "max_volume_db": -41.0,
+        },
+        top_frame_luminance_probe=lambda _path: 0.0,
+    )
+
+    assert payload["audio_status"] == "FAIL"
+    assert payload["audio_mean_volume_db"] == -52.0
+    assert payload["audio_max_volume_db"] == -41.0
+
+
+def test_qwen_speech_evidence_requires_nonempty_asr_transcript(tmp_path) -> None:
+    _store, context = _black_context(tmp_path)
+    _write_narration(context)
+    report = context.project_dir / "qc" / "pronunciation_qc_report.json"
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text(
+        json.dumps(
+            {
+                "schema": "story_video_pronunciation_qc_v3",
+                "status": "PASS",
+                "method": "sentence_chunk_plus_forced_alignment_isolated_term_asr",
+                "checked_unit": "voice_chunk",
+                "acoustic_evidence": [
+                    {
+                        "voice_chunk_id": "U01__C01",
+                        "alignment_status": "PASS",
+                        "pronunciation_status": "PASS",
+                        "prosody_status": "PASS",
+                        "asr_transcript": "",
+                        "transcript_similarity": 1.0,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = _module().probe_narration_speech_evidence(context)
+
+    assert payload["source_speech_evidence_status"] == "FAIL"
+    assert payload["asr_verified_chunk_count"] == 0
+
+
+def test_qwen_speech_evidence_fails_closed_for_malformed_similarity(tmp_path) -> None:
+    _store, context = _black_context(tmp_path)
+    _write_narration(context)
+    manifest = context.project_dir / "manifests" / "narration_manifest.json"
+    manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
+    manifest_payload["voice_chunk_count"] = 1
+    manifest.write_text(json.dumps(manifest_payload), encoding="utf-8")
+    report = context.project_dir / "qc" / "pronunciation_qc_report.json"
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text(
+        json.dumps(
+            {
+                "schema": "story_video_pronunciation_qc_v3",
+                "status": "PASS",
+                "method": "sentence_chunk_plus_forced_alignment_isolated_term_asr",
+                "checked_unit": "voice_chunk",
+                "acoustic_evidence": [
+                    {
+                        "voice_chunk_id": "U01__C01",
+                        "alignment_status": "PASS",
+                        "pronunciation_status": "PASS",
+                        "prosody_status": "PASS",
+                        "asr_transcript": "你好",
+                        "transcript_similarity": "not-a-number",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = _module().probe_narration_speech_evidence(context)
+
+    assert payload["source_speech_evidence_status"] == "FAIL"
+    assert payload["asr_verified_chunk_count"] == 0
+
+
+@pytest.mark.parametrize("bad_count", [True, 1.5, float("inf")])
+def test_qwen_speech_evidence_rejects_non_exact_integer_chunk_count(
+    tmp_path, bad_count
+) -> None:
+    _store, context = _black_context(tmp_path)
+    _write_narration(context)
+    manifest = context.project_dir / "manifests" / "narration_manifest.json"
+    manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
+    manifest_payload["voice_chunk_count"] = bad_count
+    manifest.write_text(json.dumps(manifest_payload), encoding="utf-8")
+
+    payload = _module().probe_narration_speech_evidence(context)
+
+    assert payload["source_speech_evidence_status"] == "FAIL"
+
+
+def test_qwen_speech_evidence_rejects_mismatched_run_and_chunk_ids(tmp_path) -> None:
+    _store, context = _black_context(tmp_path)
+    _write_narration(context)
+    report = context.project_dir / "qc" / "pronunciation_qc_report.json"
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text(
+        json.dumps(
+            {
+                "schema": "story_video_pronunciation_qc_v3",
+                "run_id": "another-run",
+                "status": "PASS",
+                "method": "sentence_chunk_plus_forced_alignment_isolated_term_asr",
+                "checked_unit": "voice_chunk",
+                "acoustic_evidence": [
+                    {
+                        "voice_chunk_id": chunk_id,
+                        "alignment_status": "PASS",
+                        "pronunciation_status": "PASS",
+                        "prosody_status": "PASS",
+                        "asr_transcript": "真實語音",
+                        "transcript_similarity": 0.99,
+                    }
+                    for chunk_id in ("S01_SH01__C01", "wrong-chunk")
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = _module().probe_narration_speech_evidence(context)
+
+    assert payload["source_speech_evidence_status"] == "FAIL"
+
+
+@pytest.mark.parametrize(
+    "bad_similarity", [True, False, 1.01, -0.01, float("inf")]
+)
+def test_qwen_speech_evidence_rejects_invalid_similarity(
+    tmp_path, bad_similarity
+) -> None:
+    _store, context = _black_context(tmp_path)
+    _write_narration(context)
+    report = context.project_dir / "qc" / "pronunciation_qc_report.json"
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text(
+        json.dumps(
+            {
+                "schema": "story_video_pronunciation_qc_v3",
+                "run_id": context.run_id,
+                "status": "PASS",
+                "method": "sentence_chunk_plus_forced_alignment_isolated_term_asr",
+                "checked_unit": "voice_chunk",
+                "acoustic_evidence": [
+                    {
+                        "voice_chunk_id": chunk_id,
+                        "alignment_status": "PASS",
+                        "pronunciation_status": "PASS",
+                        "prosody_status": "PASS",
+                        "asr_transcript": "真實語音",
+                        "transcript_similarity": bad_similarity,
+                    }
+                    for chunk_id in ("S01_SH01__C01", "S01_SH01__C02")
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = _module().probe_narration_speech_evidence(context)
+
+    assert payload["source_speech_evidence_status"] == "FAIL"
+
+
+def test_black_media_probe_rejects_nonfinite_loudness(tmp_path) -> None:
+    final = tmp_path / "final.mp4"
+    final.write_bytes(b"video")
+
+    payload = _module().probe_black_subtitle_media(
+        final,
+        3.2,
+        metadata_probe=lambda _path: {
+            "format_name": "mp4",
+            "duration_sec": 3.2,
+            "video_codec": "h264",
+            "audio_codec": "aac",
+        },
+        audio_loudness_probe=lambda _path: {
+            "mean_volume_db": float("inf"),
+            "max_volume_db": float("inf"),
+        },
+        top_frame_luminance_probe=lambda _path: 0.0,
+    )
+
+    assert payload["audio_status"] == "FAIL"
+
+
+def test_audio_loudness_probe_fails_closed_when_ffmpeg_is_missing(
+    tmp_path, monkeypatch
+) -> None:
+    final = tmp_path / "final.mp4"
+    final.write_bytes(b"video")
+    monkeypatch.setattr(
+        _module().subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("missing ffmpeg")),
+    )
+
+    assert _module()._ffmpeg_audio_loudness(final) == {
+        "mean_volume_db": None,
+        "max_volume_db": None,
     }
