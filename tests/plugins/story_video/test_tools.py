@@ -184,7 +184,14 @@ def test_story_video_specialist_tool_schemas_are_narrow_and_complete() -> None:
     assert "CustomVoice preset previews" in STORY_VIDEO_VOICE_MANAGER_SCHEMA[
         "description"
     ]
-    assert director_actions == ["compile", "bind_cast", "status"]
+    assert director_actions == [
+        "compile",
+        "bind_cast",
+        "status",
+        "start_production",
+        "production_status",
+        "retry_delivery",
+    ]
     assert "catalog voice" in STORY_VIDEO_AUDIO_DIRECTOR_SCHEMA["description"]
     assert STORY_VIDEO_AUDIO_DIRECTOR_SCHEMA["parameters"]["properties"]["mode"][
         "enum"
@@ -369,6 +376,72 @@ def test_audio_director_compiles_and_binds_active_story_project(tmp_path) -> Non
     assert Path(payload["binding_path"]) == context.project_dir / "voice_cast_binding.json"
 
     assert "voice_id" in STORY_VIDEO_CONTROL_SCHEMA["parameters"]["properties"]
+
+
+def test_audio_director_starts_bound_production_with_canonical_context(tmp_path) -> None:
+    store, context = _active_context(tmp_path)
+    calls = []
+
+    def starter(active_context):
+        calls.append(active_context)
+        return {
+            "success": True,
+            "work_status": "running",
+            "process_session_id": "proc-1",
+        }
+
+    payload = json.loads(
+        story_video_audio_director(
+            {"action": "start_production"},
+            session_id="session-1",
+            store=store,
+            production_starter=starter,
+        )
+    )
+
+    assert calls == [context]
+    assert payload["success"] is True
+    assert payload["run_id"] == context.run_id
+    assert payload["process_session_id"] == "proc-1"
+
+
+def test_audio_director_default_production_rejects_uncompiled_project(tmp_path) -> None:
+    store, _context = _active_context(tmp_path)
+
+    payload = json.loads(
+        story_video_audio_director(
+            {"action": "start_production"},
+            session_id="session-1",
+            store=store,
+        )
+    )
+
+    assert payload["success"] is False
+    assert payload["error_type"] in {
+        "story_mode_invalid",
+        "dubbing_contract_incomplete",
+    }
+
+
+def test_audio_director_preserves_failed_production_status(tmp_path) -> None:
+    store, _context = _active_context(tmp_path)
+
+    payload = json.loads(
+        story_video_audio_director(
+            {"action": "production_status"},
+            session_id="session-1",
+            store=store,
+            production_status_reader=lambda _context: {
+                "success": False,
+                "work_status": "failed",
+                "error_type": "render_failed",
+                "error": "renderer exited 1",
+            },
+        )
+    )
+
+    assert payload["success"] is False
+    assert payload["error_type"] == "render_failed"
 
 
 def test_audio_director_binds_three_qwen_voice_actors(tmp_path) -> None:

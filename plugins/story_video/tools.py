@@ -1400,6 +1400,8 @@ def story_video_audio_director(
     store: StoryVideoStateStore | None = None,
     voice_registry_path: str | Path | None = None,
     voice_catalog_builder: Any = None,
+    production_starter: Any = None,
+    production_status_reader: Any = None,
     **_: Any,
 ) -> str:
     state_store = store or StoryVideoStateStore()
@@ -1452,6 +1454,24 @@ def story_video_audio_director(
             )
         elif action == "status":
             payload = inspect_dubbing_project(context.project_dir)
+        elif action == "start_production":
+            if production_starter is None:
+                from .production import start_production
+
+                dubbing = inspect_dubbing_project(context.project_dir)
+                if dubbing.get("bound") is not True:
+                    raise DubbingContractError(
+                        "dubbing_contract_incomplete",
+                        "start_production requires a compiled and bound voice cast",
+                    )
+                production_starter = start_production
+            payload = production_starter(context)
+        elif action in {"production_status", "retry_delivery"}:
+            if production_status_reader is None:
+                from .production import production_status
+
+                production_status_reader = production_status
+            payload = production_status_reader(context)
         else:
             return json.dumps(
                 {
@@ -1470,9 +1490,9 @@ def story_video_audio_director(
             },
             ensure_ascii=False,
         )
+    payload.setdefault("success", True)
     payload.update(
         {
-            "success": True,
             "action": action,
             "run_id": context.run_id,
             "project_dir": str(context.project_dir),
