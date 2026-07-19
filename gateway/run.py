@@ -10731,11 +10731,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 f"stacked invocation are disabled for {_plat}.\n"
                                 f"Enable them with: `hermes skills config`"
                             )
+                    _invoked_skill_keys = [cmd_key, *extra_keys]
+                    _goal_mode = any(
+                        bool(skill_cmds.get(key, {}).get("goal_mode"))
+                        for key in _invoked_skill_keys
+                    )
+                    _effective_instruction = (
+                        stacked_instruction if extra_keys else user_instruction
+                    )
+                    _goal_runtime_note = ""
+                    if _goal_mode:
+                        if not _effective_instruction:
+                            return (
+                                f"The **{_skill_name}** skill requires an objective. "
+                                f"Use `/{command} <what must be completed>`."
+                            )
+                        try:
+                            _goal_runtime_note = await self._bootstrap_skill_goal(
+                                event, _effective_instruction
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Skill /%s goal bootstrap failed: %s",
+                                command,
+                                exc,
+                                exc_info=True,
+                            )
+                            return (
+                                f"Could not start `/{command}` because Hermes could not "
+                                f"establish its required goal: {exc}"
+                            )
                     if extra_keys and _build_stacked is not None:
                         stacked_result = _build_stacked(
                             [cmd_key, *extra_keys],
                             stacked_instruction,
                             task_id=_quick_key,
+                            runtime_note=_goal_runtime_note,
                         )
                         if stacked_result:
                             msg, _loaded, _missing = stacked_result
@@ -10745,7 +10776,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             return f"Failed to load stacked skills for /{command}."
                     else:
                         msg = build_skill_invocation_message(
-                            cmd_key, user_instruction, task_id=_quick_key
+                            cmd_key,
+                            user_instruction,
+                            task_id=_quick_key,
+                            runtime_note=_goal_runtime_note,
                         )
                         if msg:
                             event.text = msg
@@ -13177,6 +13211,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return None, None
         max_turns = self._goal_max_turns_from_config()
         return GoalManager(session_id=sid, default_max_turns=max_turns), session_entry
+
+    async def _bootstrap_skill_goal(self, event: "MessageEvent", objective: str) -> str:
+        """Atomically establish the durable goal required by a skill."""
+        manager, _session_entry = self._get_goal_manager_for_event(event)
+        if manager is None:
+            raise RuntimeError("goal manager is unavailable for this session")
+        _state, reused = manager.ensure(objective)
+        status = manager.status_line()
+        await self._send_goal_status_notice(event.source, status)
+        action = "reused" if reused else "created"
+        return f"Goal bootstrap PASS ({action}): {status}"
 
 
 

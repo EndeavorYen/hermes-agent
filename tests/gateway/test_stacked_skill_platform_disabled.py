@@ -85,11 +85,12 @@ def _make_runner():
     return runner
 
 
-def _make_skill(skills_dir, name, body="content"):
+def _make_skill(skills_dir, name, body="content", frontmatter_extra=""):
     sd = skills_dir / name
     sd.mkdir(parents=True, exist_ok=True)
     (sd / "SKILL.md").write_text(
-        f"---\nname: {name}\ndescription: desc {name}\n---\n\n# {name}\n\n{body}\n"
+        f"---\nname: {name}\ndescription: desc {name}\n"
+        f"{frontmatter_extra}---\n\n# {name}\n\n{body}\n"
     )
 
 
@@ -161,3 +162,72 @@ async def test_stacked_all_enabled_skills_still_load(monkeypatch, skills_env):
     assert result is None or "disabled for" not in result
     assert "ALPHA BODY MARKER" in event.text
     assert "BETA BODY MARKER" in event.text
+
+
+@pytest.mark.asyncio
+async def test_goal_mode_skill_bootstraps_goal_before_loading(monkeypatch, skills_env):
+    import gateway.run as gateway_run
+    import agent.skill_utils as skill_utils_mod
+
+    _make_skill(
+        skills_env,
+        "deep-fix",
+        body="DEEP FIX BODY",
+        frontmatter_extra=(
+            "metadata:\n"
+            "  hermes:\n"
+            "    goal_mode: true\n"
+        ),
+    )
+    monkeypatch.setattr(
+        skill_utils_mod, "get_disabled_skill_names", lambda platform=None: set()
+    )
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    runner = _make_runner()
+    runner._bootstrap_skill_goal = AsyncMock(
+        return_value="Goal bootstrap PASS: active"
+    )
+    event = _make_event("/deep-fix repair provider routing")
+
+    result = await runner._handle_message(event)
+
+    assert result is None or "Unknown command" not in result
+    runner._bootstrap_skill_goal.assert_awaited_once_with(
+        event, "repair provider routing"
+    )
+    assert "DEEP FIX BODY" in event.text
+    assert "Goal bootstrap PASS: active" in event.text
+
+
+@pytest.mark.asyncio
+async def test_goal_mode_skill_without_objective_fails_closed(monkeypatch, skills_env):
+    import gateway.run as gateway_run
+    import agent.skill_utils as skill_utils_mod
+
+    _make_skill(
+        skills_env,
+        "deep-fix",
+        frontmatter_extra=(
+            "metadata:\n"
+            "  hermes:\n"
+            "    goal_mode: true\n"
+        ),
+    )
+    monkeypatch.setattr(
+        skill_utils_mod, "get_disabled_skill_names", lambda platform=None: set()
+    )
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    runner = _make_runner()
+    runner._bootstrap_skill_goal = AsyncMock()
+
+    result = await runner._handle_message(_make_event("/deep-fix"))
+
+    assert result is not None
+    assert "requires an objective" in result
+    runner._bootstrap_skill_goal.assert_not_awaited()
