@@ -60,6 +60,8 @@ def test_help_is_compact_and_copy_ready() -> None:
     assert "每個角色都要明確指定聲線" in text
     assert "圖片故事影片" in text
     assert "全黑字幕影片" in text
+    assert "中央大字硬字幕" in text
+    assert "每個角色固定一種顏色" in text
     assert "MP4" in text
     assert "NSFW" in text
     assert "story_video_control" not in text

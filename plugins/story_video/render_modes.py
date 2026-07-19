@@ -12,6 +12,16 @@ from PIL import Image
 from .state import StoryVideoRunContext
 
 
+BLACK_SUBTITLE_NARRATOR_COLOR = "#FFFFFF"
+BLACK_SUBTITLE_ROLE_PALETTE = (
+    "#7FDBFF",
+    "#FF9ECD",
+    "#FFD166",
+    "#B8F2A2",
+    "#CDB4FF",
+)
+
+
 def _load_json(path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -51,7 +61,43 @@ def _safe_id(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._") or "scene"
 
 
-def _subtitle_cues(output: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+def _speaker_key(chunk: dict[str, Any]) -> str:
+    return str(
+        chunk.get("speaker_id")
+        or chunk.get("speaker")
+        or chunk.get("voice_id")
+        or "narrator"
+    ).strip()
+
+
+def _black_subtitle_role_colors(outputs: list[dict[str, Any]]) -> dict[str, str]:
+    speakers: list[str] = []
+    for output in outputs:
+        for segment in output.get("segments") or []:
+            if not isinstance(segment, dict):
+                continue
+            for chunk in segment.get("voice_chunks") or []:
+                if not isinstance(chunk, dict):
+                    continue
+                speaker = _speaker_key(chunk)
+                if speaker and speaker not in speakers:
+                    speakers.append(speaker)
+    colors: dict[str, str] = {}
+    palette_index = 0
+    for speaker in speakers or ["narrator"]:
+        if speaker.casefold() in {"narrator", "旁白"}:
+            colors[speaker] = BLACK_SUBTITLE_NARRATOR_COLOR
+            continue
+        colors[speaker] = BLACK_SUBTITLE_ROLE_PALETTE[
+            palette_index % len(BLACK_SUBTITLE_ROLE_PALETTE)
+        ]
+        palette_index += 1
+    return colors
+
+
+def _subtitle_cues(
+    output: dict[str, Any], role_colors: dict[str, str]
+) -> tuple[str, list[dict[str, Any]]]:
     cues: list[dict[str, Any]] = []
     for segment in output.get("segments") or []:
         if not isinstance(segment, dict):
@@ -64,12 +110,18 @@ def _subtitle_cues(output: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
             end = float(chunk.get("scene_speech_end_sec") or 0.0)
             if not text or end <= start:
                 raise ValueError("voice chunk requires display text and measured timing")
+            speaker_id = _speaker_key(chunk)
             cues.append(
                 {
                     "text": text,
                     "start_sec": round(start, 4),
                     "end_sec": round(end, 4),
                     "sentence_count": 1,
+                    "speaker_id": speaker_id,
+                    "voice_id": str(chunk.get("voice_id") or "").strip(),
+                    "color": role_colors.get(
+                        speaker_id, BLACK_SUBTITLE_NARRATOR_COLOR
+                    ),
                 }
             )
     display_text = "".join(str(cue["text"]) for cue in cues)
@@ -85,6 +137,9 @@ def _subtitle_cues(output: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
                 "start_sec": 0.0,
                 "end_sec": round(duration, 4),
                 "sentence_count": 1,
+                "speaker_id": "narrator",
+                "voice_id": str(output.get("voice_id") or "").strip(),
+                "color": BLACK_SUBTITLE_NARRATOR_COLOR,
             }
         ]
     if "".join(display_text.split()) != "".join(expected.split()):
@@ -104,6 +159,8 @@ def prepare_black_subtitle_render(context: StoryVideoRunContext) -> dict[str, An
     if not isinstance(outputs, list) or not outputs:
         raise ValueError("narration manifest has no outputs")
 
+    normalized_outputs = [output for output in outputs if isinstance(output, dict)]
+    role_colors = _black_subtitle_role_colors(normalized_outputs)
     scenes: list[dict[str, Any]] = []
     assets = context.project_dir / "assets" / "black"
     assets.mkdir(parents=True, exist_ok=True)
@@ -116,7 +173,7 @@ def prepare_black_subtitle_render(context: StoryVideoRunContext) -> dict[str, An
             output.get("audio"),
             label=f"audio for {scene_id}",
         )
-        display_text, cues = _subtitle_cues(output)
+        display_text, cues = _subtitle_cues(output, role_colors)
         duration = float(output.get("duration_sec") or 0.0)
         if duration <= 0 or cues[-1]["end_sec"] > duration + 0.25:
             raise ValueError(f"invalid narration duration for {scene_id}")
@@ -137,7 +194,7 @@ def prepare_black_subtitle_render(context: StoryVideoRunContext) -> dict[str, An
                         "narration": display_text,
                         "timeline_duration_sec": duration,
                         "speech_end_sec": cues[-1]["end_sec"],
-                        "subtitle_position": "bottom",
+                        "subtitle_position": "center",
                         "subtitle_timing_source": "measured_voice_chunks",
                         "subtitle_cues": cues,
                     }
@@ -157,13 +214,16 @@ def prepare_black_subtitle_render(context: StoryVideoRunContext) -> dict[str, An
         "motion_policy": "static_hold",
         "zoom_max": 1.0,
         "subtitle": {
+            "font_size": 72,
             "max_lines": 2,
-            "max_chars_per_line": 29,
+            "max_chars_per_line": 22,
             "preferred_sentences_per_cue": 1,
             "max_sentences_per_cue": 2,
             "min_cue_duration_sec": 0.35,
             "hide_outside_speech": True,
-            "position": "bottom",
+            "position": "center",
+            "center_y_ratio": 0.55,
+            "role_colors": role_colors,
             "production_stage": "post_composite",
             "qc_mode": "fast_post_composite",
         },
@@ -236,7 +296,7 @@ def _top_frame_max_luminance(path: Path) -> float:
             "-i",
             str(path),
             "-vf",
-            "crop=iw:floor(ih*0.70):0:0",
+            "crop=iw:floor(ih*0.25):0:0",
             "-frames:v",
             "1",
             "-f",

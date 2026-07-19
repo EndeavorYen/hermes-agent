@@ -137,6 +137,7 @@ def run_production(
     *,
     store: StoryVideoStateStore | None = None,
     voice_runner: Any = None,
+    voice_validator: Any = None,
     render_preparer: Any = None,
     renderer: Any = None,
     render_validator: Any = None,
@@ -198,9 +199,11 @@ def run_production(
                     or "voice production did not complete"
                 ),
             )
-        from .tools import validate_phase
+        if voice_validator is None:
+            from .tools import _validate_voice
 
-        proof = validate_phase(context)
+            voice_validator = _validate_voice
+        proof = voice_validator(context)
         if not proof.ok:
             return _error_payload(
                 jobs,
@@ -216,6 +219,19 @@ def run_production(
             context,
             error_type="production_phase_invalid",
             error=f"production can run only during voice or render, not {context.phase}",
+        )
+
+    if voice_validator is None:
+        from .tools import _validate_voice
+
+        voice_validator = _validate_voice
+    voice_proof = voice_validator(context)
+    if not voice_proof.ok:
+        return _error_payload(
+            jobs,
+            context,
+            error_type="voice_qc_failed",
+            error="; ".join((*voice_proof.missing, *voice_proof.violations)),
         )
 
     try:

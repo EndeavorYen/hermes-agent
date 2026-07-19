@@ -59,11 +59,15 @@ def _write_narration(context) -> None:
                                 "voice_chunks": [
                                     {
                                         "display_text": "故事開始。",
+                                        "speaker_id": "narrator",
+                                        "voice_id": "simon_clean_v2",
                                         "scene_start_sec": 0.0,
                                         "scene_speech_end_sec": 1.4,
                                     },
                                     {
                                         "display_text": "出發吧！",
+                                        "speaker_id": "xiaomei",
+                                        "voice_id": "qwen_custom_vivian",
                                         "scene_start_sec": 1.6,
                                         "scene_speech_end_sec": 3.0,
                                     },
@@ -148,9 +152,22 @@ def test_black_render_input_uses_project_local_black_frame_and_voice_cues(tmp_pa
     assert "ending_card" not in render_input
     shot = render_input["scenes"][0]["shots"][0]
     assert shot["subtitle_timing_source"] == "measured_voice_chunks"
+    assert shot["subtitle_position"] == "center"
+    assert render_input["subtitle"]["font_size"] == 72
+    assert render_input["subtitle"]["max_chars_per_line"] == 22
+    assert render_input["subtitle"]["position"] == "center"
+    assert render_input["subtitle"]["center_y_ratio"] == 0.55
     assert [cue["text"] for cue in shot["subtitle_cues"]] == [
         "故事開始。",
         "出發吧！",
+    ]
+    assert [cue["speaker_id"] for cue in shot["subtitle_cues"]] == [
+        "narrator",
+        "xiaomei",
+    ]
+    assert [cue["color"] for cue in shot["subtitle_cues"]] == [
+        "#FFFFFF",
+        "#7FDBFF",
     ]
     image_path = context.project_dir / shot["image"]
     assert image_path.is_relative_to(context.project_dir)
