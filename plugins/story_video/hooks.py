@@ -1035,8 +1035,9 @@ def pre_llm_call(
                 "During voice, call story_video_audio_director action=compile exactly once. "
                 "Derive ordered speakers, voice_id mappings, and utterances from the approved "
                 "story text and the operator's explicit casting. Keep display_text as spoken "
-                "dialogue only; put a concise non-spoken emotion or stage direction in the "
-                "optional action field. Do not synthesize until the "
+                "dialogue only; put the supported emotion in emotion and a concise physical "
+                "stage direction in the optional action field. The action takes visual "
+                "precedence when both exist. Do not synthesize until the "
                 "returned immutable cast binding is valid. "
             )
         elif context.visual_mode == "black_subtitle":

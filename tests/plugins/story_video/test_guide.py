@@ -63,7 +63,7 @@ def test_help_is_compact_and_copy_ready() -> None:
     assert "中央大字硬字幕" in text
     assert "每個角色固定一種顏色" in text
     assert "角色、情緒與動作標籤只顯示在字幕，不會念出來" in text
-    assert "小美（走到小王面前）：『你好。』" in text
+    assert "字幕範例：\n  小美（走到小王面前）\n  「你好。」" in text
     assert "MP4" in text
     assert "NSFW" in text
     assert "story_video_control" not in text
