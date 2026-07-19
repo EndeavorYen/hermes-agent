@@ -55,6 +55,20 @@ _BUNDLE_USER_INSTRUCTION = "\nUser instruction: "
 _BUNDLE_FIRST_SKILL_BLOCK = "\n\n[Loaded as part of the "
 
 
+def _skill_goal_mode(frontmatter: dict[str, Any]) -> bool:
+    """Return whether a skill requires a durable Hermes goal."""
+    metadata = frontmatter.get("metadata")
+    if not isinstance(metadata, dict):
+        return False
+    hermes = metadata.get("hermes")
+    if not isinstance(hermes, dict):
+        return False
+    value = hermes.get("goal_mode", False)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def extract_user_instruction_from_skill_message(content: Any) -> Optional[str]:
     """Recover the user's instruction from a slash-skill-expanded turn.
 
@@ -108,6 +122,9 @@ def _extract_bundle_user_instruction(message: str) -> Optional[str]:
     first_skill_idx = instruction.find(_BUNDLE_FIRST_SKILL_BLOCK)
     if first_skill_idx >= 0:
         instruction = instruction[:first_skill_idx]
+    runtime_idx = instruction.find(_RUNTIME_NOTE)
+    if runtime_idx >= 0:
+        instruction = instruction[:runtime_idx]
     instruction = instruction.strip()
     return instruction or None
 
@@ -379,6 +396,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                         "description": description or f"Invoke the {name} skill",
                         "skill_md_path": str(skill_md),
                         "skill_dir": str(skill_md.parent),
+                        "goal_mode": _skill_goal_mode(frontmatter),
                     }
                 except Exception:
                     continue
@@ -586,6 +604,7 @@ def build_stacked_skill_invocation_message(
     cmd_keys: list[str],
     user_instruction: str = "",
     task_id: str | None = None,
+    runtime_note: str = "",
 ) -> Optional[tuple[str, list[str], list[str]]]:
     """Build the user message for a stacked multi-skill slash invocation.
 
@@ -659,6 +678,8 @@ def build_stacked_skill_invocation_message(
         header_lines.append(f"Skills missing (skipped): {', '.join(missing)}")
     if user_instruction:
         header_lines.extend(["", f"User instruction: {user_instruction}"])
+    if runtime_note:
+        header_lines.extend(["", f"[Runtime note: {runtime_note}]"])
 
     header = "\n".join(header_lines)
     return ("\n\n".join([header, *skill_blocks]), loaded_names, missing)

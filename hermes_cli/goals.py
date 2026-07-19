@@ -1157,6 +1157,25 @@ class GoalManager:
         save_goal(self.session_id, state)
         return state
 
+    def ensure(self, goal: str) -> Tuple[GoalState, bool]:
+        """Make *goal* active, reusing an identical active goal.
+
+        Returns ``(state, reused)``. A different, completed, or cleared goal
+        starts a fresh budget; an identical paused goal resumes without
+        resetting its existing turn accounting.
+        """
+        goal = (goal or "").strip()
+        if not goal:
+            raise ValueError("goal text is empty")
+        if self._state is not None and self._state.goal == goal:
+            if self._state.status == "active":
+                return self._state, True
+            if self._state.status == "paused":
+                state = self.resume(reset_budget=False)
+                if state is not None:
+                    return state, True
+        return self.set(goal), False
+
     def set_contract(self, contract: GoalContract) -> Optional[GoalState]:
         """Attach or replace the completion contract on the active goal.
 

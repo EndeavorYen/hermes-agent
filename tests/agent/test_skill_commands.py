@@ -58,6 +58,28 @@ class TestScanSkillCommands:
         assert "/my-skill" in result
         assert result["/my-skill"]["name"] == "my-skill"
 
+    def test_exposes_declared_hermes_goal_mode(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "deep-fix",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    goal_mode: true\n"
+                ),
+            )
+            result = scan_skill_commands()
+
+        assert result["/deep-fix"]["goal_mode"] is True
+
+    def test_goal_mode_defaults_off(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "ordinary-skill")
+            result = scan_skill_commands()
+
+        assert result["/ordinary-skill"]["goal_mode"] is False
+
     def test_empty_dir(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             result = scan_skill_commands()
@@ -967,6 +989,23 @@ class TestStackedSkillCommands:
             scan_skill_commands()
             result = build_stacked_skill_invocation_message(
                 ["/skill-a", "/skill-b"], "summarize the repo"
+            )
+        assert result is not None
+        msg, _, _ = result
+        assert extract_user_instruction_from_skill_message(msg) == "summarize the repo"
+
+    def test_memory_extractor_excludes_stacked_runtime_note(self, tmp_path):
+        from agent.skill_commands import (
+            build_stacked_skill_invocation_message,
+            extract_user_instruction_from_skill_message,
+        )
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            self._setup_three_skills(tmp_path)
+            scan_skill_commands()
+            result = build_stacked_skill_invocation_message(
+                ["/skill-a", "/skill-b"],
+                "summarize the repo",
+                runtime_note="Goal bootstrap PASS",
             )
         assert result is not None
         msg, _, _ = result
