@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import io
+import math
 import re
 import subprocess
 from pathlib import Path
@@ -31,6 +32,9 @@ BLACK_SUBTITLE_EMOTION_LABELS = {
     "humor": "幽默",
     "warmth": "溫暖",
 }
+BLACK_SUBTITLE_MIN_MEAN_VOLUME_DB = -45.0
+BLACK_SUBTITLE_MIN_PEAK_VOLUME_DB = -24.0
+QWEN_SPEECH_QC_METHOD = "sentence_chunk_plus_forced_alignment_isolated_term_asr"
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -395,11 +399,113 @@ def _top_frame_max_luminance(path: Path) -> float:
     return float(maximum)
 
 
+def _ffmpeg_audio_loudness(path: Path) -> dict[str, float | None]:
+    process = subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-nostats",
+            "-i",
+            str(path),
+            "-map",
+            "0:a:0",
+            "-af",
+            "volumedetect",
+            "-f",
+            "null",
+            "-",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    output = process.stderr or ""
+
+    def value(label: str) -> float | None:
+        match = re.search(rf"{label}:\s*(-?(?:\d+(?:\.\d+)?|inf))\s*dB", output)
+        if match is None or match.group(1) == "-inf":
+            return None
+        return float(match.group(1))
+
+    return {
+        "mean_volume_db": value("mean_volume"),
+        "max_volume_db": value("max_volume"),
+    }
+
+
+def probe_narration_speech_evidence(
+    context: StoryVideoRunContext,
+) -> dict[str, Any]:
+    try:
+        manifest = _load_json(
+            context.project_dir / "manifests" / "narration_manifest.json"
+        )
+        report = _load_json(
+            context.project_dir / "qc" / "pronunciation_qc_report.json"
+        )
+    except ValueError:
+        manifest = {}
+        report = {}
+    try:
+        expected_count = int(manifest.get("voice_chunk_count") or 0)
+    except (TypeError, ValueError):
+        expected_count = 0
+    evidence = report.get("acoustic_evidence")
+    rows = evidence if isinstance(evidence, list) else []
+    verified: list[dict[str, Any]] = []
+    similarities: list[float] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            similarity = float(row.get("transcript_similarity") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(similarity) or similarity <= 0.0:
+            continue
+        if not (
+            str(row.get("voice_chunk_id") or "").strip()
+            and str(row.get("asr_transcript") or "").strip()
+            and all(
+                str(row.get(gate) or "").upper() == "PASS"
+                for gate in (
+                    "alignment_status",
+                    "pronunciation_status",
+                    "prosody_status",
+                )
+            )
+        ):
+            continue
+        verified.append(row)
+        similarities.append(similarity)
+    valid_contract = (
+        str(manifest.get("provider") or "").replace("_", "-").casefold()
+        == "local-qwen"
+        and report.get("schema") == "story_video_pronunciation_qc_v3"
+        and str(report.get("status") or "").upper() == "PASS"
+        and report.get("method") == QWEN_SPEECH_QC_METHOD
+        and report.get("checked_unit") == "voice_chunk"
+        and expected_count > 0
+        and len(rows) == expected_count
+        and len(verified) == expected_count
+        and len({str(row["voice_chunk_id"]) for row in verified}) == expected_count
+    )
+    return {
+        "speech_content_status": "PASS" if valid_contract else "FAIL",
+        "speech_qc_method": str(report.get("method") or ""),
+        "asr_verified_chunk_count": len(verified),
+        "minimum_transcript_similarity": (
+            round(min(similarities), 4) if similarities else 0.0
+        ),
+    }
+
+
 def probe_black_subtitle_media(
     path: str | Path,
     expected_duration_sec: float,
     *,
     metadata_probe: Any = _ffprobe_metadata,
+    audio_loudness_probe: Any = _ffmpeg_audio_loudness,
     top_frame_luminance_probe: Any = _top_frame_max_luminance,
 ) -> dict[str, Any]:
     video = Path(path).expanduser().resolve()
@@ -408,6 +514,15 @@ def probe_black_subtitle_media(
     expected = float(expected_duration_sec or 0.0)
     tolerance = max(0.25, expected * 0.02)
     luminance = float(top_frame_luminance_probe(video))
+    loudness = audio_loudness_probe(video)
+    mean_volume = loudness.get("mean_volume_db")
+    max_volume = loudness.get("max_volume_db")
+    audible = (
+        isinstance(mean_volume, (int, float))
+        and isinstance(max_volume, (int, float))
+        and float(mean_volume) >= BLACK_SUBTITLE_MIN_MEAN_VOLUME_DB
+        and float(max_volume) >= BLACK_SUBTITLE_MIN_PEAK_VOLUME_DB
+    )
     return {
         "container_status": (
             "PASS"
@@ -417,7 +532,15 @@ def probe_black_subtitle_media(
             else "FAIL"
         ),
         "audio_status": (
-            "PASS" if str(metadata.get("audio_codec") or "").strip() else "FAIL"
+            "PASS"
+            if str(metadata.get("audio_codec") or "").strip() and audible
+            else "FAIL"
+        ),
+        "audio_mean_volume_db": (
+            round(float(mean_volume), 4) if mean_volume is not None else None
+        ),
+        "audio_max_volume_db": (
+            round(float(max_volume), 4) if max_volume is not None else None
         ),
         "duration_match_status": (
             "PASS"
@@ -435,6 +558,7 @@ def finalize_black_subtitle_render(
     renderer_result: dict[str, Any],
     *,
     media_probe: Any = probe_black_subtitle_media,
+    speech_evidence_probe: Any = probe_narration_speech_evidence,
 ) -> dict[str, Any]:
     selected, selected_relative = _project_file(
         context,
@@ -443,6 +567,7 @@ def finalize_black_subtitle_render(
     )
     expected_duration = float(renderer_result.get("duration_sec") or 0.0)
     media = media_probe(selected, expected_duration)
+    speech = speech_evidence_probe(context)
     subtitle_qc_path = Path(str(renderer_result.get("subtitle_qc_report") or ""))
     if not subtitle_qc_path.is_absolute():
         subtitle_qc_path = context.project_dir / subtitle_qc_path
@@ -458,14 +583,16 @@ def finalize_black_subtitle_render(
             "coverage_status": subtitle_status or "FAIL",
         },
         **media,
+        **speech,
     }
     proof_passes = (
         subtitle_status == "PASS"
         and all(
-            str(media.get(field) or "").upper() == "PASS"
+            str(output.get(field) or "").upper() == "PASS"
             for field in (
                 "container_status",
                 "audio_status",
+                "speech_content_status",
                 "duration_match_status",
                 "black_background_status",
             )
@@ -525,6 +652,7 @@ def validate_black_subtitle_render(context: StoryVideoRunContext):
         for field in (
             "container_status",
             "audio_status",
+            "speech_content_status",
             "duration_match_status",
             "black_background_status",
         ):
