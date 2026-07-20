@@ -932,11 +932,54 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- Slack: native file uploads via the plugin standalone sender ---
+    if platform == Platform.SLACK and media_files:
+        from gateway.platform_registry import platform_registry as _pr_slack
+        from hermes_cli.plugins import discover_plugins as _dp_slack
+
+        _dp_slack()
+        _slack_entry = _pr_slack.get("slack")
+        if _slack_entry is None or _slack_entry.standalone_sender_fn is None:
+            return {"error": "Slack plugin not registered or missing standalone_sender_fn"}
+        media_result = await _slack_entry.standalone_sender_fn(
+            pconfig,
+            chat_id,
+            chunks[0],
+            thread_id=thread_id,
+            media_files=media_files,
+            force_document=force_document,
+        )
+        if isinstance(media_result, dict) and media_result.get("error"):
+            return media_result
+        for chunk in chunks[1:]:
+            result = await _slack_entry.standalone_sender_fn(
+                pconfig,
+                chat_id,
+                chunk,
+                thread_id=thread_id,
+                media_files=None,
+                force_document=force_document,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                partial_result = dict(media_result or {})
+                warnings = list(partial_result.get("warnings") or [])
+                warnings.append(
+                    "Slack media uploaded, but a trailing text chunk failed: "
+                    f"{_sanitize_error_text(result['error'])}"
+                )
+                partial_result.update({
+                    "success": True,
+                    "partial": True,
+                    "warnings": warnings,
+                })
+                return partial_result
+        return media_result
+
     # --- Non-media platforms ---
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and whatsapp; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, slack, matrix, weixin, signal, yuanbao, feishu and whatsapp; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -944,7 +987,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and whatsapp"
+            "native send_message media delivery is currently only supported for telegram, discord, slack, matrix, weixin, signal, yuanbao, feishu and whatsapp"
         )
 
     last_result = None
