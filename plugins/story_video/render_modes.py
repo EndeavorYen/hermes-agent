@@ -119,7 +119,14 @@ def _visual_subtitle_text(
     if is_narrator or speaker_id.casefold() in {"narrator", "旁白"}:
         return text
     emotion_label = BLACK_SUBTITLE_EMOTION_LABELS.get(emotion, "")
-    direction = action or emotion_label
+    localized_action = (
+        action
+        if re.search(r"[\u3400-\u9fff]", action)
+        and not re.search(r"[A-Za-z]", action)
+        and len(action) <= 16
+        else ""
+    )
+    direction = localized_action or emotion_label or "自然"
     suffix = f"（{direction}）" if direction else ""
     return f"{display_name or speaker_id}{suffix}\n「{text}」"
 
@@ -300,7 +307,7 @@ def prepare_black_subtitle_render(context: StoryVideoRunContext) -> dict[str, An
         "subtitle": {
             "font_size": 72,
             "max_lines": 3,
-            "max_chars_per_line": 22,
+            "max_chars_per_line": 24,
             "preferred_sentences_per_cue": 1,
             "max_sentences_per_cue": 2,
             "min_cue_duration_sec": 0.35,

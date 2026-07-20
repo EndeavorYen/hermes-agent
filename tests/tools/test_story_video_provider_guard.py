@@ -144,6 +144,29 @@ def test_audio_only_multi_role_dubbing_does_not_force_video_route() -> None:
     ) is False
 
 
+def test_long_multirole_story_script_routes_to_story_video() -> None:
+    from tools.story_video_provider_guard import story_video_request_detected
+
+    prompt = (
+        "故事劇本 (NSFW)\n"
+        + "這是一段很長的故事。" * 300
+        + "\n多角色配音：旁白用 Vivian，嘉梅用 Serena。"
+    )
+
+    assert story_video_request_detected(prompt, {}) is True
+
+
+def test_story_text_with_role_voice_arrangement_routes_to_story_video() -> None:
+    from tools.story_video_provider_guard import story_video_request_detected
+
+    prompt = (
+        "故事腳本：三位旅人在山中相遇。\n"
+        "角色聲線安排：旁白＝溫暖女聲；旅人甲＝沉穩男聲。"
+    )
+
+    assert story_video_request_detected(prompt, {}) is True
+
+
 def test_negated_structure_terms_keep_seconds_scale_clips_on_visual_route():
     from tools.story_video_provider_guard import story_video_request_detected
 

@@ -441,6 +441,30 @@ def parse_operator_call(
             visual_mode=_requested_visual_mode(raw),
         )
 
+    multirole_story_script = bool(
+        re.search(
+            r"(?:故事(?:劇本|剧本|腳本|脚本|文本|原稿)|story\s+(?:script|text))",
+            raw,
+            re.I,
+        )
+        and re.search(
+            r"(?:多角色(?:配音|聲音|声音|聲線|声线|朗讀|朗读)|"
+            r"角色(?:配音|聲音|声音|聲線|声线)(?:安排|分配|對照|对照|設定|设定)?|"
+            r"multi[ -]?role\s+(?:dubbing|voice|narration))",
+            raw,
+            re.I,
+        )
+    )
+    if multirole_story_script:
+        return OperatorCall(
+            action="start",
+            topic="多角色故事",
+            duration=DEFAULT_DURATION,
+            visual_style=DEFAULT_STYLE,
+            auto_mode=not _planning_only_requested(raw),
+            visual_mode=_requested_visual_mode(raw),
+        )
+
     long_form = _parse_explicit_long_form_start(raw)
     if long_form is not None:
         return replace(long_form, visual_mode=_requested_visual_mode(raw))
