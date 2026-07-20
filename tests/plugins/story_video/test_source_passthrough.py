@@ -9,7 +9,7 @@ from plugins.story_video.source_passthrough import (
     prepare_local_adult_passthrough,
 )
 from plugins.story_video.state import OperatorCall, StoryVideoStateStore
-from plugins.story_video.tools import validate_phase
+from plugins.story_video.tools import _project_content_rating, validate_phase
 
 
 def _request(*, duplicate: bool = False) -> str:
@@ -139,6 +139,42 @@ def test_prepare_local_adult_passthrough_is_deterministic_and_planning_valid(
     }
     proof = validate_phase(context)
     assert proof.ok is True, (proof.missing, proof.violations)
+
+
+def test_adult_passthrough_compiles_adult_action_tone_without_speaking_action(
+    tmp_path,
+) -> None:
+    request = (
+        "請把以下已完成的 NSFW 劇本做成全黑背景字幕影片，不要產圖。\n"
+        "```text\n【場景一：深夜】\n"
+        "小美：[帶著壓抑的渴望靠近耳邊，壓低聲音]「再靠近一點。」\n```\n"
+        "多角色配音：小美用 Serena。"
+    )
+    store = StoryVideoStateStore(tmp_path)
+    context = store.create_or_load(
+        source_key="source-adult-tone",
+        session_id="session-adult-tone",
+        call=OperatorCall(
+            action="start",
+            topic="已完成的成人劇本",
+            visual_mode="black_subtitle",
+        ),
+        original_request=request,
+    )
+
+    prepare_local_adult_passthrough(context)
+
+    ledger = json.loads(
+        (context.project_dir / "dialogue_ledger.json").read_text(encoding="utf-8")
+    )
+    row = ledger["utterances"][0]
+    assert ledger["content_rating"] == "adult_explicit"
+    assert row["tone"]["tone_id"] == "adult.desirous"
+    assert row["display_text"] == "再靠近一點。"
+    assert "渴望" not in row["display_text"]
+    proof = validate_phase(context)
+    assert proof.ok is True, (proof.missing, proof.violations)
+    assert _project_content_rating(context) == "adult_explicit"
 
 
 def test_prepare_local_adult_passthrough_fails_closed_outside_black_subtitle(

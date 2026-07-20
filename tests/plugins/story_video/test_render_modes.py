@@ -220,6 +220,34 @@ def test_black_render_input_uses_project_local_black_frame_and_voice_cues(tmp_pa
     assert not (context.project_dir / "manifests/shot_candidate_manifest.json").exists()
 
 
+def test_black_render_accepts_v7_and_preserves_selected_audio(tmp_path) -> None:
+    _store, context = _black_context(tmp_path)
+    _write_narration(context)
+    manifest_path = context.project_dir / "manifests" / "narration_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["schema"] = "story_video_narration_manifest_v7"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    _module().prepare_black_subtitle_render(context)
+
+    render_input = json.loads(
+        (context.project_dir / "render_input.json").read_text(encoding="utf-8")
+    )
+    assert render_input["scenes"][0]["audio"] == "audio/S01.wav"
+
+
+def test_black_render_rejects_unknown_narration_schema(tmp_path) -> None:
+    _store, context = _black_context(tmp_path)
+    _write_narration(context)
+    manifest_path = context.project_dir / "manifests" / "narration_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["schema"] = "story_video_narration_manifest_v99"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unsupported narration manifest schema"):
+        _module().prepare_black_subtitle_render(context)
+
+
 def test_black_subtitle_prefers_action_without_changing_spoken_text(
     tmp_path,
 ) -> None:

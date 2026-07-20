@@ -35,6 +35,12 @@ BLACK_SUBTITLE_EMOTION_LABELS = {
 BLACK_SUBTITLE_MIN_MEAN_VOLUME_DB = -45.0
 BLACK_SUBTITLE_MIN_PEAK_VOLUME_DB = -24.0
 QWEN_SPEECH_QC_METHOD = "sentence_chunk_plus_forced_alignment_isolated_term_asr"
+SUPPORTED_NARRATION_MANIFEST_SCHEMAS = {
+    "story_video_narration_manifest_v4",
+    "story_video_narration_manifest_v5",
+    "story_video_narration_manifest_v6",
+    "story_video_narration_manifest_v7",
+}
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -234,6 +240,9 @@ def prepare_black_subtitle_render(context: StoryVideoRunContext) -> dict[str, An
     manifest = _load_json(
         context.project_dir / "manifests" / "narration_manifest.json"
     )
+    narration_schema = str(manifest.get("schema") or "")
+    if narration_schema and narration_schema not in SUPPORTED_NARRATION_MANIFEST_SCHEMAS:
+        raise ValueError(f"unsupported narration manifest schema: {narration_schema}")
     if manifest.get("run_id") not in {None, "", context.run_id}:
         raise ValueError("narration manifest belongs to another run")
     outputs = manifest.get("outputs")

@@ -4,12 +4,18 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
 from plugins.story_video.accessible_explainer import (
     ACCESSIBLE_EXPLAINER_PROFILE_ID,
     ensure_explanation_profile,
 )
 from plugins.story_video.audit import ProviderAudit, ProviderAuditEvent
-from plugins.story_video.dubbing import DubbingContractError
+from plugins.story_video.dubbing import (
+    DubbingContractError,
+    bind_project_voice_cast,
+    compile_dubbing_project,
+)
 from plugins.story_video.schemas import (
     STORY_VIDEO_AUDIO_DIRECTOR_SCHEMA,
     STORY_VIDEO_CONTROL_SCHEMA,
@@ -18,8 +24,11 @@ from plugins.story_video.schemas import (
 from plugins.story_video.sequence_quality import write_sequence_quality_report
 from plugins.story_video.shot_contract import shot_contract_hash
 from plugins.story_video.state import StoryVideoStateStore, parse_operator_call
+from plugins.story_video.tone_map import build_tone_catalog, resolve_tone_application
 from plugins.story_video.tools import (
+    _expected_v7_chunk_spoken_text,
     _next_phase,
+    _project_content_rating,
     story_video_audio_director,
     story_video_control,
     story_video_voice_manager,
@@ -115,6 +124,258 @@ def _ready_voice_catalog(tmp_path) -> dict:
         registry_path=registry,
         preset_model_path=model,
         preset_runtime_path=runtime,
+    )
+
+
+def _write_valid_v7_tone_voice_project(tmp_path):
+    store, context = _active_context(tmp_path)
+    context = store.update(context, phase="voice")
+    catalog = _ready_voice_catalog(tmp_path)
+    compile_dubbing_project(
+        context.project_dir,
+        mode="creative",
+        source_text="",
+        content_rating="general",
+        speakers=[
+            {
+                "speaker_id": "narrator",
+                "display_name": "旁白",
+                "role": "narrator",
+                "voice_id": "simon_clean_v2",
+            },
+            {
+                "speaker_id": "xiaomei",
+                "display_name": "小美",
+                "role": "lead",
+                "voice_id": "Vivian",
+            },
+        ],
+        utterances=[
+            {
+                "utterance_id": "U001",
+                "scene_id": "S01",
+                "shot_id": "S01_SH01",
+                "speaker_id": "narrator",
+                "display_text": "故事開始。",
+            },
+            {
+                "utterance_id": "U002",
+                "scene_id": "S01",
+                "shot_id": "S01_SH01",
+                "speaker_id": "xiaomei",
+                "display_text": "你好。",
+                "emotion": "warmth",
+                "action": "輕聲走近",
+            },
+        ],
+    )
+    selection = bind_project_voice_cast(
+        context.project_dir,
+        voice_catalog=catalog,
+    )
+    dialogue = context.project_dir / "dialogue_ledger.json"
+    ledger = json.loads(dialogue.read_text(encoding="utf-8"))
+    binding = selection.binding_path
+    profiles = {
+        str(row["speaker_id"]): row for row in selection.speakers
+    }
+    audio = context.project_dir / "audio" / "qwen" / "S01.wav"
+    audio.parent.mkdir(parents=True)
+    audio.write_bytes(b"tone-aware-cast-audio")
+    pronunciation = context.project_dir / "qc" / "pronunciation_qc_report.json"
+    pronunciation.parent.mkdir(parents=True)
+    pronunciation.write_text(
+        json.dumps(
+            {
+                "schema": "story_video_pronunciation_qc_v3",
+                "run_id": context.run_id,
+                "status": "PASS",
+                "language": "zh-TW",
+                "method": "sentence_chunk_plus_forced_alignment_isolated_term_asr",
+                "checked_unit": "voice_chunk",
+                "fluency_contract": "bounded_internal_silence_v1",
+                "max_internal_silence_sec": 0.9,
+                "applied_entries": [],
+                "acoustic_evidence": [
+                    {
+                        "shot_id": chunk_id,
+                        "alignment_status": "PASS",
+                        "pronunciation_status": "PASS",
+                        "prosody_status": "PASS",
+                        "fluency_status": "PASS",
+                        "longest_internal_silence_sec": 0.1,
+                        "term_checks": [],
+                    }
+                    for chunk_id in ("U001__C01", "U002__C01")
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    def chunk(
+        *,
+        utterance_id: str,
+        speaker_id: str,
+        display_text: str,
+        start: float,
+        tone: dict,
+    ) -> dict:
+        profile = profiles[speaker_id]
+        engine = str(profile["engine"])
+        application = resolve_tone_application(
+            engine=engine,
+            tone=tone,
+            catalog=ledger["tone_catalog"],
+            baseline={
+                "speed": 1.0,
+                "pitch_shift_semitones": 0.0,
+                "expressiveness": "natural",
+            },
+            variant=profile.get("variant") or {},
+        )
+        pause = float(application.get("pause_seconds") or 0.18)
+        return {
+            "voice_chunk_id": f"{utterance_id}__C01",
+            "utterance_id": utterance_id,
+            "speaker_id": speaker_id,
+            "voice_id": str(profile["voice_id"]),
+            "engine": engine,
+            "profile_id": str(profile.get("profile_id") or ""),
+            "profile_sha256": str(profile.get("profile_sha256") or ""),
+            "speaker_routing_status": "PASS",
+            "display_text": display_text,
+            "spoken_text": display_text,
+            "pronunciation_rules": [],
+            "pronunciation_entries": [],
+            "scene_start_sec": start,
+            "scene_speech_end_sec": start + 1.0,
+            "start_sec": start,
+            "speech_end_sec": start + 1.0,
+            "alignment_status": "PASS",
+            "pronunciation_status": "PASS",
+            "prosody_status": "PASS",
+            "fluency_status": "PASS",
+            "tone": tone,
+            "tone_adapter": engine,
+            "tone_instruction_template_id": str(
+                application.get("instruction_template_id") or ""
+            ),
+            "tone_application": application,
+            "tone_applied_parameters": dict(application["applied_parameters"]),
+            "resolved_pause_after_sec": pause,
+            "pause_after_sec": pause,
+            "candidate_count": 1,
+            "selected_candidate": 1,
+            "candidate_rejections": [],
+        }
+
+    chunks = [
+        chunk(
+            utterance_id="U001",
+            speaker_id="narrator",
+            display_text="故事開始。",
+            start=0.0,
+            tone=ledger["utterances"][0]["tone"],
+        ),
+        chunk(
+            utterance_id="U002",
+            speaker_id="xiaomei",
+            display_text="你好。",
+            start=1.18,
+            tone=ledger["utterances"][1]["tone"],
+        ),
+    ]
+    tone_catalog = build_tone_catalog()
+    manifest = {
+        "schema": "story_video_narration_manifest_v7",
+        "run_id": context.run_id,
+        "provider": "local_qwen",
+        "engine": "Qwen3-TTS via MLX-Audio",
+        "language": "zh-TW",
+        "voice_role": "cast",
+        "voice": "multi_character",
+        "rate": "per_speaker",
+        "profile_status": "cast_bound",
+        "voice_contract_status": "PASS",
+        "model": "Qwen3-TTS-1.7B",
+        "inference_mode": "offline",
+        "network_fallback": "forbidden",
+        "pronunciation_status": "PASS",
+        "alignment_status": "PASS",
+        "prosody_status": "PASS",
+        "fluency_status": "PASS",
+        "spoken_text_normalization": "bounded_ellipsis_v1",
+        "voice_segmentation": "sentence_chunks_v1",
+        "voice_chunk_count": 2,
+        "story_mode": "creative",
+        "speaker_routing_status": "PASS",
+        "speaker_similarity_status": "NOT_MEASURED",
+        "speaker_similarity_method": "routing_integrity_only",
+        "voice_cast_binding": str(binding),
+        "voice_cast_binding_sha256": hashlib.sha256(binding.read_bytes()).hexdigest(),
+        "dialogue_ledger": str(dialogue),
+        "dialogue_ledger_sha256": hashlib.sha256(dialogue.read_bytes()).hexdigest(),
+        "speaker_profiles": selection.speakers,
+        "content_rating": "general",
+        "tone_catalog_schema": str(tone_catalog["schema"]),
+        "tone_catalog_version": int(tone_catalog["version"]),
+        "tone_catalog_sha256": str(tone_catalog["sha256"]),
+        "tone_control_status": "PASS",
+        "tone_evidence_status": "HEURISTIC_PASS",
+        "outputs": [
+            {
+                "scene_id": "S01",
+                "audio": str(audio),
+                "duration_sec": 2.36,
+                "display_text": "故事開始。你好。",
+                "spoken_text": "故事開始。你好。",
+                "pronunciation_status": "PASS",
+                "segments": [
+                    {
+                        "shot_id": "S01_SH01",
+                        "timeline_duration_sec": 2.36,
+                        "spoken_text": "故事開始。你好。",
+                        "alignment_status": "PASS",
+                        "pronunciation_status": "PASS",
+                        "prosody_status": "PASS",
+                        "voice_chunks": chunks,
+                    }
+                ],
+            }
+        ],
+    }
+    manifest_path = context.project_dir / "manifests" / "narration_manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return context, manifest_path, dialogue, binding
+
+
+def _resign_v7_dialogue_contract(
+    manifest_path: Path,
+    dialogue_path: Path,
+    binding_path: Path,
+) -> None:
+    binding = json.loads(binding_path.read_text(encoding="utf-8"))
+    binding["dialogue_ledger_sha256"] = hashlib.sha256(
+        dialogue_path.read_bytes()
+    ).hexdigest()
+    binding_path.write_text(
+        json.dumps(binding, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["dialogue_ledger_sha256"] = binding["dialogue_ledger_sha256"]
+    manifest["voice_cast_binding_sha256"] = hashlib.sha256(
+        binding_path.read_bytes()
+    ).hexdigest()
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False),
+        encoding="utf-8",
     )
 
 
@@ -434,6 +695,115 @@ def test_audio_director_compiles_and_binds_active_story_project(tmp_path) -> Non
     assert Path(payload["binding_path"]) == context.project_dir / "voice_cast_binding.json"
 
     assert "voice_id" in STORY_VIDEO_CONTROL_SCHEMA["parameters"]["properties"]
+
+
+def test_audio_director_rejects_incomplete_adult_profile_as_general(tmp_path) -> None:
+    store, context = _active_context(tmp_path)
+    registry = _voice_registry(tmp_path, "voice_a", default="voice_a")
+    (context.project_dir / "content_profile.json").write_text(
+        json.dumps(
+            {
+                "schema": "story_video_content_profile_v1",
+                "rating": "adult_explicit",
+                "activation_status": "active",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        story_video_audio_director(
+            {
+                "action": "compile",
+                "mode": "creative",
+                "source_text": "",
+                "speakers": [
+                    {
+                        "speaker_id": "lead",
+                        "display_name": "主角",
+                        "role": "lead",
+                        "voice_id": "voice_a",
+                    }
+                ],
+                "utterances": [
+                    {
+                        "utterance_id": "U001",
+                        "scene_id": "S01",
+                        "shot_id": "S01_SH01",
+                        "speaker_id": "lead",
+                        "display_text": "再靠近一點。",
+                        "tone_id": "adult.intimate",
+                        "tone_intensity": 2,
+                        "tone_modifiers": ["soft"],
+                    }
+                ],
+            },
+            session_id="session-1",
+            store=store,
+            voice_registry_path=registry,
+        )
+    )
+
+    assert payload["success"] is False
+    assert payload["error_type"] == "tone_content_rating_invalid"
+    assert not (context.project_dir / "voice_cast_binding.json").exists()
+
+
+@pytest.mark.parametrize(
+    "profile_update",
+    [
+        {"schema": "wrong"},
+        {"activation_status": "inactive"},
+        {"provider_capability_status": "unavailable"},
+        {"minimum_viewer_age": -1},
+        {"policy_profile_id": ""},
+        {"writer_profile_id": ""},
+        {"review_profile_id": ""},
+    ],
+)
+def test_project_content_rating_falls_back_for_invalid_general_profile(
+    tmp_path,
+    profile_update,
+) -> None:
+    _store, context = _active_context(tmp_path)
+    profile = {
+        "schema": "story_video_content_profile_v1",
+        "rating": "family",
+        "activation_status": "active",
+        "minimum_viewer_age": 5,
+        "policy_profile_id": "family-safe-v1",
+        "writer_profile_id": "family-writer-v1",
+        "review_profile_id": "family-review-board-v1",
+        "provider_capability_status": "available",
+    }
+    profile.update(profile_update)
+    (context.project_dir / "content_profile.json").write_text(
+        json.dumps(profile),
+        encoding="utf-8",
+    )
+
+    assert _project_content_rating(context) == "general"
+
+
+def test_project_content_rating_accepts_valid_general_contract(tmp_path) -> None:
+    _store, context = _active_context(tmp_path)
+    (context.project_dir / "content_profile.json").write_text(
+        json.dumps(
+            {
+                "schema": "story_video_content_profile_v1",
+                "rating": "family",
+                "activation_status": "active",
+                "minimum_viewer_age": 5,
+                "policy_profile_id": "family-safe-v1",
+                "writer_profile_id": "family-writer-v1",
+                "review_profile_id": "family-review-board-v1",
+                "provider_capability_status": "available",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert _project_content_rating(context) == "family"
 
 
 def test_audio_director_starts_bound_production_with_canonical_context(tmp_path) -> None:
@@ -2727,6 +3097,551 @@ def test_voice_validation_verifies_v6_multi_character_routing_and_hashes(
 
     assert drifted.ok is False
     assert "multi-character voice chunk profile does not match cast binding" in drifted.violations
+
+
+def test_voice_validation_accepts_v7_engine_aware_tone_contract(tmp_path) -> None:
+    context, _manifest_path, _dialogue, _binding = (
+        _write_valid_v7_tone_voice_project(tmp_path)
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is True, proof
+
+
+def test_voice_validation_accepts_v7_selective_retry_candidate_evidence(
+    tmp_path,
+) -> None:
+    context, manifest_path, _dialogue, _binding = (
+        _write_valid_v7_tone_voice_project(tmp_path)
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    chunk = manifest["outputs"][0]["segments"][0]["voice_chunks"][1]
+    chunk["candidate_count"] = 2
+    chunk["selected_candidate"] = 2
+    chunk["candidate_rejections"] = [
+        {
+            "candidate_id": 1,
+            "reasons": [
+                {
+                    "gate": "pronunciation_status",
+                    "status": "FAIL",
+                    "metrics": {"asr_transcript": "錯誤"},
+                }
+            ],
+        }
+    ]
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is True, proof
+
+
+def test_voice_validation_rejects_rehashed_noncanonical_v7_catalog(tmp_path) -> None:
+    context, manifest_path, dialogue_path, binding_path = (
+        _write_valid_v7_tone_voice_project(tmp_path)
+    )
+    ledger = json.loads(dialogue_path.read_text(encoding="utf-8"))
+    ledger["tone_catalog"]["tones"]["general.warm"]["adapters"][
+        "qwen_custom_voice"
+    ]["instruct"] = "已被竄改但重新計算雜湊"
+    canonical = {
+        key: value
+        for key, value in ledger["tone_catalog"].items()
+        if key != "sha256"
+    }
+    ledger["tone_catalog"]["sha256"] = hashlib.sha256(
+        json.dumps(
+            canonical,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    dialogue_path.write_text(
+        json.dumps(ledger, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    _resign_v7_dialogue_contract(manifest_path, dialogue_path, binding_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["tone_catalog_sha256"] = ledger["tone_catalog"]["sha256"]
+    chunk = manifest["outputs"][0]["segments"][0]["voice_chunks"][1]
+    application = resolve_tone_application(
+        engine="qwen_custom_voice",
+        tone=chunk["tone"],
+        catalog=ledger["tone_catalog"],
+        baseline={"speed": 1.0, "expressiveness": "natural"},
+        variant={},
+    )
+    chunk["tone_application"] = application
+    chunk["tone_applied_parameters"] = dict(application["applied_parameters"])
+    chunk["tone_instruction_template_id"] = application[
+        "instruction_template_id"
+    ]
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert any("canonical tone catalog" in value for value in proof.violations)
+
+
+@pytest.mark.parametrize("field", ["speed", "temperature_delta"])
+def test_voice_validation_rejects_bounded_v7_application_drift(
+    tmp_path,
+    field: str,
+) -> None:
+    context, manifest_path, _dialogue, _binding = (
+        _write_valid_v7_tone_voice_project(tmp_path)
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    chunk = manifest["outputs"][0]["segments"][0]["voice_chunks"][1]
+    drifted = float(chunk["tone_applied_parameters"][field]) + 0.001
+    chunk["tone_applied_parameters"][field] = drifted
+    chunk["tone_application"]["applied_parameters"][field] = drifted
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert any("tone application does not match expected" in value for value in proof.violations)
+
+
+def test_voice_validation_rejects_neutral_v7_application_drift(tmp_path) -> None:
+    context, manifest_path, _dialogue, _binding = (
+        _write_valid_v7_tone_voice_project(tmp_path)
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    chunk = manifest["outputs"][0]["segments"][0]["voice_chunks"][0]
+    chunk["tone_application"]["pause_seconds"] = 0.18
+    chunk["tone_applied_parameters"]["speed"] = 1.01
+    chunk["tone_application"]["applied_parameters"]["speed"] = 1.01
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert any("neutral tone adapter is not a no-op" in value for value in proof.violations)
+
+
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        ["你"],
+        ["好。", "你"],
+        ["你", "你好。"],
+        ["你好。", "你好。"],
+    ],
+    ids=["missing_suffix", "reordered", "prefix_plus_full", "duplicated"],
+)
+def test_voice_validation_rejects_inexact_v7_utterance_chunk_coverage(
+    tmp_path,
+    chunks: list[str],
+) -> None:
+    context, manifest_path, _dialogue, _binding = (
+        _write_valid_v7_tone_voice_project(tmp_path)
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    rows = manifest["outputs"][0]["segments"][0]["voice_chunks"]
+    source = rows[1]
+    replacements = []
+    for index, display_text in enumerate(chunks, start=1):
+        row = json.loads(json.dumps(source, ensure_ascii=False))
+        row["voice_chunk_id"] = f"U002__C{index:02d}"
+        row["display_text"] = display_text
+        row["spoken_text"] = display_text
+        row["start_sec"] = 1.18 + (index - 1) * 0.5
+        row["speech_end_sec"] = row["start_sec"] + 0.5
+        row["scene_start_sec"] = row["start_sec"]
+        row["scene_speech_end_sec"] = row["speech_end_sec"]
+        replacements.append(row)
+    manifest["outputs"][0]["segments"][0]["voice_chunks"] = [
+        rows[0],
+        *replacements,
+    ]
+    manifest["voice_chunk_count"] = 1 + len(replacements)
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    report_path = context.project_dir / "qc/pronunciation_qc_report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    source_evidence = report["acoustic_evidence"][1]
+    report["acoustic_evidence"] = [
+        report["acoustic_evidence"][0],
+        *[
+            {**source_evidence, "shot_id": f"U002__C{index:02d}"}
+            for index in range(1, len(replacements) + 1)
+        ],
+    ]
+    report_path.write_text(
+        json.dumps(report, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert any("chunk coverage does not reproduce utterance" in value for value in proof.violations)
+
+
+@pytest.mark.parametrize("case", ["opaque_reason", "four_candidates"])
+def test_voice_validation_rejects_malformed_v7_candidate_ledger(
+    tmp_path,
+    case: str,
+) -> None:
+    context, manifest_path, _dialogue, _binding = (
+        _write_valid_v7_tone_voice_project(tmp_path)
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    chunk = manifest["outputs"][0]["segments"][0]["voice_chunks"][1]
+    if case == "opaque_reason":
+        chunk["candidate_count"] = 2
+        chunk["selected_candidate"] = 2
+        chunk["candidate_rejections"] = [
+            {"candidate_id": 1, "reasons": ["pronunciation failed"]}
+        ]
+    else:
+        chunk["candidate_count"] = 4
+        chunk["selected_candidate"] = 4
+        chunk["candidate_rejections"] = [
+            {
+                "candidate_id": candidate_id,
+                "reasons": [
+                    {
+                        "gate": "pronunciation_status",
+                        "status": "FAIL",
+                        "metrics": {},
+                    }
+                ],
+            }
+            for candidate_id in (1, 2, 3)
+        ]
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert any("tone candidate evidence is invalid" in value for value in proof.violations)
+
+
+@pytest.mark.parametrize(
+    ("case", "replacement"),
+    [
+        ("chunk_missing", "你"),
+        ("chunk_extra", "你好。多"),
+        ("chunk_reordered", "好。你"),
+        ("segment_drift", "故事開始。你"),
+        ("output_drift", "故事開始。你好。多"),
+    ],
+)
+def test_voice_validation_rejects_v7_spoken_text_drift(
+    tmp_path,
+    case: str,
+    replacement: str,
+) -> None:
+    context, manifest_path, _dialogue, _binding = (
+        _write_valid_v7_tone_voice_project(tmp_path)
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    segment = manifest["outputs"][0]["segments"][0]
+    if case.startswith("chunk_"):
+        segment["voice_chunks"][1]["spoken_text"] = replacement
+    elif case == "segment_drift":
+        segment["spoken_text"] = replacement
+    else:
+        manifest["outputs"][0]["spoken_text"] = replacement
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert any("spoken text does not match expected" in value for value in proof.violations)
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["outside_chunk", "missing_spoken", "duplicate_display", "missing_entries"],
+)
+def test_voice_validation_rejects_v7_invalid_pronunciation_entries(
+    tmp_path,
+    case: str,
+) -> None:
+    context, manifest_path, _dialogue, _binding = (
+        _write_valid_v7_tone_voice_project(tmp_path)
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    chunk = manifest["outputs"][0]["segments"][0]["voice_chunks"][1]
+    if case == "outside_chunk":
+        chunk["pronunciation_entries"] = [
+            {"display": "不存在", "spoken": "替換", "risk": "high"}
+        ]
+    elif case == "missing_spoken":
+        chunk["pronunciation_entries"] = [{"display": "你好"}]
+    elif case == "duplicate_display":
+        chunk["pronunciation_entries"] = [
+            {"display": "你好", "spoken": "擬好"},
+            {"display": "你好", "spoken": "泥好"},
+        ]
+    else:
+        chunk.pop("pronunciation_entries")
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert any("pronunciation entries are invalid" in value for value in proof.violations)
+
+
+def test_expected_v7_chunk_spoken_text_uses_longest_pronunciation_then_ellipsis(
+) -> None:
+    chunk = {
+        "display_text": "三疊紀......疊紀？",
+        "pronunciation_entries": [
+            {"display": "疊紀", "spoken": "碟記"},
+            {"display": "三疊紀", "spoken": "三碟紀"},
+        ],
+    }
+
+    assert _expected_v7_chunk_spoken_text(chunk) == "三碟紀，碟記？"
+
+
+def _set_v7_utterance_pace(
+    manifest_path: Path,
+    dialogue_path: Path,
+    binding_path: Path,
+    *,
+    pace: str,
+    update_application: bool,
+) -> dict:
+    ledger = json.loads(dialogue_path.read_text(encoding="utf-8"))
+    tone = ledger["utterances"][1]["tone"]
+    tone["source"]["pace"] = pace
+    dialogue_path.write_text(
+        json.dumps(ledger, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    chunk = manifest["outputs"][0]["segments"][0]["voice_chunks"][1]
+    chunk["tone"] = tone
+    if update_application:
+        application = resolve_tone_application(
+            engine="qwen_custom_voice",
+            tone=tone,
+            catalog=ledger["tone_catalog"],
+            baseline={
+                "speed": 1.0,
+                "pitch_shift_semitones": 0.0,
+                "expressiveness": "natural",
+            },
+            variant={},
+        )
+        chunk["tone_application"] = application
+        chunk["tone_applied_parameters"] = dict(application["applied_parameters"])
+        chunk["tone_instruction_template_id"] = str(
+            application["instruction_template_id"]
+        )
+        pause = float(application.get("pause_seconds") or 0.18)
+        chunk["resolved_pause_after_sec"] = pause
+        chunk["pause_after_sec"] = pause
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    _resign_v7_dialogue_contract(manifest_path, dialogue_path, binding_path)
+    return chunk
+
+
+def test_voice_validation_accepts_canonical_v7_pace_overlay(tmp_path) -> None:
+    context, manifest_path, dialogue_path, binding_path = (
+        _write_valid_v7_tone_voice_project(tmp_path)
+    )
+    chunk = _set_v7_utterance_pace(
+        manifest_path,
+        dialogue_path,
+        binding_path,
+        pace="slow",
+        update_application=True,
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is True, proof
+    assert chunk["tone_application"]["adapter_status"] == "applied"
+    assert chunk["tone_application"]["pause_seconds"] > 0.18
+
+
+def test_voice_validation_rejects_v7_pace_application_drift(tmp_path) -> None:
+    context, manifest_path, dialogue_path, binding_path = (
+        _write_valid_v7_tone_voice_project(tmp_path)
+    )
+    _set_v7_utterance_pace(
+        manifest_path,
+        dialogue_path,
+        binding_path,
+        pace="quick",
+        update_application=False,
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert any(
+        "tone application does not match expected controls" in value
+        for value in proof.violations
+    )
+
+
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    [
+        ("missing_catalog_sha", "tone catalog identity"),
+        ("mismatched_catalog_sha", "tone catalog hash mismatch"),
+        ("tone_control_failed", "tone control status is not PASS"),
+        ("tone_evidence_overclaimed", "tone evidence status is not HEURISTIC_PASS"),
+        ("custom_instruction_missing", "CustomVoice tone instruction evidence"),
+        ("custom_template_missing", "CustomVoice tone instruction evidence"),
+        ("clone_instruction_present", "full-ICL tone instruction evidence"),
+        ("speed_out_of_bounds", "tone speed is outside safe bounds"),
+        ("temperature_out_of_bounds", "tone temperature delta is outside safe bounds"),
+        ("pause_out_of_bounds", "tone pause is outside safe bounds"),
+        ("tone_pitch_nonzero", "tone pitch shift must remain zero"),
+        ("adult_tone_in_general", "adult tone requires adult_explicit"),
+        ("display_label_in_spoken_text", "display-only role or action label"),
+        ("candidate_selection_invalid", "tone candidate evidence is invalid"),
+        ("engine_adapter_mismatch", "tone adapter does not match cast binding"),
+        ("application_engine_mismatch", "tone adapter does not match cast binding"),
+        ("v7_with_v1_ledger", "tone narration requires dialogue ledger v2"),
+    ],
+)
+def test_voice_validation_rejects_invalid_v7_tone_evidence(
+    tmp_path,
+    case: str,
+    expected: str,
+) -> None:
+    context, manifest_path, dialogue_path, binding_path = (
+        _write_valid_v7_tone_voice_project(tmp_path)
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    chunks = manifest["outputs"][0]["segments"][0]["voice_chunks"]
+
+    if case == "missing_catalog_sha":
+        manifest.pop("tone_catalog_sha256")
+    elif case == "mismatched_catalog_sha":
+        manifest["tone_catalog_sha256"] = "0" * 64
+    elif case == "tone_control_failed":
+        manifest["tone_control_status"] = "FAIL"
+    elif case == "tone_evidence_overclaimed":
+        manifest["tone_evidence_status"] = "PASS"
+    elif case == "custom_instruction_missing":
+        chunks[1]["tone_application"]["instruct"] = ""
+    elif case == "custom_template_missing":
+        chunks[1]["tone_instruction_template_id"] = ""
+    elif case == "clone_instruction_present":
+        chunks[0]["tone_application"]["instruct"] = "不應送出的指令"
+    elif case == "speed_out_of_bounds":
+        chunks[1]["tone_applied_parameters"]["speed"] = 1.11
+    elif case == "temperature_out_of_bounds":
+        chunks[1]["tone_applied_parameters"]["temperature_delta"] = 0.11
+    elif case == "pause_out_of_bounds":
+        chunks[1]["resolved_pause_after_sec"] = 0.46
+    elif case == "tone_pitch_nonzero":
+        chunks[1]["tone_applied_parameters"]["tone_pitch_shift_semitones"] = 1
+    elif case == "adult_tone_in_general":
+        ledger = json.loads(dialogue_path.read_text(encoding="utf-8"))
+        adult_tone = {
+            "tone_id": "adult.intimate",
+            "intensity": 2,
+            "modifiers": [],
+            "resolution": "explicit",
+            "source": {"emotion": "neutral", "action": "", "pace": "natural"},
+        }
+        ledger["utterances"][1]["tone"] = adult_tone
+        dialogue_path.write_text(
+            json.dumps(ledger, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        chunks[1]["tone"] = adult_tone
+        binding = json.loads(binding_path.read_text(encoding="utf-8"))
+        binding["dialogue_ledger_sha256"] = hashlib.sha256(
+            dialogue_path.read_bytes()
+        ).hexdigest()
+        binding_path.write_text(
+            json.dumps(binding, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        manifest["dialogue_ledger_sha256"] = binding[
+            "dialogue_ledger_sha256"
+        ]
+        manifest["voice_cast_binding_sha256"] = hashlib.sha256(
+            binding_path.read_bytes()
+        ).hexdigest()
+    elif case == "display_label_in_spoken_text":
+        chunks[1]["spoken_text"] = "小美（輕聲走近）你好。"
+    elif case == "candidate_selection_invalid":
+        chunks[1]["candidate_count"] = 2
+        chunks[1]["selected_candidate"] = 3
+    elif case == "engine_adapter_mismatch":
+        chunks[1]["tone_adapter"] = "qwen_full_icl"
+    elif case == "application_engine_mismatch":
+        chunks[1]["tone_application"]["engine"] = "qwen_full_icl"
+    elif case == "v7_with_v1_ledger":
+        ledger = json.loads(dialogue_path.read_text(encoding="utf-8"))
+        ledger["schema"] = "story_video_dialogue_ledger_v1"
+        dialogue_path.write_text(
+            json.dumps(ledger, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        binding = json.loads(binding_path.read_text(encoding="utf-8"))
+        binding["dialogue_ledger_sha256"] = hashlib.sha256(
+            dialogue_path.read_bytes()
+        ).hexdigest()
+        binding_path.write_text(
+            json.dumps(binding, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        manifest["dialogue_ledger_sha256"] = binding[
+            "dialogue_ledger_sha256"
+        ]
+        manifest["voice_cast_binding_sha256"] = hashlib.sha256(
+            binding_path.read_bytes()
+        ).hexdigest()
+    else:  # pragma: no cover - parametrization is exhaustive
+        raise AssertionError(case)
+
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert any(
+        expected in message for message in (*proof.missing, *proof.violations)
+    ), proof
 
 
 def test_voice_validation_blocks_local_qwen_without_pronunciation_proof(tmp_path) -> None:

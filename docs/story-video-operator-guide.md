@@ -96,6 +96,25 @@ The same explicit mapping can be included in each dubbing mode:
 說書模式：旁白用 simon_clean_v2，完全照附件原文朗讀，不改字。
 ```
 
+Tone is optional. Operators can describe ordinary delivery with natural
+concepts such as `溫暖／開心／疑惑`; omitting tone lets the audio director map
+the utterance's emotion, action, and pace automatically. Adult concepts such as
+`親密／挑逗／害羞` are accepted only for a valid `adult_explicit` content
+profile. Internal tone IDs remain optional rather than required prompt syntax.
+Pace can be described naturally as `慢速／從容／自然／快速`; these choices use
+catalog-owned bounded speed and pause controls and never rewrite the dialogue.
+
+```text
+小美這句用溫暖、壓低聲音的方式說；動作只顯示在字幕，不要念出來。
+成人全黑字幕影片：這句親密、帶點害羞；動作只顯示在字幕，不要念出來。
+```
+
+Character names, emotion labels, and stage directions enrich the visible
+subtitle but never enter the TTS transcript. Tone control never silently adds
+breathing, gasps, laughter, or sound effects. Lexical vocalizations are spoken
+only when they exist in the supplied text. Repeated ellipses are normalized to
+a bounded short pause so they cannot create a multi-second gap.
+
 Voice management remains separate from production:
 
 ```text

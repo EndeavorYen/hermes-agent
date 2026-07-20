@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .tone_map import ToneMapError, build_tone_catalog, resolve_utterance_tone
 from .voice_catalog import (
     VoiceCatalogError,
     build_engine_binding,
@@ -25,7 +27,13 @@ from .voice_profiles import (
 
 STORY_MODE_SCHEMA = "story_video_story_mode_v1"
 CAST_BIBLE_SCHEMA = "story_video_cast_bible_v1"
-DIALOGUE_LEDGER_SCHEMA = "story_video_dialogue_ledger_v1"
+DIALOGUE_LEDGER_SCHEMA_V1 = "story_video_dialogue_ledger_v1"
+DIALOGUE_LEDGER_SCHEMA_V2 = "story_video_dialogue_ledger_v2"
+DIALOGUE_LEDGER_SCHEMAS = {
+    DIALOGUE_LEDGER_SCHEMA_V1,
+    DIALOGUE_LEDGER_SCHEMA_V2,
+}
+DIALOGUE_LEDGER_SCHEMA = DIALOGUE_LEDGER_SCHEMA_V2
 VOICE_CAST_BINDING_SCHEMA_V1 = "story_video_voice_cast_binding_v1"
 VOICE_CAST_BINDING_SCHEMA_V2 = "story_video_voice_cast_binding_v2"
 VOICE_CAST_BINDING_SCHEMAS = {
@@ -41,20 +49,33 @@ VOICE_CAST_BINDING_NAME = "voice_cast_binding.json"
 
 STORY_MODES = {"creative", "remake", "read_aloud"}
 SPEAKER_ROLES = {"narrator", "lead", "supporting", "extra"}
-EMOTIONS = {
-    "neutral",
-    "wonder",
-    "curious",
-    "joy",
-    "sadness",
-    "fear",
-    "tension",
-    "surprise",
-    "humor",
-    "warmth",
-}
 PACES = {"slow", "measured", "natural", "quick"}
 EXPRESSIVENESS = {"restrained", "natural", "lively", "dramatic"}
+
+_LOW_ENERGY_TONES = {
+    "general.warm",
+    "general.sad",
+    "adult.intimate",
+    "adult.shy",
+    "adult.receptive",
+    "adult.afterglow",
+}
+_HIGH_ENERGY_TONES = {
+    "general.joyful",
+    "general.excited",
+    "general.angry",
+    "adult.commanding",
+    "adult.intense",
+}
+_TONE_TRANSITION_CUES = (
+    "突然",
+    "忽然",
+    "猛然",
+    "頓時",
+    "立刻",
+    "轉而",
+    "就在這時",
+)
 
 
 class DubbingContractError(RuntimeError):
@@ -151,12 +172,102 @@ def _validate_source_refs(
     return normalized
 
 
+def _apply_tone_continuity(
+    previous_tone: dict[str, Any] | None,
+    resolved_tone: dict[str, Any],
+    *,
+    cue_text: str,
+) -> dict[str, Any]:
+    if (
+        not previous_tone
+        or resolved_tone.get("resolution") == "explicit"
+        or previous_tone.get("tone_id") not in _LOW_ENERGY_TONES
+        or resolved_tone.get("tone_id") not in _HIGH_ENERGY_TONES
+        or any(cue in cue_text for cue in _TONE_TRANSITION_CUES)
+    ):
+        return resolved_tone
+    intensity = resolved_tone.get("intensity")
+    if not isinstance(intensity, int) or intensity <= 1:
+        return resolved_tone
+    adjusted = dict(resolved_tone)
+    adjusted["intensity"] = intensity - 1
+    adjusted["continuity_adjustment"] = (
+        "reduced_unprompted_low_to_high_transition"
+    )
+    return adjusted
+
+
+def _canonical_json_sha256(payload: dict[str, Any]) -> str:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _validate_dialogue_ledger_contract(
+    ledger: dict[str, Any],
+    *,
+    path: Path,
+) -> None:
+    schema = str(ledger.get("schema") or "")
+    if schema not in DIALOGUE_LEDGER_SCHEMAS:
+        raise DubbingContractError(
+            "dubbing_utterance_invalid",
+            f"dialogue ledger schema is unsupported or missing: {path}",
+        )
+    if schema == DIALOGUE_LEDGER_SCHEMA_V1:
+        return
+    if not isinstance(ledger.get("utterances"), list):
+        raise DubbingContractError(
+            "dubbing_utterance_invalid",
+            f"dialogue ledger utterances are invalid: {path}",
+        )
+    catalog = ledger.get("tone_catalog")
+    if not isinstance(catalog, dict):
+        raise DubbingContractError(
+            "dubbing_tone_catalog_invalid",
+            f"dialogue ledger v2 tone catalog is missing: {path}",
+        )
+    catalog_sha = str(catalog.get("sha256") or "")
+    tones = catalog.get("tones")
+    modifiers = catalog.get("modifiers")
+    paces = catalog.get("paces")
+    overlay_templates = catalog.get("delivery_overlay_template_ids")
+    if (
+        catalog.get("schema") != "story_video_tone_catalog_v1"
+        or len(catalog_sha) != 64
+        or any(character not in "0123456789abcdef" for character in catalog_sha)
+        or not isinstance(tones, dict)
+        or not tones
+        or not isinstance(modifiers, dict)
+        or not modifiers
+        or not isinstance(paces, dict)
+        or set(paces) != PACES
+        or not isinstance(overlay_templates, dict)
+        or set(overlay_templates) != {"qwen_custom_voice", "qwen_full_icl"}
+    ):
+        raise DubbingContractError(
+            "dubbing_tone_catalog_invalid",
+            f"dialogue ledger v2 tone catalog shape is invalid: {path}",
+        )
+    canonical_catalog = {key: value for key, value in catalog.items() if key != "sha256"}
+    if _canonical_json_sha256(canonical_catalog) != catalog_sha:
+        raise DubbingContractError(
+            "dubbing_tone_catalog_invalid",
+            f"dialogue ledger v2 tone catalog hash mismatch: {path}",
+        )
+
+
 def _validate_utterances(
     *,
     mode: str,
     source_text: str,
     utterances: list[dict[str, Any]],
     speaker_ids: set[str],
+    content_rating: str,
 ) -> list[dict[str, Any]]:
     if not utterances:
         raise DubbingContractError(
@@ -165,6 +276,7 @@ def _validate_utterances(
     normalized: list[dict[str, Any]] = []
     seen: set[str] = set()
     source_cursor = 0
+    previous_tone: dict[str, Any] | None = None
     for order, raw in enumerate(utterances, start=1):
         if not isinstance(raw, dict):
             raise DubbingContractError(
@@ -200,23 +312,38 @@ def _validate_utterances(
         }
         emotion = str(raw.get("emotion") or "").strip()
         action = str(raw.get("action") or "").strip()
-        pace = str(raw.get("pace") or "").strip()
+        pace = str(raw.get("pace") or "natural").strip().casefold()
         if emotion:
-            if emotion not in EMOTIONS:
-                raise DubbingContractError(
-                    "dubbing_performance_invalid",
-                    f"unsupported emotion {emotion!r}: {utterance_id}",
-                )
             row["emotion"] = emotion
         if action:
             row["action"] = action
-        if pace:
-            if pace not in PACES:
-                raise DubbingContractError(
-                    "dubbing_performance_invalid",
-                    f"unsupported pace {pace!r}: {utterance_id}",
-                )
-            row["pace"] = pace
+        if pace not in PACES:
+            raise DubbingContractError(
+                "dubbing_performance_invalid",
+                f"unsupported pace {pace!r}: {utterance_id}",
+            )
+        row["pace"] = pace
+        try:
+            resolved_tone = resolve_utterance_tone(
+                emotion=emotion,
+                action=action,
+                pace=pace,
+                tone_id=str(raw.get("tone_id") or ""),
+                intensity=raw.get("tone_intensity"),
+                modifiers=(
+                    raw.get("tone_modifiers")
+                    if "tone_modifiers" in raw
+                    else None
+                ),
+                content_rating=content_rating,
+            )
+        except ToneMapError as exc:
+            raise DubbingContractError(exc.error_type, str(exc)) from exc
+        row["tone"] = _apply_tone_continuity(
+            previous_tone,
+            resolved_tone,
+            cue_text=f"{action}\n{display_text}",
+        )
         if mode == "read_aloud":
             try:
                 start = int(raw["source_start"])
@@ -249,6 +376,7 @@ def _validate_utterances(
             )
         seen.add(utterance_id)
         normalized.append(row)
+        previous_tone = row["tone"]
     if mode == "read_aloud" and source_cursor != len(source_text):
         raise DubbingContractError(
             "read_aloud_source_coverage_invalid",
@@ -264,6 +392,7 @@ def compile_dubbing_project(
     source_text: str,
     speakers: list[dict[str, Any]],
     utterances: list[dict[str, Any]],
+    content_rating: str = "general",
 ) -> dict[str, Any]:
     project = Path(project_dir).expanduser().resolve()
     normalized_mode = str(mode or "").strip().lower()
@@ -272,6 +401,17 @@ def compile_dubbing_project(
             "story_mode_invalid", f"unsupported story mode: {mode!r}"
         )
     source = str(source_text or "")
+    normalized_content_rating = str(content_rating or "general").strip().casefold()
+    if normalized_content_rating not in {
+        "family",
+        "general",
+        "mature",
+        "adult_explicit",
+    }:
+        raise DubbingContractError(
+            "content_rating_invalid",
+            f"unsupported content rating: {content_rating!r}",
+        )
     if normalized_mode in {"remake", "read_aloud"} and not source:
         raise DubbingContractError(
             "story_mode_source_required",
@@ -283,6 +423,7 @@ def compile_dubbing_project(
         source_text=source,
         utterances=utterances,
         speaker_ids={row["speaker_id"] for row in normalized_speakers},
+        content_rating=normalized_content_rating,
     )
     project.mkdir(parents=True, exist_ok=True)
     source_sha = _text_sha256(source) if source else ""
@@ -300,6 +441,8 @@ def compile_dubbing_project(
     ledger_payload = {
         "schema": DIALOGUE_LEDGER_SCHEMA,
         "mode": normalized_mode,
+        "content_rating": normalized_content_rating,
+        "tone_catalog": build_tone_catalog(),
         "source_sha256": source_sha,
         "utterances": normalized_utterances,
     }
@@ -402,6 +545,8 @@ def bind_project_voice_cast(
             raise DubbingContractError(
                 "dubbing_contract_missing", f"required dubbing contract is missing: {path}"
             )
+    ledger = _load_json(ledger_path, error_type="dubbing_utterance_invalid")
+    _validate_dialogue_ledger_contract(ledger, path=ledger_path)
     binding_path = project / VOICE_CAST_BINDING_NAME
     if binding_path.is_file():
         try:
@@ -507,6 +652,9 @@ def resolve_project_voice_cast(project_dir: str | Path) -> VoiceCastSelection:
             raise DubbingContractError(
                 "voice_cast_binding_mismatch", f"bound dubbing contract hash mismatch: {path}"
             )
+    ledger_path = project / DIALOGUE_LEDGER_NAME
+    ledger = _load_json(ledger_path, error_type="dubbing_utterance_invalid")
+    _validate_dialogue_ledger_contract(ledger, path=ledger_path)
     mode = _load_json(project / STORY_MODE_NAME, error_type="story_mode_invalid")
     if str(mode.get("mode") or "") != str(binding.get("story_mode") or ""):
         raise DubbingContractError(
@@ -578,6 +726,10 @@ def inspect_dubbing_project(project_dir: str | Path) -> dict[str, Any]:
     cast = _load_json(project / CAST_BIBLE_NAME, error_type="dubbing_cast_invalid")
     ledger = _load_json(
         project / DIALOGUE_LEDGER_NAME, error_type="dubbing_utterance_invalid"
+    )
+    _validate_dialogue_ledger_contract(
+        ledger,
+        path=project / DIALOGUE_LEDGER_NAME,
     )
     payload: dict[str, Any] = {
         "mode": str(mode.get("mode") or ""),

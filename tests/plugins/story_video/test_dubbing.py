@@ -148,10 +148,180 @@ def test_creative_mode_compiles_three_project_contracts(tmp_path) -> None:
     assert (project / "story_mode.json").is_file()
     assert (project / "cast_bible.json").is_file()
     ledger = json.loads((project / "dialogue_ledger.json").read_text(encoding="utf-8"))
-    assert ledger["schema"] == "story_video_dialogue_ledger_v1"
+    assert ledger["schema"] == "story_video_dialogue_ledger_v2"
+    assert ledger["content_rating"] == "general"
+    assert ledger["tone_catalog"]["schema"] == "story_video_tone_catalog_v1"
+    assert ledger["tone_catalog"]["paces"]["natural"]["adapters"] == {
+        "qwen_custom_voice": {},
+        "qwen_full_icl": {},
+    }
     assert [row["order"] for row in ledger["utterances"]] == [1, 2]
+    assert ledger["utterances"][0]["pace"] == "natural"
+    assert ledger["utterances"][0]["tone"]["source"]["pace"] == "natural"
     assert ledger["utterances"][1]["action"] == "驚訝地看向森林深處"
     assert ledger["utterances"][1]["display_text"] == "那是什麼？"
+
+
+def test_compiler_resolves_per_utterance_tone_and_preserves_display_text(
+    tmp_path,
+) -> None:
+    project = tmp_path / "story"
+
+    compile_dubbing_project(
+        project,
+        mode="creative",
+        source_text="",
+        speakers=_speakers(),
+        content_rating="general",
+        utterances=[
+            _utterance(
+                "U001",
+                "hero",
+                "你真的看見了嗎？",
+                emotion="curious",
+                action="猶豫地問",
+            )
+        ],
+    )
+
+    ledger = json.loads((project / "dialogue_ledger.json").read_text(encoding="utf-8"))
+    row = ledger["utterances"][0]
+    assert ledger["schema"] == "story_video_dialogue_ledger_v2"
+    assert ledger["tone_catalog"]["schema"] == "story_video_tone_catalog_v1"
+    assert row["tone"]["tone_id"] == "general.puzzled"
+    assert row["tone"]["modifiers"] == ["hesitant"]
+    assert row["display_text"] == "你真的看見了嗎？"
+    assert "猶豫地問" not in row["display_text"]
+
+
+def test_compiler_accepts_explicit_tone_fields_and_rejects_adult_tone_in_general(
+    tmp_path,
+) -> None:
+    project = tmp_path / "adult-tone"
+
+    with pytest.raises(DubbingContractError, match="requires adult_explicit") as error:
+        compile_dubbing_project(
+            project,
+            mode="creative",
+            source_text="",
+            speakers=_speakers(),
+            content_rating="general",
+            utterances=[
+                _utterance(
+                    "U001",
+                    "hero",
+                    "靠近一點。",
+                    tone_id="adult.intimate",
+                    tone_intensity=2,
+                    tone_modifiers=["soft"],
+                )
+            ],
+        )
+
+    assert error.value.error_type == "tone_content_rating_invalid"
+    assert not (project / "voice_cast_binding.json").exists()
+    assert not (project / "dialogue_ledger.json").exists()
+
+
+def test_automatic_tone_continuity_downgrades_unprompted_low_to_high_jump(
+    tmp_path,
+) -> None:
+    project = tmp_path / "continuity"
+
+    compile_dubbing_project(
+        project,
+        mode="creative",
+        source_text="",
+        speakers=_speakers(),
+        utterances=[
+            _utterance("U001", "hero", "我真的很難過。", emotion="sadness"),
+            _utterance("U002", "hero", "太好了！", emotion="joy"),
+        ],
+    )
+
+    ledger = json.loads((project / "dialogue_ledger.json").read_text(encoding="utf-8"))
+    assert ledger["utterances"][0]["tone"]["tone_id"] == "general.sad"
+    assert ledger["utterances"][1]["tone"]["tone_id"] == "general.joyful"
+    assert ledger["utterances"][1]["tone"]["intensity"] == 1
+    assert ledger["utterances"][1]["tone"]["continuity_adjustment"] == (
+        "reduced_unprompted_low_to_high_transition"
+    )
+
+
+def test_tone_continuity_never_changes_explicit_tone(tmp_path) -> None:
+    project = tmp_path / "explicit-continuity"
+
+    compile_dubbing_project(
+        project,
+        mode="creative",
+        source_text="",
+        speakers=_speakers(),
+        utterances=[
+            _utterance("U001", "hero", "我真的很難過。", emotion="sadness"),
+            _utterance(
+                "U002",
+                "hero",
+                "太好了！",
+                tone_id="general.joyful",
+                tone_intensity=3,
+            ),
+        ],
+    )
+
+    ledger = json.loads((project / "dialogue_ledger.json").read_text(encoding="utf-8"))
+    tone = ledger["utterances"][1]["tone"]
+    assert tone["resolution"] == "explicit"
+    assert tone["intensity"] == 3
+    assert "continuity_adjustment" not in tone
+
+
+def test_tone_continuity_keeps_automatic_intensity_with_explicit_narrative_cue(
+    tmp_path,
+) -> None:
+    project = tmp_path / "cued-continuity"
+
+    compile_dubbing_project(
+        project,
+        mode="creative",
+        source_text="",
+        speakers=_speakers(),
+        utterances=[
+            _utterance("U001", "hero", "我真的很難過。", emotion="sadness"),
+            _utterance(
+                "U002",
+                "hero",
+                "太好了！",
+                emotion="joy",
+                action="突然收到期待已久的好消息",
+            ),
+        ],
+    )
+
+    ledger = json.loads((project / "dialogue_ledger.json").read_text(encoding="utf-8"))
+    tone = ledger["utterances"][1]["tone"]
+    assert tone["resolution"] == "mapped"
+    assert tone["intensity"] == 2
+    assert "continuity_adjustment" not in tone
+
+
+def test_audio_director_schema_exposes_optional_tone_controls() -> None:
+    utterance = STORY_VIDEO_AUDIO_DIRECTOR_SCHEMA["parameters"]["properties"][
+        "utterances"
+    ]["items"]
+
+    assert utterance["properties"]["tone_id"] == {"type": "string"}
+    assert utterance["properties"]["tone_intensity"] == {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 3,
+    }
+    assert utterance["properties"]["tone_modifiers"] == {
+        "type": "array",
+        "items": {"type": "string"},
+    }
+    assert not {"tone_id", "tone_intensity", "tone_modifiers"}.intersection(
+        utterance["required"]
+    )
 
 
 def test_audio_director_schema_exposes_optional_action() -> None:
@@ -161,6 +331,85 @@ def test_audio_director_schema_exposes_optional_action() -> None:
 
     assert utterance["properties"]["action"] == {"type": "string"}
     assert "action" not in utterance["required"]
+
+
+def test_legacy_v1_ledger_remains_inspectable_and_bindable(tmp_path) -> None:
+    voices = tmp_path / "voices"
+    _add_voice(voices, "simon")
+    _add_voice(voices, "young_male")
+    project = tmp_path / "legacy-v1"
+    compile_dubbing_project(
+        project,
+        mode="creative",
+        source_text="",
+        speakers=_speakers(),
+        utterances=[_utterance("U001", "narrator", "故事開始。")],
+    )
+    ledger_path = project / "dialogue_ledger.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    ledger["schema"] = "story_video_dialogue_ledger_v1"
+    ledger.pop("content_rating")
+    ledger.pop("tone_catalog")
+    for row in ledger["utterances"]:
+        row.pop("tone")
+    ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+
+    status = inspect_dubbing_project(project)
+    selection = bind_project_voice_cast(
+        project,
+        registry_path=voices / "registry.json",
+    )
+
+    assert status["utterance_count"] == 1
+    assert selection.binding_path.is_file()
+
+
+@pytest.mark.parametrize(
+    "ledger_schema",
+    ["story_video_dialogue_ledger_v999", None],
+)
+def test_inspect_and_bind_reject_unknown_or_missing_dialogue_ledger_schema(
+    tmp_path,
+    ledger_schema,
+) -> None:
+    project = tmp_path / "unknown-ledger"
+    compile_dubbing_project(
+        project,
+        mode="creative",
+        source_text="",
+        speakers=_speakers(),
+        utterances=[_utterance("U001", "narrator", "故事開始。")],
+    )
+    ledger_path = project / "dialogue_ledger.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    if ledger_schema is None:
+        ledger.pop("schema")
+    else:
+        ledger["schema"] = ledger_schema
+    ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+
+    with pytest.raises(DubbingContractError, match="ledger schema"):
+        inspect_dubbing_project(project)
+    with pytest.raises(DubbingContractError, match="ledger schema"):
+        bind_project_voice_cast(project)
+
+
+def test_inspect_rejects_malformed_v2_tone_catalog(tmp_path) -> None:
+    project = tmp_path / "malformed-v2"
+    compile_dubbing_project(
+        project,
+        mode="creative",
+        source_text="",
+        speakers=_speakers(),
+        utterances=[_utterance("U001", "narrator", "故事開始。")],
+    )
+    ledger_path = project / "dialogue_ledger.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    ledger["tone_catalog"].pop("tones")
+    ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+
+    with pytest.raises(DubbingContractError, match="tone catalog"):
+        inspect_dubbing_project(project)
 
 
 def test_read_aloud_requires_exact_ordered_gap_free_source_coverage(tmp_path) -> None:

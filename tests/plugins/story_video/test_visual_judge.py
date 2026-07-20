@@ -4393,8 +4393,13 @@ def test_prepare_render_copies_verified_segment_timing_to_matching_shot(tmp_path
     ]
 
 
-def test_prepare_render_preserves_shot_bound_v5_audio_across_parent_scenes(
+@pytest.mark.parametrize(
+    "narration_schema",
+    ["story_video_narration_manifest_v5", "story_video_narration_manifest_v7"],
+)
+def test_prepare_render_preserves_shot_bound_audio_across_parent_scenes(
     tmp_path,
+    narration_schema: str,
 ) -> None:
     store, context, first_shot = _context(tmp_path)
     _release_cards(context)
@@ -4468,7 +4473,7 @@ def test_prepare_render_preserves_shot_bound_v5_audio_across_parent_scenes(
     (manifests / "narration_manifest.json").write_text(
         json.dumps(
             {
-                "schema": "story_video_narration_manifest_v5",
+                "schema": narration_schema,
                 "provider": "local_qwen",
                 "outputs": narration_outputs,
             },
