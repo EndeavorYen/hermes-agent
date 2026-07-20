@@ -727,7 +727,11 @@ class StoryVideoStateStore:
                     ),
                 )
 
-            sessions = tuple(dict.fromkeys((*context.session_ids, session_id)))
+            sessions = (
+                tuple(dict.fromkeys((*context.session_ids, session_id)))
+                if session_id
+                else context.session_ids
+            )
             repair_request = (
                 call.repair_request if call.action == "repair" else context.repair_request
             )

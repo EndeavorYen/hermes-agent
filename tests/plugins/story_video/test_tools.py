@@ -179,6 +179,47 @@ def test_story_video_control_guides_active_project_without_advancing(tmp_path) -
     assert store.for_session("session-1").phase == context.phase
 
 
+def test_story_video_control_recovers_context_from_verified_run_identity(
+    tmp_path,
+) -> None:
+    store, context = _active_context(tmp_path)
+
+    payload = json.loads(
+        story_video_control(
+            {
+                "action": "status",
+                "run_id": context.run_id,
+                "project_dir": str(context.project_dir),
+            },
+            session_id="rotated-session-without-index",
+            store=store,
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["run_id"] == context.run_id
+    assert store.for_session("rotated-session-without-index").run_id == context.run_id
+
+
+def test_story_video_control_rejects_unverified_run_identity(tmp_path) -> None:
+    store, context = _active_context(tmp_path)
+
+    payload = json.loads(
+        story_video_control(
+            {
+                "action": "status",
+                "run_id": "wrong-run",
+                "project_dir": str(context.project_dir),
+            },
+            session_id="rotated-session-without-index",
+            store=store,
+        )
+    )
+
+    assert payload["success"] is False
+    assert payload["error_type"] == "story_video_context_missing"
+
+
 def test_story_video_specialist_tool_schemas_are_narrow_and_complete() -> None:
     manager_actions = STORY_VIDEO_VOICE_MANAGER_SCHEMA["parameters"]["properties"][
         "action"

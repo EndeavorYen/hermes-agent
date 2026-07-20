@@ -381,13 +381,76 @@ def handle_story_video_command(raw_args: str, *, event: Any = None) -> str:
 
 def _write_project_contract(context: StoryVideoRunContext) -> dict[str, Any]:
     visual_mode = str(getattr(context, "visual_mode", "story_visual"))
-    explanation_profile = ensure_explanation_profile(
-        context.project_dir,
-        context.original_request,
-    )
+    from .source_passthrough import is_local_adult_passthrough_request
+
+    adult_passthrough = is_local_adult_passthrough_request(context)
+    if adult_passthrough:
+        explanation_profile = {
+            "schema": "story_video_accessible_explanation_v1",
+            "profile_id": "story-video-source-passthrough-v1",
+            "mode": "professional",
+            "activation": "source_locked",
+            "scope": "none-source-verbatim",
+            "audience_target": "adults_18_plus",
+            "explanation_order": [],
+            "baby_talk_forbidden": True,
+            "precision_loss_forbidden": True,
+        }
+        explanation_path = context.project_dir / "explanation_profile.json"
+        explanation_path.parent.mkdir(parents=True, exist_ok=True)
+        explanation_path.write_text(
+            json.dumps(explanation_profile, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    else:
+        explanation_profile = ensure_explanation_profile(
+            context.project_dir,
+            context.original_request,
+        )
     path = context.project_dir / "PROJECT_CONTRACT.md"
-    if path.exists():
+    if path.exists() and not adult_passthrough:
         return explanation_profile
+    if path.exists() and adult_passthrough:
+        try:
+            if "Audience: adults 18+" in path.read_text(encoding="utf-8"):
+                return explanation_profile
+        except OSError:
+            pass
+    audience_line = (
+        "- Audience: adults 18+; user-supplied source passthrough; no child framing"
+        if adult_passthrough
+        else "- Audience default: curious children age 5+; clear but never baby talk"
+    )
+    craft_line = (
+        "- Story craft: verbatim user source; no model expansion or rewrite"
+        if adult_passthrough
+        else "- Story craft: Taiwan children's prose skill -> story-video script director -> production pipeline"
+    )
+    explanation_order_line = (
+        "- Explanation order: not applicable; source text stays verbatim"
+        if adult_passthrough
+        else "- Explanation order: concrete intuition -> causal chain -> formal term -> precision boundary"
+    )
+    continuity_line = (
+        "- Visual continuity: static pure-black frame; no generated visual assets"
+        if adult_passthrough
+        else "- Visual continuity: one style bible and one approved style anchor across the full video"
+    )
+    ending_line = (
+        "- Ending: follows the supplied screenplay without model-authored additions"
+        if adult_passthrough
+        else "- Ending: cinematic educational payoff from the story's knowledge payoff and ending echo"
+    )
+    hold_line = (
+        "- Subtitle timing: narration-segment boundaries; never cut a spoken sentence"
+        if adult_passthrough
+        else "- Semantic image hold: normally at least two complete sentences per image"
+    )
+    candidate_line = (
+        "- Candidate selection: not applicable; image generation is forbidden"
+        if adult_passthrough
+        else "- Candidate selection: one precise OpenAI candidate by default; vision QC selectively regenerates failures"
+    )
     path.write_text(
         "\n".join(
             [
@@ -415,15 +478,15 @@ def _write_project_contract(context: StoryVideoRunContext) -> dict[str, Any]:
                     else "- Motion: cinematic focus push 1.0 -> 1.10; one eased focal target, no per-frame tracking"
                 ),
                 "- Quality mode: quality-first shot-driven production",
-                "- Audience default: curious children age 5+; clear but never baby talk",
+                audience_line,
                 f"- Explanation profile: `{explanation_profile['profile_id']}`",
                 f"- Explanation mode: `{explanation_profile['mode']}`",
-                "- Explanation order: concrete intuition -> causal chain -> formal term -> precision boundary",
-                "- Story craft: Taiwan children's prose skill -> story-video script director -> production pipeline",
-                "- Visual continuity: one style bible and one approved style anchor across the full video",
-                "- Ending: cinematic educational payoff from the story's knowledge payoff and ending echo",
-                "- Semantic image hold: normally at least two complete sentences per image",
-                "- Candidate selection: one precise OpenAI candidate by default; vision QC selectively regenerates failures",
+                explanation_order_line,
+                craft_line,
+                continuity_line,
+                ending_line,
+                hold_line,
+                candidate_line,
                 "",
                 "## Original Request",
                 "",
@@ -478,6 +541,19 @@ def _has_bound_voice_cast(context: StoryVideoRunContext) -> bool:
         from .voice_profiles import VoiceProfileError
 
         return inspect_dubbing_project(context.project_dir).get("bound") is True
+    except (OSError, TypeError, ValueError, VoiceProfileError):
+        return False
+
+
+def _has_compiled_voice_cast(context: StoryVideoRunContext) -> bool:
+    try:
+        from .dubbing import inspect_dubbing_project
+        from .voice_profiles import VoiceProfileError
+
+        status = inspect_dubbing_project(context.project_dir)
+        return int(status.get("speaker_count") or 0) > 0 and int(
+            status.get("utterance_count") or 0
+        ) > 0
     except (OSError, TypeError, ValueError, VoiceProfileError):
         return False
 
@@ -578,7 +654,20 @@ def pre_gateway_dispatch(
         "source_key": source_key,
         "original_request": operator_text,
     }
-    rewritten = f"{text}\n\n{_MARKER} {json.dumps(payload, ensure_ascii=False)}"
+    from .source_passthrough import adult_source_request_detected
+
+    adult_source = adult_source_request_detected(operator_text)
+    if adult_source and call.action == "start":
+        persisted = _STORE.create_or_load(
+            source_key=source_key,
+            session_id="",
+            call=call,
+            original_request=operator_text,
+        )
+        payload["run_id"] = persisted.run_id
+        payload.pop("original_request", None)
+    marker = f"{_MARKER} {json.dumps(payload, ensure_ascii=False)}"
+    rewritten = marker if adult_source else f"{text}\n\n{marker}"
     return {"action": "rewrite", "text": rewritten}
 
 
@@ -735,6 +824,20 @@ def pre_llm_call(
 
     explanation_profile = _write_project_contract(context)
 
+    adult_passthrough: dict[str, Any] | None = None
+    adult_passthrough_error = ""
+    if context.phase == "planning":
+        from .source_passthrough import (
+            is_local_adult_passthrough_request,
+            prepare_local_adult_passthrough,
+        )
+
+        if is_local_adult_passthrough_request(context):
+            try:
+                adult_passthrough = prepare_local_adult_passthrough(context)
+            except (OSError, TypeError, ValueError) as exc:
+                adult_passthrough_error = str(exc)
+
     if session_id:
         _SESSION_PHASE_AT_LLM_START[session_id] = context.phase
         _SESSION_STATUS_AT_LLM_START[session_id] = context.status
@@ -787,7 +890,27 @@ def pre_llm_call(
     )
     if context.auto_mode:
         instruction += _autopilot_authorization_instruction(context)
-    if context.phase == "planning":
+    if context.phase == "planning" and adult_passthrough is not None:
+        instruction += (
+            " LOCAL_ADULT_SOURCE_PASSTHROUGH is active for a user-supplied "
+            "screenplay only. Deterministic local ingest already deduplicated, parsed, "
+            "hash-locked, and compiled the source into project-local dubbing contracts. "
+            "Do not rewrite script.md, source_screenplay.txt, content_profile.json, "
+            "source_passthrough_manifest.json, story_mode.json, cast_bible.json, or "
+            "dialogue_ledger.json. Do not expand, sanitize, or downgrade the source. "
+            "Image generation and every external media provider remain forbidden. Call "
+            "story_video_control action=validate exactly once "
+            f"with run_id={context.run_id} project_dir={context.project_dir}; do not run "
+            "shell commands or create the generic v6 planning bundle. "
+        )
+    elif context.phase == "planning" and adult_passthrough_error:
+        instruction += (
+            " LOCAL_ADULT_SOURCE_PASSTHROUGH could not prepare the supplied source: "
+            f"{adult_passthrough_error}. Report this exact deterministic ingest error "
+            "as SETUP_REQUIRED. Do not downgrade, rewrite, generate images, or dispatch "
+            "media. "
+        )
+    elif context.phase == "planning":
         instruction += (
         "During planning, immediately create content_profile.json, script.md, "
         "storyboard.md, scene_ledger.json, production_checklist.json, "
@@ -1033,15 +1156,23 @@ def pre_llm_call(
         )
     if context.phase == "voice":
         if _needs_bound_voice_cast(context) and not _has_bound_voice_cast(context):
-            instruction += (
-                "During voice, call story_video_audio_director action=compile exactly once. "
-                "Derive ordered speakers, voice_id mappings, and utterances from the approved "
-                "story text and the operator's explicit casting. Keep display_text as spoken "
-                "dialogue only; put the supported emotion in emotion and a concise physical "
-                "stage direction in the optional action field. The action takes visual "
-                "precedence when both exist. Do not synthesize until the "
-                "returned immutable cast binding is valid. "
-            )
+            if _has_compiled_voice_cast(context):
+                instruction += (
+                    "During voice, call story_video_audio_director action=bind_cast "
+                    f"run_id={context.run_id} project_dir={context.project_dir} exactly "
+                    "once. Bind the already compiled project-local cast; do not repost the "
+                    "long source_text or utterances and do not synthesize in this turn. "
+                )
+            else:
+                instruction += (
+                    "During voice, call story_video_audio_director action=compile exactly once. "
+                    "Derive ordered speakers, voice_id mappings, and utterances from the approved "
+                    "story text and the operator's explicit casting. Keep display_text as spoken "
+                    "dialogue only; put the supported emotion in emotion and a concise physical "
+                    "stage direction in the optional action field. The action takes visual "
+                    "precedence when both exist. Do not synthesize until the "
+                    "returned immutable cast binding is valid. "
+                )
         elif context.visual_mode == "black_subtitle":
             instruction += (
                 "During voice, call story_video_audio_director action=start_production "
@@ -1445,11 +1576,21 @@ def auto_continue_llm_output(
         if not native_work_complete:
             if context.phase == "voice":
                 if _needs_bound_voice_cast(context) and not _has_bound_voice_cast(context):
-                    next_action = "story_video_audio_director action=compile"
-                    next_work_instruction = (
-                        " Compile and hash-lock the explicit character-to-voice mapping and "
-                        "ordered utterances exactly once; do not synthesize yet."
-                    )
+                    if _has_compiled_voice_cast(context):
+                        next_action = (
+                            "story_video_audio_director action=bind_cast "
+                            f"run_id={context.run_id} project_dir={context.project_dir}"
+                        )
+                        next_work_instruction = (
+                            " Bind the already compiled project-local cast exactly once; "
+                            "do not repost source_text or utterances and do not synthesize yet."
+                        )
+                    else:
+                        next_action = "story_video_audio_director action=compile"
+                        next_work_instruction = (
+                            " Compile and hash-lock the explicit character-to-voice mapping and "
+                            "ordered utterances exactly once; do not synthesize yet."
+                        )
                 elif context.visual_mode == "black_subtitle":
                     next_action = (
                         "story_video_audio_director action=start_production "

@@ -97,10 +97,16 @@ Supported ratings are:
 - `mature`: reserved extension point for non-explicit adult themes.
 - `adult_explicit`: reserved extension point for a future NSFW workflow.
 
-The current release activates only `family` and `general`. `mature` and
-`adult_explicit` must use `activation_status=reserved` and
-`provider_capability_status=setup_required`. Any attempt to run them as active
-fails before media or provider dispatch.
+> 2026-07-20 addendum: model-authored and model-expanded `adult_explicit`
+> content remains reserved. A separately reviewed, local-only exception now exists
+> for verbatim user-supplied screenplays; see
+> [Story-video adult source passthrough](../story-video-adult-source-passthrough.md).
+
+The generic review-board path activates only `family` and `general`. `mature`
+and model-authored or model-expanded `adult_explicit` must use
+`activation_status=reserved` and `provider_capability_status=setup_required`.
+The exact local source-passthrough profile documented above is validated by its
+own fail-closed planning gate instead of the generic review board.
 
 Future activation of `adult_explicit` requires a separate reviewed change with:
 

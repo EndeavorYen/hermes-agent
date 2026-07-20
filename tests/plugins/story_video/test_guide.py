@@ -66,6 +66,10 @@ def test_help_is_compact_and_copy_ready() -> None:
     assert "字幕範例：\n  小美（走到小王面前）\n  「你好。」" in text
     assert "MP4" in text
     assert "NSFW" in text
+    assert "使用者已提供的完整劇本" in text
+    assert "18+" in text
+    assert "本機 Qwen" in text
+    assert "不會替你擴寫" in text
     assert "story_video_control" not in text
 
 

@@ -324,6 +324,17 @@ def _promote_legacy_replan_composition_energies(
 
 
 def _validate_planning(context: StoryVideoRunContext) -> PhaseProof:
+    passthrough_manifest = context.project_dir / "source_passthrough_manifest.json"
+    if passthrough_manifest.is_file():
+        from .source_passthrough import validate_local_adult_passthrough
+
+        missing, violations = validate_local_adult_passthrough(context)
+        return PhaseProof(
+            phase="planning",
+            ok=not missing and not violations,
+            missing=missing,
+            violations=violations,
+        )
     required = (
         "PROJECT_CONTRACT.md",
         "explanation_profile.json",
@@ -1528,6 +1539,24 @@ def story_video_voice_manager(
     return json.dumps(payload, ensure_ascii=False)
 
 
+def _resolve_story_context(
+    state_store: StoryVideoStateStore,
+    args: dict[str, Any],
+    session_id: str,
+) -> StoryVideoRunContext | None:
+    context = state_store.for_session(session_id)
+    if context is not None:
+        return context
+    run_id = str(args.get("run_id") or "").strip()
+    project_dir = str(args.get("project_dir") or "").strip()
+    if not run_id or not project_dir:
+        return None
+    context = state_store.for_run(run_id=run_id, project_dir=project_dir)
+    if context is not None and session_id:
+        context = state_store.bind_session(context, session_id)
+    return context
+
+
 def story_video_audio_director(
     args: dict[str, Any],
     *,
@@ -1540,7 +1569,7 @@ def story_video_audio_director(
     **_: Any,
 ) -> str:
     state_store = store or StoryVideoStateStore()
-    context = state_store.for_session(session_id)
+    context = _resolve_story_context(state_store, args, session_id)
     if context is None:
         return json.dumps(
             {
@@ -1703,7 +1732,7 @@ def story_video_control(
             payload.update({"success": True, "action": action})
         return json.dumps(payload, ensure_ascii=False)
 
-    context = state_store.for_session(session_id)
+    context = _resolve_story_context(state_store, args, session_id)
     if context is None:
         return json.dumps(
             {

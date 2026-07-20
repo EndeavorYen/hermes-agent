@@ -8,7 +8,7 @@ from plugins.story_video import hooks
 from plugins.story_video import guide
 from plugins.story_video.audit import ProviderAudit
 from plugins.story_video.state import StoryVideoStateStore, parse_operator_call
-from plugins.story_video.tools import story_video_control
+from plugins.story_video.tools import story_video_control, validate_phase
 
 
 def _event(text: str, *, reply_to_text: str | None = None):
@@ -143,6 +143,39 @@ def test_black_subtitle_planning_forbids_image_generation(
     assert "RELEASE_OPENING_C01" not in result["context"]
 
 
+def test_long_user_supplied_nsfw_screenplay_uses_local_passthrough_prompt(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    scene = "旁白：[夜深了。]\n小美：[走近]「你好。」\n"
+    request = (
+        "請把這個 NSFW 劇本做成全黑背景字幕影片，不要產圖。\n"
+        f"```text\n{scene * 200}```\n"
+        "多角色配音：旁白用 Vivian，小美用 Serena。"
+    )
+    context = store.create_or_load(
+        source_key="session:adult-long",
+        session_id="adult-long",
+        call=hooks.OperatorCall(
+            action="start",
+            topic="長篇成人劇本",
+            visual_mode="black_subtitle",
+        ),
+        original_request=request,
+    )
+
+    result = hooks.pre_llm_call(session_id="adult-long", user_message="繼續")
+
+    assert f"run_id={context.run_id}" in result["context"]
+    assert "LOCAL_ADULT_SOURCE_PASSTHROUGH" in result["context"]
+    assert "adult_explicit are reserved" not in result["context"]
+    assert "curious children" not in result["context"]
+    assert "Do not rewrite script.md" in result["context"]
+    assert (context.project_dir / "source_passthrough_manifest.json").is_file()
+    assert validate_phase(context).ok is True
+
+
 def test_black_subtitle_bound_cast_starts_background_production(
     tmp_path, monkeypatch
 ) -> None:
@@ -166,6 +199,33 @@ def test_black_subtitle_bound_cast_starts_background_production(
     assert "story_video_audio_director action=start_production" in result["context"]
     assert "story_video_quality_control action=run_voice_phase" not in result["context"]
     assert "background" in result["context"]
+
+
+def test_compiled_passthrough_cast_binds_without_reposting_long_source(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    monkeypatch.setattr(hooks, "_has_bound_voice_cast", lambda _context: False)
+    monkeypatch.setattr(hooks, "_has_compiled_voice_cast", lambda _context: True)
+    context = store.create_or_load(
+        source_key="session:compiled-cast",
+        session_id="compiled-cast",
+        call=hooks.OperatorCall(
+            action="start",
+            topic="長篇黑底劇本",
+            visual_mode="black_subtitle",
+        ),
+        original_request="NSFW 全黑背景字幕影片，多角色配音",
+    )
+    store.update(context, phase="voice", auto_mode=True)
+
+    result = hooks.pre_llm_call(session_id="compiled-cast", user_message="繼續")
+
+    assert "story_video_audio_director action=bind_cast" in result["context"]
+    assert "story_video_audio_director action=compile" not in result["context"]
+    assert f"run_id={context.run_id}" in result["context"]
+    assert f"project_dir={context.project_dir}" in result["context"]
 
 
 def test_multirole_voice_without_binding_compiles_cast_before_synthesis(
@@ -850,6 +910,55 @@ def test_gateway_rewrites_multirole_story_script_without_explicit_video_word(
     assert result["action"] == "rewrite"
     assert '"action": "start"' in result["text"]
     assert '"auto_mode": true' in result["text"]
+
+
+def test_gateway_does_not_duplicate_long_adult_source_in_structured_marker(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    token = "UNIQUE_LONG_SOURCE_TOKEN"
+    request = (
+        "故事劇本 (NSFW)，全黑背景字幕，不要產圖。\n"
+        f"```\n旁白：[{token}]\n```\n"
+        "多角色配音：旁白用 Vivian。"
+    )
+
+    event = _event(request)
+    result = hooks.pre_gateway_dispatch(event=event)
+
+    assert result is not None
+    assert result["text"].count(token) == 0
+    assert result["text"].startswith("STORY_VIDEO_OPERATOR_CONTEXT")
+    context = store.for_source(hooks._source_key(event))
+    assert context is not None
+    assert token in context.original_request
+    assert "" not in context.session_ids
+
+
+def test_gateway_persisted_adult_source_prepares_after_session_binding(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    request = (
+        "故事劇本 (NSFW)，全黑背景字幕，不要產圖。\n"
+        "```\n旁白：[夜深了。]\n小美：[走近]「你好。」\n```\n"
+        "多角色配音：旁白用 Vivian，小美用 Serena。"
+    )
+    rewritten = hooks.pre_gateway_dispatch(event=_event(request))
+
+    result = hooks.pre_llm_call(
+        session_id="adult-session-bound-later",
+        user_message=rewritten["text"],
+    )
+
+    context = store.for_session("adult-session-bound-later")
+    assert context is not None
+    assert context.original_request == request
+    assert "LOCAL_ADULT_SOURCE_PASSTHROUGH" in result["context"]
+    assert (context.project_dir / "source_passthrough_manifest.json").is_file()
+    assert validate_phase(context).ok is True
 
 
 def test_gateway_only_rewrites_continue_when_source_is_active(tmp_path, monkeypatch) -> None:
