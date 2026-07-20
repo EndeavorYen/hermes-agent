@@ -436,6 +436,61 @@ def test_audio_director_compiles_and_binds_active_story_project(tmp_path) -> Non
     assert "voice_id" in STORY_VIDEO_CONTROL_SCHEMA["parameters"]["properties"]
 
 
+def test_audio_director_derives_adult_rating_from_valid_local_profile(tmp_path) -> None:
+    store, context = _active_context(tmp_path)
+    registry = _voice_registry(tmp_path, "voice_a", default="voice_a")
+    (context.project_dir / "content_profile.json").write_text(
+        json.dumps(
+            {
+                "schema": "story_video_content_profile_v1",
+                "rating": "adult_explicit",
+                "activation_status": "active",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        story_video_audio_director(
+            {
+                "action": "compile",
+                "mode": "creative",
+                "source_text": "",
+                "speakers": [
+                    {
+                        "speaker_id": "lead",
+                        "display_name": "主角",
+                        "role": "lead",
+                        "voice_id": "voice_a",
+                    }
+                ],
+                "utterances": [
+                    {
+                        "utterance_id": "U001",
+                        "scene_id": "S01",
+                        "shot_id": "S01_SH01",
+                        "speaker_id": "lead",
+                        "display_text": "再靠近一點。",
+                        "tone_id": "adult.intimate",
+                        "tone_intensity": 2,
+                        "tone_modifiers": ["soft"],
+                    }
+                ],
+            },
+            session_id="session-1",
+            store=store,
+            voice_registry_path=registry,
+        )
+    )
+
+    assert payload["success"] is True
+    ledger = json.loads(
+        (context.project_dir / "dialogue_ledger.json").read_text(encoding="utf-8")
+    )
+    assert ledger["content_rating"] == "adult_explicit"
+    assert ledger["utterances"][0]["tone"]["tone_id"] == "adult.intimate"
+
+
 def test_audio_director_starts_bound_production_with_canonical_context(tmp_path) -> None:
     store, context = _active_context(tmp_path)
     context = store.update(context, phase="voice")

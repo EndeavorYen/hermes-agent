@@ -148,10 +148,93 @@ def test_creative_mode_compiles_three_project_contracts(tmp_path) -> None:
     assert (project / "story_mode.json").is_file()
     assert (project / "cast_bible.json").is_file()
     ledger = json.loads((project / "dialogue_ledger.json").read_text(encoding="utf-8"))
-    assert ledger["schema"] == "story_video_dialogue_ledger_v1"
+    assert ledger["schema"] == "story_video_dialogue_ledger_v2"
+    assert ledger["content_rating"] == "general"
+    assert ledger["tone_catalog"]["schema"] == "story_video_tone_catalog_v1"
     assert [row["order"] for row in ledger["utterances"]] == [1, 2]
     assert ledger["utterances"][1]["action"] == "驚訝地看向森林深處"
     assert ledger["utterances"][1]["display_text"] == "那是什麼？"
+
+
+def test_compiler_resolves_per_utterance_tone_and_preserves_display_text(
+    tmp_path,
+) -> None:
+    project = tmp_path / "story"
+
+    compile_dubbing_project(
+        project,
+        mode="creative",
+        source_text="",
+        speakers=_speakers(),
+        content_rating="general",
+        utterances=[
+            _utterance(
+                "U001",
+                "hero",
+                "你真的看見了嗎？",
+                emotion="curious",
+                action="猶豫地問",
+            )
+        ],
+    )
+
+    ledger = json.loads((project / "dialogue_ledger.json").read_text(encoding="utf-8"))
+    row = ledger["utterances"][0]
+    assert ledger["schema"] == "story_video_dialogue_ledger_v2"
+    assert ledger["tone_catalog"]["schema"] == "story_video_tone_catalog_v1"
+    assert row["tone"]["tone_id"] == "general.puzzled"
+    assert row["tone"]["modifiers"] == ["hesitant"]
+    assert row["display_text"] == "你真的看見了嗎？"
+    assert "猶豫地問" not in row["display_text"]
+
+
+def test_compiler_accepts_explicit_tone_fields_and_rejects_adult_tone_in_general(
+    tmp_path,
+) -> None:
+    project = tmp_path / "adult-tone"
+
+    with pytest.raises(DubbingContractError, match="requires adult_explicit") as error:
+        compile_dubbing_project(
+            project,
+            mode="creative",
+            source_text="",
+            speakers=_speakers(),
+            content_rating="general",
+            utterances=[
+                _utterance(
+                    "U001",
+                    "hero",
+                    "靠近一點。",
+                    tone_id="adult.intimate",
+                    tone_intensity=2,
+                    tone_modifiers=["soft"],
+                )
+            ],
+        )
+
+    assert error.value.error_type == "tone_content_rating_invalid"
+    assert not (project / "voice_cast_binding.json").exists()
+    assert not (project / "dialogue_ledger.json").exists()
+
+
+def test_audio_director_schema_exposes_optional_tone_controls() -> None:
+    utterance = STORY_VIDEO_AUDIO_DIRECTOR_SCHEMA["parameters"]["properties"][
+        "utterances"
+    ]["items"]
+
+    assert utterance["properties"]["tone_id"] == {"type": "string"}
+    assert utterance["properties"]["tone_intensity"] == {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 3,
+    }
+    assert utterance["properties"]["tone_modifiers"] == {
+        "type": "array",
+        "items": {"type": "string"},
+    }
+    assert not {"tone_id", "tone_intensity", "tone_modifiers"}.intersection(
+        utterance["required"]
+    )
 
 
 def test_audio_director_schema_exposes_optional_action() -> None:

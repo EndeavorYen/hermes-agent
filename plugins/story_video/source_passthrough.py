@@ -266,6 +266,7 @@ def prepare_local_adult_passthrough(
         source_text=extracted.text,
         speakers=list(parsed.speakers),
         utterances=list(parsed.utterances),
+        content_rating="adult_explicit",
     )
     profile = {
         "schema": "story_video_content_profile_v1",

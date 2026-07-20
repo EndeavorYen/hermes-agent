@@ -184,6 +184,16 @@ STORY_VIDEO_AUDIO_DIRECTOR_SCHEMA = {
                         "emotion": {"type": "string"},
                         "action": {"type": "string"},
                         "pace": {"type": "string"},
+                        "tone_id": {"type": "string"},
+                        "tone_intensity": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 3,
+                        },
+                        "tone_modifiers": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
                         "source_start": {"type": "integer"},
                         "source_end": {"type": "integer"},
                         "source_refs": {"type": "array", "items": {"type": "object"}},

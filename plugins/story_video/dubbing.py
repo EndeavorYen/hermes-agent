@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .tone_map import ToneMapError, build_tone_catalog, resolve_utterance_tone
 from .voice_catalog import (
     VoiceCatalogError,
     build_engine_binding,
@@ -25,7 +26,13 @@ from .voice_profiles import (
 
 STORY_MODE_SCHEMA = "story_video_story_mode_v1"
 CAST_BIBLE_SCHEMA = "story_video_cast_bible_v1"
-DIALOGUE_LEDGER_SCHEMA = "story_video_dialogue_ledger_v1"
+DIALOGUE_LEDGER_SCHEMA_V1 = "story_video_dialogue_ledger_v1"
+DIALOGUE_LEDGER_SCHEMA_V2 = "story_video_dialogue_ledger_v2"
+DIALOGUE_LEDGER_SCHEMAS = {
+    DIALOGUE_LEDGER_SCHEMA_V1,
+    DIALOGUE_LEDGER_SCHEMA_V2,
+}
+DIALOGUE_LEDGER_SCHEMA = DIALOGUE_LEDGER_SCHEMA_V2
 VOICE_CAST_BINDING_SCHEMA_V1 = "story_video_voice_cast_binding_v1"
 VOICE_CAST_BINDING_SCHEMA_V2 = "story_video_voice_cast_binding_v2"
 VOICE_CAST_BINDING_SCHEMAS = {
@@ -41,18 +48,6 @@ VOICE_CAST_BINDING_NAME = "voice_cast_binding.json"
 
 STORY_MODES = {"creative", "remake", "read_aloud"}
 SPEAKER_ROLES = {"narrator", "lead", "supporting", "extra"}
-EMOTIONS = {
-    "neutral",
-    "wonder",
-    "curious",
-    "joy",
-    "sadness",
-    "fear",
-    "tension",
-    "surprise",
-    "humor",
-    "warmth",
-}
 PACES = {"slow", "measured", "natural", "quick"}
 EXPRESSIVENESS = {"restrained", "natural", "lively", "dramatic"}
 
@@ -157,6 +152,7 @@ def _validate_utterances(
     source_text: str,
     utterances: list[dict[str, Any]],
     speaker_ids: set[str],
+    content_rating: str,
 ) -> list[dict[str, Any]]:
     if not utterances:
         raise DubbingContractError(
@@ -202,11 +198,6 @@ def _validate_utterances(
         action = str(raw.get("action") or "").strip()
         pace = str(raw.get("pace") or "").strip()
         if emotion:
-            if emotion not in EMOTIONS:
-                raise DubbingContractError(
-                    "dubbing_performance_invalid",
-                    f"unsupported emotion {emotion!r}: {utterance_id}",
-                )
             row["emotion"] = emotion
         if action:
             row["action"] = action
@@ -217,6 +208,22 @@ def _validate_utterances(
                     f"unsupported pace {pace!r}: {utterance_id}",
                 )
             row["pace"] = pace
+        try:
+            row["tone"] = resolve_utterance_tone(
+                emotion=emotion,
+                action=action,
+                pace=pace,
+                tone_id=str(raw.get("tone_id") or ""),
+                intensity=raw.get("tone_intensity"),
+                modifiers=(
+                    raw.get("tone_modifiers")
+                    if "tone_modifiers" in raw
+                    else None
+                ),
+                content_rating=content_rating,
+            )
+        except ToneMapError as exc:
+            raise DubbingContractError(exc.error_type, str(exc)) from exc
         if mode == "read_aloud":
             try:
                 start = int(raw["source_start"])
@@ -264,6 +271,7 @@ def compile_dubbing_project(
     source_text: str,
     speakers: list[dict[str, Any]],
     utterances: list[dict[str, Any]],
+    content_rating: str = "general",
 ) -> dict[str, Any]:
     project = Path(project_dir).expanduser().resolve()
     normalized_mode = str(mode or "").strip().lower()
@@ -272,6 +280,17 @@ def compile_dubbing_project(
             "story_mode_invalid", f"unsupported story mode: {mode!r}"
         )
     source = str(source_text or "")
+    normalized_content_rating = str(content_rating or "general").strip().casefold()
+    if normalized_content_rating not in {
+        "family",
+        "general",
+        "mature",
+        "adult_explicit",
+    }:
+        raise DubbingContractError(
+            "content_rating_invalid",
+            f"unsupported content rating: {content_rating!r}",
+        )
     if normalized_mode in {"remake", "read_aloud"} and not source:
         raise DubbingContractError(
             "story_mode_source_required",
@@ -283,6 +302,7 @@ def compile_dubbing_project(
         source_text=source,
         utterances=utterances,
         speaker_ids={row["speaker_id"] for row in normalized_speakers},
+        content_rating=normalized_content_rating,
     )
     project.mkdir(parents=True, exist_ok=True)
     source_sha = _text_sha256(source) if source else ""
@@ -300,6 +320,8 @@ def compile_dubbing_project(
     ledger_payload = {
         "schema": DIALOGUE_LEDGER_SCHEMA,
         "mode": normalized_mode,
+        "content_rating": normalized_content_rating,
+        "tone_catalog": build_tone_catalog(),
         "source_sha256": source_sha,
         "utterances": normalized_utterances,
     }

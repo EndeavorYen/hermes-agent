@@ -95,6 +95,20 @@ def _load_json(path: Path) -> Any:
         return None
 
 
+def _project_content_rating(project_dir: Path) -> str:
+    profile = _load_json(project_dir / "content_profile.json")
+    if not isinstance(profile, dict):
+        return "general"
+    rating = str(profile.get("rating") or "").strip().casefold()
+    if (
+        profile.get("schema") == "story_video_content_profile_v1"
+        and profile.get("activation_status") == "active"
+        and rating in {"family", "general", "mature", "adult_explicit"}
+    ):
+        return rating
+    return "general"
+
+
 def _sync_candidate_manifest_phase(context: StoryVideoRunContext) -> None:
     path = context.project_dir / "manifests" / "shot_candidate_manifest.json"
     payload = _load_json(path)
@@ -1598,6 +1612,7 @@ def story_video_audio_director(
                 utterances=(
                     args.get("utterances") if isinstance(args.get("utterances"), list) else []
                 ),
+                content_rating=_project_content_rating(context.project_dir),
             )
             selection = bind_project_voice_cast(context.project_dir, **bind_kwargs)
             payload.update(
