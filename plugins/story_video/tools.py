@@ -797,6 +797,60 @@ def _normalized_display_text(value: Any) -> str:
     return "".join(str(value or "").split())
 
 
+_V7_DISPLAY_PAUSE_RE = re.compile(r"(?:\.{3,}|…{2,}|⋯{2,}|—{1,2})")
+_V7_CLOSING_MARKS = "」』”’\"'】）》）]"
+_V7_TERMINAL_MARKS = "。！？!?"
+
+
+def _normalize_v7_spoken_punctuation(text: str) -> str:
+    source = str(text or "")
+
+    def replace(match: re.Match[str]) -> str:
+        tail = source[match.end() :].lstrip()
+        after_closers = tail.lstrip(_V7_CLOSING_MARKS)
+        if not after_closers:
+            return "。"
+        if after_closers[0] in _V7_TERMINAL_MARKS:
+            return ""
+        return "，"
+
+    return _V7_DISPLAY_PAUSE_RE.sub(replace, source)
+
+
+def _expected_v7_chunk_spoken_text(chunk: dict[str, Any]) -> str:
+    display_text = chunk.get("display_text")
+    entries = chunk.get("pronunciation_entries")
+    if not isinstance(display_text, str) or not isinstance(entries, list):
+        raise ValueError("chunk display text and pronunciation entries are required")
+    by_display: dict[str, str] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError("pronunciation entry must be an object")
+        display = entry.get("display")
+        spoken = entry.get("spoken")
+        if (
+            not isinstance(display, str)
+            or not display.strip()
+            or not isinstance(spoken, str)
+            or not spoken.strip()
+            or display not in display_text
+            or display in by_display
+        ):
+            raise ValueError("pronunciation entry is invalid for chunk display text")
+        by_display[display] = spoken
+    if by_display:
+        pattern = re.compile(
+            "|".join(
+                re.escape(value)
+                for value in sorted(by_display, key=len, reverse=True)
+            )
+        )
+        display_text = pattern.sub(
+            lambda match: by_display[match.group(0)], display_text
+        )
+    return _normalize_v7_spoken_punctuation(display_text)
+
+
 def _v7_tone_contract_violations(
     manifest: dict[str, Any],
     *,
@@ -865,14 +919,22 @@ def _v7_tone_contract_violations(
     chunks_by_utterance: dict[str, list[str]] = {
         utterance_id: [] for utterance_id in utterance_order
     }
+    spoken_by_utterance: dict[str, list[str]] = {
+        utterance_id: [] for utterance_id in utterance_order
+    }
+    expected_spoken_by_utterance: dict[str, list[str]] = {
+        utterance_id: [] for utterance_id in utterance_order
+    }
     chunk_group_order: list[str] = []
     seen_utterances: set[str] = set()
     for output_index, output in enumerate(manifest.get("outputs") or []):
         if not isinstance(output, dict):
             continue
+        output_expected_spoken: list[str] = []
         for segment_index, segment in enumerate(output.get("segments") or []):
             if not isinstance(segment, dict):
                 continue
+            segment_expected_spoken: list[str] = []
             for chunk_index, chunk in enumerate(segment.get("voice_chunks") or []):
                 if not isinstance(chunk, dict):
                     continue
@@ -1130,6 +1192,25 @@ def _v7_tone_contract_violations(
 
                 display_text = str(utterance.get("display_text") or "")
                 spoken_text = str(chunk.get("spoken_text") or "")
+                try:
+                    expected_spoken_text = _expected_v7_chunk_spoken_text(chunk)
+                except ValueError:
+                    violations.append(
+                        "local Qwen tone pronunciation entries are invalid"
+                    )
+                    expected_spoken_text = spoken_text
+                else:
+                    if spoken_text != expected_spoken_text:
+                        violations.append(
+                            "local Qwen tone spoken text does not match expected "
+                            "chunk text"
+                        )
+                spoken_by_utterance[utterance_id].append(spoken_text)
+                expected_spoken_by_utterance[utterance_id].append(
+                    expected_spoken_text
+                )
+                segment_expected_spoken.append(expected_spoken_text)
+                output_expected_spoken.append(expected_spoken_text)
                 action = str(utterance.get("action") or "").strip()
                 display_tokens = "".join(display_text.split())
                 chunk_display = "".join(str(chunk.get("display_text") or "").split())
@@ -1148,6 +1229,18 @@ def _v7_tone_contract_violations(
                     violations.append(
                         "local Qwen spoken text contains a display-only role or action label"
                     )
+            if str(segment.get("spoken_text") or "") != "".join(
+                segment_expected_spoken
+            ):
+                violations.append(
+                    "local Qwen tone segment spoken text does not match expected chunks"
+                )
+        if str(output.get("spoken_text") or "") != "".join(
+            output_expected_spoken
+        ):
+            violations.append(
+                "local Qwen tone output spoken text does not match expected chunks"
+            )
     if seen_utterances != set(utterances):
         violations.append("local Qwen tone chunk coverage does not match dialogue ledger")
     if chunk_group_order != utterance_order:
@@ -1163,6 +1256,12 @@ def _v7_tone_contract_violations(
             violations.append(
                 "local Qwen tone chunk coverage does not reproduce utterance "
                 f"{utterance_id}"
+            )
+        if "".join(spoken_by_utterance[utterance_id]) != "".join(
+            expected_spoken_by_utterance[utterance_id]
+        ):
+            violations.append(
+                "local Qwen tone utterance spoken text does not match expected chunks"
             )
     return missing, violations
 

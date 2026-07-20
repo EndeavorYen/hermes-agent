@@ -26,6 +26,7 @@ from plugins.story_video.shot_contract import shot_contract_hash
 from plugins.story_video.state import StoryVideoStateStore, parse_operator_call
 from plugins.story_video.tone_map import build_tone_catalog, resolve_tone_application
 from plugins.story_video.tools import (
+    _expected_v7_chunk_spoken_text,
     _next_phase,
     _project_content_rating,
     story_video_audio_director,
@@ -246,6 +247,8 @@ def _write_valid_v7_tone_voice_project(tmp_path):
             "speaker_routing_status": "PASS",
             "display_text": display_text,
             "spoken_text": display_text,
+            "pronunciation_rules": [],
+            "pronunciation_entries": [],
             "scene_start_sec": start,
             "scene_speech_end_sec": start + 1.0,
             "start_sec": start,
@@ -333,6 +336,7 @@ def _write_valid_v7_tone_voice_project(tmp_path):
                     {
                         "shot_id": "S01_SH01",
                         "timeline_duration_sec": 2.36,
+                        "spoken_text": "故事開始。你好。",
                         "alignment_status": "PASS",
                         "pronunciation_status": "PASS",
                         "prosody_status": "PASS",
@@ -3335,6 +3339,93 @@ def test_voice_validation_rejects_malformed_v7_candidate_ledger(
 
     assert proof.ok is False
     assert any("tone candidate evidence is invalid" in value for value in proof.violations)
+
+
+@pytest.mark.parametrize(
+    ("case", "replacement"),
+    [
+        ("chunk_missing", "你"),
+        ("chunk_extra", "你好。多"),
+        ("chunk_reordered", "好。你"),
+        ("segment_drift", "故事開始。你"),
+        ("output_drift", "故事開始。你好。多"),
+    ],
+)
+def test_voice_validation_rejects_v7_spoken_text_drift(
+    tmp_path,
+    case: str,
+    replacement: str,
+) -> None:
+    context, manifest_path, _dialogue, _binding = (
+        _write_valid_v7_tone_voice_project(tmp_path)
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    segment = manifest["outputs"][0]["segments"][0]
+    if case.startswith("chunk_"):
+        segment["voice_chunks"][1]["spoken_text"] = replacement
+    elif case == "segment_drift":
+        segment["spoken_text"] = replacement
+    else:
+        manifest["outputs"][0]["spoken_text"] = replacement
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert any("spoken text does not match expected" in value for value in proof.violations)
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["outside_chunk", "missing_spoken", "duplicate_display", "missing_entries"],
+)
+def test_voice_validation_rejects_v7_invalid_pronunciation_entries(
+    tmp_path,
+    case: str,
+) -> None:
+    context, manifest_path, _dialogue, _binding = (
+        _write_valid_v7_tone_voice_project(tmp_path)
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    chunk = manifest["outputs"][0]["segments"][0]["voice_chunks"][1]
+    if case == "outside_chunk":
+        chunk["pronunciation_entries"] = [
+            {"display": "不存在", "spoken": "替換", "risk": "high"}
+        ]
+    elif case == "missing_spoken":
+        chunk["pronunciation_entries"] = [{"display": "你好"}]
+    elif case == "duplicate_display":
+        chunk["pronunciation_entries"] = [
+            {"display": "你好", "spoken": "擬好"},
+            {"display": "你好", "spoken": "泥好"},
+        ]
+    else:
+        chunk.pop("pronunciation_entries")
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert any("pronunciation entries are invalid" in value for value in proof.violations)
+
+
+def test_expected_v7_chunk_spoken_text_uses_longest_pronunciation_then_ellipsis(
+) -> None:
+    chunk = {
+        "display_text": "三疊紀......疊紀？",
+        "pronunciation_entries": [
+            {"display": "疊紀", "spoken": "碟記"},
+            {"display": "三疊紀", "spoken": "三碟紀"},
+        ],
+    }
+
+    assert _expected_v7_chunk_spoken_text(chunk) == "三碟紀，碟記？"
 
 
 @pytest.mark.parametrize(
