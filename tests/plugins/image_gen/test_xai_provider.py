@@ -522,7 +522,10 @@ class TestGenerate:
                         "update": {
                             "sessionUpdate": "tool_call_update",
                             "status": "completed",
-                            "rawOutput": {"path": str(original_reference)},
+                            "rawOutput": {
+                                "type": "ImageEdit",
+                                "path": str(original_reference),
+                            },
                         }
                     }
                 }
