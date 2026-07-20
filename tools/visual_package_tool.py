@@ -52,6 +52,7 @@ from agent.visual.provider_failures import classify_visual_provider_failure
 from agent.visual.provider_stats import compute_provider_reliability
 from agent.visual.ranker import rank_visual_candidates
 from agent.visual.reference_similarity import augment_observation_with_reference_similarity
+from agent.visual.reference_pose import extract_pose_transfer_instruction
 from agent.visual.recovery import plan_visual_recovery
 from agent.visual.reward_model import score_visual_candidate
 from agent.visual.shadow_learning import record_shadow_update
@@ -1391,11 +1392,39 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             attachments=attachments,
             reference_binding=reference_binding,
         )
-        reference_conditioning_variants = _reference_conditioning_variants(
-            attachments,
-            reference_binding,
+        pose_transfer = _semantic_pose_transfer_for_request(
+            image_provider=image_provider_override,
+            attachments=attachments,
+            reference_binding=reference_binding,
             policy_override=reference_conditioning_policy_override,
         )
+        if pose_transfer is not None and pose_transfer.get("success") is not True:
+            return {
+                "success": False,
+                "package_status": "failed",
+                "error_type": str(
+                    pose_transfer.get("error_type") or "pose_geometry_unavailable"
+                ),
+                "error": (
+                    "Could not safely extract pose geometry from the pose/composition reference; "
+                    "xAI generation was not started to avoid identity or style drift."
+                ),
+                "images": [],
+                "videos": [],
+                "generation_strategy": {
+                    "image_provider": image_provider_override,
+                    "reference_binding": _sanitized_reference_binding(reference_binding),
+                    "pose_transfer": pose_transfer,
+                },
+            }
+        if pose_transfer:
+            reference_conditioning_variants = ["semantic_pose_transfer"]
+        else:
+            reference_conditioning_variants = _reference_conditioning_variants(
+                attachments,
+                reference_binding,
+                policy_override=reference_conditioning_policy_override,
+            )
         primary_reference_policy = _reference_conditioning_policy_for_candidate(
             reference_conditioning_variants,
             candidate_index=0,
@@ -1404,6 +1433,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             attachments,
             reference_binding,
             conditioning_policy=primary_reference_policy,
+            pose_transfer=pose_transfer,
         )
         image_generation_specs: list[dict[str, Any]] = []
         for candidate_index in range(effective_candidate_budget):
@@ -1435,6 +1465,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                         attachments,
                         reference_binding,
                         conditioning_policy=reference_policy,
+                        pose_transfer=pose_transfer,
                     )
                     reference_attempt_extra = _provider_reference_attempt_extra(
                         provider_reference_images,
@@ -1902,6 +1933,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 attachments,
                 reference_binding,
                 conditioning_policy=escalation_reference_policy,
+                pose_transfer=pose_transfer,
             )
             reference_attempt_extra = _provider_reference_attempt_extra(
                 provider_reference_images,
@@ -2069,6 +2101,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                     reference_binding=reference_binding,
                     attachments=attachments,
                     reference_conditioning_variants=reference_conditioning_variants,
+                    pose_transfer=pose_transfer,
                     aspect_ratio=aspect_ratio,
                     image_aspect_ratio=image_aspect_ratio,
                     image_provider_override=repair_provider,
@@ -2244,6 +2277,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 attachments,
                 reference_binding,
                 conditioning_policy=repair_reference_policy,
+                pose_transfer=pose_transfer,
             )
             reference_attempt_extra = _provider_reference_attempt_extra(
                 provider_reference_images,
@@ -3138,6 +3172,8 @@ def _single_candidate_generation_prompt(
             f" Pose diversity lane: {pose_lanes[candidate_index % len(pose_lanes)]}; "
             "use a different camera height and limb layout from the references."
         )
+    if "pose geometry from the user's pose/composition reference" in singular:
+        return f"{singular}\n\n{directive}".strip()
     return f"{directive}\n\n{singular}".strip()
 
 
@@ -4291,11 +4327,49 @@ def _image_aspect_ratio_from_reference(reference: str | None) -> str | None:
     return "1:1"
 
 
+def _pose_transfer_instruction(reference: str) -> dict[str, Any]:
+    return extract_pose_transfer_instruction(reference)
+
+
+def _semantic_pose_transfer_for_request(
+    *,
+    image_provider: str | None,
+    attachments: list[str],
+    reference_binding: dict[str, Any] | None,
+    policy_override: Any = None,
+) -> dict[str, Any] | None:
+    if _normalise_image_provider(image_provider) != "xai":
+        return None
+    normalized_override = _normalise_reference_conditioning_policy(
+        policy_override,
+        allow_empty=True,
+    )
+    if normalized_override and normalized_override != "semantic_pose_transfer":
+        return None
+    roles = set(_reference_role_by_index(reference_binding).values())
+    if "character_identity" not in roles or "pose_composition" not in roles:
+        return None
+    identity_reference = _reference_role_attachment(
+        attachments,
+        reference_binding,
+        role_hint="character_identity",
+    )
+    pose_reference = _reference_role_attachment(
+        attachments,
+        reference_binding,
+        role_hint="pose_composition",
+    )
+    if not identity_reference or not pose_reference or identity_reference == pose_reference:
+        return {"success": False, "error_type": "invalid_reference_binding"}
+    return _pose_transfer_instruction(pose_reference)
+
+
 def _provider_reference_image_urls(
     attachments: list[str],
     reference_binding: dict[str, Any] | None,
     *,
     conditioning_policy: str | None = None,
+    pose_transfer: dict[str, Any] | None = None,
 ) -> tuple[list[str], dict[str, Any] | None]:
     if not attachments:
         return [], None
@@ -4374,6 +4448,15 @@ def _provider_reference_image_urls(
             )
             continue
         if role_hint == "pose_composition":
+            if policy == "semantic_pose_transfer" and pose_transfer:
+                omitted.append(
+                    {
+                        "index": index,
+                        "role_hint": role_hint,
+                        "reason": "represented_by_semantic_pose_transfer",
+                    }
+                )
+                continue
             if policy in {"structure_guide", "structure_contour"}:
                 guide = _pose_composition_guide_image(attachment)
                 if guide:
@@ -4435,6 +4518,8 @@ def _provider_reference_image_urls(
         "policy": policy,
         "provider_reference_images": metadata,
     }
+    if policy == "semantic_pose_transfer" and pose_transfer:
+        conditioning["pose_transfer"] = dict(pose_transfer)
     if omitted:
         conditioning["omitted_provider_references"] = omitted
     return provider_refs, conditioning
@@ -4510,9 +4595,17 @@ def _normalise_reference_conditioning_policy(value: Any, *, allow_empty: bool = 
         "collective_inspiration": "collective_inspiration",
         "unassigned": "collective_inspiration",
         "unassigned_refs": "collective_inspiration",
+        "semantic_pose": "semantic_pose_transfer",
+        "pose_text": "semantic_pose_transfer",
     }
     normalized = aliases.get(raw, raw)
-    allowed = {"role_locked_originals", "structure_guide", "structure_contour", "collective_inspiration"}
+    allowed = {
+        "role_locked_originals",
+        "structure_guide",
+        "structure_contour",
+        "collective_inspiration",
+        "semantic_pose_transfer",
+    }
     if normalized in allowed:
         return normalized
     return "" if allow_empty else "role_locked_originals"
@@ -4630,10 +4723,32 @@ def _apply_provider_reference_conditioning_prompt(
                 "and a new pose/composition for the requested final image. The result should be a synthesis, "
                 "not a stitched blend, collage, average face, or cleanup of any reference."
             )
+        elif role_hint == "character_identity":
+            lines.append(
+                f"- provider image {provider_index} is {user_label}, the only character identity/edit anchor. "
+                "Preserve the recognizable subject, face, hair, silhouette, outfit, accessories, palette, body "
+                "proportions, and preserve the visual style. Change pose and framing only as directed below."
+            )
         else:
             lines.append(
                 f"- provider image {provider_index} = {user_label} ({role_hint}, original)"
             )
+    pose_transfer = reference_conditioning.get("pose_transfer")
+    pose_instruction = (
+        str(pose_transfer.get("instruction") or "").strip()
+        if isinstance(pose_transfer, dict)
+        else ""
+    )
+    if pose_instruction:
+        pose_instruction = re.sub(r"[.;]+", ",", pose_instruction).strip(" ,")
+        lines.insert(
+            0,
+            f"- pose geometry from the user's pose/composition reference: {pose_instruction}; reproduce it "
+            "precisely on the identity anchor while preserving the exact character identity, face, "
+            "hair, outfit, accessories, palette, body proportions, and preserve the visual style. The second "
+            "character image is intentionally omitted to prevent identity, wardrobe, and style bleed; its semantic "
+            "geometry remains authoritative."
+        )
     if not lines:
         return prompt
     block = "\n".join(
@@ -4643,6 +4758,8 @@ def _apply_provider_reference_conditioning_prompt(
             "When provider image ordering and user ref labels differ, user ref labels keep their original visible upload order.",
         ]
     )
+    if pose_instruction:
+        return f"{block}\n\n{prompt}"
     return f"{prompt}\n\n{block}"
 
 
@@ -6169,6 +6286,7 @@ def _generate_image_quality_repair_candidate(
     reference_binding: dict[str, Any] | None,
     attachments: list[str],
     reference_conditioning_variants: list[str] | None,
+    pose_transfer: dict[str, Any] | None,
     aspect_ratio: str,
     image_aspect_ratio: str,
     image_provider_override: str | None,
@@ -6208,6 +6326,7 @@ def _generate_image_quality_repair_candidate(
         attachments,
         reference_binding,
         conditioning_policy=repair_reference_policy,
+        pose_transfer=pose_transfer,
     )
     reference_attempt_extra = _provider_reference_attempt_extra(
         provider_reference_images,
