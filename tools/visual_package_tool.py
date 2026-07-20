@@ -1459,6 +1459,9 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 preserve_reference_identity=_reference_binding_locks_identity(
                     reference_binding
                 ),
+                preserve_reference_pose=_reference_binding_locks_pose(
+                    reference_binding
+                ),
             )
             provider_image_generation_prompt = build_provider_facing_visual_prompt(
                 image_generation_prompt,
@@ -2979,6 +2982,7 @@ def _single_candidate_generation_prompt(
     candidate_budget: int,
     pose_variation_requested: bool | None = None,
     preserve_reference_identity: bool = False,
+    preserve_reference_pose: bool = False,
 ) -> str:
     if candidate_budget <= 1:
         return prompt
@@ -3014,6 +3018,13 @@ def _single_candidate_generation_prompt(
             " Preserve the exact person and face from the identity/edit anchor; "
             "candidate diversity must not alter identity-defining traits."
         )
+    if preserve_reference_pose:
+        directive += (
+            " Preserve the exact pose, camera angle, framing, body orientation, and limb layout "
+            "from the bound pose/composition reference. Candidate diversity may vary only "
+            "non-role-locked details such as lighting, background treatment, and rendering finish."
+        )
+        pose_variation_requested = False
     if pose_variation_requested is None:
         pose_variation_requested = bool(
             re.search(r"\bposes?\b|姿勢|姿势|動作|动作", singular, re.IGNORECASE)
@@ -3039,6 +3050,16 @@ def _reference_binding_locks_identity(reference_binding: dict[str, Any] | None) 
         isinstance(item, dict)
         and str(item.get("role_hint") or "").strip()
         in {"edit_anchor", "character_identity"}
+        for item in reference_binding.get("reference_order") or []
+    )
+
+
+def _reference_binding_locks_pose(reference_binding: dict[str, Any] | None) -> bool:
+    if not isinstance(reference_binding, dict):
+        return False
+    return any(
+        isinstance(item, dict)
+        and str(item.get("role_hint") or "").strip() == "pose_composition"
         for item in reference_binding.get("reference_order") or []
     )
 
@@ -6367,7 +6388,12 @@ def _quality_repair_prompt(
     if "subject_not_attractive" in issues or "not_beautiful" in issues:
         instructions.append("render a naturally beautiful subject with clean facial features")
     if "composition_bad" in issues:
-        instructions.append("use a stronger editorial composition with clear framing")
+        if _reference_binding_locks_pose(reference_binding):
+            instructions.append(
+                "preserve the exact bound pose, camera angle, framing, and limb layout while improving focal clarity"
+            )
+        else:
+            instructions.append("use a stronger editorial composition with clear framing")
     if "stockings_bad" in issues:
         instructions.append("make wardrobe and legwear texture clean, refined, and realistic")
     if "reference_identity_drift" in issues:
@@ -6376,6 +6402,13 @@ def _quality_repair_prompt(
         instructions.append(
             "audit each explicit user requirement and visibly satisfy every missing required detail"
         )
+    if "action_or_moment_missing" in issues:
+        if _reference_binding_locks_pose(reference_binding):
+            instructions.append(
+                "make the final subject match the bound pose/composition reference's visible action exactly"
+            )
+        else:
+            instructions.append("show the requested action or decisive visual moment clearly")
     if not instructions:
         instructions.append("improve visual quality while preserving the original intent")
     repair = "; ".join(instructions)
@@ -6400,10 +6433,10 @@ def _quality_repair_prompt(
     else:
         policy_instruction = ""
     return (
-        f"{prompt}\n\n"
         f"{policy_instruction}Quality repair pass: "
         f"{repair}. Avoid distorted anatomy, awkward face rendering, weak composition, "
-        "and low-quality surface detail."
+        "and low-quality surface detail.\n\n"
+        f"Original target to preserve: {prompt}"
     )
 
 

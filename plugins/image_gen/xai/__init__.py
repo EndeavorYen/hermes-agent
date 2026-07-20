@@ -210,6 +210,109 @@ def _grok_build_image_path_candidates(value: Any) -> List[str]:
     return list(dict.fromkeys(candidates))
 
 
+def _existing_grok_build_image(value: Any) -> Optional[str]:
+    for candidate in _iter_output_strings(value):
+        for raw_path in _grok_build_image_path_candidates(candidate):
+            path = Path(str(raw_path).strip().strip("`'\"")).expanduser()
+            if path.suffix.lower() in _IMAGE_SUFFIXES and path.is_file():
+                return str(path.resolve())
+    return None
+
+
+def _grok_build_request_id(parsed: Any, text: str) -> str:
+    if isinstance(parsed, dict):
+        for key in ("requestId", "request_id", "promptId", "prompt_id"):
+            value = str(parsed.get(key) or "").strip()
+            if value:
+                return value
+    match = re.search(
+        r'["\'](?:requestId|request_id|promptId|prompt_id)["\']\s*:\s*["\']([^"\']+)["\']',
+        text,
+        re.IGNORECASE,
+    )
+    return match.group(1).strip() if match else ""
+
+
+def _grok_build_session_image(session_root: Path, *, request_id: str) -> Optional[str]:
+    resolved_session_root = session_root.resolve()
+
+    def current_session_image(value: Any) -> Optional[str]:
+        image = _existing_grok_build_image(value)
+        if not image:
+            return None
+        try:
+            Path(image).resolve().relative_to(resolved_session_root)
+        except ValueError:
+            return None
+        return image
+
+    updates_path = session_root / "updates.jsonl"
+    try:
+        lines = updates_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        params = event.get("params") if isinstance(event, dict) else None
+        update = params.get("update") if isinstance(params, dict) else None
+        if not isinstance(update, dict):
+            continue
+        metadata = params.get("_meta") if isinstance(params, dict) else None
+        prompt_id = str(metadata.get("promptId") or "").strip() if isinstance(metadata, dict) else ""
+        if prompt_id != request_id:
+            continue
+        if str(update.get("sessionUpdate") or "").strip() != "tool_call_update":
+            continue
+        if str(update.get("status") or "").strip().lower() != "completed":
+            continue
+        raw_output = update.get("rawOutput")
+        output_type = str(raw_output.get("type") or "").strip() if isinstance(raw_output, dict) else ""
+        if output_type not in {"ImageEdit", "ImageGen"}:
+            continue
+        image = current_session_image(raw_output)
+        if image:
+            return image
+        image = current_session_image(update.get("content"))
+        if image:
+            return image
+    return None
+
+
+def _grok_build_image_for_request(
+    request_id: str,
+    *,
+    workdir: Path,
+    config: Dict[str, Any],
+) -> Optional[str]:
+    if not request_id:
+        return None
+    grok_home = Path(str(config.get("grok_home") or Path.home() / ".grok")).expanduser()
+    sessions_root = grok_home / "sessions" / quote(str(workdir.resolve()), safe="")
+    try:
+        summaries = sorted(sessions_root.glob("*/summary.json"), reverse=True)
+    except OSError:
+        return None
+    for summary_path in summaries:
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        current_request_id = str(
+            summary.get("request_id")
+            or summary.get("requestId")
+            or summary.get("prompt_id")
+            or summary.get("promptId")
+            or ""
+        ).strip()
+        if current_request_id != request_id:
+            continue
+        return _grok_build_session_image(summary_path.parent, request_id=request_id)
+    return None
+
+
 def _extract_grok_build_image(
     stdout: str,
     *,
@@ -298,6 +401,14 @@ def _extract_grok_build_image(
                     path = session_root / relative
                     if path.is_file():
                         return str(path.resolve())
+        cfg = config if isinstance(config, dict) else {}
+        request_image = _grok_build_image_for_request(
+            _grok_build_request_id(parsed, text),
+            workdir=workdir,
+            config=cfg,
+        )
+        if request_image:
+            return request_image
     return None
 
 
