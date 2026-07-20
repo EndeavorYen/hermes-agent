@@ -1892,6 +1892,24 @@ def test_direct_visual_handoff_formats_quality_gate_error_without_internal_label
     assert response == "視覺生成失敗：參考圖角色/姿勢對應仍未通過品質檢查，已停止交付。"
 
 
+def test_direct_visual_handoff_reports_partial_qualified_candidate_delivery():
+    from agent.visual.agent_mode.handoff import format_direct_visual_agent_handoff_response
+
+    response = format_direct_visual_agent_handoff_response(
+        json.dumps(
+            {
+                "success": True,
+                "package_status": "partial",
+                "error_type": "candidate_option_shortfall",
+                "images": ["/tmp/qualified.png"],
+                "videos": [],
+            }
+        )
+    )
+
+    assert response == "已交付通過品質檢查的候選圖；合格數少於原要求，其餘已淘汰。"
+
+
 def test_direct_visual_handoff_formats_bare_tool_error_as_failure():
     from agent.visual.agent_mode.handoff import format_direct_visual_agent_handoff_response
 

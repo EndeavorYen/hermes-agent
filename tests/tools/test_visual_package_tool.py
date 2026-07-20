@@ -834,6 +834,7 @@ def test_visual_package_delivers_ranked_final_candidate_options_when_requested(
                 "include_video": False,
                 "image_provider": "xai",
                 "candidate_budget": 2,
+                "candidate_budget_source": "user",
                 "deliver_candidate_options": True,
             }
         )
@@ -848,6 +849,319 @@ def test_visual_package_delivers_ranked_final_candidate_options_when_requested(
     assert all("Create 2 final pose candidates" not in call["prompt"] for call in image_calls)
     assert len(payload["delivery_metadata"]["selected_visual_artifact_ids"]) == 2
     assert payload["generation_strategy"]["deliver_candidate_options"] is True
+
+
+def test_visual_package_candidate_options_exclude_individually_blocked_images(
+    monkeypatch,
+    tmp_path,
+):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    strong = tmp_path / "strong-final.png"
+    blocked = tmp_path / "blocked-final.png"
+    strong.write_bytes(_ONE_PIXEL_PNG + b"strong")
+    blocked.write_bytes(_ONE_PIXEL_PNG + b"blocked")
+    image_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        if len(image_calls) == 1:
+            return {
+                "success": True,
+                "image": str(strong),
+                "provider": "xai",
+                "model": "grok-build-native-image",
+                "vision_observation": {
+                    "visual_appeal": 0.92,
+                    "composition": 0.9,
+                    "confidence": 0.9,
+                    "artifact_defects": [],
+                },
+            }
+        return {
+            "success": True,
+            "image": str(blocked),
+            "provider": "xai",
+            "model": "grok-build-native-image",
+            "vision_observation": {
+                "visual_appeal": 0.45,
+                "composition": 0.2,
+                "confidence": 0.9,
+                "artifact_defects": ["composition_weak"],
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "Create 2 final pose candidates and return both for user selection.",
+                "include_image": True,
+                "include_video": False,
+                "image_provider": "xai",
+                "candidate_budget": 2,
+                "deliver_candidate_options": True,
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["package_status"] == "partial"
+    assert payload["error_type"] == "candidate_option_shortfall"
+    assert payload["images"] == [str(strong)]
+    option_gate = payload["delivery_gate"]["image"]["candidate_options"]
+    assert option_gate["requested"] == 2
+    assert option_gate["qualified"] == 1
+    assert option_gate["delivered"] == 1
+    assert option_gate["rejected"][0]["quality_issues"] == ["composition_bad"]
+
+
+def test_visual_package_delivers_valid_alternative_when_top_candidate_is_blocked(
+    monkeypatch,
+    tmp_path,
+):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    blocked = tmp_path / "blocked-top.png"
+    strong = tmp_path / "strong-alternative.png"
+    blocked.write_bytes(_ONE_PIXEL_PNG + b"blocked")
+    strong.write_bytes(_ONE_PIXEL_PNG + b"strong")
+    outputs = [blocked, strong]
+
+    def fake_generate_image(**_kwargs):
+        path = outputs.pop(0)
+        is_blocked = path == blocked
+        return {
+            "success": True,
+            "image": str(path),
+            "provider": "xai",
+            "model": "grok-build-native-image",
+            "vision_observation": {
+                "visual_appeal": 0.95 if is_blocked else 0.88,
+                "composition": 0.2 if is_blocked else 0.9,
+                "confidence": 0.9,
+                "artifact_defects": ["composition_weak"] if is_blocked else [],
+            },
+        }
+
+    def force_blocked_top(*, request_id, candidates, **_kwargs):
+        return SimpleNamespace(
+            request_id=request_id,
+            decision="post",
+            selected_artifact_id=candidates[0]["artifact_id"],
+            selected_attempt_id=candidates[0]["attempt_id"],
+            ranked_artifact_ids=[candidate["artifact_id"] for candidate in candidates],
+            reason="forced_blocked_top_for_regression",
+            version="test",
+        )
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+    monkeypatch.setattr(visual_package_tool, "rank_visual_candidates", force_blocked_top)
+
+    payload = json.loads(
+        visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "Create 2 candidates and return both for selection.",
+                "include_image": True,
+                "include_video": False,
+                "image_provider": "xai",
+                "candidate_budget": 2,
+                "candidate_budget_source": "user",
+                "deliver_candidate_options": True,
+                "visual_production_kernel": True,
+                "visual_contract_hash": "contract-1",
+                "visual_intent_contract": {"candidate_count": 2},
+                "max_generated_repairs": 0,
+            }
+        )
+    )
+
+    assert payload["images"] == [str(strong)]
+    assert payload["package_status"] == "partial"
+    assert payload["delivery_gate"]["image"]["candidate_options"]["qualified"] == 1
+    ledger = visual_package_tool.VisualAttemptLedger(
+        tmp_path / "visual" / "attempt_ledger.sqlite3"
+    )
+    final_ranking = ledger._list(
+        "visual_rankings",
+        where="request_id = ?",
+        params=(payload["visual_request_id"],),
+    )[-1]
+    assert final_ranking["selected_artifact_id"] == payload["rankings"]["image"]["selected_artifact_id"]
+    image_gate = payload["delivery_gate"]["image"]
+    prior_loop = image_gate["prior_quality_loop"]
+    resolution = image_gate["candidate_option_resolution"]
+    assert prior_loop["champion"]["artifact_id"] != resolution["selected_artifact_id"]
+    assert resolution["selected_artifact_id"] == payload["rankings"]["image"]["selected_artifact_id"]
+    resolution_rows = [
+        row
+        for row in ledger._list(
+            "visual_shadow_updates",
+            where="request_id = ?",
+            params=(payload["visual_request_id"],),
+        )
+        if row["proposed_change"].get("type") == "candidate_option_resolution"
+    ]
+    assert resolution_rows[-1]["evidence"]["selected_artifact_id"] == (
+        payload["rankings"]["image"]["selected_artifact_id"]
+    )
+    loop_rows = [
+        row
+        for row in ledger._list(
+            "visual_shadow_updates",
+            where="request_id = ?",
+            params=(payload["visual_request_id"],),
+        )
+        if row["proposed_change"].get("type") == "bounded_quality_loop_observation"
+    ]
+    assert loop_rows[-1]["evidence"]["champion"] == prior_loop["champion"]
+    assert loop_rows[-1]["evidence"]["history"] == prior_loop["history"]
+
+
+def test_visual_package_candidate_options_include_accepted_repair(
+    monkeypatch,
+    tmp_path,
+):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    blocked = tmp_path / "blocked-original.png"
+    repaired = tmp_path / "accepted-repair.png"
+    blocked.write_bytes(_ONE_PIXEL_PNG + b"blocked")
+    repaired.write_bytes(_ONE_PIXEL_PNG + b"repaired")
+    calls = []
+
+    def fake_generate_image(**_kwargs):
+        calls.append(len(calls) + 1)
+        is_repair = len(calls) == 2
+        return {
+            "success": True,
+            "image": str(repaired if is_repair else blocked),
+            "provider": "xai",
+            "model": "grok-build-native-image",
+            "vision_observation": {
+                "visual_appeal": 0.92 if is_repair else 0.5,
+                "composition": 0.9 if is_repair else 0.2,
+                "confidence": 0.9,
+                "artifact_defects": [] if is_repair else ["composition_weak"],
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "Create one candidate for selection.",
+                "include_image": True,
+                "include_video": False,
+                "image_provider": "xai",
+                "candidate_budget": 1,
+                "candidate_budget_source": "user",
+                "deliver_candidate_options": True,
+                "visual_production_kernel": True,
+                "visual_contract_hash": "contract-1",
+                "visual_intent_contract": {"candidate_count": 1},
+                "max_generated_repairs": 1,
+            }
+        )
+    )
+
+    assert calls == [1, 2]
+    assert payload["success"] is True
+    assert payload["images"] == [str(repaired)]
+    assert payload["delivery_gate"]["image"]["candidate_options"]["qualified"] == 1
+
+
+def test_candidate_option_gate_preserves_active_learning_fail_closed_for_portrait_issue():
+    from tools import visual_package_tool
+
+    candidate = {
+        "artifact_id": "var_portrait",
+        "attempt_id": "vat_portrait",
+        "artifact_path": "/tmp/portrait.png",
+        "kind": "image",
+        "hard_gate": {"passed": True},
+        "quality_issues": ["subject_not_attractive"],
+        "reward": {
+            "final_score": 0.4,
+            "confidence": 0.3,
+            "uncertainty_reasons": ["candidate_quality_issue_subject_not_attractive"],
+        },
+        "input_artifacts": [],
+    }
+
+    gate = visual_package_tool._candidate_option_delivery_gate(
+        candidate,
+        prompt="Create a beautiful portrait photo.",
+        args={},
+    )
+
+    assert gate["allowed"] is False
+    assert gate["reason"] == "active_learning_fail_closed"
+
+
+def test_package_error_prioritizes_qc_and_video_failures_over_candidate_shortfall():
+    from tools import visual_package_tool
+
+    image_shortfall = {
+        "allowed": True,
+        "reason": "delivery_allowed",
+        "candidate_options": {"requested": 4, "delivered": 1},
+    }
+    zero_qualified = {
+        "allowed": False,
+        "reason": "active_learning_review_required",
+        "quality_issues": ["reference_identity_drift"],
+        "candidate_options": {"requested": 4, "delivered": 0},
+    }
+    video_blocked = {
+        "allowed": False,
+        "reason": "video_quality_issue_blocked",
+        "quality_issues": ["motion_bad"],
+    }
+    invalid_video_source = {
+        "allowed": False,
+        "reason": "invalid_video_source_frame",
+        "quality_issues": ["source_frame_grid"],
+    }
+    preference_blocked = {
+        "allowed": False,
+        "reason": "pre_slack_preference_dimension_low",
+        "quality_issues": ["subject_not_attractive"],
+    }
+
+    zero_error = visual_package_tool._package_error(
+        success=False,
+        delivery_gate={"image": zero_qualified},
+    )
+    mixed_error = visual_package_tool._package_error(
+        success=False,
+        delivery_gate={"image": image_shortfall, "video": video_blocked},
+    )
+    partial_error = visual_package_tool._package_error(
+        success=False,
+        delivery_gate={"image": image_shortfall},
+    )
+    invalid_source_error = visual_package_tool._package_error(
+        success=False,
+        delivery_gate={"image": image_shortfall, "video": invalid_video_source},
+    )
+    preference_error = visual_package_tool._package_error(
+        success=False,
+        delivery_gate={"image": image_shortfall, "video": preference_blocked},
+    )
+
+    assert zero_error["error"] == (
+        "reference role transfer did not pass visual quality validation after repair"
+    )
+    assert mixed_error["error"] == "visual candidate blocked by active-learning delivery gate"
+    assert invalid_source_error["error_type"] == "delivery_gate_blocked"
+    assert preference_error["error_type"] == "delivery_gate_blocked"
+    assert partial_error["error_type"] == "candidate_option_shortfall"
 
 
 def test_visual_package_singularizes_production_batch_prompt_per_provider_call():
@@ -1571,6 +1885,266 @@ def test_visual_package_diversifies_reference_conditioning_for_identity_pose_con
         "role_locked_originals",
         "structure_guide",
     ]
+
+
+def test_visual_package_xai_identity_pose_uses_semantic_pose_transfer(monkeypatch, tmp_path):
+    from PIL import Image
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ref1 = tmp_path / "character.png"
+    ref2 = tmp_path / "pose.png"
+    Image.new("RGB", (160, 240), (240, 240, 255)).save(ref1)
+    Image.new("RGB", (180, 320), (60, 120, 180)).save(ref2)
+    image_calls = []
+    pose_calls = []
+
+    def fake_pose_instruction(reference):
+        pose_calls.append(reference)
+        return {
+            "success": True,
+            "instruction": "Tight upper-body portrait; left arm raised vertically beyond the top edge.",
+            "source": "vision_pose_geometry",
+            "cache_hit": False,
+            "reference_hash": "pose-hash",
+        }
+
+    def fake_generate_image(**kwargs):
+        image_path = tmp_path / f"image-{len(image_calls)}.png"
+        image_path.write_bytes(_ONE_PIXEL_PNG)
+        image_calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(image_path),
+            "provider": "xai",
+            "model": "grok-build-native-image",
+            "vision_observation": {
+                "reference_adherence": 0.92,
+                "character_identity_adherence": 0.92,
+                "pose_composition_adherence": 0.9,
+                "wardrobe_adherence": 0.9,
+                "style_adherence": 0.9,
+                "face_quality": 0.9,
+                "visual_appeal": 0.9,
+                "composition": 0.9,
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "_pose_transfer_instruction", fake_pose_instruction)
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "用 xai，將 ref1 的人物套用至 ref2 的動作，先做 4 張讓我挑選",
+                "include_video": False,
+                "candidate_budget": 4,
+                "image_provider": "xai",
+                "attachments": [str(ref1), str(ref2)],
+                "reference_binding": {
+                    "reference_order": [
+                        {"index": 1, "role_hint": "character_identity"},
+                        {"index": 2, "role_hint": "pose_composition"},
+                    ]
+                },
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert pose_calls == [str(ref2)]
+    assert len(image_calls) == 4
+    assert all(call["reference_image_urls"] == [str(ref1)] for call in image_calls)
+    assert all(str(ref2) not in call["reference_image_urls"] for call in image_calls)
+    assert all("reference_role_guides" not in str(call["reference_image_urls"]) for call in image_calls)
+    assert all("left arm raised vertically" in call["prompt"] for call in image_calls), [
+        (len(call["prompt"]), call["prompt"][-400:]) for call in image_calls
+    ]
+    assert all("preserve the visual style" in call["prompt"].lower() for call in image_calls), [
+        (len(call["prompt"]), call["prompt"][:700]) for call in image_calls
+    ]
+    assert payload["generation_strategy"]["reference_conditioning_variants"] == [
+        "semantic_pose_transfer"
+    ]
+    conditioning = payload["generation_strategy"]["reference_conditioning"]
+    assert conditioning["policy"] == "semantic_pose_transfer"
+    assert conditioning["pose_transfer"]["source"] == "vision_pose_geometry"
+    assert conditioning["provider_reference_images"] == [
+        {
+            "provider_index": 1,
+            "index": 1,
+            "role_hint": "character_identity",
+            "conditioning": "original",
+        }
+    ]
+    assert conditioning["omitted_provider_references"] == [
+        {
+            "index": 2,
+            "role_hint": "pose_composition",
+            "reason": "represented_by_semantic_pose_transfer",
+        }
+    ]
+
+
+@pytest.mark.parametrize("visual_production_kernel", [True, False])
+def test_visual_package_xai_semantic_pose_repair_reuses_identity_only_conditioning(
+    monkeypatch,
+    tmp_path,
+    visual_production_kernel,
+):
+    from PIL import Image
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ref1 = tmp_path / "character.png"
+    ref2 = tmp_path / "pose.png"
+    bad = tmp_path / "bad.png"
+    repaired = tmp_path / "repaired.png"
+    Image.new("RGB", (160, 240), (240, 240, 255)).save(ref1)
+    Image.new("RGB", (180, 320), (60, 120, 180)).save(ref2)
+    bad.write_bytes(_ONE_PIXEL_PNG + b"bad")
+    repaired.write_bytes(_ONE_PIXEL_PNG + b"repaired")
+    image_calls = []
+
+    monkeypatch.setattr(
+        visual_package_tool,
+        "_pose_transfer_instruction",
+        lambda _reference: {
+            "success": True,
+            "instruction": "Tight portrait with left arm raised overhead.",
+            "source": "vision_pose_geometry",
+            "cache_hit": True,
+            "reference_hash": "pose-hash",
+        },
+    )
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        is_repair = len(image_calls) == 2
+        return {
+            "success": True,
+            "image": str(repaired if is_repair else bad),
+            "provider": "xai",
+            "model": "grok-build-native-image",
+            "vision_observation": {
+                "reference_adherence": 0.92 if is_repair else 0.25,
+                "character_identity_adherence": 0.92 if is_repair else 0.25,
+                "pose_composition_adherence": 0.9 if is_repair else 0.3,
+                "wardrobe_adherence": 0.9 if is_repair else 0.3,
+                "style_adherence": 0.9 if is_repair else 0.3,
+                "visual_appeal": 0.9 if is_repair else 0.4,
+                "composition": 0.9 if is_repair else 0.35,
+                "confidence": 0.9,
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "用 xai，將 ref1 的人物套用至 ref2 的動作",
+                "include_video": False,
+                "candidate_budget": 1,
+                "image_provider": "xai",
+                "visual_production_kernel": visual_production_kernel,
+                "max_generated_repairs": 1,
+                "visual_contract_hash": "identity-pose-contract",
+                "attachments": [str(ref1), str(ref2)],
+                "reference_binding": {
+                    "reference_order": [
+                        {"index": 1, "role_hint": "character_identity"},
+                        {"index": 2, "role_hint": "pose_composition"},
+                    ]
+                },
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["images"] == [str(repaired)]
+    assert len(image_calls) == 2
+    assert all(call["reference_image_urls"] == [str(ref1)] for call in image_calls)
+    assert all("left arm raised overhead" in call["prompt"] for call in image_calls)
+    assert str(ref2) not in json.dumps(image_calls, ensure_ascii=False)
+
+
+def test_visual_package_xai_semantic_pose_failure_does_not_generate(monkeypatch, tmp_path):
+    from PIL import Image
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ref1 = tmp_path / "character.png"
+    ref2 = tmp_path / "pose.png"
+    Image.new("RGB", (160, 240), (240, 240, 255)).save(ref1)
+    Image.new("RGB", (180, 320), (60, 120, 180)).save(ref2)
+    monkeypatch.setattr(
+        visual_package_tool,
+        "_pose_transfer_instruction",
+        lambda _reference: {"success": False, "error_type": "pose_geometry_unavailable"},
+    )
+    monkeypatch.setattr(
+        visual_package_tool,
+        "generate_image",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("xAI generation must not run")),
+    )
+
+    payload = json.loads(
+        visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "用 xai，將 ref1 的人物套用至 ref2 的動作",
+                "include_video": False,
+                "image_provider": "xai",
+                "attachments": [str(ref1), str(ref2)],
+                "reference_binding": {
+                    "reference_order": [
+                        {"index": 1, "role_hint": "character_identity"},
+                        {"index": 2, "role_hint": "pose_composition"},
+                    ]
+                },
+            }
+        )
+    )
+
+    assert payload["success"] is False
+    assert payload["error_type"] == "pose_geometry_unavailable"
+    assert payload["images"] == []
+    assert payload["generation_strategy"]["image_provider"] == "xai"
+
+
+def test_visual_package_xai_rejects_same_image_for_identity_and_pose(monkeypatch, tmp_path):
+    from PIL import Image
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    reference = tmp_path / "same.png"
+    Image.new("RGB", (160, 240), (240, 240, 255)).save(reference)
+    monkeypatch.setattr(
+        visual_package_tool,
+        "generate_image",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("xAI generation must not run")),
+    )
+
+    payload = json.loads(
+        visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "用 xai，將 ref1 的人物套用至 ref2 的動作",
+                "include_video": False,
+                "image_provider": "xai",
+                "attachments": [str(reference), str(reference)],
+                "reference_binding": {
+                    "reference_order": [
+                        {"index": 1, "role_hint": "character_identity"},
+                        {"index": 2, "role_hint": "pose_composition"},
+                    ]
+                },
+            }
+        )
+    )
+
+    assert payload["success"] is False
+    assert payload["error_type"] == "invalid_reference_binding"
+    assert payload["images"] == []
 
 
 def test_visual_package_defaults_image_aspect_to_pose_reference(monkeypatch, tmp_path):

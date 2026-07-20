@@ -641,6 +641,97 @@ class TestGenerate:
         assert "image_edit" in single_prompt
         assert str(source) in single_prompt
 
+    def test_grok_build_transport_binds_numbered_multi_reference_roles(
+        self, monkeypatch, tmp_path
+    ):
+        from plugins.image_gen import xai as xai_module
+
+        ref1 = tmp_path / "identity.png"
+        ref2 = tmp_path / "pose.png"
+        image = tmp_path / "edited.jpg"
+        ref1.write_bytes(b"identity")
+        ref2.write_bytes(b"pose")
+        image.write_bytes(b"image")
+        captured = {}
+
+        def fake_run(command, **_kwargs):
+            captured["command"] = command
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps({"image_path": str(image)}),
+                stderr="",
+            )
+
+        monkeypatch.setattr(
+            xai_module,
+            "_load_xai_config",
+            lambda: {"transport": "grok-build", "grok_binary": "grok"},
+        )
+        monkeypatch.setattr(xai_module, "_grok_build_available", lambda _cfg=None: True)
+        monkeypatch.setattr(xai_module.subprocess, "run", fake_run)
+
+        result = xai_module.XAIImageGenProvider().generate(
+            prompt=(
+                "Follow explicit reference roles: ref 1 role: character_identity; "
+                "ref 2 role: pose_composition."
+            ),
+            aspect_ratio="portrait",
+            reference_image_urls=[str(ref1), str(ref2)],
+        )
+
+        assert result["success"] is True
+        single_prompt = captured["command"][captured["command"].index("--single") + 1]
+        assert f"ref 1: {ref1}" in single_prompt
+        assert f"ref 2: {ref2}" in single_prompt
+        assert "Obey every explicit ref role binding" in single_prompt
+        assert "Do not downgrade a role-locked source to general inspiration" in single_prompt
+        assert "When the creative request does not specify reference roles" in single_prompt
+        assert "The first image is the identity/edit anchor" not in single_prompt
+
+    def test_grok_build_transport_does_not_force_first_reference_to_identity(
+        self, monkeypatch, tmp_path
+    ):
+        from plugins.image_gen import xai as xai_module
+
+        ref1 = tmp_path / "pose.png"
+        ref2 = tmp_path / "identity.png"
+        image = tmp_path / "edited.jpg"
+        ref1.write_bytes(b"pose")
+        ref2.write_bytes(b"identity")
+        image.write_bytes(b"image")
+        captured = {}
+
+        def fake_run(command, **_kwargs):
+            captured["command"] = command
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps({"image_path": str(image)}),
+                stderr="",
+            )
+
+        monkeypatch.setattr(
+            xai_module,
+            "_load_xai_config",
+            lambda: {"transport": "grok-build", "grok_binary": "grok"},
+        )
+        monkeypatch.setattr(xai_module, "_grok_build_available", lambda _cfg=None: True)
+        monkeypatch.setattr(xai_module.subprocess, "run", fake_run)
+
+        result = xai_module.XAIImageGenProvider().generate(
+            prompt=(
+                "Follow explicit reference roles: ref 1 role: pose_composition; "
+                "ref 2 role: character_identity."
+            ),
+            reference_image_urls=[str(ref1), str(ref2)],
+        )
+
+        assert result["success"] is True
+        single_prompt = captured["command"][captured["command"].index("--single") + 1]
+        assert "Obey every explicit ref role binding" in single_prompt
+        assert "The first image is the identity/edit anchor" not in single_prompt
+
     def test_missing_api_key(self, monkeypatch):
         monkeypatch.delenv("XAI_API_KEY", raising=False)
         from plugins.image_gen.xai import XAIImageGenProvider

@@ -162,3 +162,20 @@ def test_xai_unrelated_negation_does_not_hide_explicit_stylized_intent():
     )
 
     assert "Audience age affects emotional clarity only" not in provider_prompt
+
+
+def test_xai_prompt_prioritizes_semantic_pose_roles_over_creative_variation():
+    prompt = (
+        "Creative direction: "
+        + "polished editorial variation with elaborate lighting and background detail; " * 30
+        + "\n\nProvider reference image ordering for generation:\n"
+        "- pose geometry from user ref 2: tight upper-body portrait, "
+        "left arm raised vertically beyond the top edge; preserve ref 1 character_identity, "
+        "outfit, palette, and visual style."
+    )
+
+    provider_prompt = build_provider_facing_visual_prompt(prompt, provider="xai")
+
+    assert len(provider_prompt) <= 1200
+    assert "left arm raised vertically" in provider_prompt
+    assert "preserve ref 1 character_identity" in provider_prompt

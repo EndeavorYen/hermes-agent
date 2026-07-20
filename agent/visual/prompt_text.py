@@ -326,7 +326,14 @@ def _compact_xai_creative_brief_prompt(prompt: str) -> str:
     if not reference_added and _prompt_mentions_collective_reference_policy(prompt):
         reference_blocks.append(_XAI_REFERENCE_SENTENCE)
     reference_blocks = _dedupe_prompt_blocks(reference_blocks)
-    if positive_blocks and reference_blocks:
+    semantic_reference_roles = any(
+        "pose geometry" in block.lower()
+        and _prompt_mentions_explicit_reference_roles(block)
+        for block in reference_blocks
+    )
+    if semantic_reference_roles:
+        positive_blocks = [*reference_blocks, *positive_blocks]
+    elif positive_blocks and reference_blocks:
         positive_blocks = [positive_blocks[0], *reference_blocks, *positive_blocks[1:]]
     elif reference_blocks:
         positive_blocks = reference_blocks

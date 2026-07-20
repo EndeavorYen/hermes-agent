@@ -431,7 +431,10 @@ def _generate_with_grok_build(
         )
 
     operation = "image_edit" if source_images else "image_gen"
-    reference_lines = "\n".join(f"- {path}" for path in source_images)
+    reference_lines = "\n".join(
+        f"- ref {index}: {path}"
+        for index, path in enumerate(source_images, start=1)
+    )
     instruction = (
         "Use exactly one native xAI Grok Imagine tool call. "
         f"Call `{operation}` and do not use web, shell, code execution, or subagents.\n"
@@ -440,9 +443,13 @@ def _generate_with_grok_build(
     )
     if source_images:
         instruction += (
-            "Use the following real source images as image inputs. The first image is the "
-            "identity/edit anchor; preserve its identity and requested locked traits. "
-            "Additional images are supporting visual references. Do not replace image "
+            "Use the following real source images as image inputs. Each numbered source "
+            "corresponds exactly to the same ref number in the creative "
+            "request. Obey every explicit ref role binding in that request. Do not downgrade a "
+            "role-locked source to general inspiration, and do not copy identity traits from a "
+            "source assigned only to pose or composition. When the creative request does not "
+            "specify reference roles, use ref 1 as the primary edit anchor and the remaining "
+            "sources as supporting references. Do not replace image "
             "conditioning with a text-only description.\n"
             f"Source images:\n{reference_lines}\n"
         )
