@@ -3633,6 +3633,7 @@ def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
     if narration_schema in {
         "story_video_narration_manifest_v5",
         "story_video_narration_manifest_v6",
+        "story_video_narration_manifest_v7",
     }:
         ledger_shots = {
             str(shot.get("shot_id") or "").strip(): (scene, shot)
@@ -3694,6 +3695,7 @@ def _prepare_render(context: StoryVideoRunContext) -> dict[str, Any]:
             "story_video_narration_manifest_v4",
             "story_video_narration_manifest_v5",
             "story_video_narration_manifest_v6",
+            "story_video_narration_manifest_v7",
         }:
             raw_segments = narration.get("segments")
             if not isinstance(raw_segments, list) or not raw_segments:

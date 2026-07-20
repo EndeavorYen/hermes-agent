@@ -11,7 +11,11 @@ from plugins.story_video.accessible_explainer import (
     ensure_explanation_profile,
 )
 from plugins.story_video.audit import ProviderAudit, ProviderAuditEvent
-from plugins.story_video.dubbing import DubbingContractError
+from plugins.story_video.dubbing import (
+    DubbingContractError,
+    bind_project_voice_cast,
+    compile_dubbing_project,
+)
 from plugins.story_video.schemas import (
     STORY_VIDEO_AUDIO_DIRECTOR_SCHEMA,
     STORY_VIDEO_CONTROL_SCHEMA,
@@ -20,6 +24,7 @@ from plugins.story_video.schemas import (
 from plugins.story_video.sequence_quality import write_sequence_quality_report
 from plugins.story_video.shot_contract import shot_contract_hash
 from plugins.story_video.state import StoryVideoStateStore, parse_operator_call
+from plugins.story_video.tone_map import build_tone_catalog
 from plugins.story_video.tools import (
     _next_phase,
     _project_content_rating,
@@ -119,6 +124,260 @@ def _ready_voice_catalog(tmp_path) -> dict:
         preset_model_path=model,
         preset_runtime_path=runtime,
     )
+
+
+def _write_valid_v7_tone_voice_project(tmp_path):
+    store, context = _active_context(tmp_path)
+    context = store.update(context, phase="voice")
+    catalog = _ready_voice_catalog(tmp_path)
+    compile_dubbing_project(
+        context.project_dir,
+        mode="creative",
+        source_text="",
+        content_rating="general",
+        speakers=[
+            {
+                "speaker_id": "narrator",
+                "display_name": "旁白",
+                "role": "narrator",
+                "voice_id": "simon_clean_v2",
+            },
+            {
+                "speaker_id": "xiaomei",
+                "display_name": "小美",
+                "role": "lead",
+                "voice_id": "Vivian",
+            },
+        ],
+        utterances=[
+            {
+                "utterance_id": "U001",
+                "scene_id": "S01",
+                "shot_id": "S01_SH01",
+                "speaker_id": "narrator",
+                "display_text": "故事開始。",
+            },
+            {
+                "utterance_id": "U002",
+                "scene_id": "S01",
+                "shot_id": "S01_SH01",
+                "speaker_id": "xiaomei",
+                "display_text": "你好。",
+                "emotion": "warmth",
+                "action": "輕聲走近",
+            },
+        ],
+    )
+    selection = bind_project_voice_cast(
+        context.project_dir,
+        voice_catalog=catalog,
+    )
+    dialogue = context.project_dir / "dialogue_ledger.json"
+    ledger = json.loads(dialogue.read_text(encoding="utf-8"))
+    binding = selection.binding_path
+    profiles = {
+        str(row["speaker_id"]): row for row in selection.speakers
+    }
+    audio = context.project_dir / "audio" / "qwen" / "S01.wav"
+    audio.parent.mkdir(parents=True)
+    audio.write_bytes(b"tone-aware-cast-audio")
+    pronunciation = context.project_dir / "qc" / "pronunciation_qc_report.json"
+    pronunciation.parent.mkdir(parents=True)
+    pronunciation.write_text(
+        json.dumps(
+            {
+                "schema": "story_video_pronunciation_qc_v3",
+                "run_id": context.run_id,
+                "status": "PASS",
+                "language": "zh-TW",
+                "method": "sentence_chunk_plus_forced_alignment_isolated_term_asr",
+                "checked_unit": "voice_chunk",
+                "fluency_contract": "bounded_internal_silence_v1",
+                "max_internal_silence_sec": 0.9,
+                "applied_entries": [],
+                "acoustic_evidence": [
+                    {
+                        "shot_id": chunk_id,
+                        "alignment_status": "PASS",
+                        "pronunciation_status": "PASS",
+                        "prosody_status": "PASS",
+                        "fluency_status": "PASS",
+                        "longest_internal_silence_sec": 0.1,
+                        "term_checks": [],
+                    }
+                    for chunk_id in ("U001__C01", "U002__C01")
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    def chunk(
+        *,
+        utterance_id: str,
+        speaker_id: str,
+        display_text: str,
+        start: float,
+        tone: dict,
+    ) -> dict:
+        profile = profiles[speaker_id]
+        engine = str(profile["engine"])
+        tone_id = str(tone["tone_id"])
+        adapter = ledger["tone_catalog"]["tones"][tone_id]["adapters"][engine]
+        template_id = str(adapter.get("template_id") or "")
+        instruct = str(adapter.get("instruct") or "")
+        instruction_fragments = [
+            str(
+                ledger["tone_catalog"]["modifiers"][modifier_id]["adapters"][
+                    engine
+                ].get("instruction_fragment")
+                or ""
+            ).strip()
+            for modifier_id in tone.get("modifiers") or []
+            if str(
+                ledger["tone_catalog"]["modifiers"][modifier_id]["adapters"][
+                    engine
+                ].get("instruction_fragment")
+                or ""
+            ).strip()
+        ]
+        if instruction_fragments:
+            instruct = "；".join([instruct, *instruction_fragments])
+        pause = float(adapter.get("pause_seconds") or 0.18)
+        return {
+            "voice_chunk_id": f"{utterance_id}__C01",
+            "utterance_id": utterance_id,
+            "speaker_id": speaker_id,
+            "voice_id": str(profile["voice_id"]),
+            "engine": engine,
+            "profile_id": str(profile.get("profile_id") or ""),
+            "profile_sha256": str(profile.get("profile_sha256") or ""),
+            "speaker_routing_status": "PASS",
+            "display_text": display_text,
+            "spoken_text": display_text,
+            "scene_start_sec": start,
+            "scene_speech_end_sec": start + 1.0,
+            "start_sec": start,
+            "speech_end_sec": start + 1.0,
+            "alignment_status": "PASS",
+            "pronunciation_status": "PASS",
+            "prosody_status": "PASS",
+            "fluency_status": "PASS",
+            "tone": tone,
+            "tone_adapter": engine,
+            "tone_instruction_template_id": template_id,
+            "tone_application": {
+                "adapter_status": (
+                    "neutral_noop" if tone_id == "general.neutral" else "applied"
+                ),
+                "engine": engine,
+                "instruction_template_id": template_id,
+                "instruct": instruct,
+                "pause_seconds": pause if tone_id != "general.neutral" else None,
+                "applied_parameters": {
+                    "speed": float(adapter.get("speed_multiplier") or 1.0),
+                    "temperature_delta": float(adapter.get("temperature_delta") or 0.0),
+                    "pitch_shift_semitones": 0,
+                    "tone_pitch_shift_semitones": 0,
+                    "expressiveness": str(adapter.get("expressiveness") or "natural"),
+                },
+            },
+            "tone_applied_parameters": {
+                "speed": float(adapter.get("speed_multiplier") or 1.0),
+                "temperature_delta": float(adapter.get("temperature_delta") or 0.0),
+                "pitch_shift_semitones": 0,
+                "tone_pitch_shift_semitones": 0,
+                "expressiveness": str(adapter.get("expressiveness") or "natural"),
+            },
+            "resolved_pause_after_sec": pause,
+            "pause_after_sec": pause,
+            "candidate_count": 1,
+            "selected_candidate": 1,
+            "candidate_rejections": [],
+        }
+
+    chunks = [
+        chunk(
+            utterance_id="U001",
+            speaker_id="narrator",
+            display_text="故事開始。",
+            start=0.0,
+            tone=ledger["utterances"][0]["tone"],
+        ),
+        chunk(
+            utterance_id="U002",
+            speaker_id="xiaomei",
+            display_text="你好。",
+            start=1.18,
+            tone=ledger["utterances"][1]["tone"],
+        ),
+    ]
+    tone_catalog = build_tone_catalog()
+    manifest = {
+        "schema": "story_video_narration_manifest_v7",
+        "run_id": context.run_id,
+        "provider": "local_qwen",
+        "engine": "Qwen3-TTS via MLX-Audio",
+        "language": "zh-TW",
+        "voice_role": "cast",
+        "voice": "multi_character",
+        "rate": "per_speaker",
+        "profile_status": "cast_bound",
+        "voice_contract_status": "PASS",
+        "model": "Qwen3-TTS-1.7B",
+        "inference_mode": "offline",
+        "network_fallback": "forbidden",
+        "pronunciation_status": "PASS",
+        "alignment_status": "PASS",
+        "prosody_status": "PASS",
+        "fluency_status": "PASS",
+        "spoken_text_normalization": "bounded_ellipsis_v1",
+        "voice_segmentation": "sentence_chunks_v1",
+        "voice_chunk_count": 2,
+        "story_mode": "creative",
+        "speaker_routing_status": "PASS",
+        "speaker_similarity_status": "NOT_MEASURED",
+        "speaker_similarity_method": "routing_integrity_only",
+        "voice_cast_binding": str(binding),
+        "voice_cast_binding_sha256": hashlib.sha256(binding.read_bytes()).hexdigest(),
+        "dialogue_ledger": str(dialogue),
+        "dialogue_ledger_sha256": hashlib.sha256(dialogue.read_bytes()).hexdigest(),
+        "speaker_profiles": selection.speakers,
+        "content_rating": "general",
+        "tone_catalog_schema": str(tone_catalog["schema"]),
+        "tone_catalog_version": int(tone_catalog["version"]),
+        "tone_catalog_sha256": str(tone_catalog["sha256"]),
+        "tone_control_status": "PASS",
+        "tone_evidence_status": "HEURISTIC_PASS",
+        "outputs": [
+            {
+                "scene_id": "S01",
+                "audio": str(audio),
+                "duration_sec": 2.36,
+                "display_text": "故事開始。你好。",
+                "spoken_text": "故事開始。你好。",
+                "pronunciation_status": "PASS",
+                "segments": [
+                    {
+                        "shot_id": "S01_SH01",
+                        "timeline_duration_sec": 2.36,
+                        "alignment_status": "PASS",
+                        "pronunciation_status": "PASS",
+                        "prosody_status": "PASS",
+                        "voice_chunks": chunks,
+                    }
+                ],
+            }
+        ],
+    }
+    manifest_path = context.project_dir / "manifests" / "narration_manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return context, manifest_path, dialogue, binding
 
 
 def test_story_video_control_schema_exposes_voice_profile_actions() -> None:
@@ -2839,6 +3098,178 @@ def test_voice_validation_verifies_v6_multi_character_routing_and_hashes(
 
     assert drifted.ok is False
     assert "multi-character voice chunk profile does not match cast binding" in drifted.violations
+
+
+def test_voice_validation_accepts_v7_engine_aware_tone_contract(tmp_path) -> None:
+    context, _manifest_path, _dialogue, _binding = (
+        _write_valid_v7_tone_voice_project(tmp_path)
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is True, proof
+
+
+def test_voice_validation_accepts_v7_selective_retry_candidate_evidence(
+    tmp_path,
+) -> None:
+    context, manifest_path, _dialogue, _binding = (
+        _write_valid_v7_tone_voice_project(tmp_path)
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    chunk = manifest["outputs"][0]["segments"][0]["voice_chunks"][1]
+    chunk["candidate_count"] = 2
+    chunk["selected_candidate"] = 2
+    chunk["candidate_rejections"] = [
+        {
+            "candidate_id": 1,
+            "reasons": [
+                {
+                    "gate": "pronunciation_status",
+                    "status": "FAIL",
+                    "metrics": {"asr_transcript": "錯誤"},
+                }
+            ],
+        }
+    ]
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is True, proof
+
+
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    [
+        ("missing_catalog_sha", "tone catalog identity"),
+        ("mismatched_catalog_sha", "tone catalog hash mismatch"),
+        ("tone_control_failed", "tone control status is not PASS"),
+        ("tone_evidence_overclaimed", "tone evidence status is not HEURISTIC_PASS"),
+        ("custom_instruction_missing", "CustomVoice tone instruction evidence"),
+        ("custom_template_missing", "CustomVoice tone instruction evidence"),
+        ("clone_instruction_present", "full-ICL tone instruction evidence"),
+        ("speed_out_of_bounds", "tone speed is outside safe bounds"),
+        ("temperature_out_of_bounds", "tone temperature delta is outside safe bounds"),
+        ("pause_out_of_bounds", "tone pause is outside safe bounds"),
+        ("tone_pitch_nonzero", "tone pitch shift must remain zero"),
+        ("adult_tone_in_general", "adult tone requires adult_explicit"),
+        ("display_label_in_spoken_text", "display-only role or action label"),
+        ("candidate_selection_invalid", "tone candidate evidence is invalid"),
+        ("engine_adapter_mismatch", "tone adapter does not match cast binding"),
+        ("application_engine_mismatch", "tone adapter does not match cast binding"),
+        ("v7_with_v1_ledger", "tone narration requires dialogue ledger v2"),
+    ],
+)
+def test_voice_validation_rejects_invalid_v7_tone_evidence(
+    tmp_path,
+    case: str,
+    expected: str,
+) -> None:
+    context, manifest_path, dialogue_path, binding_path = (
+        _write_valid_v7_tone_voice_project(tmp_path)
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    chunks = manifest["outputs"][0]["segments"][0]["voice_chunks"]
+
+    if case == "missing_catalog_sha":
+        manifest.pop("tone_catalog_sha256")
+    elif case == "mismatched_catalog_sha":
+        manifest["tone_catalog_sha256"] = "0" * 64
+    elif case == "tone_control_failed":
+        manifest["tone_control_status"] = "FAIL"
+    elif case == "tone_evidence_overclaimed":
+        manifest["tone_evidence_status"] = "PASS"
+    elif case == "custom_instruction_missing":
+        chunks[1]["tone_application"]["instruct"] = ""
+    elif case == "custom_template_missing":
+        chunks[1]["tone_instruction_template_id"] = ""
+    elif case == "clone_instruction_present":
+        chunks[0]["tone_application"]["instruct"] = "不應送出的指令"
+    elif case == "speed_out_of_bounds":
+        chunks[1]["tone_applied_parameters"]["speed"] = 1.11
+    elif case == "temperature_out_of_bounds":
+        chunks[1]["tone_applied_parameters"]["temperature_delta"] = 0.11
+    elif case == "pause_out_of_bounds":
+        chunks[1]["resolved_pause_after_sec"] = 0.46
+    elif case == "tone_pitch_nonzero":
+        chunks[1]["tone_applied_parameters"]["tone_pitch_shift_semitones"] = 1
+    elif case == "adult_tone_in_general":
+        ledger = json.loads(dialogue_path.read_text(encoding="utf-8"))
+        adult_tone = {
+            "tone_id": "adult.intimate",
+            "intensity": 2,
+            "modifiers": [],
+            "resolution": "explicit",
+            "source": {"emotion": "neutral", "action": "", "pace": "natural"},
+        }
+        ledger["utterances"][1]["tone"] = adult_tone
+        dialogue_path.write_text(
+            json.dumps(ledger, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        chunks[1]["tone"] = adult_tone
+        binding = json.loads(binding_path.read_text(encoding="utf-8"))
+        binding["dialogue_ledger_sha256"] = hashlib.sha256(
+            dialogue_path.read_bytes()
+        ).hexdigest()
+        binding_path.write_text(
+            json.dumps(binding, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        manifest["dialogue_ledger_sha256"] = binding[
+            "dialogue_ledger_sha256"
+        ]
+        manifest["voice_cast_binding_sha256"] = hashlib.sha256(
+            binding_path.read_bytes()
+        ).hexdigest()
+    elif case == "display_label_in_spoken_text":
+        chunks[1]["spoken_text"] = "小美（輕聲走近）你好。"
+    elif case == "candidate_selection_invalid":
+        chunks[1]["candidate_count"] = 2
+        chunks[1]["selected_candidate"] = 3
+    elif case == "engine_adapter_mismatch":
+        chunks[1]["tone_adapter"] = "qwen_full_icl"
+    elif case == "application_engine_mismatch":
+        chunks[1]["tone_application"]["engine"] = "qwen_full_icl"
+    elif case == "v7_with_v1_ledger":
+        ledger = json.loads(dialogue_path.read_text(encoding="utf-8"))
+        ledger["schema"] = "story_video_dialogue_ledger_v1"
+        dialogue_path.write_text(
+            json.dumps(ledger, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        binding = json.loads(binding_path.read_text(encoding="utf-8"))
+        binding["dialogue_ledger_sha256"] = hashlib.sha256(
+            dialogue_path.read_bytes()
+        ).hexdigest()
+        binding_path.write_text(
+            json.dumps(binding, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        manifest["dialogue_ledger_sha256"] = binding[
+            "dialogue_ledger_sha256"
+        ]
+        manifest["voice_cast_binding_sha256"] = hashlib.sha256(
+            binding_path.read_bytes()
+        ).hexdigest()
+    else:  # pragma: no cover - parametrization is exhaustive
+        raise AssertionError(case)
+
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert any(
+        expected in message for message in (*proof.missing, *proof.violations)
+    ), proof
 
 
 def test_voice_validation_blocks_local_qwen_without_pronunciation_proof(tmp_path) -> None:

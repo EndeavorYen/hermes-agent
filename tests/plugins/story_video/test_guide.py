@@ -70,6 +70,12 @@ def test_help_is_compact_and_copy_ready() -> None:
     assert "18+" in text
     assert "本機 Qwen" in text
     assert "不會替你擴寫" in text
+    assert "溫暖／開心／疑惑" in text
+    assert "親密／挑逗／害羞" in text
+    assert "可以省略 tone" in text
+    assert "成人露骨內容設定" in text
+    assert "不會暗中加入呼吸、喘聲、笑聲或其他音效" in text
+    assert "省略號" in text and "停頓" in text
     assert "story_video_control" not in text
 
 
@@ -158,6 +164,9 @@ def test_examples_cover_creation_and_dubbing_modes() -> None:
     assert "圖片故事影片" in text
     assert "全黑字幕影片" in text
     assert "Vivian" in text
+    assert "溫暖、壓低聲音" in text
+    assert "親密、帶點害羞" in text
+    assert "動作只顯示在字幕，不要念出來" in text
     assert "Serena" in text
     assert "Uncle_Fu" in text
     assert "凱因斯經濟學" in text

@@ -746,6 +746,270 @@ def _validate_batch(context: StoryVideoRunContext) -> PhaseProof:
     )
 
 
+def _exact_positive_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _v7_tone_contract_violations(
+    manifest: dict[str, Any],
+    *,
+    dialogue_ledger: dict[str, Any] | None,
+    cast_speakers: dict[str, dict[str, Any]],
+) -> tuple[list[str], list[str]]:
+    missing: list[str] = []
+    violations: list[str] = []
+    if not isinstance(dialogue_ledger, dict) or dialogue_ledger.get(
+        "schema"
+    ) != "story_video_dialogue_ledger_v2":
+        violations.append("local Qwen tone narration requires dialogue ledger v2")
+        return missing, violations
+
+    catalog = dialogue_ledger.get("tone_catalog")
+    if not isinstance(catalog, dict):
+        missing.append("local Qwen dialogue ledger tone catalog")
+        return missing, violations
+    catalog_schema = str(catalog.get("schema") or "")
+    catalog_version = catalog.get("version")
+    catalog_sha = str(catalog.get("sha256") or "")
+    manifest_schema = str(manifest.get("tone_catalog_schema") or "")
+    manifest_version = manifest.get("tone_catalog_version")
+    manifest_sha = str(manifest.get("tone_catalog_sha256") or "")
+    if not manifest_schema or not _exact_positive_int(manifest_version) or not manifest_sha:
+        missing.append("local Qwen tone catalog identity")
+    elif manifest_schema != catalog_schema or manifest_version != catalog_version:
+        violations.append("local Qwen tone catalog identity mismatch")
+    elif manifest_sha != catalog_sha:
+        violations.append("local Qwen tone catalog hash mismatch")
+    if str(manifest.get("tone_control_status") or "").upper() != "PASS":
+        violations.append("local Qwen tone control status is not PASS")
+    if (
+        str(manifest.get("tone_evidence_status") or "").upper()
+        != "HEURISTIC_PASS"
+    ):
+        violations.append("local Qwen tone evidence status is not HEURISTIC_PASS")
+
+    content_rating = str(dialogue_ledger.get("content_rating") or "general").casefold()
+    if str(manifest.get("content_rating") or "").casefold() != content_rating:
+        violations.append("local Qwen tone content rating does not match dialogue ledger")
+    tones = catalog.get("tones")
+    modifiers = catalog.get("modifiers")
+    if not isinstance(tones, dict) or not isinstance(modifiers, dict):
+        missing.append("local Qwen dialogue ledger tone catalog entries")
+        return missing, violations
+    utterances = {
+        str(row.get("utterance_id") or ""): row
+        for row in dialogue_ledger.get("utterances") or []
+        if isinstance(row, dict) and str(row.get("utterance_id") or "")
+    }
+    seen_utterances: set[str] = set()
+    for output_index, output in enumerate(manifest.get("outputs") or []):
+        if not isinstance(output, dict):
+            continue
+        for segment_index, segment in enumerate(output.get("segments") or []):
+            if not isinstance(segment, dict):
+                continue
+            for chunk_index, chunk in enumerate(segment.get("voice_chunks") or []):
+                if not isinstance(chunk, dict):
+                    continue
+                label = (
+                    f"audio narration segment[{output_index}].segments[{segment_index}]"
+                    f".voice_chunks[{chunk_index}]"
+                )
+                utterance_id = str(chunk.get("utterance_id") or "").strip()
+                utterance = utterances.get(utterance_id)
+                if utterance is None:
+                    missing.append(f"{label}.dialogue_utterance")
+                    continue
+                seen_utterances.add(utterance_id)
+                speaker_id = str(chunk.get("speaker_id") or "").strip()
+                bound = cast_speakers.get(speaker_id)
+                if bound is None:
+                    missing.append(f"{label}.tone_speaker_binding")
+                    continue
+                engine = str(bound.get("engine") or "").strip()
+                if (
+                    str(chunk.get("engine") or "") != engine
+                    or str(chunk.get("tone_adapter") or "") != engine
+                ):
+                    violations.append("local Qwen tone adapter does not match cast binding")
+                if speaker_id != str(utterance.get("speaker_id") or ""):
+                    violations.append("local Qwen tone chunk speaker does not match dialogue ledger")
+
+                tone = chunk.get("tone")
+                expected_tone = utterance.get("tone")
+                if not isinstance(tone, dict) or tone != expected_tone:
+                    violations.append("local Qwen resolved tone does not match dialogue ledger")
+                    continue
+                tone_id = str(tone.get("tone_id") or "")
+                if tone_id.startswith("adult.") and content_rating != "adult_explicit":
+                    violations.append("local Qwen adult tone requires adult_explicit rating")
+                tone_definition = tones.get(tone_id)
+                if not isinstance(tone_definition, dict):
+                    violations.append("local Qwen resolved tone is absent from tone catalog")
+                    continue
+                adapters = tone_definition.get("adapters")
+                adapter = adapters.get(engine) if isinstance(adapters, dict) else None
+                if not isinstance(adapter, dict):
+                    violations.append("local Qwen tone engine adapter is absent from catalog")
+                    continue
+                tone_intensity = tone.get("intensity")
+                tone_modifiers = tone.get("modifiers")
+                allowed_modifiers = tone_definition.get("allowed_modifiers")
+                if (
+                    not isinstance(tone_intensity, int)
+                    or isinstance(tone_intensity, bool)
+                    or tone_intensity not in {1, 2, 3}
+                    or not isinstance(tone_modifiers, list)
+                    or len(tone_modifiers) != len(set(tone_modifiers))
+                    or not isinstance(allowed_modifiers, list)
+                    or any(
+                        not isinstance(modifier_id, str)
+                        or modifier_id not in modifiers
+                        or modifier_id not in allowed_modifiers
+                        for modifier_id in tone_modifiers
+                    )
+                ):
+                    violations.append("local Qwen resolved tone parameters are invalid")
+                    continue
+
+                application = chunk.get("tone_application")
+                applied = chunk.get("tone_applied_parameters")
+                if not isinstance(application, dict) or not isinstance(applied, dict):
+                    missing.append(f"{label}.tone_applied_controls")
+                    continue
+                if application.get("applied_parameters") != applied:
+                    violations.append("local Qwen tone applied control evidence is inconsistent")
+                expected_adapter_status = (
+                    "neutral_noop" if tone_id == "general.neutral" else "applied"
+                )
+                if (
+                    str(application.get("engine") or "") != engine
+                    or str(application.get("adapter_status") or "")
+                    != expected_adapter_status
+                ):
+                    violations.append("local Qwen tone adapter does not match cast binding")
+                instruction = str(application.get("instruct") or "").strip()
+                template_id = str(
+                    chunk.get("tone_instruction_template_id") or ""
+                ).strip()
+                application_template = str(
+                    application.get("instruction_template_id") or ""
+                ).strip()
+                if engine == "qwen_custom_voice" and tone_id != "general.neutral":
+                    expected_instruction = str(adapter.get("instruct") or "").strip()
+                    expected_template = str(adapter.get("template_id") or "").strip()
+                    fragments = []
+                    for modifier_id in tone.get("modifiers") or []:
+                        modifier = modifiers.get(modifier_id)
+                        modifier_adapters = (
+                            modifier.get("adapters")
+                            if isinstance(modifier, dict)
+                            else None
+                        )
+                        modifier_adapter = (
+                            modifier_adapters.get(engine)
+                            if isinstance(modifier_adapters, dict)
+                            else None
+                        )
+                        fragment = str(
+                            (modifier_adapter or {}).get("instruction_fragment")
+                            or ""
+                        ).strip()
+                        if fragment:
+                            fragments.append(fragment)
+                    expected_instruction = "；".join(
+                        [expected_instruction, *fragments]
+                    )
+                    if (
+                        not expected_instruction
+                        or instruction != expected_instruction
+                        or template_id != expected_template
+                        or application_template != expected_template
+                    ):
+                        violations.append(
+                            "local Qwen CustomVoice tone instruction evidence is invalid"
+                        )
+                elif engine == "qwen_full_icl" and (
+                    instruction or template_id or application_template
+                ):
+                    violations.append(
+                        "local Qwen full-ICL tone instruction evidence must be empty"
+                    )
+                elif tone_id == "general.neutral" and (instruction or template_id):
+                    violations.append("local Qwen neutral tone adapter is not a no-op")
+
+                if not _bounded_number(applied.get("speed"), minimum=0.9, maximum=1.1):
+                    violations.append("local Qwen tone speed is outside safe bounds")
+                if not _bounded_number(
+                    applied.get("temperature_delta"), minimum=-0.1, maximum=0.1
+                ):
+                    violations.append(
+                        "local Qwen tone temperature delta is outside safe bounds"
+                    )
+                for pause in (
+                    chunk.get("resolved_pause_after_sec"),
+                    chunk.get("pause_after_sec"),
+                ):
+                    if not _bounded_number(pause, minimum=0.08, maximum=0.45):
+                        violations.append("local Qwen tone pause is outside safe bounds")
+                        break
+                application_pause = application.get("pause_seconds")
+                if application_pause is not None and not _bounded_number(
+                    application_pause, minimum=0.08, maximum=0.45
+                ):
+                    violations.append("local Qwen tone pause is outside safe bounds")
+                if applied.get("tone_pitch_shift_semitones") != 0:
+                    violations.append("local Qwen tone pitch shift must remain zero")
+
+                candidate_count = chunk.get("candidate_count")
+                selected_candidate = chunk.get("selected_candidate")
+                rejections = chunk.get("candidate_rejections")
+                candidate_valid = (
+                    _exact_positive_int(candidate_count)
+                    and _exact_positive_int(selected_candidate)
+                    and selected_candidate == candidate_count
+                    and isinstance(rejections, list)
+                    and len(rejections) == candidate_count - 1
+                )
+                if candidate_valid:
+                    expected_ids = list(range(1, candidate_count))
+                    rejection_ids = [
+                        row.get("candidate_id") if isinstance(row, dict) else None
+                        for row in rejections
+                    ]
+                    candidate_valid = rejection_ids == expected_ids and all(
+                        isinstance(row.get("reasons"), list) and row["reasons"]
+                        for row in rejections
+                        if isinstance(row, dict)
+                    )
+                if not candidate_valid:
+                    violations.append("local Qwen tone candidate evidence is invalid")
+
+                display_text = str(utterance.get("display_text") or "")
+                spoken_text = str(chunk.get("spoken_text") or "")
+                action = str(utterance.get("action") or "").strip()
+                display_tokens = "".join(display_text.split())
+                chunk_display = "".join(str(chunk.get("display_text") or "").split())
+                if not chunk_display or chunk_display not in display_tokens:
+                    violations.append("local Qwen tone chunk display text is not in dialogue ledger")
+                display_only_labels = {
+                    action,
+                    str(bound.get("display_name") or "").strip(),
+                    speaker_id,
+                    str(bound.get("role") or "").strip(),
+                }
+                if any(
+                    value and value in spoken_text and value not in display_text
+                    for value in display_only_labels
+                ):
+                    violations.append(
+                        "local Qwen spoken text contains a display-only role or action label"
+                    )
+    if seen_utterances != set(utterances):
+        violations.append("local Qwen tone chunk coverage does not match dialogue ledger")
+    return missing, violations
+
+
 def _validate_voice(context: StoryVideoRunContext) -> PhaseProof:
     manifest_path = context.project_dir / "manifests" / "narration_manifest.json"
     manifest = _load_json(manifest_path)
@@ -778,9 +1042,14 @@ def _validate_voice(context: StoryVideoRunContext) -> PhaseProof:
             "story_video_narration_manifest_v4",
             "story_video_narration_manifest_v5",
             "story_video_narration_manifest_v6",
+            "story_video_narration_manifest_v7",
         }
         bound_voice_contract = narration_schema == "story_video_narration_manifest_v5"
-        cast_voice_contract = narration_schema == "story_video_narration_manifest_v6"
+        cast_voice_contract = narration_schema in {
+            "story_video_narration_manifest_v6",
+            "story_video_narration_manifest_v7",
+        }
+        tone_voice_contract = narration_schema == "story_video_narration_manifest_v7"
         sentence_chunk_contract = (
             str(manifest.get("voice_segmentation") or "")
             == "sentence_chunks_v1"
@@ -795,6 +1064,7 @@ def _validate_voice(context: StoryVideoRunContext) -> PhaseProof:
             missing.append("local Qwen narration model")
         profile_path: Path | None = None
         cast_speakers: dict[str, dict[str, Any]] = {}
+        dialogue_ledger: dict[str, Any] | None = None
         if cast_voice_contract:
             if str(manifest.get("run_id") or "") != context.run_id:
                 violations.append(
@@ -855,6 +1125,10 @@ def _validate_voice(context: StoryVideoRunContext) -> PhaseProof:
                     dialogue_path
                 ):
                     violations.append("local Qwen dialogue ledger hash mismatch")
+                else:
+                    dialogue_payload = _load_json(dialogue_path)
+                    if isinstance(dialogue_payload, dict):
+                        dialogue_ledger = dialogue_payload
             if str(manifest.get("voice_role") or "") != "cast":
                 violations.append("local Qwen multi-character voice role is not cast")
             if str(manifest.get("story_mode") or "") not in {
@@ -897,6 +1171,14 @@ def _validate_voice(context: StoryVideoRunContext) -> PhaseProof:
                         violations.append(
                             "local Qwen speaker profile evidence does not match cast binding"
                         )
+            if tone_voice_contract:
+                tone_missing, tone_violations = _v7_tone_contract_violations(
+                    manifest,
+                    dialogue_ledger=dialogue_ledger,
+                    cast_speakers=cast_speakers,
+                )
+                missing.extend(tone_missing)
+                violations.extend(tone_violations)
         else:
             profile_value = str(manifest.get("voice_profile") or "").strip()
             if not profile_value:
