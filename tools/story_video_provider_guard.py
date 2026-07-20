@@ -39,6 +39,16 @@ _CHINESE_LONG_FORM_VIDEO_RE = re.compile(
     r"(?:(?:\d+(?:\.\d+)?|[零〇一二三四五六七八九十百兩两]+)\s*"
     r"(?:分鐘|分钟|分|mins?|minutes?)|旁白|字幕|場景帳本)"
 )
+_STORY_SCRIPT_RE = re.compile(
+    r"(?:故事(?:劇本|剧本|腳本|脚本|文本|原稿)|story\s+(?:script|text))",
+    re.I,
+)
+_MULTIROLE_DUBBING_RE = re.compile(
+    r"(?:多角色(?:配音|聲音|声音|聲線|声线|朗讀|朗读)|"
+    r"角色(?:配音|聲音|声音|聲線|声线)(?:安排|分配|對照|对照|設定|设定)?|"
+    r"multi[ -]?role\s+(?:dubbing|voice|narration))",
+    re.I,
+)
 _MINUTE_SCALE_RE = re.compile(
     r"(?:\d+(?:\.\d+)?|[零〇一二三四五六七八九十百兩两]+)"
     r"\s*(?:[-–]\s*)?(?:分鐘|分钟|分|mins?|minutes?)(?![A-Za-z])",
@@ -191,6 +201,8 @@ def story_video_request_detected(
         return False
     if explicit_visual_agent_request_detected(text):
         return False
+    if _STORY_SCRIPT_RE.search(text) and _MULTIROLE_DUBBING_RE.search(text):
+        return True
     lowered = text.lower()
     structure_text = _NEGATED_LONG_FORM_STRUCTURE_RE.sub("", text)
     structure_lowered = structure_text.lower()

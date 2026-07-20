@@ -2211,6 +2211,7 @@ def test_voice_validation_accepts_v4_and_verifies_v5_voice_binding(tmp_path) -> 
         json.dumps(
             {
                 "schema": "story_video_pronunciation_qc_v3",
+                "run_id": context.run_id,
                 "status": "PASS",
                 "language": "zh-TW",
                 "method": "sentence_chunk_plus_forced_alignment_isolated_term_asr",
@@ -2480,10 +2481,13 @@ def test_voice_validation_verifies_v6_multi_character_routing_and_hashes(
         json.dumps(
             {
                 "schema": "story_video_pronunciation_qc_v3",
+                "run_id": context.run_id,
                 "status": "PASS",
                 "language": "zh-TW",
                 "method": "sentence_chunk_plus_forced_alignment_isolated_term_asr",
                 "checked_unit": "voice_chunk",
+                "fluency_contract": "bounded_internal_silence_v1",
+                "max_internal_silence_sec": 0.9,
                 "applied_entries": [],
                 "acoustic_evidence": [
                     {
@@ -2491,6 +2495,8 @@ def test_voice_validation_verifies_v6_multi_character_routing_and_hashes(
                         "alignment_status": "PASS",
                         "pronunciation_status": "PASS",
                         "prosody_status": "PASS",
+                        "fluency_status": "PASS",
+                        "longest_internal_silence_sec": 0.28,
                         "term_checks": [],
                     }
                 ],
@@ -2505,16 +2511,19 @@ def test_voice_validation_verifies_v6_multi_character_routing_and_hashes(
         "profile_sha256": hashlib.sha256(profiles[0].read_bytes()).hexdigest(),
         "speaker_routing_status": "PASS",
         "display_text": "故事開始。",
+        "spoken_text": "故事開始。",
         "start_sec": 0.0,
         "speech_end_sec": 1.0,
         "alignment_status": "PASS",
         "pronunciation_status": "PASS",
         "prosody_status": "PASS",
+        "fluency_status": "PASS",
     }
     manifest_path = context.project_dir / "manifests" / "narration_manifest.json"
     manifest_path.parent.mkdir(parents=True)
     manifest = {
         "schema": "story_video_narration_manifest_v6",
+        "run_id": context.run_id,
         "provider": "local_qwen",
         "engine": "Qwen3-TTS via MLX-Audio",
         "language": "zh-TW",
@@ -2529,6 +2538,8 @@ def test_voice_validation_verifies_v6_multi_character_routing_and_hashes(
         "pronunciation_status": "PASS",
         "alignment_status": "PASS",
         "prosody_status": "PASS",
+        "fluency_status": "PASS",
+        "spoken_text_normalization": "bounded_ellipsis_v1",
         "voice_segmentation": "sentence_chunks_v1",
         "story_mode": "creative",
         "speaker_routing_status": "PASS",
@@ -2562,6 +2573,110 @@ def test_voice_validation_verifies_v6_multi_character_routing_and_hashes(
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     assert validate_phase(context).ok is True
+
+    pronunciation_payload = json.loads(pronunciation.read_text(encoding="utf-8"))
+    pronunciation_payload["acoustic_evidence"][0][
+        "longest_internal_silence_sec"
+    ] = 2.38
+    pronunciation.write_text(json.dumps(pronunciation_payload), encoding="utf-8")
+    too_slow = validate_phase(context)
+    assert too_slow.ok is False
+    assert (
+        "local Qwen multi-character fluency evidence is not PASS"
+        in too_slow.violations
+    )
+    pronunciation_payload["acoustic_evidence"][0][
+        "longest_internal_silence_sec"
+    ] = 0.28
+    pronunciation.write_text(json.dumps(pronunciation_payload), encoding="utf-8")
+
+    pronunciation_payload["acoustic_evidence"][0]["shot_id"] = "STALE__C01"
+    pronunciation.write_text(json.dumps(pronunciation_payload), encoding="utf-8")
+    stale_chunk = validate_phase(context)
+    assert stale_chunk.ok is False
+    assert (
+        "local Qwen acoustic evidence voice chunk coverage mismatch"
+        in stale_chunk.violations
+    )
+    pronunciation_payload["acoustic_evidence"][0]["shot_id"] = "U001__C01"
+    pronunciation_payload["run_id"] = "stale-run"
+    pronunciation.write_text(json.dumps(pronunciation_payload), encoding="utf-8")
+    stale_run = validate_phase(context)
+    assert stale_run.ok is False
+    assert (
+        "local Qwen multi-character pronunciation QC run_id mismatch"
+        in stale_run.violations
+    )
+    pronunciation_payload["run_id"] = context.run_id
+    pronunciation.write_text(json.dumps(pronunciation_payload), encoding="utf-8")
+
+    for field in (
+        "alignment_status",
+        "pronunciation_status",
+        "prosody_status",
+    ):
+        pronunciation_payload["acoustic_evidence"][0][field] = "FAIL"
+        pronunciation.write_text(json.dumps(pronunciation_payload), encoding="utf-8")
+        failed_acoustic_status = validate_phase(context)
+        assert failed_acoustic_status.ok is False
+        assert (
+            "local Qwen acoustic evidence statuses are not PASS"
+            in failed_acoustic_status.violations
+        )
+        pronunciation_payload["acoustic_evidence"][0][field] = "PASS"
+    pronunciation.write_text(json.dumps(pronunciation_payload), encoding="utf-8")
+
+    pronunciation_payload["acoustic_evidence"][0][
+        "longest_internal_silence_sec"
+    ] = "not-measured"
+    pronunciation.write_text(json.dumps(pronunciation_payload), encoding="utf-8")
+    malformed = validate_phase(context)
+    assert malformed.ok is False
+    pronunciation_payload["acoustic_evidence"][0][
+        "longest_internal_silence_sec"
+    ] = 0.28
+    pronunciation.write_text(json.dumps(pronunciation_payload), encoding="utf-8")
+
+    pronunciation_payload["acoustic_evidence"] = [False]
+    pronunciation.write_text(json.dumps(pronunciation_payload), encoding="utf-8")
+    malformed_row = validate_phase(context)
+    assert malformed_row.ok is False
+    assert (
+        "local Qwen multi-character fluency evidence is malformed"
+        in malformed_row.violations
+    )
+    pronunciation_payload["acoustic_evidence"] = [
+        {
+            "shot_id": "U001__C01",
+            "alignment_status": "PASS",
+            "pronunciation_status": "PASS",
+            "prosody_status": "PASS",
+            "fluency_status": "PASS",
+            "longest_internal_silence_sec": False,
+            "term_checks": [],
+        }
+    ]
+    pronunciation.write_text(json.dumps(pronunciation_payload), encoding="utf-8")
+    boolean_duration = validate_phase(context)
+    assert boolean_duration.ok is False
+    pronunciation_payload["acoustic_evidence"][0][
+        "longest_internal_silence_sec"
+    ] = 0.28
+    pronunciation.write_text(json.dumps(pronunciation_payload), encoding="utf-8")
+
+    manifest["outputs"][0]["segments"][0]["voice_chunks"][0][
+        "spoken_text"
+    ] = "那味道——繼續。"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    unbounded_dash = validate_phase(context)
+    assert unbounded_dash.ok is False
+    assert (
+        "multi-character voice chunk contains unbounded spoken pause"
+        in unbounded_dash.violations
+    )
+    manifest["outputs"][0]["segments"][0]["voice_chunks"][0][
+        "spoken_text"
+    ] = "故事開始。"
 
     manifest["outputs"][0]["segments"][0]["voice_chunks"][0][
         "profile_id"

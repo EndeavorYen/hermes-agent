@@ -833,6 +833,25 @@ def test_gateway_rewrites_multirole_short_video_with_visual_mode(
     assert '"visual_mode": "black_subtitle"' in result["text"]
 
 
+def test_gateway_rewrites_multirole_story_script_without_explicit_video_word(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(hooks, "_STORE", StoryVideoStateStore(tmp_path))
+
+    result = hooks.pre_gateway_dispatch(
+        event=_event(
+            "故事劇本 (NSFW)\n```至寬……你……真的在看……```\n"
+            "多角色配音：旁白用 Vivian，至寬用 simon_clean_v2，"
+            "嘉梅用 Serena，齊格用 Uncle_Fu。"
+        )
+    )
+
+    assert result is not None
+    assert result["action"] == "rewrite"
+    assert '"action": "start"' in result["text"]
+    assert '"auto_mode": true' in result["text"]
+
+
 def test_gateway_only_rewrites_continue_when_source_is_active(tmp_path, monkeypatch) -> None:
     store = StoryVideoStateStore(tmp_path)
     monkeypatch.setattr(hooks, "_STORE", store)
@@ -2786,6 +2805,103 @@ def test_transform_output_blocks_video_not_selected_by_current_render_manifest(
     assert str(stale) not in blocked
     assert "STORY_VIDEO_DELIVERY_BLOCKED" in blocked
     assert str(selected) in allowed
+
+
+def test_transform_output_replaces_audio_sidecars_with_one_selected_mp4(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    context = store.create_or_load(
+        source_key="gateway:thread-1",
+        session_id="session-1",
+        call=hooks.OperatorCall(action="start", topic="成人對話"),
+        original_request="故事劇本 (NSFW)，多角色配音",
+    )
+    renders = context.project_dir / "renders"
+    renders.mkdir(parents=True)
+    selected = renders / "final.mp4"
+    mp3 = renders / "intermediate.mp3"
+    wav = renders / "intermediate.wav"
+    selected.write_bytes(b"video")
+    mp3.write_bytes(b"audio")
+    wav.write_bytes(b"audio")
+    (context.project_dir / "render_manifest.json").write_text(
+        json.dumps({"output": {"path": "renders/final.mp4"}}),
+        encoding="utf-8",
+    )
+    store.update(context, phase="complete", status="complete")
+
+    result = hooks.transform_llm_output(
+        response_text=(
+            f"完成：[MP3]({mp3}) [WAV]({wav})\n"
+            f"MEDIA:{selected}\nMEDIA:{selected}\naudio/also-final.mp3"
+        ),
+        session_id="session-1",
+    )
+
+    assert str(mp3) not in result
+    assert str(wav) not in result
+    assert "also-final.mp3" not in result
+    assert result.count(f"MEDIA:{selected}") == 1
+
+
+def test_transform_output_blocks_non_mp4_render_manifest_selection(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    context = store.create_or_load(
+        source_key="gateway:thread-1",
+        session_id="session-1",
+        call=hooks.OperatorCall(action="start", topic="多角色故事"),
+        original_request="故事腳本，多角色聲線安排",
+    )
+    selected = context.project_dir / "audio" / "final.mp3"
+    selected.parent.mkdir(parents=True)
+    selected.write_bytes(b"audio")
+    (context.project_dir / "render_manifest.json").write_text(
+        json.dumps({"output": {"path": "audio/final.mp3"}}),
+        encoding="utf-8",
+    )
+    store.update(context, phase="complete", status="complete")
+
+    result = hooks.transform_llm_output(
+        response_text=f"完成：MEDIA:{selected}",
+        session_id="session-1",
+    )
+
+    assert "STORY_VIDEO_DELIVERY_BLOCKED" in result
+    assert "MEDIA:" not in result
+
+
+def test_transform_output_supplies_selected_mp4_when_final_reply_has_no_path(
+    tmp_path, monkeypatch
+) -> None:
+    store = StoryVideoStateStore(tmp_path)
+    monkeypatch.setattr(hooks, "_STORE", store)
+    context = store.create_or_load(
+        source_key="gateway:thread-1",
+        session_id="session-1",
+        call=hooks.OperatorCall(action="start", topic="多角色故事"),
+        original_request="故事腳本，多角色聲線安排",
+    )
+    selected = context.project_dir / "video" / "final.mp4"
+    selected.parent.mkdir(parents=True)
+    selected.write_bytes(b"video")
+    (context.project_dir / "render_manifest.json").write_text(
+        json.dumps({"output": {"path": "video/final.mp4"}}),
+        encoding="utf-8",
+    )
+    store.update(context, phase="complete", status="complete")
+
+    result = hooks.transform_llm_output(
+        response_text="已完成，相關檔案在 audio/final.mp3。",
+        session_id="session-1",
+    )
+
+    assert result.count(f"MEDIA:{selected}") == 1
+    assert "mp3" not in result.casefold()
 
 
 def test_transform_output_blocks_same_project_alias_with_selected_render_content(

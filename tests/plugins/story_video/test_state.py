@@ -30,6 +30,42 @@ def test_parse_explicit_black_subtitle_mode_wins() -> None:
     assert call.visual_mode == "black_subtitle"
 
 
+def test_multirole_story_script_defaults_to_video_production(tmp_path) -> None:
+    text = (
+        "故事劇本 (NSFW)\n```至寬……你……真的在看……```\n"
+        "多角色配音：旁白用 Vivian，至寬用 simon_clean_v2，"
+        "嘉梅用 Serena，齊格用 Uncle_Fu。"
+    )
+
+    call = parse_operator_call(text)
+
+    assert call is not None
+    assert call.action == "start"
+    assert call.auto_mode is True
+    assert call.visual_mode == "auto"
+
+    context = StoryVideoStateStore(tmp_path).create_or_load(
+        source_key="slack:thread",
+        session_id="session-1",
+        call=call,
+        original_request=text,
+    )
+    assert context.visual_mode == "black_subtitle"
+
+
+def test_multirole_story_text_accepts_natural_voice_mapping_words() -> None:
+    text = (
+        "故事腳本：很久以前，有三位旅人在山中相遇。\n"
+        "角色聲線安排：旁白＝溫暖女聲；旅人甲＝沉穩男聲；旅人乙＝明亮女聲。"
+    )
+
+    call = parse_operator_call(text)
+
+    assert call is not None
+    assert call.action == "start"
+    assert call.auto_mode is True
+
+
 def test_auto_adult_video_fails_closed_without_image_scope(tmp_path) -> None:
     store = StoryVideoStateStore(tmp_path)
     text = "故事影片：成人夜班故事。NSFW，全自動完整製作並出片。"

@@ -1839,8 +1839,15 @@ def transform_llm_output(
     return f"{text}\n\n{next_line}"
 
 
-_VIDEO_PATH_RE = re.compile(
-    r"(?:MEDIA:)?((?:/|~/)[^\s`\"'<>]+\.(?:mp4|mov|m4v|webm))",
+_ABSOLUTE_DELIVERABLE_PATH_RE = re.compile(
+    r"(?:MEDIA:)?((?:/|~/)[^\s`\"'<>]+\."
+    r"(?:mp4|mov|m4v|webm|mp3|wav|m4a|aac|flac|ogg|opus|srt|vtt|json|pdf))",
+    re.IGNORECASE,
+)
+_DELIVERABLE_PATH_RE = re.compile(
+    r"(?:MEDIA:)?("
+    r"(?:(?:/|~/|\.\.?/|[A-Za-z0-9_.-]+/)[^\s`\"'<>()[\]]*|[A-Za-z0-9_.-]+)"
+    r"\.(?:mp4|mov|m4v|webm|mp3|wav|m4a|aac|flac|ogg|opus|srt|vtt|json|pdf))",
     re.IGNORECASE,
 )
 
@@ -1864,14 +1871,51 @@ def _selected_render_path(context: StoryVideoRunContext) -> Path | None:
 
 
 def _guard_render_delivery(text: str, context: StoryVideoRunContext) -> str:
-    matches = list(_VIDEO_PATH_RE.finditer(text))
-    if not matches:
-        return text
+    matcher = (
+        _DELIVERABLE_PATH_RE
+        if context.phase == "complete"
+        else _ABSOLUTE_DELIVERABLE_PATH_RE
+    )
+    matches = list(matcher.finditer(text))
     selected = _selected_render_path(context) if context.phase == "complete" else None
-    referenced = {Path(match.group(1)).expanduser().resolve() for match in matches}
+    if context.phase == "complete" and (
+        selected is None
+        or selected.suffix.casefold() != ".mp4"
+        or not selected.is_file()
+    ):
+        return "\n".join(
+            [
+                "STORY_VIDEO_DELIVERY_BLOCKED",
+                "狀態：目前 render manifest 沒有可交付的最終 MP4。",
+                "風險：完成狀態與最終影片證據不一致。",
+            ]
+        )
+    if not matches:
+        if selected is not None and selected.is_file():
+            return "\n".join(
+                [
+                    "故事影片已完成，僅交付目前通過 QC 的最終 MP4。",
+                    f"MEDIA:{selected}",
+                ]
+            )
+        return text
+    referenced = set()
+    for match in matches:
+        path = Path(match.group(1)).expanduser()
+        if not path.is_absolute():
+            path = context.project_dir / path
+        referenced.add(path.resolve())
     if selected is not None and selected.is_file():
-        if referenced == {selected}:
+        selected_directive = f"MEDIA:{selected}"
+        if referenced == {selected} and text.count(selected_directive) == 1:
             return text
+        if selected in referenced or any(path.suffix.lower() != ".mp4" for path in referenced):
+            return "\n".join(
+                [
+                    "故事影片已完成，僅交付目前通過 QC 的最終 MP4。",
+                    selected_directive,
+                ]
+            )
     return "\n".join(
         [
             "STORY_VIDEO_DELIVERY_BLOCKED",

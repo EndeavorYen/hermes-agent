@@ -186,7 +186,7 @@ def test_black_render_input_uses_project_local_black_frame_and_voice_cues(tmp_pa
     assert shot["subtitle_timing_source"] == "measured_voice_chunks"
     assert shot["subtitle_position"] == "center"
     assert render_input["subtitle"]["font_size"] == 72
-    assert render_input["subtitle"]["max_chars_per_line"] == 22
+    assert render_input["subtitle"]["max_chars_per_line"] == 24
     assert render_input["subtitle"]["max_lines"] == 3
     assert render_input["subtitle"]["position"] == "center"
     assert render_input["subtitle"]["center_y_ratio"] == 0.55
@@ -240,6 +240,51 @@ def test_black_subtitle_prefers_action_without_changing_spoken_text(
     assert cue["visual_text"] == "小美（走到小王面前）\n「出發吧！」"
     assert cue["text"] == "出發吧！"
     assert cue["action"] == "走到小王面前"
+
+
+def test_black_subtitle_localizes_non_chinese_direction_with_emotion(
+    tmp_path,
+) -> None:
+    _store, context = _black_context(tmp_path)
+    _write_narration(context)
+    manifest_path = context.project_dir / "manifests" / "narration_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    character = manifest["outputs"][0]["segments"][0]["voice_chunks"][1]
+    character["action"] = "breathy and broken delivery"
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+    _module().prepare_black_subtitle_render(context)
+
+    render_input = json.loads(
+        (context.project_dir / "render_input.json").read_text(encoding="utf-8")
+    )
+    cue = render_input["scenes"][0]["shots"][0]["subtitle_cues"][1]
+    assert cue["visual_text"] == "小美（開心）\n「出發吧！」"
+    assert cue["action"] == "breathy and broken delivery"
+
+
+def test_black_subtitle_bounds_mixed_language_action_and_unknown_emotion() -> None:
+    module = _module()
+
+    mixed = module._visual_subtitle_text(
+        "你好。",
+        speaker_id="xiaomei",
+        display_name="小美",
+        emotion="tension",
+        action="very long breathy delivery 然後 slowly walks forward",
+        is_narrator=False,
+    )
+    unknown = module._visual_subtitle_text(
+        "你好。",
+        speaker_id="xiaomei",
+        display_name="小美",
+        emotion="uncertain_custom_emotion",
+        action="",
+        is_narrator=False,
+    )
+
+    assert mixed == "小美（緊張）\n「你好。」"
+    assert unknown == "小美（自然）\n「你好。」"
 
 
 def test_black_subtitle_uses_cast_role_for_nonstandard_narrator_id(tmp_path) -> None:

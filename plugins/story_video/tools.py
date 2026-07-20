@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -67,6 +68,16 @@ def _nonempty(path: Path) -> bool:
         return path.is_file() and path.stat().st_size > 1
     except OSError:
         return False
+
+
+def _bounded_number(value: Any, *, minimum: float, maximum: float) -> bool:
+    if isinstance(value, bool):
+        return False
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(number) and minimum <= number <= maximum
 
 
 def _sha256(path: Path) -> str:
@@ -753,6 +764,21 @@ def _validate_voice(context: StoryVideoRunContext) -> PhaseProof:
         profile_path: Path | None = None
         cast_speakers: dict[str, dict[str, Any]] = {}
         if cast_voice_contract:
+            if str(manifest.get("run_id") or "") != context.run_id:
+                violations.append(
+                    "local Qwen multi-character narration run_id mismatch"
+                )
+            if (
+                str(manifest.get("spoken_text_normalization") or "")
+                != "bounded_ellipsis_v1"
+            ):
+                violations.append(
+                    "local Qwen multi-character spoken text lacks bounded ellipsis normalization"
+                )
+            if str(manifest.get("fluency_status") or "").upper() != "PASS":
+                violations.append(
+                    "local Qwen multi-character narration fluency is not PASS"
+                )
             binding_value = str(manifest.get("voice_cast_binding") or "").strip()
             binding_path = Path(binding_value) if binding_value else None
             if binding_path is None:
@@ -950,6 +976,84 @@ def _validate_voice(context: StoryVideoRunContext) -> PhaseProof:
                 if not isinstance(evidence, list) or not evidence:
                     missing.append("local Qwen acoustic pronunciation evidence")
                 elif qc_schema == "story_video_pronunciation_qc_v3":
+                    if cast_voice_contract and str(
+                        pronunciation_report.get("run_id") or ""
+                    ) != context.run_id:
+                        violations.append(
+                            "local Qwen multi-character pronunciation QC run_id mismatch"
+                        )
+                    if cast_voice_contract and (
+                        str(pronunciation_report.get("fluency_contract") or "")
+                        != "bounded_internal_silence_v1"
+                        or not _bounded_number(
+                            pronunciation_report.get("max_internal_silence_sec"),
+                            minimum=0.9,
+                            maximum=0.9,
+                        )
+                    ):
+                        violations.append(
+                            "local Qwen multi-character fluency QC contract is missing"
+                        )
+                    if cast_voice_contract and any(
+                        not isinstance(row, dict) for row in evidence
+                    ):
+                        violations.append(
+                            "local Qwen multi-character fluency evidence is malformed"
+                        )
+                    if cast_voice_contract and any(
+                        any(
+                            str(row.get(status_field) or "").upper() != "PASS"
+                            for status_field in (
+                                "alignment_status",
+                                "pronunciation_status",
+                                "prosody_status",
+                                "fluency_status",
+                            )
+                        )
+                        for row in evidence
+                        if isinstance(row, dict)
+                    ):
+                        violations.append(
+                            "local Qwen acoustic evidence statuses are not PASS"
+                        )
+                    if cast_voice_contract:
+                        expected_chunk_ids = {
+                            str(chunk.get("voice_chunk_id") or "").strip()
+                            for output in manifest.get("outputs") or []
+                            if isinstance(output, dict)
+                            for segment in output.get("segments") or []
+                            if isinstance(segment, dict)
+                            for chunk in segment.get("voice_chunks") or []
+                            if isinstance(chunk, dict)
+                            and str(chunk.get("voice_chunk_id") or "").strip()
+                        }
+                        evidence_chunk_ids = {
+                            str(row.get("shot_id") or "").strip()
+                            for row in evidence
+                            if isinstance(row, dict)
+                            and str(row.get("shot_id") or "").strip()
+                        }
+                        if (
+                            not expected_chunk_ids
+                            or evidence_chunk_ids != expected_chunk_ids
+                            or len(evidence) != len(expected_chunk_ids)
+                        ):
+                            violations.append(
+                                "local Qwen acoustic evidence voice chunk coverage mismatch"
+                            )
+                    if cast_voice_contract and any(
+                        str(row.get("fluency_status") or "").upper() != "PASS"
+                        or not _bounded_number(
+                            row.get("longest_internal_silence_sec"),
+                            minimum=0.0,
+                            maximum=0.9,
+                        )
+                        for row in evidence
+                        if isinstance(row, dict)
+                    ):
+                        violations.append(
+                            "local Qwen multi-character fluency evidence is not PASS"
+                        )
                     term_checks = [
                         check
                         for row in evidence
@@ -1096,6 +1200,28 @@ def _validate_voice(context: StoryVideoRunContext) -> PhaseProof:
                                             violations.append(
                                                 f"audio narration segment[{index}].segments[{segment_index}].voice_chunks[{chunk_index}] "
                                                 f"{gate.removesuffix('_status')} is not PASS"
+                                            )
+                                    if cast_voice_contract:
+                                        if (
+                                            str(chunk.get("fluency_status") or "").upper()
+                                            != "PASS"
+                                        ):
+                                            violations.append(
+                                                f"audio narration segment[{index}].segments[{segment_index}].voice_chunks[{chunk_index}] fluency is not PASS"
+                                            )
+                                        spoken_text = str(
+                                            chunk.get("spoken_text") or ""
+                                        )
+                                        if not spoken_text:
+                                            missing.append(
+                                                f"audio narration segment[{index}].segments[{segment_index}].voice_chunks[{chunk_index}].spoken_text"
+                                            )
+                                        elif re.search(
+                                            r"(?:\.{3,}|…{2,}|⋯{2,}|—{1,2})",
+                                            spoken_text,
+                                        ):
+                                            violations.append(
+                                                "multi-character voice chunk contains unbounded spoken pause"
                                             )
             audio = str(output.get("audio") or "").strip()
             if not audio:
