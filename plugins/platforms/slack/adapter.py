@@ -4378,6 +4378,44 @@ async def _standalone_send(
                 exc_info=True,
             )
 
+    if media_files:
+        if not check_slack_requirements():
+            return {"error": "Slack send failed: slack-sdk is not installed"}
+        file_uploads = [
+            {"file": file_path, "filename": os.path.basename(file_path)}
+            for file_path, _is_voice in media_files
+        ]
+        client = AsyncWebClient(token=token)
+        _apply_slack_proxy(client, _resolve_slack_proxy_url())
+        uploaded_files = 0
+        for index in range(0, len(file_uploads), 10):
+            batch = file_uploads[index:index + 10]
+            try:
+                await client.files_upload_v2(
+                    channel=chat_id,
+                    file_uploads=batch,
+                    initial_comment=formatted if index == 0 else "",
+                    thread_ts=thread_id,
+                )
+                uploaded_files += len(batch)
+            except Exception as e:
+                if uploaded_files:
+                    return {
+                        "success": True,
+                        "partial": True,
+                        "platform": "slack",
+                        "chat_id": chat_id,
+                        "uploaded_files": uploaded_files,
+                        "warnings": ["Slack file upload stopped after a partial batch"],
+                    }
+                return {"error": f"Slack file upload failed: {e}"}
+        return {
+            "success": True,
+            "platform": "slack",
+            "chat_id": chat_id,
+            "uploaded_files": uploaded_files,
+        }
+
     try:
         import aiohttp
     except ImportError:
