@@ -19,14 +19,16 @@ three_quarter_right|profile_left|profile_right|back","elevation":"low|eye_level|
 three_quarter|full_body"},"limbs":[{"limb":"subject_left_arm|subject_right_arm|subject_left_leg|
 subject_right_leg","direction":"up|down|left|right|diagonal_up_left|diagonal_up_right|
 diagonal_down_left|diagonal_down_right|forward|back","bend":"straight|slight|bent|right_angle|
-folded","visibility":"full|partial|out_of_frame","foreground":false}],"crop":{"top":"none|
+folded","visibility":"full|partial|out_of_frame","foreground":false,
+"frame_side":"left|center|right","prominence":"dominant|clear|secondary"}],"crop":{"top":"none|
 clips_head|clips_arm","bottom":"none|clips_torso|clips_waist|clips_leg","left":"none|
 clips_head|clips_arm|clips_shoulder|clips_torso|clips_leg","right":"none|clips_head|clips_arm|
 clips_shoulder|clips_torso|clips_leg"}}. Use only listed enum values and numbers."""
 
-POSE_GEOMETRY_SCHEMA = "pose_geometry_v3"
+POSE_GEOMETRY_SCHEMA = "pose_geometry_v4"
 POSE_INSTRUCTION_MAX_CHARS = 680
 POSE_MAX_LIMBS = 6
+POSE_ANALYZER_MAX_ATTEMPTS = 2
 
 _ENUMS = {
     "lean_direction": {"none", "left", "right", "forward", "back"},
@@ -41,6 +43,8 @@ _ENUMS = {
     "direction": {"up", "down", "left", "right", "diagonal_up_left", "diagonal_up_right", "diagonal_down_left", "diagonal_down_right", "forward", "back"},
     "bend": {"straight", "slight", "bent", "right_angle", "folded"},
     "visibility": {"full", "partial", "out_of_frame"},
+    "frame_side": {"left", "center", "right"},
+    "prominence": {"dominant", "clear", "secondary"},
 }
 _CROP_ENUMS = {
     "top": {"none", "clips_head", "clips_arm"},
@@ -91,14 +95,22 @@ def extract_pose_transfer_instruction(
         return cached
 
     analyze = analyzer or _default_analyzer
-    try:
-        raw = analyze(str(path.resolve()), POSE_GEOMETRY_PROMPT)
-    except Exception as exc:  # noqa: BLE001 - provider errors are evidence, not crashes
-        return _failure("pose_geometry_analyzer_failed", detail=str(exc))
-    geometry = _parse_geometry(raw)
-    instruction = _geometry_instruction(geometry)
-    if not instruction:
-        return _failure("pose_geometry_unavailable")
+    raw: Any = None
+    instruction = ""
+    analyzer_attempts = 0
+    for analyzer_attempts in range(1, POSE_ANALYZER_MAX_ATTEMPTS + 1):
+        try:
+            raw = analyze(str(path.resolve()), POSE_GEOMETRY_PROMPT)
+        except Exception as exc:  # noqa: BLE001 - provider errors are evidence, not crashes
+            if analyzer_attempts < POSE_ANALYZER_MAX_ATTEMPTS and _is_retriable_analysis_failure(exc):
+                continue
+            return _failure("pose_geometry_analyzer_failed", detail=str(exc))
+        geometry = _parse_geometry(raw)
+        instruction = _geometry_instruction(geometry)
+        if instruction:
+            break
+        if analyzer_attempts >= POSE_ANALYZER_MAX_ATTEMPTS or not _is_retriable_analysis_failure(raw):
+            return _failure("pose_geometry_unavailable")
     result = {
         "success": True,
         "instruction": instruction,
@@ -109,6 +121,7 @@ def extract_pose_transfer_instruction(
         "prompt_hash": prompt_hash,
         "analyzer": provenance,
         "cache_policy": "content_addressed" if cache_allowed else "disabled_for_dynamic_route",
+        "analyzer_attempts": analyzer_attempts,
     }
     if cache_allowed:
         cache_root.mkdir(parents=True, exist_ok=True)
@@ -206,9 +219,15 @@ def _geometry_instruction(geometry: dict[str, Any]) -> str:
         parts.append(f"head tilt {tilt or 'none'} {tilt_degrees} degrees, chin {chin or 'level'}")
 
     limbs = geometry.get("limbs")
+    visible_limb_parts: list[str] = []
+    has_raised_arm = False
     if isinstance(limbs, list):
         seen_limbs: set[str] = set()
-        for item in limbs[:POSE_MAX_LIMBS]:
+        ordered_limbs = sorted(
+            limbs[:POSE_MAX_LIMBS],
+            key=lambda item: _limb_priority(item) if isinstance(item, dict) else 99,
+        )
+        for item in ordered_limbs:
             if not isinstance(item, dict):
                 continue
             limb = _enum(item.get("limb"), "limb")
@@ -218,11 +237,24 @@ def _geometry_instruction(geometry: dict[str, Any]) -> str:
             direction = _enum(item.get("direction"), "direction")
             bend = _enum(item.get("bend"), "bend")
             visibility = _enum(item.get("visibility"), "visibility")
-            details = [value.replace("_", " ") for value in (direction, bend, visibility) if value]
-            if item.get("foreground") is True:
-                details.append("foreground")
-            if details:
-                parts.append(f"{limb.replace('_', ' ')} " + ", ".join(details))
+            command = _limb_command(
+                limb=limb,
+                direction=direction,
+                bend=bend,
+                visibility=visibility,
+                foreground=item.get("foreground") is True,
+                frame_side=_enum(item.get("frame_side"), "frame_side"),
+                prominence=_enum(item.get("prominence"), "prominence"),
+            )
+            if command:
+                visible_limb_parts.append(command)
+                has_raised_arm = has_raised_arm or (
+                    limb.endswith("_arm")
+                    and direction in {"up", "diagonal_up_left", "diagonal_up_right"}
+                )
+    parts.extend(visible_limb_parts)
+    if has_raised_arm:
+        parts.append("replace the identity anchor's original arm layout; do not leave both arms down")
     crop_values = [
         f"{edge} {value.replace('_', ' ')}"
         for edge in ("top", "bottom", "left", "right")
@@ -231,9 +263,103 @@ def _geometry_instruction(geometry: dict[str, Any]) -> str:
     if crop_values:
         parts.append("crop " + ", ".join(crop_values))
     instruction = "; ".join(parts)
-    if not shot or not view or not any(part.startswith("subject ") for part in parts):
+    if not shot or not view or not visible_limb_parts:
         return ""
     return instruction[:POSE_INSTRUCTION_MAX_CHARS].rstrip(" ,;.")
+
+
+def _limb_priority(item: dict[str, Any]) -> int:
+    prominence = _enum(item.get("prominence"), "prominence")
+    visibility = _enum(item.get("visibility"), "visibility")
+    return (
+        {"dominant": 0, "clear": 1, "secondary": 2}.get(prominence, 3)
+        + (0 if item.get("foreground") is True else 2)
+        + (4 if visibility == "out_of_frame" else 0)
+    )
+
+
+def _limb_command(
+    *,
+    limb: str,
+    direction: str,
+    bend: str,
+    visibility: str,
+    foreground: bool,
+    frame_side: str,
+    prominence: str,
+) -> str:
+    label = limb.replace("_", " ")
+    raised_arm = limb.endswith("_arm") and direction in {
+        "up",
+        "diagonal_up_left",
+        "diagonal_up_right",
+    }
+    if raised_arm:
+        action = {
+            "up": f"key action: raise {label} vertically overhead",
+            "diagonal_up_left": f"key action: raise {label} diagonally up toward frame left",
+            "diagonal_up_right": f"key action: raise {label} diagonally up toward frame right",
+        }[direction]
+        if frame_side and f"frame {frame_side}" not in action:
+            action += f" on frame {frame_side}"
+        details = [action]
+        if bend:
+            details.append(
+                {
+                    "straight": "elbow nearly straight",
+                    "slight": "elbow only slightly bent",
+                    "bent": "elbow visibly bent",
+                    "right_angle": "elbow at a right angle",
+                    "folded": "arm folded",
+                }[bend]
+            )
+        if prominence:
+            details.append(
+                {
+                    "dominant": "dominant in the foreground",
+                    "clear": "clearly readable",
+                    "secondary": "secondary in the composition",
+                }[prominence]
+            )
+        elif foreground:
+            details.append("in the foreground")
+        if visibility == "partial":
+            details.append("partially cropped")
+        elif visibility == "full":
+            details.append("fully visible")
+        return ", ".join(details)
+    details = [value.replace("_", " ") for value in (direction, bend, visibility) if value]
+    if frame_side:
+        details.append(f"frame {frame_side}")
+    if prominence:
+        details.append(prominence)
+    if foreground:
+        details.append("foreground")
+    return f"{label} " + ", ".join(details) if details else ""
+
+
+def _is_retriable_analysis_failure(value: Any) -> bool:
+    if isinstance(value, BaseException):
+        text = f"{type(value).__name__}: {value}"
+    elif isinstance(value, dict):
+        text = " ".join(
+            str(value.get(key) or "")
+            for key in ("error", "message", "detail", "error_type")
+        )
+    else:
+        text = str(value or "")
+    lowered = text.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "connection error",
+            "client has been closed",
+            "event loop is closed",
+            "timeout",
+            "timed out",
+            "temporarily unavailable",
+        )
+    )
 
 
 def _enum(value: Any, key: str) -> str:
