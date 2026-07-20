@@ -24,7 +24,7 @@ from plugins.story_video.schemas import (
 from plugins.story_video.sequence_quality import write_sequence_quality_report
 from plugins.story_video.shot_contract import shot_contract_hash
 from plugins.story_video.state import StoryVideoStateStore, parse_operator_call
-from plugins.story_video.tone_map import build_tone_catalog
+from plugins.story_video.tone_map import build_tone_catalog, resolve_tone_application
 from plugins.story_video.tools import (
     _next_phase,
     _project_content_rating,
@@ -223,28 +223,18 @@ def _write_valid_v7_tone_voice_project(tmp_path):
     ) -> dict:
         profile = profiles[speaker_id]
         engine = str(profile["engine"])
-        tone_id = str(tone["tone_id"])
-        adapter = ledger["tone_catalog"]["tones"][tone_id]["adapters"][engine]
-        template_id = str(adapter.get("template_id") or "")
-        instruct = str(adapter.get("instruct") or "")
-        instruction_fragments = [
-            str(
-                ledger["tone_catalog"]["modifiers"][modifier_id]["adapters"][
-                    engine
-                ].get("instruction_fragment")
-                or ""
-            ).strip()
-            for modifier_id in tone.get("modifiers") or []
-            if str(
-                ledger["tone_catalog"]["modifiers"][modifier_id]["adapters"][
-                    engine
-                ].get("instruction_fragment")
-                or ""
-            ).strip()
-        ]
-        if instruction_fragments:
-            instruct = "；".join([instruct, *instruction_fragments])
-        pause = float(adapter.get("pause_seconds") or 0.18)
+        application = resolve_tone_application(
+            engine=engine,
+            tone=tone,
+            catalog=ledger["tone_catalog"],
+            baseline={
+                "speed": 1.0,
+                "pitch_shift_semitones": 0.0,
+                "expressiveness": "natural",
+            },
+            variant=profile.get("variant") or {},
+        )
+        pause = float(application.get("pause_seconds") or 0.18)
         return {
             "voice_chunk_id": f"{utterance_id}__C01",
             "utterance_id": utterance_id,
@@ -266,30 +256,11 @@ def _write_valid_v7_tone_voice_project(tmp_path):
             "fluency_status": "PASS",
             "tone": tone,
             "tone_adapter": engine,
-            "tone_instruction_template_id": template_id,
-            "tone_application": {
-                "adapter_status": (
-                    "neutral_noop" if tone_id == "general.neutral" else "applied"
-                ),
-                "engine": engine,
-                "instruction_template_id": template_id,
-                "instruct": instruct,
-                "pause_seconds": pause if tone_id != "general.neutral" else None,
-                "applied_parameters": {
-                    "speed": float(adapter.get("speed_multiplier") or 1.0),
-                    "temperature_delta": float(adapter.get("temperature_delta") or 0.0),
-                    "pitch_shift_semitones": 0,
-                    "tone_pitch_shift_semitones": 0,
-                    "expressiveness": str(adapter.get("expressiveness") or "natural"),
-                },
-            },
-            "tone_applied_parameters": {
-                "speed": float(adapter.get("speed_multiplier") or 1.0),
-                "temperature_delta": float(adapter.get("temperature_delta") or 0.0),
-                "pitch_shift_semitones": 0,
-                "tone_pitch_shift_semitones": 0,
-                "expressiveness": str(adapter.get("expressiveness") or "natural"),
-            },
+            "tone_instruction_template_id": str(
+                application.get("instruction_template_id") or ""
+            ),
+            "tone_application": application,
+            "tone_applied_parameters": dict(application["applied_parameters"]),
             "resolved_pause_after_sec": pause,
             "pause_after_sec": pause,
             "candidate_count": 1,
@@ -378,6 +349,30 @@ def _write_valid_v7_tone_voice_project(tmp_path):
         encoding="utf-8",
     )
     return context, manifest_path, dialogue, binding
+
+
+def _resign_v7_dialogue_contract(
+    manifest_path: Path,
+    dialogue_path: Path,
+    binding_path: Path,
+) -> None:
+    binding = json.loads(binding_path.read_text(encoding="utf-8"))
+    binding["dialogue_ledger_sha256"] = hashlib.sha256(
+        dialogue_path.read_bytes()
+    ).hexdigest()
+    binding_path.write_text(
+        json.dumps(binding, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["dialogue_ledger_sha256"] = binding["dialogue_ledger_sha256"]
+    manifest["voice_cast_binding_sha256"] = hashlib.sha256(
+        binding_path.read_bytes()
+    ).hexdigest()
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
 
 def test_story_video_control_schema_exposes_voice_profile_actions() -> None:
@@ -3140,6 +3135,206 @@ def test_voice_validation_accepts_v7_selective_retry_candidate_evidence(
     proof = validate_phase(context)
 
     assert proof.ok is True, proof
+
+
+def test_voice_validation_rejects_rehashed_noncanonical_v7_catalog(tmp_path) -> None:
+    context, manifest_path, dialogue_path, binding_path = (
+        _write_valid_v7_tone_voice_project(tmp_path)
+    )
+    ledger = json.loads(dialogue_path.read_text(encoding="utf-8"))
+    ledger["tone_catalog"]["tones"]["general.warm"]["adapters"][
+        "qwen_custom_voice"
+    ]["instruct"] = "已被竄改但重新計算雜湊"
+    canonical = {
+        key: value
+        for key, value in ledger["tone_catalog"].items()
+        if key != "sha256"
+    }
+    ledger["tone_catalog"]["sha256"] = hashlib.sha256(
+        json.dumps(
+            canonical,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    dialogue_path.write_text(
+        json.dumps(ledger, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    _resign_v7_dialogue_contract(manifest_path, dialogue_path, binding_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["tone_catalog_sha256"] = ledger["tone_catalog"]["sha256"]
+    chunk = manifest["outputs"][0]["segments"][0]["voice_chunks"][1]
+    application = resolve_tone_application(
+        engine="qwen_custom_voice",
+        tone=chunk["tone"],
+        catalog=ledger["tone_catalog"],
+        baseline={"speed": 1.0, "expressiveness": "natural"},
+        variant={},
+    )
+    chunk["tone_application"] = application
+    chunk["tone_applied_parameters"] = dict(application["applied_parameters"])
+    chunk["tone_instruction_template_id"] = application[
+        "instruction_template_id"
+    ]
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert any("canonical tone catalog" in value for value in proof.violations)
+
+
+@pytest.mark.parametrize("field", ["speed", "temperature_delta"])
+def test_voice_validation_rejects_bounded_v7_application_drift(
+    tmp_path,
+    field: str,
+) -> None:
+    context, manifest_path, _dialogue, _binding = (
+        _write_valid_v7_tone_voice_project(tmp_path)
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    chunk = manifest["outputs"][0]["segments"][0]["voice_chunks"][1]
+    drifted = float(chunk["tone_applied_parameters"][field]) + 0.001
+    chunk["tone_applied_parameters"][field] = drifted
+    chunk["tone_application"]["applied_parameters"][field] = drifted
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert any("tone application does not match expected" in value for value in proof.violations)
+
+
+def test_voice_validation_rejects_neutral_v7_application_drift(tmp_path) -> None:
+    context, manifest_path, _dialogue, _binding = (
+        _write_valid_v7_tone_voice_project(tmp_path)
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    chunk = manifest["outputs"][0]["segments"][0]["voice_chunks"][0]
+    chunk["tone_application"]["pause_seconds"] = 0.18
+    chunk["tone_applied_parameters"]["speed"] = 1.01
+    chunk["tone_application"]["applied_parameters"]["speed"] = 1.01
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert any("neutral tone adapter is not a no-op" in value for value in proof.violations)
+
+
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        ["你"],
+        ["好。", "你"],
+        ["你", "你好。"],
+        ["你好。", "你好。"],
+    ],
+    ids=["missing_suffix", "reordered", "prefix_plus_full", "duplicated"],
+)
+def test_voice_validation_rejects_inexact_v7_utterance_chunk_coverage(
+    tmp_path,
+    chunks: list[str],
+) -> None:
+    context, manifest_path, _dialogue, _binding = (
+        _write_valid_v7_tone_voice_project(tmp_path)
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    rows = manifest["outputs"][0]["segments"][0]["voice_chunks"]
+    source = rows[1]
+    replacements = []
+    for index, display_text in enumerate(chunks, start=1):
+        row = json.loads(json.dumps(source, ensure_ascii=False))
+        row["voice_chunk_id"] = f"U002__C{index:02d}"
+        row["display_text"] = display_text
+        row["spoken_text"] = display_text
+        row["start_sec"] = 1.18 + (index - 1) * 0.5
+        row["speech_end_sec"] = row["start_sec"] + 0.5
+        row["scene_start_sec"] = row["start_sec"]
+        row["scene_speech_end_sec"] = row["speech_end_sec"]
+        replacements.append(row)
+    manifest["outputs"][0]["segments"][0]["voice_chunks"] = [
+        rows[0],
+        *replacements,
+    ]
+    manifest["voice_chunk_count"] = 1 + len(replacements)
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    report_path = context.project_dir / "qc/pronunciation_qc_report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    source_evidence = report["acoustic_evidence"][1]
+    report["acoustic_evidence"] = [
+        report["acoustic_evidence"][0],
+        *[
+            {**source_evidence, "shot_id": f"U002__C{index:02d}"}
+            for index in range(1, len(replacements) + 1)
+        ],
+    ]
+    report_path.write_text(
+        json.dumps(report, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert any("chunk coverage does not reproduce utterance" in value for value in proof.violations)
+
+
+@pytest.mark.parametrize("case", ["opaque_reason", "four_candidates"])
+def test_voice_validation_rejects_malformed_v7_candidate_ledger(
+    tmp_path,
+    case: str,
+) -> None:
+    context, manifest_path, _dialogue, _binding = (
+        _write_valid_v7_tone_voice_project(tmp_path)
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    chunk = manifest["outputs"][0]["segments"][0]["voice_chunks"][1]
+    if case == "opaque_reason":
+        chunk["candidate_count"] = 2
+        chunk["selected_candidate"] = 2
+        chunk["candidate_rejections"] = [
+            {"candidate_id": 1, "reasons": ["pronunciation failed"]}
+        ]
+    else:
+        chunk["candidate_count"] = 4
+        chunk["selected_candidate"] = 4
+        chunk["candidate_rejections"] = [
+            {
+                "candidate_id": candidate_id,
+                "reasons": [
+                    {
+                        "gate": "pronunciation_status",
+                        "status": "FAIL",
+                        "metrics": {},
+                    }
+                ],
+            }
+            for candidate_id in (1, 2, 3)
+        ]
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert any("tone candidate evidence is invalid" in value for value in proof.violations)
 
 
 @pytest.mark.parametrize(

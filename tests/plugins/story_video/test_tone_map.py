@@ -8,6 +8,7 @@ import pytest
 from plugins.story_video.tone_map import (
     ToneMapError,
     build_tone_catalog,
+    resolve_tone_application,
     resolve_utterance_tone,
 )
 
@@ -299,3 +300,35 @@ def test_unknown_automatic_emotion_falls_back_with_warning() -> None:
     assert tone["tone_id"] == "general.neutral"
     assert tone["resolution"] == "fallback"
     assert "mysterious_future_emotion" in tone["warning"]
+
+
+def test_expected_tone_application_is_deterministic_and_baseline_aware() -> None:
+    catalog = build_tone_catalog()
+    tone = resolve_utterance_tone(
+        emotion="curious",
+        action="猶豫地問",
+        pace="slow",
+        intensity=3,
+    )
+
+    application = resolve_tone_application(
+        engine="qwen_custom_voice",
+        tone=tone,
+        catalog=catalog,
+        baseline={"speed": 1.0, "expressiveness": "natural"},
+        variant={"speed": 1.08, "pitch_shift_semitones": 1},
+    )
+
+    assert application == resolve_tone_application(
+        engine="qwen_custom_voice",
+        tone=tone,
+        catalog=catalog,
+        baseline={"speed": 1.0, "expressiveness": "natural"},
+        variant={"speed": 1.08, "pitch_shift_semitones": 1},
+    )
+    assert application["instruction_template_id"] == (
+        "general.puzzled.qwen_custom_voice.v1"
+    )
+    assert application["instruct"].endswith("帶些猶豫，用短而自然的停頓")
+    assert application["applied_parameters"]["speed"] <= 1.1
+    assert application["applied_parameters"]["pitch_shift_semitones"] == 1

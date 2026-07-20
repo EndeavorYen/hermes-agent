@@ -292,6 +292,161 @@ def build_tone_catalog() -> dict[str, Any]:
     return {**catalog, "sha256": _canonical_sha256(catalog)}
 
 
+_EXPRESSIVENESS_TEMPERATURE_DELTA = {
+    "restrained": -0.08,
+    "natural": 0.0,
+    "lively": 0.08,
+    "dramatic": 0.15,
+}
+
+
+def _clamp(value: float, lower: float, upper: float) -> float:
+    return min(upper, max(lower, value))
+
+
+def resolve_tone_application(
+    *,
+    engine: str,
+    tone: dict[str, Any],
+    catalog: dict[str, Any],
+    baseline: dict[str, Any] | None = None,
+    variant: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Resolve the exact deterministic engine controls expected in manifest v7."""
+
+    if engine not in {"qwen_full_icl", "qwen_custom_voice"}:
+        raise ToneMapError("tone_engine_invalid", f"unsupported tone engine: {engine}")
+    if not isinstance(tone, dict) or not isinstance(catalog, dict):
+        raise ToneMapError("tone_application_invalid", "tone and catalog are required")
+    merged = {**(baseline or {}), **(variant or {})}
+    base_speed = float(merged.get("speed") or 1.0)
+    base_pitch = float(merged.get("pitch_shift_semitones") or 0.0)
+    base_expressiveness = str(merged.get("expressiveness") or "natural")
+    if base_expressiveness not in _EXPRESSIVENESS_TEMPERATURE_DELTA:
+        raise ToneMapError(
+            "tone_expressiveness_invalid",
+            f"unsupported tone expressiveness: {base_expressiveness}",
+        )
+    tone_id = str(tone.get("tone_id") or "")
+    tone_definition = (catalog.get("tones") or {}).get(tone_id)
+    intensity = tone.get("intensity")
+    modifier_ids = tone.get("modifiers")
+    if (
+        not isinstance(tone_definition, dict)
+        or isinstance(intensity, bool)
+        or not isinstance(intensity, int)
+        or intensity not in {1, 2, 3}
+        or not isinstance(modifier_ids, list)
+    ):
+        raise ToneMapError(
+            "tone_application_invalid",
+            "resolved tone cannot be adapted",
+        )
+    if tone_id == "general.neutral":
+        return {
+            "adapter_status": "neutral_noop",
+            "engine": engine,
+            "instruction_template_id": "",
+            "instruct": "",
+            "pause_seconds": None,
+            "applied_parameters": {
+                "speed": base_speed,
+                "temperature_delta": _EXPRESSIVENESS_TEMPERATURE_DELTA[
+                    base_expressiveness
+                ],
+                "pitch_shift_semitones": base_pitch,
+                "tone_pitch_shift_semitones": 0,
+                "expressiveness": base_expressiveness,
+            },
+        }
+    tone_adapter = (tone_definition.get("adapters") or {}).get(engine)
+    if not isinstance(tone_adapter, dict):
+        raise ToneMapError(
+            "tone_application_invalid",
+            f"tone {tone_id!r} has no adapter for {engine}",
+        )
+    modifier_adapters: list[dict[str, Any]] = []
+    for modifier_id in modifier_ids:
+        modifier = (catalog.get("modifiers") or {}).get(modifier_id)
+        modifier_adapter = (
+            (modifier.get("adapters") or {}).get(engine)
+            if isinstance(modifier, dict)
+            else None
+        )
+        if not isinstance(modifier_adapter, dict):
+            raise ToneMapError(
+                "tone_application_invalid",
+                f"modifier {modifier_id!r} has no adapter for {engine}",
+            )
+        modifier_adapters.append(modifier_adapter)
+    adapters = [tone_adapter, *modifier_adapters]
+    intensity_scale = {1: 0.75, 2: 1.0, 3: 1.25}[intensity]
+    speed_offset = sum(
+        float(adapter.get("speed_multiplier", 1.0)) - 1.0
+        for adapter in adapters
+    )
+    tone_temperature_delta = sum(
+        float(adapter.get("temperature_delta", 0.0)) for adapter in adapters
+    ) * intensity_scale
+    selected_expressiveness = base_expressiveness
+    if not (engine == "qwen_full_icl" and tone_id == "adult.breathless"):
+        for adapter in adapters:
+            if adapter.get("expressiveness"):
+                selected_expressiveness = str(adapter["expressiveness"])
+    if selected_expressiveness not in _EXPRESSIVENESS_TEMPERATURE_DELTA:
+        raise ToneMapError(
+            "tone_expressiveness_invalid",
+            f"unsupported tone expressiveness: {selected_expressiveness}",
+        )
+    temperature_delta = _clamp(
+        _EXPRESSIVENESS_TEMPERATURE_DELTA[selected_expressiveness]
+        + tone_temperature_delta,
+        -0.1,
+        0.1,
+    )
+    pauses = [
+        float(adapter["pause_seconds"])
+        for adapter in adapters
+        if "pause_seconds" in adapter
+    ]
+    pause_seconds = _clamp(sum(pauses) / len(pauses), 0.08, 0.35)
+    fragments = [
+        str(adapter.get("instruction_fragment") or "").strip()
+        for adapter in modifier_adapters
+        if str(adapter.get("instruction_fragment") or "").strip()
+    ]
+    instruct = str(tone_adapter.get("instruct") or "").strip()
+    if fragments:
+        instruct = "；".join([instruct, *fragments])
+    template_id = str(tone_adapter.get("template_id") or "")
+    if engine == "qwen_custom_voice" and (not instruct or not template_id):
+        raise ToneMapError(
+            "tone_application_invalid",
+            f"CustomVoice tone adapter is incomplete: {tone_id}",
+        )
+    return {
+        "adapter_status": "applied",
+        "engine": engine,
+        "instruction_template_id": template_id,
+        "instruct": instruct if engine == "qwen_custom_voice" else "",
+        "pause_seconds": round(pause_seconds, 4),
+        "applied_parameters": {
+            "speed": round(
+                _clamp(
+                    base_speed * (1.0 + speed_offset * intensity_scale),
+                    0.9,
+                    1.1,
+                ),
+                6,
+            ),
+            "temperature_delta": round(temperature_delta, 6),
+            "pitch_shift_semitones": base_pitch,
+            "tone_pitch_shift_semitones": 0,
+            "expressiveness": selected_expressiveness,
+        },
+    }
+
+
 def _first_action_tone(action: str, *, allow_adult: bool) -> str:
     for tone_id, keywords in ACTION_TO_TONE:
         if tone_id.startswith("adult.") and not allow_adult:
