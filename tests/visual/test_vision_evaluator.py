@@ -121,3 +121,80 @@ def test_candidate_vision_observation_records_inline_provider_failure():
     assert observation["evidence"]["source"] == "inline_vision_unavailable"
     assert observation["vision_failure"]["failure_class"] == "quota_exceeded"
     assert observation["vision_failure"]["provider_message_code"] == "personal-team-blocked:spending-limit"
+
+
+def test_candidate_vision_observation_retries_one_transient_inline_failure():
+    calls = []
+
+    def analyzer(_candidate):
+        calls.append(len(calls) + 1)
+        if len(calls) == 1:
+            return {
+                "success": False,
+                "error": "Our servers are currently overloaded. Please try again later.",
+            }
+        return {
+            "analysis": {
+                "character_identity_adherence": 0.9,
+                "pose_composition_adherence": 0.88,
+                "composition": 0.86,
+                "visual_appeal": 0.84,
+                "confidence": 0.9,
+                "artifact_defects": [],
+            }
+        }
+
+    observation = build_candidate_vision_observation(
+        {"kind": "image", "artifact_path": "/tmp/current.png"},
+        fallback_observation={"confidence": 0.2, "artifact_defects": []},
+        inline_enabled=True,
+        analyzer=analyzer,
+        transient_retry_delay_seconds=0,
+    )
+
+    assert calls == [1, 2]
+    assert observation["evidence"]["source"] == "inline_vision_judge"
+    assert observation["pose_composition_adherence"] == 0.88
+    assert "vision_failure" not in observation
+
+
+def test_candidate_vision_observation_does_not_retry_rate_limit():
+    calls = []
+
+    def analyzer(_candidate):
+        calls.append(len(calls) + 1)
+        return {"success": False, "status_code": 429, "error": "rate limit"}
+
+    observation = build_candidate_vision_observation(
+        {"kind": "image", "artifact_path": "/tmp/current.png"},
+        fallback_observation={"confidence": 0.2, "artifact_defects": []},
+        inline_enabled=True,
+        analyzer=analyzer,
+        transient_retry_delay_seconds=0,
+    )
+
+    assert calls == [1]
+    assert observation["vision_failure"]["failure_class"] == "rate_limited"
+
+
+def test_candidate_vision_observation_stops_after_two_overload_attempts():
+    calls = []
+
+    def analyzer(_candidate):
+        calls.append(len(calls) + 1)
+        return {
+            "success": False,
+            "error": "Our servers are currently overloaded. Please try again later.",
+        }
+
+    observation = build_candidate_vision_observation(
+        {"kind": "image", "artifact_path": "/tmp/current.png"},
+        fallback_observation={"confidence": 0.2, "artifact_defects": []},
+        inline_enabled=True,
+        analyzer=analyzer,
+        transient_retry_delay_seconds=0,
+    )
+
+    assert calls == [1, 2]
+    assert observation["evidence"]["source"] == "inline_vision_unavailable"
+    assert observation["vision_failure"]["failure_class"] == "provider_unavailable"

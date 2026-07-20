@@ -11,6 +11,7 @@ make_image tool several turns earlier must not leak onto a later
 text-only reply, even when the path-based dedup set fails to capture it.
 """
 
+import json
 import os
 import re
 
@@ -361,6 +362,48 @@ caption
         tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
 
         assert tags == ["MEDIA:/tmp/current.png", "MEDIA:/tmp/current.mp4"]
+        assert voice is False
+
+    def test_gateway_auto_append_partial_visual_package_qualified_media(self):
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {"role": "user", "content": "Make four candidates"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_visual", "function": {"name": "visual_package_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_visual",
+                "content": json.dumps(
+                    {
+                        "success": True,
+                        "package_status": "partial",
+                        "error_type": "candidate_option_shortfall",
+                        "visual_request_id": "vrq_partial",
+                        "images": ["/tmp/qualified.png"],
+                        "videos": [],
+                        "delivery_metadata": {
+                            "selected_visual_artifact_ids": ["var_qualified"],
+                            "visual_artifacts": {
+                                "/tmp/qualified.png": {
+                                    "request_id": "vrq_partial",
+                                    "artifact_id": "var_qualified",
+                                    "kind": "image",
+                                }
+                            },
+                        },
+                    }
+                ),
+            },
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+
+        assert tags == ["MEDIA:/tmp/qualified.png"]
         assert voice is False
 
     def test_gateway_auto_append_visual_agent_video_only_skips_source_image(self):

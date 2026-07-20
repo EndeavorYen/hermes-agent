@@ -181,6 +181,20 @@ def test_classify_visual_provider_failure_detects_reference_aspect_rate_and_unav
     )
 
 
+def test_classify_visual_provider_failure_detects_overloaded_without_status_code():
+    from agent.visual.provider_failures import classify_visual_provider_failure
+
+    result = classify_visual_provider_failure(
+        {
+            "success": False,
+            "error": "Our servers are currently overloaded. Please try again later.",
+        }
+    )
+
+    assert result["failure_class"] == "provider_unavailable"
+    assert result["retryable"] is True
+
+
 def test_classify_visual_provider_failure_detects_xai_connection_refused_503_text():
     from agent.visual.provider_failures import classify_visual_provider_failure
 
