@@ -986,12 +986,20 @@ def _v7_tone_contract_violations(
                     continue
                 tone_intensity = tone.get("intensity")
                 tone_modifiers = tone.get("modifiers")
+                tone_source = tone.get("source")
+                tone_pace = (
+                    str(tone_source.get("pace") or "")
+                    if isinstance(tone_source, dict)
+                    else ""
+                )
+                pace_definition = (catalog.get("paces") or {}).get(tone_pace)
                 allowed_modifiers = tone_definition.get("allowed_modifiers")
                 if (
                     not isinstance(tone_intensity, int)
                     or isinstance(tone_intensity, bool)
                     or tone_intensity not in {1, 2, 3}
                     or not isinstance(tone_modifiers, list)
+                    or not isinstance(pace_definition, dict)
                     or len(tone_modifiers) != len(set(tone_modifiers))
                     or not isinstance(allowed_modifiers, list)
                     or any(
@@ -1012,7 +1020,11 @@ def _v7_tone_contract_violations(
                 if application.get("applied_parameters") != applied:
                     violations.append("local Qwen tone applied control evidence is inconsistent")
                 expected_adapter_status = (
-                    "neutral_noop" if tone_id == "general.neutral" else "applied"
+                    "neutral_noop"
+                    if tone_id == "general.neutral"
+                    and not tone_modifiers
+                    and tone_pace == "natural"
+                    else "applied"
                 )
                 if (
                     str(application.get("engine") or "") != engine
@@ -1035,7 +1047,7 @@ def _v7_tone_contract_violations(
                     )
                     expected_application = None
                 if expected_application is not None and application != expected_application:
-                    if tone_id == "general.neutral":
+                    if expected_adapter_status == "neutral_noop":
                         violations.append("local Qwen neutral tone adapter is not a no-op")
                     else:
                         violations.append(
@@ -1077,7 +1089,7 @@ def _v7_tone_contract_violations(
                 application_template = str(
                     application.get("instruction_template_id") or ""
                 ).strip()
-                if engine == "qwen_custom_voice" and tone_id != "general.neutral":
+                if engine == "qwen_custom_voice" and expected_adapter_status == "applied":
                     expected_instruction = str(adapter.get("instruct") or "").strip()
                     expected_template = str(adapter.get("template_id") or "").strip()
                     fragments = []
@@ -1099,9 +1111,28 @@ def _v7_tone_contract_violations(
                         ).strip()
                         if fragment:
                             fragments.append(fragment)
-                    expected_instruction = "；".join(
-                        [expected_instruction, *fragments]
+                    pace_adapters = pace_definition.get("adapters")
+                    pace_adapter = (
+                        pace_adapters.get(engine)
+                        if isinstance(pace_adapters, dict)
+                        else None
                     )
+                    pace_fragment = str(
+                        (pace_adapter or {}).get("instruction_fragment") or ""
+                    ).strip()
+                    if pace_fragment:
+                        fragments.append(pace_fragment)
+                    expected_instruction = "；".join(
+                        value for value in [expected_instruction, *fragments] if value
+                    )
+                    if not expected_template:
+                        expected_template = str(
+                            (
+                                catalog.get("delivery_overlay_template_ids")
+                                or {}
+                            ).get(engine)
+                            or ""
+                        )
                     if (
                         not expected_instruction
                         or instruction != expected_instruction
@@ -1117,7 +1148,9 @@ def _v7_tone_contract_violations(
                     violations.append(
                         "local Qwen full-ICL tone instruction evidence must be empty"
                     )
-                elif tone_id == "general.neutral" and (instruction or template_id):
+                elif expected_adapter_status == "neutral_noop" and (
+                    instruction or template_id
+                ):
                     violations.append("local Qwen neutral tone adapter is not a no-op")
 
                 if not _bounded_number(applied.get("speed"), minimum=0.9, maximum=1.1):

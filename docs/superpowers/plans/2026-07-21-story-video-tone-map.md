@@ -424,4 +424,3 @@ runtime pointer only through the documented protected-branch cutover.
 
 Re-read every approved requirement, confirm current evidence for each one,
 perform the final deep-fix checkpoint, then mark the durable goal complete.
-

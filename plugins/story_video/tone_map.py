@@ -18,6 +18,18 @@ APPROVED_MODIFIERS = (
     "firm",
 )
 
+APPROVED_PACES = (
+    "slow",
+    "measured",
+    "natural",
+    "quick",
+)
+
+DELIVERY_OVERLAY_TEMPLATE_IDS = {
+    "qwen_custom_voice": "delivery.overlay.qwen_custom_voice.v1",
+    "qwen_full_icl": "",
+}
+
 SAFE_BOUNDS = {
     "speed_multiplier": [0.90, 1.10],
     "temperature_delta": [-0.10, 0.10],
@@ -206,6 +218,14 @@ _MODIFIER_DEFINITIONS = {
 }
 
 
+_PACE_DEFINITIONS = {
+    "slow": ("放慢節奏，使用稍長但自然的停頓", 0.94, 0.26),
+    "measured": ("節奏從容穩定，使用清楚而適度的停頓", 0.98, 0.22),
+    "natural": ("", 1.00, 0.18),
+    "quick": ("加快節奏，縮短停頓但保持清楚咬字", 1.06, 0.12),
+}
+
+
 def _canonical_sha256(value: Any) -> str:
     encoded = json.dumps(
         value,
@@ -275,6 +295,36 @@ def _modifier_catalog_entry(
     }
 
 
+def _pace_catalog_entry(
+    pace_id: str,
+    definition: tuple[str, float, float],
+) -> dict[str, Any]:
+    if pace_id == "natural":
+        adapters = {
+            "qwen_custom_voice": {},
+            "qwen_full_icl": {},
+        }
+    else:
+        instruction, speed, pause = definition
+        common = {
+            "speed_multiplier": speed,
+            "temperature_delta": 0.0,
+            "pause_seconds": pause,
+            "pitch_shift_semitones": 0,
+        }
+        adapters = {
+            "qwen_custom_voice": {
+                **common,
+                "instruction_fragment": instruction,
+            },
+            "qwen_full_icl": dict(common),
+        }
+    return {
+        "pace_id": pace_id,
+        "adapters": adapters,
+    }
+
+
 def build_tone_catalog() -> dict[str, Any]:
     catalog = {
         "schema": TONE_CATALOG_SCHEMA,
@@ -284,6 +334,11 @@ def build_tone_catalog() -> dict[str, Any]:
             modifier_id: _modifier_catalog_entry(modifier_id, definition)
             for modifier_id, definition in _MODIFIER_DEFINITIONS.items()
         },
+        "paces": {
+            pace_id: _pace_catalog_entry(pace_id, definition)
+            for pace_id, definition in _PACE_DEFINITIONS.items()
+        },
+        "delivery_overlay_template_ids": dict(DELIVERY_OVERLAY_TEMPLATE_IDS),
         "tones": {
             tone_id: _tone_catalog_entry(tone_id, definition)
             for tone_id, definition in _TONE_DEFINITIONS.items()
@@ -331,18 +386,27 @@ def resolve_tone_application(
     tone_definition = (catalog.get("tones") or {}).get(tone_id)
     intensity = tone.get("intensity")
     modifier_ids = tone.get("modifiers")
+    source = tone.get("source")
+    pace = str(source.get("pace") or "") if isinstance(source, dict) else ""
+    pace_definition = (catalog.get("paces") or {}).get(pace)
     if (
         not isinstance(tone_definition, dict)
         or isinstance(intensity, bool)
         or not isinstance(intensity, int)
         or intensity not in {1, 2, 3}
         or not isinstance(modifier_ids, list)
+        or not isinstance(pace_definition, dict)
     ):
+        if not isinstance(pace_definition, dict):
+            raise ToneMapError(
+                "tone_pace_invalid",
+                f"unsupported tone pace: {pace!r}",
+            )
         raise ToneMapError(
             "tone_application_invalid",
             "resolved tone cannot be adapted",
         )
-    if tone_id == "general.neutral":
+    if tone_id == "general.neutral" and not modifier_ids and pace == "natural":
         return {
             "adapter_status": "neutral_noop",
             "engine": engine,
@@ -379,7 +443,13 @@ def resolve_tone_application(
                 f"modifier {modifier_id!r} has no adapter for {engine}",
             )
         modifier_adapters.append(modifier_adapter)
-    adapters = [tone_adapter, *modifier_adapters]
+    pace_adapter = (pace_definition.get("adapters") or {}).get(engine)
+    if not isinstance(pace_adapter, dict):
+        raise ToneMapError(
+            "tone_pace_invalid",
+            f"pace {pace!r} has no adapter for {engine}",
+        )
+    adapters = [tone_adapter, *modifier_adapters, pace_adapter]
     intensity_scale = {1: 0.75, 2: 1.0, 3: 1.25}[intensity]
     speed_offset = sum(
         float(adapter.get("speed_multiplier", 1.0)) - 1.0
@@ -412,13 +482,16 @@ def resolve_tone_application(
     pause_seconds = _clamp(sum(pauses) / len(pauses), 0.08, 0.35)
     fragments = [
         str(adapter.get("instruction_fragment") or "").strip()
-        for adapter in modifier_adapters
+        for adapter in [*modifier_adapters, pace_adapter]
         if str(adapter.get("instruction_fragment") or "").strip()
     ]
     instruct = str(tone_adapter.get("instruct") or "").strip()
-    if fragments:
-        instruct = "；".join([instruct, *fragments])
+    instruct = "；".join(value for value in [instruct, *fragments] if value)
     template_id = str(tone_adapter.get("template_id") or "")
+    if engine == "qwen_custom_voice" and not template_id:
+        template_id = str(
+            (catalog.get("delivery_overlay_template_ids") or {}).get(engine) or ""
+        )
     if engine == "qwen_custom_voice" and (not instruct or not template_id):
         raise ToneMapError(
             "tone_application_invalid",
@@ -506,7 +579,12 @@ def resolve_utterance_tone(
     requested_tone_id = str(tone_id or "").strip().casefold()
     source_emotion = str(emotion or "").strip()
     source_action = str(action or "").strip()
-    source_pace = str(pace or "").strip()
+    source_pace = str(pace or "").strip().casefold()
+    if source_pace not in APPROVED_PACES:
+        raise ToneMapError(
+            "tone_pace_invalid",
+            f"unsupported tone pace: {pace!r}",
+        )
     normalized_content_rating = str(content_rating or "").strip().casefold()
     warning = ""
     if requested_tone_id:

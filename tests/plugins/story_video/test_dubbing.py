@@ -151,7 +151,13 @@ def test_creative_mode_compiles_three_project_contracts(tmp_path) -> None:
     assert ledger["schema"] == "story_video_dialogue_ledger_v2"
     assert ledger["content_rating"] == "general"
     assert ledger["tone_catalog"]["schema"] == "story_video_tone_catalog_v1"
+    assert ledger["tone_catalog"]["paces"]["natural"]["adapters"] == {
+        "qwen_custom_voice": {},
+        "qwen_full_icl": {},
+    }
     assert [row["order"] for row in ledger["utterances"]] == [1, 2]
+    assert ledger["utterances"][0]["pace"] == "natural"
+    assert ledger["utterances"][0]["tone"]["source"]["pace"] == "natural"
     assert ledger["utterances"][1]["action"] == "驚訝地看向森林深處"
     assert ledger["utterances"][1]["display_text"] == "那是什麼？"
 

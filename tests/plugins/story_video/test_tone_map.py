@@ -60,6 +60,15 @@ def test_catalog_is_canonical_and_engine_aware() -> None:
         "soft",
         "firm",
     ]
+    assert list(catalog["paces"]) == ["slow", "measured", "natural", "quick"]
+    assert catalog["paces"]["natural"]["adapters"] == {
+        "qwen_custom_voice": {},
+        "qwen_full_icl": {},
+    }
+    assert catalog["delivery_overlay_template_ids"] == {
+        "qwen_custom_voice": "delivery.overlay.qwen_custom_voice.v1",
+        "qwen_full_icl": "",
+    }
     assert catalog["safe_bounds"] == {
         "speed_multiplier": [0.9, 1.1],
         "temperature_delta": [-0.1, 0.1],
@@ -81,7 +90,7 @@ def test_all_catalog_adapters_stay_within_safe_bounds() -> None:
     catalog = build_tone_catalog()
     bounds = catalog["safe_bounds"]
 
-    for collection in (catalog["tones"], catalog["modifiers"]):
+    for collection in (catalog["tones"], catalog["modifiers"], catalog["paces"]):
         for entry in collection.values():
             for adapter in entry["adapters"].values():
                 if "speed_multiplier" in adapter:
@@ -116,7 +125,7 @@ def test_catalog_instructions_do_not_request_untranscribed_vocalizations() -> No
     catalog = build_tone_catalog()
     instruction_texts = [
         adapter[field]
-        for collection in (catalog["tones"], catalog["modifiers"])
+        for collection in (catalog["tones"], catalog["modifiers"], catalog["paces"])
         for entry in collection.values()
         for adapter in entry["adapters"].values()
         for field in ("instruct", "instruction_fragment")
@@ -329,6 +338,110 @@ def test_expected_tone_application_is_deterministic_and_baseline_aware() -> None
     assert application["instruction_template_id"] == (
         "general.puzzled.qwen_custom_voice.v1"
     )
-    assert application["instruct"].endswith("帶些猶豫，用短而自然的停頓")
+    assert "帶些猶豫，用短而自然的停頓" in application["instruct"]
+    assert application["instruct"].endswith("放慢節奏，使用稍長但自然的停頓")
     assert application["applied_parameters"]["speed"] <= 1.1
     assert application["applied_parameters"]["pitch_shift_semitones"] == 1
+
+
+def test_pace_overlays_are_distinct_bounded_and_natural_is_noop() -> None:
+    catalog = build_tone_catalog()
+    baseline = {
+        "speed": 1.0,
+        "pitch_shift_semitones": 1,
+        "expressiveness": "natural",
+    }
+    applications = {}
+    for pace in ("slow", "natural", "quick"):
+        applications[pace] = resolve_tone_application(
+            engine="qwen_custom_voice",
+            tone={
+                "tone_id": "general.neutral",
+                "intensity": 2,
+                "modifiers": [],
+                "resolution": "mapped",
+                "source": {"emotion": "neutral", "action": "", "pace": pace},
+            },
+            catalog=catalog,
+            baseline=baseline,
+        )
+
+    slow = applications["slow"]
+    natural = applications["natural"]
+    quick = applications["quick"]
+    assert natural == {
+        "adapter_status": "neutral_noop",
+        "engine": "qwen_custom_voice",
+        "instruction_template_id": "",
+        "instruct": "",
+        "pause_seconds": None,
+        "applied_parameters": {
+            "speed": 1.0,
+            "temperature_delta": 0.0,
+            "pitch_shift_semitones": 1.0,
+            "tone_pitch_shift_semitones": 0,
+            "expressiveness": "natural",
+        },
+    }
+    assert slow["adapter_status"] == quick["adapter_status"] == "applied"
+    assert 0.9 <= slow["applied_parameters"]["speed"] < 1.0
+    assert 1.0 < quick["applied_parameters"]["speed"] <= 1.1
+    assert 0.08 <= quick["pause_seconds"] < slow["pause_seconds"] <= 0.35
+    assert slow["instruction_template_id"] == quick["instruction_template_id"]
+    assert slow["instruct"] != quick["instruct"]
+
+
+@pytest.mark.parametrize("engine", ["qwen_custom_voice", "qwen_full_icl"])
+def test_neutral_modifier_applies_catalog_overlay_without_clone_instruction(
+    engine: str,
+) -> None:
+    catalog = build_tone_catalog()
+    application = resolve_tone_application(
+        engine=engine,
+        tone={
+            "tone_id": "general.neutral",
+            "intensity": 2,
+            "modifiers": ["whispered"],
+            "resolution": "explicit",
+            "source": {"emotion": "neutral", "action": "輕聲", "pace": "natural"},
+        },
+        catalog=catalog,
+        baseline={"speed": 1.0, "expressiveness": "natural"},
+    )
+
+    assert application["adapter_status"] == "applied"
+    assert application["applied_parameters"]["speed"] < 1.0
+    assert application["pause_seconds"] is not None
+    if engine == "qwen_custom_voice":
+        assert application["instruction_template_id"] == (
+            "delivery.overlay.qwen_custom_voice.v1"
+        )
+        assert application["instruct"] == "壓低音量並靠近地輕聲說"
+    else:
+        assert application["instruction_template_id"] == ""
+        assert application["instruct"] == ""
+
+
+@pytest.mark.parametrize("pace", ["", "rushed", "SLOWLY"])
+def test_invalid_pace_fails_compilation_and_application(pace: str) -> None:
+    with pytest.raises(ToneMapError) as exc_info:
+        resolve_utterance_tone(
+            emotion="neutral",
+            action="",
+            pace=pace,
+        )
+    assert exc_info.value.error_type == "tone_pace_invalid"
+
+    with pytest.raises(ToneMapError) as exc_info:
+        resolve_tone_application(
+            engine="qwen_custom_voice",
+            tone={
+                "tone_id": "general.neutral",
+                "intensity": 2,
+                "modifiers": [],
+                "resolution": "mapped",
+                "source": {"emotion": "neutral", "action": "", "pace": pace},
+            },
+            catalog=build_tone_catalog(),
+        )
+    assert exc_info.value.error_type == "tone_pace_invalid"

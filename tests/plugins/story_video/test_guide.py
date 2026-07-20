@@ -73,6 +73,7 @@ def test_help_is_compact_and_copy_ready() -> None:
     assert "溫暖／開心／疑惑" in text
     assert "親密／挑逗／害羞" in text
     assert "可以省略 tone" in text
+    assert "慢速／從容／自然／快速" in text
     assert "成人露骨內容設定" in text
     assert "不會暗中加入呼吸、喘聲、笑聲或其他音效" in text
     assert "省略號" in text and "停頓" in text

@@ -101,6 +101,8 @@ concepts such as `溫暖／開心／疑惑`; omitting tone lets the audio direct
 the utterance's emotion, action, and pace automatically. Adult concepts such as
 `親密／挑逗／害羞` are accepted only for a valid `adult_explicit` content
 profile. Internal tone IDs remain optional rather than required prompt syntax.
+Pace can be described naturally as `慢速／從容／自然／快速`; these choices use
+catalog-owned bounded speed and pause controls and never rewrite the dialogue.
 
 ```text
 小美這句用溫暖、壓低聲音的方式說；動作只顯示在字幕，不要念出來。

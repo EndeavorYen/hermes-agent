@@ -130,6 +130,16 @@ tone/modifier pairs; unsupported combinations fail compilation rather than
 silently changing meaning. Concrete sexual acts remain `action` presentation
 data and are never encoded as tones.
 
+### Delivery pace
+
+Every resolved tone carries one canonical pace: `slow`, `measured`, `natural`,
+or `quick`. Pace is a catalog-owned delivery overlay with engine-specific,
+bounded speed and pause controls. `natural` has empty adapters and changes
+nothing by itself. `slow`, `measured`, and `quick` are auditable applications;
+CustomVoice adds only stable Traditional Chinese catalog fragments, while
+full-ICL never receives an instruction. Only neutral with no modifiers and
+natural pace is the strict neutral no-op.
+
 ## Engine Adapters
 
 ### Qwen CustomVoice

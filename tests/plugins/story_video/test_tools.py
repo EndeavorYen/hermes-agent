@@ -3428,6 +3428,92 @@ def test_expected_v7_chunk_spoken_text_uses_longest_pronunciation_then_ellipsis(
     assert _expected_v7_chunk_spoken_text(chunk) == "三碟紀，碟記？"
 
 
+def _set_v7_utterance_pace(
+    manifest_path: Path,
+    dialogue_path: Path,
+    binding_path: Path,
+    *,
+    pace: str,
+    update_application: bool,
+) -> dict:
+    ledger = json.loads(dialogue_path.read_text(encoding="utf-8"))
+    tone = ledger["utterances"][1]["tone"]
+    tone["source"]["pace"] = pace
+    dialogue_path.write_text(
+        json.dumps(ledger, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    chunk = manifest["outputs"][0]["segments"][0]["voice_chunks"][1]
+    chunk["tone"] = tone
+    if update_application:
+        application = resolve_tone_application(
+            engine="qwen_custom_voice",
+            tone=tone,
+            catalog=ledger["tone_catalog"],
+            baseline={
+                "speed": 1.0,
+                "pitch_shift_semitones": 0.0,
+                "expressiveness": "natural",
+            },
+            variant={},
+        )
+        chunk["tone_application"] = application
+        chunk["tone_applied_parameters"] = dict(application["applied_parameters"])
+        chunk["tone_instruction_template_id"] = str(
+            application["instruction_template_id"]
+        )
+        pause = float(application.get("pause_seconds") or 0.18)
+        chunk["resolved_pause_after_sec"] = pause
+        chunk["pause_after_sec"] = pause
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    _resign_v7_dialogue_contract(manifest_path, dialogue_path, binding_path)
+    return chunk
+
+
+def test_voice_validation_accepts_canonical_v7_pace_overlay(tmp_path) -> None:
+    context, manifest_path, dialogue_path, binding_path = (
+        _write_valid_v7_tone_voice_project(tmp_path)
+    )
+    chunk = _set_v7_utterance_pace(
+        manifest_path,
+        dialogue_path,
+        binding_path,
+        pace="slow",
+        update_application=True,
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is True, proof
+    assert chunk["tone_application"]["adapter_status"] == "applied"
+    assert chunk["tone_application"]["pause_seconds"] > 0.18
+
+
+def test_voice_validation_rejects_v7_pace_application_drift(tmp_path) -> None:
+    context, manifest_path, dialogue_path, binding_path = (
+        _write_valid_v7_tone_voice_project(tmp_path)
+    )
+    _set_v7_utterance_pace(
+        manifest_path,
+        dialogue_path,
+        binding_path,
+        pace="quick",
+        update_application=False,
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+    assert any(
+        "tone application does not match expected controls" in value
+        for value in proof.violations
+    )
+
+
 @pytest.mark.parametrize(
     ("case", "expected"),
     [

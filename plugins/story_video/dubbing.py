@@ -234,6 +234,8 @@ def _validate_dialogue_ledger_contract(
     catalog_sha = str(catalog.get("sha256") or "")
     tones = catalog.get("tones")
     modifiers = catalog.get("modifiers")
+    paces = catalog.get("paces")
+    overlay_templates = catalog.get("delivery_overlay_template_ids")
     if (
         catalog.get("schema") != "story_video_tone_catalog_v1"
         or len(catalog_sha) != 64
@@ -242,6 +244,10 @@ def _validate_dialogue_ledger_contract(
         or not tones
         or not isinstance(modifiers, dict)
         or not modifiers
+        or not isinstance(paces, dict)
+        or set(paces) != PACES
+        or not isinstance(overlay_templates, dict)
+        or set(overlay_templates) != {"qwen_custom_voice", "qwen_full_icl"}
     ):
         raise DubbingContractError(
             "dubbing_tone_catalog_invalid",
@@ -306,18 +312,17 @@ def _validate_utterances(
         }
         emotion = str(raw.get("emotion") or "").strip()
         action = str(raw.get("action") or "").strip()
-        pace = str(raw.get("pace") or "").strip()
+        pace = str(raw.get("pace") or "natural").strip().casefold()
         if emotion:
             row["emotion"] = emotion
         if action:
             row["action"] = action
-        if pace:
-            if pace not in PACES:
-                raise DubbingContractError(
-                    "dubbing_performance_invalid",
-                    f"unsupported pace {pace!r}: {utterance_id}",
-                )
-            row["pace"] = pace
+        if pace not in PACES:
+            raise DubbingContractError(
+                "dubbing_performance_invalid",
+                f"unsupported pace {pace!r}: {utterance_id}",
+            )
+        row["pace"] = pace
         try:
             resolved_tone = resolve_utterance_tone(
                 emotion=emotion,
