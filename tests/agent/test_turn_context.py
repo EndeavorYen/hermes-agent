@@ -8,6 +8,7 @@ confirm the prologue produces the right ``TurnContext`` and applies the
 
 from __future__ import annotations
 
+import base64
 import types
 from unittest.mock import MagicMock, patch
 
@@ -293,6 +294,61 @@ def test_persist_user_message_becomes_original():
     assert ctx.original_user_message == "clean"
     # but the appended user turn carries the full (sanitized) message.
     assert ctx.messages[-1]["content"] == "api-prefixed"
+
+
+def test_raphael_receives_multimodal_attachments_with_clean_persisted_text(tmp_path):
+    agent = _FakeAgent()
+    captured = {}
+    first_image = b"first-reference-image"
+    second_image = b"second-reference-image"
+    user_message = [
+        {
+            "type": "text",
+            "text": "用 xai, 將 ref1 的人物套用至 ref2 的動作，先做 4 張讓我挑選",
+        },
+        {
+            "type": "image_url",
+            "image_url": {
+                "url": "data:image/png;base64,"
+                + base64.b64encode(first_image).decode("ascii")
+            },
+        },
+        {
+            "type": "image_url",
+            "image_url": {
+                "url": "data:image/png;base64,"
+                + base64.b64encode(second_image).decode("ascii")
+            },
+        },
+    ]
+
+    def capture_turn(**kwargs):
+        captured.update(kwargs)
+        return None
+
+    with (
+        patch.dict("os.environ", {"HERMES_HOME": str(tmp_path)}),
+        patch("hermes_cli.config.load_config_readonly", return_value={}),
+        patch("hermes_cli.plugins.invoke_hook", return_value=[]),
+        patch("agent.raphael.kernel.prepare_raphael_turn", side_effect=capture_turn),
+    ):
+        _build(
+            agent,
+            user_message=user_message,
+            persist_user_message=(
+                "用 xai, 將 ref1 的人物套用至 ref2 的動作，先做 4 張讓我挑選"
+            ),
+            summarize_user_message_for_log=lambda _message: "visual request",
+        )
+
+    assert captured["user_message"] == (
+        "用 xai, 將 ref1 的人物套用至 ref2 的動作，先做 4 張讓我挑選"
+    )
+    assert captured["attachments"] == (
+        "data:image/png;base64," + base64.b64encode(first_image).decode("ascii"),
+        "data:image/png;base64," + base64.b64encode(second_image).decode("ascii"),
+    )
+    assert not (tmp_path / "cache" / "visual-agent-attachments").exists()
 
 
 def test_memory_nudge_fires_at_interval():

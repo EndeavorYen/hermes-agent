@@ -572,6 +572,7 @@ def build_turn_context(
             prepare_raphael_turn,
             render_raphael_turn_decision_context,
         )
+        from agent.raphael.observer import extract_raphael_attachment_refs
 
         _decision = prepare_raphael_turn(
             turn_id=turn_id,
@@ -579,6 +580,7 @@ def build_turn_context(
             runtime_contract=_raphael_runtime_contract,
             config=_raphael_config,
             user_message=original_user_message,
+            attachments=extract_raphael_attachment_refs(user_message),
             conversation_history=list(messages),
         )
         if _decision is not None:

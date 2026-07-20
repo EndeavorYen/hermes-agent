@@ -410,7 +410,7 @@ def build_raphael_observation_context(
     if not should_inject_raphael_observation(config):
         return ""
     message_text = _extract_user_text(user_message)
-    attachments = _extract_attachment_refs(user_message)
+    attachments = extract_raphael_attachment_refs(user_message)
     turn_observation = observe_raphael_turn(message_text)
     observation = render_raphael_observation(turn_observation)
     invocation_gate = _render_raphael_invocation_gate(message_text)
@@ -484,7 +484,7 @@ def _extract_user_text(value: Any) -> str:
     return ""
 
 
-def _extract_attachment_refs(value: Any) -> tuple[str, ...]:
+def extract_raphael_attachment_refs(value: Any) -> tuple[str, ...]:
     refs: list[str] = []
 
     def visit(item: Any) -> None:
@@ -522,6 +522,7 @@ __all__ = [
     "build_raphael_observation_context",
     "decide_raphael_auto_status_portrait",
     "decide_raphael_visual_trigger",
+    "extract_raphael_attachment_refs",
     "extract_raphael_turn_sketches",
     "observe_raphael_turn",
     "render_raphael_observation",
