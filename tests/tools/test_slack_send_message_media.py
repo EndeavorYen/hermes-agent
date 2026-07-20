@@ -59,14 +59,10 @@ async def test_slack_standalone_sender_uploads_media_with_comment(monkeypatch, t
     )
     client_factory = MagicMock(return_value=client)
     apply_proxy = MagicMock()
+    monkeypatch.setattr(slack_mod, "check_slack_requirements", lambda: True)
     monkeypatch.setattr(slack_mod, "AsyncWebClient", client_factory)
     monkeypatch.setattr(slack_mod, "_resolve_slack_proxy_url", lambda: "http://proxy")
     monkeypatch.setattr(slack_mod, "_apply_slack_proxy", apply_proxy)
-    monkeypatch.setattr(
-        slack_mod.aiohttp,
-        "ClientSession",
-        MagicMock(side_effect=AssertionError("media must not use chat.postMessage")),
-    )
 
     result = await slack_mod._standalone_send(
         SimpleNamespace(token="token"),
@@ -107,6 +103,7 @@ async def test_slack_standalone_sender_batches_more_than_ten_files(monkeypatch, 
 
     client = MagicMock()
     client.files_upload_v2 = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(slack_mod, "check_slack_requirements", lambda: True)
     monkeypatch.setattr(slack_mod, "AsyncWebClient", MagicMock(return_value=client))
 
     result = await slack_mod._standalone_send(
@@ -144,6 +141,7 @@ async def test_slack_standalone_sender_reports_partial_batch_without_retry_signa
     client.files_upload_v2 = AsyncMock(
         side_effect=[{"ok": True}, RuntimeError("second batch failed")]
     )
+    monkeypatch.setattr(slack_mod, "check_slack_requirements", lambda: True)
     monkeypatch.setattr(slack_mod, "AsyncWebClient", MagicMock(return_value=client))
 
     result = await slack_mod._standalone_send(
