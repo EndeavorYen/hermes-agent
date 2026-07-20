@@ -229,16 +229,16 @@ def _tone_catalog_entry(tone_id: str, definition: dict[str, Any]) -> dict[str, A
             "pause_seconds": definition["pause_seconds"],
             "pitch_shift_semitones": 0,
         }
+        full_icl_adapter = dict(common)
+        if tone_id != "adult.breathless":
+            full_icl_adapter["expressiveness"] = definition["expressiveness"]
         adapters = {
             "qwen_custom_voice": {
                 **common,
                 "template_id": f"{tone_id}.qwen_custom_voice.v1",
                 "instruct": definition["instruct"],
             },
-            "qwen_full_icl": {
-                **common,
-                "expressiveness": definition["expressiveness"],
-            },
+            "qwen_full_icl": full_icl_adapter,
         }
     return {
         "tone_id": tone_id,

@@ -185,7 +185,7 @@ def test_breathless_uses_only_phrase_and_bounded_pause_controls() -> None:
     assert custom_voice["temperature_delta"] == 0.0
     assert full_icl["speed_multiplier"] == 1.0
     assert full_icl["temperature_delta"] == 0.0
-    assert full_icl["expressiveness"] == "natural"
+    assert "expressiveness" not in full_icl
     for adapter in (custom_voice, full_icl):
         assert adapter["pause_seconds"] <= catalog["safe_bounds"][
             "ordinary_pause_seconds"
