@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from agent.visual.independent_vision_audit import parse_vision_judge_analysis
@@ -13,6 +14,7 @@ def build_candidate_vision_observation(
     fallback_observation: dict[str, Any],
     inline_enabled: bool = False,
     analyzer=None,
+    transient_retry_delay_seconds: float = 0.5,
 ) -> dict[str, Any]:
     raw = _raw_candidate_vision_observation(candidate)
     if raw:
@@ -23,20 +25,28 @@ def build_candidate_vision_observation(
             source="candidate_vision_observation",
         )
     if inline_enabled and analyzer is not None and candidate.get("kind") == "image":
-        try:
-            raw_inline = analyzer(candidate)
-            failure = _inline_vision_failure(raw_inline)
-            if failure:
-                return _vision_unavailable_observation(fallback_observation, failure)
-            vision = parse_vision_judge_analysis(raw_inline)
-        except Exception as exc:
-            failure = classify_visual_provider_failure(exc)
-            return _vision_unavailable_observation(fallback_observation, failure)
-        return _merge_observations(
-            fallback_observation,
-            vision,
-            source="inline_vision_judge",
-        )
+        failure: dict[str, Any] | None = None
+        for attempt in range(2):
+            try:
+                raw_inline = analyzer(candidate)
+                failure = _inline_vision_failure(raw_inline)
+                if failure is None:
+                    vision = parse_vision_judge_analysis(raw_inline)
+                    merged = _merge_observations(
+                        fallback_observation,
+                        vision,
+                        source="inline_vision_judge",
+                    )
+                    if attempt:
+                        merged["evidence"]["transient_retry_count"] = attempt
+                    return merged
+            except Exception as exc:
+                failure = classify_visual_provider_failure(exc)
+            if failure.get("failure_class") != "provider_unavailable":
+                break
+            if attempt == 0 and transient_retry_delay_seconds > 0:
+                time.sleep(transient_retry_delay_seconds)
+        return _vision_unavailable_observation(fallback_observation, failure)
     return fallback_observation
 
 

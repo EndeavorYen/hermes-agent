@@ -1425,6 +1425,12 @@ def format_direct_visual_agent_handoff_response(raw_tool_result: str) -> str:
 
     images = _string_list(payload.get("images"))
     videos = _string_list(payload.get("videos"))
+    if (
+        package_status == "partial"
+        and payload.get("error_type") == "candidate_option_shortfall"
+        and images
+    ):
+        return "已交付通過品質檢查的候選圖；合格數少於原要求，其餘已淘汰。"
     if images and videos:
         return "已產出圖片和影片。"
     if images:

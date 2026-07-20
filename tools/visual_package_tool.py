@@ -2390,6 +2390,88 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             elif hybrid_final_combine and hybrid_quality_gate_metadata is not None:
                 hybrid_quality_gate_metadata["repair_attempted"] = True
         generation_payloads["image"] = image_payloads[0] if len(image_payloads) == 1 else image_payloads
+        deliverable_candidate_options: list[dict[str, Any]] | None = None
+        if requested_image and deliver_candidate_options and not composition_guide_only:
+            option_decision = rank_visual_candidates(
+                request_id=request_id,
+                candidates=image_candidates,
+                post_threshold=0.0,
+                ask_threshold=0.0,
+            )
+            ranked_options = _ranked_candidate_options(
+                image_candidates,
+                option_decision.ranked_artifact_ids,
+            )
+            deliverable_candidate_options, candidate_option_gate = _qualified_candidate_options(
+                ranked_options,
+                prompt=prompt,
+                args=args,
+                requested_count=candidate_budget,
+            )
+            if deliverable_candidate_options:
+                prior_selected_id = str(selected_image.get("artifact_id") or "") if selected_image else ""
+                selected_image = deliverable_candidate_options[0]
+                selected_gate = _candidate_option_delivery_gate(
+                    selected_image,
+                    prompt=prompt,
+                    args=args,
+                )
+                if prior_selected_id and prior_selected_id != selected_image.get("artifact_id"):
+                    selected_gate["replaced_blocked_top_artifact_id"] = prior_selected_id
+                image_gate = selected_gate
+                ranking_record = dict(option_decision.__dict__)
+                ranking_record["selected_artifact_id"] = selected_image.get("artifact_id")
+                ranking_record["selected_attempt_id"] = selected_image.get("attempt_id")
+                ranking_record["reason"] = "selected_top_qualified_candidate_option"
+                rankings["image"] = ranking_record
+                final_learning = _record_learning_trace(
+                    ledger,
+                    request_id=request_id,
+                    intent_signature=intent_signature,
+                    strategy_signature=strategy_plan.strategy_signature,
+                    strategy_plan=strategy_plan.to_record(),
+                    modality="image",
+                    rank_decision=ranking_record,
+                    candidates=image_candidates,
+                    has_reference_image=bool(attachments),
+                )
+                learning["active_learning"]["image"] = final_learning
+                if quality_loop is not None:
+                    prior_loop = quality_loop.to_record()
+                    prior_loop["generation_attempts_before_loop"] = (
+                        generation_attempts_before_loop
+                    )
+                    prior_loop["total_generation_attempts"] = len(image_payloads)
+                    resolution = {
+                        "strategy": "ranked_qualified_candidate_options",
+                        "selected_artifact_id": selected_image.get("artifact_id"),
+                        "selected_attempt_id": selected_image.get("attempt_id"),
+                        "prior_champion_artifact_id": prior_loop["champion"].get(
+                            "artifact_id"
+                        ),
+                    }
+                    selected_gate["prior_quality_loop"] = prior_loop
+                    selected_gate["candidate_option_resolution"] = resolution
+                    record_shadow_update(
+                        ledger,
+                        request_id=request_id,
+                        intent_signature=intent_signature,
+                        strategy_signature=strategy_plan.strategy_signature,
+                        proposed_change={
+                            "type": "candidate_option_resolution",
+                            "activation": "shadow_only",
+                        },
+                        evidence={
+                            **resolution,
+                            "prior_quality_loop": prior_loop,
+                        },
+                        confidence=_coerce_float(
+                            selected_image.get("visual_quality_confidence")
+                        ),
+                    )
+                    image_gate = selected_gate
+            image_gate["candidate_options"] = candidate_option_gate
+            delivery_gate["image"] = image_gate
         if selected_image and image_gate["allowed"]:
             video_source_image = selected_image["artifact_path"]
             video_source_artifact_id = selected_image["artifact_id"]
@@ -2398,6 +2480,9 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 artifact_roles_by_id[str(selected_image["artifact_id"])] = selected_image_role
             if requested_image:
                 deliverable_images = (
+                    deliverable_candidate_options
+                    if deliverable_candidate_options is not None
+                    else
                     _ranked_candidate_options(
                         image_candidates,
                         image_decision.ranked_artifact_ids,
@@ -2811,9 +2896,22 @@ def _finalize_visual_package_payload(
     extra_generation_strategy: dict[str, Any] | None = None,
     artifact_roles_by_id: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    success = (not requested_image or bool(selected_images)) and (not wants_video or bool(selected_videos))
-    package_status = "success" if success else ("partial" if selected_images or selected_videos else "failed")
-    package_error = _package_error(success=success, delivery_gate=delivery_gate)
+    candidate_option_shortfall = _candidate_option_delivery_shortfall(
+        delivery_gate,
+        enabled=_coerce_bool(args.get("deliver_candidate_options")),
+    )
+    media_success = (
+        (not requested_image or bool(selected_images))
+        and (not wants_video or bool(selected_videos))
+    )
+    complete_success = media_success and not candidate_option_shortfall
+    success = media_success
+    package_status = (
+        "success"
+        if complete_success
+        else ("partial" if selected_images or selected_videos else "failed")
+    )
+    package_error = _package_error(success=complete_success, delivery_gate=delivery_gate)
     selected_artifact_paths = selected_images + selected_videos
     delivery_recovery = _delivery_recovery_summary(
         requested_image=requested_image,
@@ -4882,21 +4980,6 @@ def _package_error(
     if any(
         isinstance(gate, dict)
         and gate.get("allowed") is False
-        and gate.get("reason")
-        in {
-            "active_learning_fail_closed",
-            "active_learning_review_required",
-            "video_quality_issue_blocked",
-        }
-        for gate in delivery_gate.values()
-    ):
-        return {
-            "error_type": "delivery_gate_blocked",
-            "error": "visual candidate blocked by active-learning delivery gate",
-        }
-    if any(
-        isinstance(gate, dict)
-        and gate.get("allowed") is False
         and gate.get("reason") == "no_selected_candidate"
         for gate in delivery_gate.values()
     ):
@@ -4904,7 +4987,37 @@ def _package_error(
             "error_type": "no_deliverable_media",
             "error": "visual generation produced no selected deliverable media",
         }
+    if any(
+        isinstance(gate, dict)
+        and gate.get("allowed") is False
+        for gate in delivery_gate.values()
+    ):
+        return {
+            "error_type": "delivery_gate_blocked",
+            "error": "visual candidate blocked by active-learning delivery gate",
+        }
+    if _candidate_option_delivery_shortfall(delivery_gate, enabled=True):
+        return {
+            "error_type": "candidate_option_shortfall",
+            "error": "fewer qualified candidate options were available than the user requested",
+        }
     return {"error_type": None, "error": None}
+
+
+def _candidate_option_delivery_shortfall(
+    delivery_gate: dict[str, dict[str, Any]],
+    *,
+    enabled: bool,
+) -> bool:
+    if not enabled:
+        return False
+    image_gate = delivery_gate.get("image")
+    options = image_gate.get("candidate_options") if isinstance(image_gate, dict) else None
+    if not isinstance(options, dict):
+        return False
+    requested = _coerce_int(options.get("requested")) or 0
+    delivered = _coerce_int(options.get("delivered")) or 0
+    return requested > 0 and delivered < requested
 
 
 def _delivery_gate_has_reference_role_block(delivery_gate: dict[str, dict[str, Any]]) -> bool:
@@ -5758,6 +5871,65 @@ def _ranked_candidate_options(
             ranked.append(candidate)
             seen.add(key)
     return ranked
+
+
+def _qualified_candidate_options(
+    candidates: list[dict[str, Any]],
+    *,
+    prompt: str,
+    args: dict[str, Any],
+    requested_count: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    qualified: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    for candidate in candidates:
+        gate = _candidate_option_delivery_gate(candidate, prompt=prompt, args=args)
+        artifact_id = str(candidate.get("artifact_id") or "")
+        if gate.get("allowed") is True:
+            qualified.append(candidate)
+            continue
+        rejected.append(
+            {
+                "artifact_id": artifact_id,
+                "reason": str(gate.get("reason") or "quality_blocked"),
+                "quality_issues": _string_list(gate.get("quality_issues")),
+                "blocker_codes": _string_list(gate.get("blocker_codes")),
+            }
+        )
+    requested = max(1, int(requested_count))
+    delivered = qualified[:requested]
+    return delivered, {
+        "requested": requested,
+        "generated": len(candidates),
+        "qualified": len(qualified),
+        "delivered": len(delivered),
+        "rejected": rejected,
+    }
+
+
+def _candidate_option_delivery_gate(
+    candidate: dict[str, Any],
+    *,
+    prompt: str,
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    rank_decision = {
+        "decision": "post",
+        "selected_artifact_id": candidate.get("artifact_id"),
+        "ranked_artifact_ids": [candidate.get("artifact_id")],
+        "reason": "candidate_option_quality_gate",
+    }
+    active_learning = _active_learning_trace(
+        rank_decision=rank_decision,
+        candidates=[candidate],
+        has_reference_image=bool(candidate.get("input_artifacts")),
+    )
+    gate = _delivery_gate_decision(
+        active_learning,
+        candidate,
+        prompt=prompt,
+    )
+    return _apply_visual_kernel_delivery_gate(gate, candidate, args)
 
 
 def _enforce_non_grid_video_source_decision(

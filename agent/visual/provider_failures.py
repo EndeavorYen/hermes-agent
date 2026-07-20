@@ -174,6 +174,10 @@ def _is_provider_unavailable_text(text: str) -> bool:
         "remote connection failure",
         "transport failure",
         "reset before headers",
+        "servers are currently overloaded",
+        "server is currently overloaded",
+        "service is temporarily overloaded",
+        "server is busy",
     )
 
 
