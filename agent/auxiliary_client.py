@@ -3009,6 +3009,28 @@ def _is_connection_error(exc: Exception) -> bool:
     return False
 
 
+def _is_poisoned_client_error(exc: Exception) -> bool:
+    """Return True when a transport wrapper exposes an already-closed client."""
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    for _depth in range(8):
+        if current is None or id(current) in seen:
+            break
+        seen.add(id(current))
+        text = str(current).lower()
+        if any(
+            marker in text
+            for marker in (
+                "client has been closed",
+                "event loop is closed",
+                "cannot send a request, as the client has been closed",
+            )
+        ):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def _is_transient_transport_error(exc: Exception) -> bool:
     """Return True for a one-off transport blip worth retrying ON the
     same provider before any provider/model fallback.
@@ -3618,6 +3640,30 @@ def _auth_refresh_provider_for_route(
     if base_url_host_matches(client_base_url, "inference-api.nousresearch.com"):
         return "nous"
     return normalized
+
+
+def _same_route_retry_provider(
+    resolved_provider: Optional[str],
+    client: Any,
+) -> str:
+    """Resolve the concrete backend already selected for an ``auto`` route."""
+    client_base_url = str(getattr(client, "base_url", "") or "")
+    selected = _auth_refresh_provider_for_route(resolved_provider, client_base_url)
+    if selected and selected != "auto":
+        return selected
+
+    if (
+        base_url_host_matches(client_base_url, "api.x.ai")
+        and isinstance(client, (CodexAuxiliaryClient, AsyncCodexAuxiliaryClient))
+    ):
+        return "xai-oauth"
+
+    from agent.model_metadata import _infer_provider_from_url
+
+    inferred = _infer_provider_from_url(client_base_url)
+    if inferred:
+        return inferred
+    return "custom" if client_base_url else selected
 
 
 def _call_fallback_candidate_sync(
@@ -7189,6 +7235,54 @@ async def async_call_llm(
                 "once on the same provider before fallback: %s",
                 task or "call", transient_err,
             )
+            if _is_poisoned_client_error(transient_err):
+                try:
+                    _evict_cached_client_instance(client)
+                    if task == "vision":
+                        refreshed_provider, fresh_client, fresh_model = resolve_vision_provider_client(
+                            provider=resolved_provider,
+                            model=resolved_model or model,
+                            base_url=resolved_base_url or base_url,
+                            api_key=resolved_api_key or api_key,
+                            async_mode=True,
+                        )
+                        if fresh_client is not None:
+                            client = fresh_client
+                            resolved_provider = refreshed_provider or resolved_provider
+                            if fresh_model:
+                                final_model = fresh_model
+                                kwargs["model"] = fresh_model
+                    else:
+                        retry_provider = _same_route_retry_provider(
+                            resolved_provider,
+                            client,
+                        )
+                        retry_base_url = resolved_base_url
+                        retry_api_key = resolved_api_key
+                        if _normalize_aux_provider(resolved_provider) == "auto":
+                            retry_base_url = _client_base or resolved_base_url
+                            retry_api_key = str(getattr(client, "api_key", "") or "") or resolved_api_key
+                        fresh_client, fresh_model = _get_cached_client(
+                            retry_provider,
+                            resolved_model or final_model,
+                            async_mode=True,
+                            base_url=retry_base_url,
+                            api_key=retry_api_key,
+                            api_mode=resolved_api_mode,
+                            main_runtime=main_runtime,
+                            task=task,
+                        )
+                        if fresh_client is not None:
+                            client = fresh_client
+                            if fresh_model:
+                                final_model = fresh_model
+                                kwargs["model"] = fresh_model
+                except Exception:
+                    logger.debug(
+                        "Auxiliary %s (async): failed to rebuild poisoned client",
+                        task or "call",
+                        exc_info=True,
+                    )
             return _validate_llm_response(
                 await client.chat.completions.create(**kwargs), task)
     except Exception as first_err:
