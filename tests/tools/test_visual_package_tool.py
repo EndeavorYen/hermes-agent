@@ -896,6 +896,58 @@ def test_visual_package_candidate_diversity_never_changes_locked_reference_ident
     assert "Preserve the exact person and face" in result
 
 
+def test_visual_package_preserves_bound_pose_across_candidate_fanout():
+    from tools import visual_package_tool
+
+    result = visual_package_tool._single_candidate_generation_prompt(
+        "Use ref1 for identity and ref2 for the exact action. Make 4 images.",
+        candidate_index=2,
+        candidate_budget=4,
+        pose_variation_requested=True,
+        preserve_reference_identity=True,
+        preserve_reference_pose=True,
+    )
+
+    assert "Pose diversity lane" not in result
+    assert "Preserve the exact pose, camera angle, framing, body orientation, and limb layout" in result
+    assert "different camera height and limb layout" not in result
+
+
+def test_xai_quality_repair_priority_survives_long_prompt_compaction():
+    from agent.visual.prompt_text import build_provider_facing_visual_prompt
+    from tools import visual_package_tool
+
+    original = "Detailed original visual target. " * 100
+    repair = visual_package_tool._quality_repair_prompt(
+        original,
+        {
+            "quality_issues": [
+                "composition_bad",
+                "action_or_moment_missing",
+                "required_detail_missing",
+            ]
+        },
+        reference_binding={
+            "reference_order": [
+                {"index": 1, "role_hint": "character_identity"},
+                {"index": 2, "role_hint": "pose_composition"},
+            ]
+        },
+    )
+
+    compacted = build_provider_facing_visual_prompt(
+        repair,
+        provider="xai",
+        request_category="reference_edit",
+    )
+
+    assert len(compacted) <= 1200
+    assert "Reference role repair pass" in compacted
+    assert "preserve the exact bound pose" in compacted
+    assert "match the bound pose/composition reference's visible action exactly" in compacted
+    assert "visibly satisfy every missing required detail" in compacted
+
+
 def test_visual_package_category_treats_openai_composition_as_composition_guide():
     from tools import visual_package_tool
 
@@ -1509,6 +1561,12 @@ def test_visual_package_diversifies_reference_conditioning_for_identity_pose_con
     assert str(ref2) not in image_calls[1]["reference_image_urls"]
     assert "derived pose/composition guide" in image_calls[1]["prompt"]
     assert "pose/contour guide" not in image_calls[1]["prompt"]
+    assert all("Pose diversity lane" not in call["prompt"] for call in image_calls)
+    assert all(
+        "Preserve the exact pose, camera angle, framing, body orientation, and limb layout"
+        in call["prompt"]
+        for call in image_calls
+    )
     assert payload["generation_strategy"]["reference_conditioning_variants"] == [
         "role_locked_originals",
         "structure_guide",
