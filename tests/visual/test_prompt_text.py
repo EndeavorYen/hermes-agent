@@ -179,3 +179,21 @@ def test_xai_prompt_prioritizes_semantic_pose_roles_over_creative_variation():
     assert len(provider_prompt) <= 1200
     assert "left arm raised vertically" in provider_prompt
     assert "preserve ref 1 character_identity" in provider_prompt
+
+
+def test_xai_prompt_keeps_candidate_lane_after_semantic_pose_contract():
+    prompt = (
+        "Provider reference image ordering for generation:\n"
+        "- pose geometry from user ref 2: key action: raise subject left arm vertically overhead "
+        "on frame right, elbow nearly straight, dominant in the foreground, partially cropped; "
+        "replace the identity anchor's original arm layout; do not leave both arms down; preserve "
+        "ref 1 character_identity, outfit, palette, and visual style.\n\n"
+        "Provider batch candidate 2 of 4. Generate exactly ONE image. Candidate diversity may vary "
+        "only lighting and background treatment."
+    )
+
+    provider_prompt = build_provider_facing_visual_prompt(prompt, provider="xai")
+
+    assert len(provider_prompt) <= 1200
+    assert "raise subject left arm vertically overhead" in provider_prompt
+    assert "candidate 2 of 4" in provider_prompt.lower()
