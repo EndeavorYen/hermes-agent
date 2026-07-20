@@ -1963,6 +1963,11 @@ def test_visual_package_xai_identity_pose_uses_semantic_pose_transfer(monkeypatc
     assert all("preserve the visual style" in call["prompt"].lower() for call in image_calls), [
         (len(call["prompt"]), call["prompt"][:700]) for call in image_calls
     ]
+    assert [
+        f"candidate {index} of 4" in call["prompt"].lower()
+        for index, call in enumerate(image_calls, start=1)
+    ] == [True, True, True, True]
+    assert len({call["prompt"] for call in image_calls}) == 4
     assert payload["generation_strategy"]["reference_conditioning_variants"] == [
         "semantic_pose_transfer"
     ]

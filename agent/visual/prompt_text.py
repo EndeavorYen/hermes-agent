@@ -296,6 +296,7 @@ def _compact_xai_creative_brief_prompt(prompt: str) -> str:
     reference_blocks: list[str] = []
     avoid_items: list[str] = []
     reference_added = False
+    candidate_lane = _xai_candidate_lane(prompt)
 
     for block in paragraphs:
         label, body = _xai_prompt_block_label(block)
@@ -332,7 +333,9 @@ def _compact_xai_creative_brief_prompt(prompt: str) -> str:
         for block in reference_blocks
     )
     if semantic_reference_roles:
-        positive_blocks = [*reference_blocks, *positive_blocks]
+        semantic_budget = 960 if candidate_lane else _XAI_PROMPT_MAX_CHARS
+        semantic_core = _trim_xai_text(" ".join(reference_blocks), semantic_budget)
+        positive_blocks = [semantic_core, *([candidate_lane] if candidate_lane else []), *positive_blocks]
     elif positive_blocks and reference_blocks:
         positive_blocks = [positive_blocks[0], *reference_blocks, *positive_blocks[1:]]
     elif reference_blocks:
@@ -347,6 +350,29 @@ def _compact_xai_creative_brief_prompt(prompt: str) -> str:
     else:
         prompt_text = _trim_xai_text(positive_text, _XAI_PROMPT_MAX_CHARS)
     return _normalise_provider_prompt_text(prompt_text)
+
+
+def _xai_candidate_lane(prompt: str) -> str:
+    match = re.search(
+        r"provider batch candidate\s+(\d+)\s+of\s+(\d+)",
+        str(prompt or ""),
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return ""
+    index = max(1, int(match.group(1)))
+    total = max(index, int(match.group(2)))
+    lanes = (
+        "soft rim light with a dark minimal background",
+        "bright studio light with a clean light background",
+        "dramatic side light with a restrained atmospheric background",
+        "warm backlight with a subtle environmental background",
+    )
+    lane = lanes[(index - 1) % len(lanes)]
+    return (
+        f"Batch candidate {index} of {total}: {lane}; vary lighting and background only; "
+        "keep locked identity and pose unchanged."
+    )
 
 
 def _xai_prompt_block_label(block: str) -> tuple[str | None, str]:
