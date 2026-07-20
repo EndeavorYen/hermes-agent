@@ -393,6 +393,7 @@ class TestGenerate:
                     {
                         "method": "session/update",
                         "params": {
+                            "_meta": {"promptId": request_id},
                             "update": {
                                 "sessionUpdate": "tool_call_update",
                                 "status": "completed",
@@ -470,6 +471,7 @@ class TestGenerate:
             json.dumps(
                 {
                     "params": {
+                        "_meta": {"promptId": "different-request"},
                         "update": {
                             "sessionUpdate": "tool_call_update",
                             "status": "completed",
@@ -516,6 +518,7 @@ class TestGenerate:
             json.dumps(
                 {
                     "params": {
+                        "_meta": {"promptId": request_id},
                         "update": {
                             "sessionUpdate": "tool_call_update",
                             "status": "completed",
@@ -525,6 +528,65 @@ class TestGenerate:
                 }
             )
             + "\n",
+            encoding="utf-8",
+        )
+
+        assert (
+            _extract_grok_build_image(
+                json.dumps({"requestId": request_id}),
+                workdir=workdir,
+                config={"grok_home": str(grok_home)},
+            )
+            is None
+        )
+
+    def test_grok_build_request_recovery_rejects_older_image_update_in_same_session(
+        self, tmp_path
+    ):
+        from urllib.parse import quote
+
+        from plugins.image_gen.xai import _extract_grok_build_image
+
+        workdir = tmp_path / "work"
+        grok_home = tmp_path / ".grok"
+        request_id = "current-request"
+        session_root = (
+            grok_home
+            / "sessions"
+            / quote(str(workdir.resolve()), safe="")
+            / "019f8058-41d1-7d31-b4de-a80029216e6b"
+        )
+        old_image = session_root / "images" / "old.jpg"
+        old_image.parent.mkdir(parents=True)
+        old_image.write_bytes(b"old-image")
+        (session_root / "summary.json").write_text(
+            json.dumps({"request_id": request_id}),
+            encoding="utf-8",
+        )
+        updates = [
+            {
+                "params": {
+                    "_meta": {"promptId": "older-request"},
+                    "update": {
+                        "sessionUpdate": "tool_call_update",
+                        "status": "completed",
+                        "rawOutput": {"type": "ImageEdit", "path": str(old_image)},
+                    },
+                }
+            },
+            {
+                "params": {
+                    "_meta": {"promptId": request_id},
+                    "update": {
+                        "sessionUpdate": "tool_call_update",
+                        "status": "failed",
+                        "rawOutput": {"type": "ImageEdit"},
+                    },
+                }
+            },
+        ]
+        (session_root / "updates.jsonl").write_text(
+            "\n".join(json.dumps(item) for item in updates) + "\n",
             encoding="utf-8",
         )
 

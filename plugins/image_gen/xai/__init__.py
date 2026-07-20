@@ -233,7 +233,7 @@ def _grok_build_request_id(parsed: Any, text: str) -> str:
     return match.group(1).strip() if match else ""
 
 
-def _grok_build_session_image(session_root: Path) -> Optional[str]:
+def _grok_build_session_image(session_root: Path, *, request_id: str) -> Optional[str]:
     resolved_session_root = session_root.resolve()
 
     def current_session_image(value: Any) -> Optional[str]:
@@ -260,11 +260,19 @@ def _grok_build_session_image(session_root: Path) -> Optional[str]:
         update = params.get("update") if isinstance(params, dict) else None
         if not isinstance(update, dict):
             continue
+        metadata = params.get("_meta") if isinstance(params, dict) else None
+        prompt_id = str(metadata.get("promptId") or "").strip() if isinstance(metadata, dict) else ""
+        if prompt_id != request_id:
+            continue
         if str(update.get("sessionUpdate") or "").strip() != "tool_call_update":
             continue
         if str(update.get("status") or "").strip().lower() != "completed":
             continue
-        image = current_session_image(update.get("rawOutput"))
+        raw_output = update.get("rawOutput")
+        output_type = str(raw_output.get("type") or "").strip() if isinstance(raw_output, dict) else ""
+        if output_type not in {"ImageEdit", "ImageGen"}:
+            continue
+        image = current_session_image(raw_output)
         if image:
             return image
         image = current_session_image(update.get("content"))
@@ -301,7 +309,7 @@ def _grok_build_image_for_request(
         ).strip()
         if current_request_id != request_id:
             continue
-        return _grok_build_session_image(summary_path.parent)
+        return _grok_build_session_image(summary_path.parent, request_id=request_id)
     return None
 
 
