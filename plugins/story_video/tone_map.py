@@ -159,7 +159,7 @@ _TONE_DEFINITIONS = {
     "adult.breathless": _definition(
         "氣息急促", "shorter phrases, bounded irregular pauses",
         ("breathy", "trembling", "restrained", "urgent", "hesitant", "soft"),
-        "用較短語句與略不規則但克制的停頓來說，保持完整咬字", "dramatic", 1.05, 0.05, 0.16,
+        "用較短語句與略不規則但克制的停頓來說，保持完整咬字", "natural", 1.00, 0.00, 0.16,
     ),
     "adult.shy": _definition(
         "害羞", "quiet, hesitant, slightly slower",
@@ -292,8 +292,10 @@ def build_tone_catalog() -> dict[str, Any]:
     return {**catalog, "sha256": _canonical_sha256(catalog)}
 
 
-def _first_action_tone(action: str) -> str:
+def _first_action_tone(action: str, *, allow_adult: bool) -> str:
     for tone_id, keywords in ACTION_TO_TONE:
+        if tone_id.startswith("adult.") and not allow_adult:
+            continue
         if any(keyword in action for keyword in keywords):
             return tone_id
     return ""
@@ -350,12 +352,16 @@ def resolve_utterance_tone(
     source_emotion = str(emotion or "").strip()
     source_action = str(action or "").strip()
     source_pace = str(pace or "").strip()
+    normalized_content_rating = str(content_rating or "").strip().casefold()
     warning = ""
     if requested_tone_id:
         resolved_tone_id = requested_tone_id
         resolution = "explicit"
     else:
-        action_tone_id = _first_action_tone(source_action)
+        action_tone_id = _first_action_tone(
+            source_action,
+            allow_adult=normalized_content_rating == "adult_explicit",
+        )
         normalized_emotion = source_emotion.casefold()
         if action_tone_id:
             resolved_tone_id = action_tone_id
@@ -380,7 +386,10 @@ def resolve_utterance_tone(
             "tone_id_invalid",
             f"unsupported tone_id: {resolved_tone_id!r}",
         )
-    if resolved_tone_id.startswith("adult.") and str(content_rating or "").strip().casefold() != "adult_explicit":
+    if (
+        resolved_tone_id.startswith("adult.")
+        and normalized_content_rating != "adult_explicit"
+    ):
         raise ToneMapError(
             "tone_content_rating_invalid",
             f"tone {resolved_tone_id!r} requires adult_explicit content rating",
