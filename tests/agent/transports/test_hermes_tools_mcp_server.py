@@ -144,6 +144,20 @@ class TestModuleSurface:
         assert result == "ok"
         assert observed["session_id"] == "story-session-1"
 
+    def test_stateful_story_tools_advertise_verified_run_identity(self):
+        from plugins.story_video.schemas import (
+            STORY_VIDEO_AUDIO_DIRECTOR_SCHEMA,
+            STORY_VIDEO_CONTROL_SCHEMA,
+        )
+
+        for schema in (
+            STORY_VIDEO_CONTROL_SCHEMA,
+            STORY_VIDEO_AUDIO_DIRECTOR_SCHEMA,
+        ):
+            properties = schema["parameters"]["properties"]
+            assert properties["run_id"]["type"] == "string"
+            assert properties["project_dir"]["type"] == "string"
+
     def test_mcp_dispatch_unwraps_fastmcp_kwargs_envelope(self):
         import agent.transports.hermes_tools_mcp_server as m
 

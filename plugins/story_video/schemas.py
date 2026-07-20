@@ -35,6 +35,14 @@ STORY_VIDEO_CONTROL_SCHEMA = {
                     "Registered narrator profile identifier when action=select_voice."
                 ),
             },
+            "run_id": {
+                "type": "string",
+                "description": "Verified active story-video run identity.",
+            },
+            "project_dir": {
+                "type": "string",
+                "description": "Absolute project directory paired with run_id.",
+            },
         },
         "required": ["action"],
     },
@@ -188,6 +196,14 @@ STORY_VIDEO_AUDIO_DIRECTOR_SCHEMA = {
                         "display_text",
                     ],
                 },
+            },
+            "run_id": {
+                "type": "string",
+                "description": "Verified active story-video run identity.",
+            },
+            "project_dir": {
+                "type": "string",
+                "description": "Absolute project directory paired with run_id.",
             },
         },
         "required": ["action"],
