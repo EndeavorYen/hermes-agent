@@ -27,6 +27,7 @@ from .quality import CLOSE_EVIDENCE_SCALES, QUALITY_THRESHOLD, validate_quality_
 from .review_board import (
     V6_QUALITY_CHECKS,
     content_profile_requires_child_curiosity,
+    validate_content_profile,
     validate_v6_review_bundle,
 )
 from .sequence_quality import (
@@ -95,16 +96,22 @@ def _load_json(path: Path) -> Any:
         return None
 
 
-def _project_content_rating(project_dir: Path) -> str:
-    profile = _load_json(project_dir / "content_profile.json")
+def _project_content_rating(context: StoryVideoRunContext) -> str:
+    profile = _load_json(context.project_dir / "content_profile.json")
     if not isinstance(profile, dict):
         return "general"
     rating = str(profile.get("rating") or "").strip().casefold()
-    if (
-        profile.get("schema") == "story_video_content_profile_v1"
-        and profile.get("activation_status") == "active"
-        and rating in {"family", "general", "mature", "adult_explicit"}
-    ):
+    if rating == "adult_explicit":
+        from .source_passthrough import validate_local_adult_passthrough
+
+        missing, violations = validate_local_adult_passthrough(context)
+        if not missing and not violations:
+            return rating
+        return "general"
+    ledger = _load_json(context.project_dir / "scene_ledger.json")
+    if not isinstance(ledger, dict):
+        ledger = {}
+    if not validate_content_profile(profile, ledger):
         return rating
     return "general"
 
@@ -1612,7 +1619,7 @@ def story_video_audio_director(
                 utterances=(
                     args.get("utterances") if isinstance(args.get("utterances"), list) else []
                 ),
-                content_rating=_project_content_rating(context.project_dir),
+                content_rating=_project_content_rating(context),
             )
             selection = bind_project_voice_cast(context.project_dir, **bind_kwargs)
             payload.update(

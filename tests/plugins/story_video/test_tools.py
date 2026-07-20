@@ -4,6 +4,8 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
 from plugins.story_video.accessible_explainer import (
     ACCESSIBLE_EXPLAINER_PROFILE_ID,
     ensure_explanation_profile,
@@ -20,6 +22,7 @@ from plugins.story_video.shot_contract import shot_contract_hash
 from plugins.story_video.state import StoryVideoStateStore, parse_operator_call
 from plugins.story_video.tools import (
     _next_phase,
+    _project_content_rating,
     story_video_audio_director,
     story_video_control,
     story_video_voice_manager,
@@ -436,7 +439,7 @@ def test_audio_director_compiles_and_binds_active_story_project(tmp_path) -> Non
     assert "voice_id" in STORY_VIDEO_CONTROL_SCHEMA["parameters"]["properties"]
 
 
-def test_audio_director_derives_adult_rating_from_valid_local_profile(tmp_path) -> None:
+def test_audio_director_rejects_incomplete_adult_profile_as_general(tmp_path) -> None:
     store, context = _active_context(tmp_path)
     registry = _voice_registry(tmp_path, "voice_a", default="voice_a")
     (context.project_dir / "content_profile.json").write_text(
@@ -483,12 +486,66 @@ def test_audio_director_derives_adult_rating_from_valid_local_profile(tmp_path) 
         )
     )
 
-    assert payload["success"] is True
-    ledger = json.loads(
-        (context.project_dir / "dialogue_ledger.json").read_text(encoding="utf-8")
+    assert payload["success"] is False
+    assert payload["error_type"] == "tone_content_rating_invalid"
+    assert not (context.project_dir / "voice_cast_binding.json").exists()
+
+
+@pytest.mark.parametrize(
+    "profile_update",
+    [
+        {"schema": "wrong"},
+        {"activation_status": "inactive"},
+        {"provider_capability_status": "unavailable"},
+        {"minimum_viewer_age": -1},
+        {"policy_profile_id": ""},
+        {"writer_profile_id": ""},
+        {"review_profile_id": ""},
+    ],
+)
+def test_project_content_rating_falls_back_for_invalid_general_profile(
+    tmp_path,
+    profile_update,
+) -> None:
+    _store, context = _active_context(tmp_path)
+    profile = {
+        "schema": "story_video_content_profile_v1",
+        "rating": "family",
+        "activation_status": "active",
+        "minimum_viewer_age": 5,
+        "policy_profile_id": "family-safe-v1",
+        "writer_profile_id": "family-writer-v1",
+        "review_profile_id": "family-review-board-v1",
+        "provider_capability_status": "available",
+    }
+    profile.update(profile_update)
+    (context.project_dir / "content_profile.json").write_text(
+        json.dumps(profile),
+        encoding="utf-8",
     )
-    assert ledger["content_rating"] == "adult_explicit"
-    assert ledger["utterances"][0]["tone"]["tone_id"] == "adult.intimate"
+
+    assert _project_content_rating(context) == "general"
+
+
+def test_project_content_rating_accepts_valid_general_contract(tmp_path) -> None:
+    _store, context = _active_context(tmp_path)
+    (context.project_dir / "content_profile.json").write_text(
+        json.dumps(
+            {
+                "schema": "story_video_content_profile_v1",
+                "rating": "family",
+                "activation_status": "active",
+                "minimum_viewer_age": 5,
+                "policy_profile_id": "family-safe-v1",
+                "writer_profile_id": "family-writer-v1",
+                "review_profile_id": "family-review-board-v1",
+                "provider_capability_status": "available",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert _project_content_rating(context) == "family"
 
 
 def test_audio_director_starts_bound_production_with_canonical_context(tmp_path) -> None:

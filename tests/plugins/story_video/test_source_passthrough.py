@@ -9,7 +9,7 @@ from plugins.story_video.source_passthrough import (
     prepare_local_adult_passthrough,
 )
 from plugins.story_video.state import OperatorCall, StoryVideoStateStore
-from plugins.story_video.tools import validate_phase
+from plugins.story_video.tools import _project_content_rating, validate_phase
 
 
 def _request(*, duplicate: bool = False) -> str:
@@ -174,6 +174,7 @@ def test_adult_passthrough_compiles_adult_action_tone_without_speaking_action(
     assert "渴望" not in row["display_text"]
     proof = validate_phase(context)
     assert proof.ok is True, (proof.missing, proof.violations)
+    assert _project_content_rating(context) == "adult_explicit"
 
 
 def test_prepare_local_adult_passthrough_fails_closed_outside_black_subtitle(
