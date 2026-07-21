@@ -67,6 +67,46 @@ def test_visual_reference_context_falls_back_across_session_rollover():
     ]
 
 
+def test_named_visual_references_search_full_history_in_prompt_order_with_roles():
+    from gateway.run import _visual_reference_context_for_turn
+
+    history = []
+    for start in range(1, 21, 4):
+        history.append(
+            {
+                "role": "tool",
+                "content": json.dumps(
+                    {
+                        "success": True,
+                        "session_visual_artifacts": [
+                            {
+                                "label": f"G{index}",
+                                "user_ref_index": index,
+                                "uri": f"/tmp/g{index}.jpg",
+                            }
+                            for index in range(start, start + 4)
+                        ],
+                    }
+                ),
+            }
+        )
+
+    references = _visual_reference_context_for_turn(
+        "以 G2 鎖定人物身分，G15 取動作與構圖，產出一張新圖",
+        current_attachment_paths=[],
+        agent_history=history,
+    )
+
+    assert [entry["uri"] for entry in references] == [
+        "/tmp/g2.jpg",
+        "/tmp/g15.jpg",
+    ]
+    assert [entry["role_hint"] for entry in references] == [
+        "character_identity",
+        "pose_composition",
+    ]
+
+
 def test_current_attachment_wins_over_rollover_fallback():
     from gateway.run import _visual_reference_context_for_turn
 
