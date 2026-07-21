@@ -25,6 +25,7 @@ class TonePkError(RuntimeError):
 
 
 SPOKEN_TEXT_NORMALIZATION = "bounded_ellipsis_v1"
+SOURCE_ASSEMBLY_CONTRACT = "ffmpeg_concat_pcm_s16le_48000_mono_v1"
 _DISPLAY_PAUSE_RE = re.compile(r"(?:\.{3,}|…{2,}|⋯{2,}|—{1,2})")
 _CLOSING_MARKS = "」』”’\"'】）》）]"
 _TERMINAL_MARKS = "。！？!?"
@@ -45,6 +46,46 @@ def normalize_synthesis_spoken_text(text: str) -> str:
         return "，"
 
     return _DISPLAY_PAUSE_RE.sub(replace, source)
+
+
+def _source_assembly_fingerprint(chunk_hashes: list[str]) -> str:
+    if not chunk_hashes or any(
+        not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
+        for value in chunk_hashes
+    ):
+        raise TonePkError("source assembly chunk hashes are invalid")
+    payload = json.dumps(
+        {
+            "contract": SOURCE_ASSEMBLY_CONTRACT,
+            "ordered_chunk_audio_sha256s": chunk_hashes,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return _text_sha256(payload)
+
+
+def _stored_source_assembly_fingerprint(take: dict[str, Any]) -> str | None:
+    fields = (
+        "source_assembly_contract",
+        "source_chunk_audio_sha256s",
+        "source_assembly_fingerprint",
+    )
+    present = [field in take for field in fields]
+    if not any(present):
+        return None
+    if not all(present):
+        raise TonePkError("source assembly evidence is incomplete")
+    hashes = take["source_chunk_audio_sha256s"]
+    if (
+        take["source_assembly_contract"] != SOURCE_ASSEMBLY_CONTRACT
+        or not isinstance(hashes, list)
+    ):
+        raise TonePkError("source assembly evidence is invalid")
+    expected = _source_assembly_fingerprint(hashes)
+    if take["source_assembly_fingerprint"] != expected:
+        raise TonePkError("source assembly fingerprint is invalid")
+    return expected
 
 
 def _trusted_pronunciation_contract(
@@ -579,6 +620,7 @@ _PAIR_EQUAL_FIELDS = (
     ("canonical_spoken_text", "canonical spoken text"),
     ("canonical_spoken_text_sha256", "canonical spoken text hash"),
     ("pronunciation_lexicon_sha256s", "pronunciation lexicon hash"),
+    ("source_assembly_contract", "source assembly contract"),
     ("voice_id", "voice"),
     ("engine", "engine"),
     ("model_id", "model"),
@@ -613,6 +655,9 @@ def validate_pair_evidence(pair: dict[str, Any]) -> dict[str, Any]:
             raise TonePkError(f"{label} evidence is missing")
         if neutral[field] != expressive[field]:
             raise TonePkError(f"pair {pair_id} {label} drift")
+    for take in (neutral, expressive):
+        if _stored_source_assembly_fingerprint(take) is None:
+            raise TonePkError(f"pair {pair_id} source assembly evidence is missing")
     if neutral["spoken_text"] != pair.get("spoken_text"):
         raise TonePkError(f"pair {pair_id} spoken text drift from pair plan")
     chunks = neutral["canonical_voice_chunks"]
@@ -1199,6 +1244,7 @@ def _ingest_generated_variant(
                 raise TonePkError(f"generator changed {field} for {utterance_id}")
         if any(chunk.get("tone") != take.get("tone") for chunk in chunks):
             raise TonePkError(f"generator changed tone evidence for {utterance_id}")
+        observed_audio_hashes: list[str] = []
         for chunk in chunks:
             audio_path = Path(str(chunk.get("audio") or ""))
             expected_audio_sha256 = str(chunk.get("audio_sha256") or "")
@@ -1210,6 +1256,7 @@ def _ingest_generated_variant(
                 raise TonePkError(
                     f"generator audio hash is invalid for {utterance_id}"
                 )
+            observed_audio_hashes.append(expected_audio_sha256)
         speaker_binding = bindings.get(str(pair.get("speaker_id") or ""))
         if speaker_binding is None:
             raise TonePkError(f"generator speaker binding is missing for {utterance_id}")
@@ -1250,15 +1297,34 @@ def _ingest_generated_variant(
             )
         ):
             raise TonePkError(f"generator candidate evidence is invalid for {utterance_id}")
-        reuse_source_audio = (
-            reconcile_existing_source and _source_artifact_is_valid(take)
+        current_assembly_fingerprint = _source_assembly_fingerprint(
+            observed_audio_hashes
+        )
+        stored_assembly_fingerprint = _stored_source_assembly_fingerprint(take)
+        assembly_identity_changed = bool(
+            stored_assembly_fingerprint
+            and stored_assembly_fingerprint != current_assembly_fingerprint
+        )
+        reuse_source_audio = bool(
+            reconcile_existing_source
+            and _source_artifact_is_valid(take)
+            and stored_assembly_fingerprint == current_assembly_fingerprint
         )
         prior_candidates = int(take.get("candidate_count") or 0)
-        candidate_offset = prior_candidates if accumulate_candidates else 0
+        candidate_offset = (
+            prior_candidates
+            if accumulate_candidates or assembly_identity_changed
+            else 0
+        )
         observed_candidate_count = candidate_offset + max(observed_counts)
         observed_selected_candidate = candidate_offset + max(observed_selected)
+        if observed_candidate_count > 3:
+            raise TonePkError(
+                f"candidate budget exceeded while reconciling {utterance_id}"
+            )
         preserve_candidate_accounting = (
-            reuse_source_audio
+            reconcile_existing_source
+            and not assembly_identity_changed
             and prior_candidates >= observed_candidate_count
             and type(take.get("selected_candidate")) is int
             and 1 <= take["selected_candidate"] <= prior_candidates
@@ -1306,6 +1372,9 @@ def _ingest_generated_variant(
                 ),
                 "source_audio_path": str(source_audio),
                 "source_audio_sha256": source_audio_sha256,
+                "source_assembly_contract": SOURCE_ASSEMBLY_CONTRACT,
+                "source_chunk_audio_sha256s": observed_audio_hashes,
+                "source_assembly_fingerprint": current_assembly_fingerprint,
                 "duration_seconds": round(
                     sum(float(chunk.get("speech_duration_sec") or 0) for chunk in chunks),
                     4,

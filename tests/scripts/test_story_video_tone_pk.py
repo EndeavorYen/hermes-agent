@@ -14,6 +14,7 @@ from scripts import story_video_tone_pk as tone_pk
 
 def passing_pair_evidence(tmp_path: Path | None = None) -> dict:
     audio_root = tmp_path or Path("/sanitized")
+    source_chunk_hashes = ["e" * 64]
     common = {
         "spoken_text": "同一句。",
         "spoken_text_normalization": "bounded_ellipsis_v1",
@@ -25,6 +26,11 @@ def passing_pair_evidence(tmp_path: Path | None = None) -> dict:
         ).hexdigest(),
         "pronunciation_lexicon_sources": [],
         "pronunciation_lexicon_sha256s": [],
+        "source_assembly_contract": tone_pk.SOURCE_ASSEMBLY_CONTRACT,
+        "source_chunk_audio_sha256s": source_chunk_hashes,
+        "source_assembly_fingerprint": tone_pk._source_assembly_fingerprint(
+            source_chunk_hashes
+        ),
         "voice_id": "fixture_voice",
         "engine": "qwen_custom_voice",
         "model_id": "fixture_model",
@@ -611,6 +617,104 @@ def test_generate_resume_backfills_old_checkpoint_canonical_evidence(
     assert all(field in refreshed["pairs"][0]["neutral"] for field in canonical_fields)
 
 
+def test_generate_resume_reassembles_source_when_manifest_chunk_identity_changes(
+    tmp_path: Path,
+) -> None:
+    project = prepared_pk_project(tmp_path)
+    generator = tmp_path / "fake_generator.py"
+    generator.write_text("# sanitized fixture\n", encoding="utf-8")
+    _seed_existing_variant_manifests(project, generator, qc_pass=False)
+    with pytest.raises(tone_pk.TonePkError, match="use qc --repair-failed"):
+        tone_pk.generate_takes(
+            project,
+            generator,
+            resume=True,
+            runner=lambda *_args, **_kwargs: pytest.fail("provider runner called"),
+        )
+    state_path = project / "manifests" / "tone_pk_manifest.json"
+    before = json.loads(state_path.read_text(encoding="utf-8"))
+    take_before = before["pairs"][0]["neutral"]
+    old_source_hash = take_before["source_audio_sha256"]
+    manifest_path = project / "variants" / "neutral/manifests/narration_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    chunk = manifest["outputs"][0]["segments"][0]["voice_chunks"][0]
+    chunk_audio = Path(chunk["audio"])
+    chunk_audio.write_bytes(b"replacement-verified-chunk")
+    chunk["audio_sha256"] = _sha256(chunk_audio)
+    for gate in (
+        "alignment_status",
+        "pronunciation_status",
+        "prosody_status",
+        "fluency_status",
+        "qc_status",
+    ):
+        chunk[gate] = "PASS"
+    _write_json(manifest_path, manifest)
+
+    with pytest.raises(tone_pk.TonePkError, match="use qc --repair-failed"):
+        tone_pk.generate_takes(
+            project,
+            generator,
+            resume=True,
+            runner=lambda *_args, **_kwargs: pytest.fail("provider runner called"),
+        )
+
+    after = json.loads(state_path.read_text(encoding="utf-8"))
+    neutral = after["pairs"][0]["neutral"]
+    assert neutral["qc_status"] == "PASS"
+    assert neutral["source_audio_sha256"] == chunk["audio_sha256"]
+    assert neutral["source_audio_sha256"] != old_source_hash
+
+
+def test_generate_resume_changed_chunk_identity_accounts_crash_window_candidates(
+    tmp_path: Path,
+) -> None:
+    project = prepared_pk_project(tmp_path)
+    generator = tmp_path / "fake_generator.py"
+    generator.write_text("# sanitized fixture\n", encoding="utf-8")
+    fixture_runner = fake_generator_runner([], qc_pass=False)
+    fixture_runner([str(generator), str(project / "variants" / "neutral")])
+    with pytest.raises(tone_pk.TonePkError, match="use qc --repair-failed"):
+        tone_pk.generate_takes(
+            project,
+            generator,
+            resume=True,
+            runner=lambda *_args, **_kwargs: pytest.fail("provider runner called"),
+        )
+    state_path = project / "manifests" / "tone_pk_manifest.json"
+    manifest_path = project / "variants" / "neutral/manifests/narration_manifest.json"
+
+    def replace_chunk(*, suffix: bytes, candidate_count: int) -> None:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        chunk = manifest["outputs"][0]["segments"][0]["voice_chunks"][0]
+        audio = Path(chunk["audio"])
+        audio.write_bytes(audio.read_bytes() + suffix)
+        chunk["audio_sha256"] = _sha256(audio)
+        chunk["candidate_count"] = candidate_count
+        chunk["selected_candidate"] = candidate_count
+        _write_json(manifest_path, manifest)
+
+    replace_chunk(suffix=b"-repair-two", candidate_count=2)
+    with pytest.raises(tone_pk.TonePkError, match="use qc --repair-failed"):
+        tone_pk.generate_takes(
+            project,
+            generator,
+            resume=True,
+            runner=lambda *_args, **_kwargs: pytest.fail("provider runner called"),
+        )
+    checkpoint = json.loads(state_path.read_text(encoding="utf-8"))
+    assert checkpoint["pairs"][0]["neutral"]["candidate_count"] == 3
+
+    replace_chunk(suffix=b"-repair-four", candidate_count=1)
+    with pytest.raises(tone_pk.TonePkError, match="candidate budget"):
+        tone_pk.generate_takes(
+            project,
+            generator,
+            resume=True,
+            runner=lambda *_args, **_kwargs: pytest.fail("provider runner called"),
+        )
+
+
 def test_generate_accepts_exact_bounded_ellipsis_normalization_and_records_hashes(
     tmp_path: Path,
 ) -> None:
@@ -1074,6 +1178,15 @@ def test_pair_qc_accepts_distinct_paths_for_identical_pronunciation_lexicons(
         )
 
     assert tone_pk.validate_pair_evidence(pair)["pair_id"] == pair["pair_id"]
+
+
+def test_pair_qc_rejects_missing_source_assembly_fingerprint() -> None:
+    pair = passing_pair_evidence()
+    for variant in ("neutral", "expressive"):
+        pair[variant].pop("source_assembly_fingerprint")
+
+    with pytest.raises(tone_pk.TonePkError, match="source assembly evidence"):
+        tone_pk.validate_pair_evidence(pair)
 
 
 def test_resume_keeps_green_take_hashes_and_regenerates_only_failed_take(
