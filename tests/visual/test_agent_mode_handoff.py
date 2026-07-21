@@ -1676,6 +1676,54 @@ def test_direct_visual_handoff_uses_session_edit_anchor_for_followup_edit():
     }
 
 
+def test_direct_visual_handoff_uses_semantic_pose_transfer_for_original_role_refs():
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+    from gateway.session_context import reset_visual_reference_context, set_visual_reference_context
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.6-sol",
+    )
+    token = set_visual_reference_context(
+        [
+            {
+                "uri": "/tmp/ref1-character.png",
+                "role_hint": "character_identity",
+                "source": "previous_tool_reference",
+                "user_ref_index": 1,
+            },
+            {
+                "uri": "/tmp/ref2-pose.png",
+                "role_hint": "pose_composition",
+                "source": "previous_tool_reference",
+                "user_ref_index": 2,
+            },
+        ]
+    )
+    try:
+        handoff = build_direct_visual_agent_handoff(
+            agent,
+            "完全保持 ref1 的人物特徵，只套用 ref2 的姿勢與構圖，重新產出四張。",
+        )
+    finally:
+        reset_visual_reference_context(token)
+
+    assert handoff is not None
+    args = handoff["arguments"]
+    assert args["attachments"] == [
+        "/tmp/ref1-character.png",
+        "/tmp/ref2-pose.png",
+    ]
+    assert args["reference_conditioning_policy"] == "semantic_pose_transfer"
+    assert args["reference_strategy"] == {
+        "mode": "semantic_pose_transfer",
+        "source": "visual_agent_handoff",
+        "requires_new_composition": True,
+        "edit_anchor": False,
+    }
+
+
 def test_direct_visual_handoff_routes_colloquial_chinese_reference_edit():
     from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
     from gateway.session_context import reset_visual_reference_context, set_visual_reference_context

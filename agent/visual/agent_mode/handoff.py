@@ -152,13 +152,32 @@ def build_direct_visual_agent_handoff(
         arguments["reference_binding"] = _session_reference_binding(session_reference_entries)
         arguments["prompt"] = _prompt_with_session_edit_context(prompt, session_reference_entries)
         if followup_request or polish_request:
-            arguments["reference_conditioning_policy"] = "role_locked_originals"
-            arguments["reference_strategy"] = {
-                "mode": "direct_edit_anchor",
-                "source": "visual_agent_handoff",
-                "requires_new_composition": False,
-                "edit_anchor": True,
+            reference_roles = {
+                str(entry.get("role_hint") or "").strip()
+                for entry in session_reference_entries
+                if isinstance(entry, dict)
             }
+            semantic_pose_transfer = (
+                "character_identity" in reference_roles
+                and "pose_composition" in reference_roles
+                and "edit_anchor" not in reference_roles
+            )
+            if semantic_pose_transfer:
+                arguments["reference_conditioning_policy"] = "semantic_pose_transfer"
+                arguments["reference_strategy"] = {
+                    "mode": "semantic_pose_transfer",
+                    "source": "visual_agent_handoff",
+                    "requires_new_composition": True,
+                    "edit_anchor": False,
+                }
+            else:
+                arguments["reference_conditioning_policy"] = "role_locked_originals"
+                arguments["reference_strategy"] = {
+                    "mode": "direct_edit_anchor",
+                    "source": "visual_agent_handoff",
+                    "requires_new_composition": False,
+                    "edit_anchor": True,
+                }
     contract = dict(plan.get("provider_contract") or {})
     control_route = (
         raphael_control.get("route")
