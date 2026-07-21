@@ -422,6 +422,26 @@ def _seed_existing_variant_manifests(
         fixture_runner([str(generator), str(project / "variants" / variant)])
 
 
+def _set_manifest_utterance_qc(
+    project: Path,
+    *,
+    variant: str,
+    utterance_id: str,
+    passed: bool,
+) -> None:
+    path = project / "variants" / variant / "manifests" / "narration_manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    status = "PASS" if passed else "FAIL"
+    for output in manifest["outputs"]:
+        for segment in output["segments"]:
+            for chunk in segment["voice_chunks"]:
+                if chunk["utterance_id"] != utterance_id:
+                    continue
+                chunk["pronunciation_status"] = status
+                chunk["qc_status"] = status
+    _write_json(path, manifest)
+
+
 def test_generate_resume_ingests_existing_pass_manifests_without_runner(
     tmp_path: Path,
 ) -> None:
@@ -482,6 +502,113 @@ def test_generate_resume_rejects_existing_drift_before_runner(tmp_path: Path) ->
             resume=True,
             runner=lambda *_args, **_kwargs: pytest.fail("provider runner called"),
         )
+
+
+def test_neutral_fail_preingest_persists_generator_for_direct_repair(
+    tmp_path: Path,
+) -> None:
+    project = prepared_pk_project(tmp_path)
+    generator = tmp_path / "fake_generator.py"
+    generator.write_text("# sanitized fixture\n", encoding="utf-8")
+    fixture_runner = fake_generator_runner([], qc_pass=False)
+    fixture_runner([str(generator), str(project / "variants" / "neutral")])
+
+    with pytest.raises(tone_pk.TonePkError, match="use qc --repair-failed"):
+        tone_pk.generate_takes(
+            project,
+            generator,
+            resume=True,
+            runner=lambda *_args, **_kwargs: pytest.fail("provider runner called"),
+        )
+
+    checkpoint = json.loads(
+        (project / "manifests" / "tone_pk_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert checkpoint["generator_path"] == str(generator.resolve())
+    repair_calls: list[list[str]] = []
+    result = tone_pk.repair_failed_takes(
+        project,
+        max_candidates=3,
+        runner=fake_generator_runner(repair_calls),
+    )
+    assert result["status"] == "PASS"
+    assert any(str(generator.resolve()) in command for command in repair_calls)
+
+
+def test_generate_resume_reconciles_manifest_fail_over_green_checkpoint(
+    tmp_path: Path,
+) -> None:
+    project = prepared_pk_project(tmp_path)
+    generator = tmp_path / "fake_generator.py"
+    generator.write_text("# sanitized fixture\n", encoding="utf-8")
+    tone_pk.generate_takes(
+        project,
+        generator,
+        resume=True,
+        runner=fake_generator_runner([]),
+    )
+    manifest_path = project / "variants" / "neutral/manifests/narration_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    chunk = manifest["outputs"][0]["segments"][0]["voice_chunks"][0]
+    chunk["pronunciation_status"] = "FAIL"
+    chunk["qc_status"] = "FAIL"
+    _write_json(manifest_path, manifest)
+
+    with pytest.raises(tone_pk.TonePkError, match="use qc --repair-failed"):
+        tone_pk.generate_takes(
+            project,
+            generator,
+            resume=True,
+            runner=lambda *_args, **_kwargs: pytest.fail("provider runner called"),
+        )
+
+    checkpoint = json.loads(
+        (project / "manifests" / "tone_pk_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert checkpoint["pairs"][0]["neutral"]["qc_status"] == "FAIL"
+
+
+def test_generate_resume_backfills_old_checkpoint_canonical_evidence(
+    tmp_path: Path,
+) -> None:
+    project = prepared_pk_project(tmp_path)
+    generator = tmp_path / "fake_generator.py"
+    generator.write_text("# sanitized fixture\n", encoding="utf-8")
+    tone_pk.generate_takes(
+        project,
+        generator,
+        resume=True,
+        runner=fake_generator_runner([]),
+    )
+    state_path = project / "manifests" / "tone_pk_manifest.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    canonical_fields = (
+        "spoken_text_normalization",
+        "source_spoken_text_sha256",
+        "canonical_spoken_chunks",
+        "canonical_spoken_text",
+        "canonical_spoken_text_sha256",
+        "pronunciation_lexicon_sources",
+        "pronunciation_lexicon_sha256s",
+    )
+    for field in canonical_fields:
+        state["pairs"][0]["neutral"].pop(field)
+    _write_json(state_path, state)
+
+    result = tone_pk.generate_takes(
+        project,
+        generator,
+        resume=True,
+        runner=lambda *_args, **_kwargs: pytest.fail("provider runner called"),
+    )
+
+    assert result["generated_take_count"] == 0
+    refreshed = json.loads(state_path.read_text(encoding="utf-8"))
+    assert all(field in refreshed["pairs"][0]["neutral"] for field in canonical_fields)
 
 
 def test_generate_accepts_exact_bounded_ellipsis_normalization_and_records_hashes(
@@ -1290,6 +1417,12 @@ def test_public_generate_resume_refuses_qc_failed_valid_source_with_guidance(
     state = json.loads(state_path.read_text(encoding="utf-8"))
     failed = state["pairs"][0]["expressive"]
     failed["qc_status"] = "FAIL"
+    _set_manifest_utterance_qc(
+        project,
+        variant="expressive",
+        utterance_id="U0001",
+        passed=False,
+    )
     before = (failed["candidate_count"], failed["selected_candidate"])
     _write_json(state_path, state)
     ledger_hash = _sha256(state_path)
@@ -1335,6 +1468,12 @@ def test_targeted_generate_counts_unselected_failed_take_separately(
     state = json.loads(state_path.read_text(encoding="utf-8"))
     for pair in state["pairs"]:
         pair["neutral"]["qc_status"] = "FAIL"
+        _set_manifest_utterance_qc(
+            project,
+            variant="neutral",
+            utterance_id=pair["utterance_id"],
+            passed=False,
+        )
     _write_json(state_path, state)
 
     result = tone_pk.generate_takes(
@@ -1365,6 +1504,12 @@ def test_repair_failed_takes_only_regenerates_failed_take(tmp_path: Path) -> Non
     state = json.loads(state_path.read_text(encoding="utf-8"))
     neutral_hash = state["pairs"][0]["neutral"]["source_audio_sha256"]
     state["pairs"][0]["expressive"]["qc_status"] = "FAIL"
+    _set_manifest_utterance_qc(
+        project,
+        variant="expressive",
+        utterance_id="U0001",
+        passed=False,
+    )
     _write_json(state_path, state)
     repair_calls: list[list[str]] = []
 
@@ -1398,6 +1543,12 @@ def test_repair_candidate_budget_is_cumulative_and_never_exceeds_cap(
     state_path = project / "manifests/tone_pk_manifest.json"
     state = json.loads(state_path.read_text(encoding="utf-8"))
     state["pairs"][0]["expressive"]["qc_status"] = "FAIL"
+    _set_manifest_utterance_qc(
+        project,
+        variant="expressive",
+        utterance_id="U0001",
+        passed=False,
+    )
     _write_json(state_path, state)
     calls: list[list[str]] = []
 
@@ -1414,6 +1565,12 @@ def test_repair_candidate_budget_is_cumulative_and_never_exceeds_cap(
     retries_index = calls[0].index("--max-acoustic-retries") + 1
     assert calls[0][retries_index] == "1"
     take["qc_status"] = "FAIL"
+    _set_manifest_utterance_qc(
+        project,
+        variant="expressive",
+        utterance_id="U0001",
+        passed=False,
+    )
     _write_json(state_path, repaired)
     with pytest.raises(tone_pk.TonePkError, match="candidate budget exhausted"):
         tone_pk.repair_failed_takes(
@@ -1441,16 +1598,59 @@ def test_repair_dispatches_heterogeneous_take_budgets_independently(
     second = state["pairs"][1]["neutral"]
     first.update({"qc_status": "FAIL", "candidate_count": 2, "selected_candidate": 2})
     second.update({"qc_status": "FAIL", "candidate_count": 1, "selected_candidate": 1})
+    _set_manifest_utterance_qc(
+        project,
+        variant="neutral",
+        utterance_id="U0001",
+        passed=False,
+    )
+    _set_manifest_utterance_qc(
+        project,
+        variant="neutral",
+        utterance_id="U0002",
+        passed=False,
+    )
     _write_json(state_path, state)
     calls: list[list[str]] = []
+    base_runner = fake_generator_runner(
+        calls,
+        candidate_count={"U0001": 1, "U0002": 2},
+    )
+
+    def targeted_runner(command: list[str], **kwargs):
+        result = base_runner(command, **kwargs)
+        if (
+            command[0] != "ffmpeg"
+            and "--repair-shot" in command
+            and command[command.index("--repair-shot") + 1] == "U0001"
+        ):
+            _set_manifest_utterance_qc(
+                project,
+                variant="neutral",
+                utterance_id="U0002",
+                passed=False,
+            )
+            manifest_path = (
+                project
+                / "variants"
+                / "neutral"
+                / "manifests"
+                / "narration_manifest.json"
+            )
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            for output in manifest["outputs"]:
+                for segment in output["segments"]:
+                    for chunk in segment["voice_chunks"]:
+                        if chunk["utterance_id"] == "U0002":
+                            chunk["candidate_count"] = 1
+                            chunk["selected_candidate"] = 1
+            _write_json(manifest_path, manifest)
+        return result
 
     tone_pk.repair_failed_takes(
         project,
         max_candidates=3,
-        runner=fake_generator_runner(
-            calls,
-            candidate_count={"U0001": 1, "U0002": 2},
-        ),
+        runner=targeted_runner,
     )
 
     neutral_calls = [command for command in calls if "/variants/neutral" in " ".join(command)]
@@ -1483,6 +1683,12 @@ def test_repair_pre_inference_error_does_not_fabricate_candidate_evidence(
     state = json.loads(state_path.read_text(encoding="utf-8"))
     take = state["pairs"][0]["expressive"]
     take["qc_status"] = "FAIL"
+    _set_manifest_utterance_qc(
+        project,
+        variant="expressive",
+        utterance_id="U0001",
+        passed=False,
+    )
     before = (take["candidate_count"], take["selected_candidate"])
     _write_json(state_path, state)
 

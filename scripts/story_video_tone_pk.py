@@ -1114,7 +1114,7 @@ def _ingest_generated_variant(
     utterance_ids: set[str],
     runner: Callable[..., Any],
     accumulate_candidates: bool = False,
-    validate_only_if_source_valid: bool = False,
+    reconcile_existing_source: bool = False,
 ) -> int:
     variant_project = project / "variants" / variant
     manifest = _load_json(
@@ -1250,15 +1250,53 @@ def _ingest_generated_variant(
             )
         ):
             raise TonePkError(f"generator candidate evidence is invalid for {utterance_id}")
-        if validate_only_if_source_valid and _source_artifact_is_valid(take):
-            ingested += 1
-            continue
+        reuse_source_audio = (
+            reconcile_existing_source and _source_artifact_is_valid(take)
+        )
         prior_candidates = int(take.get("candidate_count") or 0)
         candidate_offset = prior_candidates if accumulate_candidates else 0
-        candidate_count = candidate_offset + max(observed_counts)
-        selected_candidate = candidate_offset + max(observed_selected)
-        source_audio = project / "takes" / "source" / f"{take['take_id']}.wav"
-        _assemble_take_audio(chunks, source_audio, runner)
+        observed_candidate_count = candidate_offset + max(observed_counts)
+        observed_selected_candidate = candidate_offset + max(observed_selected)
+        preserve_candidate_accounting = (
+            reuse_source_audio
+            and prior_candidates >= observed_candidate_count
+            and type(take.get("selected_candidate")) is int
+            and 1 <= take["selected_candidate"] <= prior_candidates
+        )
+        candidate_count = (
+            prior_candidates
+            if preserve_candidate_accounting
+            else observed_candidate_count
+        )
+        selected_candidate = (
+            int(take["selected_candidate"])
+            if preserve_candidate_accounting
+            else observed_selected_candidate
+        )
+        observed_candidate_evidence = [
+            {
+                "voice_chunk_id": str(chunk.get("voice_chunk_id") or ""),
+                "candidate_count": candidate_offset + int(chunk["candidate_count"]),
+                "selected_candidate": candidate_offset
+                + int(chunk["selected_candidate"]),
+            }
+            for chunk in chunks
+        ]
+        candidate_evidence = (
+            copy.deepcopy(take["candidate_evidence"])
+            if preserve_candidate_accounting
+            and isinstance(take.get("candidate_evidence"), list)
+            else observed_candidate_evidence
+        )
+        if reuse_source_audio:
+            source_audio = Path(str(take["source_audio_path"]))
+            source_audio_sha256 = str(take["source_audio_sha256"])
+        else:
+            source_audio = project / "takes" / "source" / f"{take['take_id']}.wav"
+            _assemble_take_audio(chunks, source_audio, runner)
+            source_audio_sha256 = _sha256(source_audio)
+        previous_qc_status = take.get("qc_status")
+        reconciled_qc_status = "PASS" if qc_pass else "FAIL"
         take.update(
             {
                 **declared_spoken_evidence,
@@ -1267,7 +1305,7 @@ def _ingest_generated_variant(
                     speaker_binding.get("engine_binding") or {}
                 ),
                 "source_audio_path": str(source_audio),
-                "source_audio_sha256": _sha256(source_audio),
+                "source_audio_sha256": source_audio_sha256,
                 "duration_seconds": round(
                     sum(float(chunk.get("speech_duration_sec") or 0) for chunk in chunks),
                     4,
@@ -1276,30 +1314,22 @@ def _ingest_generated_variant(
                     chunks[-1].get("resolved_pause_after_sec") or 0
                 ),
                 "adapter_status": adapter_statuses.pop(),
-                "qc_status": "PASS" if qc_pass else "FAIL",
+                "qc_status": reconciled_qc_status,
                 "source_voice_chunk_ids": [
                     str(chunk.get("voice_chunk_id") or "") for chunk in chunks
                 ],
                 "candidate_count": candidate_count,
                 "selected_candidate": selected_candidate,
-                "candidate_evidence": [
-                    {
-                        "voice_chunk_id": str(chunk.get("voice_chunk_id") or ""),
-                        "candidate_count": candidate_offset
-                        + int(chunk["candidate_count"]),
-                        "selected_candidate": candidate_offset
-                        + int(chunk["selected_candidate"]),
-                    }
-                    for chunk in chunks
-                ],
+                "candidate_evidence": candidate_evidence,
             }
         )
-        for stale in (
-            "normalized_audio_path",
-            "normalized_audio_sha256",
-            "integrated_lufs",
-        ):
-            take.pop(stale, None)
+        if not reuse_source_audio or previous_qc_status != reconciled_qc_status:
+            for stale in (
+                "normalized_audio_path",
+                "normalized_audio_sha256",
+                "integrated_lufs",
+            ):
+                take.pop(stale, None)
         ingested += 1
         write_checkpoint(
             project,
@@ -1327,6 +1357,15 @@ def generate_takes(
     pairs = state.get("pairs")
     if not isinstance(pairs, list):
         raise TonePkError("tone PK manifest has no pairs")
+    state["generator_path"] = str(generator_path)
+    write_checkpoint(
+        project_path,
+        pairs,
+        run_id=str(state.get("run_id") or ""),
+        metadata={"generator_path": str(generator_path)},
+    )
+    state = _load_checkpoint(project_path)
+    pairs = state["pairs"]
     ingested_existing = 0
     if resume:
         for variant in ("neutral", "expressive"):
@@ -1346,7 +1385,7 @@ def generate_takes(
                 variant=variant,
                 utterance_ids=utterance_ids,
                 runner=runner,
-                validate_only_if_source_valid=True,
+                reconcile_existing_source=True,
             )
             state = _load_checkpoint(project_path)
             state["generator_path"] = str(generator_path)
