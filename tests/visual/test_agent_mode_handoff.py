@@ -1676,6 +1676,50 @@ def test_direct_visual_handoff_uses_session_edit_anchor_for_followup_edit():
     }
 
 
+def test_direct_visual_handoff_does_not_relock_stale_pose_for_pose_diversification():
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+    from gateway.session_context import reset_visual_reference_context, set_visual_reference_context
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.6-sol",
+    )
+    token = set_visual_reference_context(
+        [
+            {
+                "uri": "/tmp/previous-selected.png",
+                "role_hint": "edit_anchor",
+                "source": "previous_selected_artifact",
+            },
+            {
+                "uri": "/tmp/character.png",
+                "role_hint": "character_identity",
+                "source": "previous_tool_reference",
+                "user_ref_index": 1,
+            },
+            {
+                "uri": "/tmp/stale-pose.png",
+                "role_hint": "pose_composition",
+                "source": "previous_tool_reference",
+                "user_ref_index": 2,
+            },
+        ]
+    )
+    try:
+        handoff = build_direct_visual_agent_handoff(
+            agent,
+            "產出更多不同的姿勢，4張",
+        )
+    finally:
+        reset_visual_reference_context(token)
+
+    assert handoff is not None
+    args = handoff["arguments"]
+    assert args["candidate_budget"] == 4
+    assert args["reference_binding"]["pose_composition_policy"] == "guidance_only"
+
+
 def test_direct_visual_handoff_uses_semantic_pose_transfer_for_original_role_refs():
     from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
     from gateway.session_context import reset_visual_reference_context, set_visual_reference_context

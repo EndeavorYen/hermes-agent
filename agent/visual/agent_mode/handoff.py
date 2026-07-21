@@ -10,6 +10,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
+from agent.visual.agent_mode.planner import _pose_composition_is_guidance_only
 from agent.visual.agent_mode.planner import _requests_visual_polish
 from agent.visual.agent_mode.planner import plan_visual_agent_request, planned_candidate_budget
 from agent.visual.prompt_text import (
@@ -149,7 +150,13 @@ def build_direct_visual_agent_handoff(
             if inherited_source == "user":
                 arguments["candidate_budget"] = inherited_budget
                 arguments["candidate_budget_source"] = "thread_context"
-        arguments["reference_binding"] = _session_reference_binding(session_reference_entries)
+        reference_binding = _session_reference_binding(session_reference_entries)
+        if _pose_composition_is_guidance_only(
+            prompt.lower(),
+            re.sub(r"\s+", "", prompt.lower()),
+        ):
+            reference_binding["pose_composition_policy"] = "guidance_only"
+        arguments["reference_binding"] = reference_binding
         arguments["prompt"] = _prompt_with_session_edit_context(prompt, session_reference_entries)
         if followup_request or polish_request:
             reference_roles = {
