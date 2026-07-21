@@ -1161,6 +1161,172 @@ def test_prepare_rejects_unknown_source_ledger_schema(tmp_path: Path) -> None:
         )
 
 
+def _prepared_short_replan_source(tmp_path: Path) -> tuple[Path, dict]:
+    project = prepared_pk_project(
+        tmp_path,
+        utterance_count=2,
+        first_text="甲乙丙丁戊己庚辛壬癸，甲乙丙丁。",
+    )
+    generator = tmp_path / "generator.py"
+    generator.write_text("# fixture\n", encoding="utf-8")
+    tone_pk.generate_takes(
+        project,
+        generator,
+        resume=True,
+        runner=fake_generator_runner([]),
+    )
+    state_path = project / "manifests" / "tone_pk_manifest.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    for pair in state["pairs"]:
+        for variant in ("neutral", "expressive"):
+            take = pair[variant]
+            take["normalized_audio_path"] = take["source_audio_path"]
+            take["normalized_audio_sha256"] = take["source_audio_sha256"]
+            take["integrated_lufs"] = -18.0
+    state["pairs"][0]["neutral"]["qc_status"] = "FAIL"
+    tone_pk.write_checkpoint(
+        project,
+        state["pairs"],
+        run_id=state["run_id"],
+        metadata={"generator_path": state["generator_path"]},
+    )
+    return project, json.loads(state_path.read_text(encoding="utf-8"))
+
+
+def test_short_replan_resets_only_failed_pair_and_reuses_green_evidence(
+    tmp_path: Path,
+) -> None:
+    source, before = _prepared_short_replan_source(tmp_path)
+    overrides = tone_pk.build_failed_short_chunk_overrides(source, max_chars=12)
+    output = tmp_path / "short-v2"
+
+    result = tone_pk.replan_failed_pairs_short(
+        source_project=source,
+        output_project=output,
+        overrides=overrides,
+        max_chars=12,
+    )
+
+    assert result == {
+        "schema": "story_video_tone_pk_short_replan_result_v1",
+        "status": "READY_FOR_GENERATION",
+        "affected_pair_count": 1,
+        "reused_pair_count": 1,
+        "candidate_budget_start": 1,
+        "candidate_budget_cap": 3,
+        "output_project": str(output.resolve()),
+    }
+    plan = json.loads(
+        (output / "manifests" / "tone_pk_plan.json").read_text(encoding="utf-8")
+    )
+    after = json.loads(
+        (output / "manifests" / "tone_pk_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    affected_plan = plan["pairs"][0]
+    affected_state = after["pairs"][0]
+    reused_state = after["pairs"][1]
+    assert affected_plan["neutral"]["canonical_voice_chunks"] == affected_plan[
+        "expressive"
+    ]["canonical_voice_chunks"]
+    assert affected_plan["neutral"]["generation_seeds"] == affected_plan[
+        "expressive"
+    ]["generation_seeds"]
+    assert "candidate_count" not in affected_state["neutral"]
+    assert "source_audio_path" not in affected_state["neutral"]
+    assert "normalized_audio_path" not in affected_state["neutral"]
+    assert "qc_status" not in affected_state["neutral"]
+    assert reused_state == before["pairs"][1]
+    assert all(
+        len(chunk) <= 12
+        for chunk in affected_plan["neutral"]["canonical_voice_chunks"]
+    )
+    assert "plan_revision" in plan
+    assert plan["plan_revision"]["candidate_budget"] == {"start": 1, "cap": 3}
+    archive = json.loads(
+        (output / "archive" / "short_replan_v2" / "affected_pairs.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert archive["pairs"] == [before["pairs"][0]]
+    assert (
+        output / "annotations" / "short_chunk_overrides.json"
+    ).read_text(encoding="utf-8") == json.dumps(
+        overrides, ensure_ascii=False, indent=2
+    ) + "\n"
+
+
+def test_short_replan_preserves_exact_ab_text_voice_tone_and_chunk_concat(
+    tmp_path: Path,
+) -> None:
+    source, before = _prepared_short_replan_source(tmp_path)
+    overrides = tone_pk.build_failed_short_chunk_overrides(source, max_chars=12)
+    output = tmp_path / "short-v2"
+
+    tone_pk.replan_failed_pairs_short(
+        source_project=source,
+        output_project=output,
+        overrides=overrides,
+        max_chars=12,
+    )
+
+    after = json.loads(
+        (output / "manifests" / "tone_pk_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    pair = after["pairs"][0]
+    old_pair = before["pairs"][0]
+    for field in ("spoken_text", "voice_id", "engine", "profile_id", "profile_sha256"):
+        assert pair["neutral"][field] == old_pair["neutral"][field]
+        assert pair["expressive"][field] == old_pair["expressive"][field]
+    assert pair["neutral"]["tone"] == old_pair["neutral"]["tone"]
+    assert pair["expressive"]["tone"] == old_pair["expressive"]["tone"]
+    assert pair["neutral"]["canonical_voice_chunks"] == pair["expressive"][
+        "canonical_voice_chunks"
+    ]
+    assert "".join(pair["neutral"]["canonical_voice_chunks"]) == pair["spoken_text"]
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda payload: payload["pairs"].clear(), "override pair IDs"),
+        (
+            lambda payload: payload["pairs"]["PK-0001"].__setitem__(0, "錯誤"),
+            "changed canonical text",
+        ),
+        (
+            lambda payload: payload["pairs"]["PK-0001"].__setitem__(
+                0, "甲" * 13
+            ),
+            "exceeds 12",
+        ),
+        (
+            lambda payload: payload.__setitem__("source_manifest_sha256", "0" * 64),
+            "manifest hash",
+        ),
+    ],
+)
+def test_short_replan_rejects_invalid_or_drifted_override(
+    tmp_path: Path,
+    mutate,
+    message: str,
+) -> None:
+    source, _before = _prepared_short_replan_source(tmp_path)
+    overrides = tone_pk.build_failed_short_chunk_overrides(source, max_chars=12)
+    mutate(overrides)
+
+    with pytest.raises(tone_pk.TonePkError, match=message):
+        tone_pk.replan_failed_pairs_short(
+            source_project=source,
+            output_project=tmp_path / "short-v2",
+            overrides=overrides,
+            max_chars=12,
+        )
+
+
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
