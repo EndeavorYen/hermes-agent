@@ -2066,6 +2066,10 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             selected_image
             and not image_gate["allowed"]
             and not composition_guide_only
+            and (
+                not deliver_candidate_options
+                or _max_visual_kernel_repairs(args) == 0
+            )
             and _coerce_bool(args.get("visual_production_kernel"))
         ):
             quality_loop = BoundedQualityLoop(
@@ -2259,6 +2263,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             selected_image
             and not image_gate["allowed"]
             and not composition_guide_only
+            and not deliver_candidate_options
             and quality_loop is None
             and (
                 kernel_repair_plan is None
@@ -2458,6 +2463,113 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 args=args,
                 requested_count=candidate_budget,
             )
+            option_repairs_attempted = 0
+            option_repairs_succeeded = 0
+            if (
+                len(deliverable_candidate_options) < candidate_budget
+                and _coerce_bool(args.get("visual_production_kernel"))
+                and _max_visual_kernel_repairs(args) > 0
+            ):
+                rejected_ids = {
+                    str(item.get("artifact_id") or "")
+                    for item in candidate_option_gate.get("rejected") or []
+                    if isinstance(item, dict)
+                }
+                for blocked_candidate in ranked_options:
+                    if len(deliverable_candidate_options) >= candidate_budget:
+                        break
+                    if str(blocked_candidate.get("artifact_id") or "") not in rejected_ids:
+                        continue
+                    blocked_gate = _candidate_option_delivery_gate(
+                        blocked_candidate,
+                        prompt=prompt,
+                        args=args,
+                    )
+                    repair_plan = _visual_kernel_repair_plan(blocked_gate, args)
+                    if not repair_plan or repair_plan.get("should_generate") is not True:
+                        continue
+                    repair_provider, provider_stop_reason = _quality_repair_provider(
+                        image_provider_override,
+                        repair_plan,
+                        args,
+                    )
+                    if provider_stop_reason:
+                        continue
+                    option_repairs_attempted += 1
+                    repair_candidate, repair_payload = _generate_image_quality_repair_candidate(
+                        args=args,
+                        ledger=ledger,
+                        request_id=request_id,
+                        image_prompt_base=str(
+                            blocked_candidate.get("generation_prompt") or image_prompt_base
+                        ),
+                        image_gate=blocked_gate,
+                        repair_plan=repair_plan,
+                        feedback_policy=feedback_policy,
+                        hybrid_final_combine=hybrid_final_combine,
+                        reference_binding=reference_binding,
+                        attachments=attachments,
+                        reference_conditioning_variants=reference_conditioning_variants,
+                        pose_transfer=pose_transfer,
+                        aspect_ratio=aspect_ratio,
+                        image_aspect_ratio=image_aspect_ratio,
+                        image_provider_override=repair_provider,
+                        request_category=request_category,
+                        selected_image=blocked_candidate,
+                        candidate_index=len(image_candidates),
+                        image_input_artifacts=image_input_artifacts,
+                        image_artifact_role=image_artifact_role,
+                        prompt_original=visual_agent_original_prompt,
+                        repair_round=1,
+                    )
+                    image_payloads.append(repair_payload)
+                    if not repair_candidate:
+                        continue
+                    image_candidates.append(repair_candidate)
+                    _score_candidates(
+                        ledger,
+                        request_id=request_id,
+                        intent_signature=intent_signature,
+                        strategy_signature=strategy_plan.strategy_signature,
+                        modality="image",
+                        has_reference_image=bool(attachments),
+                        request_category=request_category,
+                        candidates=[repair_candidate],
+                        inline_vision_judge=inline_vision_judge,
+                        vision_analyzer=analyze_candidate_with_vision_tool,
+                        reference_binding=reference_binding,
+                    )
+                    repaired_gate = _candidate_option_delivery_gate(
+                        repair_candidate,
+                        prompt=prompt,
+                        args=args,
+                    )
+                    if repaired_gate.get("allowed") is True:
+                        option_repairs_succeeded += 1
+                        deliverable_candidate_options.append(repair_candidate)
+
+                option_decision = rank_visual_candidates(
+                    request_id=request_id,
+                    candidates=image_candidates,
+                    post_threshold=0.0,
+                    ask_threshold=0.0,
+                )
+                ranked_options = _ranked_candidate_options(
+                    image_candidates,
+                    option_decision.ranked_artifact_ids,
+                )
+                deliverable_candidate_options, candidate_option_gate = _qualified_candidate_options(
+                    ranked_options,
+                    prompt=prompt,
+                    args=args,
+                    requested_count=candidate_budget,
+                )
+                candidate_option_gate["repair_attempted"] = option_repairs_attempted
+                candidate_option_gate["repair_succeeded"] = option_repairs_succeeded
+                candidate_option_gate["repair_policy"] = "one_bounded_repair_per_blocked_option"
+                generation_payloads["image"] = (
+                    image_payloads[0] if len(image_payloads) == 1 else image_payloads
+                )
             if not deliverable_candidate_options and not wants_video:
                 review_only_options = _review_only_candidate_options(
                     ranked_options,
@@ -3186,7 +3298,9 @@ def _single_candidate_generation_prompt(
     if preserve_reference_identity:
         directive += (
             " Preserve the exact person and face from the identity/edit anchor; "
-            "candidate diversity must not alter identity-defining traits."
+            "candidate diversity must not alter identity-defining traits. "
+            "Preserve the exact visual medium and rendering style from the edit anchor; "
+            "do not reinterpret anime as photoreal or photoreal as illustration."
         )
     if preserve_reference_pose:
         directive += (
@@ -5131,6 +5245,7 @@ def _record_payload_candidate(
         "hard_gate": score["hard_gate"],
         "scores": score["scores"],
         "vision_observation": _payload_vision_observation(payload),
+        "generation_prompt": prompt,
     }
     kernel_context = _ACTIVE_VISUAL_KERNEL_CONTEXT.get()
     if isinstance(kernel_context, dict) and kernel_context.get("enabled") is True:
