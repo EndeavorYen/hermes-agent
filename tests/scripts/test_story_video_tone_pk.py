@@ -411,6 +411,79 @@ def test_generate_rejects_missing_pronunciation_qc_report(tmp_path: Path) -> Non
         )
 
 
+def _seed_existing_variant_manifests(
+    project: Path,
+    generator: Path,
+    *,
+    qc_pass: bool,
+) -> None:
+    fixture_runner = fake_generator_runner([], qc_pass=qc_pass)
+    for variant in ("neutral", "expressive"):
+        fixture_runner([str(generator), str(project / "variants" / variant)])
+
+
+def test_generate_resume_ingests_existing_pass_manifests_without_runner(
+    tmp_path: Path,
+) -> None:
+    project = prepared_pk_project(tmp_path)
+    generator = tmp_path / "fake_generator.py"
+    generator.write_text("# sanitized fixture\n", encoding="utf-8")
+    _seed_existing_variant_manifests(project, generator, qc_pass=True)
+
+    result = tone_pk.generate_takes(
+        project,
+        generator,
+        resume=True,
+        runner=lambda *_args, **_kwargs: pytest.fail("provider runner called"),
+    )
+
+    assert result["status"] == "PASS"
+    assert result["generated_take_count"] == 0
+    assert result["ingested_existing_take_count"] == 2
+
+
+def test_generate_resume_ingests_existing_fail_manifests_before_guidance(
+    tmp_path: Path,
+) -> None:
+    project = prepared_pk_project(tmp_path)
+    generator = tmp_path / "fake_generator.py"
+    generator.write_text("# sanitized fixture\n", encoding="utf-8")
+    _seed_existing_variant_manifests(project, generator, qc_pass=False)
+
+    with pytest.raises(tone_pk.TonePkError, match="use qc --repair-failed"):
+        tone_pk.generate_takes(
+            project,
+            generator,
+            resume=True,
+            runner=lambda *_args, **_kwargs: pytest.fail("provider runner called"),
+        )
+
+    status = tone_pk._status_command(type("Args", (), {"project": project})())
+    assert status["ingested_source_take_count"] == 2
+    assert status["source_qc_pass_take_count"] == 0
+    assert status["candidate_evidence_take_count"] == 2
+
+
+def test_generate_resume_rejects_existing_drift_before_runner(tmp_path: Path) -> None:
+    project = prepared_pk_project(tmp_path)
+    generator = tmp_path / "fake_generator.py"
+    generator.write_text("# sanitized fixture\n", encoding="utf-8")
+    _seed_existing_variant_manifests(project, generator, qc_pass=True)
+    manifest_path = project / "variants" / "neutral/manifests/narration_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    chunk = manifest["outputs"][0]["segments"][0]["voice_chunks"][0]
+    chunk["spoken_text"] = "未授權改字。"
+    _write_json(manifest_path, manifest)
+
+    with pytest.raises(tone_pk.TonePkError, match="changed spoken text"):
+        tone_pk.generate_takes(
+            project,
+            generator,
+            resume=True,
+            runner=lambda *_args, **_kwargs: pytest.fail("provider runner called"),
+        )
+
+
 def test_generate_accepts_exact_bounded_ellipsis_normalization_and_records_hashes(
     tmp_path: Path,
 ) -> None:
@@ -1161,7 +1234,7 @@ def test_generate_rejects_candidate_when_generator_audio_hash_is_wrong(
         )
 
 
-def test_generate_resume_partial_variant_repairs_only_missing_utterance(
+def test_generate_resume_partial_variant_reassembles_existing_chunks_without_inference(
     tmp_path: Path,
 ) -> None:
     project = prepared_pk_project(tmp_path, utterance_count=2)
@@ -1191,11 +1264,11 @@ def test_generate_resume_partial_variant_repairs_only_missing_utterance(
         runner=fake_generator_runner(calls),
     )
 
-    assert result["generated_take_count"] == 1
-    assert len(calls) == 1
-    assert calls[0].count("--repair-shot") == 1
-    assert "U0002" in calls[0]
-    assert "U0001" not in calls[0]
+    assert result["generated_take_count"] == 0
+    assert result["ingested_existing_take_count"] == 4
+    assert calls == []
+    refreshed = json.loads(state_path.read_text(encoding="utf-8"))
+    assert Path(refreshed["pairs"][1]["neutral"]["source_audio_path"]).is_file()
     assert _sha256(green_provider) == green_provider_hash
 
 
