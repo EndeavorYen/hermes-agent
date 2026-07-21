@@ -918,6 +918,71 @@ def test_visual_package_candidate_options_exclude_individually_blocked_images(
     assert option_gate["rejected"][0]["quality_issues"] == ["composition_bad"]
 
 
+def test_visual_package_repairs_each_blocked_candidate_option_once(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    outputs = [
+        tmp_path / "blocked-1.png",
+        tmp_path / "blocked-2.png",
+        tmp_path / "repaired-1.png",
+        tmp_path / "repaired-2.png",
+    ]
+    for output in outputs:
+        output.write_bytes(_ONE_PIXEL_PNG + output.name.encode())
+    image_calls = []
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        path = outputs[len(image_calls) - 1]
+        blocked = len(image_calls) <= 2
+        return {
+            "success": True,
+            "image": str(path),
+            "provider": "xai",
+            "model": "grok-build-native-image",
+            "vision_observation": {
+                "visual_appeal": 0.82,
+                "composition": 0.2 if blocked else 0.9,
+                "face_quality": 0.9,
+                "anatomy_quality": 0.9,
+                "confidence": 0.9,
+                "artifact_defects": ["composition_weak"] if blocked else [],
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "Keep the same character and create 2 different poses.",
+                "include_image": True,
+                "include_video": False,
+                "image_provider": "xai",
+                "candidate_budget": 2,
+                "candidate_budget_source": "user",
+                "deliver_candidate_options": True,
+                "visual_production_kernel": True,
+                "visual_contract_hash": "candidate-repair-contract",
+                "visual_intent_contract": {"candidate_count": 2},
+                "max_generated_repairs": 2,
+            }
+        )
+    )
+
+    assert len(image_calls) == 4
+    assert payload["success"] is True
+    assert payload["package_status"] == "success"
+    assert set(payload["images"]) == {str(outputs[2]), str(outputs[3])}
+    option_gate = payload["delivery_gate"]["image"]["candidate_options"]
+    assert option_gate["requested"] == 2
+    assert option_gate["qualified"] == 2
+    assert option_gate["delivered"] == 2
+    assert option_gate["repair_attempted"] == 2
+    assert option_gate["repair_succeeded"] == 2
+
+
 def test_visual_package_delivers_soft_blocked_options_as_review_only(monkeypatch, tmp_path):
     from tools import visual_package_tool
 
@@ -1282,6 +1347,8 @@ def test_visual_package_candidate_diversity_never_changes_locked_reference_ident
     assert "distinct from the other batch candidates" in result
     assert "Pose diversity lane" not in result
     assert "Preserve the exact person and face" in result
+    assert "Preserve the exact visual medium and rendering style" in result
+    assert "do not reinterpret anime as photoreal" in result
 
 
 def test_visual_package_preserves_bound_pose_across_candidate_fanout():
