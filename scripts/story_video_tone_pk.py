@@ -671,6 +671,23 @@ def validate_pair_evidence(pair: dict[str, Any]) -> dict[str, Any]:
     ):
         raise TonePkError(f"pair {pair_id} canonical voice chunk evidence is invalid")
     for take in (neutral, expressive):
+        source_chunk_hashes = take.get("source_chunk_audio_sha256s")
+        source_chunk_ids = take.get("source_voice_chunk_ids")
+        if (
+            not isinstance(source_chunk_hashes, list)
+            or len(source_chunk_hashes) != len(chunks)
+            or not isinstance(source_chunk_ids, list)
+            or len(source_chunk_ids) != len(chunks)
+            or any(not isinstance(value, str) or not value for value in source_chunk_ids)
+            or len(set(source_chunk_ids)) != len(source_chunk_ids)
+            or any(
+                not re.fullmatch(rf".+__C{index:02d}", chunk_id)
+                for index, chunk_id in enumerate(source_chunk_ids, start=1)
+            )
+        ):
+            raise TonePkError(
+                f"pair {pair_id} source assembly chunk evidence is invalid"
+            )
         lexicon_sources = take.get("pronunciation_lexicon_sources")
         if not isinstance(lexicon_sources, list) or any(
             not isinstance(value, str) or not value for value in lexicon_sources
