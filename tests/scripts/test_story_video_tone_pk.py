@@ -16,6 +16,15 @@ def passing_pair_evidence(tmp_path: Path | None = None) -> dict:
     audio_root = tmp_path or Path("/sanitized")
     common = {
         "spoken_text": "同一句。",
+        "spoken_text_normalization": "bounded_ellipsis_v1",
+        "source_spoken_text_sha256": hashlib.sha256("同一句。".encode()).hexdigest(),
+        "canonical_spoken_chunks": ["同一句。"],
+        "canonical_spoken_text": "同一句。",
+        "canonical_spoken_text_sha256": hashlib.sha256(
+            "同一句。".encode()
+        ).hexdigest(),
+        "pronunciation_lexicon_sources": [],
+        "pronunciation_lexicon_sha256s": [],
         "voice_id": "fixture_voice",
         "engine": "qwen_custom_voice",
         "model_id": "fixture_model",
@@ -93,7 +102,12 @@ def expressive_annotation() -> dict:
     }
 
 
-def sanitized_source_project(tmp_path: Path, *, utterance_count: int) -> Path:
+def sanitized_source_project(
+    tmp_path: Path,
+    *,
+    utterance_count: int,
+    first_text: str = "這條路通往哪裡？",
+) -> Path:
     project = tmp_path / "sanitized-source"
     project.mkdir()
     story_mode = {
@@ -126,7 +140,7 @@ def sanitized_source_project(tmp_path: Path, *, utterance_count: int) -> Path:
             "shot_id": "S01_SH01",
             "speaker_id": "guide",
             "action": "疑惑地查看地圖",
-            "display_text": "這條路通往哪裡？",
+            "display_text": first_text,
             "pace": "natural",
             "tone": {
                 "tone_id": "general.neutral",
@@ -207,8 +221,17 @@ def _annotations() -> dict[str, dict]:
     }
 
 
-def prepared_pk_project(tmp_path: Path, *, utterance_count: int = 1) -> Path:
-    source = sanitized_source_project(tmp_path, utterance_count=utterance_count)
+def prepared_pk_project(
+    tmp_path: Path,
+    *,
+    utterance_count: int = 1,
+    first_text: str = "這條路通往哪裡？",
+) -> Path:
+    source = sanitized_source_project(
+        tmp_path,
+        utterance_count=utterance_count,
+        first_text=first_text,
+    )
     annotations = {key: value for key, value in _annotations().items() if int(key[1:]) <= utterance_count}
     annotations_path = tmp_path / "annotations.json"
     _write_json(annotations_path, annotations)
@@ -312,6 +335,7 @@ def fake_generator_runner(
             "schema": "story_video_narration_manifest_v7",
             "run_id": "tone-pk-test",
             "model": "fixture_model",
+            "spoken_text_normalization": "bounded_ellipsis_v1",
             "voice_chunk_count": len(chunks),
             "outputs": [
                 {
@@ -328,6 +352,164 @@ def fake_generator_runner(
         return Result()
 
     return runner
+
+
+def test_generate_accepts_exact_bounded_ellipsis_normalization_and_records_hashes(
+    tmp_path: Path,
+) -> None:
+    project = prepared_pk_project(tmp_path, first_text="等等……真的嗎？")
+    generator = tmp_path / "fake_generator.py"
+    generator.write_text("# sanitized fixture\n", encoding="utf-8")
+    base_runner = fake_generator_runner([])
+
+    def bounded_ellipsis_runner(command: list[str], **kwargs):
+        result = base_runner(command, **kwargs)
+        if command[0] == "ffmpeg":
+            return result
+        variant_project = next(
+            Path(value)
+            for value in command
+            if "/variants/" in value and Path(value).is_dir()
+        )
+        path = variant_project / "manifests" / "narration_manifest.json"
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        chunk = manifest["outputs"][0]["segments"][0]["voice_chunks"][0]
+        chunk["spoken_text"] = "等等，真的嗎？"
+        manifest["outputs"][0]["spoken_text"] = chunk["spoken_text"]
+        _write_json(path, manifest)
+        return result
+
+    result = tone_pk.generate_takes(
+        project,
+        generator,
+        resume=True,
+        runner=bounded_ellipsis_runner,
+    )
+
+    assert result["generated_take_count"] == 2
+    state = json.loads(
+        (project / "manifests" / "tone_pk_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    pair = state["pairs"][0]
+    for variant in ("neutral", "expressive"):
+        take = pair[variant]
+        assert take["spoken_text_normalization"] == "bounded_ellipsis_v1"
+        assert take["canonical_spoken_chunks"] == ["等等，真的嗎？"]
+        assert take["canonical_spoken_text"] == "等等，真的嗎？"
+        assert take["source_spoken_text_sha256"] == hashlib.sha256(
+            "等等……真的嗎？".encode()
+        ).hexdigest()
+        assert take["canonical_spoken_text_sha256"] == hashlib.sha256(
+            "等等，真的嗎？".encode()
+        ).hexdigest()
+
+
+def test_generate_rejects_lexical_drift_after_bounded_ellipsis_normalization(
+    tmp_path: Path,
+) -> None:
+    project = prepared_pk_project(tmp_path, first_text="等等……真的嗎？")
+    generator = tmp_path / "fake_generator.py"
+    generator.write_text("# sanitized fixture\n", encoding="utf-8")
+    base_runner = fake_generator_runner([])
+
+    def lexical_drift_runner(command: list[str], **kwargs):
+        result = base_runner(command, **kwargs)
+        if command[0] == "ffmpeg":
+            return result
+        variant_project = next(
+            Path(value)
+            for value in command
+            if "/variants/" in value and Path(value).is_dir()
+        )
+        path = variant_project / "manifests" / "narration_manifest.json"
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        chunk = manifest["outputs"][0]["segments"][0]["voice_chunks"][0]
+        chunk["spoken_text"] = "等等，不是嗎？"
+        manifest["outputs"][0]["spoken_text"] = chunk["spoken_text"]
+        _write_json(path, manifest)
+        return result
+
+    with pytest.raises(tone_pk.TonePkError, match="changed spoken text"):
+        tone_pk.generate_takes(
+            project,
+            generator,
+            resume=True,
+            runner=lexical_drift_runner,
+        )
+
+
+def test_generate_accepts_only_pronunciation_substitution_anchored_to_lexicon(
+    tmp_path: Path,
+) -> None:
+    project = prepared_pk_project(tmp_path, first_text="甲詞請再說一次。")
+    generator = tmp_path / "fake_generator.py"
+    generator.write_text("# sanitized fixture\n", encoding="utf-8")
+    base_runner = fake_generator_runner([])
+
+    def pronunciation_runner(command: list[str], **kwargs):
+        result = base_runner(command, **kwargs)
+        if command[0] == "ffmpeg":
+            return result
+        variant_project = next(
+            Path(value)
+            for value in command
+            if "/variants/" in value and Path(value).is_dir()
+        )
+        lexicon_path = variant_project / "pronunciation_lexicon.json"
+        entry = {
+            "display": "甲詞",
+            "spoken": "乙詞",
+            "expected_pinyin": "fixture",
+            "source": "reviewed_fixture",
+            "risk": "medium",
+        }
+        _write_json(
+            lexicon_path,
+            {
+                "schema": "story_video_pronunciation_lexicon_v1",
+                "language": "zh-TW",
+                "review_status": "PASS",
+                "entries": [entry],
+            },
+        )
+        report_path = variant_project / "qc" / "pronunciation_qc_report.json"
+        _write_json(
+            report_path,
+            {
+                "schema": "story_video_pronunciation_qc_v3",
+                "lexicon_sources": [str(lexicon_path)],
+            },
+        )
+        manifest_path = variant_project / "manifests" / "narration_manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        chunk = manifest["outputs"][0]["segments"][0]["voice_chunks"][0]
+        chunk["spoken_text"] = "乙詞請再說一次。"
+        chunk["pronunciation_entries"] = [entry]
+        chunk["pronunciation_rules"] = [entry["display"]]
+        manifest["outputs"][0]["spoken_text"] = chunk["spoken_text"]
+        manifest["pronunciation_qc_report"] = str(report_path)
+        _write_json(manifest_path, manifest)
+        return result
+
+    result = tone_pk.generate_takes(
+        project,
+        generator,
+        resume=True,
+        runner=pronunciation_runner,
+    )
+
+    assert result["generated_take_count"] == 2
+    state = json.loads(
+        (project / "manifests" / "tone_pk_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    for variant in ("neutral", "expressive"):
+        take = state["pairs"][0][variant]
+        assert take["canonical_spoken_chunks"] == ["乙詞請再說一次。"]
+        assert len(take["pronunciation_lexicon_sha256s"]) == 1
 
 
 def test_stable_pair_seed_is_deterministic_bounded_and_chunk_specific() -> None:
@@ -587,6 +769,54 @@ def test_pair_qc_rejects_long_pause_or_invalid_tone_adapter() -> None:
     pair["neutral"]["adapter_status"] = "applied"
     with pytest.raises(tone_pk.TonePkError, match="neutral adapter"):
         tone_pk.validate_pair_evidence(pair)
+
+
+def test_pair_qc_accepts_distinct_paths_for_identical_pronunciation_lexicons(
+    tmp_path: Path,
+) -> None:
+    pair = passing_pair_evidence(tmp_path)
+    lexicon = {
+        "schema": "story_video_pronunciation_lexicon_v1",
+        "language": "zh-TW",
+        "review_status": "PASS",
+        "entries": [
+            {
+                "display": "甲詞",
+                "spoken": "乙詞",
+                "expected_pinyin": "fixture",
+                "source": "reviewed_fixture",
+                "risk": "medium",
+            }
+        ],
+    }
+    paths = [tmp_path / variant / "pronunciation_lexicon.json" for variant in ("a", "b")]
+    for path in paths:
+        _write_json(path, lexicon)
+    lexicon_hash = _sha256(paths[0])
+    pair["spoken_text"] = "甲詞。"
+    for take, path in zip(
+        (pair["neutral"], pair["expressive"]),
+        paths,
+        strict=True,
+    ):
+        take.update(
+            {
+                "spoken_text": "甲詞。",
+                "source_spoken_text_sha256": hashlib.sha256(
+                    "甲詞。".encode()
+                ).hexdigest(),
+                "canonical_voice_chunks": ["甲詞。"],
+                "canonical_spoken_chunks": ["乙詞。"],
+                "canonical_spoken_text": "乙詞。",
+                "canonical_spoken_text_sha256": hashlib.sha256(
+                    "乙詞。".encode()
+                ).hexdigest(),
+                "pronunciation_lexicon_sources": [str(path)],
+                "pronunciation_lexicon_sha256s": [lexicon_hash],
+            }
+        )
+
+    assert tone_pk.validate_pair_evidence(pair)["pair_id"] == pair["pair_id"]
 
 
 def test_resume_keeps_green_take_hashes_and_regenerates_only_failed_take(
