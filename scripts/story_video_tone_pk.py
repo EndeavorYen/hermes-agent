@@ -1975,6 +1975,10 @@ def _write_fresh_short_replan_scratch_variant(
         if isinstance(row, dict)
         and str(row.get("utterance_id") or "") in affected_utterance_ids
     ]
+    filtered.sort(key=lambda row: int(row.get("order") or 0))
+    for scratch_order, row in enumerate(filtered, start=1):
+        row["source_order"] = int(row.get("source_order") or row.get("order") or 0)
+        row["order"] = scratch_order
     if (
         len(filtered) != len(affected_utterance_ids)
         or {str(row.get("utterance_id") or "") for row in filtered}
@@ -1983,8 +1987,35 @@ def _write_fresh_short_replan_scratch_variant(
         raise TonePkError(f"{variant} scratch scope does not match affected pairs")
     if scratch.exists():
         existing_ledger, _binding, _story_mode = _validate_source_binding(scratch)
-        if existing_ledger.get("utterances") != filtered:
-            raise TonePkError(f"fresh short-replan scratch drifted: {variant}")
+        existing_rows = existing_ledger.get("utterances")
+        if existing_rows != filtered:
+            if (scratch / "manifests" / "narration_manifest.json").is_file():
+                raise TonePkError(f"fresh short-replan scratch drifted: {variant}")
+            if not isinstance(existing_rows, list):
+                raise TonePkError(f"fresh short-replan scratch drifted: {variant}")
+            migrated_rows = copy.deepcopy(existing_rows)
+            migrated_rows.sort(
+                key=lambda row: int(row.get("source_order") or row.get("order") or 0)
+            )
+            for scratch_order, row in enumerate(migrated_rows, start=1):
+                row["source_order"] = int(
+                    row.get("source_order") or row.get("order") or 0
+                )
+                row["order"] = scratch_order
+            if migrated_rows != filtered:
+                raise TonePkError(f"fresh short-replan scratch drifted: {variant}")
+            existing_ledger["utterances"] = filtered
+            ledger_path = scratch / "dialogue_ledger.json"
+            _write_json(ledger_path, existing_ledger)
+            binding_path = scratch / "voice_cast_binding.json"
+            binding = _load_json(
+                binding_path,
+                label=f"{variant} scratch voice cast binding",
+            )
+            binding["dialogue_ledger_path"] = str(ledger_path)
+            binding["dialogue_ledger_sha256"] = _sha256(ledger_path)
+            _write_json(binding_path, binding)
+            _validate_source_binding(scratch)
         return scratch
     ledger["utterances"] = filtered
     story_mode = _load_json(source / "story_mode.json", label=f"{variant} story mode")
