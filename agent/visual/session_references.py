@@ -7,6 +7,10 @@ from typing import Any
 
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 MAX_SESSION_VISUAL_REFERENCES = 3
+_NAMED_VISUAL_REFERENCE_RE = re.compile(
+    r"(?<![a-z0-9])g\s*([1-9][0-9]*)",
+    re.IGNORECASE,
+)
 
 _IMAGE_REF_RE = re.compile(
     r"((?:file://|https?://|/|~/)[^\s\]~)'\"]+\.(?:png|jpe?g|webp|gif))",
@@ -240,7 +244,9 @@ def prompt_requests_visual_reference_reuse(prompt: Any) -> bool:
         "lastimage",
         "thisimage",
     )
-    return any(marker in text for marker in markers) or any(
+    return bool(_NAMED_VISUAL_REFERENCE_RE.search(text)) or any(
+        marker in text for marker in markers
+    ) or any(
         marker in compact for marker in compact_markers
     )
 
@@ -310,23 +316,62 @@ def filter_visual_reference_entries_for_prompt(
         filtered = [
             entry for entry in filtered if not entry_is_generated_visual_output(entry)
         ]
-    mentioned_indices = {
-        int(match)
-        for match in re.findall(
-            r"(?<![a-z0-9])g\s*([1-9][0-9]*)",
-            str(prompt or "").lower(),
-        )
-    }
-    if mentioned_indices:
-        named = [
-            entry
+    named_requests = _named_visual_reference_requests(prompt)
+    if named_requests:
+        entries_by_index = {
+            index: entry
             for entry in filtered
-            if _coerce_user_ref_index(entry.get("user_ref_index"))
-            in mentioned_indices
-        ]
-        if named:
-            return named
+            if isinstance(
+                index := _coerce_user_ref_index(entry.get("user_ref_index")),
+                int,
+            )
+        }
+        named: list[dict[str, Any]] = []
+        for index, role_hint in named_requests:
+            entry = entries_by_index.get(index)
+            if not entry:
+                continue
+            selected = dict(entry)
+            if role_hint:
+                selected["role_hint"] = role_hint
+            named.append(selected)
+        return named
     return filtered
+
+
+def _named_visual_reference_requests(prompt: Any) -> list[tuple[int, str | None]]:
+    text = str(prompt or "")
+    matches = list(_NAMED_VISUAL_REFERENCE_RE.finditer(text))
+    requests: list[tuple[int, str | None]] = []
+    seen: set[int] = set()
+    for position, match in enumerate(matches):
+        index = int(match.group(1))
+        if index in seen:
+            continue
+        seen.add(index)
+        segment_end = (
+            matches[position + 1].start() if position + 1 < len(matches) else len(text)
+        )
+        segment = text[match.end() : segment_end].lower()
+        role_hint: str | None = None
+        if any(
+            marker in segment
+            for marker in (
+                "人物", "角色", "身分", "身份", "臉", "脸",
+                "identity", "character", "face",
+            )
+        ):
+            role_hint = "character_identity"
+        elif any(
+            marker in segment
+            for marker in (
+                "動作", "动作", "姿勢", "姿势", "構圖", "构图",
+                "pose", "action", "composition",
+            )
+        ):
+            role_hint = "pose_composition"
+        requests.append((index, role_hint))
+    return requests
 
 
 def _entries_from_tool_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -538,7 +583,7 @@ def _refs_from_message_content(content: Any) -> list[str]:
 def collect_recent_visual_reference_entries(
     messages: list[dict[str, Any]],
     *,
-    limit: int = MAX_SESSION_VISUAL_REFERENCES,
+    limit: int | None = MAX_SESSION_VISUAL_REFERENCES,
 ) -> list[dict[str, Any]]:
     generated_indices = _generated_visual_indices(messages)
     entries: list[dict[str, Any]] = []
@@ -565,8 +610,10 @@ def collect_recent_visual_reference_entries(
         elif role == "user":
             for entry in _entries_from_message_content(msg.get("content")):
                 _append_unique_entry(entries, entry)
-        if len(entries) >= limit:
+        if limit is not None and len(entries) >= limit:
             break
+    if limit is None:
+        return entries
     return entries[: max(0, limit)]
 
 

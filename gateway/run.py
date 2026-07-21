@@ -1746,6 +1746,10 @@ def _visual_reference_context_for_turn(
     ):
         return references[:MAX_SESSION_VISUAL_REFERENCES]
 
+    named_rollover_reference = bool(
+        re.search(r"(?<![A-Za-z0-9])G\s*\d+\b", operator_request, re.IGNORECASE)
+    )
+    history_limit = None if named_rollover_reference else 16
     if requests_original:
         historical = collect_recent_original_visual_reference_entries(
             agent_history,
@@ -1754,11 +1758,8 @@ def _visual_reference_context_for_turn(
     else:
         historical = collect_recent_visual_reference_entries(
             agent_history,
-            limit=16,
+            limit=history_limit,
         )
-    named_rollover_reference = bool(
-        re.search(r"(?<![A-Za-z0-9])G\s*\d+\b", operator_request, re.IGNORECASE)
-    )
     if fallback_agent_history and (not references or named_rollover_reference):
         if requests_original:
             fallback_historical = collect_recent_original_visual_reference_entries(
@@ -1768,7 +1769,7 @@ def _visual_reference_context_for_turn(
         else:
             fallback_historical = collect_recent_visual_reference_entries(
                 fallback_agent_history,
-                limit=16,
+                limit=history_limit,
             )
         historical_uris = {str(entry.get("uri") or "") for entry in historical}
         historical.extend(
