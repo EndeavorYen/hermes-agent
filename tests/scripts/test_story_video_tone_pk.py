@@ -2855,7 +2855,15 @@ def test_cli_registers_generation_repair_and_normalization_flags() -> None:
     parser = tone_pk._build_parser()
 
     generate = parser.parse_args(
-        ["generate", "--project", "/tmp/p", "--generator", "/tmp/g.py", "--resume"]
+        [
+            "generate",
+            "--project",
+            "/tmp/p",
+            "--generator",
+            "/tmp/g.py",
+            "--resume",
+            "--fresh-short-replan",
+        ]
     )
     qc = parser.parse_args(
         ["qc", "--project", "/tmp/p", "--repair-failed", "--max-candidates", "3"]
@@ -2868,6 +2876,96 @@ def test_cli_registers_generation_repair_and_normalization_flags() -> None:
     )
 
     assert generate.resume is True
+    assert generate.fresh_short_replan is True
     assert qc.repair_failed is True and qc.max_candidates == 3
     assert normalize.target_lufs == -18.0
     assert normalize.max_pair_delta_lufs == 0.5
+
+
+def test_generate_help_documents_fresh_short_replan_flag(capsys) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        tone_pk.main(["generate", "--help"])
+
+    assert exc_info.value.code == 0
+    assert "--fresh-short-replan" in capsys.readouterr().out
+
+
+def test_cli_fresh_short_replan_dispatches_only_filtered_scratch_scope(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project, before = _prepared_short_v2(tmp_path)
+    generator = tmp_path / "generator.py"
+    generator.write_text("# fixture\n", encoding="utf-8")
+    calls: list[list[str]] = []
+    original = tone_pk.generate_fresh_replanned_takes
+
+    def dispatched(project_arg: Path, generator_arg: Path):
+        return original(
+            project_arg,
+            generator_arg,
+            runner=fake_generator_runner(calls),
+        )
+
+    monkeypatch.setattr(tone_pk, "generate_fresh_replanned_takes", dispatched)
+    args = tone_pk._build_parser().parse_args(
+        [
+            "generate",
+            "--project",
+            str(project),
+            "--generator",
+            str(generator),
+            "--resume",
+            "--fresh-short-replan",
+        ]
+    )
+
+    result = args.handler(args)
+
+    assert result["status"] == "PASS"
+    assert len(calls) == 2
+    assert all("/scratch/short_replan_v2/variants/" in command[2] for command in calls)
+    state = json.loads(
+        (project / "manifests/tone_pk_manifest.json").read_text(encoding="utf-8")
+    )
+    assert state["pairs"][1] == before["pairs"][1]
+
+
+def test_cli_fresh_short_replan_rejects_ordinary_project(tmp_path: Path) -> None:
+    project = prepared_pk_project(tmp_path)
+    generator = tmp_path / "generator.py"
+    generator.write_text("# fixture\n", encoding="utf-8")
+    args = tone_pk._build_parser().parse_args(
+        [
+            "generate",
+            "--project",
+            str(project),
+            "--generator",
+            str(generator),
+            "--fresh-short-replan",
+        ]
+    )
+
+    with pytest.raises(tone_pk.TonePkError, match="only valid for short-replan"):
+        args.handler(args)
+
+
+def test_cli_short_replan_without_fresh_flag_keeps_legacy_guard(
+    tmp_path: Path,
+) -> None:
+    project, _before = _prepared_short_v2(tmp_path)
+    generator = tmp_path / "generator.py"
+    generator.write_text("# fixture\n", encoding="utf-8")
+    args = tone_pk._build_parser().parse_args(
+        [
+            "generate",
+            "--project",
+            str(project),
+            "--generator",
+            str(generator),
+            "--resume",
+        ]
+    )
+
+    with pytest.raises(tone_pk.TonePkError, match="fresh short-replan generation"):
+        args.handler(args)

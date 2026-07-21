@@ -2885,6 +2885,25 @@ def _status_command(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _generate_command(args: argparse.Namespace) -> dict[str, Any]:
+    if args.fresh_short_replan:
+        manifest_path = (
+            Path(args.project).expanduser().resolve()
+            / "manifests"
+            / "tone_pk_manifest.json"
+        )
+        if not manifest_path.is_file():
+            raise TonePkError(
+                "--fresh-short-replan is only valid for short-replan projects"
+            )
+        state = _load_json(manifest_path, label="tone PK manifest")
+        if not _short_replan_affected_ids(state):
+            raise TonePkError(
+                "--fresh-short-replan is only valid for short-replan projects"
+            )
+        return generate_fresh_replanned_takes(
+            args.project,
+            args.generator,
+        )
     return generate_takes(
         args.project,
         args.generator,
@@ -2958,6 +2977,14 @@ def _build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--project", type=Path, required=True)
     generate.add_argument("--generator", type=Path, required=True)
     generate.add_argument("--resume", action="store_true")
+    generate.add_argument(
+        "--fresh-short-replan",
+        action="store_true",
+        help=(
+            "run or resume isolated candidate-one generation for a "
+            "short-replan project"
+        ),
+    )
     generate.set_defaults(handler=_generate_command)
     status = subcommands.add_parser("status", help="show resumable take status")
     status.add_argument("--project", type=Path, required=True)
