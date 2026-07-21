@@ -26,9 +26,86 @@ class TonePkError(RuntimeError):
 
 SPOKEN_TEXT_NORMALIZATION = "bounded_ellipsis_v1"
 SOURCE_ASSEMBLY_CONTRACT = "ffmpeg_concat_pcm_s16le_48000_mono_v1"
+CANDIDATE_LINEAGE_SCHEMA = "story_video_candidate_lineage_v1"
 _DISPLAY_PAUSE_RE = re.compile(r"(?:\.{3,}|…{2,}|⋯{2,}|—{1,2})")
 _CLOSING_MARKS = "」』”’\"'】）》）]"
 _TERMINAL_MARKS = "。！？!?"
+
+
+def _canonical_json_sha256(payload: dict[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _validated_candidate_lineages(
+    manifest: dict[str, Any],
+    chunks: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    if manifest.get("candidate_lineage_schema") != CANDIDATE_LINEAGE_SCHEMA:
+        raise TonePkError("generator candidate lineage schema is unsupported")
+    generation_mode = manifest.get("generation_mode")
+    if generation_mode not in {"full", "selective_repair"}:
+        raise TonePkError("generator candidate generation mode is invalid")
+    requested_ids = manifest.get("requested_voice_chunk_ids")
+    if not isinstance(requested_ids, list) or any(
+        not isinstance(value, str) or not value for value in requested_ids
+    ):
+        raise TonePkError("generator requested candidate IDs are invalid")
+    if len(set(requested_ids)) != len(requested_ids):
+        raise TonePkError("generator requested candidate IDs are ambiguous")
+    chunk_ids = {str(chunk.get("voice_chunk_id") or "") for chunk in chunks}
+    if not set(requested_ids) <= chunk_ids:
+        raise TonePkError("generator requested unknown candidate IDs")
+    lineages: dict[str, dict[str, Any]] = {}
+    for chunk in chunks:
+        chunk_id = str(chunk.get("voice_chunk_id") or "")
+        lineage = chunk.get("candidate_lineage")
+        if not chunk_id or chunk_id in lineages or not isinstance(lineage, dict):
+            raise TonePkError("generator candidate lineage is missing or ambiguous")
+        supplied_hash = lineage.get("lineage_sha256")
+        canonical = {key: value for key, value in lineage.items() if key != "lineage_sha256"}
+        baseline = canonical.get("baseline_candidate_count")
+        delta = canonical.get("new_candidate_count")
+        cumulative = canonical.get("cumulative_candidate_count")
+        requested = chunk_id in set(requested_ids)
+        if (
+            canonical.get("schema") != CANDIDATE_LINEAGE_SCHEMA
+            or canonical.get("generation_mode") != generation_mode
+            or canonical.get("requested") is not requested
+            or type(baseline) is not int
+            or baseline < 0
+            or type(delta) is not int
+            or delta < 0
+            or type(cumulative) is not int
+            or cumulative < 1
+            or baseline + delta != cumulative
+            or chunk.get("candidate_count") != cumulative
+            or canonical.get("output_audio_sha256") != chunk.get("audio_sha256")
+            or not isinstance(supplied_hash, str)
+            or _canonical_json_sha256(canonical) != supplied_hash
+        ):
+            raise TonePkError("generator candidate lineage is invalid")
+        if generation_mode == "full":
+            if baseline != 0 or not requested or delta < 1:
+                raise TonePkError("generator full candidate lineage is invalid")
+        elif requested:
+            if baseline < 1 or delta < 1:
+                raise TonePkError("generator selective candidate lineage is invalid")
+        elif (
+            delta != 0
+            or baseline != cumulative
+        ):
+            raise TonePkError("generator unaffected candidate lineage changed")
+        lineages[chunk_id] = canonical
+    if generation_mode == "full" and set(requested_ids) != chunk_ids:
+        raise TonePkError("generator full candidate scope is incomplete")
+    return lineages
 
 
 def normalize_synthesis_spoken_text(text: str) -> str:
@@ -1217,8 +1294,10 @@ def _ingest_generated_variant(
         variant_project / "manifests" / "narration_manifest.json",
         label=f"{variant} narration manifest",
     )
+    manifest_chunks = _flatten_voice_chunks(manifest)
+    candidate_lineages = _validated_candidate_lineages(manifest, manifest_chunks)
     chunks_by_utterance: dict[str, list[dict[str, Any]]] = {}
-    for chunk in _flatten_voice_chunks(manifest):
+    for chunk in manifest_chunks:
         utterance_id = str(chunk.get("utterance_id") or "")
         chunks_by_utterance.setdefault(utterance_id, []).append(chunk)
     bindings = _variant_binding_by_speaker(variant_project)
@@ -1248,6 +1327,33 @@ def _ingest_generated_variant(
         observed_seeds = [chunk.get("generation_seed") for chunk in chunks]
         if observed_chunks != expected_chunks or observed_seeds != expected_seeds:
             raise TonePkError(f"generator changed chunks or seeds for {utterance_id}")
+        chunk_lineages = [
+            candidate_lineages[str(chunk.get("voice_chunk_id") or "")]
+            for chunk in chunks
+        ]
+        requested_chunk_lineages = [
+            lineage for lineage in chunk_lineages if lineage["requested"]
+        ]
+        if manifest.get("generation_mode") == "selective_repair":
+            if requested_chunk_lineages and len(requested_chunk_lineages) != len(chunks):
+                raise TonePkError(
+                    f"generator selectively repaired a partial utterance {utterance_id}"
+                )
+            if not requested_chunk_lineages:
+                prior_hashes = take.get("source_chunk_audio_sha256s")
+                prior_evidence = take.get("candidate_evidence")
+                if (
+                    not isinstance(prior_hashes, list)
+                    or prior_hashes
+                    != [str(chunk.get("audio_sha256") or "") for chunk in chunks]
+                    or not isinstance(prior_evidence, list)
+                    or [row.get("candidate_count") for row in prior_evidence]
+                    != [lineage["cumulative_candidate_count"] for lineage in chunk_lineages]
+                ):
+                    raise TonePkError(
+                        f"generator changed unaffected evidence for {utterance_id}"
+                    )
+                continue
         canonical_spoken_chunks: list[str] = []
         for raw_chunk, generated_chunk in zip(
             observed_chunks,
@@ -1362,24 +1468,43 @@ def _ingest_generated_variant(
             and stored_assembly_fingerprint == current_assembly_fingerprint
         )
         prior_candidates = int(take.get("candidate_count") or 0)
-        candidate_offset = (
-            prior_candidates
-            if accumulate_candidates or assembly_identity_changed
-            else 0
+        lineage_baseline_count = max(
+            int(lineage["baseline_candidate_count"]) for lineage in chunk_lineages
         )
-        observed_candidate_count = candidate_offset + max(observed_counts)
-        observed_selected_candidate = candidate_offset + max(observed_selected)
+        lineage_new_count = max(
+            int(lineage["new_candidate_count"]) for lineage in chunk_lineages
+        )
+        observed_candidate_count = max(observed_counts)
+        observed_selected_candidate = max(observed_selected)
+        if observed_candidate_count != lineage_baseline_count + lineage_new_count:
+            raise TonePkError(
+                f"candidate lineage count differs for {utterance_id}"
+            )
         if observed_candidate_count > 3:
             raise TonePkError(
                 f"candidate budget exceeded while reconciling {utterance_id}"
             )
         preserve_candidate_accounting = (
-            reconcile_existing_source
+            (reconcile_existing_source or accumulate_candidates)
             and not assembly_identity_changed
-            and prior_candidates >= observed_candidate_count
+            and (
+                prior_candidates == observed_candidate_count
+                or (
+                    manifest.get("generation_mode") == "full"
+                    and prior_candidates > observed_candidate_count
+                )
+            )
             and type(take.get("selected_candidate")) is int
             and 1 <= take["selected_candidate"] <= prior_candidates
         )
+        if (
+            (reconcile_existing_source or accumulate_candidates)
+            and not preserve_candidate_accounting
+            and prior_candidates != lineage_baseline_count
+        ):
+            raise TonePkError(
+                f"candidate lineage baseline differs for {utterance_id}"
+            )
         candidate_count = (
             prior_candidates
             if preserve_candidate_accounting
@@ -1393,9 +1518,8 @@ def _ingest_generated_variant(
         observed_candidate_evidence = [
             {
                 "voice_chunk_id": str(chunk.get("voice_chunk_id") or ""),
-                "candidate_count": candidate_offset + int(chunk["candidate_count"]),
-                "selected_candidate": candidate_offset
-                + int(chunk["selected_candidate"]),
+                "candidate_count": int(chunk["candidate_count"]),
+                "selected_candidate": int(chunk["selected_candidate"]),
             }
             for chunk in chunks
         ]
@@ -1647,15 +1771,31 @@ def repair_failed_takes(
         raise TonePkError("max candidates must be between 1 and 3")
     project_path = Path(project).expanduser().resolve()
     initial = _load_checkpoint(project_path)
-    failed = pending_takes(initial, phase="source")
-    if not failed:
-        return {"status": "PASS", "repaired_take_count": 0, "attempts": 0}
     generator_path = Path(str(initial.get("generator_path") or ""))
     if not generator_path.is_file():
         raise TonePkError("checkpoint has no usable generator path")
     pairs = initial.get("pairs")
     if not isinstance(pairs, list):
         raise TonePkError("tone PK manifest has no pairs")
+    utterance_ids = {str(pair["utterance_id"]) for pair in pairs}
+    for variant in ("neutral", "expressive"):
+        manifest_path = (
+            project_path / "variants" / variant / "manifests" / "narration_manifest.json"
+        )
+        if manifest_path.is_file():
+            _ingest_generated_variant(
+                project=project_path,
+                state=initial,
+                variant=variant,
+                utterance_ids=utterance_ids,
+                runner=runner,
+                reconcile_existing_source=True,
+            )
+            initial = _load_checkpoint(project_path)
+    failed = pending_takes(initial, phase="source")
+    if not failed:
+        return {"status": "PASS", "repaired_take_count": 0, "attempts": 0}
+    pairs = initial["pairs"]
     by_pair = {str(pair.get("pair_id") or ""): pair for pair in pairs}
     budgets: dict[tuple[str, str], int] = {}
     repair_groups: dict[tuple[str, int], set[tuple[str, str]]] = {}

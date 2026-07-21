@@ -282,6 +282,14 @@ def fake_generator_runner(
             (variant_project / "voice_cast_binding.json").read_text(encoding="utf-8")
         )
         speaker = binding["speakers"][0]
+        prior_chunks: dict[str, dict[str, Any]] = {}
+        prior_manifest_path = variant_project / "manifests" / "narration_manifest.json"
+        if prior_manifest_path.is_file():
+            prior_manifest = json.loads(prior_manifest_path.read_text(encoding="utf-8"))
+            prior_chunks = {
+                chunk["voice_chunk_id"]: chunk
+                for chunk in tone_pk._flatten_voice_chunks(prior_manifest)
+            }
         repair_ids = {
             command[index + 1]
             for index, value in enumerate(command[:-1])
@@ -295,13 +303,16 @@ def fake_generator_runner(
         if unknown_repair_ids:
             raise tone_pk.subprocess.CalledProcessError(1, command)
         chunks = []
+        requested_voice_chunk_ids = []
         for utterance in ledger["utterances"]:
-            utterance_candidate_count = (
+            generated_candidate_count = (
                 candidate_count[utterance["utterance_id"]]
                 if isinstance(candidate_count, dict)
                 else candidate_count
             )
+            requested = not repair_ids or utterance["shot_id"] in repair_ids
             for index, text in enumerate(utterance["canonical_voice_chunks"], start=1):
+                voice_chunk_id = f"{utterance['utterance_id']}__C{index:02d}"
                 audio = (
                     variant_project
                     / "audio"
@@ -309,14 +320,38 @@ def fake_generator_runner(
                     / f"{utterance['utterance_id']}__C{index:02d}.wav"
                 )
                 audio.parent.mkdir(parents=True, exist_ok=True)
-                if not repair_ids or utterance["shot_id"] in repair_ids:
+                if requested:
                     audio.write_bytes(
                         f"{variant}-{utterance['utterance_id']}-{len(calls)}".encode()
                     )
+                    requested_voice_chunk_ids.append(
+                        voice_chunk_id
+                    )
+                prior = prior_chunks.get(voice_chunk_id, {})
+                baseline_count = int(prior.get("candidate_count") or 0)
+                new_candidate_count = generated_candidate_count if requested else 0
+                cumulative_candidate_count = baseline_count + new_candidate_count
+                lineage = {
+                    "schema": "story_video_candidate_lineage_v1",
+                    "generation_mode": "selective_repair" if repair_ids else "full",
+                    "requested": requested,
+                    "baseline_candidate_count": baseline_count,
+                    "new_candidate_count": new_candidate_count,
+                    "cumulative_candidate_count": cumulative_candidate_count,
+                    "output_audio_sha256": _sha256(audio),
+                }
+                lineage["lineage_sha256"] = hashlib.sha256(
+                    json.dumps(
+                        lineage,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest()
                 tone = utterance["tone"]
                 chunks.append(
                     {
-                        "voice_chunk_id": f"{utterance['utterance_id']}__C{index:02d}",
+                        "voice_chunk_id": voice_chunk_id,
                         "utterance_id": utterance["utterance_id"],
                         "speaker_id": utterance["speaker_id"],
                         "voice_id": speaker["voice_id"],
@@ -341,8 +376,9 @@ def fake_generator_runner(
                         "fluency_status": "PASS",
                         "qc_status": "PASS" if qc_pass else "FAIL",
                         "audio_sha256": _sha256(audio),
-                        "candidate_count": utterance_candidate_count,
-                        "selected_candidate": utterance_candidate_count,
+                        "candidate_count": cumulative_candidate_count,
+                        "selected_candidate": cumulative_candidate_count,
+                        "candidate_lineage": lineage,
                     }
                 )
         manifest = {
@@ -354,6 +390,9 @@ def fake_generator_runner(
                 variant_project / "qc" / "pronunciation_qc_report.json"
             ),
             "voice_chunk_count": len(chunks),
+            "candidate_lineage_schema": "story_video_candidate_lineage_v1",
+            "requested_voice_chunk_ids": sorted(requested_voice_chunk_ids),
+            "generation_mode": "selective_repair" if repair_ids else "full",
             "outputs": [
                 {
                     "spoken_text": "".join(row["spoken_text"] for row in chunks),
@@ -453,6 +492,40 @@ def _set_manifest_utterance_qc(
                     continue
                 chunk["pronunciation_status"] = status
                 chunk["qc_status"] = status
+    _write_json(path, manifest)
+
+
+def _set_manifest_candidate_count(
+    project: Path,
+    *,
+    variant: str,
+    utterance_id: str,
+    candidate_count: int,
+) -> None:
+    path = project / "variants" / variant / "manifests" / "narration_manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    for chunk in tone_pk._flatten_voice_chunks(manifest):
+        if chunk["utterance_id"] != utterance_id:
+            continue
+        chunk["candidate_count"] = candidate_count
+        chunk["selected_candidate"] = candidate_count
+        lineage = chunk["candidate_lineage"]
+        lineage.update(
+            {
+                "baseline_candidate_count": 0,
+                "new_candidate_count": candidate_count,
+                "cumulative_candidate_count": candidate_count,
+            }
+        )
+        canonical = {key: value for key, value in lineage.items() if key != "lineage_sha256"}
+        lineage["lineage_sha256"] = hashlib.sha256(
+            json.dumps(
+                canonical,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
     _write_json(path, manifest)
 
 
@@ -625,7 +698,7 @@ def test_generate_resume_backfills_old_checkpoint_canonical_evidence(
     assert all(field in refreshed["pairs"][0]["neutral"] for field in canonical_fields)
 
 
-def test_generate_resume_reassembles_source_when_manifest_chunk_identity_changes(
+def test_generate_resume_rejects_changed_chunk_without_candidate_lineage(
     tmp_path: Path,
 ) -> None:
     project = prepared_pk_project(tmp_path)
@@ -659,7 +732,7 @@ def test_generate_resume_reassembles_source_when_manifest_chunk_identity_changes
         chunk[gate] = "PASS"
     _write_json(manifest_path, manifest)
 
-    with pytest.raises(tone_pk.TonePkError, match="use qc --repair-failed"):
+    with pytest.raises(tone_pk.TonePkError, match="candidate lineage"):
         tone_pk.generate_takes(
             project,
             generator,
@@ -669,12 +742,11 @@ def test_generate_resume_reassembles_source_when_manifest_chunk_identity_changes
 
     after = json.loads(state_path.read_text(encoding="utf-8"))
     neutral = after["pairs"][0]["neutral"]
-    assert neutral["qc_status"] == "PASS"
-    assert neutral["source_audio_sha256"] == chunk["audio_sha256"]
-    assert neutral["source_audio_sha256"] != old_source_hash
+    assert neutral["qc_status"] == "FAIL"
+    assert neutral["source_audio_sha256"] == old_source_hash
 
 
-def test_generate_resume_changed_chunk_identity_accounts_crash_window_candidates(
+def test_generate_resume_rejects_post_synthesis_pre_manifest_crash(
     tmp_path: Path,
 ) -> None:
     project = prepared_pk_project(tmp_path)
@@ -689,32 +761,13 @@ def test_generate_resume_changed_chunk_identity_accounts_crash_window_candidates
             resume=True,
             runner=lambda *_args, **_kwargs: pytest.fail("provider runner called"),
         )
-    state_path = project / "manifests" / "tone_pk_manifest.json"
     manifest_path = project / "variants" / "neutral/manifests/narration_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    chunk = manifest["outputs"][0]["segments"][0]["voice_chunks"][0]
+    audio = Path(chunk["audio"])
+    audio.write_bytes(audio.read_bytes() + b"-crash-window")
 
-    def replace_chunk(*, suffix: bytes, candidate_count: int) -> None:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        chunk = manifest["outputs"][0]["segments"][0]["voice_chunks"][0]
-        audio = Path(chunk["audio"])
-        audio.write_bytes(audio.read_bytes() + suffix)
-        chunk["audio_sha256"] = _sha256(audio)
-        chunk["candidate_count"] = candidate_count
-        chunk["selected_candidate"] = candidate_count
-        _write_json(manifest_path, manifest)
-
-    replace_chunk(suffix=b"-repair-two", candidate_count=2)
-    with pytest.raises(tone_pk.TonePkError, match="use qc --repair-failed"):
-        tone_pk.generate_takes(
-            project,
-            generator,
-            resume=True,
-            runner=lambda *_args, **_kwargs: pytest.fail("provider runner called"),
-        )
-    checkpoint = json.loads(state_path.read_text(encoding="utf-8"))
-    assert checkpoint["pairs"][0]["neutral"]["candidate_count"] == 3
-
-    replace_chunk(suffix=b"-repair-four", candidate_count=1)
-    with pytest.raises(tone_pk.TonePkError, match="candidate budget"):
+    with pytest.raises(tone_pk.TonePkError, match="audio hash"):
         tone_pk.generate_takes(
             project,
             generator,
@@ -1509,7 +1562,7 @@ def test_generate_rejects_candidate_when_generator_audio_hash_is_wrong(
             _write_json(path, manifest)
         return result
 
-    with pytest.raises(tone_pk.TonePkError, match="audio hash"):
+    with pytest.raises(tone_pk.TonePkError, match="candidate lineage"):
         tone_pk.generate_takes(
             project,
             generator,
@@ -1801,6 +1854,84 @@ def test_repair_candidate_budget_is_cumulative_and_never_exceeds_cap(
         )
 
 
+def test_selective_candidate_lineage_counts_only_new_delta(tmp_path: Path) -> None:
+    project = prepared_pk_project(tmp_path)
+    generator = tmp_path / "fake_generator.py"
+    generator.write_text("# sanitized fixture\n", encoding="utf-8")
+    tone_pk.generate_takes(
+        project,
+        generator,
+        resume=True,
+        runner=fake_generator_runner([]),
+    )
+    state_path = project / "manifests/tone_pk_manifest.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["pairs"][0]["expressive"]["qc_status"] = "FAIL"
+    _set_manifest_utterance_qc(
+        project,
+        variant="expressive",
+        utterance_id="U0001",
+        passed=False,
+    )
+    _write_json(state_path, state)
+
+    tone_pk.repair_failed_takes(
+        project,
+        max_candidates=3,
+        runner=fake_generator_runner([], candidate_count=1),
+    )
+
+    repaired = json.loads(state_path.read_text(encoding="utf-8"))
+    assert repaired["pairs"][0]["expressive"]["candidate_count"] == 2
+
+
+def test_repair_reconciles_interrupted_manifest_before_group_planning(
+    tmp_path: Path,
+) -> None:
+    project = prepared_pk_project(tmp_path, utterance_count=2)
+    generator = tmp_path / "fake_generator.py"
+    generator.write_text("# sanitized fixture\n", encoding="utf-8")
+    tone_pk.generate_takes(
+        project,
+        generator,
+        resume=True,
+        runner=fake_generator_runner([]),
+    )
+    state_path = project / "manifests/tone_pk_manifest.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    for pair in state["pairs"]:
+        pair["neutral"]["qc_status"] = "FAIL"
+        _set_manifest_utterance_qc(
+            project,
+            variant="neutral",
+            utterance_id=pair["utterance_id"],
+            passed=False,
+        )
+    _write_json(state_path, state)
+    fake_generator_runner([], candidate_count=1)(
+        [
+            str(generator),
+            str(project / "variants" / "neutral"),
+            "--repair-shot",
+            "S01_SH01",
+        ]
+    )
+    repair_calls: list[list[str]] = []
+
+    tone_pk.repair_failed_takes(
+        project,
+        max_candidates=3,
+        runner=fake_generator_runner(repair_calls, candidate_count=1),
+    )
+
+    neutral_calls = [
+        command for command in repair_calls if "/variants/neutral" in " ".join(command)
+    ]
+    assert len(neutral_calls) == 1
+    assert "S01_SH02" in neutral_calls[0]
+    assert "S01_SH01" not in neutral_calls[0]
+
+
 def test_repair_groups_same_variant_and_remaining_budget_in_one_invocation(
     tmp_path: Path,
 ) -> None:
@@ -1867,6 +1998,14 @@ def test_repair_dispatches_heterogeneous_take_budgets_independently(
     second = state["pairs"][1]["neutral"]
     first.update({"qc_status": "FAIL", "candidate_count": 2, "selected_candidate": 2})
     second.update({"qc_status": "FAIL", "candidate_count": 1, "selected_candidate": 1})
+    for row in first["candidate_evidence"]:
+        row.update({"candidate_count": 2, "selected_candidate": 2})
+    _set_manifest_candidate_count(
+        project,
+        variant="neutral",
+        utterance_id="U0001",
+        candidate_count=2,
+    )
     _set_manifest_utterance_qc(
         project,
         variant="neutral",
@@ -1887,34 +2026,7 @@ def test_repair_dispatches_heterogeneous_take_budgets_independently(
     )
 
     def targeted_runner(command: list[str], **kwargs):
-        result = base_runner(command, **kwargs)
-        if (
-            command[0] != "ffmpeg"
-            and "--repair-shot" in command
-            and command[command.index("--repair-shot") + 1] == "S01_SH01"
-        ):
-            _set_manifest_utterance_qc(
-                project,
-                variant="neutral",
-                utterance_id="U0002",
-                passed=False,
-            )
-            manifest_path = (
-                project
-                / "variants"
-                / "neutral"
-                / "manifests"
-                / "narration_manifest.json"
-            )
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            for output in manifest["outputs"]:
-                for segment in output["segments"]:
-                    for chunk in segment["voice_chunks"]:
-                        if chunk["utterance_id"] == "U0002":
-                            chunk["candidate_count"] = 1
-                            chunk["selected_candidate"] = 1
-            _write_json(manifest_path, manifest)
-        return result
+        return base_runner(command, **kwargs)
 
     tone_pk.repair_failed_takes(
         project,
@@ -2019,6 +2131,22 @@ def test_exhausted_failed_take_does_not_block_other_group_and_cap_stays_three(
     second = state["pairs"][1]["neutral"]
     first.update({"qc_status": "FAIL", "candidate_count": 3, "selected_candidate": 3})
     second.update({"qc_status": "FAIL", "candidate_count": 2, "selected_candidate": 2})
+    for row in first["candidate_evidence"]:
+        row.update({"candidate_count": 3, "selected_candidate": 3})
+    for row in second["candidate_evidence"]:
+        row.update({"candidate_count": 2, "selected_candidate": 2})
+    _set_manifest_candidate_count(
+        project,
+        variant="neutral",
+        utterance_id="U0001",
+        candidate_count=3,
+    )
+    _set_manifest_candidate_count(
+        project,
+        variant="neutral",
+        utterance_id="U0002",
+        candidate_count=2,
+    )
     for utterance_id in ("U0001", "U0002"):
         _set_manifest_utterance_qc(
             project,
