@@ -269,6 +269,11 @@ def _quality_issues_from_observation(
         ):
             continue
         issue = _issue_for_defect(defect_text)
+        if issue == "required_detail_missing" and _contract_field_is_explicitly_empty(
+            request_context,
+            "required_details",
+        ):
+            continue
         if issue == "reference_identity_drift" and not has_reference_image:
             continue
         if issue in {"aspect_integrity_bad", "motion_bad", "video_metadata_missing"} and not video_like:
@@ -304,6 +309,14 @@ def _quality_issues_from_observation(
         if issue not in issues:
             issues.append(issue)
     return issues
+
+
+def _contract_field_is_explicitly_empty(
+    request_context: dict[str, Any],
+    field: str,
+) -> bool:
+    contract = request_context.get("visual_intent_contract")
+    return isinstance(contract, dict) and field in contract and not contract.get(field)
 
 
 def _reference_adherence_with_role_scores(

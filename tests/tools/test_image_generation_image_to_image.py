@@ -142,6 +142,60 @@ class TestFalRouting:
         assert capture["endpoint"] == "fal-ai/nano-banana-pro"
         assert "image_urls" not in capture["arguments"]
 
+    def test_text_to_image_assigns_session_label(self, cfg_home, monkeypatch):
+        import tools.image_generation_tool as image_tool
+        from gateway.session_context import (
+            reset_visual_artifact_index_context,
+            set_visual_artifact_index_context,
+        )
+
+        _write_cfg(cfg_home, {"image_gen": {"model": "fal-ai/nano-banana-pro"}})
+        capture: dict = {}
+        self._patch_submit(monkeypatch, image_tool, capture)
+        token = set_visual_artifact_index_context(3)
+        try:
+            out = json.loads(image_tool.image_generate_tool(prompt="a cat"))
+        finally:
+            reset_visual_artifact_index_context(token)
+
+        assert out["session_visual_artifacts"] == [
+            {
+                "label": "G3",
+                "user_ref_index": 3,
+                "uri": "https://out/img.png",
+            }
+        ]
+
+
+    def test_visual_package_route_preserves_session_labels(self, monkeypatch):
+        import tools.image_generation_tool as image_tool
+        import tools.visual_package_tool as visual_package_tool
+
+        monkeypatch.setattr(
+            visual_package_tool,
+            "_handle_visual_package_generate",
+            lambda args: json.dumps(
+                {
+                    "success": True,
+                    "images": ["/tmp/g5.jpg"],
+                    "session_visual_artifacts": [
+                        {"label": "G5", "user_ref_index": 5, "uri": "/tmp/g5.jpg"}
+                    ],
+                }
+            ),
+        )
+
+        result = image_tool._route_visual_image_to_package(
+            prompt="portrait",
+            aspect_ratio="portrait",
+            image_url=None,
+            reference_image_urls=None,
+            provider_override="xai",
+            candidate_budget=1,
+        )
+
+        assert result["session_visual_artifacts"][0]["label"] == "G5"
+
     def test_image_to_image_routes_to_edit_endpoint(self, cfg_home, monkeypatch):
         import tools.image_generation_tool as image_tool
 

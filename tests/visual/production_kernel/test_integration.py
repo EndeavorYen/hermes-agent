@@ -109,3 +109,22 @@ def test_reference_roles_use_stable_indices_instead_of_local_paths():
     ]
     assert first["visual_contract_hash"] == second["visual_contract_hash"]
     assert "/private/tmp" not in str(first["visual_intent_contract"])
+
+
+def test_production_kernel_extracts_explicit_chinese_action_constraint():
+    result = attach_visual_production_kernel(
+        "基於這個動作，試試兩隻手都舉起來的動作，更性感一些，也是 4 張讓我挑選",
+        {
+            "candidate_budget": 4,
+            "candidate_budget_source": "user",
+            "image_provider": "xai",
+        },
+    )
+
+    assert result["visual_intent_contract"]["observable_action"] == "兩隻手都舉起來"
+
+
+def test_production_kernel_extracts_bare_chinese_limb_action_constraint():
+    result = attach_visual_production_kernel("兩隻手都舉起來", {})
+
+    assert result["visual_intent_contract"]["observable_action"] == "兩隻手都舉起來"

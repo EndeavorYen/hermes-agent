@@ -199,6 +199,17 @@ def _handle_visual_agent_generate(args: dict[str, Any], **_kw: Any) -> str:
     except Exception:
         return raw
     if isinstance(payload, dict):
+        from agent.visual.session_references import label_visual_payload_images
+        from gateway.session_context import reserve_visual_artifact_indices
+
+        image_count = len(_normalise_attachments(payload.get("images")))
+        if (
+            payload.get("success") is True
+            and image_count
+            and not payload.get("session_visual_artifacts")
+        ):
+            start_index = reserve_visual_artifact_indices(image_count)
+            label_visual_payload_images(payload, start_index=start_index)
         provider_contract = dict(plan.get("provider_contract") or {})
         provider_contract["image_provider"] = package_args.get("image_provider")
         provider_contract["visual_media_provider_selected"] = package_args.get(

@@ -59,7 +59,8 @@ def attach_visual_production_kernel(
         original_prompt,
         {
             "primary_subject": _primary_subject(original_prompt),
-            "observable_action": result.get("observable_action"),
+            "observable_action": result.get("observable_action")
+            or _observable_action(original_prompt),
             "decisive_moment": result.get("decisive_moment"),
             "focal_point": result.get("focal_point"),
             "composition": result.get("composition"),
@@ -136,3 +137,17 @@ def _primary_subject(prompt: str) -> str:
         if match and match.group(1).strip():
             return match.group(1).strip()
     return text
+
+
+def _observable_action(prompt: str) -> str:
+    text = str(prompt or "").strip()
+    for pattern in (
+        r"(?:試試|试试|改成|換成|换成)\s*([^，。；;\n]{2,60}?)(?:的)?(?:動作|动作|姿勢|姿势)",
+        r"((?:兩|两|雙|双|一|單|单|左|右)(?:隻|只)?(?:手|臂)[^，。；;\n]{0,30}"
+        r"(?:舉|举|抬|伸|彎|弯|交叉|扶|撐|撑)[^，。；;\n]{0,20})",
+        r"(?:try|change(?:\s+the)?\s+pose\s+to|make\s+(?:them|him|her|it))\s+([^,.;\n]{2,80})",
+    ):
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match and match.group(1).strip():
+            return match.group(1).strip()
+    return ""

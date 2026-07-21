@@ -13,6 +13,8 @@ and the gateway 404'd at ``send_photo`` time.
 from __future__ import annotations
 
 import http.server
+from pathlib import Path
+import re
 import socketserver
 import threading
 from unittest.mock import MagicMock
@@ -202,3 +204,62 @@ class TestSaveUrlImage:
         path1 = save_url_image(f"{base}/image.png", prefix="xai_collision")
         path2 = save_url_image(f"{base}/image.png", prefix="xai_collision")
         assert path1 != path2, "filename collision — uuid suffix isn't doing its job"
+
+
+def test_success_response_stages_generic_local_name_with_provider_model_identity(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    source = tmp_path / "image.png"
+    source.write_bytes(PNG_1PX)
+
+    from agent.image_gen_provider import success_response
+
+    first = success_response(
+        image=str(source),
+        model="gpt-image-2",
+        prompt="portrait",
+        aspect_ratio="portrait",
+        provider="openai-codex",
+    )
+    second = success_response(
+        image=str(source),
+        model="gpt-image-2",
+        prompt="portrait",
+        aspect_ratio="portrait",
+        provider="openai-codex",
+    )
+
+    first_path = Path(first["image"])
+    second_path = Path(second["image"])
+    pattern = re.compile(
+        r"^openai-codex-gpt-image-2_\d{8}T\d{6}Z_[0-9a-f]{8}\.png$"
+    )
+    assert pattern.fullmatch(first_path.name)
+    assert pattern.fullmatch(second_path.name)
+    assert first_path.parent == tmp_path / ".hermes" / "visual" / "outputs" / "openai-codex"
+    assert first_path.read_bytes() == PNG_1PX
+    assert second_path != first_path
+
+
+def test_success_response_restages_timestamped_name_without_provider_model_identity(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    source = tmp_path / "openrouter_gen_20260721T120000Z_deadbeef.png"
+    source.write_bytes(PNG_1PX)
+
+    from agent.image_gen_provider import success_response
+
+    result = success_response(
+        image=str(source),
+        model="gpt-image-2",
+        prompt="portrait",
+        aspect_ratio="portrait",
+        provider="openrouter",
+    )
+
+    assert Path(result["image"]).name.startswith("openrouter-gpt-image-2_")
+    assert Path(result["image"]) != source

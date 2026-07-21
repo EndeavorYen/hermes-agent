@@ -1,6 +1,35 @@
 import json
 
 
+def test_visual_generation_loads_previous_history_even_with_current_attachments():
+    from gateway.run import _should_load_previous_visual_history
+
+    assert _should_load_previous_visual_history(
+        "基於這個動作，再產四張讓我挑選",
+        current_attachment_paths=["/tmp/current-reference.jpg"],
+    )
+
+
+def test_visual_artifact_start_index_continues_across_session_rollover():
+    from gateway.run import _visual_artifact_start_index_for_turn
+
+    prior_history = [
+        {
+            "role": "tool",
+            "content": json.dumps(
+                {
+                    "success": True,
+                    "session_visual_artifacts": [
+                        {"label": "G7", "user_ref_index": 7, "uri": "/tmp/g7.jpg"}
+                    ],
+                }
+            ),
+        }
+    ]
+
+    assert _visual_artifact_start_index_for_turn([], prior_history) == 8
+
+
 def test_visual_reference_context_falls_back_across_session_rollover():
     from gateway.run import _visual_reference_context_for_turn
 
@@ -61,6 +90,36 @@ def test_current_attachment_wins_over_rollover_fallback():
     )
 
     assert [entry["uri"] for entry in references] == ["/tmp/current-upload.jpg"]
+
+
+def test_current_attachment_precedes_but_does_not_hide_named_rollover_reference():
+    from gateway.run import _visual_reference_context_for_turn
+
+    prior_history = [
+        {
+            "role": "tool",
+            "content": json.dumps(
+                {
+                    "success": True,
+                    "session_visual_artifacts": [
+                        {"label": "G2", "user_ref_index": 2, "uri": "/tmp/g2.jpg"}
+                    ],
+                }
+            ),
+        }
+    ]
+
+    references = _visual_reference_context_for_turn(
+        "把目前附件和 G2 一起作為參考",
+        current_attachment_paths=["/tmp/current-upload.jpg"],
+        agent_history=[],
+        fallback_agent_history=prior_history,
+    )
+
+    assert [entry["uri"] for entry in references] == [
+        "/tmp/current-upload.jpg",
+        "/tmp/g2.jpg",
+    ]
 
 
 def test_runtime_metadata_does_not_pollute_named_reference_selection():

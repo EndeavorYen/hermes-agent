@@ -34,6 +34,45 @@ def test_visual_agent_registry_handler_is_synchronous():
     assert inspect.iscoroutinefunction(entry.handler) is False
 
 
+def test_visual_agent_generate_labels_images_from_session_counter(monkeypatch):
+    from gateway.session_context import (
+        reset_visual_artifact_index_context,
+        set_visual_artifact_index_context,
+    )
+    from tools import visual_agent_tool
+
+    monkeypatch.setattr(
+        visual_agent_tool,
+        "_handle_visual_package_generate",
+        lambda _args: json.dumps(
+            {
+                "success": True,
+                "images": ["/tmp/first.jpg", "/tmp/second.jpg"],
+                "videos": [],
+            }
+        ),
+    )
+
+    token = set_visual_artifact_index_context(9)
+    try:
+        payload = json.loads(
+            visual_agent_tool._handle_visual_agent_generate(
+                {
+                    "prompt": "請產出兩張圖片",
+                    "visual_agent_handoff_mode": "pre_llm_direct",
+                    "visual_agent_llm_rounds": 0,
+                }
+            )
+        )
+    finally:
+        reset_visual_artifact_index_context(token)
+
+    assert [item["label"] for item in payload["session_visual_artifacts"]] == [
+        "G9",
+        "G10",
+    ]
+
+
 def test_visual_agent_generate_plans_natural_image_plus_video_request(monkeypatch):
     from tools import visual_agent_tool
 

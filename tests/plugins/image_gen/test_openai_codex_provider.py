@@ -199,9 +199,9 @@ class TestGenerate:
         saved = Path(result["image"])
         assert saved.exists()
         assert saved.parent == tmp_path / "cache" / "images"
-        # Filename prefix differs from the API-key plugin so cache audits can
-        # tell the two backends apart.
-        assert saved.name.startswith("openai_codex_")
+        # Provider and model stay visible while the timestamp/random suffix
+        # keeps Slack delivery names collision-safe.
+        assert saved.name.startswith("openai-codex-gpt-image-2-medium_")
 
     def test_codex_stream_request_shape(self, provider, monkeypatch):
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")

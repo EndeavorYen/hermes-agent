@@ -284,6 +284,8 @@ def _is_visual_followup_edit_request(prompt: str) -> bool:
         "換成",
         "幫我換",
         "帮我换",
+        "試試",
+        "试试",
         "換個",
         "换个",
         "移除",
@@ -1425,15 +1427,27 @@ def format_direct_visual_agent_handoff_response(raw_tool_result: str) -> str:
 
     images = _string_list(payload.get("images"))
     videos = _string_list(payload.get("videos"))
+    labels = [
+        str(item.get("label") or "").strip()
+        for item in payload.get("session_visual_artifacts") or []
+        if isinstance(item, dict) and str(item.get("label") or "").strip()
+    ]
     if (
         package_status == "partial"
         and payload.get("error_type") == "candidate_option_shortfall"
         and images
     ):
+        if labels:
+            return (
+                f"已交付通過品質檢查的候選圖：{'、'.join(labels)}；"
+                "合格數少於原要求，其餘已淘汰。後續可直接指定編號繼續編輯。"
+            )
         return "已交付通過品質檢查的候選圖；合格數少於原要求，其餘已淘汰。"
     if images and videos:
         return "已產出圖片和影片。"
     if images:
+        if labels:
+            return f"已產出圖片：{'、'.join(labels)}。後續可直接指定編號繼續編輯。"
         return "已產出圖片。"
     if videos:
         return "已產出影片。"
