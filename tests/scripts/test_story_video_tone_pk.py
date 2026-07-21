@@ -221,6 +221,45 @@ def test_pair_plan_requires_explicit_run_local_tone_id(tmp_path: Path) -> None:
         )
 
 
+def test_pair_plan_uses_explicit_empty_modifiers_without_action_inference(
+    tmp_path: Path,
+) -> None:
+    source = sanitized_source_project(tmp_path, utterance_count=2)
+    annotations = _annotations()
+    annotations["U0002"]["modifiers"] = []
+
+    plan = tone_pk.build_pair_plan(
+        source_project=source,
+        run_id="tone-pk-test",
+        annotations=annotations,
+        expected_utterance_count=2,
+    )
+
+    assert plan["pairs"][1]["action"] == "急促地提醒同行者"
+    assert plan["pairs"][1]["expressive"]["tone"]["modifiers"] == []
+
+
+@pytest.mark.parametrize("modifier_value", ["missing", None])
+def test_pair_plan_rejects_missing_or_null_run_local_modifiers(
+    tmp_path: Path,
+    modifier_value: object,
+) -> None:
+    source = sanitized_source_project(tmp_path, utterance_count=2)
+    annotations = _annotations()
+    if modifier_value == "missing":
+        annotations["U0002"].pop("modifiers")
+    else:
+        annotations["U0002"]["modifiers"] = modifier_value
+
+    with pytest.raises(tone_pk.TonePkError, match="explicit modifiers list"):
+        tone_pk.build_pair_plan(
+            source_project=source,
+            run_id="tone-pk-test",
+            annotations=annotations,
+            expected_utterance_count=2,
+        )
+
+
 def test_prepare_writes_local_variant_contracts_with_tone_only_difference(
     tmp_path: Path,
 ) -> None:

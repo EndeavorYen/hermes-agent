@@ -152,6 +152,9 @@ def _resolved_tone(
         raise TonePkError(
             "expressive annotation requires an explicit non-neutral tone_id"
         )
+    modifiers = annotation.get("modifiers")
+    if "modifiers" not in annotation or not isinstance(modifiers, list):
+        raise TonePkError("expressive annotation requires an explicit modifiers list")
     try:
         return resolve_utterance_tone(
             emotion=str(utterance.get("emotion") or ""),
@@ -159,7 +162,7 @@ def _resolved_tone(
             pace=str(annotation.get("pace") or ""),
             tone_id=tone_id,
             intensity=annotation.get("intensity"),
-            modifiers=annotation.get("modifiers"),
+            modifiers=modifiers,
             content_rating="adult_explicit",
         )
     except ToneMapError as exc:
