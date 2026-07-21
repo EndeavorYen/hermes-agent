@@ -1985,10 +1985,6 @@ def _write_fresh_short_replan_scratch_variant(
         existing_ledger, _binding, _story_mode = _validate_source_binding(scratch)
         if existing_ledger.get("utterances") != filtered:
             raise TonePkError(f"fresh short-replan scratch drifted: {variant}")
-        if (scratch / "manifests" / "narration_manifest.json").exists():
-            raise TonePkError(
-                f"fresh short-replan scratch already has generation evidence: {variant}"
-            )
         return scratch
     ledger["utterances"] = filtered
     story_mode = _load_json(source / "story_mode.json", label=f"{variant} story mode")
@@ -2048,6 +2044,22 @@ def _validate_fresh_scratch_manifest(
     return manifest
 
 
+def _validate_scratch_manifest_scope(
+    scratch: Path,
+    *,
+    affected_utterance_ids: set[str],
+) -> dict[str, Any]:
+    manifest = _load_json(
+        scratch / "manifests" / "narration_manifest.json",
+        label="short-replan scratch manifest",
+    )
+    chunks = _flatten_voice_chunks(manifest)
+    _validated_candidate_lineages(manifest, chunks)
+    if {str(chunk.get("utterance_id") or "") for chunk in chunks} != affected_utterance_ids:
+        raise TonePkError("short-replan scratch manifest scope differs from affected pairs")
+    return manifest
+
+
 def generate_fresh_replanned_takes(
     project: Path,
     generator: Path,
@@ -2071,7 +2083,7 @@ def generate_fresh_replanned_takes(
     affected_utterance_ids = {
         str(pair.get("utterance_id") or "") for pair in affected_pairs
     }
-    reset_fields = (
+    generation_fields = (
         "candidate_count",
         "selected_candidate",
         "candidate_evidence",
@@ -2082,13 +2094,6 @@ def generate_fresh_replanned_takes(
         "integrated_lufs",
         "qc_status",
     )
-    if any(
-        field in pair[variant]
-        for pair in affected_pairs
-        for variant in ("neutral", "expressive")
-        for field in reset_fields
-    ):
-        raise TonePkError("fresh short-replan take already has generation evidence")
     before_reused = {
         str(pair["pair_id"]): copy.deepcopy(pair)
         for pair in state["pairs"]
@@ -2098,11 +2103,57 @@ def generate_fresh_replanned_takes(
     manifest_hashes: dict[str, str] = {}
     generated = 0
     for variant in ("neutral", "expressive"):
+        state = _load_checkpoint(project_path)
+        state["generator_path"] = str(generator_path)
+        current_pairs = {
+            str(pair["pair_id"]): pair for pair in state["pairs"]
+        }
+        variant_takes = [current_pairs[pair_id][variant] for pair_id in affected_pair_ids]
+        has_any_evidence = [
+            any(field in take for field in generation_fields) for take in variant_takes
+        ]
         scratch = _write_fresh_short_replan_scratch_variant(
             project_path,
             variant=variant,
             affected_utterance_ids=affected_utterance_ids,
         )
+        scratch_manifest = scratch / "manifests" / "narration_manifest.json"
+        if scratch_manifest.is_file():
+            if not all(has_any_evidence):
+                raise TonePkError(
+                    f"{variant} fresh short-replan scratch/master evidence is partial"
+                )
+            _validate_fresh_scratch_manifest(
+                scratch,
+                affected_utterance_ids=affected_utterance_ids,
+            )
+            _ingest_generated_variant(
+                project=project_path,
+                state=state,
+                variant=variant,
+                utterance_ids=affected_utterance_ids,
+                runner=runner,
+                reconcile_existing_source=True,
+                variant_project_override=scratch,
+            )
+            state = _load_checkpoint(project_path)
+            refreshed = {
+                str(pair["pair_id"]): pair for pair in state["pairs"]
+            }
+            if any(
+                refreshed[pair_id][variant].get("candidate_count") != 1
+                or not _source_artifact_is_valid(refreshed[pair_id][variant])
+                for pair_id in affected_pair_ids
+            ):
+                raise TonePkError(
+                    f"{variant} fresh short-replan master evidence is invalid"
+                )
+            manifest_hashes[variant] = _sha256(scratch_manifest)
+            continue
+        if any(has_any_evidence):
+            raise TonePkError(
+                f"{variant} fresh short-replan master evidence lacks scratch manifest"
+            )
         command = [
             sys.executable,
             str(generator_path),
@@ -2169,6 +2220,124 @@ def generate_fresh_replanned_takes(
         "generated_take_count": generated,
         "affected_pair_count": len(affected_pair_ids),
         "reused_pair_count": len(before_reused),
+    }
+
+
+def _repair_short_replanned_takes(
+    project: Path,
+    *,
+    state: dict[str, Any],
+    generator: Path,
+    max_candidates: int,
+    runner: Callable[..., Any],
+) -> dict[str, Any]:
+    affected_pair_ids = _short_replan_affected_ids(state)
+    pairs = state["pairs"]
+    by_pair = {str(pair["pair_id"]): pair for pair in pairs}
+    affected_utterance_ids = {
+        str(by_pair[pair_id]["utterance_id"]) for pair_id in affected_pair_ids
+    }
+    before_reused = {
+        str(pair["pair_id"]): copy.deepcopy(pair)
+        for pair in pairs
+        if str(pair.get("pair_id") or "") not in affected_pair_ids
+    }
+    for variant in ("neutral", "expressive"):
+        scratch = project / "scratch" / "short_replan_v2" / "variants" / variant
+        _validate_scratch_manifest_scope(
+            scratch,
+            affected_utterance_ids=affected_utterance_ids,
+        )
+        _ingest_generated_variant(
+            project=project,
+            state=state,
+            variant=variant,
+            utterance_ids=affected_utterance_ids,
+            runner=runner,
+            reconcile_existing_source=True,
+            variant_project_override=scratch,
+        )
+        state = _load_checkpoint(project)
+        state["generator_path"] = str(generator)
+    failed = pending_takes(state, phase="source")
+    if any(row["pair_id"] not in affected_pair_ids for row in failed):
+        raise TonePkError("short-replan repair found a failed reused pair")
+    if not failed:
+        return {"status": "PASS", "repaired_take_count": 0, "attempts": 0}
+    by_pair = {str(pair["pair_id"]): pair for pair in state["pairs"]}
+    groups: dict[tuple[str, int], set[str]] = {}
+    exhausted: list[tuple[str, str]] = []
+    for row in failed:
+        used = int(by_pair[row["pair_id"]][row["variant"]].get("candidate_count") or 0)
+        remaining = max_candidates - used
+        if remaining <= 0:
+            exhausted.append((row["pair_id"], row["variant"]))
+            continue
+        groups.setdefault((row["variant"], remaining), set()).add(row["pair_id"])
+    attempts = 0
+    for (variant, remaining), target_pair_ids in sorted(groups.items()):
+        scratch = project / "scratch" / "short_replan_v2" / "variants" / variant
+        shot_map = _variant_repair_shot_map(
+            scratch,
+            expected_utterance_ids=affected_utterance_ids,
+        )
+        target_utterance_ids = {
+            str(by_pair[pair_id]["utterance_id"]) for pair_id in target_pair_ids
+        }
+        command = [
+            sys.executable,
+            str(generator),
+            str(scratch),
+            "--voice-cast-binding",
+            str(scratch / "voice_cast_binding.json"),
+            "--dialogue-ledger",
+            str(scratch / "dialogue_ledger.json"),
+        ]
+        for utterance_id in sorted(target_utterance_ids):
+            command.extend(["--repair-shot", shot_map[utterance_id]])
+        command.extend(
+            [
+                "--max-acoustic-retries",
+                str(remaining - 1),
+                "--emit-failed-qc-manifest",
+            ]
+        )
+        try:
+            runner(command, check=True)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise TonePkError(
+                f"{variant} short-replan scratch repair failed: {exc}"
+            ) from exc
+        _validate_scratch_manifest_scope(
+            scratch,
+            affected_utterance_ids=affected_utterance_ids,
+        )
+        _ingest_generated_variant(
+            project=project,
+            state=state,
+            variant=variant,
+            utterance_ids=target_utterance_ids,
+            runner=runner,
+            accumulate_candidates=True,
+            variant_project_override=scratch,
+        )
+        state = _load_checkpoint(project)
+        state["generator_path"] = str(generator)
+        by_pair = {str(pair["pair_id"]): pair for pair in state["pairs"]}
+        attempts += 1
+    current_by_id = {str(pair["pair_id"]): pair for pair in state["pairs"]}
+    if any(current_by_id[pair_id] != pair for pair_id, pair in before_reused.items()):
+        raise TonePkError("short-replan repair changed a reused pair")
+    if exhausted:
+        labels = ", ".join(f"{pair_id} {variant}" for pair_id, variant in exhausted)
+        raise TonePkError(f"candidate budget exhausted for {labels}")
+    still_failed = pending_takes(state, phase="source")
+    if still_failed:
+        raise TonePkError(f"failed takes remain after repair: {still_failed}")
+    return {
+        "status": "PASS",
+        "repaired_take_count": len(failed),
+        "attempts": attempts,
     }
 
 
@@ -2375,6 +2544,14 @@ def repair_failed_takes(
     pairs = initial.get("pairs")
     if not isinstance(pairs, list):
         raise TonePkError("tone PK manifest has no pairs")
+    if _short_replan_affected_ids(initial):
+        return _repair_short_replanned_takes(
+            project_path,
+            state=initial,
+            generator=generator_path,
+            max_candidates=max_candidates,
+            runner=runner,
+        )
     utterance_ids = {str(pair["utterance_id"]) for pair in pairs}
     for variant in ("neutral", "expressive"):
         manifest_path = (
