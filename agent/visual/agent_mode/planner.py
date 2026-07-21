@@ -530,6 +530,8 @@ def _pose_composition_is_guidance_only(lowered_prompt: str, compact_prompt: str)
             "不要照搬姿勢",
             "不要複製姿勢",
             "不同姿勢",
+            "不同的姿勢",
+            "不同的姿势",
         )
     )
 

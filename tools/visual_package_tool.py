@@ -3252,6 +3252,8 @@ def _reference_binding_locks_identity(reference_binding: dict[str, Any] | None) 
 def _reference_binding_locks_pose(reference_binding: dict[str, Any] | None) -> bool:
     if not isinstance(reference_binding, dict):
         return False
+    if str(reference_binding.get("pose_composition_policy") or "").strip() == "guidance_only":
+        return False
     return any(
         isinstance(item, dict)
         and str(item.get("role_hint") or "").strip() == "pose_composition"
@@ -4454,6 +4456,11 @@ def _provider_reference_image_urls(
         }
     binding_item_by_index = _reference_binding_item_by_index(reference_binding)
     policy = _normalise_reference_conditioning_policy(conditioning_policy)
+    pose_guidance_only = (
+        isinstance(reference_binding, dict)
+        and str(reference_binding.get("pose_composition_policy") or "").strip()
+        == "guidance_only"
+    )
     max_provider_refs = VISUAL_PROVIDER_REFERENCE_SLOT_BUDGET
     provider_refs: list[str] = []
     metadata: list[dict[str, Any]] = []
@@ -4509,6 +4516,15 @@ def _provider_reference_image_urls(
             )
             continue
         if role_hint == "pose_composition":
+            if pose_guidance_only:
+                omitted.append(
+                    {
+                        "index": index,
+                        "role_hint": role_hint,
+                        "reason": "guidance_only_pose_diversification",
+                    }
+                )
+                continue
             if policy == "semantic_pose_transfer" and pose_transfer:
                 omitted.append(
                     {

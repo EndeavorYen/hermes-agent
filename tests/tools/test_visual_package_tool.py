@@ -3251,6 +3251,103 @@ def test_visual_package_followup_uses_previous_selected_image_as_edit_anchor(mon
     }
 
 
+def test_visual_package_pose_diversification_omits_stale_pose_provider_reference(
+    monkeypatch,
+    tmp_path,
+):
+    from PIL import Image
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    anchor = tmp_path / "previous-selected.png"
+    character = tmp_path / "character.png"
+    stale_pose = tmp_path / "stale-pose.png"
+    Image.new("RGB", (768, 1344), (230, 230, 245)).save(anchor)
+    Image.new("RGB", (768, 1344), (245, 245, 255)).save(character)
+    Image.new("RGB", (768, 1344), (220, 210, 200)).save(stale_pose)
+    image_calls = []
+
+    def fake_generate_image(**kwargs):
+        output = tmp_path / f"candidate-{len(image_calls)}.png"
+        output.write_bytes(_ONE_PIXEL_PNG)
+        image_calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(output),
+            "provider": "xai",
+            "model": "grok-imagine-image-quality",
+            "vision_observation": {
+                "reference_adherence": 0.96,
+                "edit_anchor_adherence": 0.97,
+                "character_identity_adherence": 0.97,
+                "pose_composition_adherence": 0.95,
+                "wardrobe_adherence": 0.95,
+                "face_quality": 0.95,
+                "visual_appeal": 0.95,
+                "composition": 0.95,
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+    monkeypatch.setattr(
+        visual_package_tool,
+        "analyze_candidate_with_vision_tool",
+        lambda _candidate: {
+            "reference_adherence": 0.96,
+            "edit_anchor_adherence": 0.97,
+            "character_identity_adherence": 0.97,
+            "pose_composition_adherence": 0.95,
+            "wardrobe_adherence": 0.95,
+            "face_quality": 0.95,
+            "visual_appeal": 0.95,
+            "composition": 0.95,
+            "confidence": 0.95,
+        },
+    )
+
+    payload = json.loads(
+        visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "產出更多不同的姿勢，4張",
+                "include_image": True,
+                "include_video": False,
+                "candidate_budget": 4,
+                "candidate_budget_source": "user",
+                "image_provider": "xai",
+                "inline_vision_judge": False,
+                "reference_conditioning_policy": "role_locked_originals",
+                "attachments": [str(anchor), str(character), str(stale_pose)],
+                "reference_binding": {
+                    "mode": "session_visual_context",
+                    "pose_composition_policy": "guidance_only",
+                    "reference_order": [
+                        {"index": 1, "role_hint": "edit_anchor"},
+                        {"index": 2, "role_hint": "character_identity"},
+                        {"index": 3, "role_hint": "pose_composition"},
+                    ],
+                },
+            }
+        )
+    )
+
+    assert payload["success"] is True, payload
+    assert len(image_calls) == 4
+    assert all(
+        call["reference_image_urls"] == [str(anchor), str(character)]
+        for call in image_calls
+    )
+    assert all("Preserve the exact pose" not in call["prompt"] for call in image_calls)
+    assert len({call["prompt"] for call in image_calls}) == 4
+    conditioning = payload["generation_strategy"]["reference_conditioning"]
+    assert conditioning["omitted_provider_references"] == [
+        {
+            "index": 3,
+            "role_hint": "pose_composition",
+            "reason": "guidance_only_pose_diversification",
+        }
+    ]
+
+
 def test_visual_package_product_video_ignores_portrait_only_vision_defects(monkeypatch, tmp_path):
     from tools import visual_package_tool
 
