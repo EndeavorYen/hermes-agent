@@ -2,11 +2,74 @@ from __future__ import annotations
 
 import hashlib
 import json
+import copy
+import re
 from pathlib import Path
 
 import pytest
 
+from plugins.story_video.final_speech_worker import load_narration_contract
 from scripts import story_video_tone_pk as tone_pk
+
+
+def passing_pair_evidence(tmp_path: Path | None = None) -> dict:
+    audio_root = tmp_path or Path("/sanitized")
+    common = {
+        "spoken_text": "同一句。",
+        "voice_id": "fixture_voice",
+        "engine": "qwen_custom_voice",
+        "model_id": "fixture_model",
+        "profile_id": "fixture_profile",
+        "profile_sha256": "a" * 64,
+        "engine_binding": {"preset_speaker": "Fixture"},
+        "canonical_voice_chunks": ["同一句。"],
+        "generation_seeds": [123],
+        "post_utterance_pause_seconds": 0.4,
+        "duration_seconds": 1.2,
+        "integrated_lufs": -18.1,
+        "qc_status": "PASS",
+    }
+    neutral = {
+        **common,
+        "variant": "neutral",
+        "take_id": "PK-0007__A",
+        "adapter_status": "neutral_noop",
+        "tone": {"tone_id": "general.neutral"},
+        "normalized_audio_path": str(audio_root / "PK-0007__A.wav"),
+        "normalized_audio_sha256": "b" * 64,
+    }
+    expressive = {
+        **copy.deepcopy(common),
+        "variant": "expressive",
+        "take_id": "PK-0007__B",
+        "adapter_status": "applied",
+        "tone": {"tone_id": "general.puzzled"},
+        "integrated_lufs": -17.8,
+        "normalized_audio_path": str(audio_root / "PK-0007__B.wav"),
+        "normalized_audio_sha256": "c" * 64,
+    }
+    for take in (neutral, expressive):
+        source_audio = audio_root / f"{take['take_id']}__source.wav"
+        take["source_audio_path"] = str(source_audio)
+        take["source_audio_sha256"] = "d" * 64
+        if tmp_path is not None:
+            source_audio.write_bytes(f"source-{take['take_id']}".encode())
+            normalized_audio = Path(take["normalized_audio_path"])
+            normalized_audio.write_bytes(f"normalized-{take['take_id']}".encode())
+            take["source_audio_sha256"] = _sha256(source_audio)
+            take["normalized_audio_sha256"] = _sha256(normalized_audio)
+    return {
+        "pair_id": "PK-0007",
+        "utterance_id": "U0007",
+        "order": 7,
+        "speaker_id": "guide",
+        "speaker_name": "導覽員",
+        "action": "疑惑地查看地圖",
+        "display_text": "同一句。",
+        "spoken_text": "同一句。",
+        "neutral": neutral,
+        "expressive": expressive,
+    }
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -142,6 +205,126 @@ def _annotations() -> dict[str, dict]:
             "modifiers": ["urgent"],
         },
     }
+
+
+def prepared_pk_project(tmp_path: Path, *, utterance_count: int = 1) -> Path:
+    source = sanitized_source_project(tmp_path, utterance_count=utterance_count)
+    annotations = {key: value for key, value in _annotations().items() if int(key[1:]) <= utterance_count}
+    annotations_path = tmp_path / "annotations.json"
+    _write_json(annotations_path, annotations)
+    output = tmp_path / "pk-project"
+    tone_pk.prepare_project(
+        source_project=source,
+        output_project=output,
+        run_id="tone-pk-test",
+        annotations_path=annotations_path,
+        expected_utterance_count=utterance_count,
+    )
+    return output
+
+
+def fake_generator_runner(
+    calls: list[list[str]],
+    *,
+    candidate_count: int | dict[str, int] = 1,
+):
+    def runner(command: list[str], **_kwargs):
+        if command[0] == "ffmpeg":
+            sources = [
+                Path(command[index + 1])
+                for index, value in enumerate(command[:-1])
+                if value == "-i"
+            ]
+            Path(command[-1]).write_bytes(b"".join(path.read_bytes() for path in sources))
+            return None
+        calls.append(command)
+        variant_project = next(
+            Path(value)
+            for value in command
+            if "/variants/" in value and Path(value).is_dir()
+        )
+        variant = variant_project.name
+        ledger = json.loads(
+            (variant_project / "dialogue_ledger.json").read_text(encoding="utf-8")
+        )
+        binding = json.loads(
+            (variant_project / "voice_cast_binding.json").read_text(encoding="utf-8")
+        )
+        speaker = binding["speakers"][0]
+        repair_ids = {
+            command[index + 1]
+            for index, value in enumerate(command[:-1])
+            if value == "--repair-shot"
+        }
+        chunks = []
+        for utterance in ledger["utterances"]:
+            utterance_candidate_count = (
+                candidate_count[utterance["utterance_id"]]
+                if isinstance(candidate_count, dict)
+                else candidate_count
+            )
+            for index, text in enumerate(utterance["canonical_voice_chunks"], start=1):
+                audio = (
+                    variant_project
+                    / "audio"
+                    / "segments"
+                    / f"{utterance['utterance_id']}__C{index:02d}.wav"
+                )
+                audio.parent.mkdir(parents=True, exist_ok=True)
+                if not repair_ids or utterance["utterance_id"] in repair_ids:
+                    audio.write_bytes(
+                        f"{variant}-{utterance['utterance_id']}-{len(calls)}".encode()
+                    )
+                tone = utterance["tone"]
+                chunks.append(
+                    {
+                        "voice_chunk_id": f"{utterance['utterance_id']}__C{index:02d}",
+                        "utterance_id": utterance["utterance_id"],
+                        "speaker_id": utterance["speaker_id"],
+                        "voice_id": speaker["voice_id"],
+                        "engine": speaker["engine"],
+                        "profile_id": speaker.get("profile_id", ""),
+                        "profile_sha256": speaker.get("profile_sha256", ""),
+                        "display_text": text,
+                        "spoken_text": text,
+                        "audio": str(audio),
+                        "generation_seed": utterance["generation_seeds"][index - 1],
+                        "speech_duration_sec": 0.4,
+                        "resolved_pause_after_sec": 0.2,
+                        "tone": tone,
+                        "tone_application": {
+                            "adapter_status": (
+                                "neutral_noop" if variant == "neutral" else "applied"
+                            )
+                        },
+                        "alignment_status": "PASS",
+                        "pronunciation_status": "PASS",
+                        "prosody_status": "PASS",
+                        "fluency_status": "PASS",
+                        "candidate_count": utterance_candidate_count,
+                        "selected_candidate": utterance_candidate_count,
+                    }
+                )
+        manifest = {
+            "schema": "story_video_narration_manifest_v7",
+            "run_id": "tone-pk-test",
+            "model": "fixture_model",
+            "voice_chunk_count": len(chunks),
+            "outputs": [
+                {
+                    "spoken_text": "".join(row["spoken_text"] for row in chunks),
+                    "segments": [{"voice_chunks": chunks}],
+                }
+            ],
+        }
+        _write_json(variant_project / "manifests" / "narration_manifest.json", manifest)
+
+        class Result:
+            returncode = 0
+
+        return Result()
+
+    return runner
 
 
 def test_stable_pair_seed_is_deterministic_bounded_and_chunk_specific() -> None:
@@ -311,3 +494,654 @@ def test_prepare_writes_local_variant_contracts_with_tone_only_difference(
     assert copied_annotations == _annotations()
     assert (output / "variants/neutral/story_mode.json").is_file()
     assert (output / "variants/expressive/cast_bible.json").is_file()
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (lambda pair: pair["expressive"]["generation_seeds"].__setitem__(0, 124), "generation seed"),
+        (lambda pair: pair["expressive"].__setitem__("spoken_text", "不同句。"), "spoken text"),
+        (lambda pair: pair["expressive"].__setitem__("voice_id", "other"), "voice"),
+        (lambda pair: pair["expressive"].__setitem__("integrated_lufs", -17.0), "loudness"),
+    ],
+)
+def test_pair_qc_rejects_voice_seed_text_chunk_or_loudness_drift(
+    mutation,
+    message: str,
+) -> None:
+    pair = passing_pair_evidence()
+    mutation(pair)
+
+    with pytest.raises(tone_pk.TonePkError, match=message):
+        tone_pk.validate_pair_evidence(pair)
+
+
+def test_pair_qc_rejects_long_pause_or_invalid_tone_adapter() -> None:
+    pair = passing_pair_evidence()
+    pair["expressive"]["post_utterance_pause_seconds"] = 0.46
+    with pytest.raises(tone_pk.TonePkError, match="pause"):
+        tone_pk.validate_pair_evidence(pair)
+
+    pair = passing_pair_evidence()
+    pair["neutral"]["adapter_status"] = "applied"
+    with pytest.raises(tone_pk.TonePkError, match="neutral adapter"):
+        tone_pk.validate_pair_evidence(pair)
+
+
+def test_resume_keeps_green_take_hashes_and_regenerates_only_failed_take(
+    tmp_path: Path,
+) -> None:
+    pair = passing_pair_evidence(tmp_path)
+    pair["neutral"]["qc_status"] = "PASS"
+    green_hash = pair["neutral"]["source_audio_sha256"]
+    pair["expressive"]["qc_status"] = "FAIL"
+    pair["expressive"]["source_audio_sha256"] = "e" * 64
+    state = {"pairs": [pair]}
+
+    pending = tone_pk.pending_takes(state)
+
+    assert [(row["pair_id"], row["variant"]) for row in pending] == [
+        ("PK-0007", "expressive")
+    ]
+    assert pair["neutral"]["source_audio_sha256"] == green_hash
+
+
+def test_resume_regenerates_green_take_when_audio_hash_no_longer_matches(
+    tmp_path: Path,
+) -> None:
+    pair = passing_pair_evidence(tmp_path)
+    Path(pair["neutral"]["normalized_audio_path"]).write_bytes(b"corrupted")
+
+    pending = tone_pk.pending_takes({"pairs": [pair]})
+
+    assert ("PK-0007", "neutral") in [
+        (row["pair_id"], row["variant"]) for row in pending
+    ]
+
+
+def test_normalize_take_uses_fixed_loudness_contract(tmp_path: Path) -> None:
+    source = tmp_path / "source.wav"
+    source.write_bytes(b"fixture")
+    output = tmp_path / "normalized" / "take.wav"
+    calls: list[list[str]] = []
+
+    tone_pk.normalize_take(source, output, calls.append)
+
+    assert calls == [[
+        "ffmpeg", "-y", "-v", "error", "-i", str(source),
+        "-af", "loudnorm=I=-18:LRA=7:TP=-2,aresample=48000",
+        "-ar", "48000", "-ac", "1", "-c:a", "pcm_s16le", str(output),
+    ]]
+    assert output.parent.is_dir()
+
+
+def test_probe_loudness_parses_final_ebur128_summary(tmp_path: Path) -> None:
+    source = tmp_path / "normalized.wav"
+    source.write_bytes(b"fixture")
+
+    class Result:
+        stderr = "I: -70.0 LUFS\nSummary:\n  I: -18.2 LUFS\n"
+
+    calls: list[list[str]] = []
+
+    def runner(command, **_kwargs):
+        calls.append(command)
+        return Result()
+
+    assert tone_pk.probe_loudness(source, runner) == -18.2
+    assert "ebur128=peak=true" in calls[0]
+
+
+def test_timeline_is_fixed_a_then_b_with_display_only_labels() -> None:
+    timeline = tone_pk.build_pk_timeline([passing_pair_evidence()])
+
+    assert [row["variant"] for row in timeline["takes"]] == [
+        "neutral",
+        "expressive",
+    ]
+    assert timeline["spoken_text"] == "同一句。同一句。"
+    assert "無情緒" not in timeline["spoken_text"]
+    assert "有情緒" not in timeline["spoken_text"]
+    assert timeline["takes"][0]["subtitle_label"] == "A｜無情緒"
+    assert timeline["takes"][1]["subtitle_label"].startswith("B｜有情緒")
+    assert timeline["takes"][0]["start_seconds"] == 0.0
+    assert timeline["takes"][1]["start_seconds"] == pytest.approx(1.55)
+    assert timeline["duration_seconds"] == pytest.approx(2.75)
+
+
+def test_write_checkpoint_builds_final_speech_compatible_manifest(
+    tmp_path: Path,
+) -> None:
+    pair = passing_pair_evidence(tmp_path)
+
+    result = tone_pk.write_checkpoint(tmp_path, [pair])
+
+    manifest = json.loads(
+        (tmp_path / "manifests/tone_pk_manifest.json").read_text(encoding="utf-8")
+    )
+    narration = json.loads(
+        (tmp_path / "manifests/narration_manifest.json").read_text(encoding="utf-8")
+    )
+    chunks = narration["outputs"][0]["segments"][0]["voice_chunks"]
+    assert result["status"] == "PASS"
+    assert manifest["schema"] == "story_video_tone_pk_manifest_v1"
+    assert [row["voice_chunk_id"] for row in chunks] == [
+        "PK-0007__A__001",
+        "PK-0007__B__001",
+    ]
+    assert [row["spoken_text"] for row in chunks] == ["同一句。", "同一句。"]
+
+
+def test_render_pk_video_builds_black_ass_h264_aac_command(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pair = passing_pair_evidence(tmp_path)
+    tone_pk.write_checkpoint(tmp_path, [pair])
+    calls: list[list[str]] = []
+    monkeypatch.setattr(tone_pk.subprocess, "run", lambda command, **_kwargs: calls.append(command))
+    output = tmp_path / "video" / "tone_pk_full.mp4"
+
+    result = tone_pk.render_pk_video(tmp_path, output, 1920, 1080)
+
+    assert result["status"] == "PASS"
+    assert result["visual_mode"] == "black_subtitle"
+    command = calls[-1]
+    assert command[:6] == ["ffmpeg", "-y", "-v", "error", "-f", "lavfi"]
+    assert any(
+        value.startswith("color=c=black:s=1920x1080:r=30:d=") for value in command
+    )
+    assert "libx264" in command
+    assert "aac" in command
+    ass_path = tmp_path / "manifests" / "tone_pk.ass"
+    ass = ass_path.read_text(encoding="utf-8")
+    assert "Alignment=5" not in ass
+    assert r"A｜無情緒\N{\c&H" in ass
+    assert r"B｜有情緒・疑惑\N{\c&H" in ass
+    assert "導覽員 (疑惑地查看地圖)" in ass
+
+
+def test_render_pk_video_rejects_stale_green_audio_hash(tmp_path: Path) -> None:
+    pair = passing_pair_evidence(tmp_path)
+    tone_pk.write_checkpoint(tmp_path, [pair])
+    Path(pair["neutral"]["normalized_audio_path"]).write_bytes(b"corrupted")
+
+    with pytest.raises(tone_pk.TonePkError, match="pending takes"):
+        tone_pk.render_pk_video(
+            tmp_path,
+            tmp_path / "video" / "tone_pk_full.mp4",
+            1920,
+            1080,
+        )
+
+
+def test_cli_registers_status_qc_and_render_subcommands() -> None:
+    parser = tone_pk._build_parser()
+
+    status = parser.parse_args(["status", "--project", "/tmp/fixture"])
+    qc = parser.parse_args(["qc", "--project", "/tmp/fixture"])
+    render = parser.parse_args(
+        [
+            "render",
+            "--project",
+            "/tmp/fixture",
+            "--output",
+            "/tmp/fixture.mp4",
+        ]
+    )
+
+    assert status.handler is tone_pk._status_command
+    assert qc.handler is tone_pk._qc_command
+    assert render.handler is tone_pk._render_command
+    assert (render.width, render.height) == (1920, 1080)
+
+
+def test_generate_resume_checkpoints_takes_and_skips_hash_green_audio(
+    tmp_path: Path,
+) -> None:
+    project = prepared_pk_project(tmp_path)
+    generator = tmp_path / "fake_generator.py"
+    generator.write_text("# sanitized fixture\n", encoding="utf-8")
+    calls: list[list[str]] = []
+    first = tone_pk.generate_takes(
+        project,
+        generator,
+        resume=True,
+        runner=fake_generator_runner(calls),
+    )
+    state = json.loads(
+        (project / "manifests/tone_pk_manifest.json").read_text(encoding="utf-8")
+    )
+    source_hashes = {
+        (pair["pair_id"], variant): pair[variant]["source_audio_sha256"]
+        for pair in state["pairs"]
+        for variant in ("neutral", "expressive")
+    }
+
+    second = tone_pk.generate_takes(
+        project,
+        generator,
+        resume=True,
+        runner=lambda *_args, **_kwargs: pytest.fail("green takes regenerated"),
+    )
+
+    assert first["generated_take_count"] == 2
+    assert len(calls) == 2
+    assert all(
+        command[command.index("--max-acoustic-retries") + 1] == "0"
+        for command in calls
+    )
+    assert all(
+        pair[variant]["candidate_count"] == 1
+        for pair in state["pairs"]
+        for variant in ("neutral", "expressive")
+    )
+    assert second["generated_take_count"] == 0
+    assert second["skipped_green_take_count"] == 2
+    resumed = json.loads(
+        (project / "manifests/tone_pk_manifest.json").read_text(encoding="utf-8")
+    )
+    assert {
+        (pair["pair_id"], variant): pair[variant]["source_audio_sha256"]
+        for pair in resumed["pairs"]
+        for variant in ("neutral", "expressive")
+    } == source_hashes
+
+
+def test_generate_resume_partial_variant_repairs_only_missing_utterance(
+    tmp_path: Path,
+) -> None:
+    project = prepared_pk_project(tmp_path, utterance_count=2)
+    generator = tmp_path / "fake_generator.py"
+    generator.write_text("# sanitized fixture\n", encoding="utf-8")
+    tone_pk.generate_takes(
+        project,
+        generator,
+        resume=True,
+        runner=fake_generator_runner([]),
+    )
+    state_path = project / "manifests/tone_pk_manifest.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    green_provider = project / "variants/neutral/audio/segments/U0001__C01.wav"
+    green_provider_hash = _sha256(green_provider)
+    missing_take = state["pairs"][1]["neutral"]
+    Path(missing_take["source_audio_path"]).unlink()
+    missing_take.pop("source_audio_path")
+    missing_take.pop("source_audio_sha256")
+    _write_json(state_path, state)
+    calls: list[list[str]] = []
+
+    result = tone_pk.generate_takes(
+        project,
+        generator,
+        resume=True,
+        runner=fake_generator_runner(calls),
+    )
+
+    assert result["generated_take_count"] == 1
+    assert len(calls) == 1
+    assert calls[0].count("--repair-shot") == 1
+    assert "U0002" in calls[0]
+    assert "U0001" not in calls[0]
+    assert _sha256(green_provider) == green_provider_hash
+
+
+def test_public_generate_resume_refuses_qc_failed_valid_source_with_guidance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project = prepared_pk_project(tmp_path)
+    generator = tmp_path / "fake_generator.py"
+    generator.write_text("# sanitized fixture\n", encoding="utf-8")
+    tone_pk.generate_takes(
+        project,
+        generator,
+        resume=True,
+        runner=fake_generator_runner([]),
+    )
+    state_path = project / "manifests/tone_pk_manifest.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    failed = state["pairs"][0]["expressive"]
+    failed["qc_status"] = "FAIL"
+    before = (failed["candidate_count"], failed["selected_candidate"])
+    _write_json(state_path, state)
+    ledger_hash = _sha256(state_path)
+    monkeypatch.setattr(
+        tone_pk.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("public resume retried QC failure"),
+    )
+
+    with pytest.raises(SystemExit):
+        tone_pk.main(
+            [
+                "generate",
+                "--project",
+                str(project),
+                "--generator",
+                str(generator),
+                "--resume",
+            ]
+        )
+
+    error = capsys.readouterr().err
+    assert "qc --repair-failed --max-candidates" in error
+    assert _sha256(state_path) == ledger_hash
+    unchanged = json.loads(state_path.read_text(encoding="utf-8"))
+    take = unchanged["pairs"][0]["expressive"]
+    assert (take["candidate_count"], take["selected_candidate"]) == before
+
+
+def test_targeted_generate_counts_unselected_failed_take_separately(
+    tmp_path: Path,
+) -> None:
+    project = prepared_pk_project(tmp_path, utterance_count=2)
+    generator = tmp_path / "fake_generator.py"
+    generator.write_text("# sanitized fixture\n", encoding="utf-8")
+    tone_pk.generate_takes(
+        project,
+        generator,
+        resume=True,
+        runner=fake_generator_runner([]),
+    )
+    state_path = project / "manifests/tone_pk_manifest.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    for pair in state["pairs"]:
+        pair["neutral"]["qc_status"] = "FAIL"
+    _write_json(state_path, state)
+
+    result = tone_pk.generate_takes(
+        project,
+        generator,
+        resume=True,
+        runner=fake_generator_runner([]),
+        candidate_budgets={("PK-0001", "neutral"): 1},
+        target_takes={("PK-0001", "neutral")},
+    )
+
+    assert result["skipped_green_take_count"] == 2
+    assert result["not_selected_take_count"] == 1
+
+
+def test_repair_failed_takes_only_regenerates_failed_take(tmp_path: Path) -> None:
+    project = prepared_pk_project(tmp_path)
+    generator = tmp_path / "fake_generator.py"
+    generator.write_text("# sanitized fixture\n", encoding="utf-8")
+    setup_calls: list[list[str]] = []
+    tone_pk.generate_takes(
+        project,
+        generator,
+        resume=True,
+        runner=fake_generator_runner(setup_calls),
+    )
+    state_path = project / "manifests/tone_pk_manifest.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    neutral_hash = state["pairs"][0]["neutral"]["source_audio_sha256"]
+    state["pairs"][0]["expressive"]["qc_status"] = "FAIL"
+    _write_json(state_path, state)
+    repair_calls: list[list[str]] = []
+
+    result = tone_pk.repair_failed_takes(
+        project,
+        max_candidates=3,
+        runner=fake_generator_runner(repair_calls),
+    )
+
+    repaired = json.loads(state_path.read_text(encoding="utf-8"))
+    assert result["repaired_take_count"] == 1
+    assert len(repair_calls) == 1
+    assert "--repair-shot" in repair_calls[0]
+    assert "U0001" in repair_calls[0]
+    assert repaired["pairs"][0]["neutral"]["source_audio_sha256"] == neutral_hash
+    assert repaired["pairs"][0]["expressive"]["qc_status"] == "PASS"
+
+
+def test_repair_candidate_budget_is_cumulative_and_never_exceeds_cap(
+    tmp_path: Path,
+) -> None:
+    project = prepared_pk_project(tmp_path)
+    generator = tmp_path / "fake_generator.py"
+    generator.write_text("# sanitized fixture\n", encoding="utf-8")
+    tone_pk.generate_takes(
+        project,
+        generator,
+        resume=True,
+        runner=fake_generator_runner([]),
+    )
+    state_path = project / "manifests/tone_pk_manifest.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["pairs"][0]["expressive"]["qc_status"] = "FAIL"
+    _write_json(state_path, state)
+    calls: list[list[str]] = []
+
+    tone_pk.repair_failed_takes(
+        project,
+        max_candidates=3,
+        runner=fake_generator_runner(calls, candidate_count=2),
+    )
+
+    repaired = json.loads(state_path.read_text(encoding="utf-8"))
+    take = repaired["pairs"][0]["expressive"]
+    assert take["candidate_count"] == 3
+    assert take["selected_candidate"] == 3
+    retries_index = calls[0].index("--max-acoustic-retries") + 1
+    assert calls[0][retries_index] == "1"
+    take["qc_status"] = "FAIL"
+    _write_json(state_path, repaired)
+    with pytest.raises(tone_pk.TonePkError, match="candidate budget exhausted"):
+        tone_pk.repair_failed_takes(
+            project,
+            max_candidates=3,
+            runner=lambda *_args, **_kwargs: pytest.fail("cap exceeded"),
+        )
+
+
+def test_repair_dispatches_heterogeneous_take_budgets_independently(
+    tmp_path: Path,
+) -> None:
+    project = prepared_pk_project(tmp_path, utterance_count=2)
+    generator = tmp_path / "fake_generator.py"
+    generator.write_text("# sanitized fixture\n", encoding="utf-8")
+    tone_pk.generate_takes(
+        project,
+        generator,
+        resume=True,
+        runner=fake_generator_runner([]),
+    )
+    state_path = project / "manifests/tone_pk_manifest.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    first = state["pairs"][0]["neutral"]
+    second = state["pairs"][1]["neutral"]
+    first.update({"qc_status": "FAIL", "candidate_count": 2, "selected_candidate": 2})
+    second.update({"qc_status": "FAIL", "candidate_count": 1, "selected_candidate": 1})
+    _write_json(state_path, state)
+    calls: list[list[str]] = []
+
+    tone_pk.repair_failed_takes(
+        project,
+        max_candidates=3,
+        runner=fake_generator_runner(
+            calls,
+            candidate_count={"U0001": 1, "U0002": 2},
+        ),
+    )
+
+    neutral_calls = [command for command in calls if "/variants/neutral" in " ".join(command)]
+    assert len(neutral_calls) == 2
+    by_utterance = {
+        command[command.index("--repair-shot") + 1]: command[
+            command.index("--max-acoustic-retries") + 1
+        ]
+        for command in neutral_calls
+    }
+    assert by_utterance == {"U0001": "0", "U0002": "1"}
+    repaired = json.loads(state_path.read_text(encoding="utf-8"))
+    assert repaired["pairs"][0]["neutral"]["candidate_count"] == 3
+    assert repaired["pairs"][1]["neutral"]["candidate_count"] == 3
+
+
+def test_repair_pre_inference_error_does_not_fabricate_candidate_evidence(
+    tmp_path: Path,
+) -> None:
+    project = prepared_pk_project(tmp_path)
+    generator = tmp_path / "fake_generator.py"
+    generator.write_text("# sanitized fixture\n", encoding="utf-8")
+    tone_pk.generate_takes(
+        project,
+        generator,
+        resume=True,
+        runner=fake_generator_runner([]),
+    )
+    state_path = project / "manifests/tone_pk_manifest.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    take = state["pairs"][0]["expressive"]
+    take["qc_status"] = "FAIL"
+    before = (take["candidate_count"], take["selected_candidate"])
+    _write_json(state_path, state)
+
+    def launch_failure(*_args, **_kwargs):
+        raise OSError("sanitized launch failure")
+
+    with pytest.raises(tone_pk.TonePkError, match="generation failed"):
+        tone_pk.repair_failed_takes(
+            project,
+            max_candidates=3,
+            runner=launch_failure,
+        )
+
+    unchanged = json.loads(state_path.read_text(encoding="utf-8"))
+    repaired_take = unchanged["pairs"][0]["expressive"]
+    assert (repaired_take["candidate_count"], repaired_take["selected_candidate"]) == before
+
+
+def test_normalize_project_updates_evidence_and_checkpoint_per_take(
+    tmp_path: Path,
+) -> None:
+    project = prepared_pk_project(tmp_path)
+    generator = tmp_path / "fake_generator.py"
+    generator.write_text("# sanitized fixture\n", encoding="utf-8")
+    tone_pk.generate_takes(
+        project,
+        generator,
+        resume=True,
+        runner=fake_generator_runner([]),
+    )
+    normalized: list[Path] = []
+
+    def normalizer(source: Path, output: Path, _runner, *, target_lufs: float):
+        assert target_lufs == -18.0
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(source.read_bytes() + b"-normalized")
+        normalized.append(output)
+
+    result = tone_pk.normalize_project(
+        project,
+        target_lufs=-18.0,
+        max_pair_delta_lufs=0.5,
+        normalizer=normalizer,
+        loudness_probe=lambda _path: -18.0,
+        runner=lambda _command: None,
+    )
+
+    state = json.loads(
+        (project / "manifests/tone_pk_manifest.json").read_text(encoding="utf-8")
+    )
+    assert result["status"] == "PASS"
+    assert len(normalized) == 2
+    assert state["status"] == "PASS"
+    assert all(
+        pair[variant]["integrated_lufs"] == -18.0
+        and Path(pair[variant]["normalized_audio_path"]).is_file()
+        for pair in state["pairs"]
+        for variant in ("neutral", "expressive")
+    )
+
+
+@pytest.mark.parametrize("drift", ["seed", "loudness"])
+def test_checkpoint_status_and_narration_fail_closed_on_pair_drift(
+    tmp_path: Path,
+    drift: str,
+) -> None:
+    pair = passing_pair_evidence(tmp_path)
+    if drift == "seed":
+        pair["expressive"]["generation_seeds"][0] += 1
+    else:
+        pair["expressive"]["integrated_lufs"] = -17.0
+
+    result = tone_pk.write_checkpoint(tmp_path, [pair], run_id="tone-pk-test")
+    state = json.loads(
+        (tmp_path / "manifests/tone_pk_manifest.json").read_text(encoding="utf-8")
+    )
+    narration = json.loads(
+        (tmp_path / "manifests/narration_manifest.json").read_text(encoding="utf-8")
+    )
+
+    assert result["status"] != "PASS"
+    assert state["status"] != "PASS"
+    assert narration["status"] != "PASS"
+    status_args = tone_pk._build_parser().parse_args(
+        ["status", "--project", str(tmp_path)]
+    )
+    assert status_args.handler(status_args)["status"] != "PASS"
+
+
+def test_checkpoint_narration_contract_loads_with_real_final_speech_loader(
+    tmp_path: Path,
+) -> None:
+    pair = passing_pair_evidence(tmp_path)
+    tone_pk.write_checkpoint(tmp_path, [pair], run_id="tone-pk-test")
+
+    contract = load_narration_contract(tmp_path)
+
+    assert contract["run_id"] == "tone-pk-test"
+    assert contract["voice_chunk_count"] == 2
+    assert contract["voice_chunk_ids"] == ["PK-0007__A__001", "PK-0007__B__001"]
+    assert contract["expected_transcript"] == "同一句。同一句。"
+
+
+def test_timeline_assigns_stable_distinct_role_colors(tmp_path: Path) -> None:
+    first = passing_pair_evidence()
+    first["pair_id"] = "PK-0001"
+    first["neutral"]["take_id"] = "PK-0001__A"
+    first["expressive"]["take_id"] = "PK-0001__B"
+    second = copy.deepcopy(first)
+    second["pair_id"] = "PK-0002"
+    second["speaker_id"] = "traveler"
+    second["speaker_name"] = "旅人"
+    third = copy.deepcopy(first)
+    third["pair_id"] = "PK-0003"
+
+    timeline = tone_pk.build_pk_timeline([first, second, third])
+    colors = [take["role_color"] for take in timeline["takes"] if take["variant"] == "neutral"]
+
+    assert colors[0] == colors[2]
+    assert colors[0] != colors[1]
+    ass_path = tmp_path / "tone-pk-role-colors.ass"
+    tone_pk._write_ass(ass_path, timeline, 1920, 1080)
+    ass = ass_path.read_text(encoding="utf-8")
+    role_tags = re.findall(r"\\c(&H[0-9A-F]{8}&)", ass)
+    assert role_tags[0] == role_tags[1] == role_tags[4] == role_tags[5]
+    assert role_tags[0] != role_tags[2]
+
+
+def test_cli_registers_generation_repair_and_normalization_flags() -> None:
+    parser = tone_pk._build_parser()
+
+    generate = parser.parse_args(
+        ["generate", "--project", "/tmp/p", "--generator", "/tmp/g.py", "--resume"]
+    )
+    qc = parser.parse_args(
+        ["qc", "--project", "/tmp/p", "--repair-failed", "--max-candidates", "3"]
+    )
+    normalize = parser.parse_args(
+        [
+            "normalize", "--project", "/tmp/p", "--target-lufs", "-18",
+            "--max-pair-delta-lufs", "0.5",
+        ]
+    )
+
+    assert generate.resume is True
+    assert qc.repair_failed is True and qc.max_candidates == 3
+    assert normalize.target_lufs == -18.0
+    assert normalize.max_pair_delta_lufs == 0.5
