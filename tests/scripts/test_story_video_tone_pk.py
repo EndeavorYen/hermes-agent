@@ -1885,6 +1885,93 @@ def test_selective_candidate_lineage_counts_only_new_delta(tmp_path: Path) -> No
     assert repaired["pairs"][0]["expressive"]["candidate_count"] == 2
 
 
+def test_selective_candidate_lineage_allows_canonical_partial_chunk_repair(
+    tmp_path: Path,
+) -> None:
+    project = prepared_pk_project(
+        tmp_path,
+        first_text="這是一段足以切成兩個固定語音區塊的測試句子，後半段必須保持原始音訊與候選證據完全不變。",
+    )
+    generator = tmp_path / "fake_generator.py"
+    generator.write_text("# sanitized fixture\n", encoding="utf-8")
+    tone_pk.generate_takes(
+        project,
+        generator,
+        resume=True,
+        runner=fake_generator_runner([]),
+    )
+    state_path = project / "manifests/tone_pk_manifest.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    take = state["pairs"][0]["neutral"]
+    assert len(take["canonical_voice_chunks"]) == 2
+    take["qc_status"] = "FAIL"
+    _set_manifest_utterance_qc(
+        project,
+        variant="neutral",
+        utterance_id="U0001",
+        passed=False,
+    )
+    _write_json(state_path, state)
+    manifest_path = project / "variants/neutral/manifests/narration_manifest.json"
+    prior_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    prior_chunks = list(tone_pk._flatten_voice_chunks(prior_manifest))
+    untouched = prior_chunks[1]
+    untouched_bytes = Path(untouched["audio"]).read_bytes()
+    base_runner = fake_generator_runner([], candidate_count=1)
+
+    def partial_chunk_runner(command: list[str], **kwargs):
+        result = base_runner(command, **kwargs)
+        if command[0] == "ffmpeg":
+            return result
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        chunks = list(tone_pk._flatten_voice_chunks(manifest))
+        repaired, unaffected = chunks
+        Path(unaffected["audio"]).write_bytes(untouched_bytes)
+        for field in (
+            "audio_sha256",
+            "candidate_count",
+            "selected_candidate",
+            "candidate_rejections",
+            "alignment_status",
+            "pronunciation_status",
+            "prosody_status",
+            "fluency_status",
+            "qc_status",
+        ):
+            if field in untouched:
+                unaffected[field] = copy.deepcopy(untouched[field])
+            else:
+                unaffected.pop(field, None)
+        lineage = {
+            "schema": tone_pk.CANDIDATE_LINEAGE_SCHEMA,
+            "generation_mode": "selective_repair",
+            "requested": False,
+            "baseline_candidate_count": 1,
+            "new_candidate_count": 0,
+            "cumulative_candidate_count": 1,
+            "output_audio_sha256": unaffected["audio_sha256"],
+        }
+        lineage["lineage_sha256"] = tone_pk._canonical_json_sha256(lineage)
+        unaffected["candidate_lineage"] = lineage
+        manifest["requested_voice_chunk_ids"] = [repaired["voice_chunk_id"]]
+        _write_json(manifest_path, manifest)
+        return result
+
+    tone_pk.generate_takes(
+        project,
+        generator,
+        resume=True,
+        runner=partial_chunk_runner,
+        candidate_budgets={("PK-0001", "neutral"): 1},
+        target_takes={("PK-0001", "neutral")},
+    )
+
+    repaired_state = json.loads(state_path.read_text(encoding="utf-8"))
+    repaired_take = repaired_state["pairs"][0]["neutral"]
+    assert repaired_take["candidate_count"] == 2
+    assert repaired_take["source_chunk_audio_sha256s"][1] == untouched["audio_sha256"]
+
+
 def test_repair_reconciles_interrupted_manifest_before_group_planning(
     tmp_path: Path,
 ) -> None:
