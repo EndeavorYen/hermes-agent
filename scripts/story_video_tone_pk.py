@@ -990,6 +990,17 @@ def _ingest_generated_variant(
                 raise TonePkError(f"generator changed {field} for {utterance_id}")
         if any(chunk.get("tone") != take.get("tone") for chunk in chunks):
             raise TonePkError(f"generator changed tone evidence for {utterance_id}")
+        for chunk in chunks:
+            audio_path = Path(str(chunk.get("audio") or ""))
+            expected_audio_sha256 = str(chunk.get("audio_sha256") or "")
+            if (
+                not audio_path.is_file()
+                or not re.fullmatch(r"[0-9a-f]{64}", expected_audio_sha256)
+                or _sha256(audio_path) != expected_audio_sha256
+            ):
+                raise TonePkError(
+                    f"generator audio hash is invalid for {utterance_id}"
+                )
         speaker_binding = bindings.get(str(pair.get("speaker_id") or ""))
         if speaker_binding is None:
             raise TonePkError(f"generator speaker binding is missing for {utterance_id}")
@@ -1002,6 +1013,13 @@ def _ingest_generated_variant(
         qc_pass = all(
             all(chunk.get(gate) == "PASS" for gate in gates) for chunk in chunks
         )
+        if any(
+            chunk.get("qc_status") != (
+                "PASS" if all(chunk.get(gate) == "PASS" for gate in gates) else "FAIL"
+            )
+            for chunk in chunks
+        ):
+            raise TonePkError(f"generator chunk QC evidence is invalid for {utterance_id}")
         adapter_statuses = {
             str((chunk.get("tone_application") or {}).get("adapter_status") or "")
             for chunk in chunks
@@ -1180,6 +1198,7 @@ def generate_takes(
             )
         else:
             command.extend(["--max-acoustic-retries", "0"])
+        command.append("--emit-failed-qc-manifest")
         try:
             runner(command, check=True)
         except (OSError, subprocess.SubprocessError) as exc:

@@ -227,6 +227,7 @@ def fake_generator_runner(
     calls: list[list[str]],
     *,
     candidate_count: int | dict[str, int] = 1,
+    qc_pass: bool = True,
 ):
     def runner(command: list[str], **_kwargs):
         if command[0] == "ffmpeg":
@@ -298,9 +299,11 @@ def fake_generator_runner(
                             )
                         },
                         "alignment_status": "PASS",
-                        "pronunciation_status": "PASS",
+                        "pronunciation_status": "PASS" if qc_pass else "FAIL",
                         "prosody_status": "PASS",
                         "fluency_status": "PASS",
+                        "qc_status": "PASS" if qc_pass else "FAIL",
+                        "audio_sha256": _sha256(audio),
                         "candidate_count": utterance_candidate_count,
                         "selected_candidate": utterance_candidate_count,
                     }
@@ -789,6 +792,7 @@ def test_generate_resume_checkpoints_takes_and_skips_hash_green_audio(
         command[command.index("--max-acoustic-retries") + 1] == "0"
         for command in calls
     )
+    assert all("--emit-failed-qc-manifest" in command for command in calls)
     assert all(
         pair[variant]["candidate_count"] == 1
         for pair in state["pairs"]
@@ -804,6 +808,70 @@ def test_generate_resume_checkpoints_takes_and_skips_hash_green_audio(
         for pair in resumed["pairs"]
         for variant in ("neutral", "expressive")
     } == source_hashes
+
+
+def test_generate_ingests_failed_candidate_for_bounded_controller_repair(
+    tmp_path: Path,
+) -> None:
+    project = prepared_pk_project(tmp_path)
+    generator = tmp_path / "fake_generator.py"
+    generator.write_text("# sanitized fixture\n", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    result = tone_pk.generate_takes(
+        project,
+        generator,
+        resume=True,
+        runner=fake_generator_runner(calls, qc_pass=False),
+    )
+
+    state = json.loads(
+        (project / "manifests/tone_pk_manifest.json").read_text(encoding="utf-8")
+    )
+    assert result["status"] == "FAIL"
+    assert result["generated_take_count"] == 2
+    assert all("--emit-failed-qc-manifest" in command for command in calls)
+    assert all(
+        pair[variant]["candidate_count"] == 1
+        and pair[variant]["selected_candidate"] == 1
+        and pair[variant]["qc_status"] == "FAIL"
+        and Path(pair[variant]["source_audio_path"]).is_file()
+        and pair[variant]["source_audio_sha256"]
+        for pair in state["pairs"]
+        for variant in ("neutral", "expressive")
+    )
+
+
+def test_generate_rejects_candidate_when_generator_audio_hash_is_wrong(
+    tmp_path: Path,
+) -> None:
+    project = prepared_pk_project(tmp_path)
+    generator = tmp_path / "fake_generator.py"
+    generator.write_text("# sanitized fixture\n", encoding="utf-8")
+    base_runner = fake_generator_runner([])
+
+    def corrupt_hash_runner(command: list[str], **kwargs):
+        result = base_runner(command, **kwargs)
+        if command[0] != "ffmpeg":
+            variant_project = next(
+                Path(value)
+                for value in command
+                if "/variants/" in value and Path(value).is_dir()
+            )
+            path = variant_project / "manifests" / "narration_manifest.json"
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            chunk = manifest["outputs"][0]["segments"][0]["voice_chunks"][0]
+            chunk["audio_sha256"] = "0" * 64
+            _write_json(path, manifest)
+        return result
+
+    with pytest.raises(tone_pk.TonePkError, match="audio hash"):
+        tone_pk.generate_takes(
+            project,
+            generator,
+            resume=True,
+            runner=corrupt_hash_runner,
+        )
 
 
 def test_generate_resume_partial_variant_repairs_only_missing_utterance(
