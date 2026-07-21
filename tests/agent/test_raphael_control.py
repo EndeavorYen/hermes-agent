@@ -367,6 +367,35 @@ def test_control_asks_precise_clarification_for_missing_reference_index():
     assert decision.next_action == "ask_precise_clarification"
 
 
+def test_control_accepts_named_refs_recoverable_from_thread_history():
+    decision = build_raphael_control_decision(
+        "完全保持 ref1 的人物特徵，只套用 ref2 的動作，重新產出",
+        attachments=[],
+        conversation_history=[
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "visual_package_generate",
+                            "arguments": (
+                                '{"attachments":["/tmp/ref1.jpg","/tmp/ref2.jpg"],'
+                                '"reference_binding":{"reference_order":['
+                                '{"index":1,"role_hint":"character_identity"},'
+                                '{"index":2,"role_hint":"pose_composition"}]}}'
+                            ),
+                        }
+                    }
+                ],
+            }
+        ],
+    )
+
+    assert decision.mode == "visual_agent_generation"
+    assert decision.reference_resolution != "clarify_missing_reference"
+    assert not decision.goal.blockers
+
+
 def test_control_asks_clarification_for_ambiguous_unassigned_references():
     decision = build_raphael_control_decision(
         "用 ref1、ref2、ref3 做一張更好看的角色圖",

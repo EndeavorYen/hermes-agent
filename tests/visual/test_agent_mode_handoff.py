@@ -699,6 +699,74 @@ def test_direct_visual_handoff_fails_closed_when_raphael_evidence_is_missing(
     assert format_direct_visual_agent_handoff_response(raw).startswith("視覺生成失敗：")
 
 
+def test_direct_visual_handoff_preserves_explicit_review_only_candidate_delivery():
+    from agent.visual.agent_mode.handoff import attach_direct_visual_agent_handoff_metadata
+
+    image = "/tmp/review-only.png"
+    raw = attach_direct_visual_agent_handoff_metadata(
+        json.dumps(
+            {
+                "success": True,
+                "package_status": "partial",
+                "error_type": "candidate_options_review_required",
+                "images": [image],
+                "generation_payloads": {"image": {"provider": "xai"}},
+                "delivery_gate": {
+                    "image": {
+                        "allowed": False,
+                        "candidate_options": {"review_only": True, "delivered": 1},
+                    }
+                },
+                "delivery_recovery": {"deliver_rejected_artifact": False},
+                "delivery_metadata": {
+                    "selected_visual_artifact_ids": ["artifact-review"],
+                    "visual_artifacts": {
+                        image: {
+                            "artifact_id": "artifact-review",
+                            "kind": "image",
+                            "freshness_status": "fresh",
+                            "is_stable": True,
+                        }
+                    },
+                },
+            }
+        ),
+        {
+            "mode": "visual_agent_generation",
+            "base_llm_provider_bypassed": True,
+            "base_llm_model_bypassed": True,
+            "visual_agent_llm_provider": "xai-oauth",
+            "visual_agent_llm_model": "grok-runtime-model",
+            "raphael_control": {
+                "mission_id": "mission-review",
+                "turn_id": "turn-review",
+                "route": {"visual_media_provider": "xai"},
+                "evidence": {
+                    "required_proofs": [
+                        "direct_handoff_metadata",
+                        "provider_attempt_evidence",
+                        "artifact_quality_evidence",
+                        "selected_current_artifact_only",
+                        "stale_artifact_guard",
+                        "delivery_cleanliness",
+                    ]
+                },
+            },
+        },
+    )
+    payload = json.loads(raw)
+
+    assert payload["success"] is True
+    assert payload["images"] == [image]
+    gate = payload["direct_visual_agent_handoff"]["raphael_evidence_gate"]
+    assert gate["passed"] is False
+    assert gate["delivery_disposition"] == "review_only"
+    assert set(gate["missing_proofs"]) == {
+        "artifact_quality_evidence",
+        "delivery_cleanliness",
+    }
+
+
 def test_raphael_evidence_gate_rejects_empty_turn_identity():
     from agent.visual.agent_mode.handoff import _evaluate_raphael_evidence_gate
 
@@ -1976,6 +2044,36 @@ def test_direct_visual_handoff_lists_session_image_labels():
     )
 
     assert response == "已產出圖片：G5、G6。後續可直接指定編號繼續編輯。"
+
+
+def test_direct_visual_handoff_labels_review_only_candidates_without_claiming_qc_pass():
+    from agent.visual.agent_mode.handoff import format_direct_visual_agent_handoff_response
+
+    response = format_direct_visual_agent_handoff_response(
+        json.dumps(
+            {
+                "success": True,
+                "package_status": "partial",
+                "error_type": "candidate_options_review_required",
+                "images": ["/tmp/a.jpg", "/tmp/b.jpg"],
+                "session_visual_artifacts": [
+                    {"label": "G5", "uri": "/tmp/a.jpg"},
+                    {"label": "G6", "uri": "/tmp/b.jpg"},
+                ],
+                "delivery_gate": {
+                    "image": {
+                        "allowed": False,
+                        "candidate_options": {"review_only": True},
+                    }
+                },
+            }
+        )
+    )
+
+    assert response == (
+        "已交付尚未通過品質檢查的候選圖供你評選：G5、G6。"
+        "這些圖片不視為 QC PASS；後續可直接指定編號繼續修正。"
+    )
 
 
 def test_direct_visual_handoff_formats_bare_tool_error_as_failure():

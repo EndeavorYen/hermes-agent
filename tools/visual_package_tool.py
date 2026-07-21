@@ -102,6 +102,11 @@ PORTRAIT_BLOCKING_QUALITY_ISSUES = {
     "not_beautiful",
     "stockings_bad",
 }
+REVIEW_ONLY_CANDIDATE_QUALITY_ISSUES = {
+    "action_or_moment_missing",
+    "composition_bad",
+    "required_detail_missing",
+}
 PREFERENCE_DIMENSION_DELIVERY_THRESHOLD = 0.5
 
 
@@ -2453,6 +2458,19 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 args=args,
                 requested_count=candidate_budget,
             )
+            if not deliverable_candidate_options and not wants_video:
+                review_only_options = _review_only_candidate_options(
+                    ranked_options,
+                    candidate_option_gate=candidate_option_gate,
+                    requested_count=candidate_budget,
+                )
+                if review_only_options:
+                    deliverable_candidate_options = review_only_options
+                    candidate_option_gate["review_only"] = True
+                    candidate_option_gate["review_only_reason"] = (
+                        "bounded_quality_repair_exhausted"
+                    )
+                    candidate_option_gate["delivered"] = len(review_only_options)
             if deliverable_candidate_options:
                 prior_selected_id = str(selected_image.get("artifact_id") or "") if selected_image else ""
                 selected_image = deliverable_candidate_options[0]
@@ -2467,7 +2485,11 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 ranking_record = dict(option_decision.__dict__)
                 ranking_record["selected_artifact_id"] = selected_image.get("artifact_id")
                 ranking_record["selected_attempt_id"] = selected_image.get("attempt_id")
-                ranking_record["reason"] = "selected_top_qualified_candidate_option"
+                ranking_record["reason"] = (
+                    "selected_top_review_only_candidate_option"
+                    if candidate_option_gate.get("review_only") is True
+                    else "selected_top_qualified_candidate_option"
+                )
                 rankings["image"] = ranking_record
                 final_learning = _record_learning_trace(
                     ledger,
@@ -2517,9 +2539,11 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                     image_gate = selected_gate
             image_gate["candidate_options"] = candidate_option_gate
             delivery_gate["image"] = image_gate
-        if selected_image and image_gate["allowed"]:
-            video_source_image = selected_image["artifact_path"]
-            video_source_artifact_id = selected_image["artifact_id"]
+        review_only_delivery = _candidate_options_review_only(image_gate)
+        if selected_image and (image_gate["allowed"] or review_only_delivery):
+            if image_gate["allowed"]:
+                video_source_image = selected_image["artifact_path"]
+                video_source_artifact_id = selected_image["artifact_id"]
             selected_image_role = str(selected_image.get("artifact_role") or "").strip()
             if selected_image_role:
                 artifact_roles_by_id[str(selected_image["artifact_id"])] = selected_image_role
@@ -2949,7 +2973,10 @@ def _finalize_visual_package_payload(
         (not requested_image or bool(selected_images))
         and (not wants_video or bool(selected_videos))
     )
-    complete_success = media_success and not candidate_option_shortfall
+    review_only_delivery = _candidate_options_review_only(delivery_gate.get("image"))
+    complete_success = (
+        media_success and not candidate_option_shortfall and not review_only_delivery
+    )
     success = media_success
     package_status = (
         "success"
@@ -5123,6 +5150,11 @@ def _package_error(
 ) -> dict[str, str | None]:
     if success:
         return {"error_type": None, "error": None}
+    if _candidate_options_review_only(delivery_gate.get("image")):
+        return {
+            "error_type": "candidate_options_review_required",
+            "error": "candidate options delivered for review without claiming QC pass",
+        }
     if _delivery_gate_has_reference_role_block(delivery_gate):
         return {
             "error_type": "delivery_gate_blocked",
@@ -6061,6 +6093,38 @@ def _qualified_candidate_options(
         "delivered": len(delivered),
         "rejected": rejected,
     }
+
+
+def _review_only_candidate_options(
+    candidates: list[dict[str, Any]],
+    *,
+    candidate_option_gate: dict[str, Any],
+    requested_count: int,
+) -> list[dict[str, Any]]:
+    rejected_by_id = {
+        str(item.get("artifact_id") or ""): item
+        for item in candidate_option_gate.get("rejected") or []
+        if isinstance(item, dict)
+    }
+    reviewable: list[dict[str, Any]] = []
+    for candidate in candidates:
+        rejection = rejected_by_id.get(str(candidate.get("artifact_id") or ""))
+        if not rejection:
+            continue
+        issues = set(_string_list(rejection.get("quality_issues")))
+        if not issues or not issues.issubset(REVIEW_ONLY_CANDIDATE_QUALITY_ISSUES):
+            continue
+        reviewable.append(candidate)
+        if len(reviewable) >= max(1, int(requested_count)):
+            break
+    return reviewable
+
+
+def _candidate_options_review_only(image_gate: Any) -> bool:
+    if not isinstance(image_gate, dict):
+        return False
+    options = image_gate.get("candidate_options")
+    return isinstance(options, dict) and options.get("review_only") is True
 
 
 def _candidate_option_delivery_gate(

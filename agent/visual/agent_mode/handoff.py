@@ -952,6 +952,9 @@ def attach_direct_visual_agent_handoff_metadata(
             handoff["raphael_control"],
             payload,
         )
+        review_only_delivery = _review_only_candidate_delivery_allowed(payload, gate)
+        if review_only_delivery:
+            gate["delivery_disposition"] = "review_only"
         payload["direct_visual_agent_handoff"]["raphael_evidence_gate"] = gate
         if payload.get("success") is True and gate.get("passed") is True:
             _record_successful_raphael_visual_handoff_mission(
@@ -959,7 +962,11 @@ def attach_direct_visual_agent_handoff_metadata(
                 handoff["raphael_control"],
                 gate,
             )
-        if payload.get("success") is True and gate.get("passed") is not True:
+        if (
+            payload.get("success") is True
+            and gate.get("passed") is not True
+            and not review_only_delivery
+        ):
             blocked_images = _string_list(payload.get("images"))
             blocked_videos = _string_list(payload.get("videos"))
             if blocked_images or blocked_videos:
@@ -980,6 +987,27 @@ def attach_direct_visual_agent_handoff_metadata(
             )
             payload["failure_layer"] = gate.get("failure_layer") or "artifact_quality"
     return json.dumps(payload, ensure_ascii=False)
+
+
+def _review_only_candidate_delivery_allowed(
+    payload: dict[str, Any],
+    gate: dict[str, Any],
+) -> bool:
+    if (
+        payload.get("success") is not True
+        or payload.get("package_status") != "partial"
+        or payload.get("error_type") != "candidate_options_review_required"
+    ):
+        return False
+    image_gate = (payload.get("delivery_gate") or {}).get("image")
+    options = image_gate.get("candidate_options") if isinstance(image_gate, dict) else None
+    if not isinstance(options, dict) or options.get("review_only") is not True:
+        return False
+    if not _string_list(payload.get("images")) or _string_list(payload.get("videos")):
+        return False
+    allowed_missing = {"artifact_quality_evidence", "delivery_cleanliness"}
+    missing = set(_string_list(gate.get("missing_proofs")))
+    return bool(missing) and missing.issubset(allowed_missing)
 
 
 def _record_successful_raphael_visual_handoff_mission(
@@ -1432,6 +1460,22 @@ def format_direct_visual_agent_handoff_response(raw_tool_result: str) -> str:
         for item in payload.get("session_visual_artifacts") or []
         if isinstance(item, dict) and str(item.get("label") or "").strip()
     ]
+    image_gate = (payload.get("delivery_gate") or {}).get("image")
+    candidate_options = (
+        image_gate.get("candidate_options") if isinstance(image_gate, dict) else None
+    )
+    if (
+        package_status == "partial"
+        and payload.get("error_type") == "candidate_options_review_required"
+        and isinstance(candidate_options, dict)
+        and candidate_options.get("review_only") is True
+        and images
+    ):
+        suffix = f"：{'、'.join(labels)}" if labels else ""
+        return (
+            f"已交付尚未通過品質檢查的候選圖供你評選{suffix}。"
+            "這些圖片不視為 QC PASS；後續可直接指定編號繼續修正。"
+        )
     if (
         package_status == "partial"
         and payload.get("error_type") == "candidate_option_shortfall"

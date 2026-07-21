@@ -11,6 +11,10 @@ _NAMED_VISUAL_REFERENCE_RE = re.compile(
     r"(?<![a-z0-9])g\s*([1-9][0-9]*)",
     re.IGNORECASE,
 )
+_NAMED_ORIGINAL_REFERENCE_RE = re.compile(
+    r"(?<![a-z0-9])(?:ref(?:erence)?|參考圖?)\s*([1-9][0-9]*)",
+    re.IGNORECASE,
+)
 
 _IMAGE_REF_RE = re.compile(
     r"((?:file://|https?://|/|~/)[^\s\]~)'\"]+\.(?:png|jpe?g|webp|gif))",
@@ -116,7 +120,18 @@ def _append_unique_entry(entries: list[dict[str, Any]], entry: dict[str, Any] | 
     uri = str(entry.get("uri") or "").strip()
     if not uri:
         return
-    if any(str(existing.get("uri") or "").strip() == uri for existing in entries):
+    for existing in entries:
+        if str(existing.get("uri") or "").strip() != uri:
+            continue
+        if existing.get("user_ref_index") in (None, "") and entry.get(
+            "user_ref_index"
+        ) not in (None, ""):
+            existing["user_ref_index"] = entry["user_ref_index"]
+        if existing.get("role_hint") in (None, "", "visual_reference") and entry.get(
+            "role_hint"
+        ) not in (None, "", "visual_reference"):
+            existing["role_hint"] = entry["role_hint"]
+            existing["source"] = entry.get("source", existing.get("source"))
         return
     entries.append(entry)
 
@@ -273,7 +288,8 @@ def prompt_requests_original_visual_references(prompt: Any) -> bool:
         "原来的reference",
     )
     return (
-        "original reference" in text
+        bool(_NAMED_ORIGINAL_REFERENCE_RE.search(text))
+        or "original reference" in text
         or "original ref" in text
         or "原圖" in text
         or "原图" in text
@@ -341,7 +357,13 @@ def filter_visual_reference_entries_for_prompt(
 
 def _named_visual_reference_requests(prompt: Any) -> list[tuple[int, str | None]]:
     text = str(prompt or "")
-    matches = list(_NAMED_VISUAL_REFERENCE_RE.finditer(text))
+    matches = sorted(
+        [
+            *_NAMED_VISUAL_REFERENCE_RE.finditer(text),
+            *_NAMED_ORIGINAL_REFERENCE_RE.finditer(text),
+        ],
+        key=lambda match: match.start(),
+    )
     requests: list[tuple[int, str | None]] = []
     seen: set[int] = set()
     for position, match in enumerate(matches):
@@ -372,6 +394,10 @@ def _named_visual_reference_requests(prompt: Any) -> list[tuple[int, str | None]
             role_hint = "pose_composition"
         requests.append((index, role_hint))
     return requests
+
+
+def named_original_visual_reference_indices(prompt: Any) -> list[int]:
+    return [int(match.group(1)) for match in _NAMED_ORIGINAL_REFERENCE_RE.finditer(str(prompt or ""))]
 
 
 def _entries_from_tool_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:

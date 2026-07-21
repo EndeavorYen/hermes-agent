@@ -918,6 +918,80 @@ def test_visual_package_candidate_options_exclude_individually_blocked_images(
     assert option_gate["rejected"][0]["quality_issues"] == ["composition_bad"]
 
 
+def test_visual_package_delivers_soft_blocked_options_as_review_only(monkeypatch, tmp_path):
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    outputs = [tmp_path / "candidate-1.png", tmp_path / "candidate-2.png"]
+    for output in outputs:
+        output.write_bytes(_ONE_PIXEL_PNG)
+
+    def fake_generate_image(**_kwargs):
+        path = outputs.pop(0)
+        return {
+            "success": True,
+            "image": str(path),
+            "provider": "xai",
+            "model": "grok-build-native-image",
+            "vision_observation": {
+                "visual_appeal": 0.7,
+                "composition": 0.2,
+                "confidence": 0.9,
+                "artifact_defects": ["action_or_moment_missing"],
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "Keep ref1 identity and apply ref2 pose. Return 2 options.",
+                "include_image": True,
+                "include_video": False,
+                "image_provider": "xai",
+                "candidate_budget": 2,
+                "candidate_budget_source": "user",
+                "deliver_candidate_options": True,
+                "visual_production_kernel": True,
+                "visual_contract_hash": "review-only-contract",
+                "visual_intent_contract": {"candidate_count": 2},
+                "max_generated_repairs": 0,
+            }
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["package_status"] == "partial"
+    assert payload["error_type"] == "candidate_options_review_required"
+    assert len(payload["images"]) == 2
+    image_gate = payload["delivery_gate"]["image"]
+    assert image_gate["allowed"] is False
+    assert image_gate["candidate_options"]["qualified"] == 0
+    assert image_gate["candidate_options"]["review_only"] is True
+    assert image_gate["candidate_options"]["delivered"] == 2
+
+
+def test_review_only_candidate_options_keep_identity_drift_fail_closed():
+    from tools import visual_package_tool
+
+    candidates = [{"artifact_id": "identity-drift", "artifact_path": "/tmp/drift.png"}]
+    options = visual_package_tool._review_only_candidate_options(
+        candidates,
+        candidate_option_gate={
+            "rejected": [
+                {
+                    "artifact_id": "identity-drift",
+                    "quality_issues": ["reference_identity_drift"],
+                }
+            ]
+        },
+        requested_count=1,
+    )
+
+    assert options == []
+
+
 def test_visual_package_delivers_valid_alternative_when_top_candidate_is_blocked(
     monkeypatch,
     tmp_path,

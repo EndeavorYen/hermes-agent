@@ -1720,6 +1720,7 @@ def _visual_reference_context_for_turn(
         collect_recent_original_visual_reference_entries,
         collect_recent_visual_reference_entries,
         filter_visual_reference_entries_for_prompt,
+        named_original_visual_reference_indices,
         prompt_requests_original_visual_references,
         prompt_requests_visual_reference_reuse,
     )
@@ -1739,6 +1740,9 @@ def _visual_reference_context_for_turn(
     operator_request = strip_visual_prompt_metadata(
         current_operator_request_text(message)
     )
+    named_original_indices = named_original_visual_reference_indices(operator_request)
+    if references and named_original_indices and max(named_original_indices) <= len(references):
+        return references[:MAX_SESSION_VISUAL_REFERENCES]
     requests_original = prompt_requests_original_visual_references(operator_request)
     if not (
         requests_original

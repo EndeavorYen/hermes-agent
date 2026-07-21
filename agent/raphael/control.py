@@ -5,7 +5,10 @@ from dataclasses import asdict, dataclass
 import re
 from typing import Any
 
-from agent.raphael.artifacts import latest_selected_artifact_id
+from agent.raphael.artifacts import (
+    latest_selected_artifact_id,
+    recover_reference_attachment_paths,
+)
 
 BASE_LLM_PROVIDER = "openai-codex"
 BASE_LLM_MODEL = ""
@@ -255,6 +258,8 @@ def build_raphael_control_decision(
         for item in (attachments or ())
         if str(item).strip() and _is_visual_attachment_ref(str(item))
     )
+    if not attachment_list and conversation_history and _mentioned_ref_indices(prompt):
+        attachment_list = recover_reference_attachment_paths(conversation_history)
     active_artifact_id = latest_selected_artifact_id(conversation_history)
 
     if active_mission is not None and _looks_like_mission_followup(prompt):
@@ -422,11 +427,12 @@ def build_raphael_control_decision(
             confidence=0.96,
         )
 
-    missing_reference = _missing_reference_index(prompt, len(attachment_list))
+    reference_count = len(attachment_list)
+    missing_reference = _missing_reference_index(prompt, reference_count)
     if missing_reference is not None:
         question = (
             f"你提到 ref{missing_reference}，但目前只看到 "
-            f"{len(attachment_list)} 個 reference；請補上 ref{missing_reference} "
+            f"{reference_count} 個 reference；請補上 ref{missing_reference} "
             "或說明要改用哪一張。"
         )
         return RaphaelControlDecision(

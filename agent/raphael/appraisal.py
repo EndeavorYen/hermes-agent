@@ -5,7 +5,10 @@ from dataclasses import dataclass
 import re
 from typing import Any
 
-from agent.raphael.artifacts import latest_selected_artifact_id
+from agent.raphael.artifacts import (
+    latest_selected_artifact_id,
+    recover_reference_attachment_paths,
+)
 
 
 _VISUAL_MARKERS = (
@@ -158,6 +161,8 @@ def appraise_raphael_situation(
     text = _extract_text(user_message)
     active_artifact_id = latest_selected_artifact_id(conversation_history)
     attachment_count = len([item for item in attachments or () if str(item).strip()])
+    if attachment_count == 0 and conversation_history:
+        attachment_count = len(recover_reference_attachment_paths(conversation_history))
     missing_ref = _missing_reference_index(text, attachment_count)
     if missing_ref is not None:
         return RaphaelAppraisal(
