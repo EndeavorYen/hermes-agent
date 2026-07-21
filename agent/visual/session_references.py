@@ -400,23 +400,6 @@ def named_original_visual_reference_indices(prompt: Any) -> list[int]:
     return [int(match.group(1)) for match in _NAMED_ORIGINAL_REFERENCE_RE.finditer(str(prompt or ""))]
 
 
-def available_original_visual_reference_count(messages: list[dict[str, Any]]) -> int:
-    """Return the contiguous ref1..refN bundle recoverable from durable history."""
-    entries = collect_recent_original_visual_reference_entries(messages, limit=16)
-    indices = {
-        index
-        for entry in entries
-        if isinstance(index := _coerce_user_ref_index(entry.get("user_ref_index")), int)
-        and index > 0
-    }
-    if not indices:
-        return len(entries)
-    count = 0
-    while count + 1 in indices:
-        count += 1
-    return count
-
-
 def _entries_from_tool_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
     library_root = str(payload.get("library_root") or "").strip()
