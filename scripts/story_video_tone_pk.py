@@ -1658,38 +1658,46 @@ def repair_failed_takes(
         raise TonePkError("tone PK manifest has no pairs")
     by_pair = {str(pair.get("pair_id") or ""): pair for pair in pairs}
     budgets: dict[tuple[str, str], int] = {}
+    repair_groups: dict[tuple[str, int], set[tuple[str, str]]] = {}
+    exhausted: list[tuple[str, str]] = []
     for row in failed:
         pair = by_pair[row["pair_id"]]
         take = pair[row["variant"]]
         used = int(take.get("candidate_count") or 0)
         remaining = max_candidates - used
         if remaining <= 0:
-            raise TonePkError(
-                f"candidate budget exhausted for {row['pair_id']} {row['variant']}"
-            )
+            exhausted.append((row["pair_id"], row["variant"]))
+            continue
         budgets[(row["pair_id"], row["variant"])] = remaining
-    for row in failed:
-        key = (row["pair_id"], row["variant"])
+        repair_groups.setdefault((row["variant"], remaining), set()).add(
+            (row["pair_id"], row["variant"])
+        )
+    attempts = 0
+    for (_variant, _remaining), target_keys in sorted(repair_groups.items()):
         generate_takes(
             project_path,
             generator_path,
             resume=True,
             runner=runner,
-            candidate_budgets={key: budgets[key]},
-            target_takes={key},
+            candidate_budgets={key: budgets[key] for key in target_keys},
+            target_takes=target_keys,
         )
+        attempts += 1
     current = _load_checkpoint(project_path)
-    still_failed = pending_takes(current, phase="source")
-    if still_failed:
-        raise TonePkError(f"failed takes remain after repair: {still_failed}")
     for pair in current["pairs"]:
         for variant in ("neutral", "expressive"):
             if int(pair[variant].get("candidate_count") or 0) > max_candidates:
                 raise TonePkError("candidate budget exceeded after repair")
+    if exhausted:
+        labels = ", ".join(f"{pair_id} {variant}" for pair_id, variant in exhausted)
+        raise TonePkError(f"candidate budget exhausted for {labels}")
+    still_failed = pending_takes(current, phase="source")
+    if still_failed:
+        raise TonePkError(f"failed takes remain after repair: {still_failed}")
     return {
         "status": "PASS",
         "repaired_take_count": len(failed),
-        "attempts": len(failed),
+        "attempts": attempts,
     }
 
 
