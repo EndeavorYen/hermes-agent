@@ -689,6 +689,325 @@ def prepare_project(
     }
 
 
+SHORT_REPLAN_OVERRIDE_SCHEMA = "story_video_tone_pk_chunk_overrides_v1"
+SHORT_REPLAN_REVISION = "failed_pairs_short_chunks_v2"
+
+
+def _short_replan_inputs(
+    project: Path,
+) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    source = Path(project).expanduser().resolve()
+    plan_path = source / "manifests" / "tone_pk_plan.json"
+    manifest_path = source / "manifests" / "tone_pk_manifest.json"
+    plan = _load_json(plan_path, label="tone PK plan")
+    manifest = _load_json(manifest_path, label="tone PK manifest")
+    if plan.get("schema") != "story_video_tone_pk_plan_v1":
+        raise TonePkError("tone PK plan schema is unsupported for short replan")
+    if manifest.get("schema") != "story_video_tone_pk_manifest_v1":
+        raise TonePkError("tone PK manifest schema is unsupported for short replan")
+    if plan.get("run_id") != manifest.get("run_id"):
+        raise TonePkError("tone PK plan and manifest run IDs differ")
+    plan_pairs = plan.get("pairs")
+    state_pairs = manifest.get("pairs")
+    if not isinstance(plan_pairs, list) or not isinstance(state_pairs, list):
+        raise TonePkError("tone PK short replan requires pair lists")
+    plan_by_id = {
+        str(pair.get("pair_id") or ""): pair
+        for pair in plan_pairs
+        if isinstance(pair, dict) and str(pair.get("pair_id") or "")
+    }
+    state_by_id = {
+        str(pair.get("pair_id") or ""): pair
+        for pair in state_pairs
+        if isinstance(pair, dict) and str(pair.get("pair_id") or "")
+    }
+    if (
+        len(plan_by_id) != len(plan_pairs)
+        or len(state_by_id) != len(state_pairs)
+        or set(plan_by_id) != set(state_by_id)
+    ):
+        raise TonePkError("tone PK plan and manifest pair IDs differ")
+    failed_ids: list[str] = []
+    immutable_take_fields = (
+        "take_id",
+        "spoken_text",
+        "voice_id",
+        "engine",
+        "profile_id",
+        "profile_sha256",
+        "canonical_voice_chunks",
+        "generation_seeds",
+        "tone",
+    )
+    for pair_id in [str(pair["pair_id"]) for pair in plan_pairs]:
+        planned = plan_by_id[pair_id]
+        observed = state_by_id[pair_id]
+        if any(
+            planned.get(field) != observed.get(field)
+            for field in (
+                "pair_id",
+                "utterance_id",
+                "order",
+                "speaker_id",
+                "spoken_text",
+                "voice_id",
+                "engine",
+            )
+        ):
+            raise TonePkError(f"pair identity drifted before short replan: {pair_id}")
+        statuses: list[str] = []
+        for variant in ("neutral", "expressive"):
+            planned_take = planned.get(variant)
+            observed_take = observed.get(variant)
+            if not isinstance(planned_take, dict) or not isinstance(observed_take, dict):
+                raise TonePkError(f"pair take is missing before short replan: {pair_id}")
+            if any(
+                planned_take.get(field) != observed_take.get(field)
+                for field in immutable_take_fields
+            ):
+                raise TonePkError(
+                    f"pair take identity drifted before short replan: {pair_id}/{variant}"
+                )
+            status = observed_take.get("qc_status")
+            if status not in {"PASS", "FAIL"}:
+                raise TonePkError(
+                    f"pair QC status is unknown before short replan: {pair_id}/{variant}"
+                )
+            statuses.append(str(status))
+        if "FAIL" in statuses:
+            failed_ids.append(pair_id)
+    if not failed_ids:
+        raise TonePkError("short replan has no failed pairs")
+    return plan, manifest, failed_ids
+
+
+def build_failed_short_chunk_overrides(
+    source_project: Path,
+    *,
+    max_chars: int = 12,
+) -> dict[str, Any]:
+    """Build a private, hash-bound override for only the failed pair union."""
+    if isinstance(max_chars, bool) or not isinstance(max_chars, int) or max_chars < 1:
+        raise TonePkError("short replan max chars must be a positive integer")
+    source = Path(source_project).expanduser().resolve()
+    plan, _manifest, failed_ids = _short_replan_inputs(source)
+    plan_by_id = {str(pair["pair_id"]): pair for pair in plan["pairs"]}
+    pairs: dict[str, list[str]] = {}
+    for pair_id in failed_ids:
+        text = str(plan_by_id[pair_id].get("spoken_text") or "")
+        chunks = split_exact_text_on_sentence_then_clause(text, max_chars=max_chars)
+        if "".join(chunks) != text:
+            raise TonePkError(f"short replan changed canonical text for {pair_id}")
+        pairs[pair_id] = chunks
+    return {
+        "schema": SHORT_REPLAN_OVERRIDE_SCHEMA,
+        "source_plan_sha256": _sha256(source / "manifests" / "tone_pk_plan.json"),
+        "source_manifest_sha256": _sha256(
+            source / "manifests" / "tone_pk_manifest.json"
+        ),
+        "max_chars": max_chars,
+        "pairs": pairs,
+    }
+
+
+def _rewrite_short_replan_variant(
+    output: Path,
+    *,
+    variant: str,
+    revised_by_utterance: dict[str, dict[str, Any]],
+) -> None:
+    variant_dir = output / "variants" / variant
+    ledger_path = variant_dir / "dialogue_ledger.json"
+    binding_path = variant_dir / "voice_cast_binding.json"
+    ledger = _load_json(ledger_path, label=f"{variant} dialogue ledger")
+    utterances = ledger.get("utterances")
+    if not isinstance(utterances, list):
+        raise TonePkError(f"{variant} dialogue ledger has no utterances")
+    seen: set[str] = set()
+    for row in utterances:
+        if not isinstance(row, dict):
+            raise TonePkError(f"{variant} dialogue ledger has an invalid utterance")
+        utterance_id = str(row.get("utterance_id") or "")
+        revised = revised_by_utterance.get(utterance_id)
+        if revised is None:
+            continue
+        take = revised[variant]
+        row["canonical_voice_chunks"] = list(take["canonical_voice_chunks"])
+        row["generation_seeds"] = list(take["generation_seeds"])
+        seen.add(utterance_id)
+    if seen != set(revised_by_utterance):
+        raise TonePkError(f"{variant} dialogue ledger is missing revised utterances")
+    _write_json(ledger_path, ledger)
+    binding = _load_json(binding_path, label=f"{variant} voice cast binding")
+    binding["dialogue_ledger_path"] = str(ledger_path)
+    binding["dialogue_ledger_sha256"] = _sha256(ledger_path)
+    story_mode_path = variant_dir / "story_mode.json"
+    binding["story_mode_path"] = str(story_mode_path)
+    binding["story_mode_sha256"] = _sha256(story_mode_path)
+    cast_path = variant_dir / "cast_bible.json"
+    if cast_path.is_file():
+        binding["cast_bible_path"] = str(cast_path)
+        binding["cast_bible_sha256"] = _sha256(cast_path)
+    _write_json(binding_path, binding)
+
+
+def replan_failed_pairs_short(
+    *,
+    source_project: Path,
+    output_project: Path,
+    overrides: dict[str, Any],
+    max_chars: int = 12,
+) -> dict[str, Any]:
+    """Clone a run and reset only failed pairs under a new short-chunk identity."""
+    source = Path(source_project).expanduser().resolve()
+    output = Path(output_project).expanduser().resolve()
+    if output == source:
+        raise TonePkError("short replan output project must differ from source")
+    if output.exists():
+        raise TonePkError("short replan output project already exists")
+    if not isinstance(overrides, dict):
+        raise TonePkError("short replan override must be an object")
+    plan, manifest, failed_ids = _short_replan_inputs(source)
+    plan_path = source / "manifests" / "tone_pk_plan.json"
+    manifest_path = source / "manifests" / "tone_pk_manifest.json"
+    if overrides.get("schema") != SHORT_REPLAN_OVERRIDE_SCHEMA:
+        raise TonePkError("short replan override schema is unsupported")
+    if overrides.get("source_plan_sha256") != _sha256(plan_path):
+        raise TonePkError("short replan source plan hash does not match")
+    if overrides.get("source_manifest_sha256") != _sha256(manifest_path):
+        raise TonePkError("short replan source manifest hash does not match")
+    if overrides.get("max_chars") != max_chars:
+        raise TonePkError("short replan max chars does not match override")
+    override_pairs = overrides.get("pairs")
+    if not isinstance(override_pairs, dict) or set(override_pairs) != set(failed_ids):
+        raise TonePkError("short replan override pair IDs do not match failed pairs")
+    plan_by_id = {str(pair["pair_id"]): pair for pair in plan["pairs"]}
+    validated_chunks: dict[str, list[str]] = {}
+    for pair_id in failed_ids:
+        chunks = override_pairs[pair_id]
+        if (
+            not isinstance(chunks, list)
+            or not chunks
+            or any(not isinstance(chunk, str) or not chunk for chunk in chunks)
+        ):
+            raise TonePkError(f"short replan chunks are invalid for {pair_id}")
+        if any(len(chunk) > max_chars for chunk in chunks):
+            raise TonePkError(f"short replan chunk exceeds {max_chars} for {pair_id}")
+        text = str(plan_by_id[pair_id].get("spoken_text") or "")
+        if "".join(chunks) != text:
+            raise TonePkError(f"short replan changed canonical text for {pair_id}")
+        deterministic = split_exact_text_on_sentence_then_clause(
+            text,
+            max_chars=max_chars,
+        )
+        if chunks != deterministic:
+            raise TonePkError(f"short replan chunks are not deterministic for {pair_id}")
+        validated_chunks[pair_id] = list(chunks)
+
+    revised_plan = copy.deepcopy(plan)
+    revision_seed_scope = (
+        f"{plan['run_id']}:{SHORT_REPLAN_REVISION}:{_sha256(plan_path)[:16]}"
+    )
+    revised_by_id = {
+        str(pair["pair_id"]): pair for pair in revised_plan["pairs"]
+    }
+    revised_by_utterance: dict[str, dict[str, Any]] = {}
+    for pair_id in failed_ids:
+        pair = revised_by_id[pair_id]
+        chunks = validated_chunks[pair_id]
+        seeds = [
+            stable_pair_seed(revision_seed_scope, str(pair["utterance_id"]), index)
+            for index in range(1, len(chunks) + 1)
+        ]
+        pair["canonical_voice_chunks"] = list(chunks)
+        pair["generation_seeds"] = list(seeds)
+        for variant in ("neutral", "expressive"):
+            take = pair[variant]
+            take["canonical_voice_chunks"] = list(chunks)
+            take["generation_seeds"] = list(seeds)
+            take["voice_chunks"] = [
+                {
+                    "chunk_index": index,
+                    "spoken_text": chunk,
+                    "generation_seed": seeds[index - 1],
+                }
+                for index, chunk in enumerate(chunks, start=1)
+            ]
+        revised_by_utterance[str(pair["utterance_id"])] = pair
+    revised_plan["plan_revision"] = {
+        "schema": "story_video_tone_pk_plan_revision_v1",
+        "revision": SHORT_REPLAN_REVISION,
+        "source_plan_sha256": _sha256(plan_path),
+        "source_manifest_sha256": _sha256(manifest_path),
+        "affected_pair_ids": list(failed_ids),
+        "max_chunk_chars": max_chars,
+        "seed_scope_sha256": _text_sha256(revision_seed_scope),
+        "candidate_budget": {"start": 1, "cap": 3},
+    }
+
+    shutil.copytree(source, output)
+    archive_dir = output / "archive" / "short_replan_v2"
+    _write_json(
+        archive_dir / "affected_pairs.json",
+        {
+            "schema": "story_video_tone_pk_archived_pairs_v1",
+            "source_plan_sha256": _sha256(plan_path),
+            "source_manifest_sha256": _sha256(manifest_path),
+            "pair_ids": list(failed_ids),
+            "pairs": [
+                copy.deepcopy(pair)
+                for pair in manifest["pairs"]
+                if str(pair["pair_id"]) in set(failed_ids)
+            ],
+        },
+    )
+    _write_json(output / "annotations" / "short_chunk_overrides.json", overrides)
+    _write_json(output / "manifests" / "tone_pk_plan.json", revised_plan)
+    for variant in ("neutral", "expressive"):
+        _rewrite_short_replan_variant(
+            output,
+            variant=variant,
+            revised_by_utterance=revised_by_utterance,
+        )
+
+    old_by_id = {str(pair["pair_id"]): pair for pair in manifest["pairs"]}
+    migrated_pairs = [
+        copy.deepcopy(revised_by_id[pair_id])
+        if pair_id in set(failed_ids)
+        else copy.deepcopy(old_by_id[pair_id])
+        for pair_id in [str(pair["pair_id"]) for pair in plan["pairs"]]
+    ]
+    write_checkpoint(
+        output,
+        migrated_pairs,
+        run_id=str(plan["run_id"]),
+        metadata={
+            "generator_path": manifest.get("generator_path", ""),
+            "replan_provenance": copy.deepcopy(revised_plan["plan_revision"]),
+        },
+    )
+    for stale_report in (output / "qc" / "tone_pk_qc_report.json",):
+        if stale_report.is_file():
+            stale_report.replace(archive_dir / stale_report.name)
+    for variant in ("neutral", "expressive"):
+        stale_manifest = (
+            output / "variants" / variant / "manifests" / "narration_manifest.json"
+        )
+        if stale_manifest.is_file():
+            destination = archive_dir / f"{variant}_narration_manifest.json"
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            stale_manifest.replace(destination)
+    return {
+        "schema": "story_video_tone_pk_short_replan_result_v1",
+        "status": "READY_FOR_GENERATION",
+        "affected_pair_count": len(failed_ids),
+        "reused_pair_count": len(plan["pairs"]) - len(failed_ids),
+        "candidate_budget_start": 1,
+        "candidate_budget_cap": 3,
+        "output_project": str(output),
+    }
+
+
 _PAIR_EQUAL_FIELDS = (
     ("spoken_text", "spoken text"),
     ("spoken_text_normalization", "spoken text normalization"),
