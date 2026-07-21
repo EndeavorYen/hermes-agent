@@ -110,8 +110,11 @@ def _validate_source_binding(
     ledger = _load_json(ledger_path, label="dialogue ledger")
     binding = _load_json(binding_path, label="voice cast binding")
     story_mode = _load_json(story_mode_path, label="story mode")
-    if ledger.get("schema") != "story_video_dialogue_ledger_v2":
-        raise TonePkError("source dialogue ledger must use story_video_dialogue_ledger_v2")
+    if ledger.get("schema") not in {
+        "story_video_dialogue_ledger_v1",
+        "story_video_dialogue_ledger_v2",
+    }:
+        raise TonePkError("source dialogue ledger schema is unsupported")
     if binding.get("schema") not in {
         "story_video_voice_cast_binding_v1",
         "story_video_voice_cast_binding_v2",

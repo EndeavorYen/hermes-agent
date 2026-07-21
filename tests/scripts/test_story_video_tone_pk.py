@@ -496,6 +496,64 @@ def test_prepare_writes_local_variant_contracts_with_tone_only_difference(
     assert (output / "variants/expressive/cast_bible.json").is_file()
 
 
+def test_prepare_accepts_hash_locked_v1_source_and_upgrades_variant_ledgers(
+    tmp_path: Path,
+) -> None:
+    source = sanitized_source_project(tmp_path, utterance_count=2)
+    ledger_path = source / "dialogue_ledger.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    ledger["schema"] = "story_video_dialogue_ledger_v1"
+    _write_json(ledger_path, ledger)
+    binding_path = source / "voice_cast_binding.json"
+    binding = json.loads(binding_path.read_text(encoding="utf-8"))
+    binding["dialogue_ledger_sha256"] = _sha256(ledger_path)
+    _write_json(binding_path, binding)
+    annotations_path = tmp_path / "tone_annotations.json"
+    _write_json(annotations_path, _annotations())
+    output = tmp_path / "local-output"
+
+    result = tone_pk.prepare_project(
+        source_project=source,
+        output_project=output,
+        run_id="tone-pk-v1-source",
+        annotations_path=annotations_path,
+        expected_utterance_count=2,
+    )
+
+    assert result["pair_count"] == 2
+    plan = json.loads(
+        (output / "manifests/tone_pk_plan.json").read_text(encoding="utf-8")
+    )
+    assert plan["source_binding"]["dialogue_ledger_sha256"] == _sha256(ledger_path)
+    for variant in ("neutral", "expressive"):
+        variant_ledger = json.loads(
+            (output / f"variants/{variant}/dialogue_ledger.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert variant_ledger["schema"] == "story_video_dialogue_ledger_v2"
+
+
+def test_prepare_rejects_unknown_source_ledger_schema(tmp_path: Path) -> None:
+    source = sanitized_source_project(tmp_path, utterance_count=1)
+    ledger_path = source / "dialogue_ledger.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    ledger["schema"] = "story_video_dialogue_ledger_v99"
+    _write_json(ledger_path, ledger)
+    binding_path = source / "voice_cast_binding.json"
+    binding = json.loads(binding_path.read_text(encoding="utf-8"))
+    binding["dialogue_ledger_sha256"] = _sha256(ledger_path)
+    _write_json(binding_path, binding)
+
+    with pytest.raises(tone_pk.TonePkError, match="schema is unsupported"):
+        tone_pk.build_pair_plan(
+            source_project=source,
+            run_id="tone-pk-unknown-source",
+            annotations={"U0001": expressive_annotation()},
+            expected_utterance_count=1,
+        )
+
+
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
