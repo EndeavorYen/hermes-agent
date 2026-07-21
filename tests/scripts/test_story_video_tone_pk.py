@@ -287,6 +287,13 @@ def fake_generator_runner(
             for index, value in enumerate(command[:-1])
             if value == "--repair-shot"
         }
+        known_repair_ids = {
+            str(utterance.get("shot_id") or "")
+            for utterance in ledger["utterances"]
+        }
+        unknown_repair_ids = repair_ids - known_repair_ids
+        if unknown_repair_ids:
+            raise tone_pk.subprocess.CalledProcessError(1, command)
         chunks = []
         for utterance in ledger["utterances"]:
             utterance_candidate_count = (
@@ -302,7 +309,7 @@ def fake_generator_runner(
                     / f"{utterance['utterance_id']}__C{index:02d}.wav"
                 )
                 audio.parent.mkdir(parents=True, exist_ok=True)
-                if not repair_ids or utterance["utterance_id"] in repair_ids:
+                if not repair_ids or utterance["shot_id"] in repair_ids:
                     audio.write_bytes(
                         f"{variant}-{utterance['utterance_id']}-{len(calls)}".encode()
                     )
@@ -1673,9 +1680,73 @@ def test_repair_failed_takes_only_regenerates_failed_take(tmp_path: Path) -> Non
     assert result["repaired_take_count"] == 1
     assert len(repair_calls) == 1
     assert "--repair-shot" in repair_calls[0]
-    assert "U0001" in repair_calls[0]
+    assert "S01_SH01" in repair_calls[0]
+    assert "U0001" not in repair_calls[0]
     assert repaired["pairs"][0]["neutral"]["source_audio_sha256"] == neutral_hash
     assert repaired["pairs"][0]["expressive"]["qc_status"] == "PASS"
+
+
+@pytest.mark.parametrize("variant", ["neutral", "expressive"])
+def test_generate_validates_each_variant_ledger_binding_before_runner(
+    tmp_path: Path,
+    variant: str,
+) -> None:
+    project = prepared_pk_project(tmp_path)
+    generator = tmp_path / "fake_generator.py"
+    generator.write_text("# sanitized fixture\n", encoding="utf-8")
+    ledger_path = project / "variants" / variant / "dialogue_ledger.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    ledger["utterances"][0]["shot_id"] = "SHOT-TAMPERED"
+    _write_json(ledger_path, ledger)
+
+    with pytest.raises(tone_pk.TonePkError, match="ledger hash"):
+        tone_pk.generate_takes(
+            project,
+            generator,
+            resume=True,
+            runner=lambda *_args, **_kwargs: pytest.fail("runner was invoked"),
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_error"),
+    [
+        ("missing", "missing an utterance or shot ID"),
+        ("duplicate", "contains duplicate IDs"),
+        ("unknown", "unknown=\\['U9999'\\]"),
+    ],
+)
+def test_generate_repair_mapping_fails_closed_before_runner(
+    tmp_path: Path,
+    mutation: str,
+    expected_error: str,
+) -> None:
+    project = prepared_pk_project(tmp_path, utterance_count=2)
+    generator = tmp_path / "fake_generator.py"
+    generator.write_text("# sanitized fixture\n", encoding="utf-8")
+    variant = "expressive"
+    variant_project = project / "variants" / variant
+    ledger_path = variant_project / "dialogue_ledger.json"
+    binding_path = variant_project / "voice_cast_binding.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    if mutation == "missing":
+        ledger["utterances"][0].pop("shot_id")
+    elif mutation == "duplicate":
+        ledger["utterances"][1]["shot_id"] = ledger["utterances"][0]["shot_id"]
+    else:
+        ledger["utterances"][1]["utterance_id"] = "U9999"
+    _write_json(ledger_path, ledger)
+    binding = json.loads(binding_path.read_text(encoding="utf-8"))
+    binding["dialogue_ledger_sha256"] = _sha256(ledger_path)
+    _write_json(binding_path, binding)
+
+    with pytest.raises(tone_pk.TonePkError, match=expected_error):
+        tone_pk.generate_takes(
+            project,
+            generator,
+            resume=True,
+            runner=lambda *_args, **_kwargs: pytest.fail("runner was invoked"),
+        )
 
 
 def test_repair_candidate_budget_is_cumulative_and_never_exceeds_cap(
@@ -1772,7 +1843,7 @@ def test_repair_dispatches_heterogeneous_take_budgets_independently(
         if (
             command[0] != "ffmpeg"
             and "--repair-shot" in command
-            and command[command.index("--repair-shot") + 1] == "U0001"
+            and command[command.index("--repair-shot") + 1] == "S01_SH01"
         ):
             _set_manifest_utterance_qc(
                 project,
@@ -1805,13 +1876,13 @@ def test_repair_dispatches_heterogeneous_take_budgets_independently(
 
     neutral_calls = [command for command in calls if "/variants/neutral" in " ".join(command)]
     assert len(neutral_calls) == 2
-    by_utterance = {
+    by_shot = {
         command[command.index("--repair-shot") + 1]: command[
             command.index("--max-acoustic-retries") + 1
         ]
         for command in neutral_calls
     }
-    assert by_utterance == {"U0001": "0", "U0002": "1"}
+    assert by_shot == {"S01_SH01": "0", "S01_SH02": "1"}
     repaired = json.loads(state_path.read_text(encoding="utf-8"))
     assert repaired["pairs"][0]["neutral"]["candidate_count"] == 3
     assert repaired["pairs"][1]["neutral"]["candidate_count"] == 3
