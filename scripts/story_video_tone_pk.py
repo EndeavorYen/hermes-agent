@@ -26,7 +26,7 @@ class TonePkError(RuntimeError):
 
 SPOKEN_TEXT_NORMALIZATION = "bounded_ellipsis_v1"
 _DISPLAY_PAUSE_RE = re.compile(r"(?:\.{3,}|…{2,}|⋯{2,}|—{1,2})")
-_CLOSING_MARKS = "」』”’\"'】》〉）]"
+_CLOSING_MARKS = "」』”’\"'】）》）]"
 _TERMINAL_MARKS = "。！？!?"
 
 
@@ -50,9 +50,12 @@ def normalize_synthesis_spoken_text(text: str) -> str:
 def _trusted_pronunciation_contract(
     manifest: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], list[str], list[str]]:
-    report_path = Path(str(manifest.get("pronunciation_qc_report") or ""))
+    report_value = manifest.get("pronunciation_qc_report")
+    if not isinstance(report_value, str) or not report_value:
+        raise TonePkError("pronunciation QC report is missing")
+    report_path = Path(report_value)
     if not report_path.is_file():
-        return [], [], []
+        raise TonePkError("pronunciation QC report does not exist")
     report = _load_json(report_path, label="pronunciation QC report")
     if report.get("schema") != "story_video_pronunciation_qc_v3":
         raise TonePkError("pronunciation QC schema is unsupported")
