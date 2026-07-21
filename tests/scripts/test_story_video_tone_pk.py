@@ -31,6 +31,7 @@ def passing_pair_evidence(tmp_path: Path | None = None) -> dict:
         "source_assembly_fingerprint": tone_pk._source_assembly_fingerprint(
             source_chunk_hashes
         ),
+        "source_voice_chunk_ids": ["U0007__C01"],
         "voice_id": "fixture_voice",
         "engine": "qwen_custom_voice",
         "model_id": "fixture_model",
@@ -1186,6 +1187,42 @@ def test_pair_qc_rejects_missing_source_assembly_fingerprint() -> None:
         pair[variant].pop("source_assembly_fingerprint")
 
     with pytest.raises(tone_pk.TonePkError, match="source assembly evidence"):
+        tone_pk.validate_pair_evidence(pair)
+
+
+def _two_chunk_pair_evidence() -> dict:
+    pair = passing_pair_evidence()
+    pair["spoken_text"] = "同一句。"
+    for take in (pair["neutral"], pair["expressive"]):
+        take["canonical_voice_chunks"] = ["同一", "句。"]
+        take["canonical_spoken_chunks"] = ["同一", "句。"]
+        take["generation_seeds"] = [123, 456]
+        take["source_voice_chunk_ids"] = ["U0007__C01", "U0007__C02"]
+        hashes = ["e" * 64, "f" * 64]
+        take["source_chunk_audio_sha256s"] = hashes
+        take["source_assembly_fingerprint"] = tone_pk._source_assembly_fingerprint(
+            hashes
+        )
+    return pair
+
+
+def test_pair_qc_rejects_partial_source_chunk_hash_list_with_valid_fingerprint() -> None:
+    pair = _two_chunk_pair_evidence()
+    partial_hashes = ["e" * 64]
+    pair["neutral"]["source_chunk_audio_sha256s"] = partial_hashes
+    pair["neutral"]["source_assembly_fingerprint"] = (
+        tone_pk._source_assembly_fingerprint(partial_hashes)
+    )
+
+    with pytest.raises(tone_pk.TonePkError, match="source assembly chunk evidence"):
+        tone_pk.validate_pair_evidence(pair)
+
+
+def test_pair_qc_rejects_duplicate_source_voice_chunk_ids() -> None:
+    pair = _two_chunk_pair_evidence()
+    pair["neutral"]["source_voice_chunk_ids"] = ["U0007__C01", "U0007__C01"]
+
+    with pytest.raises(tone_pk.TonePkError, match="source assembly chunk evidence"):
         tone_pk.validate_pair_evidence(pair)
 
 
