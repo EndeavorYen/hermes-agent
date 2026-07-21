@@ -173,6 +173,30 @@ def test_direct_visual_handoff_routes_attached_chinese_edit_candidates_to_xai():
     }
 
 
+def test_direct_visual_handoff_treats_try_this_action_as_attached_followup():
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.6-sol",
+    )
+    message = [
+        {
+            "type": "text",
+            "text": "基於這個動作，試試兩隻手都舉起來的動作，也是 4 張讓我挑選",
+        },
+        {"type": "image_url", "image_url": {"url": "/tmp/previous-g1.png"}},
+        {"type": "image_url", "image_url": {"url": "/tmp/previous-g2.png"}},
+    ]
+
+    handoff = build_direct_visual_agent_handoff(agent, message)
+
+    assert handoff is not None
+    assert handoff["arguments"]["reference_binding"]["reference_order"][0]["role_hint"] == "edit_anchor"
+    assert handoff["arguments"]["reference_conditioning_policy"] == "role_locked_originals"
+
+
 def test_direct_visual_handoff_recovers_attachment_only_identity_lock_continuation():
     from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
 
@@ -1908,6 +1932,50 @@ def test_direct_visual_handoff_reports_partial_qualified_candidate_delivery():
     )
 
     assert response == "已交付通過品質檢查的候選圖；合格數少於原要求，其餘已淘汰。"
+
+
+def test_direct_visual_handoff_reports_labels_for_partial_candidate_delivery():
+    from agent.visual.agent_mode.handoff import format_direct_visual_agent_handoff_response
+
+    response = format_direct_visual_agent_handoff_response(
+        json.dumps(
+            {
+                "success": True,
+                "package_status": "partial",
+                "error_type": "candidate_option_shortfall",
+                "images": ["/tmp/a.jpg", "/tmp/b.jpg"],
+                "videos": [],
+                "session_visual_artifacts": [
+                    {"label": "G5", "uri": "/tmp/a.jpg"},
+                    {"label": "G6", "uri": "/tmp/b.jpg"},
+                ],
+            }
+        )
+    )
+
+    assert response == (
+        "已交付通過品質檢查的候選圖：G5、G6；合格數少於原要求，其餘已淘汰。"
+        "後續可直接指定編號繼續編輯。"
+    )
+
+
+def test_direct_visual_handoff_lists_session_image_labels():
+    from agent.visual.agent_mode.handoff import format_direct_visual_agent_handoff_response
+
+    response = format_direct_visual_agent_handoff_response(
+        json.dumps(
+            {
+                "success": True,
+                "images": ["/tmp/a.jpg", "/tmp/b.jpg"],
+                "session_visual_artifacts": [
+                    {"label": "G5", "uri": "/tmp/a.jpg"},
+                    {"label": "G6", "uri": "/tmp/b.jpg"},
+                ],
+            }
+        )
+    )
+
+    assert response == "已產出圖片：G5、G6。後續可直接指定編號繼續編輯。"
 
 
 def test_direct_visual_handoff_formats_bare_tool_error_as_failure():

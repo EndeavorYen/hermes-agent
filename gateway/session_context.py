@@ -88,6 +88,10 @@ _SESSION_VISUAL_REFERENCE_ENTRIES: ContextVar = ContextVar(
     "HERMES_SESSION_VISUAL_REFERENCE_ENTRIES",
     default=(),
 )
+_SESSION_VISUAL_ARTIFACT_NEXT_INDEX: ContextVar = ContextVar(
+    "HERMES_SESSION_VISUAL_ARTIFACT_NEXT_INDEX",
+    default=1,
+)
 
 _SESSION_PROFILE: ContextVar = ContextVar("HERMES_SESSION_PROFILE", default=_UNSET)
 
@@ -230,6 +234,27 @@ def get_visual_reference_context_entries() -> list[dict[str, Any]]:
         if entry:
             entries.append(entry)
     return entries
+
+
+def set_visual_artifact_index_context(next_index: int) -> Any:
+    """Bind the next session-wide image label index for this turn."""
+    try:
+        value = max(1, int(next_index))
+    except (TypeError, ValueError):
+        value = 1
+    return _SESSION_VISUAL_ARTIFACT_NEXT_INDEX.set(value)
+
+
+def reset_visual_artifact_index_context(token: Any) -> None:
+    _SESSION_VISUAL_ARTIFACT_NEXT_INDEX.reset(token)
+
+
+def reserve_visual_artifact_indices(count: int) -> int:
+    """Reserve consecutive image labels and return the first index."""
+    start = max(1, int(_SESSION_VISUAL_ARTIFACT_NEXT_INDEX.get() or 1))
+    size = max(0, int(count or 0))
+    _SESSION_VISUAL_ARTIFACT_NEXT_INDEX.set(start + size)
+    return start
 
 
 def set_session_vars(

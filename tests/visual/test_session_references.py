@@ -1,6 +1,68 @@
 import json
 
 
+def test_visual_reference_reuse_recognises_natural_action_continuation():
+    from agent.visual.session_references import prompt_requests_visual_reference_reuse
+
+    assert prompt_requests_visual_reference_reuse(
+        "基於這個動作，試試兩隻手都舉起來，也是 4 張讓我挑選"
+    ) is True
+
+
+def test_generic_visual_outputs_receive_stable_session_indices():
+    from agent.visual.session_references import (
+        collect_recent_visual_reference_entries,
+        filter_visual_reference_entries_for_prompt,
+    )
+
+    messages = [
+        {
+            "role": "tool",
+            "content": json.dumps(
+                {
+                    "success": True,
+                    "images": ["/tmp/xai-first.jpg", "/tmp/xai-second.jpg"],
+                }
+            ),
+        },
+        {
+            "role": "tool",
+            "content": json.dumps(
+                {
+                    "success": True,
+                    "images": ["/tmp/xai-third.jpg"],
+                }
+            ),
+        },
+    ]
+
+    entries = collect_recent_visual_reference_entries(messages, limit=8)
+    selected = filter_visual_reference_entries_for_prompt(entries, "基於 G2 再做四張")
+
+    assert [(entry["uri"], entry["user_ref_index"]) for entry in entries] == [
+        ("/tmp/xai-third.jpg", 3),
+        ("/tmp/xai-first.jpg", 1),
+        ("/tmp/xai-second.jpg", 2),
+    ]
+    assert [entry["uri"] for entry in selected] == ["/tmp/xai-second.jpg"]
+
+
+def test_visual_payload_session_labels_continue_from_reserved_index():
+    from agent.visual.session_references import label_visual_payload_images
+
+    payload = {
+        "success": True,
+        "images": ["/tmp/xai-a.jpg", "/tmp/xai-b.jpg"],
+    }
+
+    label_visual_payload_images(payload, start_index=5)
+
+    assert payload["session_visual_artifacts"] == [
+        {"label": "G5", "user_ref_index": 5, "uri": "/tmp/xai-a.jpg"},
+        {"label": "G6", "user_ref_index": 6, "uri": "/tmp/xai-b.jpg"},
+    ]
+
+
 def test_original_reference_request_requires_explicit_original_semantics():
     from agent.visual.session_references import prompt_requests_original_visual_references
 

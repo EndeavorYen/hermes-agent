@@ -204,6 +204,10 @@ def prompt_requests_visual_reference_reuse(prompt: Any) -> bool:
         "上一輪",
         "剛剛",
         "剛才",
+        "基於",
+        "基于",
+        "沿著",
+        "沿着",
         "這張",
         "這位角色",
         "原圖",
@@ -280,6 +284,7 @@ def entry_is_generated_visual_output(entry: dict[str, Any]) -> bool:
         "previous_selected_artifact",
         "previous_tool_output",
         "previous_visual_arsenal_output",
+        "session_visual_artifact",
         "generated_output",
     }:
         return True
@@ -337,6 +342,19 @@ def _entries_from_tool_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
     )
     if not payload.get("success") and not is_visual_arsenal_payload:
         return entries
+
+    for item in payload.get("session_visual_artifacts") or []:
+        if not isinstance(item, dict):
+            continue
+        _append_unique_entry(
+            entries,
+            _make_entry(
+                item.get("uri"),
+                role_hint="edit_anchor",
+                source="session_visual_artifact",
+                user_ref_index=item.get("user_ref_index"),
+            ),
+        )
 
     delivery = payload.get("delivery_metadata")
     if isinstance(delivery, dict):
@@ -522,6 +540,7 @@ def collect_recent_visual_reference_entries(
     *,
     limit: int = MAX_SESSION_VISUAL_REFERENCES,
 ) -> list[dict[str, Any]]:
+    generated_indices = _generated_visual_indices(messages)
     entries: list[dict[str, Any]] = []
     for msg in reversed(messages or []):
         if not isinstance(msg, dict):
@@ -531,6 +550,14 @@ def collect_recent_visual_reference_entries(
             payload = _as_json_object(msg.get("content"))
             if payload:
                 for entry in _entries_from_tool_payload(payload):
+                    uri = str(entry.get("uri") or "").strip()
+                    if (
+                        entry_is_generated_visual_output(entry)
+                        and entry.get("user_ref_index") in (None, "")
+                        and uri in generated_indices
+                    ):
+                        entry = dict(entry)
+                        entry["user_ref_index"] = generated_indices[uri]
                     _append_unique_entry(entries, entry)
         elif role == "assistant":
             for entry in _entries_from_tool_calls(msg):
@@ -541,6 +568,70 @@ def collect_recent_visual_reference_entries(
         if len(entries) >= limit:
             break
     return entries[: max(0, limit)]
+
+
+def label_visual_payload_images(
+    payload: dict[str, Any],
+    *,
+    start_index: int,
+) -> list[dict[str, Any]]:
+    """Persist stable, user-facing session labels for selected images."""
+    existing = payload.get("session_visual_artifacts")
+    if isinstance(existing, list) and existing:
+        return [dict(item) for item in existing if isinstance(item, dict)]
+    try:
+        next_index = max(1, int(start_index))
+    except (TypeError, ValueError):
+        next_index = 1
+    artifacts: list[dict[str, Any]] = []
+    for uri in normalise_visual_reference_paths(
+        [payload.get("images"), payload.get("image")]
+    ):
+        artifacts.append(
+            {
+                "label": f"G{next_index}",
+                "user_ref_index": next_index,
+                "uri": uri,
+            }
+        )
+        next_index += 1
+    if artifacts:
+        payload["session_visual_artifacts"] = artifacts
+    return artifacts
+
+
+def _generated_visual_indices(messages: list[dict[str, Any]]) -> dict[str, int]:
+    indices: dict[str, int] = {}
+    next_index = 1
+    for msg in messages or []:
+        if not isinstance(msg, dict) or msg.get("role") not in {"tool", "function"}:
+            continue
+        payload = _as_json_object(msg.get("content"))
+        if not payload or not payload.get("success"):
+            continue
+        explicit = payload.get("session_visual_artifacts")
+        if isinstance(explicit, list) and explicit:
+            for item in explicit:
+                if not isinstance(item, dict):
+                    continue
+                uri = _clean_reference(str(item.get("uri") or ""))
+                index = _coerce_user_ref_index(item.get("user_ref_index"))
+                if not uri or not isinstance(index, int) or index <= 0:
+                    continue
+                indices.setdefault(uri, index)
+                next_index = max(next_index, index + 1)
+            continue
+        for uri in normalise_visual_reference_paths(payload.get("images")):
+            if uri in indices:
+                continue
+            indices[uri] = next_index
+            next_index += 1
+    return indices
+
+
+def next_session_visual_artifact_index(messages: list[dict[str, Any]]) -> int:
+    indices = _generated_visual_indices(messages)
+    return max(indices.values(), default=0) + 1
 
 
 def collect_recent_original_visual_reference_entries(

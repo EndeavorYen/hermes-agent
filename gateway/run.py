@@ -1658,19 +1658,53 @@ def _run_conversation_with_visual_reference_context(
     message: Any,
     *,
     visual_references: List[Dict[str, Any]],
+    visual_artifact_start_index: int = 1,
     conversation_kwargs: Dict[str, Any],
 ) -> Dict[str, Any]:
     """Bind current gateway attachments for direct and tool-selected visuals."""
     from gateway.session_context import (
         reset_visual_reference_context,
+        reset_visual_artifact_index_context,
         set_visual_reference_context,
+        set_visual_artifact_index_context,
     )
 
     token = set_visual_reference_context(visual_references)
+    artifact_token = set_visual_artifact_index_context(visual_artifact_start_index)
     try:
         return agent.run_conversation(message, **conversation_kwargs)
     finally:
+        reset_visual_artifact_index_context(artifact_token)
         reset_visual_reference_context(token)
+
+
+def _visual_artifact_start_index_for_turn(
+    agent_history: List[Dict[str, Any]],
+    fallback_agent_history: Optional[List[Dict[str, Any]]] = None,
+) -> int:
+    """Continue user-visible G labels across the current route's transcripts."""
+    from agent.visual.session_references import next_session_visual_artifact_index
+
+    return max(
+        next_session_visual_artifact_index(agent_history),
+        next_session_visual_artifact_index(fallback_agent_history or []),
+    )
+
+
+def _should_load_previous_visual_history(
+    message: Any,
+    *,
+    current_attachment_paths: Optional[List[str]] = None,
+) -> bool:
+    """Load durable history for visual references and G-label continuity."""
+    from agent.visual.session_references import prompt_requests_visual_reference_reuse
+    from tools.story_video_provider_guard import explicit_visual_agent_request_detected
+
+    del current_attachment_paths  # Attachments affect reference priority, not label continuity.
+    return bool(
+        prompt_requests_visual_reference_reuse(message)
+        or explicit_visual_agent_request_detected(message)
+    )
 
 
 def _visual_reference_context_for_turn(
@@ -1722,17 +1756,26 @@ def _visual_reference_context_for_turn(
             agent_history,
             limit=16,
         )
-    if not references and not historical and fallback_agent_history:
+    named_rollover_reference = bool(
+        re.search(r"(?<![A-Za-z0-9])G\s*\d+\b", operator_request, re.IGNORECASE)
+    )
+    if fallback_agent_history and (not references or named_rollover_reference):
         if requests_original:
-            historical = collect_recent_original_visual_reference_entries(
+            fallback_historical = collect_recent_original_visual_reference_entries(
                 fallback_agent_history,
                 limit=16,
             )
         else:
-            historical = collect_recent_visual_reference_entries(
+            fallback_historical = collect_recent_visual_reference_entries(
                 fallback_agent_history,
                 limit=16,
             )
+        historical_uris = {str(entry.get("uri") or "") for entry in historical}
+        historical.extend(
+            entry
+            for entry in fallback_historical
+            if str(entry.get("uri") or "") not in historical_uris
+        )
     historical = filter_visual_reference_entries_for_prompt(
         historical,
         operator_request,
@@ -19401,15 +19444,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
                 _fallback_visual_history: List[Dict[str, Any]] = []
                 try:
-                    from agent.visual.session_references import (
-                        prompt_requests_visual_reference_reuse,
-                    )
                     from tools.story_video_provider_guard import (
                         current_operator_request_text,
                     )
 
-                    if not _native_imgs and prompt_requests_visual_reference_reuse(
-                        current_operator_request_text(_run_message)
+                    _operator_request = current_operator_request_text(_run_message)
+                    if _should_load_previous_visual_history(
+                        _operator_request,
+                        current_attachment_paths=_native_imgs,
                     ):
                         _fallback_visual_history = (
                             self.session_store.load_previous_transcript_for_session_key(
@@ -19432,6 +19474,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     agent,
                     _api_run_message,
                     visual_references=_visual_references,
+                    visual_artifact_start_index=_visual_artifact_start_index_for_turn(
+                        agent_history,
+                        _fallback_visual_history,
+                    ),
                     conversation_kwargs=_conversation_kwargs,
                 )
             finally:

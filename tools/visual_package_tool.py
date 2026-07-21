@@ -967,6 +967,17 @@ def _handle_visual_package_generate(args: dict[str, Any], **_kw: Any) -> str:
     try:
         _deadline_checkpoint("request_start")
         payload = _visual_package_generate(args, prompt=prompt)
+        if isinstance(payload, dict) and payload.get("success") is True:
+            from agent.visual.session_references import (
+                label_visual_payload_images,
+                normalise_visual_reference_paths,
+            )
+            from gateway.session_context import reserve_visual_artifact_indices
+
+            image_count = len(normalise_visual_reference_paths(payload.get("images")))
+            if image_count and not payload.get("session_visual_artifacts"):
+                start_index = reserve_visual_artifact_indices(image_count)
+                label_visual_payload_images(payload, start_index=start_index)
         return json.dumps(payload, ensure_ascii=False)
     except _VisualPackageDeadlineExceeded as exc:
         return json.dumps(
@@ -3157,6 +3168,14 @@ def _single_candidate_generation_prompt(
             "non-role-locked details such as lighting, background treatment, and rendering finish."
         )
         pose_variation_requested = False
+    explicit_action_constraint = _prompt_has_explicit_action_constraint(singular)
+    if explicit_action_constraint:
+        directive += (
+            " Preserve the user's explicit action constraint exactly across every candidate; "
+            "vary camera position, framing, lighting, expression, or background without changing "
+            "the requested limb positions or body action."
+        )
+        pose_variation_requested = False
     if pose_variation_requested is None:
         pose_variation_requested = bool(
             re.search(r"\bposes?\b|姿勢|姿势|動作|动作", singular, re.IGNORECASE)
@@ -3175,6 +3194,21 @@ def _single_candidate_generation_prompt(
     if "pose geometry from the user's pose/composition reference" in singular:
         return f"{singular}\n\n{directive}".strip()
     return f"{directive}\n\n{singular}".strip()
+
+
+def _prompt_has_explicit_action_constraint(prompt: str) -> bool:
+    text = str(prompt or "")
+    return bool(
+        re.search(
+            r"(?:試試|试试|改成|換成|换成)\s*[^，。；;\n]{2,60}?(?:動作|动作|姿勢|姿势)"
+            r"|(?:兩|两|雙|双|一|單|单|左|右)(?:隻|只)?(?:手|臂)[^，。；;\n]{0,30}"
+            r"(?:舉|举|抬|伸|彎|弯|交叉|扶|撐|撑)"
+            r"|\b(?:both|one|left|right)\s+(?:hands?|arms?)\b[^.;\n]{0,50}"
+            r"\b(?:raise|lift|extend|cross|support|touch)",
+            text,
+            re.IGNORECASE,
+        )
+    )
 
 
 def _reference_binding_locks_identity(reference_binding: dict[str, Any] | None) -> bool:
@@ -5802,6 +5836,11 @@ def _score_candidates(
             request_context={
                 "has_reference_image": has_reference_image,
                 "category": request_category,
+                **(
+                    {"visual_intent_contract": candidate["visual_intent_contract"]}
+                    if isinstance(candidate.get("visual_intent_contract"), dict)
+                    else {}
+                ),
                 **({"reference_binding": _sanitized_reference_binding(reference_binding)} if reference_binding else {}),
             },
             recent_artifact_hashes=recent_hashes,

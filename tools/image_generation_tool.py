@@ -981,6 +981,7 @@ def _route_visual_image_to_package(
         "visual_request_id": package_payload.get("visual_request_id"),
         "package_status": package_payload.get("package_status"),
         "delivery_metadata": package_payload.get("delivery_metadata"),
+        "session_visual_artifacts": package_payload.get("session_visual_artifacts"),
     }
 
 
@@ -1202,6 +1203,11 @@ def image_generate_tool(
             "image": formatted_images[0]["url"] if formatted_images else None,
             "modality": modality,
         }
+        from agent.visual.session_references import label_visual_payload_images
+        from gateway.session_context import reserve_visual_artifact_indices
+
+        start_index = reserve_visual_artifact_indices(1)
+        label_visual_payload_images(response_data, start_index=start_index)
 
         debug_call_data["success"] = True
         debug_call_data["images_generated"] = len(formatted_images)

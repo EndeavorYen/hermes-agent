@@ -45,6 +45,8 @@ import abc
 import base64
 import datetime
 import logging
+import re
+import shutil
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -54,6 +56,9 @@ logger = logging.getLogger(__name__)
 
 VALID_ASPECT_RATIOS: Tuple[str, ...] = ("landscape", "square", "portrait")
 DEFAULT_ASPECT_RATIO = "landscape"
+_UNIQUE_IMAGE_FILENAME_RE = re.compile(
+    r"_\d{8}(?:T|_)\d{6}(?:Z)?_[0-9a-fA-F]{8,}\.[A-Za-z0-9]+$"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -402,6 +407,11 @@ def success_response(
     actually hit, useful for diagnostics. Callers that need to pass through
     additional backend-specific fields can supply ``extra``.
     """
+    image = _stage_unique_local_image_name(
+        image,
+        provider=provider,
+        model=model,
+    )
     payload: Dict[str, Any] = {
         "success": True,
         "image": image,
@@ -415,6 +425,53 @@ def success_response(
         for k, v in extra.items():
             payload.setdefault(k, v)
     return payload
+
+
+def _stage_unique_local_image_name(
+    image: str,
+    *,
+    provider: str,
+    model: str,
+) -> str:
+    """Give generic provider files a stable, collision-safe delivery name."""
+    value = str(image or "").strip()
+    if not value or value.lower().startswith(("http://", "https://", "data:")):
+        return value
+    source = Path(value).expanduser()
+    if not source.is_file():
+        return value
+    try:
+        from hermes_constants import get_hermes_home
+
+        provider_slug = _filename_slug(provider or "image-provider")
+        model_slug = _filename_slug(model or "image-model")
+        if (
+            source.name.startswith(f"{provider_slug}-{model_slug}_")
+            and _UNIQUE_IMAGE_FILENAME_RE.search(source.name)
+        ):
+            return str(source.resolve())
+        hermes_home = get_hermes_home().resolve()
+        try:
+            source.resolve().relative_to(hermes_home)
+            output_dir = source.parent
+        except ValueError:
+            output_dir = hermes_home / "visual" / "outputs" / provider_slug
+        output_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        suffix = source.suffix.lower() or ".png"
+        destination = output_dir / (
+            f"{provider_slug}-{model_slug}_{timestamp}_{uuid.uuid4().hex[:8]}{suffix}"
+        )
+        shutil.copy2(source, destination)
+        return str(destination.resolve())
+    except Exception as exc:
+        logger.warning("Could not stage unique image delivery filename: %s", exc)
+        return value
+
+
+def _filename_slug(value: Any) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
+    return slug or "image"
 
 
 def error_response(

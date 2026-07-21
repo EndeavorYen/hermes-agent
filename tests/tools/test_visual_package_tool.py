@@ -1227,6 +1227,35 @@ def test_visual_package_preserves_bound_pose_across_candidate_fanout():
     assert "different camera height and limb layout" not in result
 
 
+def test_visual_package_preserves_explicit_user_action_across_candidate_fanout():
+    from tools import visual_package_tool
+
+    result = visual_package_tool._single_candidate_generation_prompt(
+        "基於這個動作，試試兩隻手都舉起來的動作，更性感一些",
+        candidate_index=2,
+        candidate_budget=4,
+        pose_variation_requested=True,
+    )
+
+    assert "Preserve the user's explicit action constraint exactly" in result
+    assert "Pose diversity lane" not in result
+    assert "one hand touching" not in result
+
+
+def test_single_candidate_prompt_preserves_bare_action_without_pose_flag():
+    from tools import visual_package_tool
+
+    result = visual_package_tool._single_candidate_generation_prompt(
+        "兩隻手都舉起來，產出 4 張",
+        candidate_index=2,
+        candidate_budget=4,
+        pose_variation_requested=None,
+    )
+
+    assert "Preserve the user's explicit action constraint exactly" in result
+    assert "Pose diversity lane" not in result
+
+
 def test_xai_quality_repair_priority_survives_long_prompt_compaction():
     from agent.visual.prompt_text import build_provider_facing_visual_prompt
     from tools import visual_package_tool
@@ -10464,3 +10493,32 @@ def test_ffmpeg_pass_checks_execution_deadline_before_subprocess(
 
 def _list_rows(ledger, table):
     return ledger._list(table)
+
+
+def test_visual_package_handler_assigns_session_labels(monkeypatch):
+    from gateway.session_context import (
+        reset_visual_artifact_index_context,
+        set_visual_artifact_index_context,
+    )
+    from tools import visual_package_tool
+
+    monkeypatch.setattr(
+        visual_package_tool,
+        "_visual_package_generate",
+        lambda args, *, prompt: {
+            "success": True,
+            "images": ["/tmp/a.jpg", "/tmp/b.jpg"],
+        },
+    )
+    token = set_visual_artifact_index_context(5)
+    try:
+        payload = json.loads(
+            visual_package_tool._handle_visual_package_generate({"prompt": "make images"})
+        )
+    finally:
+        reset_visual_artifact_index_context(token)
+
+    assert [item["label"] for item in payload["session_visual_artifacts"]] == [
+        "G5",
+        "G6",
+    ]

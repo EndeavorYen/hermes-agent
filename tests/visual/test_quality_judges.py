@@ -651,3 +651,31 @@ def test_quality_judge_surfaces_visual_contract_defect_codes():
         "required_detail_missing",
         "forbidden_detail_present",
     ]
+
+
+def test_quality_judge_ignores_required_detail_defect_when_contract_lists_none():
+    from agent.visual.judges.quality import judge_visual_quality
+
+    result = judge_visual_quality(
+        {
+            "artifact_id": "false-required-detail",
+            "kind": "image",
+            "hard_gate": {"passed": True, "delivery_possible": True},
+            "scores": {"resolution": 0.9, "aspect_match": 0.9, "final_score": 0.9},
+        },
+        request_context={
+            "category": "portrait",
+            "visual_intent_contract": {
+                "observable_action": "兩隻手都舉起來",
+                "required_details": [],
+            },
+        },
+        vision_observation={
+            "visual_appeal": 0.9,
+            "composition": 0.9,
+            "confidence": 0.9,
+            "artifact_defects": ["required_detail_missing"],
+        },
+    )
+
+    assert "required_detail_missing" not in result["quality_issues"]
