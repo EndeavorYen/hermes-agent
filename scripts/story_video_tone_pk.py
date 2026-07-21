@@ -1986,36 +1986,103 @@ def _write_fresh_short_replan_scratch_variant(
     ):
         raise TonePkError(f"{variant} scratch scope does not match affected pairs")
     if scratch.exists():
-        existing_ledger, _binding, _story_mode = _validate_source_binding(scratch)
-        existing_rows = existing_ledger.get("utterances")
-        if existing_rows != filtered:
-            if (scratch / "manifests" / "narration_manifest.json").is_file():
-                raise TonePkError(f"fresh short-replan scratch drifted: {variant}")
-            if not isinstance(existing_rows, list):
-                raise TonePkError(f"fresh short-replan scratch drifted: {variant}")
-            migrated_rows = copy.deepcopy(existing_rows)
-            migrated_rows.sort(
-                key=lambda row: int(row.get("source_order") or row.get("order") or 0)
+        manifest_exists = (
+            scratch / "manifests" / "narration_manifest.json"
+        ).is_file()
+        if manifest_exists:
+            existing_ledger, _binding, _story_mode = _validate_source_binding(
+                scratch
             )
-            for scratch_order, row in enumerate(migrated_rows, start=1):
-                row["source_order"] = int(
-                    row.get("source_order") or row.get("order") or 0
+            if existing_ledger.get("utterances") != filtered:
+                raise TonePkError(f"fresh short-replan scratch drifted: {variant}")
+            return scratch
+        ledger_path = scratch / "dialogue_ledger.json"
+        binding_path = scratch / "voice_cast_binding.json"
+        story_mode_path = scratch / "story_mode.json"
+        cast_path = scratch / "cast_bible.json"
+        existing_ledger = _load_json(
+            ledger_path,
+            label=f"{variant} legacy scratch dialogue ledger",
+        )
+        binding = _load_json(
+            binding_path,
+            label=f"{variant} legacy scratch voice cast binding",
+        )
+        scratch_story = _load_json(
+            story_mode_path,
+            label=f"{variant} legacy scratch story mode",
+        )
+        source_story = _load_json(
+            source / "story_mode.json",
+            label=f"{variant} source story mode",
+        )
+        source_binding = _load_json(
+            source / "voice_cast_binding.json",
+            label=f"{variant} source voice cast binding",
+        )
+        if (
+            binding.get("status") != "locked"
+            or binding.get("dialogue_ledger_sha256") != _sha256(ledger_path)
+            or binding.get("story_mode_sha256") != _sha256(story_mode_path)
+            or Path(str(binding.get("dialogue_ledger_path") or "")).resolve()
+            != ledger_path.resolve()
+            or Path(str(binding.get("story_mode_path") or "")).resolve()
+            != story_mode_path.resolve()
+            or scratch_story != source_story
+        ):
+            raise TonePkError(f"fresh short-replan scratch drifted: {variant}")
+        if cast_path.is_file():
+            if (
+                binding.get("cast_bible_sha256") != _sha256(cast_path)
+                or Path(str(binding.get("cast_bible_path") or "")).resolve()
+                != cast_path.resolve()
+                or _load_json(cast_path, label=f"{variant} legacy scratch cast")
+                != _load_json(
+                    source / "cast_bible.json",
+                    label=f"{variant} source cast",
                 )
-                row["order"] = scratch_order
-            if migrated_rows != filtered:
+            ):
                 raise TonePkError(f"fresh short-replan scratch drifted: {variant}")
-            existing_ledger["utterances"] = filtered
-            ledger_path = scratch / "dialogue_ledger.json"
-            _write_json(ledger_path, existing_ledger)
-            binding_path = scratch / "voice_cast_binding.json"
-            binding = _load_json(
-                binding_path,
-                label=f"{variant} scratch voice cast binding",
+        binding_location_fields = {
+            "dialogue_ledger_path",
+            "dialogue_ledger_sha256",
+            "story_mode_path",
+            "story_mode_sha256",
+            "cast_bible_path",
+            "cast_bible_sha256",
+        }
+        if {
+            key: value
+            for key, value in binding.items()
+            if key not in binding_location_fields
+        } != {
+            key: value
+            for key, value in source_binding.items()
+            if key not in binding_location_fields
+        }:
+            raise TonePkError(f"fresh short-replan scratch drifted: {variant}")
+        expected_ledger = copy.deepcopy(ledger)
+        expected_ledger["utterances"] = filtered
+        existing_rows = existing_ledger.get("utterances")
+        if not isinstance(existing_rows, list):
+            raise TonePkError(f"fresh short-replan scratch drifted: {variant}")
+        migrated_rows = copy.deepcopy(existing_rows)
+        migrated_rows.sort(
+            key=lambda row: int(row.get("source_order") or row.get("order") or 0)
+        )
+        for scratch_order, row in enumerate(migrated_rows, start=1):
+            row["source_order"] = int(
+                row.get("source_order") or row.get("order") or 0
             )
-            binding["dialogue_ledger_path"] = str(ledger_path)
-            binding["dialogue_ledger_sha256"] = _sha256(ledger_path)
-            _write_json(binding_path, binding)
-            _validate_source_binding(scratch)
+            row["order"] = scratch_order
+        existing_ledger["utterances"] = migrated_rows
+        if existing_ledger != expected_ledger:
+            raise TonePkError(f"fresh short-replan scratch drifted: {variant}")
+        _write_json(ledger_path, expected_ledger)
+        binding["dialogue_ledger_path"] = str(ledger_path)
+        binding["dialogue_ledger_sha256"] = _sha256(ledger_path)
+        _write_json(binding_path, binding)
+        _validate_source_binding(scratch)
         return scratch
     ledger["utterances"] = filtered
     story_mode = _load_json(source / "story_mode.json", label=f"{variant} story mode")
