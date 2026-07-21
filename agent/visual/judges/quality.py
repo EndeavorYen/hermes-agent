@@ -7,7 +7,7 @@ from agent.visual.judges.vision_observation import normalize_vision_observation
 
 VERSION = "visual_quality_judge.v0.1"
 ROLE_ADHERENCE_THRESHOLD = 0.5
-IDENTITY_LOCK_THRESHOLD = 0.9
+IDENTITY_LOCK_THRESHOLD = 0.85
 
 
 def judge_visual_quality(

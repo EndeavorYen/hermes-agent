@@ -262,6 +262,37 @@ def test_quality_judge_blocks_portrait_edit_anchor_below_identity_lock_threshold
     assert result["scores"]["reference_adherence"] <= 0.82
 
 
+def test_quality_judge_allows_high_confidence_portrait_identity_match():
+    from agent.visual.judges.quality import judge_visual_quality
+
+    result = judge_visual_quality(
+        {
+            "artifact_id": "var_demo",
+            "kind": "image",
+            "hard_gate": {"passed": True, "delivery_possible": True},
+            "scores": {"aspect_match": 0.9, "resolution": 0.8, "final_score": 0.8},
+        },
+        request_context={
+            "has_reference_image": True,
+            "category": "portrait",
+            "reference_binding": {
+                "reference_order": [{"index": 1, "role_hint": "edit_anchor"}]
+            },
+        },
+        vision_observation={
+            "reference_adherence": 0.87,
+            "edit_anchor_adherence": 0.92,
+            "character_identity_adherence": 0.87,
+            "visual_appeal": 0.92,
+            "composition": 0.94,
+            "confidence": 0.9,
+        },
+    )
+
+    assert "reference_identity_drift" not in result["quality_issues"]
+    assert result["scores"]["reference_adherence"] == 0.87
+
+
 def test_quality_judge_flags_low_character_identity_adherence():
     from agent.visual.judges.quality import judge_visual_quality
 
