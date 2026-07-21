@@ -24,6 +24,121 @@ class TonePkError(RuntimeError):
     pass
 
 
+SPOKEN_TEXT_NORMALIZATION = "bounded_ellipsis_v1"
+_DISPLAY_PAUSE_RE = re.compile(r"(?:\.{3,}|…{2,}|⋯{2,}|—{1,2})")
+_CLOSING_MARKS = "」』”’\"'】》〉）]"
+_TERMINAL_MARKS = "。！？!?"
+
+
+def normalize_synthesis_spoken_text(text: str) -> str:
+    """Apply the generator's exact, versioned display-pause normalization."""
+
+    source = str(text or "")
+
+    def replace(match: re.Match[str]) -> str:
+        tail = source[match.end() :].lstrip()
+        after_closers = tail.lstrip(_CLOSING_MARKS)
+        if not after_closers:
+            return "。"
+        if after_closers[0] in _TERMINAL_MARKS:
+            return ""
+        return "，"
+
+    return _DISPLAY_PAUSE_RE.sub(replace, source)
+
+
+def _trusted_pronunciation_contract(
+    manifest: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+    report_path = Path(str(manifest.get("pronunciation_qc_report") or ""))
+    if not report_path.is_file():
+        return [], [], []
+    report = _load_json(report_path, label="pronunciation QC report")
+    if report.get("schema") != "story_video_pronunciation_qc_v3":
+        raise TonePkError("pronunciation QC schema is unsupported")
+    sources = report.get("lexicon_sources")
+    if not isinstance(sources, list) or any(
+        not isinstance(value, str) or not value for value in sources
+    ):
+        raise TonePkError("pronunciation lexicon sources are invalid")
+    entries, source_hashes = _load_trusted_pronunciation_sources(sources)
+    return entries, list(sources), source_hashes
+
+
+def _load_trusted_pronunciation_sources(
+    sources: list[str],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    merged: dict[str, dict[str, Any]] = {}
+    source_hashes: list[str] = []
+    for source_value in sources:
+        source = Path(source_value)
+        payload = _load_json(source, label="pronunciation lexicon")
+        if (
+            payload.get("schema") != "story_video_pronunciation_lexicon_v1"
+            or payload.get("language") != "zh-TW"
+            or (
+                source.name == "pronunciation_lexicon.json"
+                and str(payload.get("review_status") or "").upper() != "PASS"
+            )
+        ):
+            raise TonePkError("pronunciation lexicon contract is invalid")
+        source_hashes.append(_sha256(source))
+        rows = payload.get("entries")
+        if not isinstance(rows, list):
+            raise TonePkError("pronunciation lexicon entries are invalid")
+        for row in rows:
+            if not isinstance(row, dict):
+                raise TonePkError("pronunciation lexicon entry is invalid")
+            display = str(row.get("display") or "").strip()
+            spoken = str(row.get("spoken") or "").strip()
+            if not display or not spoken:
+                raise TonePkError("pronunciation lexicon entry is incomplete")
+            entry: dict[str, Any] = {
+                "display": display,
+                "spoken": spoken,
+                "expected_pinyin": str(row.get("expected_pinyin") or "").strip(),
+                "source": str(row.get("source") or "").strip() or source.name,
+                "risk": str(row.get("risk") or "").strip().lower(),
+            }
+            accepted = row.get("accepted_pinyin_variants") or []
+            if not isinstance(accepted, list) or any(
+                not isinstance(value, str) or not value.strip()
+                for value in accepted
+            ):
+                raise TonePkError("pronunciation accepted variants are invalid")
+            if accepted:
+                entry["accepted_pinyin_variants"] = [
+                    value.strip() for value in accepted
+                ]
+            merged[display] = entry
+    ordered = sorted(merged.values(), key=lambda entry: len(entry["display"]), reverse=True)
+    return ordered, source_hashes
+
+
+def _compile_pronunciation_contract(
+    text: str,
+    entries: list[dict[str, Any]],
+) -> tuple[str, list[dict[str, Any]]]:
+    applicable = [entry for entry in entries if entry["display"] in text]
+    if not applicable:
+        return text, []
+    by_display = {entry["display"]: entry for entry in applicable}
+    pattern = re.compile(
+        "|".join(re.escape(value) for value in sorted(by_display, key=len, reverse=True))
+    )
+    applied: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def replace(match: re.Match[str]) -> str:
+        entry = by_display[match.group(0)]
+        if entry["display"] not in seen:
+            applied.append(entry)
+            seen.add(entry["display"])
+        return str(entry["spoken"])
+
+    return pattern.sub(replace, text), applied
+
+
 def stable_pair_seed(run_id: str, utterance_id: str, chunk_index: int) -> int:
     payload = f"{run_id}\0{utterance_id}\0{chunk_index}".encode("utf-8")
     return int.from_bytes(hashlib.sha256(payload).digest()[:4], "big") & 0x7FFFFFFF
@@ -455,6 +570,12 @@ def prepare_project(
 
 _PAIR_EQUAL_FIELDS = (
     ("spoken_text", "spoken text"),
+    ("spoken_text_normalization", "spoken text normalization"),
+    ("source_spoken_text_sha256", "source spoken text hash"),
+    ("canonical_spoken_chunks", "canonical spoken chunk"),
+    ("canonical_spoken_text", "canonical spoken text"),
+    ("canonical_spoken_text_sha256", "canonical spoken text hash"),
+    ("pronunciation_lexicon_sha256s", "pronunciation lexicon hash"),
     ("voice_id", "voice"),
     ("engine", "engine"),
     ("model_id", "model"),
@@ -501,6 +622,46 @@ def validate_pair_evidence(pair: dict[str, Any]) -> dict[str, Any]:
         or len(seeds) != len(chunks)
     ):
         raise TonePkError(f"pair {pair_id} canonical voice chunk evidence is invalid")
+    for take in (neutral, expressive):
+        lexicon_sources = take.get("pronunciation_lexicon_sources")
+        if not isinstance(lexicon_sources, list) or any(
+            not isinstance(value, str) or not value for value in lexicon_sources
+        ):
+            raise TonePkError(
+                f"pair {pair_id} pronunciation lexicon sources are invalid"
+            )
+        pronunciation_entries, lexicon_hashes = _load_trusted_pronunciation_sources(
+            lexicon_sources
+        )
+        expected_spoken_chunks = []
+        for chunk in chunks:
+            pronunciation_text, _ = _compile_pronunciation_contract(
+                chunk,
+                pronunciation_entries,
+            )
+            expected_spoken_chunks.append(
+                normalize_synthesis_spoken_text(pronunciation_text)
+            )
+        spoken_chunks = take["canonical_spoken_chunks"]
+        if not isinstance(spoken_chunks, list):
+            raise TonePkError(
+                f"pair {pair_id} canonical spoken text evidence is invalid"
+            )
+        canonical_spoken_text = "".join(spoken_chunks)
+        if (
+            len(spoken_chunks) != len(chunks)
+            or spoken_chunks != expected_spoken_chunks
+            or take["spoken_text_normalization"] != SPOKEN_TEXT_NORMALIZATION
+            or take["source_spoken_text_sha256"]
+            != _text_sha256(take["spoken_text"])
+            or take["canonical_spoken_text"] != canonical_spoken_text
+            or take["canonical_spoken_text_sha256"]
+            != _text_sha256(canonical_spoken_text)
+            or take["pronunciation_lexicon_sha256s"] != lexicon_hashes
+        ):
+            raise TonePkError(
+                f"pair {pair_id} canonical spoken text evidence is invalid"
+            )
     if neutral.get("variant") != "neutral" or expressive.get("variant") != "expressive":
         raise TonePkError(f"pair {pair_id} variant order is invalid")
     if neutral.get("adapter_status") != "neutral_noop":
@@ -961,6 +1122,9 @@ def _ingest_generated_variant(
         utterance_id = str(chunk.get("utterance_id") or "")
         chunks_by_utterance.setdefault(utterance_id, []).append(chunk)
     bindings = _variant_binding_by_speaker(variant_project)
+    pronunciation_entries, pronunciation_lexicon_sources, pronunciation_lexicon_sha256s = (
+        _trusted_pronunciation_contract(manifest)
+    )
     pairs = state.get("pairs")
     if not isinstance(pairs, list):
         raise TonePkError("tone PK manifest has no pairs")
@@ -978,13 +1142,54 @@ def _ingest_generated_variant(
         expected_chunks = take.get("canonical_voice_chunks")
         expected_seeds = take.get("generation_seeds")
         observed_chunks = [str(chunk.get("display_text") or "") for chunk in chunks]
+        observed_spoken_chunks = [
+            str(chunk.get("spoken_text") or "") for chunk in chunks
+        ]
         observed_seeds = [chunk.get("generation_seed") for chunk in chunks]
         if observed_chunks != expected_chunks or observed_seeds != expected_seeds:
             raise TonePkError(f"generator changed chunks or seeds for {utterance_id}")
-        if "".join(str(chunk.get("spoken_text") or "") for chunk in chunks) != take.get(
-            "spoken_text"
+        canonical_spoken_chunks: list[str] = []
+        for raw_chunk, generated_chunk in zip(
+            observed_chunks,
+            chunks,
+            strict=True,
+        ):
+            pronunciation_text, applied_entries = _compile_pronunciation_contract(
+                raw_chunk,
+                pronunciation_entries,
+            )
+            if (
+                generated_chunk.get("pronunciation_entries") or []
+            ) != applied_entries or (
+                generated_chunk.get("pronunciation_rules") or []
+            ) != [entry["display"] for entry in applied_entries]:
+                raise TonePkError(
+                    f"generator pronunciation evidence changed for {utterance_id}"
+                )
+            canonical_spoken_chunks.append(
+                normalize_synthesis_spoken_text(pronunciation_text)
+            )
+        canonical_spoken_text = "".join(canonical_spoken_chunks)
+        if (
+            manifest.get("spoken_text_normalization")
+            != SPOKEN_TEXT_NORMALIZATION
+            or observed_spoken_chunks != canonical_spoken_chunks
         ):
             raise TonePkError(f"generator changed spoken text for {utterance_id}")
+        declared_spoken_evidence = {
+            "spoken_text_normalization": SPOKEN_TEXT_NORMALIZATION,
+            "source_spoken_text_sha256": _text_sha256(str(take.get("spoken_text") or "")),
+            "canonical_spoken_chunks": canonical_spoken_chunks,
+            "canonical_spoken_text": canonical_spoken_text,
+            "canonical_spoken_text_sha256": _text_sha256(canonical_spoken_text),
+            "pronunciation_lexicon_sources": pronunciation_lexicon_sources,
+            "pronunciation_lexicon_sha256s": pronunciation_lexicon_sha256s,
+        }
+        for field, expected in declared_spoken_evidence.items():
+            if field in take and take[field] != expected:
+                raise TonePkError(
+                    f"planned {field} changed for {utterance_id}"
+                )
         for field in ("voice_id", "engine", "profile_id", "profile_sha256"):
             if any(str(chunk.get(field) or "") != str(take.get(field) or "") for chunk in chunks):
                 raise TonePkError(f"generator changed {field} for {utterance_id}")
@@ -1049,6 +1254,7 @@ def _ingest_generated_variant(
         _assemble_take_audio(chunks, source_audio, runner)
         take.update(
             {
+                **declared_spoken_evidence,
                 "model_id": str(manifest.get("model") or ""),
                 "engine_binding": copy.deepcopy(
                     speaker_binding.get("engine_binding") or {}
