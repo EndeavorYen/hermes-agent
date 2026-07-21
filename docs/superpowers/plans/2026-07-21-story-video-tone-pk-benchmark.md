@@ -215,7 +215,7 @@ Add `seed_setter: Callable[[int], Any] | None = None` to the existing function
 signature. Immediately after the optional MLX dependency wiring, insert:
 
 ```python
-if seed_setter is None:
+if seed_setter is None and any("generation_seed" in row for row in segments):
     import mlx.core as mx
 
     seed_setter = mx.random.seed
@@ -227,12 +227,17 @@ insert:
 
 ```python
 seed = segment.get("generation_seed")
-if type(seed) is not int or not 0 <= seed <= 0x7FFFFFFF:
-    raise ValueError("cast generation seed is invalid")
-seed_setter(seed)
+if seed is not None:
+    if type(seed) is not int or not 0 <= seed <= 0x7FFFFFFF:
+        raise ValueError("cast generation seed is invalid")
+    if seed_setter is None:
+        raise RuntimeError("cast generation seed setter is unavailable")
+    seed_setter(seed)
 ```
 
-Pass `generation_seed` from each manifest row into the synthesis segment.
+Pass `generation_seed` from each benchmark manifest row into the synthesis
+segment. Existing non-benchmark callers without this field retain their
+current behavior and must not import MLX solely for seed handling.
 
 - [ ] **Step 4: Honor the supplied canonical chunk plan fail-closed**
 
@@ -443,6 +448,7 @@ Expected: no private project file, annotation, text, media, or provider output a
 
 ```bash
 env HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+  PYTHONPATH=/Users/simon/.hermes/hermes-agent/.worktrees/feat-story-video-tone-pk-benchmark \
   /Users/simon/.hermes/.venvs/mlx-audio/bin/python \
   /Users/simon/.hermes/hermes-agent/.worktrees/feat-story-video-tone-pk-benchmark/scripts/story_video_tone_pk.py generate \
   --project /Users/simon/.hermes/story_videos/tone-pk-jiamei-56-20260721 \
@@ -457,6 +463,7 @@ restart skips hash-matching green takes.
 
 ```bash
 env HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+  PYTHONPATH=/Users/simon/.hermes/hermes-agent/.worktrees/feat-story-video-tone-pk-benchmark \
   /Users/simon/.hermes/.venvs/mlx-audio/bin/python \
   /Users/simon/.hermes/hermes-agent/.worktrees/feat-story-video-tone-pk-benchmark/scripts/story_video_tone_pk.py qc \
   --project /Users/simon/.hermes/story_videos/tone-pk-jiamei-56-20260721 \
