@@ -1335,24 +1335,36 @@ def _ingest_generated_variant(
             lineage for lineage in chunk_lineages if lineage["requested"]
         ]
         if manifest.get("generation_mode") == "selective_repair":
-            if requested_chunk_lineages and len(requested_chunk_lineages) != len(chunks):
+            prior_hashes = take.get("source_chunk_audio_sha256s")
+            prior_evidence = take.get("candidate_evidence")
+            if (
+                not isinstance(prior_hashes, list)
+                or len(prior_hashes) != len(chunks)
+                or not isinstance(prior_evidence, list)
+                or len(prior_evidence) != len(chunks)
+            ):
                 raise TonePkError(
-                    f"generator selectively repaired a partial utterance {utterance_id}"
+                    f"generator lacks unaffected evidence for {utterance_id}"
                 )
-            if not requested_chunk_lineages:
-                prior_hashes = take.get("source_chunk_audio_sha256s")
-                prior_evidence = take.get("candidate_evidence")
+            for index, (chunk, lineage) in enumerate(
+                zip(chunks, chunk_lineages, strict=True)
+            ):
+                if lineage["requested"]:
+                    continue
+                prior_row = prior_evidence[index]
                 if (
-                    not isinstance(prior_hashes, list)
-                    or prior_hashes
-                    != [str(chunk.get("audio_sha256") or "") for chunk in chunks]
-                    or not isinstance(prior_evidence, list)
-                    or [row.get("candidate_count") for row in prior_evidence]
-                    != [lineage["cumulative_candidate_count"] for lineage in chunk_lineages]
+                    prior_hashes[index] != str(chunk.get("audio_sha256") or "")
+                    or prior_row.get("voice_chunk_id")
+                    != chunk.get("voice_chunk_id")
+                    or prior_row.get("candidate_count")
+                    != lineage["cumulative_candidate_count"]
+                    or prior_row.get("selected_candidate")
+                    != chunk.get("selected_candidate")
                 ):
                     raise TonePkError(
                         f"generator changed unaffected evidence for {utterance_id}"
                     )
+            if not requested_chunk_lineages:
                 continue
         canonical_spoken_chunks: list[str] = []
         for raw_chunk, generated_chunk in zip(
