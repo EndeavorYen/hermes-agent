@@ -1430,6 +1430,71 @@ def test_fresh_short_replan_generation_filters_provider_scope_and_ingests_ab(
         assert scratch_manifest.is_file()
 
 
+def test_short_replan_scratch_reindexes_noncontiguous_source_orders(
+    tmp_path: Path,
+) -> None:
+    source_contract = sanitized_source_project(tmp_path, utterance_count=2)
+    source_ledger_path = source_contract / "dialogue_ledger.json"
+    source_ledger = json.loads(source_ledger_path.read_text(encoding="utf-8"))
+    third = copy.deepcopy(source_ledger["utterances"][1])
+    third.update({"order": 3, "utterance_id": "U0003", "shot_id": "S03"})
+    source_ledger["utterances"].append(third)
+    _write_json(source_ledger_path, source_ledger)
+    source_binding_path = source_contract / "voice_cast_binding.json"
+    source_binding = json.loads(source_binding_path.read_text(encoding="utf-8"))
+    source_binding["dialogue_ledger_sha256"] = _sha256(source_ledger_path)
+    _write_json(source_binding_path, source_binding)
+    annotations = _annotations()
+    annotations["U0003"] = expressive_annotation()
+    annotations_path = tmp_path / "annotations-three.json"
+    _write_json(annotations_path, annotations)
+    source = tmp_path / "pk-three"
+    tone_pk.prepare_project(
+        source_project=source_contract,
+        output_project=source,
+        run_id="tone-pk-three",
+        annotations_path=annotations_path,
+        expected_utterance_count=3,
+    )
+    plan = json.loads(
+        (source / "manifests/tone_pk_plan.json").read_text(encoding="utf-8")
+    )
+    pairs = copy.deepcopy(plan["pairs"])
+    for index, pair in enumerate(pairs):
+        for variant in ("neutral", "expressive"):
+            pair[variant]["qc_status"] = "FAIL" if index in {0, 2} else "PASS"
+    tone_pk.write_checkpoint(source, pairs, run_id=plan["run_id"])
+    output = tmp_path / "short-v2-three"
+    tone_pk.replan_failed_pairs_short(
+        source_project=source,
+        output_project=output,
+        overrides=tone_pk.build_failed_short_chunk_overrides(source, max_chars=12),
+        max_chars=12,
+    )
+    master_before = json.loads(
+        (output / "variants/neutral/dialogue_ledger.json").read_text(encoding="utf-8")
+    )
+    affected_ids = {pairs[0]["utterance_id"], pairs[2]["utterance_id"]}
+
+    scratch = tone_pk._write_fresh_short_replan_scratch_variant(
+        output,
+        variant="neutral",
+        affected_utterance_ids=affected_ids,
+    )
+
+    scratch_ledger = json.loads(
+        (scratch / "dialogue_ledger.json").read_text(encoding="utf-8")
+    )
+    rows = scratch_ledger["utterances"]
+    assert [row["order"] for row in rows] == [1, 2]
+    assert [row["source_order"] for row in rows] == [1, 3]
+    assert {row["utterance_id"] for row in rows} == affected_ids
+    master_by_id = {row["utterance_id"]: row for row in master_before["utterances"]}
+    assert all(row["shot_id"] == master_by_id[row["utterance_id"]]["shot_id"] for row in rows)
+    assert [row["order"] for row in master_before["utterances"]] == [1, 2, 3]
+    assert tone_pk._validate_source_binding(scratch)
+
+
 def test_fresh_short_replan_rejects_invalid_scratch_audio_hash(
     tmp_path: Path,
 ) -> None:
