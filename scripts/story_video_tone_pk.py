@@ -1607,8 +1607,13 @@ def _ingest_generated_variant(
     runner: Callable[..., Any],
     accumulate_candidates: bool = False,
     reconcile_existing_source: bool = False,
+    variant_project_override: Path | None = None,
 ) -> int:
-    variant_project = project / "variants" / variant
+    variant_project = (
+        Path(variant_project_override)
+        if variant_project_override is not None
+        else project / "variants" / variant
+    )
     manifest = _load_json(
         variant_project / "manifests" / "narration_manifest.json",
         label=f"{variant} narration manifest",
@@ -1910,9 +1915,261 @@ def _ingest_generated_variant(
             project,
             pairs,
             run_id=str(state.get("run_id") or ""),
-            metadata={"generator_path": state.get("generator_path", "")},
+            metadata={
+                "generator_path": state.get("generator_path", ""),
+                **(
+                    {"replan_provenance": copy.deepcopy(state["replan_provenance"])}
+                    if isinstance(state.get("replan_provenance"), dict)
+                    else {}
+                ),
+            },
         )
     return ingested
+
+
+def _short_replan_affected_ids(state: dict[str, Any]) -> set[str]:
+    provenance = state.get("replan_provenance")
+    if not isinstance(provenance, dict):
+        return set()
+    if provenance.get("revision") != SHORT_REPLAN_REVISION:
+        raise TonePkError("short replan provenance revision is unsupported")
+    pair_ids = provenance.get("affected_pair_ids")
+    if (
+        not isinstance(pair_ids, list)
+        or not pair_ids
+        or any(not isinstance(value, str) or not value for value in pair_ids)
+        or len(set(pair_ids)) != len(pair_ids)
+    ):
+        raise TonePkError("short replan affected pair IDs are invalid")
+    budget = provenance.get("candidate_budget")
+    if budget != {"start": 1, "cap": 3}:
+        raise TonePkError("short replan candidate budget is invalid")
+    pairs = state.get("pairs")
+    if not isinstance(pairs, list):
+        raise TonePkError("short replan checkpoint has no pairs")
+    known = {
+        str(pair.get("pair_id") or "")
+        for pair in pairs
+        if isinstance(pair, dict) and str(pair.get("pair_id") or "")
+    }
+    if not set(pair_ids) <= known:
+        raise TonePkError("short replan affected pair IDs are unknown")
+    return set(pair_ids)
+
+
+def _write_fresh_short_replan_scratch_variant(
+    project: Path,
+    *,
+    variant: str,
+    affected_utterance_ids: set[str],
+) -> Path:
+    source = project / "variants" / variant
+    scratch = project / "scratch" / "short_replan_v2" / "variants" / variant
+    ledger = _load_json(source / "dialogue_ledger.json", label=f"{variant} ledger")
+    rows = ledger.get("utterances")
+    if not isinstance(rows, list):
+        raise TonePkError(f"{variant} dialogue ledger has no utterances")
+    filtered = [
+        copy.deepcopy(row)
+        for row in rows
+        if isinstance(row, dict)
+        and str(row.get("utterance_id") or "") in affected_utterance_ids
+    ]
+    if (
+        len(filtered) != len(affected_utterance_ids)
+        or {str(row.get("utterance_id") or "") for row in filtered}
+        != affected_utterance_ids
+    ):
+        raise TonePkError(f"{variant} scratch scope does not match affected pairs")
+    if scratch.exists():
+        existing_ledger, _binding, _story_mode = _validate_source_binding(scratch)
+        if existing_ledger.get("utterances") != filtered:
+            raise TonePkError(f"fresh short-replan scratch drifted: {variant}")
+        if (scratch / "manifests" / "narration_manifest.json").exists():
+            raise TonePkError(
+                f"fresh short-replan scratch already has generation evidence: {variant}"
+            )
+        return scratch
+    ledger["utterances"] = filtered
+    story_mode = _load_json(source / "story_mode.json", label=f"{variant} story mode")
+    binding = _load_json(
+        source / "voice_cast_binding.json",
+        label=f"{variant} voice cast binding",
+    )
+    story_mode_path = scratch / "story_mode.json"
+    ledger_path = scratch / "dialogue_ledger.json"
+    _write_json(story_mode_path, story_mode)
+    _write_json(ledger_path, ledger)
+    cast_source = source / "cast_bible.json"
+    cast_path = scratch / "cast_bible.json"
+    if cast_source.is_file():
+        _write_json(cast_path, _load_json(cast_source, label=f"{variant} cast bible"))
+    binding["story_mode_path"] = str(story_mode_path)
+    binding["story_mode_sha256"] = _sha256(story_mode_path)
+    binding["dialogue_ledger_path"] = str(ledger_path)
+    binding["dialogue_ledger_sha256"] = _sha256(ledger_path)
+    if cast_path.is_file():
+        binding["cast_bible_path"] = str(cast_path)
+        binding["cast_bible_sha256"] = _sha256(cast_path)
+    _write_json(scratch / "voice_cast_binding.json", binding)
+    lexicon_source = source / "pronunciation_lexicon.json"
+    if lexicon_source.is_file():
+        _write_json(
+            scratch / "pronunciation_lexicon.json",
+            _load_json(lexicon_source, label=f"{variant} pronunciation lexicon"),
+        )
+    _validate_source_binding(scratch)
+    return scratch
+
+
+def _validate_fresh_scratch_manifest(
+    scratch: Path,
+    *,
+    affected_utterance_ids: set[str],
+) -> dict[str, Any]:
+    manifest_path = scratch / "manifests" / "narration_manifest.json"
+    manifest = _load_json(manifest_path, label="fresh short-replan manifest")
+    chunks = _flatten_voice_chunks(manifest)
+    lineages = _validated_candidate_lineages(manifest, chunks)
+    observed_ids = {str(chunk.get("utterance_id") or "") for chunk in chunks}
+    if observed_ids != affected_utterance_ids:
+        raise TonePkError("fresh short-replan manifest scope differs from affected pairs")
+    for chunk in chunks:
+        lineage = lineages[str(chunk.get("voice_chunk_id") or "")]
+        if (
+            manifest.get("generation_mode") != "full"
+            or lineage.get("baseline_candidate_count") != 0
+            or lineage.get("new_candidate_count") != 1
+            or lineage.get("cumulative_candidate_count") != 1
+            or chunk.get("candidate_count") != 1
+            or chunk.get("selected_candidate") != 1
+        ):
+            raise TonePkError("fresh short-replan candidate must start at one")
+    return manifest
+
+
+def generate_fresh_replanned_takes(
+    project: Path,
+    generator: Path,
+    *,
+    runner: Callable[..., Any] = subprocess.run,
+) -> dict[str, Any]:
+    """Generate only changed short-replan identities as full candidate-one runs."""
+    project_path = Path(project).expanduser().resolve()
+    generator_path = Path(generator).expanduser().resolve()
+    if not generator_path.is_file():
+        raise TonePkError(f"Qwen generator does not exist: {generator_path}")
+    state = _load_checkpoint(project_path)
+    affected_pair_ids = _short_replan_affected_ids(state)
+    if not affected_pair_ids:
+        raise TonePkError("checkpoint is not a fresh short-replan project")
+    affected_pairs = [
+        pair
+        for pair in state["pairs"]
+        if str(pair.get("pair_id") or "") in affected_pair_ids
+    ]
+    affected_utterance_ids = {
+        str(pair.get("utterance_id") or "") for pair in affected_pairs
+    }
+    reset_fields = (
+        "candidate_count",
+        "selected_candidate",
+        "candidate_evidence",
+        "source_audio_path",
+        "source_audio_sha256",
+        "normalized_audio_path",
+        "normalized_audio_sha256",
+        "integrated_lufs",
+        "qc_status",
+    )
+    if any(
+        field in pair[variant]
+        for pair in affected_pairs
+        for variant in ("neutral", "expressive")
+        for field in reset_fields
+    ):
+        raise TonePkError("fresh short-replan take already has generation evidence")
+    before_reused = {
+        str(pair["pair_id"]): copy.deepcopy(pair)
+        for pair in state["pairs"]
+        if str(pair.get("pair_id") or "") not in affected_pair_ids
+    }
+    state["generator_path"] = str(generator_path)
+    manifest_hashes: dict[str, str] = {}
+    generated = 0
+    for variant in ("neutral", "expressive"):
+        scratch = _write_fresh_short_replan_scratch_variant(
+            project_path,
+            variant=variant,
+            affected_utterance_ids=affected_utterance_ids,
+        )
+        command = [
+            sys.executable,
+            str(generator_path),
+            str(scratch),
+            "--voice-cast-binding",
+            str(scratch / "voice_cast_binding.json"),
+            "--dialogue-ledger",
+            str(scratch / "dialogue_ledger.json"),
+            "--max-acoustic-retries",
+            "0",
+            "--emit-failed-qc-manifest",
+        ]
+        try:
+            runner(command, check=True)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise TonePkError(
+                f"{variant} fresh short-replan Qwen generation failed: {exc}"
+            ) from exc
+        _validate_fresh_scratch_manifest(
+            scratch,
+            affected_utterance_ids=affected_utterance_ids,
+        )
+        generated += _ingest_generated_variant(
+            project=project_path,
+            state=state,
+            variant=variant,
+            utterance_ids=affected_utterance_ids,
+            runner=runner,
+            variant_project_override=scratch,
+        )
+        manifest_hashes[variant] = _sha256(
+            scratch / "manifests" / "narration_manifest.json"
+        )
+        state = _load_checkpoint(project_path)
+        state["generator_path"] = str(generator_path)
+    current_by_id = {str(pair["pair_id"]): pair for pair in state["pairs"]}
+    if any(current_by_id[pair_id] != pair for pair_id, pair in before_reused.items()):
+        raise TonePkError("fresh short-replan changed a reused pair")
+    audit = {
+        "schema": "story_video_tone_pk_fresh_generation_audit_v1",
+        "status": "PASS",
+        "affected_pair_count": len(affected_pair_ids),
+        "generated_take_count": generated,
+        "provider_utterance_count_per_variant": len(affected_utterance_ids),
+        "generation_mode": "full",
+        "candidate_budget": {"start": 1, "cap": 3},
+        "manifest_sha256s": manifest_hashes,
+    }
+    _write_json(project_path / "scratch" / "short_replan_v2" / "audit.json", audit)
+    write_checkpoint(
+        project_path,
+        state["pairs"],
+        run_id=str(state.get("run_id") or ""),
+        metadata={
+            "generator_path": str(generator_path),
+            "replan_provenance": copy.deepcopy(state["replan_provenance"]),
+            "fresh_generation_audit": audit,
+        },
+    )
+    return {
+        "status": "PASS"
+        if not pending_takes({"pairs": state["pairs"]}, phase="source")
+        else "FAIL",
+        "generated_take_count": generated,
+        "affected_pair_count": len(affected_pair_ids),
+        "reused_pair_count": len(before_reused),
+    }
 
 
 def generate_takes(
@@ -1932,6 +2189,16 @@ def generate_takes(
     pairs = state.get("pairs")
     if not isinstance(pairs, list):
         raise TonePkError("tone PK manifest has no pairs")
+    fresh_pair_ids = _short_replan_affected_ids(state)
+    if fresh_pair_ids and any(
+        "candidate_count" not in pair[variant]
+        for pair in pairs
+        if str(pair.get("pair_id") or "") in fresh_pair_ids
+        for variant in ("neutral", "expressive")
+    ):
+        raise TonePkError(
+            "short-replan identities require fresh short-replan generation"
+        )
     state["generator_path"] = str(generator_path)
     write_checkpoint(
         project_path,
