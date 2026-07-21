@@ -10,7 +10,9 @@ from typing import Any, Callable
 
 POSE_GEOMETRY_PROMPT = """Analyze only pose and shot geometry. Ignore identity, appearance, hair,
 wardrobe, colors, visual style, attractiveness, and background. Return JSON only in this schema:
-{"torso":{"lean_direction":"none|left|right|forward|back","lean_degrees":0,
+{"body":{"posture":"standing|seated|kneeling|crouching|reclining|lying",
+"support":"none|chair|bench|stool|platform|floor|bed|wall"},
+"torso":{"lean_direction":"none|left|right|forward|back","lean_degrees":0,
 "facing":"front|three_quarter_left|three_quarter_right|profile_left|profile_right|back"},
 "head":{"tilt_direction":"none|left|right|forward|back","tilt_degrees":0,
 "chin":"up|level|down"},"camera":{"view":"front|near_frontal_three_quarter|three_quarter_left|
@@ -23,14 +25,18 @@ folded","visibility":"full|partial|out_of_frame","foreground":false,
 "frame_side":"left|center|right","prominence":"dominant|clear|secondary"}],"crop":{"top":"none|
 clips_head|clips_arm","bottom":"none|clips_torso|clips_waist|clips_leg","left":"none|
 clips_head|clips_arm|clips_shoulder|clips_torso|clips_leg","right":"none|clips_head|clips_arm|
-clips_shoulder|clips_torso|clips_leg"}}. Use only listed enum values and numbers."""
+clips_shoulder|clips_torso|clips_leg"}}. Support describes only the surface bearing the subject's
+weight and is required for seated, kneeling, reclining, or lying poses. Use only listed enum values
+and numbers."""
 
-POSE_GEOMETRY_SCHEMA = "pose_geometry_v4"
+POSE_GEOMETRY_SCHEMA = "pose_geometry_v5"
 POSE_INSTRUCTION_MAX_CHARS = 680
 POSE_MAX_LIMBS = 6
 POSE_ANALYZER_MAX_ATTEMPTS = 2
 
 _ENUMS = {
+    "posture": {"standing", "seated", "kneeling", "crouching", "reclining", "lying"},
+    "support": {"none", "chair", "bench", "stool", "platform", "floor", "bed", "wall"},
     "lean_direction": {"none", "left", "right", "forward", "back"},
     "facing": {"front", "three_quarter_left", "three_quarter_right", "profile_left", "profile_right", "back"},
     "tilt_direction": {"none", "left", "right", "forward", "back"},
@@ -192,6 +198,7 @@ def _parse_geometry(raw: Any) -> dict[str, Any]:
 
 
 def _geometry_instruction(geometry: dict[str, Any]) -> str:
+    body = geometry.get("body") if isinstance(geometry.get("body"), dict) else {}
     torso = geometry.get("torso") if isinstance(geometry.get("torso"), dict) else {}
     head = geometry.get("head") if isinstance(geometry.get("head"), dict) else {}
     camera = geometry.get("camera") if isinstance(geometry.get("camera"), dict) else {}
@@ -202,6 +209,13 @@ def _geometry_instruction(geometry: dict[str, Any]) -> str:
     shot = _enum(framing.get("shot"), "shot")
     if shot:
         parts.append(f"framing {shot.replace('_', ' ')}")
+    posture = _enum(body.get("posture"), "posture")
+    support = _enum(body.get("support"), "support")
+    if posture:
+        posture_instruction = f"body posture {posture.replace('_', ' ')}"
+        if support and support != "none":
+            posture_instruction += f" on {support.replace('_', ' ')}"
+        parts.append(posture_instruction)
     view = _enum(camera.get("view"), "view")
     elevation = _enum(camera.get("elevation"), "elevation")
     distance = _enum(camera.get("distance"), "distance")

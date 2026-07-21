@@ -185,6 +185,41 @@ def test_extract_pose_transfer_instruction_preserves_diagonal_raised_arm_directi
     assert "right arm vertically overhead" not in result["instruction"]
 
 
+def test_extract_pose_transfer_instruction_preserves_seated_support_geometry(tmp_path):
+    from agent.visual.reference_pose import extract_pose_transfer_instruction
+
+    reference = tmp_path / "seated-pose.png"
+    reference.write_bytes(b"seated-pose-reference")
+    geometry = {
+        "body": {"posture": "seated", "support": "bench"},
+        "torso": {"lean_direction": "back", "lean_degrees": 15, "facing": "three_quarter_left"},
+        "head": {"tilt_direction": "left", "tilt_degrees": 10, "chin": "level"},
+        "camera": {"view": "near_frontal_three_quarter", "elevation": "low", "distance": "medium"},
+        "framing": {"shot": "full_body"},
+        "limbs": [
+            {
+                "limb": "subject_left_leg",
+                "direction": "forward",
+                "bend": "bent",
+                "visibility": "full",
+                "foreground": True,
+                "frame_side": "center",
+                "prominence": "dominant",
+            }
+        ],
+        "crop": {"top": "none", "bottom": "none", "left": "none", "right": "none"},
+    }
+
+    result = extract_pose_transfer_instruction(
+        str(reference),
+        analyzer=lambda *_args: {"success": True, "analysis": json.dumps(geometry)},
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert result["success"] is True
+    assert "body posture seated on bench" in result["instruction"]
+
+
 def test_extract_pose_transfer_instruction_bounds_large_geometry(tmp_path):
     from agent.visual.reference_pose import extract_pose_transfer_instruction
 
