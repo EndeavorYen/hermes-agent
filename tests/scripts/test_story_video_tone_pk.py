@@ -1471,6 +1471,135 @@ def test_fresh_short_replan_rejects_invalid_scratch_audio_hash(
     assert "candidate_count" not in state["pairs"][0]["neutral"]
 
 
+def test_fresh_short_replan_resumes_after_neutral_without_recalling_provider(
+    tmp_path: Path,
+) -> None:
+    project, before = _prepared_short_v2(tmp_path)
+    generator = tmp_path / "generator.py"
+    generator.write_text("# fixture\n", encoding="utf-8")
+    first_calls: list[list[str]] = []
+    first_base = fake_generator_runner(first_calls)
+
+    def fail_expressive(command: list[str], **kwargs):
+        if command[0] != "ffmpeg" and "/variants/expressive" in command[2]:
+            raise OSError("fixture expressive interruption")
+        return first_base(command, **kwargs)
+
+    with pytest.raises(tone_pk.TonePkError, match="expressive fresh"):
+        tone_pk.generate_fresh_replanned_takes(
+            project,
+            generator,
+            runner=fail_expressive,
+        )
+
+    interrupted = json.loads(
+        (project / "manifests/tone_pk_manifest.json").read_text(encoding="utf-8")
+    )
+    assert interrupted["pairs"][0]["neutral"]["candidate_count"] == 1
+    assert "candidate_count" not in interrupted["pairs"][0]["expressive"]
+
+    resumed_calls: list[list[str]] = []
+    result = tone_pk.generate_fresh_replanned_takes(
+        project,
+        generator,
+        runner=fake_generator_runner(resumed_calls),
+    )
+
+    assert result["status"] == "PASS"
+    assert result["generated_take_count"] == 1
+    assert len(resumed_calls) == 1
+    assert "/variants/expressive" in resumed_calls[0][2]
+    state = json.loads(
+        (project / "manifests/tone_pk_manifest.json").read_text(encoding="utf-8")
+    )
+    assert state["pairs"][1] == before["pairs"][1]
+
+
+def test_fresh_short_replan_resume_rejects_corrupt_completed_neutral(
+    tmp_path: Path,
+) -> None:
+    project, _before = _prepared_short_v2(tmp_path)
+    generator = tmp_path / "generator.py"
+    generator.write_text("# fixture\n", encoding="utf-8")
+    first_base = fake_generator_runner([])
+
+    def fail_expressive(command: list[str], **kwargs):
+        if command[0] != "ffmpeg" and "/variants/expressive" in command[2]:
+            raise OSError("fixture expressive interruption")
+        return first_base(command, **kwargs)
+
+    with pytest.raises(tone_pk.TonePkError, match="expressive fresh"):
+        tone_pk.generate_fresh_replanned_takes(
+            project,
+            generator,
+            runner=fail_expressive,
+        )
+    manifest_path = (
+        project
+        / "scratch/short_replan_v2/variants/neutral/manifests/narration_manifest.json"
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    audio = Path(tone_pk._flatten_voice_chunks(manifest)[0]["audio"])
+    audio.write_bytes(audio.read_bytes() + b"-corrupt")
+
+    with pytest.raises(tone_pk.TonePkError, match="audio hash"):
+        tone_pk.generate_fresh_replanned_takes(
+            project,
+            generator,
+            runner=lambda *_args, **_kwargs: pytest.fail("provider runner called"),
+        )
+
+
+@pytest.mark.parametrize("repair_passes", [True, False])
+def test_short_replan_repair_uses_scratch_lineage_and_preserves_reused_pairs(
+    tmp_path: Path,
+    repair_passes: bool,
+) -> None:
+    project, before = _prepared_short_v2(tmp_path)
+    generator = tmp_path / "generator.py"
+    generator.write_text("# fixture\n", encoding="utf-8")
+    fresh = tone_pk.generate_fresh_replanned_takes(
+        project,
+        generator,
+        runner=fake_generator_runner([], qc_pass=False),
+    )
+    assert fresh["status"] == "FAIL"
+    repair_calls: list[list[str]] = []
+    repair_runner = fake_generator_runner(repair_calls, qc_pass=repair_passes)
+
+    if repair_passes:
+        result = tone_pk.repair_failed_takes(
+            project,
+            max_candidates=3,
+            runner=repair_runner,
+        )
+        assert result["status"] == "PASS"
+    else:
+        with pytest.raises(tone_pk.TonePkError, match="failed takes remain"):
+            tone_pk.repair_failed_takes(
+                project,
+                max_candidates=3,
+                runner=repair_runner,
+            )
+
+    assert len(repair_calls) == 2
+    for command in repair_calls:
+        assert "/scratch/short_replan_v2/variants/" in command[2]
+        assert "/short-v2/variants/" not in command[2]
+        assert command.count("--repair-shot") == 1
+        assert command[command.index("--max-acoustic-retries") + 1] == "1"
+    state = json.loads(
+        (project / "manifests/tone_pk_manifest.json").read_text(encoding="utf-8")
+    )
+    assert state["pairs"][1] == before["pairs"][1]
+    expected_status = "PASS" if repair_passes else "FAIL"
+    for variant in ("neutral", "expressive"):
+        take = state["pairs"][0][variant]
+        assert take["candidate_count"] == 2
+        assert take["selected_candidate"] == 2
+        assert take["qc_status"] == expected_status
+
+
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
