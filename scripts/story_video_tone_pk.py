@@ -1168,6 +1168,40 @@ def _variant_binding_by_speaker(variant_project: Path) -> dict[str, dict[str, An
     }
 
 
+def _variant_repair_shot_map(
+    variant_project: Path,
+    *,
+    expected_utterance_ids: set[str],
+) -> dict[str, str]:
+    """Return the generator's repair IDs after validating the bound ledger."""
+    ledger, _binding, _story_mode = _validate_source_binding(variant_project)
+    utterances = ledger.get("utterances")
+    if not isinstance(utterances, list) or not utterances:
+        raise TonePkError("variant dialogue ledger has no utterances")
+    mapping: dict[str, str] = {}
+    used_shot_ids: set[str] = set()
+    for row in utterances:
+        if not isinstance(row, dict):
+            raise TonePkError("variant dialogue ledger utterance is invalid")
+        utterance_id = str(row.get("utterance_id") or "").strip()
+        shot_id = str(row.get("shot_id") or "").strip()
+        if not utterance_id or not shot_id:
+            raise TonePkError("variant repair mapping is missing an utterance or shot ID")
+        if utterance_id in mapping or shot_id in used_shot_ids:
+            raise TonePkError("variant repair mapping contains duplicate IDs")
+        mapping[utterance_id] = shot_id
+        used_shot_ids.add(shot_id)
+    actual_utterance_ids = set(mapping)
+    if actual_utterance_ids != expected_utterance_ids:
+        missing = sorted(expected_utterance_ids - actual_utterance_ids)
+        unknown = sorted(actual_utterance_ids - expected_utterance_ids)
+        raise TonePkError(
+            "variant repair mapping does not match pair plan; "
+            f"missing={missing}, unknown={unknown}"
+        )
+    return mapping
+
+
 def _ingest_generated_variant(
     *,
     project: Path,
@@ -1452,6 +1486,14 @@ def generate_takes(
     )
     state = _load_checkpoint(project_path)
     pairs = state["pairs"]
+    expected_utterance_ids = {str(pair["utterance_id"]) for pair in pairs}
+    repair_shot_maps = {
+        variant: _variant_repair_shot_map(
+            project_path / "variants" / variant,
+            expected_utterance_ids=expected_utterance_ids,
+        )
+        for variant in ("neutral", "expressive")
+    }
     ingested_existing = 0
     if resume:
         for variant in ("neutral", "expressive"):
@@ -1544,7 +1586,9 @@ def generate_takes(
         partial_variant = len(variant_pairs) < len(pairs)
         if existing_source or existing_generation or partial_variant:
             for utterance_id in sorted(utterance_ids):
-                command.extend(["--repair-shot", utterance_id])
+                command.extend(
+                    ["--repair-shot", repair_shot_maps[variant][utterance_id]]
+                )
         variant_budgets = [
             candidate_budgets[(str(pair["pair_id"]), variant)]
             for pair in variant_pairs
