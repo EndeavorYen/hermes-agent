@@ -1237,10 +1237,65 @@ def pending_takes(
     return pending
 
 
+def select_passed_pairs(
+    *,
+    source_project: Path,
+    output_project: Path,
+) -> dict[str, Any]:
+    """Export only pairs whose neutral and expressive source takes both pass."""
+    source = Path(source_project).expanduser().resolve()
+    output = Path(output_project).expanduser().resolve()
+    if output == source:
+        raise TonePkError("passed-pair output project must differ from source")
+    if output.exists():
+        raise TonePkError("passed-pair output project already exists")
+    state_path = source / "manifests" / "tone_pk_manifest.json"
+    state = _load_json(state_path, label="tone PK manifest")
+    pairs = state.get("pairs")
+    if not isinstance(pairs, list) or not pairs:
+        raise TonePkError("tone PK manifest has no pairs")
+    selected = [
+        copy.deepcopy(pair)
+        for pair in pairs
+        if all(
+            isinstance(pair.get(variant), dict)
+            and _source_take_is_green(pair[variant])
+            for variant in ("neutral", "expressive")
+        )
+    ]
+    if not selected:
+        raise TonePkError("tone PK has no complete A/B source pairs")
+    provenance = {
+        "schema": "story_video_tone_pk_selection_v1",
+        "source_project": str(source),
+        "source_manifest_sha256": _sha256(state_path),
+        "rule": "both_source_takes_pass",
+        "selected_pair_count": len(selected),
+        "excluded_pair_count": len(pairs) - len(selected),
+    }
+    output.mkdir(parents=True)
+    write_checkpoint(
+        output,
+        selected,
+        run_id=f"{state.get('run_id') or 'tone-pk'}-passed",
+        metadata={
+            "generator_path": state.get("generator_path", ""),
+            "selection_provenance": provenance,
+        },
+    )
+    return {
+        "schema": "story_video_tone_pk_selection_v1",
+        "status": "READY_FOR_NORMALIZATION",
+        "selected_pair_count": len(selected),
+        "excluded_pair_count": len(pairs) - len(selected),
+        "output_project": str(output),
+    }
+
+
 def normalize_take(
     source: Path,
     output: Path,
-    runner: Callable[[list[str]], Any],
+    runner: Callable[..., Any],
     *,
     target_lufs: float = -18.0,
 ) -> None:
@@ -1249,6 +1304,44 @@ def normalize_take(
     if not source_path.is_file():
         raise TonePkError(f"source take does not exist: {source_path}")
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    analysis = runner(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-nostats",
+            "-i",
+            str(source_path),
+            "-af",
+            f"loudnorm=I={target_lufs:g}:LRA=7:TP=-2:print_format=json",
+            "-f",
+            "null",
+            "-",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    matches = re.findall(
+        r'\{\s*"input_i"\s*:.*?\}',
+        str(getattr(analysis, "stderr", "") or ""),
+        flags=re.DOTALL,
+    )
+    if not matches:
+        raise TonePkError(f"cannot parse loudnorm analysis for {source_path}")
+    try:
+        measured = json.loads(matches[-1])
+        fields = {
+            "measured_I": str(measured["input_i"]),
+            "measured_LRA": str(measured["input_lra"]),
+            "measured_TP": str(measured["input_tp"]),
+            "measured_thresh": str(measured["input_thresh"]),
+            "offset": str(measured["target_offset"]),
+        }
+        if not all(math.isfinite(float(value)) for value in fields.values()):
+            raise ValueError("non-finite loudnorm measurement")
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise TonePkError(f"invalid loudnorm analysis for {source_path}") from exc
+    measured_filter = ":".join(f"{key}={value}" for key, value in fields.items())
     runner(
         [
             "ffmpeg",
@@ -1258,7 +1351,10 @@ def normalize_take(
             "-i",
             str(source_path),
             "-af",
-            f"loudnorm=I={target_lufs:g}:LRA=7:TP=-2,aresample=48000",
+            (
+                f"loudnorm=I={target_lufs:g}:LRA=7:TP=-2:{measured_filter}:"
+                "linear=true,aresample=48000"
+            ),
             "-ar",
             "48000",
             "-ac",
@@ -1266,7 +1362,8 @@ def normalize_take(
             "-c:a",
             "pcm_s16le",
             str(output_path),
-        ]
+        ],
+        check=True,
     )
 
 
@@ -1304,6 +1401,12 @@ def probe_loudness(
 def _subtitle_visual_text(pair: dict[str, Any], *, variant: str) -> str:
     speaker = str(pair.get("speaker_name") or pair.get("speaker_id") or "角色")
     action = str(pair.get("action") or "").strip()
+    for quoted_dialogue_start in ("：「", "：『", "「", "『"):
+        if quoted_dialogue_start in action:
+            action = action.split(quoted_dialogue_start, maxsplit=1)[0].rstrip(
+                "：:，,。 "
+            )
+            break
     cue = f"{speaker} ({action})" if action else speaker
     if variant == "neutral":
         label = "A｜無情緒"
@@ -1311,7 +1414,7 @@ def _subtitle_visual_text(pair: dict[str, Any], *, variant: str) -> str:
         tone_id = str(pair["expressive"]["tone"].get("tone_id") or "")
         tone_definition = build_tone_catalog().get("tones", {}).get(tone_id, {})
         tone_label = str(tone_definition.get("label") or tone_id)
-        label = f"B｜有情緒・{tone_label}"
+        label = f"B｜有情緒｜{tone_label}"
     return f"{label}\n{cue}：『{pair['display_text']}』"
 
 
@@ -1345,7 +1448,7 @@ def build_pk_timeline(pairs: list[dict[str, Any]]) -> dict[str, Any]:
             subtitle_label = (
                 "A｜無情緒"
                 if variant == "neutral"
-                else f"B｜有情緒・{tone_id}"
+                else f"B｜有情緒｜{tone_id}"
             )
             takes.append(
                 {
@@ -2714,6 +2817,46 @@ def repair_failed_takes(
     }
 
 
+def attenuate_normalized_take(
+    path: Path,
+    gain_db: float,
+    runner: Callable[..., Any],
+) -> None:
+    """Apply a bounded attenuation without risking a new true-peak overshoot."""
+    source = Path(path)
+    if not source.is_file():
+        raise TonePkError(f"normalized take does not exist: {source}")
+    if not math.isfinite(gain_db) or gain_db > 0:
+        raise TonePkError("pair loudness correction must be finite attenuation")
+    temporary = source.with_name(f".{source.stem}.balanced.wav")
+    try:
+        runner(
+            [
+                "ffmpeg",
+                "-y",
+                "-v",
+                "error",
+                "-i",
+                str(source),
+                "-af",
+                f"volume={gain_db:.6f}dB",
+                "-ar",
+                "48000",
+                "-ac",
+                "1",
+                "-c:a",
+                "pcm_s16le",
+                str(temporary),
+            ],
+            check=True,
+        )
+        if not temporary.is_file():
+            raise TonePkError(f"balanced take is missing: {temporary}")
+        temporary.replace(source)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def normalize_project(
     project: Path,
     *,
@@ -2721,9 +2864,10 @@ def normalize_project(
     max_pair_delta_lufs: float,
     normalizer: Callable[..., None] = normalize_take,
     loudness_probe: Callable[[Path], float] = probe_loudness,
-    runner: Callable[[list[str]], Any] = lambda command: subprocess.run(
-        command, check=True
+    loudness_matcher: Callable[[Path, float, Callable[..., Any]], None] = (
+        attenuate_normalized_take
     ),
+    runner: Callable[..., Any] = subprocess.run,
 ) -> dict[str, Any]:
     if not math.isfinite(target_lufs) or not -30 <= target_lufs <= -10:
         raise TonePkError("target LUFS must be between -30 and -10")
@@ -2738,6 +2882,10 @@ def normalize_project(
     if not isinstance(pairs, list):
         raise TonePkError("tone PK manifest has no pairs")
     normalized_count = 0
+    checkpoint_metadata = {"generator_path": state.get("generator_path", "")}
+    for key in ("selection_provenance", "replan_provenance"):
+        if isinstance(state.get(key), dict):
+            checkpoint_metadata[key] = copy.deepcopy(state[key])
     for pair in pairs:
         for variant in ("neutral", "expressive"):
             take = pair[variant]
@@ -2763,7 +2911,30 @@ def normalize_project(
                 project_path,
                 pairs,
                 run_id=str(state.get("run_id") or ""),
-                metadata={"generator_path": state.get("generator_path", "")},
+                metadata=checkpoint_metadata,
+            )
+        neutral_lufs = float(pair["neutral"]["integrated_lufs"])
+        expressive_lufs = float(pair["expressive"]["integrated_lufs"])
+        if abs(neutral_lufs - expressive_lufs) > max_pair_delta_lufs + 1e-9:
+            louder_variant = (
+                "neutral" if neutral_lufs > expressive_lufs else "expressive"
+            )
+            quieter_lufs = min(neutral_lufs, expressive_lufs)
+            louder_take = pair[louder_variant]
+            gain_db = quieter_lufs - float(louder_take["integrated_lufs"])
+            balanced_path = Path(louder_take["normalized_audio_path"])
+            loudness_matcher(balanced_path, gain_db, runner)
+            louder_take.update(
+                {
+                    "normalized_audio_sha256": _sha256(balanced_path),
+                    "integrated_lufs": float(loudness_probe(balanced_path)),
+                }
+            )
+            write_checkpoint(
+                project_path,
+                pairs,
+                run_id=str(state.get("run_id") or ""),
+                metadata=checkpoint_metadata,
             )
     pair_reports = [validate_pair_evidence(pair) for pair in pairs]
     if any(
@@ -2775,7 +2946,7 @@ def normalize_project(
         project_path,
         pairs,
         run_id=str(state.get("run_id") or ""),
-        metadata={"generator_path": state.get("generator_path", "")},
+        metadata=checkpoint_metadata,
     )
     report = {
         "schema": "story_video_tone_pk_qc_v1",
@@ -2844,6 +3015,118 @@ Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
     path.write_text(header + "\n".join(events) + "\n", encoding="utf-8")
 
 
+def _subtitle_font_path() -> Path | None:
+    candidates = (
+        Path("/System/Library/Fonts/STHeiti Medium.ttc"),
+        Path("/System/Library/Fonts/STHeiti Light.ttc"),
+        Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+    )
+    return next((path for path in candidates if path.is_file()), None)
+
+
+def _wrap_card_text(draw: Any, text: str, font: Any, max_width: int) -> list[str]:
+    lines: list[str] = []
+    current = ""
+    for character in str(text):
+        if character == "\n":
+            lines.append(current)
+            current = ""
+            continue
+        candidate = current + character
+        width = draw.textbbox((0, 0), candidate, font=font)[2]
+        if current and width > max_width:
+            lines.append(current)
+            current = character
+        else:
+            current = candidate
+    if current or not lines:
+        lines.append(current)
+    return lines
+
+
+def _write_subtitle_card(
+    path: Path,
+    take: dict[str, Any],
+    width: int,
+    height: int,
+) -> None:
+    from PIL import Image, ImageDraw, ImageFont
+
+    image = Image.new("RGB", (width, height), "black")
+    draw = ImageDraw.Draw(image)
+    font_path = _subtitle_font_path()
+
+    def font(size: int) -> Any:
+        return (
+            ImageFont.truetype(str(font_path), size=size)
+            if font_path is not None
+            else ImageFont.load_default(size=size)
+        )
+
+    label, role_text = str(take["subtitle_text"]).split("\n", maxsplit=1)
+    label_font = font(max(34, round(height * 0.067)))
+    body_size = max(42, round(height * 0.072))
+    max_text_width = width - max(160, round(width * 0.12))
+    body_font = font(body_size)
+    body_lines = _wrap_card_text(draw, role_text, body_font, max_text_width)
+    while len(body_lines) > 5 and body_size > 42:
+        body_size -= 4
+        body_font = font(body_size)
+        body_lines = _wrap_card_text(draw, role_text, body_font, max_text_width)
+    line_gap = max(12, round(body_size * 0.22))
+    label_box = draw.textbbox((0, 0), label, font=label_font)
+    label_height = label_box[3] - label_box[1]
+    body_boxes = [draw.textbbox((0, 0), line, font=body_font) for line in body_lines]
+    body_heights = [box[3] - box[1] for box in body_boxes]
+    total_height = label_height + line_gap * 2 + sum(body_heights)
+    total_height += line_gap * max(0, len(body_lines) - 1)
+    y = (height - total_height) / 2
+    label_width = label_box[2] - label_box[0]
+    label_color = "#D0D0D0" if take["variant"] == "neutral" else "#FFD700"
+    draw.text(((width - label_width) / 2, y), label, font=label_font, fill=label_color)
+    y += label_height + line_gap * 2
+    for line, box, line_height in zip(body_lines, body_boxes, body_heights):
+        line_width = box[2] - box[0]
+        draw.text(
+            ((width - line_width) / 2, y),
+            line,
+            font=body_font,
+            fill=str(take["role_color"]),
+            stroke_width=2,
+            stroke_fill="#101010",
+        )
+        y += line_height + line_gap
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(path, format="PNG")
+
+
+def _write_card_timeline(
+    directory: Path,
+    timeline: dict[str, Any],
+    width: int,
+    height: int,
+) -> Path:
+    from PIL import Image
+
+    directory.mkdir(parents=True, exist_ok=True)
+    black = directory / "black.png"
+    Image.new("RGB", (width, height), "black").save(black, format="PNG")
+    rows = ["ffconcat version 1.0"]
+    takes = timeline["takes"]
+    for index, take in enumerate(takes, start=1):
+        card = directory / f"take_{index:04d}.png"
+        _write_subtitle_card(card, take, width, height)
+        rows.extend((f"file '{card}'", f"duration {float(take['duration_seconds']):.6f}"))
+        if index < len(takes):
+            gap = float(takes[index]["start_seconds"]) - float(take["end_seconds"])
+            if gap > 1e-6:
+                rows.extend((f"file '{black}'", f"duration {gap:.6f}"))
+    rows.append(f"file '{black}'")
+    concat_path = directory / "timeline.ffconcat"
+    concat_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    return concat_path
+
+
 def render_pk_video(
     project: Path,
     output: Path,
@@ -2867,6 +3150,12 @@ def render_pk_video(
     timeline = build_pk_timeline(pairs)
     ass_path = project_path / "manifests" / "tone_pk.ass"
     _write_ass(ass_path, timeline, width, height)
+    card_timeline = _write_card_timeline(
+        project_path / "manifests" / "tone_pk_cards",
+        timeline,
+        width,
+        height,
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     command = [
         "ffmpeg",
@@ -2874,9 +3163,11 @@ def render_pk_video(
         "-v",
         "error",
         "-f",
-        "lavfi",
+        "concat",
+        "-safe",
+        "0",
         "-i",
-        f"color=c=black:s={width}x{height}:r=30:d={timeline['duration_seconds']}",
+        str(card_timeline),
     ]
     filter_parts: list[str] = []
     audio_labels: list[str] = []
@@ -2897,12 +3188,12 @@ def render_pk_video(
         [
             "-filter_complex",
             ";".join(filter_parts),
-            "-vf",
-            f"ass={ass_path}",
             "-map",
             "0:v:0",
             "-map",
             "[aout]",
+            "-vf",
+            "fps=30",
             "-c:v",
             "libx264",
             "-pix_fmt",
@@ -2914,7 +3205,7 @@ def render_pk_video(
             "-movflags",
             "+faststart",
             "-t",
-            str(timeline["duration_seconds"]),
+            f"{float(timeline['duration_seconds']) + (1 / 30):.3f}",
             str(output_path),
         ]
     )
@@ -2926,7 +3217,8 @@ def render_pk_video(
         "pair_count": len(pairs),
         "take_count": len(timeline["takes"]),
         "duration_seconds": timeline["duration_seconds"],
-        "subtitle_path": str(ass_path),
+        "subtitle_path": str(card_timeline),
+        "ass_audit_path": str(ass_path),
     }
 
 
@@ -3060,6 +3352,13 @@ def _normalize_command(args: argparse.Namespace) -> dict[str, Any]:
     )
 
 
+def _select_passed_command(args: argparse.Namespace) -> dict[str, Any]:
+    return select_passed_pairs(
+        source_project=args.source_project,
+        output_project=args.output_project,
+    )
+
+
 def _render_command(args: argparse.Namespace) -> dict[str, Any]:
     return render_pk_video(
         args.project,
@@ -3102,6 +3401,13 @@ def _build_parser() -> argparse.ArgumentParser:
     qc.add_argument("--repair-failed", action="store_true")
     qc.add_argument("--max-candidates", type=int, default=3)
     qc.set_defaults(handler=_qc_command)
+    select_passed = subcommands.add_parser(
+        "select-passed",
+        help="export only A/B pairs whose source speech passed QC",
+    )
+    select_passed.add_argument("--source-project", type=Path, required=True)
+    select_passed.add_argument("--output-project", type=Path, required=True)
+    select_passed.set_defaults(handler=_select_passed_command)
     normalize = subcommands.add_parser(
         "normalize", help="normalize takes and validate pair loudness"
     )
