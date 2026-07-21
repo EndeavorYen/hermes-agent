@@ -1327,6 +1327,150 @@ def test_short_replan_rejects_invalid_or_drifted_override(
         )
 
 
+def _prepared_short_v2(tmp_path: Path) -> tuple[Path, dict]:
+    source, before = _prepared_short_replan_source(tmp_path)
+    output = tmp_path / "short-v2"
+    tone_pk.replan_failed_pairs_short(
+        source_project=source,
+        output_project=output,
+        overrides=tone_pk.build_failed_short_chunk_overrides(
+            source,
+            max_chars=12,
+        ),
+        max_chars=12,
+    )
+    return output, before
+
+
+def test_short_replan_blocks_legacy_partial_generation_without_prior_manifest(
+    tmp_path: Path,
+) -> None:
+    project, _before = _prepared_short_v2(tmp_path)
+    generator = tmp_path / "generator.py"
+    generator.write_text("# fixture\n", encoding="utf-8")
+
+    with pytest.raises(tone_pk.TonePkError, match="fresh short-replan generation"):
+        tone_pk.generate_takes(
+            project,
+            generator,
+            resume=True,
+            runner=lambda *_args, **_kwargs: pytest.fail("provider runner called"),
+        )
+
+
+def test_fresh_short_replan_generation_filters_provider_scope_and_ingests_ab(
+    tmp_path: Path,
+) -> None:
+    project, before = _prepared_short_v2(tmp_path)
+    generator = tmp_path / "generator.py"
+    generator.write_text("# fixture\n", encoding="utf-8")
+    calls: list[list[str]] = []
+    base_runner = fake_generator_runner(calls)
+    provider_utterance_ids: list[set[str]] = []
+
+    def scoped_runner(command: list[str], **kwargs):
+        if command[0] == "ffmpeg":
+            return base_runner(command, **kwargs)
+        assert "--repair-shot" not in command
+        assert command[-2:] == ["--max-acoustic-retries", "0"] or (
+            "--max-acoustic-retries" in command
+            and command[command.index("--max-acoustic-retries") + 1] == "0"
+        )
+        assert "--emit-failed-qc-manifest" in command
+        scratch = next(
+            Path(value)
+            for value in command
+            if "/scratch/short_replan_v2/variants/" in value
+            and Path(value).is_dir()
+        )
+        ledger = json.loads(
+            (scratch / "dialogue_ledger.json").read_text(encoding="utf-8")
+        )
+        provider_utterance_ids.append(
+            {str(row["utterance_id"]) for row in ledger["utterances"]}
+        )
+        return base_runner(command, **kwargs)
+
+    result = tone_pk.generate_fresh_replanned_takes(
+        project,
+        generator,
+        runner=scoped_runner,
+    )
+
+    assert result["status"] == "PASS"
+    assert result["generated_take_count"] == 2
+    assert result["affected_pair_count"] == 1
+    assert len(provider_utterance_ids) == 2
+    assert provider_utterance_ids[0] == provider_utterance_ids[1]
+    assert provider_utterance_ids[0] == {before["pairs"][0]["utterance_id"]}
+    state = json.loads(
+        (project / "manifests" / "tone_pk_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert state["pairs"][1] == before["pairs"][1]
+    for variant in ("neutral", "expressive"):
+        take = state["pairs"][0][variant]
+        assert take["candidate_count"] == 1
+        assert take["selected_candidate"] == 1
+        assert take["qc_status"] == "PASS"
+        assert tone_pk._artifact_hash_matches(
+            take["source_audio_path"],
+            take["source_audio_sha256"],
+        )
+        scratch_manifest = (
+            project
+            / "scratch"
+            / "short_replan_v2"
+            / "variants"
+            / variant
+            / "manifests"
+            / "narration_manifest.json"
+        )
+        assert scratch_manifest.is_file()
+
+
+def test_fresh_short_replan_rejects_invalid_scratch_audio_hash(
+    tmp_path: Path,
+) -> None:
+    project, before = _prepared_short_v2(tmp_path)
+    generator = tmp_path / "generator.py"
+    generator.write_text("# fixture\n", encoding="utf-8")
+    base_runner = fake_generator_runner([])
+
+    def corrupting_runner(command: list[str], **kwargs):
+        result = base_runner(command, **kwargs)
+        scratch = next(
+            Path(value)
+            for value in command
+            if "/scratch/short_replan_v2/variants/" in value
+            and Path(value).is_dir()
+        )
+        manifest = json.loads(
+            (scratch / "manifests/narration_manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        audio = Path(tone_pk._flatten_voice_chunks(manifest)[0]["audio"])
+        audio.write_bytes(audio.read_bytes() + b"-corrupt")
+        return result
+
+    with pytest.raises(tone_pk.TonePkError, match="audio hash"):
+        tone_pk.generate_fresh_replanned_takes(
+            project,
+            generator,
+            runner=corrupting_runner,
+        )
+
+    state = json.loads(
+        (project / "manifests" / "tone_pk_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert state["pairs"][1] == before["pairs"][1]
+    assert "candidate_count" not in state["pairs"][0]["neutral"]
+
+
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
