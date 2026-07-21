@@ -1114,6 +1114,7 @@ def _ingest_generated_variant(
     utterance_ids: set[str],
     runner: Callable[..., Any],
     accumulate_candidates: bool = False,
+    validate_only_if_source_valid: bool = False,
 ) -> int:
     variant_project = project / "variants" / variant
     manifest = _load_json(
@@ -1249,6 +1250,9 @@ def _ingest_generated_variant(
             )
         ):
             raise TonePkError(f"generator candidate evidence is invalid for {utterance_id}")
+        if validate_only_if_source_valid and _source_artifact_is_valid(take):
+            ingested += 1
+            continue
         prior_candidates = int(take.get("candidate_count") or 0)
         candidate_offset = prior_candidates if accumulate_candidates else 0
         candidate_count = candidate_offset + max(observed_counts)
@@ -1323,6 +1327,30 @@ def generate_takes(
     pairs = state.get("pairs")
     if not isinstance(pairs, list):
         raise TonePkError("tone PK manifest has no pairs")
+    ingested_existing = 0
+    if resume:
+        for variant in ("neutral", "expressive"):
+            existing_manifest = (
+                project_path
+                / "variants"
+                / variant
+                / "manifests"
+                / "narration_manifest.json"
+            )
+            if not existing_manifest.is_file():
+                continue
+            utterance_ids = {str(pair["utterance_id"]) for pair in pairs}
+            ingested_existing += _ingest_generated_variant(
+                project=project_path,
+                state=state,
+                variant=variant,
+                utterance_ids=utterance_ids,
+                runner=runner,
+                validate_only_if_source_valid=True,
+            )
+            state = _load_checkpoint(project_path)
+            state["generator_path"] = str(generator_path)
+            pairs = state["pairs"]
     source_pending = {
         (row["pair_id"], row["variant"])
         for row in pending_takes(state, phase="source")
@@ -1434,6 +1462,7 @@ def generate_takes(
         if not pending_takes({"pairs": pairs}, phase="source")
         else "FAIL",
         "generated_take_count": generated,
+        "ingested_existing_take_count": ingested_existing,
         "skipped_green_take_count": skipped_green,
         "not_selected_take_count": not_selected,
     }
@@ -1737,10 +1766,27 @@ def _status_command(args: argparse.Namespace) -> dict[str, Any]:
         raise TonePkError("tone PK manifest has no pairs")
     pending = pending_takes(state)
     status, pair_reports = _pairs_status(pairs)
+    takes = [
+        pair[variant]
+        for pair in pairs
+        for variant in ("neutral", "expressive")
+        if isinstance(pair.get(variant), dict)
+    ]
     return {
         "status": status,
         "pair_count": len(pairs),
         "completed_take_count": len(pairs) * 2 - len(pending),
+        "ingested_source_take_count": sum(
+            _source_artifact_is_valid(take) for take in takes
+        ),
+        "source_qc_pass_take_count": sum(
+            _source_take_is_green(take) for take in takes
+        ),
+        "candidate_evidence_take_count": sum(
+            type(take.get("candidate_count")) is int
+            and take["candidate_count"] > 0
+            for take in takes
+        ),
         "pending_takes": pending,
         "pair_reports": pair_reports,
     }
