@@ -1801,6 +1801,54 @@ def test_repair_candidate_budget_is_cumulative_and_never_exceeds_cap(
         )
 
 
+def test_repair_groups_same_variant_and_remaining_budget_in_one_invocation(
+    tmp_path: Path,
+) -> None:
+    project = prepared_pk_project(tmp_path, utterance_count=2)
+    generator = tmp_path / "fake_generator.py"
+    generator.write_text("# sanitized fixture\n", encoding="utf-8")
+    tone_pk.generate_takes(
+        project,
+        generator,
+        resume=True,
+        runner=fake_generator_runner([]),
+    )
+    state_path = project / "manifests/tone_pk_manifest.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    for pair in state["pairs"]:
+        pair["neutral"]["qc_status"] = "FAIL"
+        _set_manifest_utterance_qc(
+            project,
+            variant="neutral",
+            utterance_id=pair["utterance_id"],
+            passed=False,
+        )
+    _write_json(state_path, state)
+    calls: list[list[str]] = []
+
+    result = tone_pk.repair_failed_takes(
+        project,
+        max_candidates=3,
+        runner=fake_generator_runner(calls),
+    )
+
+    neutral_calls = [
+        command for command in calls if "/variants/neutral" in " ".join(command)
+    ]
+    assert len(neutral_calls) == 1
+    assert [
+        neutral_calls[0][index + 1]
+        for index, value in enumerate(neutral_calls[0][:-1])
+        if value == "--repair-shot"
+    ] == ["S01_SH01", "S01_SH02"]
+    assert result["attempts"] == 1
+    repaired = json.loads(state_path.read_text(encoding="utf-8"))
+    assert [pair["neutral"]["candidate_count"] for pair in repaired["pairs"]] == [
+        2,
+        2,
+    ]
+
+
 def test_repair_dispatches_heterogeneous_take_budgets_independently(
     tmp_path: Path,
 ) -> None:
@@ -1883,6 +1931,117 @@ def test_repair_dispatches_heterogeneous_take_budgets_independently(
         for command in neutral_calls
     }
     assert by_shot == {"S01_SH01": "0", "S01_SH02": "1"}
+    repaired = json.loads(state_path.read_text(encoding="utf-8"))
+    assert repaired["pairs"][0]["neutral"]["candidate_count"] == 3
+    assert repaired["pairs"][1]["neutral"]["candidate_count"] == 3
+
+
+def test_grouped_repair_accounts_for_passing_and_failing_takes_independently(
+    tmp_path: Path,
+) -> None:
+    project = prepared_pk_project(tmp_path, utterance_count=2)
+    generator = tmp_path / "fake_generator.py"
+    generator.write_text("# sanitized fixture\n", encoding="utf-8")
+    tone_pk.generate_takes(
+        project,
+        generator,
+        resume=True,
+        runner=fake_generator_runner([]),
+    )
+    state_path = project / "manifests/tone_pk_manifest.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    for pair in state["pairs"]:
+        pair["neutral"]["qc_status"] = "FAIL"
+        _set_manifest_utterance_qc(
+            project,
+            variant="neutral",
+            utterance_id=pair["utterance_id"],
+            passed=False,
+        )
+    _write_json(state_path, state)
+    calls: list[list[str]] = []
+    base_runner = fake_generator_runner(calls, candidate_count=2)
+
+    def one_fails_runner(command: list[str], **kwargs):
+        result = base_runner(command, **kwargs)
+        if command[0] == "ffmpeg":
+            return result
+        manifest_path = (
+            project
+            / "variants"
+            / "neutral"
+            / "manifests"
+            / "narration_manifest.json"
+        )
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        for chunk in tone_pk._flatten_voice_chunks(manifest):
+            if chunk["utterance_id"] == "U0002":
+                chunk["pronunciation_status"] = "FAIL"
+                chunk["qc_status"] = "FAIL"
+        _write_json(manifest_path, manifest)
+        return result
+
+    with pytest.raises(tone_pk.TonePkError, match="failed takes remain"):
+        tone_pk.repair_failed_takes(
+            project,
+            max_candidates=3,
+            runner=one_fails_runner,
+        )
+
+    neutral_calls = [
+        command for command in calls if "/variants/neutral" in " ".join(command)
+    ]
+    assert len(neutral_calls) == 1
+    repaired = json.loads(state_path.read_text(encoding="utf-8"))
+    assert repaired["pairs"][0]["neutral"]["qc_status"] == "PASS"
+    assert repaired["pairs"][1]["neutral"]["qc_status"] == "FAIL"
+    assert [pair["neutral"]["candidate_count"] for pair in repaired["pairs"]] == [
+        3,
+        3,
+    ]
+
+
+def test_exhausted_failed_take_does_not_block_other_group_and_cap_stays_three(
+    tmp_path: Path,
+) -> None:
+    project = prepared_pk_project(tmp_path, utterance_count=2)
+    generator = tmp_path / "fake_generator.py"
+    generator.write_text("# sanitized fixture\n", encoding="utf-8")
+    tone_pk.generate_takes(
+        project,
+        generator,
+        resume=True,
+        runner=fake_generator_runner([]),
+    )
+    state_path = project / "manifests/tone_pk_manifest.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    first = state["pairs"][0]["neutral"]
+    second = state["pairs"][1]["neutral"]
+    first.update({"qc_status": "FAIL", "candidate_count": 3, "selected_candidate": 3})
+    second.update({"qc_status": "FAIL", "candidate_count": 2, "selected_candidate": 2})
+    for utterance_id in ("U0001", "U0002"):
+        _set_manifest_utterance_qc(
+            project,
+            variant="neutral",
+            utterance_id=utterance_id,
+            passed=False,
+        )
+    _write_json(state_path, state)
+    calls: list[list[str]] = []
+
+    with pytest.raises(tone_pk.TonePkError, match="candidate budget exhausted"):
+        tone_pk.repair_failed_takes(
+            project,
+            max_candidates=3,
+            runner=fake_generator_runner(calls),
+        )
+
+    neutral_calls = [
+        command for command in calls if "/variants/neutral" in " ".join(command)
+    ]
+    assert len(neutral_calls) == 1
+    assert neutral_calls[0].count("--repair-shot") == 1
+    assert "S01_SH02" in neutral_calls[0]
     repaired = json.loads(state_path.read_text(encoding="utf-8"))
     assert repaired["pairs"][0]["neutral"]["candidate_count"] == 3
     assert repaired["pairs"][1]["neutral"]["candidate_count"] == 3
