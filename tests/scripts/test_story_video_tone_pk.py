@@ -1193,6 +1193,51 @@ def _prepared_short_replan_source(tmp_path: Path) -> tuple[Path, dict]:
     return project, json.loads(state_path.read_text(encoding="utf-8"))
 
 
+def test_select_passed_exports_only_complete_ab_pairs_without_mutating_source(
+    tmp_path: Path,
+) -> None:
+    source, before = _prepared_short_replan_source(tmp_path)
+    output = tmp_path / "passed-only"
+
+    result = tone_pk.select_passed_pairs(
+        source_project=source,
+        output_project=output,
+    )
+
+    assert result == {
+        "schema": "story_video_tone_pk_selection_v1",
+        "status": "READY_FOR_NORMALIZATION",
+        "selected_pair_count": 1,
+        "excluded_pair_count": 1,
+        "output_project": str(output.resolve()),
+    }
+    after = json.loads(
+        (output / "manifests" / "tone_pk_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert after["pair_count"] == 1
+    assert [pair["pair_id"] for pair in after["pairs"]] == ["PK-0002"]
+    assert after["selection_provenance"]["rule"] == "both_source_takes_pass"
+    assert json.loads(
+        (source / "manifests" / "tone_pk_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    ) == before
+
+
+def test_select_passed_refuses_to_overwrite_existing_output(tmp_path: Path) -> None:
+    source, _before = _prepared_short_replan_source(tmp_path)
+    output = tmp_path / "passed-only"
+    output.mkdir()
+
+    with pytest.raises(tone_pk.TonePkError, match="already exists"):
+        tone_pk.select_passed_pairs(
+            source_project=source,
+            output_project=output,
+        )
+
+
 def test_short_replan_resets_only_failed_pair_and_reuses_green_evidence(
     tmp_path: Path,
 ) -> None:
@@ -1854,19 +1899,38 @@ def test_resume_regenerates_green_take_when_audio_hash_no_longer_matches(
     ]
 
 
-def test_normalize_take_uses_fixed_loudness_contract(tmp_path: Path) -> None:
+def test_normalize_take_uses_measured_two_pass_loudness_contract(tmp_path: Path) -> None:
     source = tmp_path / "source.wav"
     source.write_bytes(b"fixture")
     output = tmp_path / "normalized" / "take.wav"
-    calls: list[list[str]] = []
+    calls: list[tuple[list[str], dict]] = []
 
-    tone_pk.normalize_take(source, output, calls.append)
+    class Result:
+        stderr = """{
+            "input_i": "-25.10",
+            "input_tp": "-8.20",
+            "input_lra": "1.10",
+            "input_thresh": "-35.20",
+            "target_offset": "0.10"
+        }"""
 
-    assert calls == [[
-        "ffmpeg", "-y", "-v", "error", "-i", str(source),
-        "-af", "loudnorm=I=-18:LRA=7:TP=-2,aresample=48000",
-        "-ar", "48000", "-ac", "1", "-c:a", "pcm_s16le", str(output),
-    ]]
+    def runner(command: list[str], **kwargs):
+        calls.append((command, kwargs))
+        return Result()
+
+    tone_pk.normalize_take(source, output, runner)
+
+    assert len(calls) == 2
+    assert "print_format=json" in calls[0][0][calls[0][0].index("-af") + 1]
+    second_filter = calls[1][0][calls[1][0].index("-af") + 1]
+    assert "measured_I=-25.10" in second_filter
+    assert "measured_LRA=1.10" in second_filter
+    assert "measured_TP=-8.20" in second_filter
+    assert "measured_thresh=-35.20" in second_filter
+    assert "offset=0.10" in second_filter
+    assert "linear=true" in second_filter
+    assert calls[0][1] == {"capture_output": True, "text": True, "check": True}
+    assert calls[1][1] == {"check": True}
     assert output.parent.is_dir()
 
 
@@ -1904,6 +1968,16 @@ def test_timeline_is_fixed_a_then_b_with_display_only_labels() -> None:
     assert timeline["duration_seconds"] == pytest.approx(2.75)
 
 
+def test_subtitle_action_does_not_repeat_embedded_quoted_dialogue() -> None:
+    pair = passing_pair_evidence()
+    pair["action"] = "立刻回：「同一句。」"
+
+    subtitle = tone_pk._subtitle_visual_text(pair, variant="expressive")
+
+    assert "導覽員 (立刻回)" in subtitle
+    assert subtitle.count("同一句。") == 1
+
+
 def test_write_checkpoint_builds_final_speech_compatible_manifest(
     tmp_path: Path,
 ) -> None:
@@ -1927,7 +2001,7 @@ def test_write_checkpoint_builds_final_speech_compatible_manifest(
     assert [row["spoken_text"] for row in chunks] == ["同一句。", "同一句。"]
 
 
-def test_render_pk_video_builds_black_ass_h264_aac_command(
+def test_render_pk_video_builds_black_card_h264_aac_command(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1942,17 +2016,18 @@ def test_render_pk_video_builds_black_ass_h264_aac_command(
     assert result["status"] == "PASS"
     assert result["visual_mode"] == "black_subtitle"
     command = calls[-1]
-    assert command[:6] == ["ffmpeg", "-y", "-v", "error", "-f", "lavfi"]
-    assert any(
-        value.startswith("color=c=black:s=1920x1080:r=30:d=") for value in command
-    )
+    assert command[:6] == ["ffmpeg", "-y", "-v", "error", "-f", "concat"]
+    assert command[command.index("-vf") + 1] == "fps=30"
     assert "libx264" in command
     assert "aac" in command
+    cards = tmp_path / "manifests" / "tone_pk_cards"
+    assert (cards / "timeline.ffconcat").is_file()
+    assert len(list(cards.glob("take_*.png"))) == 2
     ass_path = tmp_path / "manifests" / "tone_pk.ass"
     ass = ass_path.read_text(encoding="utf-8")
     assert "Alignment=5" not in ass
     assert r"A｜無情緒\N{\c&H" in ass
-    assert r"B｜有情緒・疑惑\N{\c&H" in ass
+    assert r"B｜有情緒｜疑惑\N{\c&H" in ass
     assert "導覽員 (疑惑地查看地圖)" in ass
 
 
@@ -2880,6 +2955,48 @@ def test_normalize_project_updates_evidence_and_checkpoint_per_take(
         for pair in state["pairs"]
         for variant in ("neutral", "expressive")
     )
+
+
+def test_normalize_project_attenuates_louder_take_to_pair_tolerance(
+    tmp_path: Path,
+) -> None:
+    project = prepared_pk_project(tmp_path)
+    generator = tmp_path / "fake_generator.py"
+    generator.write_text("# sanitized fixture\n", encoding="utf-8")
+    tone_pk.generate_takes(
+        project,
+        generator,
+        resume=True,
+        runner=fake_generator_runner([]),
+    )
+    balanced: list[tuple[str, float]] = []
+
+    def normalizer(source: Path, output: Path, _runner, *, target_lufs: float):
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(source.read_bytes() + b"-normalized")
+
+    def matcher(path: Path, gain_db: float, _runner) -> None:
+        balanced.append((path.name, gain_db))
+        path.write_bytes(path.read_bytes() + b"-balanced")
+
+    def probe(path: Path) -> float:
+        if path.name.endswith("__A.wav"):
+            return -22.0
+        return -22.0 if balanced else -21.2
+
+    result = tone_pk.normalize_project(
+        project,
+        target_lufs=-18.0,
+        max_pair_delta_lufs=0.5,
+        normalizer=normalizer,
+        loudness_probe=probe,
+        loudness_matcher=matcher,
+        runner=lambda *_args, **_kwargs: None,
+    )
+
+    assert result["status"] == "PASS"
+    assert balanced == [("PK-0001__B.wav", pytest.approx(-0.8))]
+    assert result["pair_reports"][0]["loudness_delta_lufs"] == 0.0
 
 
 @pytest.mark.parametrize("drift", ["seed", "loudness"])
