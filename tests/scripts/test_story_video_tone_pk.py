@@ -336,6 +336,9 @@ def fake_generator_runner(
             "run_id": "tone-pk-test",
             "model": "fixture_model",
             "spoken_text_normalization": "bounded_ellipsis_v1",
+            "pronunciation_qc_report": str(
+                variant_project / "qc" / "pronunciation_qc_report.json"
+            ),
             "voice_chunk_count": len(chunks),
             "outputs": [
                 {
@@ -344,6 +347,13 @@ def fake_generator_runner(
                 }
             ],
         }
+        _write_json(
+            variant_project / "qc" / "pronunciation_qc_report.json",
+            {
+                "schema": "story_video_pronunciation_qc_v3",
+                "lexicon_sources": [],
+            },
+        )
         _write_json(variant_project / "manifests" / "narration_manifest.json", manifest)
 
         class Result:
@@ -352,6 +362,53 @@ def fake_generator_runner(
         return Result()
 
     return runner
+
+
+@pytest.mark.parametrize(
+    ("source", "generator_expected"),
+    [
+        ("停……〉。", "停，〉。"),
+        ("停……〉", "停，〉"),
+        ("停—〉。", "停，〉。"),
+        ("停—〉", "停，〉"),
+    ],
+)
+def test_bounded_ellipsis_closing_marks_match_generator_contract(
+    source: str,
+    generator_expected: str,
+) -> None:
+    assert tone_pk._CLOSING_MARKS == "」』”’\"'】）》）]"
+    assert tone_pk.normalize_synthesis_spoken_text(source) == generator_expected
+
+
+def test_generate_rejects_missing_pronunciation_qc_report(tmp_path: Path) -> None:
+    project = prepared_pk_project(tmp_path)
+    generator = tmp_path / "fake_generator.py"
+    generator.write_text("# sanitized fixture\n", encoding="utf-8")
+    base_runner = fake_generator_runner([])
+
+    def missing_report_runner(command: list[str], **kwargs):
+        result = base_runner(command, **kwargs)
+        if command[0] == "ffmpeg":
+            return result
+        variant_project = next(
+            Path(value)
+            for value in command
+            if "/variants/" in value and Path(value).is_dir()
+        )
+        manifest_path = variant_project / "manifests" / "narration_manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest.pop("pronunciation_qc_report")
+        _write_json(manifest_path, manifest)
+        return result
+
+    with pytest.raises(tone_pk.TonePkError, match="pronunciation QC report"):
+        tone_pk.generate_takes(
+            project,
+            generator,
+            resume=True,
+            runner=missing_report_runner,
+        )
 
 
 def test_generate_accepts_exact_bounded_ellipsis_normalization_and_records_hashes(
