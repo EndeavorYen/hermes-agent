@@ -2885,17 +2885,21 @@ def _status_command(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _generate_command(args: argparse.Namespace) -> dict[str, Any]:
+    manifest_path = (
+        Path(args.project).expanduser().resolve()
+        / "manifests"
+        / "tone_pk_manifest.json"
+    )
+    state = (
+        _load_json(manifest_path, label="tone PK manifest")
+        if manifest_path.is_file()
+        else None
+    )
     if args.fresh_short_replan:
-        manifest_path = (
-            Path(args.project).expanduser().resolve()
-            / "manifests"
-            / "tone_pk_manifest.json"
-        )
-        if not manifest_path.is_file():
+        if state is None:
             raise TonePkError(
                 "--fresh-short-replan is only valid for short-replan projects"
             )
-        state = _load_json(manifest_path, label="tone PK manifest")
         if not _short_replan_affected_ids(state):
             raise TonePkError(
                 "--fresh-short-replan is only valid for short-replan projects"
@@ -2903,6 +2907,12 @@ def _generate_command(args: argparse.Namespace) -> dict[str, Any]:
         return generate_fresh_replanned_takes(
             args.project,
             args.generator,
+        )
+    if state is not None and _short_replan_affected_ids(state):
+        raise TonePkError(
+            "short-replan projects require fresh short-replan generation via "
+            "generate --fresh-short-replan; "
+            "use qc --repair-failed for later candidates"
         )
     return generate_takes(
         args.project,

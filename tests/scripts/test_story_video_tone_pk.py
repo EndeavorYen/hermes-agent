@@ -2969,3 +2969,34 @@ def test_cli_short_replan_without_fresh_flag_keeps_legacy_guard(
 
     with pytest.raises(tone_pk.TonePkError, match="fresh short-replan generation"):
         args.handler(args)
+
+
+def test_cli_completed_candidate_one_short_replan_without_flag_never_dispatches(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project, _before = _prepared_short_v2(tmp_path)
+    generator = tmp_path / "generator.py"
+    generator.write_text("# fixture\n", encoding="utf-8")
+    tone_pk.generate_fresh_replanned_takes(
+        project,
+        generator,
+        runner=fake_generator_runner([]),
+    )
+    monkeypatch.setattr(
+        tone_pk,
+        "generate_takes",
+        lambda *_args, **_kwargs: pytest.fail("ordinary generator dispatched"),
+    )
+    args = tone_pk._build_parser().parse_args(
+        [
+            "generate",
+            "--project",
+            str(project),
+            "--generator",
+            str(generator),
+        ]
+    )
+
+    with pytest.raises(tone_pk.TonePkError, match="--fresh-short-replan"):
+        args.handler(args)
