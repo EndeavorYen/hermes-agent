@@ -1432,6 +1432,7 @@ def test_fresh_short_replan_generation_filters_provider_scope_and_ingests_ab(
 
 def test_short_replan_scratch_reindexes_noncontiguous_source_orders(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     source_contract = sanitized_source_project(tmp_path, utterance_count=2)
     source_ledger_path = source_contract / "dialogue_ledger.json"
@@ -1493,6 +1494,38 @@ def test_short_replan_scratch_reindexes_noncontiguous_source_orders(
     assert all(row["shot_id"] == master_by_id[row["utterance_id"]]["shot_id"] for row in rows)
     assert [row["order"] for row in master_before["utterances"]] == [1, 2, 3]
     assert tone_pk._validate_source_binding(scratch)
+
+    legacy = copy.deepcopy(scratch_ledger)
+    for row in legacy["utterances"]:
+        row["order"] = row.pop("source_order")
+    legacy_path = scratch / "dialogue_ledger.json"
+    _write_json(legacy_path, legacy)
+    binding_path = scratch / "voice_cast_binding.json"
+    binding = json.loads(binding_path.read_text(encoding="utf-8"))
+    binding["dialogue_ledger_sha256"] = _sha256(legacy_path)
+    _write_json(binding_path, binding)
+    original_validate = tone_pk._validate_source_binding
+
+    def contiguous_validator(path: Path):
+        raw = json.loads((Path(path) / "dialogue_ledger.json").read_text(encoding="utf-8"))
+        orders = [row["order"] for row in raw["utterances"]]
+        if Path(path) == scratch and orders != list(range(1, len(orders) + 1)):
+            raise tone_pk.TonePkError("dialogue ledger order is not contiguous")
+        return original_validate(path)
+
+    monkeypatch.setattr(tone_pk, "_validate_source_binding", contiguous_validator)
+
+    migrated = tone_pk._write_fresh_short_replan_scratch_variant(
+        output,
+        variant="neutral",
+        affected_utterance_ids=affected_ids,
+    )
+
+    migrated_ledger = json.loads(
+        (migrated / "dialogue_ledger.json").read_text(encoding="utf-8")
+    )
+    assert [row["order"] for row in migrated_ledger["utterances"]] == [1, 2]
+    assert [row["source_order"] for row in migrated_ledger["utterances"]] == [1, 3]
 
 
 def test_fresh_short_replan_rejects_invalid_scratch_audio_hash(
