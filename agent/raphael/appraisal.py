@@ -158,6 +158,14 @@ def appraise_raphael_situation(
     text = _extract_text(user_message)
     active_artifact_id = latest_selected_artifact_id(conversation_history)
     attachment_count = len([item for item in attachments or () if str(item).strip()])
+    if attachment_count == 0 and conversation_history:
+        from agent.visual.session_references import (
+            available_original_visual_reference_count,
+        )
+
+        attachment_count = available_original_visual_reference_count(
+            list(conversation_history)
+        )
     missing_ref = _missing_reference_index(text, attachment_count)
     if missing_ref is not None:
         return RaphaelAppraisal(

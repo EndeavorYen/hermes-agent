@@ -107,6 +107,66 @@ def test_named_visual_references_search_full_history_in_prompt_order_with_roles(
     ]
 
 
+def test_named_ref_followup_recovers_original_uploads_after_generated_candidates():
+    from gateway.run import _visual_reference_context_for_turn
+
+    history = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "用 ref1 的人物套用 ref2 的動作"},
+                {"type": "image_url", "image_url": {"url": "/tmp/ref1.jpg"}},
+                {"type": "image_url", "image_url": {"url": "/tmp/ref2.jpg"}},
+            ],
+        },
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "function": {
+                        "name": "visual_package_generate",
+                        "arguments": json.dumps(
+                            {
+                                "attachments": ["/tmp/ref1.jpg", "/tmp/ref2.jpg"],
+                                "reference_binding": {
+                                    "reference_order": [
+                                        {"index": 1, "role_hint": "character_identity"},
+                                        {"index": 2, "role_hint": "pose_composition"},
+                                    ]
+                                },
+                            }
+                        ),
+                    }
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "content": json.dumps(
+                {
+                    "success": True,
+                    "images": ["/tmp/cache/images/xai_candidate_g1.jpg"],
+                }
+            ),
+        },
+    ]
+
+    references = _visual_reference_context_for_turn(
+        "完全保持 ref1 的人物特徵，只套用 ref2 的動作，重新產出",
+        current_attachment_paths=[],
+        agent_history=history,
+    )
+
+    assert [entry["uri"] for entry in references] == [
+        "/tmp/ref1.jpg",
+        "/tmp/ref2.jpg",
+    ]
+    assert [entry["role_hint"] for entry in references] == [
+        "character_identity",
+        "pose_composition",
+    ]
+
+
 def test_current_attachment_wins_over_rollover_fallback():
     from gateway.run import _visual_reference_context_for_turn
 
