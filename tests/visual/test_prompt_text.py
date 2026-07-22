@@ -197,3 +197,13 @@ def test_xai_prompt_keeps_candidate_lane_after_semantic_pose_contract():
     assert len(provider_prompt) <= 1200
     assert "raise subject left arm vertically overhead" in provider_prompt
     assert "candidate 2 of 4" in provider_prompt.lower()
+
+
+def test_xai_prompt_hard_cap_includes_terminal_period():
+    provider_prompt = build_provider_facing_visual_prompt(
+        "x" * 2000,
+        provider="xai",
+    )
+
+    assert len(provider_prompt) == 1200
+    assert provider_prompt.endswith(".")

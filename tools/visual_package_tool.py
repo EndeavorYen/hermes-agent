@@ -2299,6 +2299,10 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 reference_binding,
                 conditioning_policy=repair_reference_policy,
                 pose_transfer=pose_transfer,
+                fail_closed_on_structure_guide_unavailable=(
+                    repair_reference_policy == "structure_guide"
+                    and "semantic_pose_transfer" in reference_conditioning_variants
+                ),
             )
             reference_attempt_extra = _provider_reference_attempt_extra(
                 provider_reference_images,
@@ -2321,12 +2325,23 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             if str(args.get("image_model") or "").strip():
                 repair_kwargs["model"] = str(args["image_model"]).strip()
             _apply_image_provider_override(repair_kwargs, image_provider_override)
-            repair_payload = _call_generation_provider(
-                generate_image,
-                kind="image",
-                stage="image_quality_repair",
-                kwargs=repair_kwargs,
-            )
+            if _pose_structure_guide_unavailable(reference_conditioning):
+                repair_payload = {
+                    "success": False,
+                    "error_type": "pose_structure_guide_unavailable",
+                    "error": (
+                        "Could not derive the pose structure guide; repair generation was skipped "
+                        "to avoid sending the original pose reference and risking identity drift."
+                    ),
+                    "provider": image_provider_override,
+                }
+            else:
+                repair_payload = _call_generation_provider(
+                    generate_image,
+                    kind="image",
+                    stage="image_quality_repair",
+                    kwargs=repair_kwargs,
+                )
             repair_payload["retry_of"] = selected_image.get("attempt_id")
             repair_payload["quality_repair"] = {
                 "reason": image_gate.get("reason"),
@@ -4547,6 +4562,7 @@ def _provider_reference_image_urls(
     *,
     conditioning_policy: str | None = None,
     pose_transfer: dict[str, Any] | None = None,
+    fail_closed_on_structure_guide_unavailable: bool = False,
 ) -> tuple[list[str], dict[str, Any] | None]:
     if not attachments:
         return [], None
@@ -4681,6 +4697,15 @@ def _provider_reference_image_urls(
                                 }
                             )
                     continue
+                if policy == "structure_guide" and fail_closed_on_structure_guide_unavailable:
+                    omitted.append(
+                        {
+                            "index": index,
+                            "role_hint": role_hint,
+                            "reason": "pose_structure_guide_unavailable",
+                        }
+                    )
+                    continue
             append_required(
                 attachment,
                 with_reference_metadata(index, role_hint, "pose_composition_original_role_locked"),
@@ -4761,6 +4786,11 @@ def _reference_conditioning_policy_for_gate(
     if not variants:
         return None
     quality_issues = set(_string_list(gate.get("quality_issues")))
+    if (
+        "semantic_pose_transfer" in variants
+        and quality_issues.intersection({"composition_bad", "action_or_moment_missing"})
+    ):
+        return "structure_guide"
     if "reference_identity_drift" in quality_issues and "structure_guide" in variants:
         return "structure_guide"
     if "composition_bad" in quality_issues and "role_locked_originals" in variants:
@@ -4894,9 +4924,8 @@ def _apply_provider_reference_conditioning_prompt(
             )
             lines.append(
                 f"- provider image {provider_index} is a derived pose/composition guide from {user_label}; "
-                "use it only to reinforce pose, camera angle, framing, body orientation, limb placement, "
-                "and composition. It is not a separate user ref and must not change identity, face, hair, "
-                f"wardrobe, or color palette.{policy_note}"
+                "use only pose, camera angle, framing, body orientation, limb placement, and composition; "
+                f"never identity, face, hair, wardrobe, or color palette.{policy_note}"
             )
         elif conditioning == "pose_composition_edge_guide":
             lines.append(
@@ -4917,8 +4946,8 @@ def _apply_provider_reference_conditioning_prompt(
         elif role_hint == "character_identity":
             lines.append(
                 f"- provider image {provider_index} is {user_label}, the only character identity/edit anchor. "
-                "Preserve the recognizable subject, face, hair, silhouette, outfit, accessories, palette, body "
-                "proportions, and preserve the visual style. Change pose and framing only as directed below."
+                "Preserve identity, face, hair, silhouette, outfit, accessories, palette, body proportions, "
+                "and style; change only the requested pose and framing."
             )
         else:
             lines.append(
@@ -6567,11 +6596,36 @@ def _generate_image_quality_repair_candidate(
         reference_binding,
         conditioning_policy=repair_reference_policy,
         pose_transfer=pose_transfer,
+        fail_closed_on_structure_guide_unavailable=(
+            repair_reference_policy == "structure_guide"
+            and "semantic_pose_transfer" in (reference_conditioning_variants or [])
+        ),
     )
     reference_attempt_extra = _provider_reference_attempt_extra(
         provider_reference_images,
         reference_conditioning,
     )
+    if _pose_structure_guide_unavailable(reference_conditioning):
+        repair_payload = {
+            "success": False,
+            "error_type": "pose_structure_guide_unavailable",
+            "error": (
+                "Could not derive the pose structure guide; repair generation was skipped to avoid "
+                "sending the original pose reference and risking identity drift."
+            ),
+            "provider": image_provider_override,
+            "quality_repair": {
+                "round": repair_round,
+                "reason": image_gate.get("reason"),
+                "quality_issues": image_gate.get("quality_issues", []),
+                "policy_mode": image_repair_mode,
+                "policy_actions": feedback_policy.get("applied_action_types", []),
+                "strategy": (repair_plan or {}).get("strategy"),
+                "blocker_codes": _string_list((repair_plan or {}).get("blocker_codes")),
+                "visual_contract_hash": str(args.get("visual_contract_hash") or ""),
+            },
+        }
+        return None, repair_payload
     repair_prompt = _apply_provider_reference_conditioning_prompt(
         repair_prompt,
         reference_conditioning,
@@ -6914,8 +6968,6 @@ def _quality_repair_prompt(
     issues = _string_list(gate.get("quality_issues"))
     instructions: list[str] = []
     reference_repair = _reference_role_repair_instruction(reference_binding, issues)
-    if reference_repair:
-        instructions.append(reference_repair)
     if "subject_not_attractive" in issues or "not_beautiful" in issues:
         instructions.append("render a naturally beautiful subject with clean facial features")
     if "composition_bad" in issues:
@@ -6945,34 +6997,43 @@ def _quality_repair_prompt(
             )
         else:
             instructions.append("show the requested action or decisive visual moment clearly")
+    if reference_repair:
+        instructions.append(reference_repair)
     if not instructions:
         instructions.append("improve visual quality while preserving the original intent")
     repair = "; ".join(instructions)
     if mode == "preferred":
-        policy_instruction = "Proven quality repair strategy: reuse the historically successful repair pattern. "
+        policy_instruction = (
+            "Proven quality repair strategy: reuse the historically successful repair pattern; "
+        )
     elif mode == "escalated":
         policy_instruction = (
-            "Escalated quality repair strategy: change the composition path instead of repeating the failed draft. "
+            "Escalated quality repair strategy: change the composition path instead of repeating "
+            "the failed draft; "
         )
     elif mode == "hybrid_final_combine":
         policy_instruction = (
-            "Hybrid repair pass: regenerate once with stricter role separation. Preserve character identity "
-            "from character-design refs, preserve pose/camera/framing from pose-composition refs, and remove "
-            "any guide lines, contour-map artifacts, stitched-reference blending, or identity drift. "
-        )
-        return (
-            f"{policy_instruction}Quality repair pass: "
-            f"{repair}. Avoid distorted anatomy, awkward face rendering, weak composition, "
-            "and low-quality surface detail.\n\n"
-            f"Original target to preserve: {prompt}"
+            "Hybrid repair pass: use strict role separation: identity only from character refs and "
+            "pose/camera/framing only from pose refs; remove guide artifacts, blended references, "
+            "and identity drift; "
         )
     else:
         policy_instruction = ""
     return (
-        f"{policy_instruction}Quality repair pass: "
-        f"{repair}. Avoid distorted anatomy, awkward face rendering, weak composition, "
+        f"Quality repair pass: {policy_instruction}{repair}. "
+        "Avoid distorted anatomy, awkward face rendering, weak composition, "
         "and low-quality surface detail.\n\n"
         f"Original target to preserve: {prompt}"
+    )
+
+
+def _pose_structure_guide_unavailable(conditioning: dict[str, Any] | None) -> bool:
+    if not isinstance(conditioning, dict) or conditioning.get("policy") != "structure_guide":
+        return False
+    return any(
+        isinstance(item, dict)
+        and item.get("reason") == "pose_structure_guide_unavailable"
+        for item in conditioning.get("omitted_provider_references") or []
     )
 
 
