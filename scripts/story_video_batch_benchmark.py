@@ -179,7 +179,10 @@ def run_benchmark(fixture: dict[str, Any], root: Path) -> dict[str, Any]:
         "continuity_hold_count": len(unresolved)
         == int(expected["expected_continuity_hold_count"]),
         "provider_lock": all(
-            call.get("provider") == "openai-codex" for call in generator.calls
+            call.get("provider") == "visual-engine-openai" for call in generator.calls
+        ) and all(
+            row.get("provider") == "openai-codex"
+            for row in candidate_manifest.get("attempt_history") or []
         ),
         "no_hard_blocked_selection": all(
             not row.get("hard_blockers") for row in selected_rows

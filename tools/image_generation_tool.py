@@ -1478,6 +1478,7 @@ def _dispatch_to_plugin_provider(
     *,
     provider_override: Optional[str] = None,
     model_override: Optional[str] = None,
+    task_id: Optional[str] = None,
 ):
     """Route the call to a plugin-registered provider when one is selected.
 
@@ -1544,6 +1545,8 @@ def _dispatch_to_plugin_provider(
 
     kwargs: Dict[str, Any] = {"prompt": prompt, "aspect_ratio": aspect_ratio}
     try:
+        if isinstance(task_id, str) and task_id.strip():
+            kwargs["task_id"] = task_id.strip()
         if configured_model:
             kwargs["model"] = configured_model
         if isinstance(image_url, str) and image_url.strip():
@@ -1762,6 +1765,7 @@ def _handle_image_generate(args, **kw):
         reference_image_urls=reference_image_urls,
         provider_override=provider_override,
         model_override=args.get("_model"),
+        task_id=task_id,
     )
     if dispatched is not None:
         postprocessed = _postprocess_image_generate_result(dispatched, task_id=task_id)

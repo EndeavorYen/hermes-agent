@@ -7,6 +7,7 @@ from agent.visual.prompt_text import strip_visual_prompt_metadata
 
 
 STORY_VIDEO_IMAGE_PROVIDER = "openai-codex"
+STORY_VIDEO_ENGINE_IMAGE_PROVIDER = "visual-engine-openai"
 STORY_VIDEO_PROVIDER_ERROR_TYPE = "story_video_provider_blocked"
 
 _DIRECT_STORY_VIDEO_MARKERS = (
@@ -272,6 +273,8 @@ def resolve_story_video_image_provider(
         return STORY_VIDEO_IMAGE_PROVIDER, None
     if normalized == STORY_VIDEO_IMAGE_PROVIDER:
         return STORY_VIDEO_IMAGE_PROVIDER, None
+    if normalized == STORY_VIDEO_ENGINE_IMAGE_PROVIDER:
+        return STORY_VIDEO_ENGINE_IMAGE_PROVIDER, None
     provider = str(provider_override or normalized)
     return provider_override, {
         "success": False,
