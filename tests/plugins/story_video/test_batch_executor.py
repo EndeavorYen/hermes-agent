@@ -130,6 +130,15 @@ def _compiler(_context, *, shot_id: str) -> dict:
     }
 
 
+def test_generation_args_route_keyframes_through_visual_engine_openai() -> None:
+    args = StoryVideoBatchExecutor._generation_args(
+        {"prompt": "precise story-video keyframe", "reference_image_urls": []}
+    )
+
+    assert args["provider"] == "visual-engine-openai"
+    assert args["aspect_ratio"] == "16:9"
+
+
 def test_executor_runs_fresh_shots_before_one_bounded_repair_wave(tmp_path) -> None:
     context = _context(tmp_path)
     generator = FakeGenerator(tmp_path)
@@ -156,7 +165,7 @@ def test_executor_runs_fresh_shots_before_one_bounded_repair_wave(tmp_path) -> N
     assert complete.work_status == "complete"
     assert len(generator.calls) == 8
     assert generator.max_active == 3
-    assert all(call["provider"] == "openai-codex" for call in generator.calls)
+    assert all(call["provider"] == "visual-engine-openai" for call in generator.calls)
 
     batch_manifest = json.loads(
         (context.project_dir / "manifests" / "batch_run_manifest.json").read_text()
@@ -725,7 +734,7 @@ def test_executor_recovers_legacy_candidate_usage_before_resuming(tmp_path) -> N
     assert batch_manifest["budget"]["generated_by_shot"]["S00_SH00"] == 2
 
 
-def test_executor_passes_source_image_and_style_references_to_openai(tmp_path) -> None:
+def test_executor_passes_source_image_and_style_references_to_engine_openai(tmp_path) -> None:
     context = _context(tmp_path, shot_count=1)
     generator = FakeGenerator(tmp_path)
 
@@ -750,7 +759,7 @@ def test_executor_passes_source_image_and_style_references_to_openai(tmp_path) -
         {
             "prompt": "precise prompt for S00_SH00",
             "aspect_ratio": "16:9",
-            "provider": "openai-codex",
+            "provider": "visual-engine-openai",
             "image_url": "/tmp/repair-source.png",
             "reference_image_urls": ["/tmp/style-anchor.png"],
         }

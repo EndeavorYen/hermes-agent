@@ -15,6 +15,20 @@ def test_story_video_implicit_image_provider_is_openai_codex():
     assert error is None
 
 
+def test_story_video_engine_openai_adapter_is_an_allowed_openai_route():
+    from tools.story_video_provider_guard import resolve_story_video_image_provider
+
+    prompt = "Scene S03 keyframe for a 5-minute documentary with narration and subtitles"
+    provider, error = resolve_story_video_image_provider(
+        {"prompt": prompt, "provider": "visual-engine-openai"},
+        prompt=prompt,
+        provider_override="visual-engine-openai",
+    )
+
+    assert provider == "visual-engine-openai"
+    assert error is None
+
+
 def test_story_video_explicit_xai_image_provider_is_blocked_without_prompt_echo():
     from tools.story_video_provider_guard import resolve_story_video_image_provider
 

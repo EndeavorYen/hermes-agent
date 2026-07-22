@@ -52,6 +52,41 @@ class _NamedRecordingProvider(ImageGenProvider):
 
 
 class TestPluginDispatch:
+    def test_dispatch_forwards_task_id_to_plugin_provider(
+        self, monkeypatch, tmp_path
+    ):
+        from agent import image_gen_registry as registry_module
+        from hermes_cli import plugins as plugins_module
+        from tools import image_generation_tool
+
+        provider = _NamedRecordingProvider("visual-engine-openai")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(
+            image_generation_tool,
+            "_read_configured_image_provider",
+            lambda: "visual-engine-openai",
+        )
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda *a, **k: None)
+        monkeypatch.setattr(
+            registry_module,
+            "get_provider",
+            lambda name: provider if name == "visual-engine-openai" else None,
+        )
+
+        payload = json.loads(
+            image_generation_tool._handle_image_generate(
+                {
+                    "prompt": "Story-video shot",
+                    "provider": "visual-engine-openai",
+                    "_disable_visual_tracking": True,
+                },
+                task_id="story-video-run-1-S01_SH01",
+            )
+        )
+
+        assert payload["success"] is True
+        assert provider.last_kwargs["task_id"] == "story-video-run-1-S01_SH01"
+
     def test_legacy_reference_images_reach_xai_provider_as_reference_urls(
         self, monkeypatch, tmp_path
     ):

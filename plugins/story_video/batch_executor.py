@@ -17,6 +17,7 @@ from .sequence_quality import build_sequence_quality_report, write_sequence_qual
 
 _MANIFEST_LOCK = threading.RLock()
 _SEQUENCE_QUALITY_GATE_VERSION = 2
+_ENGINE_IMAGE_PROVIDER = "visual-engine-openai"
 
 
 def _utc_now() -> str:
@@ -483,7 +484,7 @@ class StoryVideoBatchExecutor:
             )
 
         generation_wave_run = GenerationWaveScheduler(
-            provider="openai-codex",
+            provider=_ENGINE_IMAGE_PROVIDER,
             requested_parallelism=self.max_workers,
         ).run(
             [
@@ -716,7 +717,7 @@ class StoryVideoBatchExecutor:
         args: dict[str, Any] = {
             "prompt": str(item.get("prompt") or ""),
             "aspect_ratio": "16:9",
-            "provider": "openai-codex",
+            "provider": _ENGINE_IMAGE_PROVIDER,
         }
         source = str(item.get("source_image_url") or "").strip()
         if source:
