@@ -2110,7 +2110,9 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
     return str(interpreter), env_overlay
 
 
-def _run_job_script(script_path: str) -> tuple[bool, str]:
+def _run_job_script(
+    script_path: str, *, workdir: Optional[str] = None
+) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
     Scripts must reside within HERMES_HOME/scripts/.  Both relative and
@@ -2136,6 +2138,8 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         script_path: Path to the script.  Relative paths are resolved
             against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
             are also validated to ensure they stay within the scripts dir.
+        workdir: Optional subprocess working directory. Script resolution and
+            containment remain anchored to HERMES_HOME/scripts/.
 
     Returns:
         (success, output) — on failure *output* contains the error message so the
@@ -2211,7 +2215,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             capture_output=True,
             text=True,
             timeout=script_timeout,
-            cwd=str(path.parent),
+            cwd=workdir or str(path.parent),
             env=env,
             **popen_kwargs,
         )
@@ -2245,7 +2249,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
 
 
 def _run_job_script_with_claim_heartbeat(
-    job: dict, script_path: str
+    job: dict, script_path: str, *, workdir: Optional[str] = None
 ) -> tuple[bool, str]:
     """Run a cron script while keeping its owned one-shot claim fresh.
 
@@ -2259,6 +2263,11 @@ def _run_job_script_with_claim_heartbeat(
     storage.  ``heartbeat_run_claim`` compares that stable owner before every
     refresh, so a stale runner cannot extend a replacement owner's claim.
     """
+    def _run_script() -> tuple[bool, str]:
+        if workdir is None:
+            return _run_job_script(script_path)
+        return _run_job_script(script_path, workdir=workdir)
+
     schedule = job.get("schedule")
     claim = job.get("run_claim")
     owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
@@ -2267,7 +2276,7 @@ def _run_job_script_with_claim_heartbeat(
         and schedule.get("kind") == "once"
         and owner
     ):
-        return _run_job_script(script_path)
+        return _run_script()
 
     job_id = str(job.get("id") or "")
     stop = threading.Event()
@@ -2298,10 +2307,10 @@ def _run_job_script_with_claim_heartbeat(
             job_id,
             exc_info=True,
         )
-        return _run_job_script(script_path)
+        return _run_script()
 
     try:
-        return _run_job_script(script_path)
+        return _run_script()
     finally:
         stop.set()
         # Event.wait() wakes immediately.  Keep completion bounded if the
@@ -2707,22 +2716,12 @@ def run_job(
         # paths. For no_agent jobs this is just the subprocess cwd (not an
         # agent TERMINAL_CWD bridge).
         _job_workdir = (job.get("workdir") or "").strip() or None
-        _prior_cwd = None
-        if _job_workdir and Path(_job_workdir).is_dir():
-            _prior_cwd = os.getcwd()
-            try:
-                os.chdir(_job_workdir)
-            except OSError:
-                _prior_cwd = None
+        if _job_workdir and not Path(_job_workdir).is_dir():
+            _job_workdir = None
 
-        try:
-            ok, output = _run_job_script_with_claim_heartbeat(job, script_path)
-        finally:
-            if _prior_cwd is not None:
-                try:
-                    os.chdir(_prior_cwd)
-                except OSError:
-                    pass
+        ok, output = _run_job_script_with_claim_heartbeat(
+            job, script_path, workdir=_job_workdir
+        )
 
         now_iso = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
 

@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -208,6 +209,31 @@ def test_run_job_no_agent_success_returns_script_stdout(hermes_env):
     assert error is None
     assert "RAM 92% on host" in final_response
     assert "RAM 92% on host" in doc
+
+
+def test_run_job_no_agent_uses_configured_workdir(hermes_env, tmp_path):
+    """The script subprocess must run from the job's configured workdir."""
+    from cron.jobs import create_job
+    from cron.scheduler import run_job
+
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    script_path = hermes_env / "scripts" / "show_cwd.py"
+    script_path.write_text("from pathlib import Path\nprint(Path.cwd())\n")
+
+    job = create_job(
+        prompt=None,
+        schedule="every 5m",
+        script="show_cwd.py",
+        no_agent=True,
+        deliver="local",
+        workdir=str(workdir),
+    )
+    success, _doc, final_response, error = run_job(job)
+
+    assert success is True
+    assert error is None
+    assert Path(final_response) == workdir
 
 
 def test_run_job_no_agent_empty_output_is_silent(hermes_env):
