@@ -9,6 +9,7 @@ from agent.raphael.artifacts import (
     latest_selected_artifact_id,
     recover_reference_attachment_paths,
 )
+from tools.story_video_provider_guard import current_operator_request_text
 
 BASE_LLM_PROVIDER = "openai-codex"
 BASE_LLM_MODEL = ""
@@ -252,14 +253,19 @@ def build_raphael_control_decision(
     visual_plan: Mapping[str, Any] | None = None,
     visual_result: Mapping[str, Any] | None = None,
 ) -> RaphaelControlDecision:
-    prompt = _extract_text(user_message)
+    prompt = current_operator_request_text(user_message) or _extract_text(user_message)
     attachment_list = tuple(
         str(item).strip()
         for item in (attachments or ())
         if str(item).strip() and _is_visual_attachment_ref(str(item))
     )
-    if not attachment_list and conversation_history and _mentioned_ref_indices(prompt):
-        attachment_list = recover_reference_attachment_paths(conversation_history)
+    if not attachment_list:
+        if conversation_history and _mentioned_ref_indices(prompt):
+            attachment_list = recover_reference_attachment_paths(conversation_history)
+        if not attachment_list:
+            from gateway.session_context import get_visual_reference_context
+
+            attachment_list = tuple(get_visual_reference_context())
     active_artifact_id = latest_selected_artifact_id(conversation_history)
 
     if active_mission is not None and _looks_like_mission_followup(prompt):

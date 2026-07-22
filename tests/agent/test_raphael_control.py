@@ -396,6 +396,75 @@ def test_control_accepts_named_refs_recoverable_from_thread_history():
     assert not decision.goal.blockers
 
 
+def test_control_accepts_named_refs_resolved_by_gateway_session_context():
+    from gateway.session_context import (
+        reset_visual_reference_context,
+        set_visual_reference_context,
+    )
+
+    token = set_visual_reference_context(
+        [
+            {
+                "uri": "/tmp/ref1.jpg",
+                "role_hint": "character_identity",
+                "source": "previous_tool_reference",
+                "user_ref_index": 1,
+            },
+            {
+                "uri": "/tmp/ref2.jpg",
+                "role_hint": "pose_composition",
+                "source": "previous_tool_reference",
+                "user_ref_index": 2,
+            },
+        ]
+    )
+    try:
+        decision = build_raphael_control_decision(
+            "完全保持 ref1 的人物特徵，只套用 ref2 的動作，重新產出",
+            attachments=[],
+            conversation_history=[],
+        )
+    finally:
+        reset_visual_reference_context(token)
+
+    assert decision.mode == "visual_agent_generation"
+    assert decision.reference_resolution != "clarify_missing_reference"
+    assert not decision.goal.blockers
+
+
+def test_control_ignores_named_refs_inside_slack_thread_context():
+    from gateway.session_context import (
+        reset_visual_reference_context,
+        set_visual_reference_context,
+    )
+
+    token = set_visual_reference_context(
+        [
+            {"uri": "/tmp/ref1.jpg", "user_ref_index": 1},
+            {"uri": "/tmp/ref2.jpg", "user_ref_index": 2},
+        ]
+    )
+    try:
+        decision = build_raphael_control_decision(
+            '''[Replying to: "用 xai，將 ref1 的人物套用至 ref2 的動作"]
+
+[Thread context — prior messages in this thread (not yet in conversation history):]
+[thread parent] simon: 用 xai，將 ref1 的人物套用至 ref2 的動作
+simon: ref1 鎖定人物，ref2 鎖定姿勢
+[End of thread context]
+
+請產出更多不同姿勢，4張''',
+            attachments=[],
+            conversation_history=[],
+        )
+    finally:
+        reset_visual_reference_context(token)
+
+    assert decision.mode == "visual_agent_generation"
+    assert decision.reference_resolution != "clarify_missing_reference"
+    assert not decision.goal.blockers
+
+
 def test_control_asks_clarification_for_ambiguous_unassigned_references():
     decision = build_raphael_control_decision(
         "用 ref1、ref2、ref3 做一張更好看的角色圖",
