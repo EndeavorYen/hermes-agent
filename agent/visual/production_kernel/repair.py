@@ -92,6 +92,17 @@ def plan_visual_repair(
                 "while changing only the failed composition or rendering details."
             ),
         )
+    if "reference_overcopy" in blockers:
+        return _plan(
+            "reference_resynthesis",
+            blockers,
+            should_generate=True,
+            directive=(
+                "Create a genuinely new role-locked synthesis: preserve character identity only from the "
+                "identity reference and use the pose reference only for pose, camera, framing, and limb layout. "
+                "Do not reproduce either reference verbatim or reuse the pose reference as the final image."
+            ),
+        )
     if "composition_weak" in blockers:
         return _plan(
             "composition_reset",

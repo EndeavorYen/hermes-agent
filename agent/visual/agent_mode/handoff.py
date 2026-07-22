@@ -338,6 +338,7 @@ def _is_visual_followup_edit_request(prompt: str) -> bool:
         "试试",
         "換個",
         "换个",
+        "套用",
         "移除",
         "去掉",
         "脫掉",

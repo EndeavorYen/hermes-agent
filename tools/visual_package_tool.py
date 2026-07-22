@@ -6424,9 +6424,15 @@ def _apply_visual_kernel_delivery_gate(
         requested = {}
     vision_source = str(candidate.get("vision_observation_source") or "").strip()
     trusted_vision_sources = {"candidate_vision_observation", "inline_vision_judge"}
+    vision_source_components = {
+        component.strip()
+        for component in vision_source.split("+")
+        if component.strip()
+    }
     confidence = (
         candidate.get("visual_quality_confidence")
-        if vision_source in trusted_vision_sources and not candidate.get("vision_failure")
+        if vision_source_components.intersection(trusted_vision_sources)
+        and not candidate.get("vision_failure")
         else 0.0
     )
     hard_gate = candidate.get("hard_gate")
@@ -6923,6 +6929,11 @@ def _quality_repair_prompt(
         instructions.append("make wardrobe and legwear texture clean, refined, and realistic")
     if "reference_identity_drift" in issues:
         instructions.append("preserve the reference identity and recognizable facial structure")
+    if "reference_overcopy" in issues:
+        instructions.append(
+            "create a genuinely new synthesis and do not reproduce either reference verbatim; "
+            "take identity only from the identity reference and geometry only from the pose reference"
+        )
     if "required_detail_missing" in issues:
         instructions.append(
             "audit each explicit user requirement and visibly satisfy every missing required detail"

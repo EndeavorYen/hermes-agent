@@ -65,3 +65,15 @@ def test_stale_contract_requires_recompile_without_generation():
 
     assert plan.strategy == "recompile_contract"
     assert plan.should_generate is False
+
+
+def test_reference_overcopy_requests_new_role_locked_synthesis():
+    plan = plan_visual_repair(
+        ("reference_overcopy",),
+        prior_generated_repairs=(),
+    )
+
+    assert plan.strategy == "reference_resynthesis"
+    assert plan.should_generate is True
+    assert "identity reference" in plan.directive
+    assert "pose reference" in plan.directive

@@ -14,6 +14,7 @@ _BLOCKER_ORDER = (
     "action_or_moment_missing",
     "composition_weak",
     "reference_identity_drift",
+    "reference_overcopy",
     "style_mismatch",
     "truth_or_evidence_risk",
     "other",
@@ -87,7 +88,9 @@ def classify_quality_blockers(quality_issues: Iterable[Any]) -> tuple[str, ...]:
         text = str(issue or "").strip().lower()
         if not text:
             continue
-        if "reference" in text and any(token in text for token in ("identity", "drift", "role")):
+        if text == "reference_overcopy":
+            blockers.add("reference_overcopy")
+        elif "reference" in text and any(token in text for token in ("identity", "drift", "role")):
             blockers.add("reference_identity_drift")
         elif any(token in text for token in ("composition", "framing", "focal", "pose_stiff")):
             blockers.add("composition_weak")
