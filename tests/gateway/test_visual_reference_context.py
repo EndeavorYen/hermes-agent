@@ -107,6 +107,103 @@ def test_named_visual_references_search_full_history_in_prompt_order_with_roles(
     ]
 
 
+def test_named_g_references_survive_positional_reattachment_across_session_rollover():
+    from gateway.run import _visual_reference_context_for_turn
+
+    prior_history = [
+        {
+            "role": "tool",
+            "content": json.dumps(
+                {
+                    "success": True,
+                    "session_visual_artifacts": [
+                        {"label": "G1", "user_ref_index": 1, "uri": "/tmp/g1.jpg"}
+                    ],
+                }
+            ),
+        }
+    ]
+    current_history = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "function": {
+                        "name": "visual_package_generate",
+                        "arguments": json.dumps(
+                            {
+                                "attachments": [
+                                    "/tmp/original-ref1.jpg",
+                                    "/tmp/original-ref2.jpg",
+                                ],
+                                "reference_binding": {
+                                    "reference_order": [
+                                        {"index": 1, "role_hint": "character_identity"},
+                                        {"index": 2, "role_hint": "pose_composition"},
+                                    ]
+                                },
+                            }
+                        ),
+                    }
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "content": json.dumps(
+                {
+                    "success": True,
+                    "session_visual_artifacts": [
+                        {"label": "G2", "user_ref_index": 2, "uri": "/tmp/g2.jpg"}
+                    ],
+                }
+            ),
+        },
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "function": {
+                        "name": "visual_package_generate",
+                        "arguments": json.dumps(
+                            {
+                                "attachments": [
+                                    "/tmp/g3.jpg",
+                                    "/tmp/g4.jpg",
+                                    "/tmp/g1.jpg",
+                                ],
+                                "reference_binding": {
+                                    "reference_order": [
+                                        {"index": 1, "role_hint": "visual_reference"},
+                                        {"index": 2, "role_hint": "visual_reference"},
+                                        {"index": 3, "role_hint": "visual_reference"},
+                                    ]
+                                },
+                            }
+                        ),
+                    }
+                }
+            ],
+        },
+    ]
+
+    references = _visual_reference_context_for_turn(
+        "G1 的人物，套用 G2 的姿勢",
+        current_attachment_paths=[],
+        agent_history=current_history,
+        fallback_agent_history=prior_history,
+    )
+
+    assert [entry["uri"] for entry in references] == [
+        "/tmp/g1.jpg",
+        "/tmp/g2.jpg",
+    ]
+    assert [entry["role_hint"] for entry in references] == [
+        "character_identity",
+        "pose_composition",
+    ]
+
+
 def test_named_ref_followup_recovers_original_uploads_after_generated_candidates():
     from gateway.run import _visual_reference_context_for_turn
 
