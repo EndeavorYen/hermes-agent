@@ -34,6 +34,9 @@ _SECTION_LABELS = {
     "reference mapping from the user's visible upload order": "Reference use",
     "reference roles for this request": "Reference use",
     "role constraints": "Role constraints",
+    "quality repair pass": "Quality repair pass",
+    "visual contract repair strategy": "Visual contract repair strategy",
+    "original target to preserve": "Original target",
 }
 _THREAD_CONTEXT_RE = re.compile(
     r"\[Thread context[^\]]*\].*?(?:\[End of thread context\]|$)",
@@ -61,7 +64,11 @@ _XAI_POSITIVE_LABELS = {
     "quality",
     "quality refinements",
     "role constraints",
+    "quality repair pass",
+    "visual contract repair strategy",
+    "original target",
 }
+_XAI_REPAIR_LABELS = {"quality repair pass", "visual contract repair strategy"}
 
 
 def strip_visual_runtime_metadata(value: Any) -> str:
@@ -109,6 +116,7 @@ def build_provider_facing_visual_prompt(
         return _normalise_provider_prompt_text(text)
 
     output: list[str] = []
+    provider_reference_blocks: list[str] = []
     saw_collective_reference_policy = False
     saw_reference_mapping = False
     for label, body in sections:
@@ -122,7 +130,7 @@ def build_provider_facing_visual_prompt(
             if _section_is_collective_reference_policy(cleaned_body):
                 saw_collective_reference_policy = True
             elif cleaned_body:
-                output.append(f"Reference use: {cleaned_body}")
+                provider_reference_blocks.append(f"Reference use: {cleaned_body}")
             continue
         display_label = _SECTION_LABELS.get(normalized_label)
         if display_label is None:
@@ -141,7 +149,9 @@ def build_provider_facing_visual_prompt(
             "palette, and recurring design cues only; create a new coherent image, not a cleanup, "
             "canvas extension, watermark removal, stitched blend, collage, or average of one reference."
         )
-    prompt = "\n\n".join(_dedupe_prompt_blocks(output)).strip()
+    prompt = "\n\n".join(
+        _dedupe_prompt_blocks([*provider_reference_blocks, *output])
+    ).strip()
     prompt = _normalise_provider_prompt_text(prompt)
     if _should_compact_for_xai(provider, request_category, prompt):
         return _compact_xai_creative_brief_prompt(prompt)
@@ -293,6 +303,7 @@ def _compact_xai_creative_brief_prompt(prompt: str) -> str:
         if _normalise_provider_prompt_text(block)
     ]
     positive_blocks: list[str] = []
+    repair_blocks: list[tuple[str, str]] = []
     reference_blocks: list[str] = []
     avoid_items: list[str] = []
     reference_added = False
@@ -308,6 +319,9 @@ def _compact_xai_creative_brief_prompt(prompt: str) -> str:
             if reference_sentence:
                 reference_blocks.append(reference_sentence)
                 reference_added = reference_added or reference_sentence == _XAI_REFERENCE_SENTENCE
+            continue
+        if label in _XAI_REPAIR_LABELS:
+            repair_blocks.append((label, _xai_positive_label_sentence(label, body)))
             continue
         if label in _XAI_POSITIVE_LABELS:
             positive_blocks.append(_xai_positive_label_sentence(label, body))
@@ -333,9 +347,38 @@ def _compact_xai_creative_brief_prompt(prompt: str) -> str:
         for block in reference_blocks
     )
     if semantic_reference_roles:
-        semantic_budget = 960 if candidate_lane else _XAI_PROMPT_MAX_CHARS
+        priority_repair = ""
+        if repair_blocks:
+            ordered_repairs = sorted(
+                repair_blocks,
+                key=lambda item: 0 if item[0] == "visual contract repair strategy" else 1,
+            )
+            priority_repair = _trim_xai_text(
+                " ".join(block for _label, block in ordered_repairs),
+                460,
+            )
+        semantic_budget = 680 if priority_repair else (960 if candidate_lane else _XAI_PROMPT_MAX_CHARS)
         semantic_core = _trim_xai_text(" ".join(reference_blocks), semantic_budget)
-        positive_blocks = [semantic_core, *([candidate_lane] if candidate_lane else []), *positive_blocks]
+        positive_blocks = [
+            *([priority_repair] if priority_repair else []),
+            semantic_core,
+            *([candidate_lane] if candidate_lane else []),
+            *positive_blocks,
+        ]
+    elif repair_blocks:
+        ordered_repairs = sorted(
+            repair_blocks,
+            key=lambda item: 0 if item[0] == "visual contract repair strategy" else 1,
+        )
+        priority_repair = _trim_xai_text(
+            " ".join(block for _label, block in ordered_repairs),
+            460,
+        )
+        positive_blocks = [
+            priority_repair,
+            *reference_blocks,
+            *positive_blocks,
+        ]
     elif positive_blocks and reference_blocks:
         positive_blocks = [positive_blocks[0], *reference_blocks, *positive_blocks[1:]]
     elif reference_blocks:
@@ -404,6 +447,10 @@ def _xai_positive_label_sentence(label: str, body: str) -> str:
         return ""
     if label == "role constraints":
         return f"Follow reference role constraints: {text}"
+    if label == "quality repair pass":
+        return f"Quality repair pass: {text}"
+    if label == "visual contract repair strategy":
+        return f"Visual contract repair strategy: {text}"
     return _capitalise_ascii_sentence(text)
 
 
@@ -429,9 +476,11 @@ def _trim_xai_text(text: str, max_chars: int) -> str:
     value = _normalise_provider_prompt_text(text)
     if len(value) <= max_chars:
         return value
-    cutoff = max_chars
+    if max_chars <= 0:
+        return ""
+    cutoff = max_chars - 1
     for marker in (". ", "; ", ", "):
-        index = value.rfind(marker, 0, max_chars)
+        index = value.rfind(marker, 0, cutoff)
         if index >= max_chars * 0.55:
             cutoff = index + len(marker.rstrip())
             break

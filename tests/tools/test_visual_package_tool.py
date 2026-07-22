@@ -1432,6 +1432,263 @@ def test_xai_quality_repair_priority_survives_long_prompt_compaction():
     assert "visibly satisfy every missing required detail" in compacted
 
 
+def test_xai_semantic_pose_compaction_preserves_quality_repair_directive():
+    from agent.visual.prompt_text import build_provider_facing_visual_prompt
+    from tools import visual_package_tool
+
+    repair = visual_package_tool._quality_repair_prompt(
+        "G1 character with G2 pose",
+        {
+            "quality_issues": [
+                "composition_bad",
+                "action_or_moment_missing",
+            ]
+        },
+        reference_binding={
+            "reference_order": [
+                {"index": 1, "role_hint": "character_identity"},
+                {"index": 2, "role_hint": "pose_composition"},
+            ]
+        },
+    )
+    repair += (
+        "\n\nVisual contract repair strategy: composition_reset. "
+        "Blocker codes: action_or_moment_missing, composition_weak. "
+        "Correct blocker composition_weak with a materially different composition, "
+        "focal hierarchy, and subject placement."
+    )
+    conditioned = visual_package_tool._apply_provider_reference_conditioning_prompt(
+        repair,
+        {
+            "policy": "semantic_pose_transfer",
+            "provider_reference_images": [
+                {
+                    "index": 1,
+                    "provider_index": 1,
+                    "role_hint": "character_identity",
+                    "conditioning": "original",
+                }
+            ],
+            "pose_transfer": {
+                "instruction": (
+                    "framing three quarter; body posture standing; camera low and near frontal; "
+                    "torso leaning back; subject left arm raised; subject right arm lowered; "
+                    "subject left leg bent in the foreground; preserve the visible limb layout"
+                )
+            },
+        },
+    )
+
+    compacted = build_provider_facing_visual_prompt(
+        conditioned,
+        provider="xai",
+        request_category="reference_edit",
+    )
+
+    assert len(compacted) <= 1200
+    assert "subject left arm raised" in compacted
+    assert "match the bound pose/composition reference's visible action exactly" in compacted
+    assert "materially different composition" in compacted
+
+
+@pytest.mark.parametrize("mode", ["preferred", "escalated", "hybrid_final_combine"])
+def test_xai_semantic_pose_compaction_preserves_learned_quality_repair_modes(mode):
+    from agent.visual.prompt_text import build_provider_facing_visual_prompt
+    from tools import visual_package_tool
+
+    repair = visual_package_tool._quality_repair_prompt(
+        "Detailed original target. " * 100,
+        {"quality_issues": ["composition_bad", "action_or_moment_missing"]},
+        mode=mode,
+        reference_binding={
+            "reference_order": [
+                {"index": 1, "role_hint": "character_identity"},
+                {"index": 2, "role_hint": "pose_composition"},
+            ]
+        },
+    )
+    conditioned = visual_package_tool._apply_provider_reference_conditioning_prompt(
+        repair,
+        {
+            "policy": "semantic_pose_transfer",
+            "provider_reference_images": [
+                {
+                    "index": 1,
+                    "provider_index": 1,
+                    "role_hint": "character_identity",
+                    "conditioning": "original",
+                }
+            ],
+            "pose_transfer": {
+                "instruction": "three-quarter framing with the left arm raised and right leg forward"
+            },
+        },
+    )
+
+    compacted = build_provider_facing_visual_prompt(
+        conditioned,
+        provider="xai",
+        request_category="reference_edit",
+    )
+
+    assert len(compacted) <= 1200
+    assert "Quality repair pass" in compacted
+    assert "visible action exactly" in compacted
+    assert "left arm raised" in compacted
+
+
+def test_semantic_pose_repair_uses_structure_guide_after_action_composition_failure():
+    from tools import visual_package_tool
+
+    policy = visual_package_tool._reference_conditioning_policy_for_gate(
+        {
+            "quality_issues": [
+                "composition_bad",
+                "action_or_moment_missing",
+            ]
+        },
+        ["semantic_pose_transfer"],
+    )
+
+    assert policy == "structure_guide"
+
+
+def test_xai_structure_guide_repair_keeps_reference_roles_and_repair_directive():
+    from agent.visual.prompt_text import build_provider_facing_visual_prompt
+    from tools import visual_package_tool
+
+    repair = visual_package_tool._quality_repair_prompt(
+        "G1 character with G2 pose",
+        {
+            "quality_issues": [
+                "composition_bad",
+                "action_or_moment_missing",
+            ]
+        },
+        reference_binding={
+            "reference_order": [
+                {"index": 1, "role_hint": "character_identity"},
+                {"index": 2, "role_hint": "pose_composition"},
+            ]
+        },
+    )
+    repair += (
+        "\n\nVisual contract repair strategy: composition_reset. "
+        "Blocker codes: action_or_moment_missing, composition_weak. "
+        "Use a materially different composition."
+    )
+    conditioned = visual_package_tool._apply_provider_reference_conditioning_prompt(
+        repair,
+        {
+            "policy": "structure_guide",
+            "provider_reference_images": [
+                {
+                    "index": 1,
+                    "provider_index": 1,
+                    "role_hint": "character_identity",
+                    "conditioning": "original",
+                },
+                {
+                    "index": 2,
+                    "provider_index": 2,
+                    "role_hint": "pose_composition",
+                    "conditioning": "pose_composition_guide",
+                },
+            ],
+        },
+    )
+
+    compacted = build_provider_facing_visual_prompt(
+        conditioned,
+        provider="xai",
+        request_category="reference_edit",
+    )
+
+    assert "visible action exactly" in compacted
+    assert "materially different composition" in compacted
+    assert "only character identity/edit anchor" in compacted
+    assert "derived pose/composition guide" in compacted
+
+
+@pytest.mark.parametrize("visual_production_kernel", [True, False])
+def test_xai_structure_guide_failure_does_not_call_provider_for_repair(
+    monkeypatch,
+    tmp_path,
+    visual_production_kernel,
+):
+    from PIL import Image
+    from tools import visual_package_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ref1 = tmp_path / "character.png"
+    ref2 = tmp_path / "pose.png"
+    bad = tmp_path / "bad.png"
+    Image.new("RGB", (160, 240), (240, 240, 255)).save(ref1)
+    Image.new("RGB", (180, 320), (60, 120, 180)).save(ref2)
+    bad.write_bytes(_ONE_PIXEL_PNG + b"bad")
+    image_calls = []
+
+    monkeypatch.setattr(
+        visual_package_tool,
+        "_pose_transfer_instruction",
+        lambda _reference: {
+            "success": True,
+            "instruction": "Tight portrait with left arm raised overhead.",
+            "source": "vision_pose_geometry",
+        },
+    )
+    monkeypatch.setattr(
+        visual_package_tool,
+        "_pose_composition_guide_image",
+        lambda _reference: None,
+    )
+
+    def fake_generate_image(**kwargs):
+        image_calls.append(kwargs)
+        return {
+            "success": True,
+            "image": str(bad),
+            "provider": "xai",
+            "model": "grok-build-native-image",
+            "vision_observation": {
+                "reference_adherence": 0.2,
+                "character_identity_adherence": 0.2,
+                "pose_composition_adherence": 0.2,
+                "visual_appeal": 0.2,
+                "composition": 0.2,
+                "confidence": 0.9,
+            },
+        }
+
+    monkeypatch.setattr(visual_package_tool, "generate_image", fake_generate_image)
+
+    payload = json.loads(
+        visual_package_tool._handle_visual_package_generate(
+            {
+                "prompt": "用 xai，將 ref1 的人物套用至 ref2 的動作",
+                "include_video": False,
+                "candidate_budget": 1,
+                "image_provider": "xai",
+                "visual_production_kernel": visual_production_kernel,
+                "max_generated_repairs": 1,
+                "visual_contract_hash": "identity-pose-contract",
+                "attachments": [str(ref1), str(ref2)],
+                "reference_binding": {
+                    "reference_order": [
+                        {"index": 1, "role_hint": "character_identity"},
+                        {"index": 2, "role_hint": "pose_composition"},
+                    ]
+                },
+            }
+        )
+    )
+
+    assert payload["success"] is False
+    assert len(image_calls) == 1
+    repair_payload = payload["generation_payloads"]["image"][1]
+    assert repair_payload["error_type"] == "pose_structure_guide_unavailable"
+
+
 def test_visual_package_category_treats_openai_composition_as_composition_guide():
     from tools import visual_package_tool
 
@@ -2166,7 +2423,7 @@ def test_visual_package_xai_identity_pose_uses_semantic_pose_transfer(monkeypatc
 
 
 @pytest.mark.parametrize("visual_production_kernel", [True, False])
-def test_visual_package_xai_semantic_pose_repair_reuses_identity_only_conditioning(
+def test_visual_package_xai_semantic_pose_repair_escalates_to_structure_guide(
     monkeypatch,
     tmp_path,
     visual_production_kernel,
@@ -2243,8 +2500,13 @@ def test_visual_package_xai_semantic_pose_repair_reuses_identity_only_conditioni
     assert payload["success"] is True
     assert payload["images"] == [str(repaired)]
     assert len(image_calls) == 2
-    assert all(call["reference_image_urls"] == [str(ref1)] for call in image_calls)
-    assert all("left arm raised overhead" in call["prompt"] for call in image_calls)
+    assert image_calls[0]["reference_image_urls"] == [str(ref1)]
+    assert len(image_calls[1]["reference_image_urls"]) == 2
+    assert image_calls[1]["reference_image_urls"][0] == str(ref1)
+    assert image_calls[1]["reference_image_urls"][1] != str(ref2)
+    assert "derived pose/composition guide" in image_calls[1]["prompt"]
+    assert "left arm raised overhead" in image_calls[0]["prompt"]
+    assert "left arm raised overhead" not in image_calls[1]["prompt"]
     assert str(ref2) not in json.dumps(image_calls, ensure_ascii=False)
 
 
