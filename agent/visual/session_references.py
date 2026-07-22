@@ -7,6 +7,10 @@ from typing import Any
 
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 MAX_SESSION_VISUAL_REFERENCES = 3
+_AUTHORITATIVE_GENERATED_REFERENCE_SOURCES = {
+    "session_visual_artifact",
+    "previous_visual_arsenal_output",
+}
 _NAMED_VISUAL_REFERENCE_RE = re.compile(
     r"(?<![a-z0-9])g\s*([1-9][0-9]*)",
     re.IGNORECASE,
@@ -123,6 +127,14 @@ def _append_unique_entry(entries: list[dict[str, Any]], entry: dict[str, Any] | 
     for existing in entries:
         if str(existing.get("uri") or "").strip() != uri:
             continue
+        incoming_source = str(entry.get("source") or "").strip()
+        existing_source = str(existing.get("source") or "").strip()
+        if (
+            incoming_source in _AUTHORITATIVE_GENERATED_REFERENCE_SOURCES
+            and existing_source not in _AUTHORITATIVE_GENERATED_REFERENCE_SOURCES
+        ):
+            existing.update(entry)
+            return
         if existing.get("user_ref_index") in (None, "") and entry.get(
             "user_ref_index"
         ) not in (None, ""):
@@ -134,6 +146,17 @@ def _append_unique_entry(entries: list[dict[str, Any]], entry: dict[str, Any] | 
             existing["source"] = entry.get("source", existing.get("source"))
         return
     entries.append(entry)
+
+
+def merge_visual_reference_entries(
+    *groups: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge reference history while preserving stable generated labels."""
+    merged: list[dict[str, Any]] = []
+    for group in groups:
+        for entry in group:
+            _append_unique_entry(merged, dict(entry))
+    return merged
 
 
 def normalise_visual_reference_entries(
@@ -315,6 +338,7 @@ def entry_is_generated_visual_output(entry: dict[str, Any]) -> bool:
         return False
     normalized = uri.replace("\\", "/")
     generated_markers = (
+        "/visual/outputs/",
         "/cache/images/grok_web_imagine_",
         "/cache/images/visual-package",
         "/cache/images/openai_",
@@ -328,51 +352,72 @@ def filter_visual_reference_entries_for_prompt(
     prompt: Any,
 ) -> list[dict[str, Any]]:
     filtered = list(entries)
-    if prompt_requests_original_visual_references(prompt):
-        filtered = [
-            entry for entry in filtered if not entry_is_generated_visual_output(entry)
-        ]
     named_requests = _named_visual_reference_requests(prompt)
     if named_requests:
-        entries_by_index = {
-            index: entry
-            for entry in filtered
-            if isinstance(
-                index := _coerce_user_ref_index(entry.get("user_ref_index")),
-                int,
-            )
-        }
         named: list[dict[str, Any]] = []
-        for index, role_hint in named_requests:
-            entry = entries_by_index.get(index)
-            if not entry:
+        for index, role_hint, namespace in named_requests:
+            indexed_candidates = [
+                entry
+                for entry in filtered
+                if _coerce_user_ref_index(entry.get("user_ref_index")) == index
+            ]
+            if namespace == "generated":
+                generated_candidates = [
+                    entry
+                    for entry in indexed_candidates
+                    if entry_is_generated_visual_output(entry)
+                ]
+                candidates = generated_candidates or indexed_candidates
+            else:
+                candidates = [
+                    entry
+                    for entry in indexed_candidates
+                    if not entry_is_generated_visual_output(entry)
+                ]
+            if not candidates:
                 continue
+            entry = max(
+                candidates,
+                key=lambda candidate: (
+                    str(candidate.get("source") or "")
+                    in _AUTHORITATIVE_GENERATED_REFERENCE_SOURCES
+                ),
+            )
             selected = dict(entry)
             if role_hint:
                 selected["role_hint"] = role_hint
             named.append(selected)
         return named
+    if prompt_requests_original_visual_references(prompt):
+        filtered = [
+            entry for entry in filtered if not entry_is_generated_visual_output(entry)
+        ]
     return filtered
 
 
-def _named_visual_reference_requests(prompt: Any) -> list[tuple[int, str | None]]:
+def _named_visual_reference_requests(
+    prompt: Any,
+) -> list[tuple[int, str | None, str]]:
     text = str(prompt or "")
     matches = sorted(
         [
-            *_NAMED_VISUAL_REFERENCE_RE.finditer(text),
-            *_NAMED_ORIGINAL_REFERENCE_RE.finditer(text),
+            *((match, "generated") for match in _NAMED_VISUAL_REFERENCE_RE.finditer(text)),
+            *((match, "original") for match in _NAMED_ORIGINAL_REFERENCE_RE.finditer(text)),
         ],
-        key=lambda match: match.start(),
+        key=lambda item: item[0].start(),
     )
-    requests: list[tuple[int, str | None]] = []
-    seen: set[int] = set()
-    for position, match in enumerate(matches):
+    requests: list[tuple[int, str | None, str]] = []
+    seen: set[tuple[str, int]] = set()
+    for position, (match, namespace) in enumerate(matches):
         index = int(match.group(1))
-        if index in seen:
+        identity = (namespace, index)
+        if identity in seen:
             continue
-        seen.add(index)
+        seen.add(identity)
         segment_end = (
-            matches[position + 1].start() if position + 1 < len(matches) else len(text)
+            matches[position + 1][0].start()
+            if position + 1 < len(matches)
+            else len(text)
         )
         segment = text[match.end() : segment_end].lower()
         role_hint: str | None = None
@@ -392,7 +437,7 @@ def _named_visual_reference_requests(prompt: Any) -> list[tuple[int, str | None]
             )
         ):
             role_hint = "pose_composition"
-        requests.append((index, role_hint))
+        requests.append((index, role_hint, namespace))
     return requests
 
 

@@ -83,6 +83,39 @@ def test_original_reference_request_requires_explicit_original_semantics():
     ) is True
 
 
+def test_generated_and_original_reference_labels_use_separate_namespaces():
+    from agent.visual.session_references import filter_visual_reference_entries_for_prompt
+
+    entries = [
+        {
+            "uri": "/tmp/visual/outputs/generated-g1.jpg",
+            "role_hint": "edit_anchor",
+            "source": "session_visual_artifact",
+            "user_ref_index": 1,
+        },
+        {
+            "uri": "/tmp/original-ref1.jpg",
+            "role_hint": "visual_reference",
+            "source": "previous_tool_reference",
+            "user_ref_index": 1,
+        },
+    ]
+
+    selected = filter_visual_reference_entries_for_prompt(
+        entries,
+        "G1 鎖定人物，ref1 只取姿勢",
+    )
+
+    assert [entry["uri"] for entry in selected] == [
+        "/tmp/visual/outputs/generated-g1.jpg",
+        "/tmp/original-ref1.jpg",
+    ]
+    assert [entry["role_hint"] for entry in selected] == [
+        "character_identity",
+        "pose_composition",
+    ]
+
+
 def test_visual_arsenal_outputs_keep_candidate_indices_for_named_reuse():
     from agent.visual.session_references import (
         collect_recent_visual_reference_entries,

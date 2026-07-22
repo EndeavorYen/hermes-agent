@@ -1834,6 +1834,7 @@ def _visual_reference_context_for_turn(
         collect_recent_original_visual_reference_entries,
         collect_recent_visual_reference_entries,
         filter_visual_reference_entries_for_prompt,
+        merge_visual_reference_entries,
         named_original_visual_reference_indices,
         prompt_requests_original_visual_references,
         prompt_requests_visual_reference_reuse,
@@ -1889,12 +1890,7 @@ def _visual_reference_context_for_turn(
                 fallback_agent_history,
                 limit=history_limit,
             )
-        historical_uris = {str(entry.get("uri") or "") for entry in historical}
-        historical.extend(
-            entry
-            for entry in fallback_historical
-            if str(entry.get("uri") or "") not in historical_uris
-        )
+        historical = merge_visual_reference_entries(historical, fallback_historical)
     historical = filter_visual_reference_entries_for_prompt(
         historical,
         operator_request,
