@@ -188,15 +188,15 @@ def build_direct_visual_agent_handoff(
                 for entry in session_reference_entries
                 if isinstance(entry, dict)
             }
-            semantic_pose_transfer = (
+            role_locked_pose_transfer = (
                 "character_identity" in reference_roles
                 and "pose_composition" in reference_roles
                 and "edit_anchor" not in reference_roles
             )
-            if semantic_pose_transfer:
-                arguments["reference_conditioning_policy"] = "semantic_pose_transfer"
+            if role_locked_pose_transfer:
+                arguments["reference_conditioning_policy"] = "role_locked_originals"
                 arguments["reference_strategy"] = {
-                    "mode": "semantic_pose_transfer",
+                    "mode": "role_locked_originals",
                     "source": "visual_agent_handoff",
                     "requires_new_composition": True,
                     "edit_anchor": False,

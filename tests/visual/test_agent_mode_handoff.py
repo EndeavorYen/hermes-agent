@@ -1771,7 +1771,7 @@ def test_direct_visual_handoff_honors_raphael_visual_decision_for_short_followup
     ]
 
 
-def test_direct_visual_handoff_uses_semantic_pose_transfer_for_original_role_refs():
+def test_direct_visual_handoff_uses_native_role_locked_originals_for_original_role_refs():
     from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
     from gateway.session_context import reset_visual_reference_context, set_visual_reference_context
 
@@ -1810,16 +1810,16 @@ def test_direct_visual_handoff_uses_semantic_pose_transfer_for_original_role_ref
         "/tmp/ref1-character.png",
         "/tmp/ref2-pose.png",
     ]
-    assert args["reference_conditioning_policy"] == "semantic_pose_transfer"
+    assert args["reference_conditioning_policy"] == "role_locked_originals"
     assert args["reference_strategy"] == {
-        "mode": "semantic_pose_transfer",
+        "mode": "role_locked_originals",
         "source": "visual_agent_handoff",
         "requires_new_composition": True,
         "edit_anchor": False,
     }
 
 
-def test_direct_visual_handoff_uses_semantic_pose_transfer_for_named_g_roles():
+def test_direct_visual_handoff_uses_native_role_locked_originals_for_named_g_roles():
     from agent.raphael.control import build_raphael_control_decision
     from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
     from gateway.session_context import reset_visual_reference_context, set_visual_reference_context
@@ -1857,8 +1857,8 @@ def test_direct_visual_handoff_uses_semantic_pose_transfer_for_named_g_roles():
         reset_visual_reference_context(token)
 
     assert handoff is not None
-    assert handoff["arguments"]["reference_conditioning_policy"] == "semantic_pose_transfer"
-    assert handoff["arguments"]["reference_strategy"]["mode"] == "semantic_pose_transfer"
+    assert handoff["arguments"]["reference_conditioning_policy"] == "role_locked_originals"
+    assert handoff["arguments"]["reference_strategy"]["mode"] == "role_locked_originals"
 
 
 def test_direct_visual_handoff_routes_colloquial_chinese_reference_edit():
