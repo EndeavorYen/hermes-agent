@@ -782,7 +782,7 @@ def _reference_resolution(
         )
     return (
         "collective_reference_set",
-        ("reference_mapping_evidence", "multi_candidate_validation"),
+        ("reference_mapping_evidence",),
     )
 
 
