@@ -18,6 +18,14 @@ FINAL_SPEECH_QC_SCHEMA = "story_video_final_speech_qc_v1"
 FINAL_SPEECH_QC_METHOD = "final_mp4_demux_qwen_asr_v1"
 FINAL_SPEECH_MIN_SIMILARITY = 0.72
 DEFAULT_ASR_MODEL = Path.home() / ".hermes/models/Qwen3-ASR-0.6B-8bit"
+_DISPLAY_PAUSE_ONLY_RE = re.compile(
+    r"(?:(?:\.{3,}|…{2,}|⋯{2,}|—{1,2})\s*)+"
+)
+
+
+def _is_display_pause_only(text: str) -> bool:
+    source = str(text or "").strip()
+    return bool(source and _DISPLAY_PAUSE_ONLY_RE.fullmatch(source))
 
 
 def _sha256(path: Path) -> str:
@@ -166,10 +174,19 @@ def load_narration_contract(project_dir: Path) -> dict[str, Any]:
                     raise ValueError("narration voice chunk must be an object")
                 chunk_id = str(chunk.get("voice_chunk_id") or "").strip()
                 spoken_text = str(chunk.get("spoken_text") or "").strip()
-                if not chunk_id or not spoken_text:
+                display_pause_only = chunk.get("display_pause_only") is True
+                if not chunk_id or (not spoken_text and not display_pause_only):
                     raise ValueError("narration voice chunk lacks id or spoken text")
+                if display_pause_only and (
+                    spoken_text
+                    or not _is_display_pause_only(
+                        str(chunk.get("display_text") or "")
+                    )
+                ):
+                    raise ValueError("narration display-only pause is not canonical")
                 chunk_ids.append(chunk_id)
-                chunk_texts.append(spoken_text)
+                if spoken_text:
+                    chunk_texts.append(spoken_text)
     if len(chunk_ids) != count or len(set(chunk_ids)) != count:
         raise ValueError("narration voice chunk ids/count are inconsistent")
     expected = "".join(chunk_texts)

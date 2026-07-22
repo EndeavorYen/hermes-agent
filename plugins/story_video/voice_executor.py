@@ -192,6 +192,7 @@ class StoryVideoVoiceExecutor:
                 str(cast.binding_path),
                 "--dialogue-ledger",
                 str(project_dir / DIALOGUE_LEDGER_NAME),
+                "--emit-failed-qc-manifest",
             ]
         else:
             try:

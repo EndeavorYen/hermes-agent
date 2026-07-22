@@ -473,39 +473,99 @@ def probe_narration_speech_evidence(
         report = {}
     expected_count_raw = manifest.get("voice_chunk_count")
     expected_count = expected_count_raw if type(expected_count_raw) is int else 0
-    expected_ids = [
-        str(chunk.get("voice_chunk_id") or "").strip()
+    chunks_by_id = {
+        str(chunk.get("voice_chunk_id") or "").strip(): chunk
         for output in manifest.get("outputs") or []
         if isinstance(output, dict)
         for segment in output.get("segments") or []
         if isinstance(segment, dict)
         for chunk in segment.get("voice_chunks") or []
         if isinstance(chunk, dict)
-    ]
+        and str(chunk.get("voice_chunk_id") or "").strip()
+    }
+    expected_ids = list(chunks_by_id)
+    display_pause_only_re = re.compile(
+        r"(?:(?:\.{3,}|…{2,}|⋯{2,}|—{1,2})\s*)+"
+    )
+    pause_ids = {
+        chunk_id
+        for chunk_id, chunk in chunks_by_id.items()
+        if chunk.get("display_pause_only") is True
+        and not str(chunk.get("spoken_text") or "").strip()
+        and bool(
+            (display_text := str(chunk.get("display_text") or "").strip())
+            and display_pause_only_re.fullmatch(display_text)
+        )
+    }
     evidence = report.get("acoustic_evidence")
     rows = evidence if isinstance(evidence, list) else []
     verified: list[dict[str, Any]] = []
+    verified_pauses: list[dict[str, Any]] = []
     similarities: list[float] = []
     for row in rows:
         if not isinstance(row, dict):
             continue
-        similarity_raw = row.get("transcript_similarity")
-        if type(similarity_raw) not in {int, float}:
+        chunk_id = str(row.get("voice_chunk_id") or "").strip()
+        transcript_similarity_raw = row.get("transcript_similarity")
+        transcript_similarity = (
+            float(transcript_similarity_raw)
+            if type(transcript_similarity_raw) in {int, float}
+            and math.isfinite(float(transcript_similarity_raw))
+            and 0.0 <= float(transcript_similarity_raw) <= 1.0
+            else None
+        )
+        token_similarity_raw = row.get("token_similarity")
+        token_similarity = (
+            float(token_similarity_raw)
+            if type(token_similarity_raw) in {int, float}
+            and math.isfinite(float(token_similarity_raw))
+            and 0.0 <= float(token_similarity_raw) <= 1.0
+            else None
+        )
+        if transcript_similarity is None or (
+            "token_similarity" in row and token_similarity is None
+        ):
             continue
-        similarity = float(similarity_raw)
-        if not math.isfinite(similarity) or not 0.0 < similarity <= 1.0:
-            continue
-        if not (
-            str(row.get("voice_chunk_id") or "").strip()
-            and str(row.get("asr_transcript") or "").strip()
-            and all(
-                str(row.get(gate) or "").upper() == "PASS"
-                for gate in (
-                    "alignment_status",
-                    "pronunciation_status",
-                    "prosody_status",
-                )
+        gates_pass = all(
+            str(row.get(gate) or "").upper() == "PASS"
+            for gate in (
+                "alignment_status",
+                "pronunciation_status",
+                "prosody_status",
             )
+        )
+        if chunk_id in pause_ids:
+            if (
+                gates_pass
+                and not str(row.get("asr_transcript") or "").strip()
+                and transcript_similarity == 1.0
+                and str(row.get("prosody_measurement_status") or "").upper()
+                == "NOT_APPLICABLE"
+            ):
+                verified_pauses.append(row)
+            continue
+        chunk = chunks_by_id.get(chunk_id, {})
+        spoken_text = str(chunk.get("spoken_text") or "")
+        speech_duration = chunk.get("speech_duration_sec")
+        short_interjection_fallback = bool(
+            transcript_similarity == 0.0
+            and token_similarity is not None
+            and token_similarity >= 0.94
+            and type(speech_duration) in {int, float}
+            and math.isfinite(float(speech_duration))
+            and 0.0 < float(speech_duration) <= 0.75
+            and 0 < sum(char.isalnum() for char in spoken_text) <= 2
+            and str(row.get("prosody_measurement_status") or "").upper()
+            == "NOT_MEASURED_SHORT_CLIP"
+        )
+        similarity = (
+            token_similarity if short_interjection_fallback else transcript_similarity
+        )
+        if (
+            not chunk_id
+            or not str(row.get("asr_transcript") or "").strip()
+            or not gates_pass
+            or similarity <= 0.0
         ):
             continue
         verified.append(row)
@@ -521,16 +581,19 @@ def probe_narration_speech_evidence(
         and str(report.get("run_id") or "") == context.run_id
         and expected_count > 0
         and expected_count == len(expected_ids)
-        and all(expected_ids)
         and len(set(expected_ids)) == expected_count
         and len(rows) == expected_count
-        and len(verified) == expected_count
-        and {str(row["voice_chunk_id"]) for row in verified} == set(expected_ids)
+        and len(verified) == expected_count - len(pause_ids)
+        and len(verified_pauses) == len(pause_ids)
+        and {str(row["voice_chunk_id"]) for row in verified}
+        == set(expected_ids) - pause_ids
+        and {str(row["voice_chunk_id"]) for row in verified_pauses} == pause_ids
     )
     return {
         "source_speech_evidence_status": "PASS" if valid_contract else "FAIL",
         "speech_qc_method": str(report.get("method") or ""),
         "asr_verified_chunk_count": len(verified),
+        "display_pause_chunk_count": len(verified_pauses),
         "minimum_transcript_similarity": (
             round(min(similarities), 4) if similarities else 0.0
         ),

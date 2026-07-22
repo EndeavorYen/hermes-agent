@@ -3141,6 +3141,155 @@ def test_voice_validation_accepts_v7_selective_retry_candidate_evidence(
     assert proof.ok is True, proof
 
 
+def test_voice_validation_accepts_v7_cumulative_selective_candidate_lineage(
+    tmp_path,
+) -> None:
+    context, manifest_path, _dialogue, _binding = (
+        _write_valid_v7_tone_voice_project(tmp_path)
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    chunk = manifest["outputs"][0]["segments"][0]["voice_chunks"][1]
+    chunk["candidate_count"] = 5
+    chunk["selected_candidate"] = 5
+    chunk["candidate_rejections"] = [
+        {
+            "candidate_id": candidate_id,
+            "reasons": [
+                {
+                    "gate": "pronunciation_status",
+                    "status": "FAIL",
+                    "metrics": {"asr_transcript": "錯誤"},
+                }
+            ],
+        }
+        for candidate_id in (1, 2, 4)
+    ]
+    audio_path = Path(manifest["outputs"][0]["audio"])
+    actual_audio_sha256 = hashlib.sha256(audio_path.read_bytes()).hexdigest()
+    chunk["audio"] = str(audio_path)
+    chunk["audio_sha256"] = actual_audio_sha256
+    lineage = {
+        "schema": "story_video_candidate_lineage_v1",
+        "generation_mode": "selective_repair",
+        "requested": True,
+        "baseline_candidate_count": 4,
+        "new_candidate_count": 1,
+        "cumulative_candidate_count": 5,
+        "output_audio_sha256": actual_audio_sha256,
+    }
+    lineage["lineage_sha256"] = hashlib.sha256(
+        json.dumps(
+            lineage,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    chunk["candidate_lineage"] = lineage
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is True, proof
+
+    chunk["candidate_lineage"]["lineage_sha256"] = "b" * 64
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    tampered = validate_phase(context)
+    assert tampered.ok is False
+    assert any(
+        "tone candidate evidence is invalid" in value
+        for value in tampered.violations
+    )
+
+    chunk["audio_sha256"] = "a" * 64
+    chunk["candidate_lineage"]["output_audio_sha256"] = "a" * 64
+    unsigned = {
+        key: value
+        for key, value in chunk["candidate_lineage"].items()
+        if key != "lineage_sha256"
+    }
+    chunk["candidate_lineage"]["lineage_sha256"] = hashlib.sha256(
+        json.dumps(
+            unsigned,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    forged_audio = validate_phase(context)
+    assert forged_audio.ok is False
+    assert any(
+        "tone candidate evidence is invalid" in value
+        for value in forged_audio.violations
+    )
+
+
+def test_voice_validation_accepts_display_only_pause_without_spoken_audio(
+    tmp_path,
+) -> None:
+    context, manifest_path, dialogue_path, binding_path = (
+        _write_valid_v7_tone_voice_project(tmp_path)
+    )
+    ledger = json.loads(dialogue_path.read_text(encoding="utf-8"))
+    ledger["utterances"][1]["display_text"] = "……"
+    dialogue_path.write_text(
+        json.dumps(ledger, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    _resign_v7_dialogue_contract(manifest_path, dialogue_path, binding_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    segment = manifest["outputs"][0]["segments"][0]
+    chunk = segment["voice_chunks"][1]
+    chunk["display_text"] = "……"
+    chunk["spoken_text"] = ""
+    chunk["display_pause_only"] = True
+    chunk["resolved_pause_after_sec"] = 0.45
+    chunk["pause_after_sec"] = 0.45
+    segment["spoken_text"] = "故事開始。"
+    manifest["outputs"][0]["spoken_text"] = "故事開始。"
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is True, proof
+
+
+@pytest.mark.parametrize("display_text", ["", "   ", "，", "🙂"])
+def test_voice_validation_rejects_noncanonical_display_only_pause(
+    tmp_path,
+    display_text: str,
+) -> None:
+    context, manifest_path, _dialogue, _binding = (
+        _write_valid_v7_tone_voice_project(tmp_path)
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    chunk = manifest["outputs"][0]["segments"][0]["voice_chunks"][1]
+    chunk["display_text"] = display_text
+    chunk["spoken_text"] = ""
+    chunk["display_pause_only"] = True
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    proof = validate_phase(context)
+
+    assert proof.ok is False
+
+
 def test_voice_validation_rejects_rehashed_noncanonical_v7_catalog(tmp_path) -> None:
     context, manifest_path, dialogue_path, binding_path = (
         _write_valid_v7_tone_voice_project(tmp_path)

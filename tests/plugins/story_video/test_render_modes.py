@@ -699,6 +699,64 @@ def test_qwen_speech_evidence_requires_nonempty_asr_transcript(tmp_path) -> None
     assert payload["asr_verified_chunk_count"] == 0
 
 
+def test_qwen_speech_evidence_accepts_explicit_display_pause_without_asr(
+    tmp_path,
+) -> None:
+    _store, context = _black_context(tmp_path)
+    _write_narration(context)
+    manifest_path = context.project_dir / "manifests" / "narration_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    chunks = manifest["outputs"][0]["segments"][0]["voice_chunks"]
+    chunks[0]["display_text"] = "啊。"
+    chunks[0]["spoken_text"] = "啊。"
+    chunks[0]["speech_duration_sec"] = 0.4
+    chunks[1]["display_text"] = "……"
+    chunks[1]["spoken_text"] = ""
+    chunks[1]["display_pause_only"] = True
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    report = context.project_dir / "qc" / "pronunciation_qc_report.json"
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text(
+        json.dumps(
+            {
+                "schema": "story_video_pronunciation_qc_v3",
+                "run_id": context.run_id,
+                "status": "PASS",
+                "method": "sentence_chunk_plus_forced_alignment_isolated_term_asr",
+                "checked_unit": "voice_chunk",
+                "acoustic_evidence": [
+                    {
+                        "voice_chunk_id": "S01_SH01__C01",
+                        "alignment_status": "PASS",
+                        "pronunciation_status": "PASS",
+                        "prosody_status": "PASS",
+                        "asr_transcript": "哦。",
+                        "transcript_similarity": 0.0,
+                        "token_similarity": 1.0,
+                        "prosody_measurement_status": "NOT_MEASURED_SHORT_CLIP",
+                    },
+                    {
+                        "voice_chunk_id": "S01_SH01__C02",
+                        "alignment_status": "PASS",
+                        "pronunciation_status": "PASS",
+                        "prosody_status": "PASS",
+                        "prosody_measurement_status": "NOT_APPLICABLE",
+                        "asr_transcript": "",
+                        "transcript_similarity": 1.0,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = _module().probe_narration_speech_evidence(context)
+
+    assert payload["source_speech_evidence_status"] == "PASS"
+    assert payload["asr_verified_chunk_count"] == 1
+    assert payload["display_pause_chunk_count"] == 1
+
+
 def test_qwen_speech_evidence_fails_closed_for_malformed_similarity(tmp_path) -> None:
     _store, context = _black_context(tmp_path)
     _write_narration(context)
@@ -723,6 +781,7 @@ def test_qwen_speech_evidence_fails_closed_for_malformed_similarity(tmp_path) ->
                         "prosody_status": "PASS",
                         "asr_transcript": "你好",
                         "transcript_similarity": "not-a-number",
+                        "token_similarity": 1.0,
                     }
                 ],
             }
@@ -734,6 +793,51 @@ def test_qwen_speech_evidence_fails_closed_for_malformed_similarity(tmp_path) ->
 
     assert payload["source_speech_evidence_status"] == "FAIL"
     assert payload["asr_verified_chunk_count"] == 0
+
+
+def test_qwen_speech_evidence_rejects_token_fallback_for_long_speech(
+    tmp_path,
+) -> None:
+    _store, context = _black_context(tmp_path)
+    _write_narration(context)
+    manifest_path = context.project_dir / "manifests" / "narration_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    chunks = manifest["outputs"][0]["segments"][0]["voice_chunks"]
+    chunks[0]["spoken_text"] = "這是一段完整的長台詞。"
+    chunks[0]["speech_duration_sec"] = 2.0
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    report = context.project_dir / "qc" / "pronunciation_qc_report.json"
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text(
+        json.dumps(
+            {
+                "schema": "story_video_pronunciation_qc_v3",
+                "run_id": context.run_id,
+                "status": "PASS",
+                "method": "sentence_chunk_plus_forced_alignment_isolated_term_asr",
+                "checked_unit": "voice_chunk",
+                "acoustic_evidence": [
+                    {
+                        "voice_chunk_id": chunk_id,
+                        "alignment_status": "PASS",
+                        "pronunciation_status": "PASS",
+                        "prosody_status": "PASS",
+                        "asr_transcript": "另一段長台詞",
+                        "transcript_similarity": 0.0 if index == 0 else 0.99,
+                        "token_similarity": 1.0,
+                    }
+                    for index, chunk_id in enumerate(
+                        ("S01_SH01__C01", "S01_SH01__C02")
+                    )
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = _module().probe_narration_speech_evidence(context)
+
+    assert payload["source_speech_evidence_status"] == "FAIL"
 
 
 @pytest.mark.parametrize("bad_count", [True, 1.5, float("inf")])
