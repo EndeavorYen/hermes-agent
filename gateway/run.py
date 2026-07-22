@@ -22962,9 +22962,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # If streaming already delivered the response, mark it so the
         # caller's send() is skipped (avoiding duplicate messages).
-        # BUT: never suppress delivery when the agent failed — the error
-        # message is new content the user hasn't seen, and it must reach
-        # them even if streaming had sent earlier partial output.
+        # Failed responses still need a normal send after unrelated partial
+        # output. Suppress only when the exact failed final was already
+        # delivered as commentary or final stream content.
         #
         # Also never suppress when the final response is "(empty)" — this
         # means the model failed to produce content after tool calls (common
@@ -22974,9 +22974,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # final answer.  Suppressing delivery here leaves the user staring
         # at silence.  (#10xxx — "agent stops after web search")
         _sc = stream_consumer_holder[0]
-        if isinstance(response, dict) and not response.get("failed"):
+        if isinstance(response, dict):
             _final = response.get("final_response") or ""
             _is_empty_sentinel = not _final or _final == "(empty)"
+            _failed = bool(response.get("failed"))
             # response_previewed means the interim_assistant_callback already
             # saw the final text, but only suppress the normal send if that
             # exact final text was delivered. Unrelated commentary/progress
@@ -23000,7 +23001,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _final,
                 previewed=_previewed,
             )
-            if not _is_empty_sentinel and not _transformed and (_streamed or _content_delivered):
+            _delivery_confirmed = _streamed or (
+                _content_delivered and not _failed
+            )
+            if not _is_empty_sentinel and not _transformed and _delivery_confirmed:
                 logger.info(
                     "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s content_delivered=%s).",
                     session_key or "?",
@@ -23009,7 +23013,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _content_delivered,
                 )
                 response["already_sent"] = True
-            elif not _is_empty_sentinel and _transformed and _sc is not None:
+            elif (
+                not _failed
+                and not _is_empty_sentinel
+                and _transformed
+                and _sc is not None
+            ):
                 # Plugin hooks transformed the response after streaming — edit the
                 # existing streamed message instead of sending a duplicate.
                 _sc_msg_id = _sc.message_id
