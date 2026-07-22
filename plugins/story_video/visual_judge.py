@@ -2506,10 +2506,9 @@ def _run_batch_chunk(
 ) -> dict[str, Any]:
     from dataclasses import asdict
 
-    from tools.image_generation_tool import generate_image
-
     from .batch_executor import StoryVideoBatchExecutor
     from .hooks import _batch_parallelism
+    from .visual_engine import generate_story_video_image
 
     shot_ids = _ordered_shot_ids(context)
     manifest_path = context.project_dir / "manifests" / "shot_candidate_manifest.json"
@@ -2593,7 +2592,7 @@ def _run_batch_chunk(
 
     executor = StoryVideoBatchExecutor(
         prompt_compiler=_compile_prompt,
-        image_generator=generate_image,
+        image_generator=generate_story_video_image,
         candidate_judge=judge,
         max_workers=_batch_parallelism(),
     )
