@@ -1819,6 +1819,48 @@ def test_direct_visual_handoff_uses_semantic_pose_transfer_for_original_role_ref
     }
 
 
+def test_direct_visual_handoff_uses_semantic_pose_transfer_for_named_g_roles():
+    from agent.raphael.control import build_raphael_control_decision
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+    from gateway.session_context import reset_visual_reference_context, set_visual_reference_context
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.6-sol",
+    )
+    prompt = "G1 的人物，套用 G2 的姿勢"
+    token = set_visual_reference_context(
+        [
+            {
+                "uri": "/tmp/generated-g1.png",
+                "role_hint": "character_identity",
+                "source": "session_visual_artifact",
+                "user_ref_index": 1,
+            },
+            {
+                "uri": "/tmp/generated-g2.png",
+                "role_hint": "pose_composition",
+                "source": "session_visual_artifact",
+                "user_ref_index": 2,
+            },
+        ]
+    )
+    try:
+        decision = build_raphael_control_decision(prompt, attachments=[])
+        handoff = build_direct_visual_agent_handoff(
+            agent,
+            prompt,
+            raphael_decision=decision.to_dict(),
+        )
+    finally:
+        reset_visual_reference_context(token)
+
+    assert handoff is not None
+    assert handoff["arguments"]["reference_conditioning_policy"] == "semantic_pose_transfer"
+    assert handoff["arguments"]["reference_strategy"]["mode"] == "semantic_pose_transfer"
+
+
 def test_direct_visual_handoff_routes_colloquial_chinese_reference_edit():
     from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
     from gateway.session_context import reset_visual_reference_context, set_visual_reference_context

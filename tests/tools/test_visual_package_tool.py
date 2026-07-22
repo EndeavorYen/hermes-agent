@@ -6566,6 +6566,53 @@ def test_visual_package_kernel_blocks_delivery_without_artifact_vision_evidence(
     assert gate["blocker_codes"] == ["vision_evidence_missing"]
 
 
+def test_visual_package_kernel_trusts_composite_inline_vision_evidence():
+    from tools import visual_package_tool
+
+    gate = visual_package_tool._apply_visual_kernel_delivery_gate(
+        {
+            "allowed": False,
+            "reason": "active_learning_review_required",
+            "quality_issues": ["reference_overcopy"],
+        },
+        {
+            "artifact_id": "artifact-1",
+            "hard_gate": {"passed": True},
+            "requested_parameters": {"visual_contract_hash": "contract-v1"},
+            "vision_observation_source": "inline_vision_judge+reference_similarity",
+            "visual_quality_confidence": 0.8,
+        },
+        {
+            "visual_production_kernel": True,
+            "visual_contract_hash": "contract-v1",
+        },
+    )
+
+    assert gate["blocker_codes"] == ["reference_overcopy"]
+    repair = visual_package_tool._visual_kernel_repair_plan(
+        gate,
+        {
+            "visual_production_kernel": True,
+            "max_generated_repairs": 2,
+        },
+    )
+    assert repair is not None
+    assert repair["strategy"] == "reference_resynthesis"
+    assert repair["should_generate"] is True
+
+
+def test_quality_repair_prompt_requires_new_synthesis_for_reference_overcopy():
+    from tools import visual_package_tool
+
+    prompt = visual_package_tool._quality_repair_prompt(
+        "Use G1 identity with G2 pose",
+        {"quality_issues": ["reference_overcopy"]},
+    )
+
+    assert "genuinely new synthesis" in prompt
+    assert "do not reproduce either reference verbatim" in prompt
+
+
 def test_visual_package_applies_self_validation_next_actions(monkeypatch, tmp_path):
     from tools import visual_package_tool
 
