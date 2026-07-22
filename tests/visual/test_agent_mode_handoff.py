@@ -1720,6 +1720,57 @@ def test_direct_visual_handoff_does_not_relock_stale_pose_for_pose_diversificati
     assert args["reference_binding"]["pose_composition_policy"] == "guidance_only"
 
 
+def test_direct_visual_handoff_honors_raphael_visual_decision_for_short_followup():
+    from agent.raphael.control import build_raphael_control_decision
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+    from gateway.session_context import reset_visual_reference_context, set_visual_reference_context
+
+    agent = SimpleNamespace(
+        valid_tool_names={"visual_agent_generate"},
+        provider="openai-codex",
+        model="gpt-5.6-sol",
+    )
+    prompt = "更多不同的姿勢，性感一點，4張"
+    token = set_visual_reference_context(
+        [
+            {
+                "uri": "/tmp/ref1-character.png",
+                "role_hint": "character_identity",
+                "source": "previous_tool_reference",
+                "user_ref_index": 1,
+            },
+            {
+                "uri": "/tmp/ref2-pose.png",
+                "role_hint": "pose_composition",
+                "source": "previous_tool_reference",
+                "user_ref_index": 2,
+            },
+        ]
+    )
+    try:
+        decision = build_raphael_control_decision(
+            prompt,
+            attachments=[],
+        )
+        handoff = build_direct_visual_agent_handoff(
+            agent,
+            prompt,
+            raphael_decision=decision.to_dict(),
+        )
+    finally:
+        reset_visual_reference_context(token)
+
+    assert decision.mode == "visual_agent_generation"
+    assert decision.route.bypass_base_llm is True
+    assert handoff is not None
+    assert handoff["tool_name"] == "visual_agent_generate"
+    assert handoff["arguments"]["candidate_budget"] == 4
+    assert handoff["arguments"]["attachments"] == [
+        "/tmp/ref1-character.png",
+        "/tmp/ref2-pose.png",
+    ]
+
+
 def test_direct_visual_handoff_uses_semantic_pose_transfer_for_original_role_refs():
     from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
     from gateway.session_context import reset_visual_reference_context, set_visual_reference_context

@@ -75,13 +75,37 @@ def build_direct_visual_agent_handoff(
         or is_text_only_visual_analysis_request(prompt)
     ):
         return None
+    raphael_control = (
+        dict(raphael_decision)
+        if isinstance(raphael_decision, dict) and raphael_decision
+        else None
+    )
+    raphael_route = (
+        raphael_control.get("route")
+        if isinstance(raphael_control, dict)
+        and isinstance(raphael_control.get("route"), dict)
+        else {}
+    )
+    raphael_direct_request = bool(
+        isinstance(raphael_control, dict)
+        and (
+            str(raphael_control.get("mode") or "") == "needs_clarification"
+            or (
+                str(raphael_control.get("mode") or "").startswith("visual_agent")
+                and bool(raphael_route.get("bypass_base_llm"))
+            )
+        )
+    )
     session_reference_entries: list[dict[str, Any]] = []
     polish_request = _is_visual_polish_request(prompt)
     followup_request = _is_visual_followup_edit_request(prompt) or _is_current_result_regenerate_request(prompt)
     candidate_output_request = _requests_visual_candidate_output(prompt)
     explicit_generation_request = _is_explicit_visual_generation_request(prompt)
     if not attachments and (
-        followup_request or polish_request or explicit_generation_request
+        followup_request
+        or polish_request
+        or explicit_generation_request
+        or raphael_direct_request
     ):
         session_reference_entries = _session_visual_reference_entries(prompt)
         if polish_request:
@@ -93,21 +117,21 @@ def build_direct_visual_agent_handoff(
         explicit_generation_request
         or (bool(attachments) and polish_request)
         or bool(session_reference_entries)
+        or raphael_direct_request
     ):
         return None
 
     plan = plan_visual_agent_request(
         raw_prompt or prompt,
         attachments=attachments,
-        force_image_output=bool(session_reference_entries or candidate_output_request),
+        force_image_output=bool(
+            session_reference_entries
+            or candidate_output_request
+            or raphael_direct_request
+        ),
     )
     if not plan.get("should_use_visual_package"):
         return None
-    raphael_control = (
-        dict(raphael_decision)
-        if isinstance(raphael_decision, dict) and raphael_decision
-        else None
-    )
     if raphael_control is None and _raphael_handoff_control_enabled():
         try:
             from agent.raphael.control import build_raphael_control_decision
