@@ -463,6 +463,9 @@ simon: ref1 鎖定人物，ref2 鎖定姿勢
     assert decision.mode == "visual_agent_generation"
     assert decision.reference_resolution != "clarify_missing_reference"
     assert not decision.goal.blockers
+    assert decision.reference_resolution == "collective_reference_set"
+    assert "reference_mapping_evidence" in decision.evidence.required_proofs
+    assert "multi_candidate_validation" not in decision.evidence.required_proofs
 
 
 def test_control_asks_clarification_for_ambiguous_unassigned_references():
