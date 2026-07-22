@@ -490,7 +490,9 @@ class BaseEnvironment(ABC):
         # by ``&``-launched subshells, while ``$BASHPID`` is unavailable in the
         # system Bash 3.2 shipped by macOS.  Use mktemp so the protocol remains
         # collision-free across macOS, Linux, and Git Bash.
-        _snap_tmp_template = shlex.quote(self._snapshot_path + ".tmp.XXXXXX")
+        _snap_tmp_template = self._quote_shell_path(
+            self._snapshot_path + ".tmp.XXXXXX"
+        )
         bootstrap = (
             f"umask 077\n"
             f"__hermes_snap_tmp=$(mktemp {_snap_tmp_template}) || exit 1\n"
@@ -609,7 +611,9 @@ class BaseEnvironment(ABC):
         # available in macOS Bash 3.2.  mktemp provides a genuinely unique name
         # across the supported shell versions.  Quote the whole template for
         # Windows/Git-Bash paths and paths containing spaces.
-        _snap_tmp_template = shlex.quote(self._snapshot_path + ".tmp.XXXXXX")
+        _snap_tmp_template = self._quote_shell_path(
+            self._snapshot_path + ".tmp.XXXXXX"
+        )
 
         parts = []
 
