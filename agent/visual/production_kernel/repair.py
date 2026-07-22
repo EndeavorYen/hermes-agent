@@ -34,6 +34,7 @@ def plan_visual_repair(
 ) -> VisualRepairPlan:
     blockers = tuple(dict.fromkeys(str(code).strip() for code in blocker_codes if str(code).strip()))
     prior = tuple(str(item).strip() for item in prior_generated_repairs if str(item).strip())
+    prior_set = set(prior)
     repeated = {str(item).strip() for item in repeated_blockers if str(item).strip()}
     if "stale_contract" in blockers:
         return _plan(
@@ -59,7 +60,11 @@ def plan_visual_repair(
             directive="Stop generation and surface the current blocker evidence for review.",
             reason="generated_repair_budget_exhausted",
         )
-    if prior and prior[-1] == "targeted_repair" and "artifact_defect" in blockers:
+    if (
+        prior
+        and prior[-1] == "targeted_repair"
+        and {"artifact_defect", "subject_mismatch", "other"}.intersection(blockers)
+    ):
         return _plan(
             "constraint_rebuild",
             blockers,
@@ -70,7 +75,20 @@ def plan_visual_repair(
                 "detail; do not repeat the prior targeted repair composition."
             ),
         )
-    if "provider_failure" in blockers or capability_mismatch or repeated.intersection(blockers):
+    provider_or_capability_failure = (
+        "provider_failure" in blockers
+        or capability_mismatch
+        or bool(repeated.intersection(blockers))
+    )
+    if provider_or_capability_failure and "provider_switch" in prior_set:
+        return _plan(
+            "review_required",
+            blockers,
+            should_generate=False,
+            directive="Stop generation because the authorized provider recovery did not clear the failure.",
+            reason="persistent_provider_failure",
+        )
+    if provider_or_capability_failure:
         return _plan(
             "provider_switch",
             blockers,
@@ -82,7 +100,7 @@ def plan_visual_repair(
             ),
             reason="provider_or_capability_failure",
         )
-    if "reference_identity_drift" in blockers:
+    if "reference_identity_drift" in blockers and "identity_recovery" not in prior_set:
         return _plan(
             "identity_recovery",
             blockers,
@@ -92,7 +110,7 @@ def plan_visual_repair(
                 "while changing only the failed composition or rendering details."
             ),
         )
-    if "reference_overcopy" in blockers:
+    if "reference_overcopy" in blockers and "reference_resynthesis" not in prior_set:
         return _plan(
             "reference_resynthesis",
             blockers,
@@ -103,7 +121,7 @@ def plan_visual_repair(
                 "Do not reproduce either reference verbatim or reuse the pose reference as the final image."
             ),
         )
-    if "composition_weak" in blockers:
+    if "composition_weak" in blockers and "composition_reset" not in prior_set:
         return _plan(
             "composition_reset",
             blockers,
@@ -113,7 +131,7 @@ def plan_visual_repair(
                 "and subject placement; do not merely adjust color or lighting."
             ),
         )
-    if "action_or_moment_missing" in blockers:
+    if "action_or_moment_missing" in blockers and "story_moment_reframe" not in prior_set:
         return _plan(
             "story_moment_reframe",
             blockers,
@@ -123,14 +141,14 @@ def plan_visual_repair(
                 "without explanatory text."
             ),
         )
-    if "style_mismatch" in blockers:
+    if "style_mismatch" in blockers and "style_correction" not in prior_set:
         return _plan(
             "style_correction",
             blockers,
             should_generate=True,
             directive="Correct the requested visual language while preserving subject, action, and composition.",
         )
-    if "truth_or_evidence_risk" in blockers:
+    if "truth_or_evidence_risk" in blockers and "truth_reframe" not in prior_set:
         return _plan(
             "truth_reframe",
             blockers,
