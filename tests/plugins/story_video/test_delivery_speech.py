@@ -172,6 +172,94 @@ def test_final_speech_report_is_bound_to_run_and_exact_video_hash(tmp_path) -> N
     assert validate_final_speech_report(context, video, report).ok is False
 
 
+def test_final_speech_contract_omits_explicit_display_pause_from_transcript(
+    tmp_path,
+) -> None:
+    from plugins.story_video.final_speech_worker import load_narration_contract
+
+    context = _context(tmp_path)
+    manifest = context.project_dir / "manifests" / "narration_manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps(
+            {
+                "run_id": context.run_id,
+                "voice_chunk_count": 2,
+                "outputs": [
+                    {
+                        "spoken_text": "小美你好",
+                        "segments": [
+                            {
+                                "voice_chunks": [
+                                    {
+                                        "voice_chunk_id": "U01__C01",
+                                        "display_text": "小美你好",
+                                        "spoken_text": "小美你好",
+                                    },
+                                    {
+                                        "voice_chunk_id": "U01__C02",
+                                        "display_text": "……",
+                                        "spoken_text": "",
+                                        "display_pause_only": True,
+                                    },
+                                ]
+                            }
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    contract = load_narration_contract(context.project_dir)
+
+    assert contract["voice_chunk_count"] == 2
+    assert contract["voice_chunk_ids"] == ["U01__C01", "U01__C02"]
+    assert contract["expected_transcript"] == "小美你好"
+
+
+@pytest.mark.parametrize("display_text", ["", "   ", "，", "🙂"])
+def test_final_speech_contract_rejects_noncanonical_empty_spoken_chunk(
+    tmp_path,
+    display_text: str,
+) -> None:
+    from plugins.story_video.final_speech_worker import load_narration_contract
+
+    context = _context(tmp_path)
+    manifest = context.project_dir / "manifests" / "narration_manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps(
+            {
+                "run_id": context.run_id,
+                "voice_chunk_count": 1,
+                "outputs": [
+                    {
+                        "spoken_text": "",
+                        "segments": [
+                            {
+                                "voice_chunks": [
+                                    {
+                                        "voice_chunk_id": "U01__C01",
+                                        "display_text": display_text,
+                                        "spoken_text": "",
+                                        "display_pause_only": True,
+                                    }
+                                ]
+                            }
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="display-only pause"):
+        load_narration_contract(context.project_dir)
+
+
 @pytest.mark.parametrize(
     ("chunk_ids", "declared_count"),
     [(["", "U01__C02"], 2), (["U01__C01", "U01__C01"], 2), (["U01__C01", "U01__C02"], 3)],

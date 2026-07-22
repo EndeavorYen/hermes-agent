@@ -197,6 +197,7 @@ def test_voice_executor_dispatches_locked_multi_character_cast(tmp_path) -> None
             str(cast_binding),
             "--dialogue-ledger",
             str(dialogue),
+            "--emit-failed-qc-manifest",
         ]
     ]
 

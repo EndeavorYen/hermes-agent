@@ -798,12 +798,18 @@ def _normalized_display_text(value: Any) -> str:
 
 
 _V7_DISPLAY_PAUSE_RE = re.compile(r"(?:\.{3,}|…{2,}|⋯{2,}|—{1,2})")
+_V7_DISPLAY_PAUSE_ONLY_RE = re.compile(
+    r"(?:(?:\.{3,}|…{2,}|⋯{2,}|—{1,2})\s*)+"
+)
 _V7_CLOSING_MARKS = "」』”’\"'】）》）]"
 _V7_TERMINAL_MARKS = "。！？!?"
 
 
 def _normalize_v7_spoken_punctuation(text: str) -> str:
     source = str(text or "")
+
+    if _is_v7_display_pause_only(source):
+        return ""
 
     def replace(match: re.Match[str]) -> str:
         tail = source[match.end() :].lstrip()
@@ -815,6 +821,11 @@ def _normalize_v7_spoken_punctuation(text: str) -> str:
         return "，"
 
     return _V7_DISPLAY_PAUSE_RE.sub(replace, source)
+
+
+def _is_v7_display_pause_only(text: str) -> bool:
+    source = str(text or "").strip()
+    return bool(source and _V7_DISPLAY_PAUSE_ONLY_RE.fullmatch(source))
 
 
 def _expected_v7_chunk_spoken_text(chunk: dict[str, Any]) -> str:
@@ -854,6 +865,7 @@ def _expected_v7_chunk_spoken_text(chunk: dict[str, Any]) -> str:
 def _v7_tone_contract_violations(
     manifest: dict[str, Any],
     *,
+    project_dir: Path,
     dialogue_ledger: dict[str, Any] | None,
     cast_speakers: dict[str, dict[str, Any]],
 ) -> tuple[list[str], list[str]]:
@@ -1179,7 +1191,7 @@ def _v7_tone_contract_violations(
                 candidate_count = chunk.get("candidate_count")
                 selected_candidate = chunk.get("selected_candidate")
                 rejections = chunk.get("candidate_rejections")
-                candidate_valid = (
+                ordinary_candidate_valid = (
                     _exact_positive_int(candidate_count)
                     and candidate_count <= 3
                     and _exact_positive_int(selected_candidate)
@@ -1187,13 +1199,88 @@ def _v7_tone_contract_violations(
                     and isinstance(rejections, list)
                     and len(rejections) == candidate_count - 1
                 )
+                lineage = chunk.get("candidate_lineage")
+                lineage_hash_valid = False
+                if isinstance(lineage, dict):
+                    unsigned_lineage = {
+                        key: value
+                        for key, value in lineage.items()
+                        if key != "lineage_sha256"
+                    }
+                    lineage_hash_valid = (
+                        str(lineage.get("lineage_sha256") or "")
+                        == _canonical_json_sha256(unsigned_lineage)
+                    )
+                chunk_audio_hash_valid = False
+                chunk_audio_value = str(chunk.get("audio") or "").strip()
+                if chunk_audio_value:
+                    chunk_audio_path = Path(chunk_audio_value).expanduser()
+                    if not chunk_audio_path.is_absolute():
+                        chunk_audio_path = project_dir / chunk_audio_path
+                    try:
+                        chunk_audio_path = chunk_audio_path.resolve()
+                        chunk_audio_hash_valid = (
+                            chunk_audio_path.is_relative_to(project_dir.resolve())
+                            and _nonempty(chunk_audio_path)
+                            and _sha256(chunk_audio_path)
+                            == str(chunk.get("audio_sha256") or "")
+                        )
+                    except OSError:
+                        chunk_audio_hash_valid = False
+                cumulative_candidate_valid = (
+                    isinstance(lineage, dict)
+                    and lineage.get("schema")
+                    == "story_video_candidate_lineage_v1"
+                    and lineage.get("generation_mode") == "selective_repair"
+                    and _exact_positive_int(candidate_count)
+                    and _exact_positive_int(selected_candidate)
+                    and selected_candidate == candidate_count
+                    and isinstance(rejections, list)
+                    and isinstance(lineage.get("requested"), bool)
+                    and isinstance(lineage.get("baseline_candidate_count"), int)
+                    and not isinstance(lineage.get("baseline_candidate_count"), bool)
+                    and lineage["baseline_candidate_count"] >= 1
+                    and isinstance(lineage.get("new_candidate_count"), int)
+                    and not isinstance(lineage.get("new_candidate_count"), bool)
+                    and 0 <= lineage["new_candidate_count"] <= 3
+                    and lineage["requested"]
+                    == (lineage["new_candidate_count"] > 0)
+                    and lineage.get("cumulative_candidate_count") == candidate_count
+                    and lineage["baseline_candidate_count"]
+                    + lineage["new_candidate_count"]
+                    == candidate_count
+                    and lineage_hash_valid
+                    and chunk_audio_hash_valid
+                    and re.fullmatch(
+                        r"[0-9a-f]{64}",
+                        str(lineage.get("output_audio_sha256") or ""),
+                    )
+                    is not None
+                    and str(lineage.get("output_audio_sha256") or "")
+                    == str(chunk.get("audio_sha256") or "")
+                    and re.fullmatch(
+                        r"[0-9a-f]{64}",
+                        str(lineage.get("lineage_sha256") or ""),
+                    )
+                    is not None
+                )
+                candidate_valid = ordinary_candidate_valid or cumulative_candidate_valid
                 if candidate_valid:
-                    expected_ids = list(range(1, candidate_count))
                     rejection_ids = [
                         row.get("candidate_id") if isinstance(row, dict) else None
                         for row in rejections
                     ]
-                    candidate_valid = rejection_ids == expected_ids
+                    candidate_valid = (
+                        rejection_ids == list(range(1, candidate_count))
+                        if ordinary_candidate_valid
+                        else rejection_ids
+                        == sorted(set(rejection_ids))
+                        and all(
+                            _exact_positive_int(candidate_id)
+                            and candidate_id < candidate_count
+                            for candidate_id in rejection_ids
+                        )
+                    )
                     for rejection in rejections:
                         if not candidate_valid or not isinstance(rejection, dict):
                             candidate_valid = False
@@ -1463,6 +1550,7 @@ def _validate_voice(context: StoryVideoRunContext) -> PhaseProof:
             if tone_voice_contract:
                 tone_missing, tone_violations = _v7_tone_contract_violations(
                     manifest,
+                    project_dir=context.project_dir,
                     dialogue_ledger=dialogue_ledger,
                     cast_speakers=cast_speakers,
                 )
@@ -1815,9 +1903,21 @@ def _validate_voice(context: StoryVideoRunContext) -> PhaseProof:
                                         spoken_text = str(
                                             chunk.get("spoken_text") or ""
                                         )
-                                        if not spoken_text:
+                                        display_pause_only = (
+                                            chunk.get("display_pause_only") is True
+                                        )
+                                        if not spoken_text and not display_pause_only:
                                             missing.append(
                                                 f"audio narration segment[{index}].segments[{segment_index}].voice_chunks[{chunk_index}].spoken_text"
+                                            )
+                                        elif display_pause_only and (
+                                            spoken_text
+                                            or not _is_v7_display_pause_only(
+                                                str(chunk.get("display_text") or "")
+                                            )
+                                        ):
+                                            violations.append(
+                                                "multi-character display-only pause contains spoken content"
                                             )
                                         elif re.search(
                                             r"(?:\.{3,}|…{2,}|⋯{2,}|—{1,2})",
