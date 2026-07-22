@@ -3,6 +3,7 @@
 Based on PR #1085 by ismoilh (salvaged).
 """
 
+import json
 import os
 from pathlib import Path
 
@@ -23,6 +24,81 @@ class TestStaticDenyList:
 
     def test_etc_shadow_is_denied(self):
         assert _is_write_denied("/etc/shadow") is True
+
+    def test_story_video_canonical_workflow_state_is_denied(self, monkeypatch, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        target = (
+            hermes_home
+            / "story_videos"
+            / "_workflow_state"
+            / "runs"
+            / "run-1.json"
+        )
+
+        assert _is_write_denied(str(target)) is True
+
+    def test_story_video_project_artifacts_remain_writable(self, monkeypatch, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        target = hermes_home / "story_videos" / "project-1" / "scene_ledger.json"
+
+        assert _is_write_denied(str(target)) is False
+
+    def test_story_video_planning_artifacts_lock_when_production_starts(
+        self, monkeypatch, tmp_path
+    ):
+        hermes_home = tmp_path / ".hermes"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        project = hermes_home / "story_videos" / "project-1"
+        project.mkdir(parents=True)
+        run_id = "run-1"
+        context = {
+            "run_id": run_id,
+            "project_dir": str(project),
+            "phase": "batch",
+            "auto_mode": True,
+        }
+        (project / "story_video_run_context.json").write_text(
+            json.dumps(context), encoding="utf-8"
+        )
+        canonical = hermes_home / "story_videos" / "_workflow_state" / "runs"
+        canonical.mkdir(parents=True)
+        (canonical / f"{run_id}.json").write_text(
+            json.dumps(context), encoding="utf-8"
+        )
+
+        assert _is_write_denied(str(project / "scene_ledger.json")) is True
+        assert _is_write_denied(str(project / "production_checklist.json")) is True
+        assert _is_write_denied(str(project / "keyframes" / "S00.png")) is False
+
+    def test_story_video_run_context_is_always_tool_owned(
+        self, monkeypatch, tmp_path
+    ):
+        hermes_home = tmp_path / ".hermes"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        target = (
+            hermes_home
+            / "story_videos"
+            / "project-1"
+            / "story_video_run_context.json"
+        )
+
+        assert _is_write_denied(str(target)) is True
+
+    def test_story_video_explanation_profile_is_always_tool_owned(
+        self, monkeypatch, tmp_path
+    ):
+        hermes_home = tmp_path / ".hermes"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        target = (
+            hermes_home
+            / "story_videos"
+            / "project-1"
+            / "explanation_profile.json"
+        )
+
+        assert _is_write_denied(str(target)) is True
 
 
 class TestSafeWriteRoot:

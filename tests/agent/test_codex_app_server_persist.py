@@ -28,7 +28,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from agent.codex_runtime import run_codex_app_server_turn
+import hermes_cli.plugins
+import pytest
+
+from agent.codex_runtime import (
+    _rotate_plugin_auto_continuation_session,
+    run_codex_app_server_turn,
+)
 from hermes_state import SessionDB
 from run_agent import AIAgent
 
@@ -74,6 +80,638 @@ def test_codex_success_flushes_and_reports_persisted():
     assert result["completed"] is True
     # With the agent as sole persister, the gateway must SKIP its DB write.
     assert result["agent_persisted"] is True
+
+
+def test_codex_runtime_honors_explicit_binary(monkeypatch):
+    import agent.transports.codex_app_server_session as session_module
+
+    captured = {}
+
+    class FakeSession:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def run_turn(self, **_kwargs):
+            return _make_turn()
+
+    monkeypatch.setenv("HERMES_CODEX_BIN", "/opt/codex/current/bin/codex")
+    monkeypatch.setattr(session_module, "CodexAppServerSession", FakeSession)
+
+    agent = _make_agent(session_db=None)
+    agent._codex_session = None
+    agent.session_cwd = "/tmp"
+    agent.model = "gpt-5.6-sol"
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.platform = "cli"
+
+    result = run_codex_app_server_turn(
+        agent,
+        user_message="hello",
+        original_user_message="hello",
+        messages=[{"role": "user", "content": "hello"}],
+        effective_task_id="task-1",
+    )
+
+    assert result["completed"] is True
+    assert captured["codex_bin"] == "/opt/codex/current/bin/codex"
+    assert captured["subprocess_env"] == {"HERMES_SESSION_ID": "sess-codex"}
+
+
+def test_codex_runtime_makes_cron_threads_ephemeral(monkeypatch):
+    """Cron turns are implementation details, not user-visible Codex tasks."""
+    import agent.transports.codex_app_server_session as session_module
+
+    captured = {}
+
+    class FakeSession:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def run_turn(self, **_kwargs):
+            return _make_turn()
+
+    monkeypatch.setattr(session_module, "CodexAppServerSession", FakeSession)
+
+    agent = _make_agent(session_db=None)
+    agent._codex_session = None
+    agent.session_cwd = "/tmp"
+    agent.model = "gpt-5.6-sol"
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.platform = "cron"
+
+    result = run_codex_app_server_turn(
+        agent,
+        user_message="say hello",
+        original_user_message="say hello",
+        messages=[{"role": "user", "content": "say hello"}],
+        effective_task_id="cron-job-1",
+    )
+
+    assert result["completed"] is True
+    assert captured["ephemeral"] is True
+
+
+@pytest.mark.parametrize("platform", ["curator", "subagent", "background_review", "unknown-worker"])
+def test_codex_runtime_makes_internal_or_unknown_threads_ephemeral(monkeypatch, platform):
+    """Internal and newly introduced worker paths must fail closed."""
+    import agent.transports.codex_app_server_session as session_module
+
+    captured = {}
+
+    class FakeSession:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def run_turn(self, **_kwargs):
+            return _make_turn()
+
+    monkeypatch.setattr(session_module, "CodexAppServerSession", FakeSession)
+
+    agent = _make_agent(session_db=None)
+    agent._codex_session = None
+    agent.session_cwd = "/tmp"
+    agent.model = "gpt-5.6-sol"
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.platform = platform
+
+    result = run_codex_app_server_turn(
+        agent,
+        user_message="internal work",
+        original_user_message="internal work",
+        messages=[{"role": "user", "content": "internal work"}],
+        effective_task_id="internal-1",
+    )
+
+    assert result["completed"] is True
+    assert captured["ephemeral"] is True
+
+
+def test_codex_runtime_keeps_interactive_cli_thread_visible(monkeypatch):
+    """The central policy must preserve the existing interactive CLI surface."""
+    import agent.transports.codex_app_server_session as session_module
+
+    captured = {}
+
+    class FakeSession:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def run_turn(self, **_kwargs):
+            return _make_turn()
+
+    monkeypatch.setattr(session_module, "CodexAppServerSession", FakeSession)
+
+    agent = _make_agent(session_db=None)
+    agent._codex_session = None
+    agent.session_cwd = "/tmp"
+    agent.model = "gpt-5.6-sol"
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.platform = "cli"
+
+    run_codex_app_server_turn(
+        agent,
+        user_message="interactive work",
+        original_user_message="interactive work",
+        messages=[{"role": "user", "content": "interactive work"}],
+        effective_task_id="interactive-1",
+    )
+
+    assert captured["ephemeral"] is False
+
+
+def test_codex_runtime_keeps_story_video_slack_worker_out_of_codex_task_list(
+    monkeypatch,
+):
+    import agent.transports.codex_app_server_session as session_module
+
+    captured = {}
+
+    class FakeSession:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def run_turn(self, **_kwargs):
+            return _make_turn()
+
+    monkeypatch.setattr(session_module, "CodexAppServerSession", FakeSession)
+    agent = _make_agent(session_db=None)
+    agent._codex_session = None
+    agent.session_cwd = "/tmp"
+    agent.model = "gpt-5.6-sol"
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.platform = "slack"
+
+    run_codex_app_server_turn(
+        agent,
+        user_message="故事影片：恐龍起源",
+        original_user_message="故事影片：恐龍起源",
+        messages=[{"role": "user", "content": "故事影片：恐龍起源"}],
+        effective_task_id="story-video-1",
+        raphael_decision={"goal": {"target_artifact": "story_video_workflow"}},
+    )
+
+    assert captured["ephemeral"] is True
+    assert captured["request_routing"].auto_resolve_user_input is True
+
+
+def test_codex_runtime_honors_explicit_ephemeral_override(monkeypatch):
+    """CLI one-shot/background callers can opt out of Remote task materialization."""
+    import agent.transports.codex_app_server_session as session_module
+
+    captured = {}
+
+    class FakeSession:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def run_turn(self, **_kwargs):
+            return _make_turn()
+
+    monkeypatch.setattr(session_module, "CodexAppServerSession", FakeSession)
+
+    agent = _make_agent(session_db=None)
+    agent._codex_session = None
+    agent.session_cwd = "/tmp"
+    agent.model = "gpt-5.6-sol"
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.platform = "cli"
+    agent.codex_thread_ephemeral = True
+
+    run_codex_app_server_turn(
+        agent,
+        user_message="one shot",
+        original_user_message="one shot",
+        messages=[{"role": "user", "content": "one shot"}],
+        effective_task_id="oneshot-1",
+    )
+
+    assert captured["ephemeral"] is True
+
+
+def test_codex_success_runs_api_and_output_hooks(monkeypatch):
+    calls = []
+
+    def invoke_hook(name, **kwargs):
+        calls.append((name, kwargs))
+        if name == "transform_llm_output":
+            return ["TRANSFORMED_CODEX_ASSISTANT"]
+        return []
+
+    monkeypatch.setattr(hermes_cli.plugins, "has_hook", lambda _name: True)
+    monkeypatch.setattr(hermes_cli.plugins, "invoke_hook", invoke_hook)
+    agent = _make_agent(session_db=None)
+    agent.model = "gpt-5.5"
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.platform = "cli"
+
+    result = run_codex_app_server_turn(
+        agent,
+        user_message="hello",
+        original_user_message="hello",
+        messages=[{"role": "user", "content": "hello"}],
+        effective_task_id="task-1",
+        turn_id="turn-1",
+    )
+
+    names = [name for name, _kwargs in calls]
+    assert names == [
+        "pre_api_request",
+        "post_api_request",
+        "transform_llm_output",
+        "post_llm_call",
+        "auto_continue_llm_output",
+    ]
+    assert result["final_response"] == "TRANSFORMED_CODEX_ASSISTANT"
+    pre_api = calls[0][1]
+    post_api = calls[1][1]
+    assert pre_api["api_request_id"] == post_api["api_request_id"]
+    assert post_api["response_model"] == "gpt-5.5"
+    assert calls[3][1]["assistant_response"] == "TRANSFORMED_CODEX_ASSISTANT"
+
+
+def test_codex_runtime_runs_bounded_plugin_auto_continuation(monkeypatch):
+    calls = []
+    continuation_calls = {"count": 0}
+
+    def invoke_hook(name, **kwargs):
+        calls.append((name, kwargs))
+        if name == "auto_continue_llm_output":
+            continuation_calls["count"] += 1
+            if continuation_calls["count"] == 1:
+                return [{"action": "continue", "message": "AUTO NEXT"}]
+        if name == "pre_llm_call" and kwargs.get("auto_continuation") is True:
+            return [
+                {"context": "RAPHAEL CONTEXT"},
+                {"context": "STORY VIDEO CONTEXT"},
+            ]
+        return []
+
+    monkeypatch.setattr(hermes_cli.plugins, "has_hook", lambda _name: True)
+    monkeypatch.setattr(hermes_cli.plugins, "invoke_hook", invoke_hook)
+    agent = _make_agent(session_db=None)
+    second_turn = _make_turn()
+    second_turn.final_text = "AUTO COMPLETE"
+    second_turn.projected_messages = [
+        {"role": "assistant", "content": "AUTO COMPLETE"}
+    ]
+    agent._codex_session.run_turn.side_effect = [_make_turn(), second_turn]
+    agent.model = "gpt-5.6-sol"
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.platform = "slack"
+
+    result = run_codex_app_server_turn(
+        agent,
+        user_message="start",
+        original_user_message="start",
+        messages=[{"role": "user", "content": "start"}],
+        effective_task_id="story-auto",
+        turn_id="turn-1",
+    )
+
+    assert agent._codex_session.run_turn.call_count == 2
+    assert agent._codex_session.run_turn.call_args_list[1].kwargs["user_input"] == (
+        "AUTO NEXT\n\nRAPHAEL CONTEXT\n\nSTORY VIDEO CONTEXT"
+    )
+    assert result["final_response"] == "AUTO COMPLETE"
+    assert result["api_calls"] == 2
+
+
+def test_codex_runtime_rotates_plugin_continuation_into_fresh_session(monkeypatch):
+    import agent.transports.codex_app_server_session as session_module
+
+    hook_calls = []
+    continuation_calls = 0
+    replacement_session_kwargs = {}
+
+    def invoke_hook(name, **kwargs):
+        nonlocal continuation_calls
+        hook_calls.append((name, kwargs))
+        if name == "auto_continue_llm_output":
+            continuation_calls += 1
+            if continuation_calls == 1:
+                return [{
+                    "action": "rotate",
+                    "message": "AUTO NEXT",
+                    "reason": "story_video_context_budget",
+                }]
+        if name == "pre_llm_call" and kwargs.get("auto_continuation") is True:
+            return [{"context": "FRESH STORY CONTEXT"}]
+        return []
+
+    second_turn = _make_turn()
+    second_turn.final_text = "AUTO COMPLETE"
+    second_turn.projected_messages = [
+        {"role": "assistant", "content": "AUTO COMPLETE"}
+    ]
+
+    class ReplacementSession:
+        def __init__(self, **kwargs):
+            replacement_session_kwargs.update(kwargs)
+
+        def run_turn(self, **_kwargs):
+            return second_turn
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(hermes_cli.plugins, "has_hook", lambda _name: True)
+    monkeypatch.setattr(hermes_cli.plugins, "invoke_hook", invoke_hook)
+    monkeypatch.setattr(session_module, "CodexAppServerSession", ReplacementSession)
+    db = MagicMock()
+    db.get_session_title.return_value = None
+    agent = _make_agent(session_db=db, session_id="session-parent")
+    old_codex_session = agent._codex_session
+    agent._session_init_model_config = "{}"
+    agent.model = "gpt-5.6-sol"
+    agent.provider = "openai-codex"
+    agent.base_url = "codex-app-server://local"
+    agent.platform = "slack"
+    agent.session_cwd = "/tmp"
+    messages = [
+        {"role": "user", "content": "OLD HISTORY"},
+        {"role": "assistant", "content": "OLD RESPONSE"},
+    ]
+
+    result = run_codex_app_server_turn(
+        agent,
+        user_message="start",
+        original_user_message="start",
+        messages=messages,
+        effective_task_id="story-auto-rotate",
+        turn_id="turn-1",
+        raphael_decision={"goal": {"target_artifact": "story_video_workflow"}},
+    )
+
+    assert agent.session_id != "session-parent"
+    old_codex_session.close.assert_called_once()
+    db.end_session.assert_called_once_with(
+        "session-parent", "plugin_auto_continue"
+    )
+    create_kwargs = db.create_session.call_args.kwargs
+    assert create_kwargs["session_id"] == agent.session_id
+    assert create_kwargs["parent_session_id"] == "session-parent"
+    pre_llm = next(
+        kwargs
+        for name, kwargs in hook_calls
+        if name == "pre_llm_call" and kwargs.get("auto_continuation") is True
+    )
+    assert pre_llm["session_id"] == agent.session_id
+    assert pre_llm["parent_session_id"] == "session-parent"
+    assert "OLD HISTORY" not in [message.get("content") for message in messages]
+    assert replacement_session_kwargs["ephemeral"] is True
+    assert result["final_response"] == "AUTO COMPLETE"
+
+
+def test_plugin_rotation_preserves_parent_when_end_session_fails():
+    db = MagicMock()
+    db.get_session_title.return_value = None
+    db.end_session.side_effect = RuntimeError("session database unavailable")
+    agent = _make_agent(session_db=db, session_id="session-parent")
+    old_codex_session = agent._codex_session
+    messages = [
+        {"role": "user", "content": "KEEP THIS HISTORY"},
+        {"role": "assistant", "content": "KEEP THIS RESPONSE"},
+    ]
+
+    result = _rotate_plugin_auto_continuation_session(agent, messages)
+
+    assert result == ""
+    assert agent.session_id == "session-parent"
+    assert messages[0]["content"] == "KEEP THIS HISTORY"
+    db.create_session.assert_not_called()
+    old_codex_session.close.assert_not_called()
+
+
+def test_plugin_rotation_reopens_parent_when_child_create_fails():
+    db = MagicMock()
+    db.get_session_title.return_value = None
+    db.create_session.side_effect = RuntimeError("child create failed")
+    agent = _make_agent(session_db=db, session_id="session-parent")
+    old_codex_session = agent._codex_session
+    messages = [{"role": "user", "content": "KEEP THIS HISTORY"}]
+
+    result = _rotate_plugin_auto_continuation_session(agent, messages)
+
+    assert result == ""
+    assert agent.session_id == "session-parent"
+    assert messages[0]["content"] == "KEEP THIS HISTORY"
+    db.reopen_session.assert_called_once_with("session-parent")
+    old_codex_session.close.assert_not_called()
+
+
+def test_codex_runtime_rotates_story_continuation_after_broken_pipe(monkeypatch):
+    import agent.transports.codex_app_server_session as session_module
+
+    continuation_calls = 0
+
+    def invoke_hook(name, **_kwargs):
+        nonlocal continuation_calls
+        if name == "auto_continue_llm_output":
+            continuation_calls += 1
+            if continuation_calls == 1:
+                return [{
+                    "action": "rotate",
+                    "message": "RECOVER CANONICAL NEXT WORK",
+                    "reason": "story_video_transport_recovery",
+                }]
+        return []
+
+    replacement_turn = _make_turn()
+    replacement_turn.final_text = "RECOVERED"
+    replacement_turn.projected_messages = [
+        {"role": "assistant", "content": "RECOVERED"}
+    ]
+
+    class ReplacementSession:
+        def __init__(self, **_kwargs):
+            pass
+
+        def run_turn(self, **_kwargs):
+            return replacement_turn
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(hermes_cli.plugins, "has_hook", lambda _name: True)
+    monkeypatch.setattr(hermes_cli.plugins, "invoke_hook", invoke_hook)
+    monkeypatch.setattr(session_module, "CodexAppServerSession", ReplacementSession)
+    db = MagicMock()
+    db.get_session_title.return_value = None
+    agent = _make_agent(session_db=db, session_id="session-parent")
+    agent._codex_session.run_turn.side_effect = BrokenPipeError(
+        "codex app-server stdin closed unexpectedly"
+    )
+    agent._session_init_model_config = "{}"
+    agent.model = "gpt-5.6-sol"
+    agent.provider = "openai-codex"
+    agent.base_url = "codex-app-server://local"
+    agent.platform = "slack"
+    agent.session_cwd = "/tmp"
+
+    result = run_codex_app_server_turn(
+        agent,
+        user_message="continue story batch",
+        original_user_message="continue story batch",
+        messages=[{"role": "user", "content": "continue story batch"}],
+        effective_task_id="story-transport-rotate",
+        turn_id="turn-broken-pipe",
+    )
+
+    assert agent.session_id != "session-parent"
+    assert result["final_response"] == "RECOVERED"
+    assert result["completed"] is True
+
+
+def test_codex_runtime_auto_continues_after_post_tool_transport_error(monkeypatch):
+    import agent.transports.codex_app_server_session as session_module
+
+    hook_calls = []
+    continuation_count = 0
+
+    def invoke_hook(name, **kwargs):
+        nonlocal continuation_count
+        hook_calls.append((name, kwargs))
+        if name == "auto_continue_llm_output":
+            continuation_count += 1
+            if continuation_count == 1:
+                return [{"action": "continue", "message": "RECOVER NEXT"}]
+        return []
+
+    first_turn = _make_turn()
+    first_turn.interrupted = True
+    first_turn.error = "codex went silent for 90s after a tool result"
+    first_turn.should_retire = True
+    first_turn.tool_iterations = 1
+    first_turn.final_text = "completed image output was preserved"
+    first_turn.projected_messages = [
+        {"role": "assistant", "content": first_turn.final_text}
+    ]
+    second_turn = _make_turn()
+    second_turn.final_text = "RECOVERED"
+    second_turn.projected_messages = [
+        {"role": "assistant", "content": "RECOVERED"}
+    ]
+
+    initial_session = MagicMock()
+    initial_session.run_turn.return_value = first_turn
+
+    class ReplacementSession:
+        def __init__(self, **_kwargs):
+            pass
+
+        def run_turn(self, **_kwargs):
+            return second_turn
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(hermes_cli.plugins, "has_hook", lambda _name: True)
+    monkeypatch.setattr(hermes_cli.plugins, "invoke_hook", invoke_hook)
+    monkeypatch.setattr(session_module, "CodexAppServerSession", ReplacementSession)
+    agent = _make_agent(session_db=None)
+    agent._codex_session = initial_session
+    agent.model = "gpt-5.6-sol"
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.platform = "slack"
+
+    result = run_codex_app_server_turn(
+        agent,
+        user_message="continue story batch",
+        original_user_message="continue story batch",
+        messages=[{"role": "user", "content": "continue story batch"}],
+        effective_task_id="story-transport-recovery",
+        turn_id="turn-transport-error",
+    )
+
+    recovery_hook = next(
+        kwargs for name, kwargs in hook_calls
+        if name == "auto_continue_llm_output"
+    )
+    assert recovery_hook["recoverable_transport_error"] is True
+    assert "went silent" in recovery_hook["turn_error"]
+    assert result["final_response"] == "RECOVERED"
+    assert result["api_calls"] == 2
+
+
+def test_codex_runtime_stops_plugin_auto_continuation_at_bound(monkeypatch):
+    import agent.codex_runtime as codex_runtime
+
+    def invoke_hook(name, **_kwargs):
+        if name == "auto_continue_llm_output":
+            return [{"action": "continue", "message": "KEEP GOING"}]
+        return []
+
+    monkeypatch.setattr(hermes_cli.plugins, "has_hook", lambda _name: True)
+    monkeypatch.setattr(hermes_cli.plugins, "invoke_hook", invoke_hook)
+    monkeypatch.setattr(codex_runtime, "_MAX_PLUGIN_AUTO_CONTINUATIONS", 2)
+    agent = _make_agent(session_db=None)
+    agent._codex_session.run_turn.side_effect = [
+        _make_turn(),
+        _make_turn(),
+        _make_turn(),
+    ]
+    agent.model = "gpt-5.6-sol"
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.platform = "slack"
+
+    result = run_codex_app_server_turn(
+        agent,
+        user_message="start",
+        original_user_message="start",
+        messages=[{"role": "user", "content": "start"}],
+        effective_task_id="story-auto-bound",
+        turn_id="turn-1",
+    )
+
+    assert agent._codex_session.run_turn.call_count == 3
+    assert result["api_calls"] == 3
+    assert agent._plugin_auto_continue_count == 0
+
+
+def test_codex_runtime_receives_pre_llm_plugin_context(monkeypatch):
+    import agent.conversation_loop as conversation_loop
+
+    captured = {}
+    agent = SimpleNamespace(api_mode="codex_app_server")
+
+    def fake_build_turn_context(*_args, **_kwargs):
+        return SimpleNamespace(
+            user_message="hello",
+            original_user_message="hello",
+            messages=[{"role": "user", "content": "hello"}],
+            conversation_history=[],
+            active_system_prompt="",
+            effective_task_id="task-1",
+            turn_id="turn-1",
+            current_turn_user_idx=0,
+            should_review_memory=False,
+            plugin_user_context="PLUGIN_CONTEXT",
+            ext_prefetch_cache="",
+        )
+
+    def fake_codex_turn(**kwargs):
+        captured.update(kwargs)
+        return {"final_response": "ok"}
+
+    agent._run_codex_app_server_turn = fake_codex_turn
+    monkeypatch.setattr(conversation_loop, "build_turn_context", fake_build_turn_context)
+
+    result = conversation_loop.run_conversation(agent, "hello")
+
+    assert result["final_response"] == "ok"
+    assert captured["user_message"] == "hello\n\nPLUGIN_CONTEXT"
+    assert captured["original_user_message"] == "hello"
+    assert captured["messages"] == [{"role": "user", "content": "hello"}]
 
 
 def test_codex_turn_persists_each_message_exactly_once():

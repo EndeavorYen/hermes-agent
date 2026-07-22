@@ -9268,15 +9268,43 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 # loads every leading skill (up to 5), not just the first.
                 # Inspired by Claude Code v2.1.199.
                 from agent.skill_commands import (
+                    build_durable_skill_goal,
                     build_stacked_skill_invocation_message,
                     split_stacked_skill_commands,
                 )
                 extra_keys, user_instruction = split_stacked_skill_commands(rest)
+                invoked_skill_keys = [base_cmd, *extra_keys]
+                goal_mode = any(
+                    bool(skill_commands.get(key, {}).get("goal_mode"))
+                    for key in invoked_skill_keys
+                )
+                goal_runtime_note = ""
+                if goal_mode:
+                    if not user_instruction:
+                        self._console_print(
+                            f"[bold red]The {skill_commands[base_cmd]['name']} skill "
+                            f"requires an objective. Use {base_cmd} <what must be completed>.[/]"
+                        )
+                        return True
+                    try:
+                        durable_goal = build_durable_skill_goal(
+                            invoked_skill_keys,
+                            user_instruction,
+                            commands=skill_commands,
+                        )
+                        goal_runtime_note = self._bootstrap_skill_goal(durable_goal)
+                    except Exception as exc:
+                        self._console_print(
+                            f"[bold red]Could not start {base_cmd} because Hermes could "
+                            f"not establish its required goal: {exc}[/]"
+                        )
+                        return True
                 if extra_keys:
                     stacked_result = build_stacked_skill_invocation_message(
                         [base_cmd, *extra_keys],
                         user_instruction,
                         task_id=self.session_id,
+                        runtime_note=goal_runtime_note,
                     )
                     if stacked_result:
                         msg, loaded_names, missing = stacked_result
@@ -9297,7 +9325,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     return True
                 user_instruction = rest
                 msg = build_skill_invocation_message(
-                    base_cmd, user_instruction, task_id=self.session_id
+                    base_cmd,
+                    user_instruction,
+                    task_id=self.session_id,
+                    runtime_note=goal_runtime_note,
                 )
                 if msg:
                     skill_name = skill_commands[base_cmd]["name"]
@@ -9398,6 +9429,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         mgr = GoalManager(session_id=sid, default_max_turns=max_turns)
         self._goal_manager = mgr
         return mgr
+
+    def _bootstrap_skill_goal(self, objective: str) -> str:
+        """Establish the durable goal required by a CLI skill invocation."""
+        manager = self._get_goal_manager()
+        if manager is None:
+            raise RuntimeError("goal manager is unavailable for this session")
+        _state, reused = manager.ensure(objective)
+        status = manager.status_line()
+        self._console_print(status)
+        action = "reused" if reused else "created"
+        return f"Goal bootstrap PASS ({action}): {status}"
 
 
 

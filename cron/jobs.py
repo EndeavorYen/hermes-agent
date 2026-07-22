@@ -609,6 +609,59 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
     )
 
 
+def _schedule_period_minutes(schedule: Dict[str, Any]) -> Optional[float]:
+    """Return the recurring period, or None for one-shot/unknown schedules."""
+    if schedule.get("kind") == "interval":
+        return float(schedule.get("minutes", 0) or 0)
+    if schedule.get("kind") == "cron" and HAS_CRONITER:
+        try:
+            iterator = croniter(schedule["expr"], _hermes_now())
+            first = iterator.get_next(datetime)
+            second = iterator.get_next(datetime)
+            return max(0.0, (second - first).total_seconds() / 60.0)
+        except Exception:
+            return None
+    return None
+
+
+def _validate_agent_schedule_safety(
+    schedule: Dict[str, Any],
+    *,
+    repeat: Any,
+    no_agent: bool,
+) -> None:
+    """Reject accidental unbounded high-frequency LLM jobs at the store gate."""
+    if schedule.get("kind") == "once" or bool(no_agent):
+        return
+    repeat_times = repeat.get("times") if isinstance(repeat, dict) else repeat
+    if repeat_times is not None:
+        return
+
+    try:
+        from hermes_cli.config import load_config
+
+        cron_cfg = (load_config().get("cron") or {})
+    except Exception:
+        cron_cfg = {}
+    env_override = os.getenv("HERMES_CRON_ALLOW_HIGH_FREQUENCY_AGENT_JOBS", "")
+    if env_override.strip().lower() in {"1", "true", "yes", "on"}:
+        return
+    if bool(cron_cfg.get("allow_high_frequency_agent_jobs", False)):
+        return
+    try:
+        minimum = max(1, int(cron_cfg.get("min_agent_interval_minutes", 30)))
+    except (TypeError, ValueError):
+        minimum = 30
+    period = _schedule_period_minutes(schedule)
+    if period is not None and period < minimum:
+        raise ValueError(
+            "Refusing unbounded agent cron scheduled every "
+            f"{period:g}m (minimum {minimum}m). Set a finite repeat count, "
+            "use no_agent=True for a script-only watchdog, or explicitly set "
+            "cron.allow_high_frequency_agent_jobs=true in config.yaml."
+        )
+
+
 def _ensure_aware(dt: datetime) -> datetime:
     """Return a timezone-aware datetime in Hermes configured timezone.
 
@@ -1145,6 +1198,12 @@ def create_job(
     if parsed_schedule["kind"] == "once" and repeat is None:
         repeat = 1
 
+    _validate_agent_schedule_safety(
+        parsed_schedule,
+        repeat=repeat,
+        no_agent=bool(no_agent),
+    )
+
     # Default delivery to origin if available, otherwise local
     if deliver is None:
         deliver = "origin" if origin else "local"
@@ -1404,6 +1463,13 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                             f"{ONESHOT_GRACE_SECONDS}s in the past and cannot be scheduled."
                         )
                     updated["next_run_at"] = updated_next_run
+
+            if {"schedule", "repeat", "no_agent"}.intersection(updates):
+                _validate_agent_schedule_safety(
+                    updated["schedule"],
+                    repeat=updated.get("repeat"),
+                    no_agent=bool(updated.get("no_agent")),
+                )
 
             if inference_fields_changed:
                 provider_snapshot, model_snapshot = _compute_provider_model_snapshots(

@@ -90,6 +90,15 @@ _SESSION_UI_SESSION_ID: ContextVar = ContextVar("HERMES_UI_SESSION_ID", default=
 # so background-process notifications stay inside the originating Telegram
 # private-chat topic (those lanes route only with thread id + reply anchor).
 _SESSION_MESSAGE_ID: ContextVar = ContextVar("HERMES_SESSION_MESSAGE_ID", default=_UNSET)
+_SESSION_VISUAL_REFERENCES: ContextVar = ContextVar("HERMES_SESSION_VISUAL_REFERENCES", default=())
+_SESSION_VISUAL_REFERENCE_ENTRIES: ContextVar = ContextVar(
+    "HERMES_SESSION_VISUAL_REFERENCE_ENTRIES",
+    default=(),
+)
+_SESSION_VISUAL_ARTIFACT_NEXT_INDEX: ContextVar = ContextVar(
+    "HERMES_SESSION_VISUAL_ARTIFACT_NEXT_INDEX",
+    default=1,
+)
 
 _SESSION_PROFILE: ContextVar = ContextVar("HERMES_SESSION_PROFILE", default=_UNSET)
 
@@ -152,6 +161,108 @@ def set_current_session_id(session_id: str) -> None:
 
     os.environ["HERMES_SESSION_ID"] = session_id
     _SESSION_ID.set(session_id)
+
+
+def _normalise_visual_reference_entry(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, str):
+        uri = value.strip()
+        if not uri:
+            return None
+        return {
+            "uri": uri,
+            "role_hint": "visual_reference",
+            "source": "session_visual_context",
+        }
+    if not isinstance(value, dict):
+        return None
+    uri = (
+        value.get("uri")
+        or value.get("path")
+        or value.get("attachment")
+        or value.get("url")
+        or value.get("image")
+    )
+    if not isinstance(uri, str) or not uri.strip():
+        return None
+    entry: dict[str, Any] = {
+        "uri": uri.strip(),
+        "role_hint": str(value.get("role_hint") or "visual_reference").strip()
+        or "visual_reference",
+        "source": str(value.get("source") or "session_visual_context").strip()
+        or "session_visual_context",
+    }
+    if value.get("user_ref_index") not in (None, ""):
+        user_ref_index = value.get("user_ref_index")
+        if isinstance(user_ref_index, (int, float, str)):
+            entry["user_ref_index"] = user_ref_index
+    return entry
+
+
+def set_visual_reference_context(references: list[Any] | tuple[Any, ...]) -> Any:
+    """Bind recent role-aware visual references for image/video tools."""
+    entries = tuple(
+        entry
+        for entry in (_normalise_visual_reference_entry(ref) for ref in references)
+        if entry
+    )
+    paths = tuple(str(entry["uri"]) for entry in entries)
+    path_token = _SESSION_VISUAL_REFERENCES.set(paths)
+    entry_token = _SESSION_VISUAL_REFERENCE_ENTRIES.set(entries)
+    return path_token, entry_token
+
+
+def reset_visual_reference_context(token: Any) -> None:
+    """Restore the previous visual reference context."""
+    if isinstance(token, tuple) and len(token) == 2:
+        _SESSION_VISUAL_REFERENCES.reset(token[0])
+        _SESSION_VISUAL_REFERENCE_ENTRIES.reset(token[1])
+        return
+    _SESSION_VISUAL_REFERENCES.reset(token)
+    _SESSION_VISUAL_REFERENCE_ENTRIES.set(())
+
+
+def get_visual_reference_context() -> list[str]:
+    """Return recent selected/reference image paths for the current turn."""
+    value = _SESSION_VISUAL_REFERENCES.get()
+    if not value:
+        return []
+    return [str(ref) for ref in value if isinstance(ref, str) and ref.strip()]
+
+
+def get_visual_reference_context_entries() -> list[dict[str, Any]]:
+    """Return role-aware visual references for the current turn."""
+    value = _SESSION_VISUAL_REFERENCE_ENTRIES.get()
+    if not value:
+        return []
+    entries: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        entry = _normalise_visual_reference_entry(item)
+        if entry:
+            entries.append(entry)
+    return entries
+
+
+def set_visual_artifact_index_context(next_index: int) -> Any:
+    """Bind the next session-wide image label index for this turn."""
+    try:
+        value = max(1, int(next_index))
+    except (TypeError, ValueError):
+        value = 1
+    return _SESSION_VISUAL_ARTIFACT_NEXT_INDEX.set(value)
+
+
+def reset_visual_artifact_index_context(token: Any) -> None:
+    _SESSION_VISUAL_ARTIFACT_NEXT_INDEX.reset(token)
+
+
+def reserve_visual_artifact_indices(count: int) -> int:
+    """Reserve consecutive image labels and return the first index."""
+    start = max(1, int(_SESSION_VISUAL_ARTIFACT_NEXT_INDEX.get() or 1))
+    size = max(0, int(count or 0))
+    _SESSION_VISUAL_ARTIFACT_NEXT_INDEX.set(start + size)
+    return start
 
 
 def set_session_vars(

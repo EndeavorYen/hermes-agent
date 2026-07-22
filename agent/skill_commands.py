@@ -55,6 +55,55 @@ _BUNDLE_USER_INSTRUCTION = "\nUser instruction: "
 _BUNDLE_FIRST_SKILL_BLOCK = "\n\n[Loaded as part of the "
 
 
+def _skill_durable_goal_policy(frontmatter: dict[str, Any]) -> tuple[bool, list[str]]:
+    """Parse the runtime-neutral durable-goal contract from skill metadata."""
+    metadata = frontmatter.get("metadata")
+    if not isinstance(metadata, dict):
+        return False, []
+    execution = metadata.get("execution")
+    if not isinstance(execution, dict):
+        return False, []
+    durable_goal = execution.get("durable_goal")
+    if isinstance(durable_goal, bool):
+        return durable_goal, []
+    if not isinstance(durable_goal, dict):
+        return False, []
+    required = durable_goal.get("required", False)
+    if not isinstance(required, bool):
+        required = str(required).strip().lower() in {"1", "true", "yes", "on"}
+    raw_constraints = durable_goal.get("constraints")
+    constraints = (
+        [str(value).strip() for value in raw_constraints if str(value).strip()]
+        if isinstance(raw_constraints, list)
+        else []
+    )
+    return required, constraints
+
+
+def build_durable_skill_goal(
+    cmd_keys: list[str],
+    objective: str,
+    *,
+    commands: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> str:
+    """Compose a stored goal from the objective and declared skill constraints."""
+    commands = commands if commands is not None else get_skill_commands()
+    constraints: list[str] = []
+    seen: set[str] = set()
+    for cmd_key in cmd_keys:
+        for value in commands.get(cmd_key, {}).get("goal_constraints", []):
+            constraint = str(value).strip()
+            if constraint and constraint not in seen:
+                constraints.append(constraint)
+                seen.add(constraint)
+    objective = (objective or "").strip()
+    if not constraints:
+        return objective
+    lines = [objective, "", "Required execution discipline:"]
+    lines.extend(f"- {constraint}" for constraint in constraints)
+    return "\n".join(lines)
+
+
 def extract_user_instruction_from_skill_message(content: Any) -> Optional[str]:
     """Recover the user's instruction from a slash-skill-expanded turn.
 
@@ -108,6 +157,9 @@ def _extract_bundle_user_instruction(message: str) -> Optional[str]:
     first_skill_idx = instruction.find(_BUNDLE_FIRST_SKILL_BLOCK)
     if first_skill_idx >= 0:
         instruction = instruction[:first_skill_idx]
+    runtime_idx = instruction.find(_RUNTIME_NOTE)
+    if runtime_idx >= 0:
+        instruction = instruction[:runtime_idx]
     instruction = instruction.strip()
     return instruction or None
 
@@ -375,6 +427,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     cmd_name = _SKILL_MULTI_HYPHEN.sub('-', cmd_name).strip('-')
                     if not cmd_name:
                         continue
+                    goal_mode, goal_constraints = _skill_durable_goal_policy(frontmatter)
                     # Skip if this skill's auto-generated /command collides
                     # with a core Hermes slash command (name or alias). The
                     # skill remains fully loadable via /skill <name>.
@@ -405,6 +458,8 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                         "description": description or f"Invoke the {name} skill",
                         "skill_md_path": str(skill_md),
                         "skill_dir": str(skill_md.parent),
+                        "goal_mode": goal_mode,
+                        "goal_constraints": goal_constraints,
                     }
                 except Exception:
                     continue
@@ -612,6 +667,7 @@ def build_stacked_skill_invocation_message(
     cmd_keys: list[str],
     user_instruction: str = "",
     task_id: str | None = None,
+    runtime_note: str = "",
 ) -> Optional[tuple[str, list[str], list[str]]]:
     """Build the user message for a stacked multi-skill slash invocation.
 
@@ -685,6 +741,8 @@ def build_stacked_skill_invocation_message(
         header_lines.append(f"Skills missing (skipped): {', '.join(missing)}")
     if user_instruction:
         header_lines.extend(["", f"User instruction: {user_instruction}"])
+    if runtime_note:
+        header_lines.extend(["", f"[Runtime note: {runtime_note}]"])
 
     header = "\n".join(header_lines)
     return ("\n\n".join([header, *skill_blocks]), loaded_names, missing)

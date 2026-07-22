@@ -365,12 +365,13 @@ class TestRegistryIntegration:
 
     def test_schema_exposes_expected_agent_params(self, image_tool):
         """The agent-facing schema exposes the unified text+image surface:
-        prompt (required), aspect_ratio, and the image-to-image inputs
-        image_url + reference_image_urls. Model selection stays a user-level
-        config choice, never an agent-level arg."""
+        prompt (required), aspect_ratio, provider policy override, and the
+        image-to-image inputs image_url + reference_image_urls. Model selection
+        stays a user-level config choice, never an agent-level arg."""
         props = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]
         assert set(props.keys()) == {
-            "prompt", "aspect_ratio", "image_url", "reference_image_urls",
+            "prompt", "aspect_ratio", "provider", "image_url",
+            "reference_image_urls",
         }
         assert image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["required"] == ["prompt"]
 
@@ -632,3 +633,31 @@ class TestFalKreaCatalog:
     def test_fal_krea_models_in_fal_catalog(self, image_tool):
         assert "fal-ai/krea/v2/medium/text-to-image" in image_tool.FAL_MODELS
         assert "fal-ai/krea/v2/large/text-to-image" in image_tool.FAL_MODELS
+
+
+def test_public_generate_image_wrapper_returns_structured_payload(
+    image_tool, monkeypatch
+):
+    import json
+
+    monkeypatch.setattr(
+        image_tool,
+        "_handle_image_generate",
+        lambda args, **kwargs: json.dumps(
+            {
+                "success": True,
+                "image": "/tmp/generated.png",
+                "provider": "openai-codex",
+                "response_id": "resp-image",
+            }
+        ),
+    )
+
+    payload = image_tool.generate_image(
+        {"prompt": "a precise story frame", "provider": "openai-codex"},
+        task_id="story-shot",
+    )
+
+    assert payload["success"] is True
+    assert payload["image"] == "/tmp/generated.png"
+    assert payload["provider"] == "openai-codex"

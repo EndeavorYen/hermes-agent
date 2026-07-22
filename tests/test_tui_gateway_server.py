@@ -8655,6 +8655,8 @@ def test_browser_manage_connect_defaults_to_loopback(monkeypatch):
 
 
 def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
+    from hermes_cli.browser_connect import ChromeDebugLaunch
+
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
     monkeypatch.setattr("platform.system", lambda: "Linux")
     emitted: list[tuple[str, dict]] = []
@@ -8673,7 +8675,7 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
             patch(
                 "hermes_cli.browser_connect.launch_chrome_debug",
                 return_value=ChromeDebugLaunch(),
-            ),
+            ) as mock_launch,
             patch("hermes_cli.browser_connect.local_port_in_use", return_value=False),
             patch("hermes_cli.browser_connect.manual_chrome_debug_command", return_value=None),
             patch(
@@ -8693,6 +8695,8 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
                 }
             )
 
+    mock_launch.assert_called_once()
+
     assert resp["result"]["connected"] is False
     assert resp["result"]["url"] == "http://127.0.0.1:9222"
     assert (
@@ -8700,7 +8704,7 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
         == "Chromium-family browser isn't running with remote debugging — attempting to launch..."
     )
     assert any(
-        "No supported Chromium-family browser executable was found" in line
+        "Browser not connected" in line
         for line in resp["result"]["messages"]
     )
     assert any(

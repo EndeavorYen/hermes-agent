@@ -103,6 +103,15 @@ class TestCommandExecutionProjection:
         assert tool["tool_call_id"] == assistant["tool_calls"][0]["id"]
         assert "hello" in tool["content"]
 
+    def test_successful_command_projects_execution_metadata_for_proof_consumers(
+        self,
+    ) -> None:
+        p = CodexEventProjector()
+        tool = p.project(COMMAND_EXEC_COMPLETED).messages[1]
+
+        assert tool["command"] == COMMAND_EXEC_COMPLETED["params"]["item"]["command"]
+        assert tool["exit_code"] == 0
+
     def test_nonzero_exit_code_annotated_in_tool_result(self) -> None:
         item = {**COMMAND_EXEC_COMPLETED["params"]["item"], "exitCode": 2,
                 "aggregatedOutput": "boom"}
@@ -209,7 +218,7 @@ class TestMcpToolCallProjection:
         msgs = CodexEventProjector().project(
             {"method": "item/completed", "params": {"item": item}}
         ).messages
-        assert msgs[0]["tool_calls"][0]["function"]["name"] == "mcp.obsidian.search_notes"
+        assert msgs[0]["tool_calls"][0]["function"]["name"] == "mcp__obsidian__search_notes"
         assert "found" in msgs[1]["content"]
 
     def test_mcp_error_surfaced(self) -> None:
@@ -223,6 +232,26 @@ class TestMcpToolCallProjection:
             {"method": "item/completed", "params": {"item": item}}
         ).messages
         assert "error" in msgs[1]["content"]
+
+    def test_mcp_call_id_respects_openai_responses_limit(self) -> None:
+        item = {
+            "type": "mcpToolCall",
+            "id": "cf365273-d583-47f6-ad85-583990af40ca",
+            "server": "hermes-tools",
+            "tool": "story_video_quality_control",
+            "status": "completed",
+            "arguments": {"action": "judge_candidates"},
+            "result": {"success": True},
+            "error": None,
+        }
+
+        assistant, tool = CodexEventProjector().project(
+            {"method": "item/completed", "params": {"item": item}}
+        ).messages
+        call_id = assistant["tool_calls"][0]["id"]
+
+        assert len(call_id) <= 64
+        assert tool["tool_call_id"] == call_id
 
 
 class TestUserAndOpaqueProjection:
@@ -264,6 +293,16 @@ class TestHelpers:
         b = _deterministic_call_id("exec", "")
         assert a == b
         assert "exec" in a
+
+    def test_deterministic_call_id_bounds_long_values_without_collisions(self) -> None:
+        item_type = "mcp__hermes-tools__story_video_quality_control"
+        first = _deterministic_call_id(item_type, "a" * 36)
+        replay = _deterministic_call_id(item_type, "a" * 36)
+        second = _deterministic_call_id(item_type, "b" * 36)
+
+        assert len(first) <= 64
+        assert first == replay
+        assert first != second
 
     def test_format_tool_args_sorted_keys(self) -> None:
         # Sorted keys = deterministic across replays = prefix cache stays valid

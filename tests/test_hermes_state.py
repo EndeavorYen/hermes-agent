@@ -98,6 +98,26 @@ class TestSessionLifecycle:
     def test_get_nonexistent_session(self, db):
         assert db.get_session("nonexistent") is None
 
+    def test_find_previous_session_for_same_gateway_key(self, db):
+        session_key = "agent:main:slack:dm:D123:thread-1"
+        db.create_session(
+            "old-session",
+            source="slack",
+            session_key=session_key,
+        )
+        db.append_message("old-session", role="user", content="old visual turn")
+        db.end_session("old-session", "session_reset")
+        db.create_session(
+            "current-session",
+            source="slack",
+            session_key=session_key,
+        )
+
+        assert db.find_previous_session_id_for_key(
+            session_key=session_key,
+            exclude_session_id="current-session",
+        ) == "old-session"
+
     def test_create_session_enriches_null_metadata_on_conflict(self, db):
         """Gateway creates a bare row first; the agent's later create_session
         must backfill model/model_config/system_prompt without clobbering the
@@ -5006,6 +5026,93 @@ class TestAutoMaintenance:
         assert result["pruned"] == 1
         # File stays — caller didn't opt in
         assert (sessions_dir / "old.jsonl").exists()
+
+
+class TestCronSessionMaintenance:
+    def _make_old_ended(self, db, sid: str, days_old: int = 100):
+        db.create_session(session_id=sid, source="cli")
+        db.end_session(sid, end_reason="done")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (time.time() - days_old * 86400, sid),
+        )
+        db._conn.commit()
+
+    def _make_cron(self, db, sid: str, *, days_old: float, ended: bool = True):
+        db.create_session(session_id=sid, source="cron")
+        db.append_message(sid, "user", f"payload {sid}")
+        if ended:
+            db.end_session(sid, "cron_complete")
+        ts = time.time() - days_old * 86400
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, ended_at = CASE WHEN ended_at IS NULL THEN NULL ELSE ? END WHERE id = ?",
+            (ts, ts + 1, sid),
+        )
+        db._conn.commit()
+
+    def test_prune_cron_sessions_applies_age_and_per_job_cap(self, db):
+        self._make_cron(db, "cron_alpha_20260712_120000", days_old=0.1)
+        self._make_cron(db, "cron_alpha_20260712_110000", days_old=0.2)
+        self._make_cron(db, "cron_alpha_20260712_100000", days_old=0.3)
+        self._make_cron(db, "cron_beta_20260601_100000", days_old=40)
+        self._make_cron(db, "cron_beta_20260712_100000", days_old=0.1)
+        self._make_cron(db, "cron_alpha_20260712_090000", days_old=60, ended=False)
+        db.create_session("interactive", "cli")
+        db.end_session("interactive", "done")
+
+        pruned = db.prune_cron_sessions(retention_days=30, keep_per_job=2)
+
+        assert pruned == 2
+        assert db.get_session("cron_alpha_20260712_100000") is None
+        assert db.get_session("cron_beta_20260601_100000") is None
+        assert db.get_session("cron_alpha_20260712_120000") is not None
+        assert db.get_session("cron_alpha_20260712_110000") is not None
+        assert db.get_session("cron_beta_20260712_100000") is not None
+        assert db.get_session("cron_alpha_20260712_090000") is not None
+        assert db.get_session("interactive") is not None
+
+    def test_prune_cron_sessions_removes_transcripts_and_fts_rows(self, db, tmp_path):
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        old_sid = "cron_alpha_20260601_100000"
+        keep_sid = "cron_alpha_20260712_100000"
+        self._make_cron(db, old_sid, days_old=40)
+        self._make_cron(db, keep_sid, days_old=0.1)
+        (sessions_dir / f"{old_sid}.jsonl").write_text("{}\n")
+        assert any(row["session_id"] == old_sid for row in db.search_messages(old_sid))
+
+        db.prune_cron_sessions(
+            retention_days=30,
+            keep_per_job=50,
+            sessions_dir=sessions_dir,
+        )
+
+        assert not (sessions_dir / f"{old_sid}.jsonl").exists()
+        assert db.search_messages(old_sid) == []
+        assert db.get_session(keep_sid) is not None
+
+    def test_maybe_auto_prune_cron_sessions_has_independent_cadence(self, db, monkeypatch):
+        self._make_cron(db, "cron_alpha_20260601_100000", days_old=40)
+        vacuum_calls = []
+        monkeypatch.setattr(db, "vacuum", lambda: vacuum_calls.append(True) or 2)
+
+        first = db.maybe_auto_prune_cron_sessions(
+            retention_days=30,
+            keep_per_job=50,
+            min_interval_hours=24,
+            vacuum=True,
+        )
+        second = db.maybe_auto_prune_cron_sessions(
+            retention_days=30,
+            keep_per_job=50,
+            min_interval_hours=24,
+            vacuum=True,
+        )
+
+        assert first == {"skipped": False, "pruned": 1, "vacuumed": True}
+        assert second == {"skipped": True, "pruned": 0, "vacuumed": False}
+        assert vacuum_calls == [True]
+        assert db.get_meta("last_auto_prune_cron") is not None
 
     def test_prune_sessions_deletes_files_for_pruned_only(self, db, tmp_path):
         """Active-session transcripts must never be deleted by prune."""

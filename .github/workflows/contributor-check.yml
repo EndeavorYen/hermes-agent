@@ -2,6 +2,15 @@ name: Contributor Attribution Check
 
 on:
   workflow_call:
+    inputs:
+      base_ref:
+        description: PR base branch or the pushed branch name
+        required: true
+        type: string
+      base_sha:
+        description: PR base SHA or the pre-push SHA
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -17,8 +26,18 @@ jobs:
 
       - name: Check for unmapped contributor emails
         run: |
-          # Get the merge base between this PR and main
-          MERGE_BASE=$(git merge-base origin/main HEAD)
+          BASE_REF="${{ inputs.base_ref }}"
+          BASE_SHA="${{ inputs.base_sha }}"
+
+          # Reusable workflows must audit the caller's actual base.  Hard-coding
+          # origin/main breaks fork-local PRs whose protected base is local/main.
+          if [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            echo "No pre-push base SHA; skipping attribution diff for initial branch push."
+            exit 0
+          fi
+          git fetch --no-tags origin "$BASE_REF"
+          git cat-file -e "${BASE_SHA}^{commit}"
+          MERGE_BASE=$(git merge-base "$BASE_SHA" HEAD)
 
           # Find any new author emails in this PR's commits
           NEW_EMAILS=$(git log ${MERGE_BASE}..HEAD --format='%ae' --no-merges | sort -u)

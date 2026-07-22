@@ -23,6 +23,8 @@ keep the exact logger name (``"agent.conversation_loop"``).
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
+from datetime import datetime, timezone
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.message_content import flatten_message_text
@@ -66,6 +68,33 @@ def _drop_verification_continuation_scaffolding(messages) -> None:
     ]
 
 
+def _load_raphael_evolution_config_if_enabled():
+    """Return cached read-only config only when Raphael evolution can run."""
+    from hermes_cli.config import load_config_readonly
+
+    config = load_config_readonly()
+    if not isinstance(config, dict):
+        return None
+    plugins = config.get("plugins")
+    raphael = config.get("raphael")
+    if not isinstance(plugins, dict) or not isinstance(raphael, dict):
+        return None
+    enabled = plugins.get("enabled")
+    disabled = plugins.get("disabled")
+    enabled_plugins = set(enabled) if isinstance(enabled, list) else set()
+    disabled_plugins = set(disabled) if isinstance(disabled, list) else set()
+    if "raphael" not in enabled_plugins or "raphael" in disabled_plugins:
+        return None
+    if raphael.get("enabled") is not True:
+        return None
+    if str(raphael.get("mode") or "sage_king").strip() not in {"", "advisor", "sage_king"}:
+        return None
+    evolution = raphael.get("evolution")
+    if isinstance(evolution, dict) and evolution.get("enabled", True) is not True:
+        return None
+    return config
+
+
 def finalize_turn(
     agent,
     *,
@@ -83,6 +112,7 @@ def finalize_turn(
     _turn_exit_reason,
     _pending_verification_response=None,
     _pending_verification_response_previewed=False,
+    raphael_decision=None,
 ):
     """Run the post-loop finalization and return the turn ``result`` dict.
 
@@ -90,6 +120,12 @@ def finalize_turn(
     loop). See module docstring.
     """
     from agent.conversation_loop import logger
+
+    from agent.raphael.finalization import (
+        enforce_raphael_completion,
+        record_raphael_finalization_outcome,
+        replace_terminal_assistant_response,
+    )
 
     budget_exhausted = (
         api_call_count >= agent.max_iterations
@@ -190,11 +226,33 @@ def finalize_turn(
                     exc_info=True,
                 )
 
+    _raphael_finalization = enforce_raphael_completion(
+        decision=raphael_decision,
+        final_response=final_response,
+        messages=messages,
+    )
+    if not interrupted:
+        record_raphael_finalization_outcome(
+            decision=raphael_decision,
+            result=_raphael_finalization,
+        )
+    # A missing Raphael decision must be behavior-neutral.  In particular,
+    # ``enforce_raphael_completion`` normalizes ``None`` to ``""`` for its
+    # metadata result, but the upstream finalizer relies on preserving the
+    # distinction between no response and an empty response.  Only let
+    # Raphael rewrite the live response/transcript when the gate actually
+    # applied to this turn.
+    if _raphael_finalization.status != "not_applicable":
+        final_response = _raphael_finalization.final_response
+        if final_response and not interrupted and not preserved_verification_fallback:
+            replace_terminal_assistant_response(messages, final_response)
+
     # Determine if conversation completed successfully
     normal_text_response = str(_turn_exit_reason).startswith("text_response(")
     completed = (
         final_response is not None
         and not failed
+        and _raphael_finalization.status != "blocked_unverified_completion"
         and (
             api_call_count < agent.max_iterations
             or normal_text_response
@@ -241,6 +299,13 @@ def finalize_turn(
         # nudges need stripping; the assistant candidate persists in
         # state.db. (#65919 §7)
         _drop_verification_continuation_scaffolding(messages)
+
+        # A preserved verification candidate is followed by a synthetic user
+        # continuation nudge until the cleanup above. Replacing the terminal
+        # assistant before removing that nudge would append a second assistant
+        # row. Reconcile the real candidate only after scaffolding is gone.
+        if final_response and not interrupted and preserved_verification_fallback:
+            replace_terminal_assistant_response(messages, final_response)
 
         # When the turn was interrupted and the last message is a tool
         # result, append a synthetic assistant message to close the
@@ -383,7 +448,11 @@ def finalize_turn(
     # Gate: only applied when a real text response exists for this
     # turn and the user didn't interrupt.  Empty/interrupted turns
     # already have other surface text that shouldn't be augmented.
-    if final_response and not interrupted:
+    if (
+        final_response
+        and not interrupted
+        and _raphael_finalization.status != "blocked_unverified_completion"
+    ):
         try:
             _failed = getattr(agent, "_turn_failed_file_mutations", None) or {}
             if _failed and agent._file_mutation_verifier_enabled():
@@ -456,7 +525,11 @@ def finalize_turn(
     # Fired once per turn after the tool-calling loop completes.
     # Plugins can transform the LLM's output text before it's returned.
     # First hook to return a string wins; None/empty return leaves text unchanged.
-    if final_response and not interrupted:
+    if (
+        final_response
+        and not interrupted
+        and _raphael_finalization.status != "blocked_unverified_completion"
+    ):
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
             _transform_results = _invoke_hook(
@@ -546,6 +619,7 @@ def finalize_turn(
             (getattr(agent, "request_overrides", {}) or {}).get("extra_body") or {}
         ).get("service_tier"),
         "session_id": agent.session_id,
+        "raphael_finalization": _raphael_finalization.to_dict(),
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
@@ -580,6 +654,128 @@ def finalize_turn(
         _should_review_skills = True
         agent._iters_since_skill = 0
 
+    _review_prompt = None
+    _review_label = None
+    _raphael_evolution = None
+    _evolution_metadata = None
+    if final_response and not interrupted:
+        try:
+            _raphael_config = _load_raphael_evolution_config_if_enabled()
+            if _raphael_config is not None:
+                from agent.raphael.evolution import (
+                    append_evolution_record,
+                    build_raphael_evolution_review_prompt,
+                    decide_raphael_evolution,
+                )
+                from agent.raphael.models import SkillTrace
+                from agent.raphael.skill_trace import append_skill_trace
+
+                _raphael_evolution = decide_raphael_evolution(
+                    user_message=original_user_message,
+                    final_response=final_response,
+                    messages=messages,
+                    turn_exit_reason=_turn_exit_reason,
+                    config=_raphael_config,
+                    metadata={
+                        "origin": str(
+                            raphael_decision.get("origin")
+                            if isinstance(raphael_decision, Mapping)
+                            else getattr(raphael_decision, "origin", "")
+                        ),
+                        "occurrence_id": str(turn_id or ""),
+                        "failure_class": (
+                            "proof_gate"
+                            if _raphael_finalization.status
+                            == "blocked_unverified_completion"
+                            else ""
+                        ),
+                    },
+                )
+            _evolution_metadata = {
+                "task_id": effective_task_id,
+                "turn_id": turn_id,
+                "turn_exit_reason": _turn_exit_reason,
+            }
+            if _raphael_evolution is not None and _raphael_evolution.should_review:
+                append_evolution_record(
+                    _raphael_evolution,
+                    status="scheduled",
+                    metadata=_evolution_metadata,
+                )
+                append_skill_trace(
+                    SkillTrace(
+                        trace_id=f"raphael-evolution-{turn_id}",
+                        task_id=str(effective_task_id or ""),
+                        created_at=datetime.now(timezone.utc),
+                        source="raphael_evolution",
+                        skills_used=tuple(
+                            skill
+                            for skill in (
+                                "raphael",
+                                "skill_manage" if _raphael_evolution.review_skills else "",
+                                "memory" if _raphael_evolution.review_memory else "",
+                            )
+                            if skill
+                        ),
+                        tools_used=tuple(
+                            tool
+                            for tool in (
+                                "skill_manage" if _raphael_evolution.review_skills else "",
+                                "memory" if _raphael_evolution.review_memory else "",
+                            )
+                            if tool
+                        ),
+                        outcome="scheduled",
+                        user_corrections=tuple(_raphael_evolution.reason_codes),
+                        risk_incidents=(),
+                        metadata={
+                            "mode": _raphael_evolution.mode,
+                            "reason_codes": list(_raphael_evolution.reason_codes),
+                            "evidence_summary": _raphael_evolution.evidence_summary,
+                            "turn_exit_reason": _turn_exit_reason,
+                        },
+                    ),
+                    max_string_length=500,
+                )
+                _should_review_memory = (
+                    _should_review_memory or _raphael_evolution.review_memory
+                )
+                _should_review_skills = (
+                    _should_review_skills or _raphael_evolution.review_skills
+                )
+                _review_prompt = build_raphael_evolution_review_prompt(
+                    _raphael_evolution
+                )
+                _review_label = _raphael_evolution.review_label
+            elif _raphael_evolution is not None and _raphael_evolution.proposal_only:
+                append_evolution_record(
+                    _raphael_evolution,
+                    status="proposal_only",
+                    metadata=_evolution_metadata,
+                )
+                append_skill_trace(
+                    SkillTrace(
+                        trace_id=f"raphael-evolution-{turn_id}",
+                        task_id=str(effective_task_id or ""),
+                        created_at=datetime.now(timezone.utc),
+                        source="raphael_evolution",
+                        skills_used=("raphael",),
+                        tools_used=(),
+                        outcome="proposal_only",
+                        user_corrections=(),
+                        risk_incidents=tuple(_raphael_evolution.reason_codes),
+                        metadata={
+                            "mode": _raphael_evolution.mode,
+                            "reason_codes": list(_raphael_evolution.reason_codes),
+                            "evidence_summary": _raphael_evolution.evidence_summary,
+                            "turn_exit_reason": _turn_exit_reason,
+                        },
+                    ),
+                    max_string_length=500,
+                )
+        except Exception as exc:
+            logger.debug("Raphael evolution scheduling skipped: %s", exc)
+
     # External memory provider: sync the completed turn + queue next prefetch.
     agent._sync_external_memory_for_turn(
         original_user_message=original_user_message,
@@ -596,9 +792,53 @@ def finalize_turn(
                 messages_snapshot=list(messages),
                 review_memory=_should_review_memory,
                 review_skills=_should_review_skills,
+                review_prompt=_review_prompt,
+                review_label=_review_label,
             )
-        except Exception:
-            pass  # Background review is best-effort
+        except Exception as exc:
+            logger.debug("Background review spawn failed: %s", exc)
+            if _raphael_evolution is not None and _evolution_metadata is not None:
+                try:
+                    from agent.raphael.evolution import append_evolution_record
+                    from agent.raphael.evolution import sanitize_persistent_error
+                    from agent.raphael.models import SkillTrace
+                    from agent.raphael.skill_trace import append_skill_trace
+
+                    persistent_error = sanitize_persistent_error(exc)
+
+                    append_evolution_record(
+                        _raphael_evolution,
+                        status="background_spawn_failed",
+                        metadata={
+                            **_evolution_metadata,
+                            "error": persistent_error,
+                        },
+                    )
+                    append_skill_trace(
+                        SkillTrace(
+                            trace_id=f"raphael-evolution-spawn-failed-{turn_id}",
+                            task_id=str(effective_task_id or ""),
+                            created_at=datetime.now(timezone.utc),
+                            source="raphael_evolution",
+                            skills_used=("raphael",),
+                            tools_used=(),
+                            outcome="background_spawn_failed",
+                            user_corrections=(),
+                            risk_incidents=tuple(_raphael_evolution.reason_codes),
+                            metadata={
+                                "mode": _raphael_evolution.mode,
+                                "reason_codes": list(_raphael_evolution.reason_codes),
+                                "turn_exit_reason": _turn_exit_reason,
+                                "error": persistent_error,
+                            },
+                        ),
+                        max_string_length=500,
+                    )
+                except Exception as record_exc:
+                    logger.debug(
+                        "Raphael background review failure recording skipped: %s",
+                        record_exc,
+                    )
 
     # Note: Memory provider on_session_end() + shutdown_all() are NOT
     # called here — run_conversation() is called once per user message in

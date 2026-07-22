@@ -13,6 +13,7 @@ Signal's native implementation is covered by test_signal.py.
 """
 
 import asyncio
+import re
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -336,6 +337,40 @@ class TestSlackMultiImage:
         _run(adapter.send_multiple_images("C12345", []))
         client = adapter._get_client("C12345")
         client.files_upload_v2.assert_not_called()
+
+    def test_remote_url_batch_uses_provider_timestamp_filename(self, adapter):
+        class FakeResponse:
+            headers = {"content-type": "image/png"}
+            content = b"\x89PNG" + b"\x00" * 20
+
+            def raise_for_status(self):
+                return None
+
+        class FakeAsyncClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+            async def get(self, url):
+                assert url == "https://files-cdn.x.ai/token/file_abc.png"
+                return FakeResponse()
+
+        with patch("httpx.AsyncClient", return_value=FakeAsyncClient()), \
+             patch("tools.url_safety.is_safe_url", return_value=True):
+            _run(
+                adapter.send_multiple_images(
+                    "C12345",
+                    [("https://files-cdn.x.ai/token/file_abc.png", "")],
+                )
+            )
+
+        client = adapter._get_client("C12345")
+        kwargs = client.files_upload_v2.await_args.kwargs
+        filename = kwargs["file_uploads"][0]["filename"]
+        assert filename != "image_0.png"
+        assert re.match(r"xai_image_\d{8}_\d{6}_[0-9a-f]{8}\.png", filename)
 
 
 # ---------------------------------------------------------------------------

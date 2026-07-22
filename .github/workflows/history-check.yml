@@ -15,6 +15,15 @@ name: History Check
 
 on:
   workflow_call:
+    inputs:
+      base_ref:
+        description: PR base branch name
+        required: true
+        type: string
+      base_sha:
+        description: PR base commit SHA
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -28,15 +37,20 @@ jobs:
         with:
           fetch-depth: 0 # full history both sides for merge-base
 
-      - name: Reject PRs with no common ancestor on main
+      - name: Reject PRs with no common ancestor on the PR base
         run: |
+          BASE_REF="${{ inputs.base_ref }}"
+          BASE_SHA="${{ inputs.base_sha }}"
+          git fetch --no-tags origin "$BASE_REF"
+          git cat-file -e "${BASE_SHA}^{commit}"
+
           # `git merge-base` exits non-zero AND prints nothing when the two
           # commits share no ancestor.  We check both conditions explicitly
           # so the failure message is clear regardless of which signal fires
           # first.
-          if ! BASE=$(git merge-base origin/main HEAD 2>/dev/null) || [ -z "$BASE" ]; then
+          if ! BASE=$(git merge-base "$BASE_SHA" HEAD 2>/dev/null) || [ -z "$BASE" ]; then
             echo ""
-            echo "::error::This PR has no common ancestor with main."
+            echo "::error::This PR has no common ancestor with ${BASE_REF}."
             echo ""
             echo "Your branch's history is disconnected from main.  Common causes:"
             echo "  - the branch was created with 'git checkout --orphan'"
@@ -48,11 +62,11 @@ jobs:
             echo "Reference: PR #25045 caused this and re-rooted blame on ~1500"
             echo "files to a single orphan commit."
             echo ""
-            echo "To fix, rebase your changes onto current main:"
-            echo "  git fetch origin main"
-            echo "  git checkout -b fix-branch origin/main"
+            echo "To fix, rebase your changes onto ${BASE_REF}:"
+            echo "  git fetch origin ${BASE_REF}"
+            echo "  git checkout -b fix-branch origin/${BASE_REF}"
             echo "  # re-apply your changes (cherry-pick, copy files, etc.)"
             echo "  git push -f origin fix-branch"
             exit 1
           fi
-          echo "::notice::Common ancestor with main: $BASE"
+          echo "::notice::Common ancestor with ${BASE_REF}: $BASE"

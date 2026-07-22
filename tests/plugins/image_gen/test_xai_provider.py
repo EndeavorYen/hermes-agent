@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import json
+import re
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -127,6 +129,609 @@ class TestConfig:
 
 
 class TestGenerate:
+    def test_grok_build_extracts_markdown_wrapped_absolute_image_path(self, tmp_path):
+        from plugins.image_gen.xai import _extract_grok_build_image
+
+        image = tmp_path / "generated.jpg"
+        image.write_bytes(b"image")
+        stdout = json.dumps({"text": f"`{image}`"})
+
+        assert _extract_grok_build_image(stdout) == str(image.resolve())
+
+    def test_grok_build_resolves_session_relative_image_path(self, tmp_path):
+        from plugins.image_gen.xai import _extract_grok_build_image
+
+        workdir = tmp_path / "work"
+        workdir.mkdir()
+        grok_home = tmp_path / ".grok"
+        session_id = "019f671d-6a86-7ee3-a189-24235146c063"
+        from urllib.parse import quote
+
+        image = (
+            grok_home
+            / "sessions"
+            / quote(str(workdir.resolve()), safe="")
+            / session_id
+            / "images"
+            / "1.jpg"
+        )
+        image.parent.mkdir(parents=True)
+        image.write_bytes(b"image")
+        stdout = json.dumps(
+            {
+                "sessionId": session_id,
+                "structuredOutput": {"image_path": "images/1.jpg"},
+            }
+        )
+
+        assert _extract_grok_build_image(
+            stdout,
+            workdir=workdir,
+            config={"grok_home": str(grok_home)},
+        ) == str(image.resolve())
+
+    def test_grok_build_resolves_workdir_session_relative_image_path(self, tmp_path):
+        from plugins.image_gen.xai import _extract_grok_build_image
+
+        workdir = tmp_path / "work"
+        session_id = "019f6c47-6ffd-7a70-8acf-b14c53822113"
+        image = workdir / session_id / "images" / "1.jpg"
+        image.parent.mkdir(parents=True)
+        image.write_bytes(b"image")
+        stdout = json.dumps(
+            {
+                "sessionId": session_id,
+                "structuredOutput": {"image_path": "images/1.jpg"},
+            }
+        )
+
+        assert _extract_grok_build_image(
+            stdout,
+            workdir=workdir,
+        ) == str(image.resolve())
+
+    def test_grok_build_resolves_noisy_pretty_json_session_output(self, tmp_path):
+        from urllib.parse import quote
+
+        from plugins.image_gen.xai import _extract_grok_build_image
+
+        workdir = tmp_path / "work"
+        workdir.mkdir()
+        grok_home = tmp_path / ".grok"
+        session_id = "019f6ca0-c172-7af3-a85c-9576ab0d31fc"
+        image = (
+            grok_home
+            / "sessions"
+            / quote(str(workdir.resolve()), safe="")
+            / session_id
+            / "images"
+            / "1.jpg"
+        )
+        image.parent.mkdir(parents=True)
+        image.write_bytes(b"image")
+        stdout = f'''Native image tool completed successfully.
+{{
+  "result": "Generated file: `images/1.jpg`",
+  "stopReason": "EndTurn",
+  "sessionId": "{session_id}",
+  "thought": "The image was generated successfully."
+}}
+'''
+
+        assert _extract_grok_build_image(
+            stdout,
+            workdir=workdir,
+            config={"grok_home": str(grok_home)},
+        ) == str(image.resolve())
+
+    def test_grok_build_does_not_reuse_unbound_workdir_image(self, tmp_path):
+        from plugins.image_gen.xai import _extract_grok_build_image
+
+        workdir = tmp_path / "work"
+        stale_image = workdir / "images" / "1.jpg"
+        stale_image.parent.mkdir(parents=True)
+        stale_image.write_bytes(b"stale image")
+        stdout = json.dumps(
+            {
+                "sessionId": "019f6c47-6ffd-7a70-8acf-b14c53822113",
+                "structuredOutput": {"image_path": "images/1.jpg"},
+            }
+        )
+
+        assert _extract_grok_build_image(stdout, workdir=workdir) is None
+
+    def test_grok_build_resolves_url_encoded_vscode_file_link(self, tmp_path):
+        from urllib.parse import quote
+
+        from plugins.image_gen.xai import _extract_grok_build_image
+
+        image = tmp_path / "generated image.jpg"
+        image.write_bytes(b"image")
+        encoded_path = quote(str(image.resolve()), safe="")
+        stdout = json.dumps(
+            {
+                "text": (
+                    "Generated file: "
+                    f"[Open](vscode-file://vscode-app/{encoded_path})"
+                )
+            }
+        )
+
+        assert _extract_grok_build_image(stdout) == str(image.resolve())
+
+    def test_grok_build_transport_uses_native_image_tools_without_web(
+        self, monkeypatch, tmp_path
+    ):
+        from plugins.image_gen import xai as xai_module
+
+        image = tmp_path / "generated.jpg"
+        image.write_bytes(b"image")
+        captured = {}
+
+        def fake_run(command, **kwargs):
+            captured["command"] = command
+            captured["kwargs"] = kwargs
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps({"result": {"image_path": str(image)}}),
+                stderr="",
+            )
+
+        monkeypatch.setattr(
+            xai_module,
+            "_load_xai_config",
+            lambda: {
+                "transport": "grok-build",
+                "grok_binary": "/Users/simon/.local/bin/grok",
+            },
+        )
+        monkeypatch.setattr(xai_module, "_grok_build_available", lambda _cfg=None: True)
+        monkeypatch.setattr(xai_module.subprocess, "run", fake_run)
+
+        result = xai_module.XAIImageGenProvider().generate(
+            prompt="A dramatic studio portrait",
+            aspect_ratio="portrait",
+        )
+
+        assert result["success"] is True
+        assert result["provider"] == "xai"
+        assert result["transport"] == "grok-build"
+        assert Path(result["image"]).is_file()
+        assert Path(result["image"]).name.startswith(
+            "xai-grok-build-native-image_"
+        )
+        assert result["provider_source_image"] == str(image)
+        command = captured["command"]
+        assert "--disable-web-search" in command
+        assert "--tools" not in command
+        assert "--json-schema" not in command
+        denied = command[command.index("--disallowed-tools") + 1]
+        assert "run_terminal_cmd" in denied
+        assert "web_search" in denied
+        assert "web_fetch" in denied
+        assert "Agent" in denied
+        assert "--no-subagents" in command
+        assert "--no-memory" in command
+        assert captured["kwargs"]["shell"] is False
+
+    def test_grok_build_stages_unique_readable_delivery_filename(
+        self, monkeypatch, tmp_path
+    ):
+        from plugins.image_gen import xai as xai_module
+
+        source = tmp_path / "session" / "images" / "1.jpg"
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"generated-image")
+        output_dir = tmp_path / "delivery"
+
+        def fake_run(command, **_kwargs):
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps({"image_path": str(source)}),
+                stderr="",
+            )
+
+        monkeypatch.setattr(
+            xai_module,
+            "_load_xai_config",
+            lambda: {
+                "transport": "grok-build",
+                "grok_binary": "grok",
+                "output_dir": str(output_dir),
+            },
+        )
+        monkeypatch.setattr(xai_module, "_grok_build_available", lambda _cfg=None: True)
+        monkeypatch.setattr(xai_module.subprocess, "run", fake_run)
+
+        first = xai_module.XAIImageGenProvider().generate(prompt="portrait")
+        second = xai_module.XAIImageGenProvider().generate(prompt="portrait")
+
+        pattern = re.compile(
+            r"^xai-grok-build-native-image_\d{8}T\d{6}Z_[0-9a-f]{8}\.jpg$"
+        )
+        first_path = Path(first["image"])
+        second_path = Path(second["image"])
+        assert pattern.fullmatch(first_path.name)
+        assert pattern.fullmatch(second_path.name)
+        assert first_path.parent == output_dir
+        assert first_path.read_bytes() == b"generated-image"
+        assert second_path.read_bytes() == b"generated-image"
+        assert first_path != second_path
+        assert first["provider_source_image"] == str(source)
+
+    def test_grok_build_recovers_completed_tool_artifact_by_request_id(
+        self, monkeypatch, tmp_path
+    ):
+        from urllib.parse import quote
+
+        from plugins.image_gen import xai as xai_module
+
+        workdir = tmp_path / "work"
+        grok_home = tmp_path / ".grok"
+        output_dir = tmp_path / "delivery"
+        request_id = "602b8a7b-ae2b-4f51-86b2-eb44c2cc0aa4"
+        session_id = "019f8058-41d1-7d31-b4de-a80029216e6b"
+
+        def fake_run(command, **_kwargs):
+            session_root = (
+                grok_home
+                / "sessions"
+                / quote(str(workdir.resolve()), safe="")
+                / session_id
+            )
+            image = session_root / "images" / "1.jpg"
+            image.parent.mkdir(parents=True)
+            image.write_bytes(b"generated-image")
+            (session_root / "summary.json").write_text(
+                json.dumps({"id": session_id, "request_id": request_id}),
+                encoding="utf-8",
+            )
+            (session_root / "updates.jsonl").write_text(
+                json.dumps(
+                    {
+                        "method": "session/update",
+                        "params": {
+                            "_meta": {"promptId": request_id},
+                            "update": {
+                                "sessionUpdate": "tool_call_update",
+                                "status": "completed",
+                                "rawOutput": {
+                                    "type": "ImageEdit",
+                                    "path": str(image),
+                                },
+                            }
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(
+                    {
+                        "requestId": request_id,
+                        "thought": "The native image tool succeeded, but the final path was omitted.",
+                    }
+                ),
+                stderr="",
+            )
+
+        monkeypatch.setattr(
+            xai_module,
+            "_load_xai_config",
+            lambda: {
+                "transport": "grok-build",
+                "grok_binary": "grok",
+                "workdir": str(workdir),
+                "grok_home": str(grok_home),
+                "output_dir": str(output_dir),
+            },
+        )
+        monkeypatch.setattr(xai_module, "_grok_build_available", lambda _cfg=None: True)
+        monkeypatch.setattr(xai_module.subprocess, "run", fake_run)
+        ref1 = tmp_path / "ref1.png"
+        ref2 = tmp_path / "ref2.png"
+        ref1.write_bytes(b"ref1")
+        ref2.write_bytes(b"ref2")
+
+        result = xai_module.XAIImageGenProvider().generate(
+            prompt="Apply ref1 identity to ref2 pose",
+            reference_image_urls=[str(ref1), str(ref2)],
+        )
+
+        assert result["success"] is True, result
+        assert Path(result["image"]).read_bytes() == b"generated-image"
+        assert result["provider_source_image"].endswith(f"/{session_id}/images/1.jpg")
+
+    def test_grok_build_does_not_recover_artifact_from_another_request(self, tmp_path):
+        from urllib.parse import quote
+
+        from plugins.image_gen.xai import _extract_grok_build_image
+
+        workdir = tmp_path / "work"
+        grok_home = tmp_path / ".grok"
+        session_root = (
+            grok_home
+            / "sessions"
+            / quote(str(workdir.resolve()), safe="")
+            / "019f8058-41d1-7d31-b4de-a80029216e6b"
+        )
+        image = session_root / "images" / "1.jpg"
+        image.parent.mkdir(parents=True)
+        image.write_bytes(b"stale-image")
+        (session_root / "summary.json").write_text(
+            json.dumps({"request_id": "different-request"}),
+            encoding="utf-8",
+        )
+        (session_root / "updates.jsonl").write_text(
+            json.dumps(
+                {
+                    "params": {
+                        "_meta": {"promptId": "different-request"},
+                        "update": {
+                            "sessionUpdate": "tool_call_update",
+                            "status": "completed",
+                            "rawOutput": {"path": str(image)},
+                        }
+                    }
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        assert (
+            _extract_grok_build_image(
+                json.dumps({"requestId": "current-request"}),
+                workdir=workdir,
+                config={"grok_home": str(grok_home)},
+            )
+            is None
+        )
+
+    def test_grok_build_request_recovery_rejects_path_outside_matched_session(self, tmp_path):
+        from urllib.parse import quote
+
+        from plugins.image_gen.xai import _extract_grok_build_image
+
+        workdir = tmp_path / "work"
+        grok_home = tmp_path / ".grok"
+        request_id = "current-request"
+        session_root = (
+            grok_home
+            / "sessions"
+            / quote(str(workdir.resolve()), safe="")
+            / "019f8058-41d1-7d31-b4de-a80029216e6b"
+        )
+        session_root.mkdir(parents=True)
+        original_reference = tmp_path / "ref1.png"
+        original_reference.write_bytes(b"original-reference")
+        (session_root / "summary.json").write_text(
+            json.dumps({"request_id": request_id}),
+            encoding="utf-8",
+        )
+        (session_root / "updates.jsonl").write_text(
+            json.dumps(
+                {
+                    "params": {
+                        "_meta": {"promptId": request_id},
+                        "update": {
+                            "sessionUpdate": "tool_call_update",
+                            "status": "completed",
+                            "rawOutput": {
+                                "type": "ImageEdit",
+                                "path": str(original_reference),
+                            },
+                        }
+                    }
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        assert (
+            _extract_grok_build_image(
+                json.dumps({"requestId": request_id}),
+                workdir=workdir,
+                config={"grok_home": str(grok_home)},
+            )
+            is None
+        )
+
+    def test_grok_build_request_recovery_rejects_older_image_update_in_same_session(
+        self, tmp_path
+    ):
+        from urllib.parse import quote
+
+        from plugins.image_gen.xai import _extract_grok_build_image
+
+        workdir = tmp_path / "work"
+        grok_home = tmp_path / ".grok"
+        request_id = "current-request"
+        session_root = (
+            grok_home
+            / "sessions"
+            / quote(str(workdir.resolve()), safe="")
+            / "019f8058-41d1-7d31-b4de-a80029216e6b"
+        )
+        old_image = session_root / "images" / "old.jpg"
+        old_image.parent.mkdir(parents=True)
+        old_image.write_bytes(b"old-image")
+        (session_root / "summary.json").write_text(
+            json.dumps({"request_id": request_id}),
+            encoding="utf-8",
+        )
+        updates = [
+            {
+                "params": {
+                    "_meta": {"promptId": "older-request"},
+                    "update": {
+                        "sessionUpdate": "tool_call_update",
+                        "status": "completed",
+                        "rawOutput": {"type": "ImageEdit", "path": str(old_image)},
+                    },
+                }
+            },
+            {
+                "params": {
+                    "_meta": {"promptId": request_id},
+                    "update": {
+                        "sessionUpdate": "tool_call_update",
+                        "status": "failed",
+                        "rawOutput": {"type": "ImageEdit"},
+                    },
+                }
+            },
+        ]
+        (session_root / "updates.jsonl").write_text(
+            "\n".join(json.dumps(item) for item in updates) + "\n",
+            encoding="utf-8",
+        )
+
+        assert (
+            _extract_grok_build_image(
+                json.dumps({"requestId": request_id}),
+                workdir=workdir,
+                config={"grok_home": str(grok_home)},
+            )
+            is None
+        )
+
+    def test_grok_build_transport_instructs_native_edit_for_reference(
+        self, monkeypatch, tmp_path
+    ):
+        from plugins.image_gen import xai as xai_module
+
+        source = tmp_path / "source.png"
+        source.write_bytes(b"source")
+        image = tmp_path / "edited.jpg"
+        image.write_bytes(b"image")
+        captured = {}
+
+        def fake_run(command, **_kwargs):
+            captured["command"] = command
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps({"image_path": str(image)}),
+                stderr="",
+            )
+
+        monkeypatch.setattr(
+            xai_module,
+            "_load_xai_config",
+            lambda: {"transport": "grok-build", "grok_binary": "grok"},
+        )
+        monkeypatch.setattr(xai_module, "_grok_build_available", lambda _cfg=None: True)
+        monkeypatch.setattr(xai_module.subprocess, "run", fake_run)
+
+        result = xai_module.XAIImageGenProvider().generate(
+            prompt="Keep identity and change the pose",
+            aspect_ratio="portrait",
+            image_url=str(source),
+        )
+
+        assert result["success"] is True
+        single_prompt = captured["command"][captured["command"].index("--single") + 1]
+        assert "image_edit" in single_prompt
+        assert str(source) in single_prompt
+
+    def test_grok_build_transport_binds_numbered_multi_reference_roles(
+        self, monkeypatch, tmp_path
+    ):
+        from plugins.image_gen import xai as xai_module
+
+        ref1 = tmp_path / "identity.png"
+        ref2 = tmp_path / "pose.png"
+        image = tmp_path / "edited.jpg"
+        ref1.write_bytes(b"identity")
+        ref2.write_bytes(b"pose")
+        image.write_bytes(b"image")
+        captured = {}
+
+        def fake_run(command, **_kwargs):
+            captured["command"] = command
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps({"image_path": str(image)}),
+                stderr="",
+            )
+
+        monkeypatch.setattr(
+            xai_module,
+            "_load_xai_config",
+            lambda: {"transport": "grok-build", "grok_binary": "grok"},
+        )
+        monkeypatch.setattr(xai_module, "_grok_build_available", lambda _cfg=None: True)
+        monkeypatch.setattr(xai_module.subprocess, "run", fake_run)
+
+        result = xai_module.XAIImageGenProvider().generate(
+            prompt=(
+                "Follow explicit reference roles: ref 1 role: character_identity; "
+                "ref 2 role: pose_composition."
+            ),
+            aspect_ratio="portrait",
+            reference_image_urls=[str(ref1), str(ref2)],
+        )
+
+        assert result["success"] is True
+        single_prompt = captured["command"][captured["command"].index("--single") + 1]
+        assert f"ref 1: {ref1}" in single_prompt
+        assert f"ref 2: {ref2}" in single_prompt
+        assert "Obey every explicit ref role binding" in single_prompt
+        assert "Do not downgrade a role-locked source to general inspiration" in single_prompt
+        assert "When the creative request does not specify reference roles" in single_prompt
+        assert "The first image is the identity/edit anchor" not in single_prompt
+
+    def test_grok_build_transport_does_not_force_first_reference_to_identity(
+        self, monkeypatch, tmp_path
+    ):
+        from plugins.image_gen import xai as xai_module
+
+        ref1 = tmp_path / "pose.png"
+        ref2 = tmp_path / "identity.png"
+        image = tmp_path / "edited.jpg"
+        ref1.write_bytes(b"pose")
+        ref2.write_bytes(b"identity")
+        image.write_bytes(b"image")
+        captured = {}
+
+        def fake_run(command, **_kwargs):
+            captured["command"] = command
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps({"image_path": str(image)}),
+                stderr="",
+            )
+
+        monkeypatch.setattr(
+            xai_module,
+            "_load_xai_config",
+            lambda: {"transport": "grok-build", "grok_binary": "grok"},
+        )
+        monkeypatch.setattr(xai_module, "_grok_build_available", lambda _cfg=None: True)
+        monkeypatch.setattr(xai_module.subprocess, "run", fake_run)
+
+        result = xai_module.XAIImageGenProvider().generate(
+            prompt=(
+                "Follow explicit reference roles: ref 1 role: pose_composition; "
+                "ref 2 role: character_identity."
+            ),
+            reference_image_urls=[str(ref1), str(ref2)],
+        )
+
+        assert result["success"] is True
+        single_prompt = captured["command"][captured["command"].index("--single") + 1]
+        assert "Obey every explicit ref role binding" in single_prompt
+        assert "The first image is the identity/edit anchor" not in single_prompt
+
     def test_missing_api_key(self, monkeypatch):
         monkeypatch.delenv("XAI_API_KEY", raising=False)
         from plugins.image_gen.xai import XAIImageGenProvider
@@ -196,14 +801,8 @@ class TestGenerate:
         assert call_args[0] == "https://imgen.x.ai/xai-tmp-imgen-test.jpeg"
         assert call_kwargs.get("prefix", "").startswith("xai_")
 
-    def test_url_response_falls_back_to_bare_url_when_download_fails(self):
-        """If caching the URL fails (network blip, 404 in-flight), the
-        provider must NOT hard-error — fall through to returning the bare
-        URL so the agent surface at least sees *something*.  The gateway's
-        existing URL-send fallback then has a chance to succeed; if it
-        too 404s, the user gets the original (now legible) error rather
-        than an opaque "image generation failed" tool result.
-        """
+    def test_url_response_fails_closed_when_safe_cache_fails(self):
+        """A provider URL must never bypass the guarded local cache path."""
         import requests as req_lib
         from plugins.image_gen.xai import XAIImageGenProvider
 
@@ -222,10 +821,10 @@ class TestGenerate:
             provider = XAIImageGenProvider()
             result = provider.generate(prompt="A cat playing piano")
 
-        assert result["success"] is True, (
-            "Cache failure must not turn into a tool error — gateway gets a chance to retry"
-        )
-        assert result["image"] == "https://imgen.x.ai/xai-tmp-imgen-already-404.jpeg"
+        assert result["success"] is False
+        assert result["error_type"] == "io_error"
+        assert result["image"] is None
+        assert "imgen.x.ai" not in str(result)
 
     def test_api_error(self):
         import requests as req_lib
@@ -429,7 +1028,7 @@ class TestGenerate:
         assert "expires_after" not in payload["storage_options"]
         assert payload["storage_options"]["filename"].endswith(".png")
 
-    def test_public_url_file_output_wins_over_temporary_url(self):
+    def test_public_url_file_output_is_cached_and_preserved(self, tmp_path):
         from plugins.image_gen.xai import XAIImageGenProvider
 
         mock_resp = MagicMock()
@@ -447,16 +1046,51 @@ class TestGenerate:
             }],
         }
 
+        cached_path = tmp_path / "xai_grok-imagine-image_20260708_014800_deadbeef.png"
         with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp), \
-             patch("plugins.image_gen.xai.save_url_image") as mock_save_url:
+             patch(
+                 "plugins.image_gen.xai.save_url_image",
+                 return_value=cached_path,
+             ) as mock_save_url:
             provider = XAIImageGenProvider()
             result = provider.generate(prompt="A cat playing piano")
 
         assert result["success"] is True
-        assert result["image"] == "https://xai-files.example/stored.png"
+        assert result["image"] == str(cached_path)
         assert result["public_url"] == "https://xai-files.example/stored.png"
         assert "file_id" not in result
-        mock_save_url.assert_not_called()
+        mock_save_url.assert_called_once_with(
+            "https://xai-files.example/stored.png",
+            prefix="xai_grok-imagine-image",
+        )
+
+    def test_public_url_cache_failure_does_not_return_bare_url(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {
+            "data": [
+                {
+                    "file_output": {
+                        "public_url": "http://127.0.0.1/internal.png",
+                    }
+                }
+            ]
+        }
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp), \
+             patch(
+                 "plugins.image_gen.xai.save_url_image",
+                 side_effect=ValueError("unsafe image URL"),
+             ):
+            result = XAIImageGenProvider().generate(prompt="A cat")
+
+        assert result["success"] is False
+        assert result["error_type"] == "io_error"
+        assert result["image"] is None
+        assert "127.0.0.1" not in str(result)
 
 
 # ---------------------------------------------------------------------------

@@ -10,13 +10,16 @@ Uses slack-bolt (Python) with Socket Mode for:
 
 import asyncio
 import contextvars
+import datetime
 import json
 import logging
 import os
 import re
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Any, Tuple, List
+from urllib.parse import urlparse
 
 try:
     from slack_bolt.async_app import AsyncApp
@@ -73,6 +76,48 @@ _slash_user_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "_slash_user_id",
     default=None,
 )
+
+
+def _remote_image_upload_filename(
+    image_url: str,
+    *,
+    extension: str,
+) -> str:
+    """Create a non-secret, collision-resistant filename for remote media."""
+    host = (urlparse(image_url).hostname or "").lower().rstrip(".")
+
+    def _host_is(domain: str) -> bool:
+        return host == domain or host.endswith(f".{domain}")
+
+    provider = "image"
+    if _host_is("x.ai"):
+        provider = "xai"
+    elif _host_is("openai.com"):
+        provider = "openai"
+    elif _host_is("krea.ai"):
+        provider = "krea"
+    elif _host_is("fal.ai") or _host_is("fal.media"):
+        provider = "fal"
+    safe_ext = extension.lower().lstrip(".") or "png"
+    if safe_ext == "jpeg":
+        safe_ext = "jpg"
+    if not re.fullmatch(r"[a-z0-9]+", safe_ext):
+        safe_ext = "png"
+    timestamp = datetime.datetime.now(datetime.timezone.utc).strftime(
+        "%Y%m%d_%H%M%S"
+    )
+    return f"{provider}_image_{timestamp}_{uuid.uuid4().hex[:8]}.{safe_ext}"
+
+
+def _image_extension_from_content_type(content_type: str) -> str:
+    normalized = (content_type or "").lower()
+    if "jpeg" in normalized or "jpg" in normalized:
+        return "jpg"
+    if "gif" in normalized:
+        return "gif"
+    if "webp" in normalized:
+        return "webp"
+    return "png"
 
 
 @dataclass
@@ -1915,18 +1960,16 @@ class SlackAdapter(BasePlatformAdapter):
                             try:
                                 response = await http_client.get(image_url)
                                 response.raise_for_status()
-                                ext = "png"
-                                ct = response.headers.get("content-type", "")
-                                if "jpeg" in ct or "jpg" in ct:
-                                    ext = "jpg"
-                                elif "gif" in ct:
-                                    ext = "gif"
-                                elif "webp" in ct:
-                                    ext = "webp"
+                                ext = _image_extension_from_content_type(
+                                    response.headers.get("content-type", "")
+                                )
                                 file_uploads.append(
                                     {
                                         "content": response.content,
-                                        "filename": f"image_{len(file_uploads)}.{ext}",
+                                        "filename": _remote_image_upload_filename(
+                                            image_url,
+                                            extension=ext,
+                                        ),
                                     }
                                 )
                             except Exception as dl_err:
@@ -2375,12 +2418,18 @@ class SlackAdapter(BasePlatformAdapter):
                 response.raise_for_status()
 
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
+            ext = _image_extension_from_content_type(
+                response.headers.get("content-type", "")
+            )
             result = await self._get_client(
                 chat_id, team_id=self._metadata_team_id(metadata)
             ).files_upload_v2(
                 channel=chat_id,
                 content=response.content,
-                filename="image.png",
+                filename=_remote_image_upload_filename(
+                    image_url,
+                    extension=ext,
+                ),
                 initial_comment=caption or "",
                 thread_ts=thread_ts,
             )
@@ -4936,6 +4985,44 @@ async def _standalone_send(
                 "Failed to apply Slack mrkdwn formatting in _standalone_send",
                 exc_info=True,
             )
+
+    if media_files:
+        if not check_slack_requirements():
+            return {"error": "Slack send failed: slack-sdk is not installed"}
+        file_uploads = [
+            {"file": file_path, "filename": os.path.basename(file_path)}
+            for file_path, _is_voice in media_files
+        ]
+        client = AsyncWebClient(token=token)
+        _apply_slack_proxy(client, _resolve_slack_proxy_url())
+        uploaded_files = 0
+        for index in range(0, len(file_uploads), 10):
+            batch = file_uploads[index:index + 10]
+            try:
+                await client.files_upload_v2(
+                    channel=chat_id,
+                    file_uploads=batch,
+                    initial_comment=formatted if index == 0 else "",
+                    thread_ts=thread_id,
+                )
+                uploaded_files += len(batch)
+            except Exception as e:
+                if uploaded_files:
+                    return {
+                        "success": True,
+                        "partial": True,
+                        "platform": "slack",
+                        "chat_id": chat_id,
+                        "uploaded_files": uploaded_files,
+                        "warnings": ["Slack file upload stopped after a partial batch"],
+                    }
+                return {"error": f"Slack file upload failed: {e}"}
+        return {
+            "success": True,
+            "platform": "slack",
+            "chat_id": chat_id,
+            "uploaded_files": uploaded_files,
+        }
 
     try:
         import aiohttp

@@ -11,6 +11,7 @@ We mock the slack modules at import time to avoid collection errors.
 import asyncio
 import contextlib
 import os
+import re
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch, call
 
@@ -4194,6 +4195,37 @@ class TestFallbackPreservesThreadContext:
 
 class TestSendImageSSRFGuards:
     """send_image should reject redirects that land on private/internal hosts."""
+
+    @pytest.mark.asyncio
+    async def test_send_image_url_uses_provider_timestamp_filename(self, adapter):
+        response = MagicMock()
+        response.content = b"\x89PNG" + b"\x00" * 20
+        response.headers = {"content-type": "image/png"}
+        response.raise_for_status = MagicMock()
+
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.get = AsyncMock(return_value=response)
+        adapter._app.client.files_upload_v2 = AsyncMock(return_value={"ok": True})
+
+        with (
+            patch("tools.url_safety.is_safe_url", return_value=True),
+            patch("httpx.AsyncClient", return_value=mock_client),
+        ):
+            result = await adapter.send_image(
+                chat_id="C123",
+                image_url="https://files-cdn.x.ai/token/file_abc.png",
+                caption="see this",
+            )
+
+        assert result.success
+        call_kwargs = adapter._app.client.files_upload_v2.call_args.kwargs
+        assert call_kwargs["filename"] != "image.png"
+        assert re.fullmatch(
+            r"xai_image_\d{8}_\d{6}_[0-9a-f]{8}\.png",
+            call_kwargs["filename"],
+        )
 
     @pytest.mark.asyncio
     async def test_send_image_blocks_private_redirect_target(self, adapter):

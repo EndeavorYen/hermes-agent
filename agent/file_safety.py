@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Optional
@@ -95,6 +96,67 @@ def get_safe_write_roots() -> set[str]:
     return roots
 
 
+_STORY_VIDEO_PLANNING_ARTIFACTS = {
+    "PROJECT_CONTRACT.md",
+    "production_checklist.json",
+    "pronunciation_lexicon.json",
+    "scene_ledger.json",
+    "script.md",
+    "script_quality_report.json",
+    "storyboard.md",
+}
+
+
+def _story_video_project_write_is_denied(
+    resolved: str,
+    hermes_dirs: list[str],
+) -> bool:
+    for base_real in hermes_dirs:
+        story_root = os.path.realpath(os.path.join(base_real, "story_videos"))
+        try:
+            relative = os.path.relpath(resolved, story_root)
+        except ValueError:
+            continue
+        parts = relative.split(os.sep)
+        if len(parts) != 2 or parts[0] in {"", "..", "_workflow_state"}:
+            continue
+        project_dir = os.path.join(story_root, parts[0])
+        basename = parts[1]
+        if basename in {"story_video_run_context.json", "explanation_profile.json"}:
+            return True
+        if basename not in _STORY_VIDEO_PLANNING_ARTIFACTS:
+            continue
+        try:
+            projection_path = os.path.join(
+                project_dir,
+                "story_video_run_context.json",
+            )
+            with open(projection_path, encoding="utf-8") as handle:
+                projection = json.load(handle)
+            run_id = str(projection.get("run_id") or "").strip()
+            if not run_id:
+                continue
+            canonical_path = os.path.join(
+                story_root,
+                "_workflow_state",
+                "runs",
+                f"{run_id}.json",
+            )
+            with open(canonical_path, encoding="utf-8") as handle:
+                canonical = json.load(handle)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if (
+            str(canonical.get("project_dir") or "") == project_dir
+            and (
+                str(canonical.get("phase") or "planning") != "planning"
+                or canonical.get("auto_mode") is True
+            )
+        ):
+            return True
+    return False
+
+
 def _classify_write_denial(path: str) -> Optional[str]:
     """Return ``'credential'``, ``'safe_root'``, or ``None`` if writes are allowed."""
     home = os.path.realpath(os.path.expanduser("~"))
@@ -123,9 +185,20 @@ def _classify_write_denial(path: str) -> Optional[str]:
         # falsify conversation history and invalidate resume/compression state.
         try:
             if resolved == os.path.realpath(os.path.join(base_real, "state.db")):
-                return True
+                return "credential"
             sessions_real = os.path.realpath(os.path.join(base_real, "sessions"))
             if resolved == sessions_real or resolved.startswith(sessions_real + os.sep):
+                return "credential"
+        except Exception:
+            pass
+        try:
+            workflow_state_real = os.path.realpath(
+                os.path.join(base_real, "story_videos", "_workflow_state")
+            )
+            if (
+                resolved == workflow_state_real
+                or resolved.startswith(workflow_state_real + os.sep)
+            ):
                 return True
         except Exception:
             pass
@@ -141,6 +214,9 @@ def _classify_write_denial(path: str) -> Optional[str]:
                 return "credential"
         except Exception:
             pass
+
+    if _story_video_project_write_is_denied(resolved, hermes_dirs):
+        return "credential"
 
     safe_roots = get_safe_write_roots()
     if safe_roots:

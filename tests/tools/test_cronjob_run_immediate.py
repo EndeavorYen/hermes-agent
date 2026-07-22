@@ -79,3 +79,32 @@ class TestCronjobRunExecutesImmediately:
         assert res["success"] is False
         assert "boom" in res["error"]
         m_mark.assert_called_once()
+
+    def test_removed_one_shot_reports_success_from_execution_outcome(self):
+        """Finite jobs disappear after mark_job_run; that must not become failure."""
+        def run_and_remove(_job, *, outcome):
+            outcome.update(success=True, error=None)
+            return True
+
+        with patch("tools.cronjob_tools.claim_job_for_fire", return_value=True), \
+             patch("cron.scheduler.run_one_job", side_effect=run_and_remove), \
+             patch("tools.cronjob_tools.get_job", return_value=None):
+            res = _execute_job_now(dict(_JOB))
+
+        assert res == {"claimed": True, "success": True, "error": None}
+
+    def test_removed_failed_one_shot_reports_execution_error(self):
+        def run_and_remove(_job, *, outcome):
+            outcome.update(success=False, error="provider 500")
+            return True
+
+        with patch("tools.cronjob_tools.claim_job_for_fire", return_value=True), \
+             patch("cron.scheduler.run_one_job", side_effect=run_and_remove), \
+             patch("tools.cronjob_tools.get_job", return_value=None):
+            res = _execute_job_now(dict(_JOB))
+
+        assert res == {
+            "claimed": True,
+            "success": False,
+            "error": "provider 500",
+        }

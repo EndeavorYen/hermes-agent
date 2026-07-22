@@ -24,8 +24,9 @@ import base64
 import json
 import logging
 import os
+import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
@@ -111,6 +112,11 @@ _CODEX_INSTRUCTIONS = (
     "requests by using the image_generation tool when provided."
 )
 
+
+class _ImageGenerationResult(NamedTuple):
+    b64: str
+    response_id: str = ""
+
 _MAX_REFERENCE_IMAGES = 16
 _MAX_INPUT_IMAGE_BYTES = 25 * 1024 * 1024
 # gpt-image-2's Responses ``input_image`` accepts raster formats only. The
@@ -178,9 +184,55 @@ def _read_codex_access_token() -> Optional[str]:
         token = _reader()
         if isinstance(token, str) and token.strip():
             return token.strip()
-        return None
     except Exception as exc:
         logger.debug("Could not resolve Codex access token: %s", exc)
+    if not _codex_app_server_enabled():
+        return None
+    return _read_codex_cli_access_token()
+
+
+def _codex_app_server_enabled() -> bool:
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        model = cfg.get("model") if isinstance(cfg, dict) else None
+        return (
+            isinstance(model, dict)
+            and str(model.get("openai_runtime") or "").strip().lower()
+            == "codex_app_server"
+        )
+    except Exception:
+        return False
+
+
+def _read_codex_cli_access_token() -> Optional[str]:
+    """Read Codex CLI access_token without refreshing or mutating auth state."""
+    codex_home = Path(
+        os.environ.get("CODEX_HOME") or (Path.home() / ".codex")
+    ).expanduser()
+    path = codex_home / "auth.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or payload.get("auth_mode") != "chatgpt":
+            return None
+        tokens = payload.get("tokens")
+        token = tokens.get("access_token") if isinstance(tokens, dict) else None
+        if not isinstance(token, str) or not token.strip():
+            return None
+        normalized = token.strip()
+        try:
+            encoded = normalized.split(".")[1]
+            encoded += "=" * (-len(encoded) % 4)
+            claims = json.loads(base64.urlsafe_b64decode(encoded))
+            expires_at = float(claims.get("exp") or 0)
+            if expires_at and time.time() >= expires_at:
+                return None
+        except Exception:
+            pass
+        return normalized
+    except Exception as exc:
+        logger.debug("Could not read Codex CLI access token: %s", exc)
         return None
 
 
@@ -316,27 +368,55 @@ def _build_responses_payload(
     }
 
 
-def _extract_image_b64(value: Any) -> Optional[str]:
-    """Return the newest image b64 embedded in a Responses event payload."""
-    found: Optional[str] = None
+def _extract_image_generation_result(
+    value: Any,
+    *,
+    response_id: str = "",
+) -> Optional[_ImageGenerationResult]:
+    """Return image bytes with only the enclosing Responses API id."""
+    found: Optional[_ImageGenerationResult] = None
     if isinstance(value, dict):
+        current_response_id = response_id
+        value_type = str(value.get("type") or "")
+        if (
+            value.get("object") == "response"
+            or "output" in value
+            or value_type in {"response.completed", "response.created"}
+        ):
+            current_response_id = str(
+                value.get("response_id") or value.get("id") or response_id
+            ).strip()
+        elif value.get("response_id"):
+            current_response_id = str(value.get("response_id") or "").strip()
         if value.get("type") == "image_generation_call":
             result = value.get("result")
             if isinstance(result, str) and result:
-                found = result
+                found = _ImageGenerationResult(result, current_response_id)
         partial = value.get("partial_image_b64")
         if isinstance(partial, str) and partial:
-            found = partial
+            found = _ImageGenerationResult(partial, current_response_id)
         for child in value.values():
-            nested = _extract_image_b64(child)
+            nested = _extract_image_generation_result(
+                child,
+                response_id=current_response_id,
+            )
             if nested:
                 found = nested
     elif isinstance(value, list):
         for child in value:
-            nested = _extract_image_b64(child)
+            nested = _extract_image_generation_result(
+                child,
+                response_id=response_id,
+            )
             if nested:
                 found = nested
     return found
+
+
+def _extract_image_b64(value: Any) -> Optional[str]:
+    """Return the newest image b64 embedded in a Responses event payload."""
+    result = _extract_image_generation_result(value)
+    return result.b64 if result else None
 
 
 def _iter_sse_json(response: Any):
@@ -393,8 +473,8 @@ def _collect_image_b64(
     size: str,
     quality: str,
     input_images: Optional[List[Dict[str, str]]] = None,
-) -> Optional[str]:
-    """Stream a Codex Responses image_generation call and return the b64 image."""
+) -> Optional[_ImageGenerationResult]:
+    """Stream a Codex Responses image call and return image plus response id."""
     import httpx
     from agent.auxiliary_client import _codex_cloudflare_headers
 
@@ -412,7 +492,7 @@ def _collect_image_b64(
     )
     timeout = httpx.Timeout(300.0, connect=30.0, read=300.0, write=30.0, pool=30.0)
 
-    image_b64: Optional[str] = None
+    image_result: Optional[_ImageGenerationResult] = None
     with httpx.Client(timeout=timeout, headers=headers) as http:
         with http.stream("POST", f"{_CODEX_BASE_URL}/responses", json=payload) as response:
             try:
@@ -430,11 +510,11 @@ def _collect_image_b64(
                     f"Codex Responses API returned HTTP {exc.response.status_code}: {body}"
                 ) from exc
             for event in _iter_sse_json(response):
-                found = _extract_image_b64(event)
+                found = _extract_image_generation_result(event)
                 if found:
-                    image_b64 = found
+                    image_result = found
 
-    return image_b64
+    return image_result
 
 
 # ---------------------------------------------------------------------------
@@ -567,7 +647,7 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             )
 
         try:
-            b64 = _collect_image_b64(
+            collected = _collect_image_b64(
                 token,
                 prompt=prompt,
                 size=size,
@@ -598,7 +678,16 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        if not b64:
+        if isinstance(collected, str):
+            b64 = collected
+            response_id = ""
+        else:
+            b64 = getattr(collected, "b64", None)
+            response_id = str(
+                getattr(collected, "response_id", "") or ""
+            ).strip()
+
+        if not isinstance(b64, str) or not b64:
             return error_response(
                 error="Codex response contained no image_generation_call result",
                 error_type="empty_response",
@@ -620,7 +709,7 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        return success_response(
+        result = success_response(
             image=str(saved_path),
             model=tier_id,
             prompt=prompt,
@@ -629,6 +718,9 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             modality="image" if input_images else "text",
             extra={"size": size, "quality": meta["quality"], "input_image_count": len(input_images)},
         )
+        if response_id:
+            result["response_id"] = response_id
+        return result
 
 
 # ---------------------------------------------------------------------------

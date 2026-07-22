@@ -45,6 +45,8 @@ import abc
 import base64
 import datetime
 import logging
+import re
+import shutil
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -54,6 +56,9 @@ logger = logging.getLogger(__name__)
 
 VALID_ASPECT_RATIOS: Tuple[str, ...] = ("landscape", "square", "portrait")
 DEFAULT_ASPECT_RATIO = "landscape"
+_UNIQUE_IMAGE_FILENAME_RE = re.compile(
+    r"_\d{8}(?:T|_)\d{6}(?:Z)?_[0-9a-fA-F]{8,}\.[A-Za-z0-9]+$"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -289,17 +294,59 @@ def save_url_image(
     fall back to returning the bare URL with a clear error message.
     """
     import requests
+    from urllib.parse import urljoin
 
-    response = requests.get(url, timeout=timeout, stream=True)
+    from tools.url_safety import is_safe_url
+
+    current_url = str(url or "").strip()
+    response = None
+    for _redirect_count in range(6):
+        if not is_safe_url(current_url):
+            if response is not None:
+                response.close()
+            raise ValueError("Refusing to cache unsafe image URL")
+        response = requests.get(
+            current_url,
+            timeout=timeout,
+            stream=True,
+            allow_redirects=False,
+        )
+        if not getattr(response, "is_redirect", False):
+            break
+        location = response.headers.get("Location") or response.headers.get("location")
+        response.close()
+        response = None
+        if not location:
+            raise ValueError("Image redirect response omitted Location")
+        current_url = urljoin(current_url, str(location))
+    else:
+        raise ValueError("Image URL exceeded 5 redirect limit")
+
+    if response is None:
+        raise ValueError("Image URL returned no response")
     response.raise_for_status()
 
     # Infer extension from the response content-type, falling back to the
     # URL suffix when xAI / OpenAI omit a precise type (some CDNs return
     # ``application/octet-stream``).  Defaults to ``png``.
     content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+    if content_type and content_type not in _URL_IMAGE_CONTENT_TYPES and content_type != "application/octet-stream":
+        response.close()
+        raise ValueError("Remote image returned a non-image content type")
+    content_length = response.headers.get("Content-Length") or response.headers.get("content-length")
+    if content_length:
+        try:
+            declared_bytes = int(content_length)
+        except (TypeError, ValueError):
+            declared_bytes = 0
+        if declared_bytes > max_bytes:
+            response.close()
+            raise ValueError(
+                f"Remote image exceeds {max_bytes // (1024 * 1024)}MB cap"
+            )
     extension = _URL_IMAGE_CONTENT_TYPES.get(content_type)
     if extension is None:
-        url_path = url.split("?", 1)[0].lower()
+        url_path = current_url.split("?", 1)[0].lower()
         for ext in ("png", "jpg", "jpeg", "webp", "gif"):
             if url_path.endswith(f".{ext}"):
                 extension = "jpg" if ext == "jpeg" else ext
@@ -312,28 +359,32 @@ def save_url_image(
     path = _images_cache_dir() / f"{prefix}_{ts}_{short}.{extension}"
 
     bytes_written = 0
-    with path.open("wb") as fh:
-        for chunk in response.iter_content(chunk_size=64 * 1024):
-            if not chunk:
-                continue
-            bytes_written += len(chunk)
-            if bytes_written > max_bytes:
-                fh.close()
-                try:
-                    path.unlink()
-                except OSError:
-                    pass
-                raise ValueError(
-                    f"Image at {url} exceeds {max_bytes // (1024 * 1024)}MB cap; refusing to cache."
-                )
-            fh.write(chunk)
+    try:
+        with path.open("wb") as fh:
+            for chunk in response.iter_content(chunk_size=64 * 1024):
+                if not chunk:
+                    continue
+                bytes_written += len(chunk)
+                if bytes_written > max_bytes:
+                    raise ValueError(
+                        f"Remote image exceeds {max_bytes // (1024 * 1024)}MB cap"
+                    )
+                fh.write(chunk)
+    except Exception:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        raise
+    finally:
+        response.close()
 
     if bytes_written == 0:
         try:
             path.unlink()
         except OSError:
             pass
-        raise ValueError(f"Image at {url} returned 0 bytes; refusing to cache.")
+        raise ValueError("Remote image returned 0 bytes; refusing to cache")
 
     return path
 
@@ -356,6 +407,11 @@ def success_response(
     actually hit, useful for diagnostics. Callers that need to pass through
     additional backend-specific fields can supply ``extra``.
     """
+    image = _stage_unique_local_image_name(
+        image,
+        provider=provider,
+        model=model,
+    )
     payload: Dict[str, Any] = {
         "success": True,
         "image": image,
@@ -369,6 +425,53 @@ def success_response(
         for k, v in extra.items():
             payload.setdefault(k, v)
     return payload
+
+
+def _stage_unique_local_image_name(
+    image: str,
+    *,
+    provider: str,
+    model: str,
+) -> str:
+    """Give generic provider files a stable, collision-safe delivery name."""
+    value = str(image or "").strip()
+    if not value or value.lower().startswith(("http://", "https://", "data:")):
+        return value
+    source = Path(value).expanduser()
+    if not source.is_file():
+        return value
+    try:
+        from hermes_constants import get_hermes_home
+
+        provider_slug = _filename_slug(provider or "image-provider")
+        model_slug = _filename_slug(model or "image-model")
+        if (
+            source.name.startswith(f"{provider_slug}-{model_slug}_")
+            and _UNIQUE_IMAGE_FILENAME_RE.search(source.name)
+        ):
+            return str(source.resolve())
+        hermes_home = get_hermes_home().resolve()
+        try:
+            source.resolve().relative_to(hermes_home)
+            output_dir = source.parent
+        except ValueError:
+            output_dir = hermes_home / "visual" / "outputs" / provider_slug
+        output_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        suffix = source.suffix.lower() or ".png"
+        destination = output_dir / (
+            f"{provider_slug}-{model_slug}_{timestamp}_{uuid.uuid4().hex[:8]}{suffix}"
+        )
+        shutil.copy2(source, destination)
+        return str(destination.resolve())
+    except Exception as exc:
+        logger.warning("Could not stage unique image delivery filename: %s", exc)
+        return value
+
+
+def _filename_slug(value: Any) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
+    return slug or "image"
 
 
 def error_response(

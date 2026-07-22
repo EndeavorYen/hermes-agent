@@ -472,6 +472,7 @@ class AIAgent:
         request_overrides: Dict[str, Any] = None,
         prefill_messages: List[Dict[str, Any]] = None,
         platform: str = None,
+        codex_thread_ephemeral: Optional[bool] = None,
         user_id: str = None,
         user_id_alt: str = None,
         user_name: str = None,
@@ -548,6 +549,7 @@ class AIAgent:
             request_overrides=request_overrides,
             prefill_messages=prefill_messages,
             platform=platform,
+            codex_thread_ephemeral=codex_thread_ephemeral,
             user_id=user_id,
             user_id_alt=user_id_alt,
             user_name=user_name,
@@ -1645,6 +1647,8 @@ class AIAgent:
         messages_snapshot: List[Dict],
         review_memory: bool = False,
         review_skills: bool = False,
+        review_prompt: Optional[str] = None,
+        review_label: Optional[str] = None,
     ) -> None:
         """Spawn the background memory/skill review thread.
 
@@ -1661,6 +1665,8 @@ class AIAgent:
             messages_snapshot,
             review_memory=review_memory,
             review_skills=review_skills,
+            review_prompt=review_prompt,
+            review_label=review_label,
         )
         # Carry the active profile into the review thread so MEMORY.md / skill
         # review writes land in the right profile (#54937).
@@ -6425,11 +6431,22 @@ class AIAgent:
         original_user_message: Any,
         messages: List[Dict[str, Any]],
         effective_task_id: str,
+        turn_id: str = "",
         should_review_memory: bool = False,
+        raphael_decision: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.codex_runtime.run_codex_app_server_turn``."""
         from agent.codex_runtime import run_codex_app_server_turn
-        return run_codex_app_server_turn(self, user_message=user_message, original_user_message=original_user_message, messages=messages, effective_task_id=effective_task_id, should_review_memory=should_review_memory)
+        return run_codex_app_server_turn(
+            self,
+            user_message=user_message,
+            original_user_message=original_user_message,
+            messages=messages,
+            effective_task_id=effective_task_id,
+            turn_id=turn_id,
+            should_review_memory=should_review_memory,
+            raphael_decision=raphael_decision,
+        )
 
 def main(
     query: str = None,

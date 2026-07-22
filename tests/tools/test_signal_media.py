@@ -122,23 +122,22 @@ class TestSendSignalMediaRestrictions:
             assert result["success"] is True
 
     def test_non_media_platforms_reject_text_only_media(self):
-        """Slack should reject text-only media (no MESSAGE content)."""
+        """Platforms without media support reject media-only sends."""
         import httpx
         if not hasattr(httpx, 'Proxy') or not hasattr(httpx, 'URL'):
             pytest.skip("httpx type annotations incompatible with telegram library")
         from tools.send_message_tool import _send_to_platform
 
         config = MagicMock()
-        config.platforms = {Platform.SLACK: MagicMock(enabled=True)}
+        config.platforms = {Platform.EMAIL: MagicMock(enabled=True)}
         config.get_home_channel.return_value = None
 
-        # Empty message with media_files should trigger restriction block
         result = asyncio.run(
             _send_to_platform(
-                Platform.SLACK,
+                Platform.EMAIL,
                 config,
-                "C012AB3CD",
-                "",  # Empty message - media is the only content
+                "reviewer@example.com",
+                "",
                 media_files=[("/tmp/test.png", False)]
             )
         )
@@ -151,44 +150,34 @@ class TestSendSignalMediaWarningMessages:
     """Test warning messages are updated to include signal."""
 
     def test_warning_includes_signal_when_media_omitted(self):
-        """Non-media platforms should show a warning mentioning signal in the supported list."""
+        """Non-media platforms list Slack and Signal as supported."""
         import httpx
         if not hasattr(httpx, 'Proxy') or not hasattr(httpx, 'URL'):
             pytest.skip("httpx type annotations incompatible with telegram library")
         from tools.send_message_tool import _send_to_platform
-        from hermes_cli.plugins import discover_plugins
-        from gateway.platform_registry import platform_registry
 
         config = MagicMock()
-        config.platforms = {Platform.SLACK: MagicMock(enabled=True)}
+        config.extra = {}
         config.get_home_channel.return_value = None
 
-        # Slack migrated to a bundled plugin (#41112) — delivery now flows
-        # through the registry's standalone_sender_fn instead of the old
-        # tools.send_message_tool._send_slack helper. Patch the registry entry's
-        # sender so the slack send succeeds and the media-omitted warning (which
-        # must mention signal) gets attached to the result.
-        discover_plugins()
-        slack_entry = platform_registry.get("slack")
-        original_sender = slack_entry.standalone_sender_fn
-        slack_entry.standalone_sender_fn = AsyncMock(return_value={"success": True})
-        try:
+        with patch(
+            "tools.send_message_tool._send_bluebubbles",
+            new=AsyncMock(return_value={"success": True}),
+        ):
             result = asyncio.run(
                 _send_to_platform(
-                    Platform.SLACK,
+                    Platform.BLUEBUBBLES,
                     config,
-                    "C012AB3CD",
+                    "chat-guid",
                     "Test message with media",
                     media_files=[("/tmp/test.png", False)]
                 )
             )
-        finally:
-            slack_entry.standalone_sender_fn = original_sender
 
         assert result.get("warnings") is not None
-        # Check that the warning mentions signal as supported
-        found = any("signal" in w.lower() for w in result["warnings"])
-        assert found, f"Expected 'signal' in warnings but got: {result.get('warnings')}"
+        warning = " ".join(result["warnings"]).lower()
+        assert "signal" in warning
+        assert "slack" in warning
 
 
 class TestSendSignalGroupChats:

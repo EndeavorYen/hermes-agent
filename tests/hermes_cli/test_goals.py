@@ -217,6 +217,32 @@ class TestJudgeGoal:
 
 
 class TestGoalManager:
+    def test_ensure_reuses_matching_active_goal(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="ensure-same", default_max_turns=7)
+        original = mgr.set("repair provider routing")
+        original.turns_used = 3
+
+        state, reused = mgr.ensure("repair provider routing")
+
+        assert reused is True
+        assert state is original
+        assert state.turns_used == 3
+
+    def test_ensure_replaces_different_goal(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="ensure-replace", default_max_turns=7)
+        mgr.set("old objective")
+
+        state, reused = mgr.ensure("new objective")
+
+        assert reused is False
+        assert state.goal == "new objective"
+        assert state.status == "active"
+        assert state.turns_used == 0
+
     def test_no_goal_initial(self, hermes_home):
         from hermes_cli.goals import GoalManager
 

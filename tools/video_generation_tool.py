@@ -55,6 +55,7 @@ from agent.video_gen_provider import (
     error_response,
 )
 from tools.registry import registry, tool_error
+from tools.story_video_provider_guard import story_video_video_block_payload
 
 logger = logging.getLogger(__name__)
 
@@ -223,21 +224,26 @@ def check_video_generation_requirements() -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _resolve_active_provider():
+def _resolve_active_provider(provider_override: Optional[str] = None):
     """Return the active provider object or None.
 
     Forces plugin discovery before checking the registry — handles cases
     where a long-lived session was started before a plugin was installed.
     """
     try:
-        from agent.video_gen_registry import get_active_provider
+        from agent.video_gen_registry import get_active_provider, get_provider
         from hermes_cli.plugins import _ensure_plugins_discovered
 
         _ensure_plugins_discovered()
-        provider = get_active_provider()
+        override = (
+            provider_override.strip()
+            if isinstance(provider_override, str)
+            else ""
+        )
+        provider = get_provider(override) if override else get_active_provider()
         if provider is None:
             _ensure_plugins_discovered(force=True)
-            provider = get_active_provider()
+            provider = get_provider(override) if override else get_active_provider()
         return provider
     except Exception as exc:
         logger.debug("video_gen provider resolution failed: %s", exc)
@@ -307,6 +313,51 @@ def _normalize_reference_images(value: Any) -> Optional[List[str]]:
     return out or None
 
 
+def _track_video_generate_payload(
+    payload: Dict[str, Any],
+    *,
+    prompt: str,
+    image_url: Optional[str],
+    provider: str,
+    model: str,
+    aspect_ratio: str,
+    duration: Optional[int],
+    resolution: str,
+) -> Dict[str, Any]:
+    try:
+        from agent.visual.tracking import record_visual_generation_attempt
+
+        operation = "image_to_video" if image_url else "text_to_video"
+        modality = str(
+            payload.get("modality") or ("image" if image_url else "text")
+        )
+        return record_visual_generation_attempt(
+            payload,
+            user_prompt=prompt,
+            prompt_original=prompt,
+            prompt_mediated=prompt,
+            modality=modality,
+            operation=operation,
+            artifact_key="video",
+            kind="video",
+            provider=provider,
+            model=model,
+            parameters_requested={
+                "aspect_ratio": aspect_ratio,
+                "duration": duration,
+                "resolution": resolution,
+            },
+            parameters_effective={
+                "aspect_ratio": payload.get("aspect_ratio") or aspect_ratio,
+                "duration": payload.get("duration") or duration,
+                "resolution": payload.get("resolution") or resolution,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - generation cannot depend on audit
+        logger.warning("Video generation tracking skipped: %s", exc)
+        return payload
+
+
 def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
     prompt = (args.get("prompt") or "").strip()
     image_url = (args.get("image_url") or "").strip() or None
@@ -317,7 +368,10 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
     negative_prompt = (args.get("negative_prompt") or "").strip() or None
     audio = _coerce_bool(args.get("audio"))
     seed = _coerce_int(args.get("seed"))
-    model_override = (args.get("model") or "").strip() or None
+    provider_override = (args.get("_provider") or "").strip() or None
+    model_override = (
+        args.get("_model") or args.get("model") or ""
+    ).strip() or None
 
     # Soft validation — providers do their own. Prompt is required by the
     # schema; the backend may still accept image-only on its image-to-video
@@ -330,14 +384,24 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
             "reference-to-video; use a provider-specific tool for video edit/extend"
         )
 
+    configured = provider_override or _read_configured_video_provider()
+    configured_model = None if provider_override else _read_configured_video_model()
+    story_video_error = story_video_video_block_payload(
+        args,
+        prompt=prompt,
+        provider=configured,
+        model=model_override or configured_model,
+    )
+    if story_video_error is not None:
+        return json.dumps(story_video_error, ensure_ascii=False)
+
     # Resolve the active provider.
-    configured = _read_configured_video_provider()
-    provider = _resolve_active_provider()
+    provider = _resolve_active_provider(provider_override=provider_override)
     if provider is None:
         return _missing_provider_error(configured)
 
     # Resolve model: explicit arg wins, then config, then provider default.
-    model = model_override or _read_configured_video_model() or provider.default_model()
+    model = model_override or configured_model or provider.default_model()
 
     kwargs: Dict[str, Any] = {
         "model": model,
@@ -354,6 +418,18 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
     # Drop None entries so providers see clean defaults.
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
 
+    def _tracked(payload: Dict[str, Any]) -> Dict[str, Any]:
+        return _track_video_generate_payload(
+            payload,
+            prompt=prompt,
+            image_url=image_url,
+            provider=str(getattr(provider, "name", "") or configured or ""),
+            model=str(payload.get("model") or model or ""),
+            aspect_ratio=aspect_ratio,
+            duration=duration,
+            resolution=resolution,
+        )
+
     try:
         result = provider.generate(prompt=prompt, **kwargs)
     except TypeError as exc:
@@ -363,7 +439,7 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
             "video_gen provider '%s' rejected kwargs (signature too narrow): %s",
             getattr(provider, "name", "?"), exc,
         )
-        return json.dumps(error_response(
+        return json.dumps(_tracked(error_response(
             error=(
                 f"Provider '{getattr(provider, 'name', '?')}' signature is "
                 f"out of date with the video_generate schema. Report this "
@@ -373,30 +449,30 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
             provider=getattr(provider, "name", ""),
             model=model or "",
             prompt=prompt,
-        ))
+        )))
     except Exception as exc:
         logger.warning(
             "video_gen provider '%s' raised: %s",
             getattr(provider, "name", "?"), exc,
         )
-        return json.dumps(error_response(
+        return json.dumps(_tracked(error_response(
             error=f"Provider '{getattr(provider, 'name', '?')}' error: {exc}",
             error_type="provider_exception",
             provider=getattr(provider, "name", ""),
             model=model or "",
             prompt=prompt,
-        ))
+        )))
 
     if not isinstance(result, dict):
-        return json.dumps(error_response(
+        return json.dumps(_tracked(error_response(
             error="Provider returned a non-dict result",
             error_type="provider_contract",
             provider=getattr(provider, "name", ""),
             model=model or "",
             prompt=prompt,
-        ))
+        )))
 
-    return json.dumps(result)
+    return json.dumps(_tracked(result))
 
 
 # ---------------------------------------------------------------------------

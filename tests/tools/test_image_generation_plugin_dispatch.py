@@ -30,7 +30,122 @@ class _FakeCodexProvider(ImageGenProvider):
         }
 
 
+class _NamedRecordingProvider(ImageGenProvider):
+    def __init__(self, name: str):
+        self._name = name
+        self.last_kwargs = {}
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def generate(self, prompt, aspect_ratio="landscape", **kwargs):
+        self.last_kwargs = {"prompt": prompt, "aspect_ratio": aspect_ratio, **kwargs}
+        return {
+            "success": True,
+            "image": f"/tmp/{self._name}-test.png",
+            "model": kwargs.get("model") or "fixture-image-model",
+            "prompt": prompt,
+            "aspect_ratio": aspect_ratio,
+            "provider": self._name,
+        }
+
+
 class TestPluginDispatch:
+    def test_legacy_reference_images_reach_xai_provider_as_reference_urls(
+        self, monkeypatch, tmp_path
+    ):
+        from agent import image_gen_registry as registry_module
+        from hermes_cli import plugins as plugins_module
+        from tools import image_generation_tool
+
+        provider = _NamedRecordingProvider("xai")
+        reference = tmp_path / "identity.png"
+        reference.write_bytes(b"identity")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "xai")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda *a, **k: None)
+        monkeypatch.setattr(
+            registry_module,
+            "get_provider",
+            lambda name: provider if name == "xai" else None,
+        )
+
+        payload = json.loads(
+            image_generation_tool._handle_image_generate(
+                {
+                    "prompt": "Keep the same identity and change the pose",
+                    "aspect_ratio": "portrait",
+                    "provider": "grok-web-imagine",
+                    "reference_images": [str(reference)],
+                }
+            )
+        )
+
+        assert payload["success"] is True
+        assert payload["provider"] == "xai"
+        assert provider.last_kwargs["reference_image_urls"] == [str(reference)]
+
+    def test_configured_grok_web_alias_cannot_dispatch_browser_provider(
+        self, monkeypatch, tmp_path
+    ):
+        from agent import image_gen_registry as registry_module
+        from hermes_cli import plugins as plugins_module
+        from tools import image_generation_tool
+
+        provider = _NamedRecordingProvider("xai")
+        requested_providers = []
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(
+            image_generation_tool,
+            "_read_configured_image_provider",
+            lambda: "grok-web-imagine",
+        )
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda *a, **k: None)
+
+        def get_provider(name):
+            requested_providers.append(name)
+            return provider if name == "xai" else None
+
+        monkeypatch.setattr(registry_module, "get_provider", get_provider)
+
+        payload = json.loads(
+            image_generation_tool._handle_image_generate(
+                {
+                    "prompt": "Create a cinematic portrait",
+                    "aspect_ratio": "portrait",
+                }
+            )
+        )
+
+        assert payload["success"] is True
+        assert payload["provider"] == "xai"
+        assert requested_providers == ["xai"]
+
+    def test_explicit_provider_override_preserves_exact_registry_ids(self):
+        from tools import image_generation_tool
+
+        assert image_generation_tool._image_provider_override_arg(
+            {"_provider": "openai"},
+            "draw a still",
+        ) == "openai"
+        assert image_generation_tool._image_provider_override_arg(
+            {"image_provider": "custom-openai"},
+            "draw a still",
+        ) == "custom-openai"
+        assert image_generation_tool._image_provider_override_arg(
+            {"provider": "grok-web-imagine"},
+            "draw a still",
+        ) == "xai"
+
+    def test_prompt_provider_negation_and_comparison_do_not_infer_override(self):
+        from tools import image_generation_tool
+
+        assert image_generation_tool._image_provider_override_arg(
+            {},
+            "Do not use xai; compare OpenAI with custom-openai before drawing.",
+        ) is None
+
     def test_dispatch_routes_to_codex_provider(self, monkeypatch, tmp_path):
         from tools import image_generation_tool
         from agent import image_gen_registry as registry_module
@@ -122,3 +237,131 @@ class TestPluginDispatch:
             image_generation_tool, "_read_configured_image_provider", lambda: None
         )
         assert image_generation_tool.check_image_generation_requirements() is False
+
+    def test_story_video_image_prompt_forces_openai_when_configured_provider_is_xai(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        from agent import image_gen_registry as registry_module
+        from hermes_cli import plugins as plugins_module
+        from tools import image_generation_tool
+
+        xai_provider = _NamedRecordingProvider("xai")
+        openai_provider = _NamedRecordingProvider("openai-codex")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "xai")
+        monkeypatch.setattr(
+            image_generation_tool,
+            "_read_configured_image_model",
+            lambda: "grok-imagine-image-quality",
+        )
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda *a, **k: None)
+        monkeypatch.setattr(
+            registry_module,
+            "get_provider",
+            lambda name: {"xai": xai_provider, "openai-codex": openai_provider}.get(name),
+        )
+
+        prompt = (
+            "Scene S03 keyframe concept for a 5-minute Traditional Chinese "
+            "science explainer about dinosaur origins. Photoreal natural-history "
+            "documentary paleoart. Leave the bottom 20% visually clean for subtitles."
+        )
+        payload = json.loads(
+            image_generation_tool._handle_image_generate(
+                {"prompt": prompt, "aspect_ratio": "landscape"}
+            )
+        )
+
+        assert payload["success"] is True
+        assert payload["provider"] == "openai-codex"
+        assert openai_provider.last_kwargs["prompt"].startswith("Scene S03")
+        assert xai_provider.last_kwargs == {}
+
+    def test_story_video_image_prompt_rejects_explicit_xai_before_provider_call(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        from agent import image_gen_registry as registry_module
+        from hermes_cli import plugins as plugins_module
+        from tools import image_generation_tool
+
+        xai_provider = _NamedRecordingProvider("xai")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "xai")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda *a, **k: None)
+        monkeypatch.setattr(
+            registry_module,
+            "get_provider",
+            lambda name: xai_provider if name == "xai" else None,
+        )
+
+        prompt = "故事影片 scene keyframe，秘密提示詞 privacy-marker-3517，科普影片 5mins"
+        payload = json.loads(
+            image_generation_tool._handle_image_generate({"prompt": prompt, "_provider": "xai"})
+        )
+
+        assert payload["success"] is False
+        assert payload["error_type"] == "story_video_provider_blocked"
+        assert payload["provider"] == "xai"
+        assert "privacy-marker-3517" not in str(payload)
+        assert xai_provider.last_kwargs == {}
+
+    def test_agent_mode_image_uses_sync_visual_package_handler(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from tools import visual_package_tool
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        captured = {}
+
+        def fake_visual_package(args, **_kwargs):
+            captured.update(args)
+            return json.dumps(
+                {
+                    "success": True,
+                    "package_status": "success",
+                    "visual_request_id": "vrq_agent_image",
+                    "images": ["/tmp/selected-agent-image.png"],
+                    "generation_payloads": {
+                        "image": [
+                            {
+                                "success": True,
+                                "image": "/tmp/selected-agent-image.png",
+                                "provider": "xai",
+                                "model": "grok-imagine-image-quality",
+                            }
+                        ]
+                    },
+                    "delivery_metadata": {"selected_artifact_paths": ["/tmp/selected-agent-image.png"]},
+                }
+            )
+
+        monkeypatch.setattr(
+            visual_package_tool,
+            "_handle_visual_package_generate",
+            fake_visual_package,
+        )
+
+        payload = json.loads(
+            image_generation_tool._handle_image_generate(
+                {
+                    "prompt": "請用 Agent mode 固定這位角色，產出精緻圖片",
+                    "aspect_ratio": "9:16",
+                    "reference_image_urls": ["/tmp/ref.png"],
+                    "agent_mode": True,
+                    "_provider": "xai",
+                }
+            )
+        )
+
+        assert payload["success"] is True
+        assert payload["image"] == "/tmp/selected-agent-image.png"
+        assert payload["provider"] == "xai"
+        assert payload["model"] == "grok-imagine-image-quality"
+        assert payload["route"] == "image_visual_package"
+        assert payload["source_tool"] == "image_generate"
+        assert payload["visual_package_request_id"] == "vrq_agent_image"
+        assert captured["attachments"] == ["/tmp/ref.png"]
+        assert captured["image_provider"] == "xai"

@@ -325,6 +325,7 @@ def init_agent(
     request_overrides: Dict[str, Any] = None,
     prefill_messages: List[Dict[str, Any]] = None,
     platform: str = None,
+    codex_thread_ephemeral: Optional[bool] = None,
     user_id: str = None,
     user_id_alt: str = None,
     user_name: str = None,
@@ -388,6 +389,9 @@ def init_agent(
             output_config.format instead of a trailing-assistant prefill.
         platform (str): The interface platform the user is on (e.g. "cli", "telegram", "discord", "whatsapp").
             Used to inject platform-specific formatting hints into the system prompt.
+        codex_thread_ephemeral (bool): Explicit Codex app-server visibility
+            override. Background/one-shot callers set True; interactive callers
+            normally leave this unset and use the centralized platform policy.
         skip_context_files (bool): If True, skip auto-injection of project context files
             (SOUL.md, .hermes.md, AGENTS.md, CLAUDE.md, .cursorrules) from the cwd / HERMES_HOME
             into the system prompt. Use this for batch processing and data generation to avoid
@@ -410,6 +414,7 @@ def init_agent(
     agent.tool_progress_mode = tool_progress_mode
     agent.ephemeral_system_prompt = ephemeral_system_prompt
     agent.platform = platform  # "cli", "telegram", "discord", "whatsapp", etc.
+    agent.codex_thread_ephemeral = codex_thread_ephemeral
     agent._user_id = user_id  # Platform user identifier (gateway sessions)
     agent._user_id_alt = user_id_alt  # Optional stable alternate platform identifier
     agent._user_name = user_name
@@ -943,6 +948,12 @@ def init_agent(
         if not agent.quiet_mode:
             _gr_label = " + Guardrails" if agent._bedrock_guardrail_config else ""
             print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock, {agent._bedrock_region}{_gr_label})")
+    elif agent.api_mode == "codex_app_server":
+        # The Codex subprocess owns transport and authentication. Building an
+        # OpenAI HTTP client here would wrongly require a Hermes OAuth token
+        # before the app-server can use Codex.app / CLI login state.
+        agent.client = None
+        agent._client_kwargs = {}
     else:
         if api_key and base_url:
             # Explicit credentials from CLI/gateway — construct directly.

@@ -7,6 +7,7 @@ deadline timeouts. These tests pin all of that without spawning real codex.
 
 from __future__ import annotations
 
+import inspect
 import time
 from unittest.mock import patch
 from typing import Any, Optional
@@ -149,6 +150,24 @@ class TestLifecycle:
         method_calls = [m for (m, _) in client.requests if m == "thread/start"]
         assert len(method_calls) == 1
 
+    def test_forwards_explicit_subprocess_env_to_client(self):
+        captured = {}
+        client = FakeClient()
+
+        def factory(**kwargs):
+            captured.update(kwargs)
+            return client
+
+        session = CodexAppServerSession(
+            cwd="/tmp",
+            subprocess_env={"HERMES_SESSION_ID": "story-session-1"},
+            client_factory=factory,
+        )
+
+        session.ensure_started()
+
+        assert captured["env"] == {"HERMES_SESSION_ID": "story-session-1"}
+
     def test_thread_start_passes_cwd_only(self):
         """thread/start carries cwd. We intentionally do NOT pass `permissions`
         on this codex version (experimentalApi-gated + requires matching
@@ -160,6 +179,15 @@ class TestLifecycle:
         method, params = next(r for r in client.requests if r[0] == "thread/start")
         assert params["cwd"] == "/tmp"
         assert "permissions" not in params  # see session.ensure_started() comment
+        assert "ephemeral" not in params
+
+    def test_thread_start_marks_internal_run_ephemeral(self):
+        """Scheduled/internal runs must not create visible Codex Remote tasks."""
+        client = FakeClient()
+        s = make_session(client, ephemeral=True)
+        s.ensure_started()
+        _, params = next(r for r in client.requests if r[0] == "thread/start")
+        assert params["ephemeral"] is True
 
     def test_close_idempotent(self):
         client = FakeClient()
@@ -626,6 +654,53 @@ class TestServerRequestRouting:
         s.run_turn("hi", turn_timeout=1.0)
         assert ("req-2", {"decision": "acceptForSession"}) in client.responses
 
+    def test_apply_patch_denies_story_video_canonical_state_even_when_auto_approved(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        protected = (
+            hermes_home
+            / "story_videos"
+            / "_workflow_state"
+            / "authorizations"
+            / "run-1.json"
+        )
+        client = FakeClient()
+        client.queue_notification(
+            "item/started",
+            item={
+                "type": "fileChange",
+                "id": "fc-protected",
+                "changes": [{"kind": {"type": "update"}, "path": str(protected)}],
+            },
+            threadId="t",
+            turnId="tu1",
+        )
+        client.queue_server_request(
+            "item/fileChange/requestApproval",
+            request_id="req-protected",
+            itemId="fc-protected",
+            turnId="tu1",
+            threadId="t",
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+        session = make_session(
+            client,
+            request_routing=_ServerRequestRouting(auto_approve_apply_patch=True),
+        )
+
+        session.run_turn("hi", turn_timeout=1.0)
+
+        assert (
+            "req-protected",
+            {"decision": "decline"},
+        ) in client.responses
+
     def test_unknown_server_request_replied_with_error(self):
         client = FakeClient()
         client.queue_server_request("totally/unknown", request_id="req-3")
@@ -696,6 +771,95 @@ class TestServerRequestRouting:
             "item/started drained alongside the approval was not "
             "forwarded to on_event — display will miss tool bubbles "
             "around approvals"
+        )
+
+    def test_request_user_input_uses_safe_unattended_defaults(self):
+        client = FakeClient()
+        client.queue_server_request(
+            "item/tool/requestUserInput",
+            request_id="input-1",
+            threadId="t",
+            turnId="tu1",
+            itemId="tool-1",
+            autoResolutionMs=None,
+            questions=[
+                {
+                    "id": "mode",
+                    "header": "Mode",
+                    "question": "Choose a mode",
+                    "isOther": True,
+                    "isSecret": False,
+                    "options": [
+                        {"label": "Recommended", "description": "Best default"},
+                        {"label": "Alternate", "description": "More manual"},
+                    ],
+                },
+                {
+                    "id": "detail",
+                    "header": "Detail",
+                    "question": "Add details",
+                    "isOther": True,
+                    "isSecret": False,
+                    "options": None,
+                },
+                {
+                    "id": "secret",
+                    "header": "Secret",
+                    "question": "Enter a key",
+                    "isOther": False,
+                    "isSecret": True,
+                    "options": None,
+                },
+            ],
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+
+        make_session(
+            client,
+            request_routing=_ServerRequestRouting(
+                auto_resolve_user_input=True,
+            ),
+        ).run_turn("continue", turn_timeout=1.0)
+
+        assert (
+            "input-1",
+            {
+                "answers": {
+                    "mode": {"answers": ["Recommended"]},
+                    "detail": {
+                        "answers": ["Proceed with your recommended default."]
+                    },
+                    "secret": {"answers": []},
+                }
+            },
+        ) in client.responses
+
+    def test_request_user_input_without_autonomy_fails_closed(self):
+        client = FakeClient()
+        client.queue_server_request(
+            "item/tool/requestUserInput",
+            request_id="input-2",
+            threadId="t",
+            turnId="tu1",
+            itemId="tool-2",
+            autoResolutionMs=None,
+            questions=[],
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+
+        make_session(client).run_turn("continue", turn_timeout=1.0)
+
+        assert any(
+            rid == "input-2" and code == -32601
+            for rid, code, _message in client.error_responses
         )
 
     def test_mcp_elicitation_for_hermes_tools_auto_accepts(self):
@@ -890,6 +1054,13 @@ class TestSessionRetirement:
             "respawns codex instead of riding a wedged subprocess."
         )
 
+    def test_default_post_tool_quiet_window_allows_frontier_reasoning(self):
+        default = inspect.signature(
+            CodexAppServerSession.run_turn
+        ).parameters["post_tool_quiet_timeout"].default
+
+        assert default >= 300.0
+
     def test_completed_turn_does_not_retire(self):
         client = FakeClient()
         client.queue_notification(
@@ -907,7 +1078,8 @@ class TestSessionRetirement:
 
     def test_final_agent_message_without_turn_completed_is_recovered(self):
         """A completed assistant item is still a usable terminal response when
-        codex omits turn/completed and then goes quiet.
+        codex omits turn/completed and then goes quiet, but the incomplete
+        session must be retired before the next user turn.
         """
         client = FakeClient()
         client.queue_notification(
@@ -925,12 +1097,12 @@ class TestSessionRetirement:
         assert r.final_text == "done"
         assert r.interrupted is False
         assert r.error is None
-        assert r.should_retire is False
+        assert r.should_retire is True
         assert any(
             msg["role"] == "assistant" and msg.get("content") == "done"
             for msg in r.projected_messages
         )
-        assert not any(method == "turn/interrupt" for method, _ in client.requests)
+        assert any(method == "turn/interrupt" for method, _ in client.requests)
 
     def test_post_tool_quiet_watchdog_trips_and_retires(self):
         client = FakeClient()
@@ -1025,6 +1197,76 @@ class TestSessionRetirement:
         assert r.final_text == "tool finished"
         assert r.should_retire is False
         assert r.interrupted is False
+
+    def test_post_tool_watchdog_treats_reasoning_delta_as_progress(self):
+        """Streaming reasoning after a tool is live model progress, even though
+        the event projector intentionally does not persist delta notifications.
+        """
+        clock = [0.0]
+
+        class ReasoningProgressClient(FakeClient):
+            def __init__(self):
+                super().__init__()
+                self.polls = 0
+
+            def take_notification(self, timeout: float = 0.0):
+                self.polls += 1
+                if self.polls == 1:
+                    return {
+                        "method": "item/completed",
+                        "params": {
+                            "item": {
+                                "type": "commandExecution",
+                                "id": "ex1",
+                                "command": "echo hi",
+                                "cwd": "/tmp",
+                                "status": "completed",
+                                "aggregatedOutput": "hi",
+                                "exitCode": 0,
+                                "commandActions": [],
+                            },
+                            "threadId": "t",
+                            "turnId": "tu1",
+                        },
+                    }
+                if self.polls == 2:
+                    clock[0] = 0.09
+                    return {
+                        "method": "item/reasoning/summaryTextDelta",
+                        "params": {
+                            "delta": "still working",
+                            "threadId": "t",
+                            "turnId": "tu1",
+                        },
+                    }
+                if self.polls == 3:
+                    clock[0] = 0.16
+                    return None
+                return {
+                    "method": "turn/completed",
+                    "params": {
+                        "threadId": "t",
+                        "turn": {
+                            "id": "tu1",
+                            "status": "completed",
+                            "error": None,
+                        },
+                    },
+                }
+
+        client = ReasoningProgressClient()
+        session = make_session(client)
+        with patch.object(session_mod.time, "monotonic", side_effect=lambda: clock[0]):
+            result = session.run_turn(
+                "tool then reason",
+                turn_timeout=5.0,
+                notification_poll_timeout=0.0,
+                post_tool_quiet_timeout=0.1,
+            )
+
+        assert result.interrupted is False
+        assert result.should_retire is False
+        assert result.error is None
 
     def test_turn_aborted_marker_in_text_is_terminal(self):
         """If codex emits `<turn_aborted>` in agent text and never sends
@@ -1278,6 +1520,16 @@ class TestClassifyOAuthFailure:
         assert _classify_oauth_failure("connection reset") is None
         assert _classify_oauth_failure("model returned bad json") is None
         assert _classify_oauth_failure("rate limit exceeded") is None
+
+    def test_unsupported_chatgpt_model_is_not_classified_as_auth_failure(self):
+        from agent.transports.codex_app_server_session import (
+            _classify_oauth_failure,
+        )
+
+        assert _classify_oauth_failure(
+            "The 'gpt-5.6' model is not supported when using Codex with a ChatGPT account.",
+            "codex app-server is using OAuth authentication",
+        ) is None
 
     def test_empty_inputs(self):
         from agent.transports.codex_app_server_session import (

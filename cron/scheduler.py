@@ -3708,7 +3708,14 @@ def _teardown_cron_agent(agent, job_id: str) -> None:
         logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
 
 
-def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -> bool:
+def run_one_job(
+    job: dict,
+    *,
+    adapters=None,
+    loop=None,
+    verbose: bool = False,
+    outcome: Optional[dict] = None,
+) -> bool:
     """Run ONE due job end-to-end: execute → save output → deliver → mark.
 
     This is the shared firing body extracted from ``tick``'s per-job closure so
@@ -3744,6 +3751,8 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
                 success=False,
                 error="Dispatch claim rejected; execution was not started.",
             )
+            if outcome is not None:
+                outcome.update(success=True, error=None)
             return True  # not an error — already handled/removed
 
         # The attempt is claimed durably before executor/provider dispatch and
@@ -3857,6 +3866,8 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         if not _consume_interrupted_flag(job["id"]):
             mark_job_run(job["id"], success, error, delivery_error=delivery_error)
         finish_execution(execution_id, success=success, error=error)
+        if outcome is not None:
+            outcome.update(success=bool(success), error=error)
         return True
 
     except Exception as e:
@@ -3864,6 +3875,8 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         if not _consume_interrupted_flag(job["id"]):
             mark_job_run(job["id"], False, str(e))
         finish_execution(execution_id, success=False, error=str(e))
+        if outcome is not None:
+            outcome.update(success=False, error=str(e))
         return False
 
 

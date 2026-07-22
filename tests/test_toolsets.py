@@ -291,3 +291,8 @@ class TestResolveToolsetIncludeRegistry:
 
     def test_registry_only_toolset_static_view_is_empty(self):
         assert resolve_toolset("__definitely_not_a_real_toolset__", include_registry=False) == []
+
+    def test_image_toolset_keeps_local_visual_composites_in_static_view(self):
+        expected = {"visual_agent_generate", "visual_package_generate"}
+        assert expected <= set(resolve_toolset("image_gen", include_registry=False))
+        assert expected <= set(resolve_toolset("image_gen"))

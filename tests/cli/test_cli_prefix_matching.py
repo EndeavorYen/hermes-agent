@@ -107,6 +107,55 @@ class TestSlashCommandPrefixMatching:
         unknown = any("Unknown command" in p for p in printed)
         assert not unknown, f"Expected skill prefix to match, got: {printed}"
 
+    def test_goal_mode_skill_bootstraps_goal_before_loading(self):
+        cli_obj = _make_cli()
+        cli_obj.session_id = "goal-mode-cli"
+        fake_skill = {
+            "/deep-fix": {
+                "name": "Deep Fix",
+                "description": "test",
+                "goal_mode": True,
+                "goal_constraints": [
+                    "Check goal drift and over-design after each meaningful phase."
+                ],
+            }
+        }
+        manager = MagicMock()
+        manager.ensure.return_value = (MagicMock(), False)
+        manager.status_line.return_value = "Goal active: repair routing"
+
+        import cli as cli_mod
+        with patch.object(cli_mod, "_skill_commands", fake_skill), \
+             patch.object(cli_obj, "_get_goal_manager", return_value=manager), \
+             patch.object(cli_mod, "build_skill_invocation_message", return_value="loaded") as build:
+            cli_obj.process_command("/deep-fix repair routing")
+
+        goal_text = manager.ensure.call_args.args[0]
+        assert goal_text.startswith("repair routing")
+        assert "Check goal drift and over-design" in goal_text
+        assert build.call_args.kwargs["runtime_note"].startswith("Goal bootstrap PASS")
+        cli_obj._pending_input.put.assert_called_once_with("loaded")
+
+    def test_goal_mode_skill_without_objective_fails_closed(self):
+        cli_obj = _make_cli()
+        fake_skill = {
+            "/deep-fix": {
+                "name": "Deep Fix",
+                "description": "test",
+                "goal_mode": True,
+                "goal_constraints": [],
+            }
+        }
+
+        import cli as cli_mod
+        with patch.object(cli_mod, "_skill_commands", fake_skill), \
+             patch.object(cli_mod, "build_skill_invocation_message") as build:
+            cli_obj.process_command("/deep-fix")
+
+        build.assert_not_called()
+        printed = " ".join(str(c) for c in cli_obj.console.print.call_args_list)
+        assert "requires an objective" in printed
+
     def test_ambiguous_between_builtin_and_skill(self):
         """Ambiguous prefix spanning builtin + skill commands shows suggestions."""
         cli_obj = _make_cli()

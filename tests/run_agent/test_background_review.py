@@ -76,6 +76,40 @@ def test_background_review_shuts_down_memory_provider_before_close(monkeypatch):
     ]
 
 
+def test_background_review_accepts_custom_raphael_review_prompt(monkeypatch):
+    events = []
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            events.append(("init", kwargs))
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            events.append(("run_conversation", kwargs))
+
+        def shutdown_memory_provider(self):
+            events.append(("shutdown_memory_provider", None))
+
+        def close(self):
+            events.append(("close", None))
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_skills=True,
+        review_prompt="CUSTOM RAPHAEL EVOLUTION PROMPT",
+        review_label="Raphael evolution review",
+    )
+
+    run_event = next(payload for name, payload in events if name == "run_conversation")
+    assert run_event["user_message"].startswith("CUSTOM RAPHAEL EVOLUTION PROMPT")
+
+
 def test_background_review_fork_opts_out_of_session_finalization(monkeypatch):
     """The review fork shares the parent's live session_id, so it must set
     ``_end_session_on_close = False``. Otherwise close() (now finalizing owned

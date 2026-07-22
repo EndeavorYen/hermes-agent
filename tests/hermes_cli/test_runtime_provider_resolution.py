@@ -301,6 +301,44 @@ def test_resolve_runtime_provider_codex(monkeypatch):
     assert resolved["requested_provider"] == "openai-codex"
 
 
+def test_codex_app_server_runtime_does_not_require_hermes_oauth_tokens(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "openai-codex",
+            "default": "gpt-5.6-terra",
+            "openai_runtime": "codex_app_server",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_codex_runtime_credentials",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("app-server must own Codex authentication")
+        ),
+    )
+    monkeypatch.setattr(
+        rp,
+        "load_pool",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("app-server must not read the Hermes credential pool")
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="openai-codex")
+
+    assert resolved == {
+        "provider": "openai-codex",
+        "api_mode": "codex_app_server",
+        "base_url": "codex-app-server://local",
+        "api_key": "",
+        "source": "codex-app-server",
+        "requested_provider": "openai-codex",
+    }
+
+
 def test_resolve_runtime_provider_qwen_oauth(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "qwen-oauth")
     monkeypatch.setattr(

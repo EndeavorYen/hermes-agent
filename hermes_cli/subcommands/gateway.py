@@ -141,6 +141,14 @@ def build_gateway_parser(
         action="store_true",
         help="Kill ALL gateway processes across all profiles before restarting",
     )
+    gateway_restart.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Restart even when active agent runs would be interrupted. "
+            "Without --force, restart fails closed until the gateway is idle."
+        ),
+    )
     _add_compat_platform_flag(gateway_restart)
 
     # gateway status

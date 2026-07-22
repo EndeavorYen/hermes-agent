@@ -1,0 +1,2066 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+from pathlib import Path
+from typing import Any
+
+from .accessible_explainer import (
+    ACCESSIBILITY_CONCEPT_BRIDGE_FIELDS,
+    ensure_explanation_profile,
+)
+from .audit import ProviderAudit, ProviderAuditEvent
+from .editorial_quality import (
+    EDITORIAL_PROFILE_ID,
+    NARRATIVE_CAUSAL_HANDOFF_FIELDS,
+    NARRATIVE_CROSS_SEGMENT_LOOP_FIELDS,
+    NARRATIVE_RETENTION_BEAT_FIELDS,
+)
+from .factual_accuracy import (
+    FACTUAL_CLAIM_FIELDS,
+    FACTUAL_EVIDENCE_SCHEMA,
+    FACTUAL_SOURCE_FIELDS,
+    NONFACTUAL_SEGMENT_FIELDS,
+)
+from .policy import guard_tool_call
+from .sequence_quality import validate_sequence_quality_report
+from .state import OperatorCall, StoryVideoRunContext, StoryVideoStateStore, parse_operator_call
+from .visual_judge import _next_batch_work
+from .voice_presets import PRESET_VOICES
+
+
+_STORE = StoryVideoStateStore()
+_MARKER = "STORY_VIDEO_OPERATOR_CONTEXT"
+_MARKER_RE = re.compile(rf"{_MARKER}\s+(\{{.*\}})\s*$", re.DOTALL)
+_SESSION_PHASE_AT_LLM_START: dict[str, str] = {}
+_SESSION_STATUS_AT_LLM_START: dict[str, str] = {}
+_VISUAL_AGENT_BYPASS_SESSIONS: set[str] = set()
+_VOICE_PREVIEW_MEDIA_BY_SESSION: dict[str, list[str]] = {}
+_SETUP_BLOCKER_RE = re.compile(
+    r"(?:(?:quota|rate.?limit|配額|額度).{0,32}"
+    r"(?:exhausted|exceeded|blocked|required|耗盡|用完|不足)|"
+    r"(?:missing|invalid|expired|缺少|失效|過期).{0,32}"
+    r"(?:credential|authentication|authorization|subscription|"
+    r"憑證|认证|認證|授權|订阅|訂閱)|setup.?required)",
+    re.IGNORECASE,
+)
+_INTERNAL_WORKFLOW_BUDGET_EXHAUSTED_RE = re.compile(
+    r"(?:(?:視覺|视觉)\s*策略\s*(?:額度|额度|配額|配额|預算|预算)|"
+    r"(?:品質|质量|候選|候选|修復|修复|重規劃|重规划)\s*(?:策略)?\s*"
+    r"(?:額度|额度|配額|配额|預算|预算)|"
+    r"(?:quality|candidate|repair|replan|strategy)[ _-]*(?:quota|budget))"
+    r"\s*(?:已|already)?\s*(?:耗盡|耗尽|用完|不足|exhausted|depleted|[=:]\s*0)",
+    re.IGNORECASE,
+)
+_PHASE_BLOCKED_RE = re.compile(
+    r"STORY_VIDEO_PHASE_PROOF:\s+[a-z]+\s+BLOCKED",
+    re.IGNORECASE,
+)
+_PHASE_REVIEW_REQUIRED_RE = re.compile(
+    r"(?:STORY_VIDEO_PHASE_ATTENTION:\s*(?:batch|voice)\s+REVIEW_REQUIRED|"
+    r"[\"']work_status[\"']\s*:\s*[\"']human_review_required[\"'])",
+    re.IGNORECASE,
+)
+_AUTOPILOT_STALL_LIMIT = 3
+_AUTOPILOT_ROTATE_AFTER_CONTINUATIONS = 3
+_AUTOPILOT_BATCH_ROTATE_AFTER_CONTINUATIONS = 9
+_AUTOPILOT_ROTATE_AFTER_MESSAGES = 80
+_DEFAULT_BATCH_PARALLELISM = 3
+_THREAD_CONTEXT_END = "[End of thread context]"
+_REPLY_PARENT_RE = re.compile(r'^\[Replying to: "(.*?)"\]', re.DOTALL)
+_VOICE_NOUN_RE = re.compile(
+    r"(?:聲線|声线|voice(?:\s+profiles?)?|voices?)",
+    re.IGNORECASE,
+)
+_VOICE_PRESET_RESERVED_NAMES = {
+    "qwen3",
+    "tts",
+    "customvoice",
+    "sample",
+    "preview",
+    "voice",
+    "voices",
+}
+_VOICE_MANAGEMENT_ACTIONS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("delete", re.compile(r"(?:刪除|删除|移除|delete|remove)", re.IGNORECASE)),
+    ("archive", re.compile(r"(?:封存|歸檔|归档|archive)", re.IGNORECASE)),
+    (
+        "tune",
+        re.compile(r"(?:調整|调整|微調|微调|修改|tune|adjust|update)", re.IGNORECASE),
+    ),
+    (
+        "add",
+        re.compile(r"(?:新增|增加|加入|建立|註冊|注册|add|create|register)", re.IGNORECASE),
+    ),
+    (
+        "preview_preset",
+        re.compile(
+            r"(?:試聽|试听|聽看看|听看看|聽聽|听听|preview|sample)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "list",
+        re.compile(
+            r"(?:列出|列舉|列举|顯示|显示|查看|查詢|查询|有哪些|"
+            r"清單|清单|列表|可用|list|show|available)",
+            re.IGNORECASE,
+        ),
+    ),
+)
+_STORY_VIDEO_HELP_SUBJECT_RE = re.compile(
+    r"(?:故事影片|story[ -]?video)",
+    re.IGNORECASE,
+)
+_STORY_VIDEO_HELP_INTENT_RE = re.compile(
+    r"(?:怎麼用|怎么用|如何(?:使用|操作)|操作說明|操作说明|"
+    r"幫助|帮助|說明|说明|help|指令|command|prompt|範例|范例|example|"
+    r"目前狀態|目前状态|狀態|状态|進度|进度|有哪些聲線|有哪些声线)",
+    re.IGNORECASE,
+)
+_STORY_VIDEO_WRITING_HELP_RE = re.compile(
+    r"(?:(?:文本|寫作|写作|難度|难度|淺白|浅白|科普).{0,16}"
+    r"(?:怎麼|怎么|如何|設定|设定|調整|调整|選擇|选择|help)|"
+    r"(?:怎麼|怎么|如何|設定|设定|調整|调整|選擇|选择).{0,16}"
+    r"(?:文本|寫作|写作|難度|难度|淺白|浅白|科普))",
+    re.IGNORECASE,
+)
+_INTERNAL_STORY_VIDEO_CONTROL_PREFIXES = (
+    "STORY_VIDEO_AUTOPILOT",
+    "STORY_VIDEO_PLANNING_COMPLETION",
+)
+_PRODUCTION_COMPLETION_RE = re.compile(
+    r"STORY_VIDEO_PRODUCTION_(?:COMPLETE|FAILED)\s+run_id=([A-Za-z0-9._-]+)",
+    re.IGNORECASE,
+)
+
+
+def _prompt_field_list(fields: tuple[str, ...]) -> str:
+    return f"{', '.join(fields[:-1])}, and {fields[-1]}"
+
+
+def _has_operator_setup_blocker(*values: str) -> bool:
+    text = "\n".join(str(value or "") for value in values)
+    text = _INTERNAL_WORKFLOW_BUDGET_EXHAUSTED_RE.sub(
+        "internal workflow budget exhausted",
+        text,
+    )
+    return _SETUP_BLOCKER_RE.search(text) is not None
+
+
+def _digest_source(parts: list[str]) -> str:
+    digest = hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
+    return f"gateway:{digest[:24]}"
+
+
+def _batch_parallelism() -> int:
+    """Return the conservative story-video source-image concurrency cap."""
+    value: Any = None
+    config: dict[str, Any] = {}
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config() or {}
+        story_video = config.get("story_video") if isinstance(config, dict) else None
+        image_gen = config.get("image_gen") if isinstance(config, dict) else None
+        if isinstance(story_video, dict):
+            value = story_video.get("batch_parallelism")
+        if value is None and isinstance(image_gen, dict):
+            value = image_gen.get("max_parallel_requests")
+    except Exception:
+        value = None
+    from agent.visual.generation_waves import resolve_generation_parallelism
+
+    return resolve_generation_parallelism(
+        "openai-codex",
+        requested_limit=value,
+        config=config,
+    )
+
+
+def _legacy_source_key(event: Any) -> str:
+    source = getattr(event, "source", None)
+    parts = [
+        str(getattr(source, "platform", "") or ""),
+        str(getattr(source, "scope_id", "") or ""),
+        str(getattr(source, "chat_id", "") or ""),
+        str(getattr(source, "thread_id", "") or ""),
+        str(getattr(source, "user_id", "") or ""),
+    ]
+    return _digest_source(parts)
+
+
+def _source_key(event: Any) -> str:
+    source = getattr(event, "source", None)
+    thread_id = str(
+        getattr(source, "thread_id", "")
+        or getattr(event, "reply_to_message_id", "")
+        or ""
+    )
+    return _digest_source(
+        [
+            str(getattr(source, "platform", "") or ""),
+            str(getattr(source, "chat_id", "") or ""),
+            thread_id,
+        ]
+    )
+
+
+def _marker_payload(text: Any) -> dict[str, Any] | None:
+    if not isinstance(text, str):
+        return None
+    match = _MARKER_RE.search(text.strip())
+    if not match:
+        return None
+    try:
+        payload = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _current_operator_text(text: Any) -> str:
+    raw = str(text or "").strip()
+    if _THREAD_CONTEXT_END in raw:
+        return raw.rsplit(_THREAD_CONTEXT_END, 1)[1].strip()
+    return raw
+
+
+def _reply_parent_text(text: Any) -> str:
+    match = _REPLY_PARENT_RE.match(str(text or "").strip())
+    return match.group(1).strip() if match else ""
+
+
+def _voice_management_action(text: Any) -> str | None:
+    operator_text = _current_operator_text(text)
+    if _VOICE_NOUN_RE.search(operator_text) is None:
+        return None
+    for action, pattern in _VOICE_MANAGEMENT_ACTIONS:
+        if pattern.search(operator_text) is not None:
+            return action
+    return None
+
+
+def _voice_preset_names(text: Any) -> list[str]:
+    operator_text = _current_operator_text(text)
+    requested: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(r"(?<![A-Za-z0-9_])[A-Za-z][A-Za-z0-9_]*", operator_text):
+        raw_name = match.group(0)
+        key = raw_name.casefold()
+        preset = PRESET_VOICES.get(key)
+        if preset is not None:
+            name = preset["speaker"]
+        else:
+            if key in _VOICE_PRESET_RESERVED_NAMES:
+                continue
+            before = operator_text[max(0, match.start() - 16) : match.start()]
+            after = operator_text[match.end() : match.end() + 24]
+            line_start = operator_text.rfind("\n", 0, match.start()) + 1
+            line_prefix = operator_text[line_start : match.start()]
+            explicit = any(
+                (
+                    re.search(
+                        r"(?:試聽|试听|聽看看|听看看|聽聽|听听|preview)\s*$",
+                        before,
+                        re.IGNORECASE,
+                    ),
+                    re.match(r"\s*(?:聲線|声线|voices?)", after, re.IGNORECASE),
+                    re.search(r"(?:和|與|与|、|,)\s*$", before),
+                    (
+                        re.fullmatch(r"\s*(?:[-*|`]\s*)*", line_prefix)
+                        and re.search(r"(?:男|女|中文|英文|日文|韓文|韩文)", after)
+                    ),
+                )
+            )
+            if not explicit:
+                continue
+            name = raw_name
+        identity = name.casefold()
+        if identity not in seen:
+            requested.append(name)
+            seen.add(identity)
+    return requested
+
+
+def _story_video_help_section(text: Any) -> str | None:
+    operator_text = _current_operator_text(text)
+    if operator_text.lstrip().startswith(_INTERNAL_STORY_VIDEO_CONTROL_PREFIXES):
+        return None
+    if _STORY_VIDEO_HELP_SUBJECT_RE.search(operator_text) is None:
+        return None
+    writing_help = _STORY_VIDEO_WRITING_HELP_RE.search(operator_text) is not None
+    if _STORY_VIDEO_HELP_INTENT_RE.search(operator_text) is None and not writing_help:
+        return None
+    if re.search(r"(?:目前狀態|目前状态|狀態|状态|進度|进度|status)", operator_text, re.I):
+        return "status"
+    if re.search(r"(?:prompt|範例|范例|example)", operator_text, re.I):
+        return "examples"
+    if _VOICE_NOUN_RE.search(operator_text) is not None:
+        return "voices"
+    if writing_help:
+        return "writing"
+    return "help"
+
+
+def _voice_management_instruction(
+    action: str,
+    *,
+    preset_names: list[str] | None = None,
+) -> str:
+    preview_instruction = ""
+    if action == "preview_preset":
+        names = json.dumps(preset_names or [], ensure_ascii=False)
+        preview_instruction = (
+            f" Pass speakers={names}. Do not require an attachment or reference "
+            "recording; these are built-in Qwen CustomVoice presets. On success, "
+            "preserve every MEDIA:<absolute path> line from the manager result."
+        )
+    return (
+        "VOICE_MANAGER_FAST_ROUTE. This request manages the global local voice "
+        "registry; it is not a story-video production phase. Call "
+        f"story_video_voice_manager action={action} exactly once, using only fields "
+        "explicitly present in the current operator request and attached recording. "
+        f"{preview_instruction} "
+        "Do not run shell commands, terminal tools, search, memory lookup, delegation, "
+        "or visual tools. Do not inspect story-video projects and do not create or bind "
+        "a story-video project. Return the manager result concisely; when required input "
+        "is missing, report only the concrete missing prerequisite."
+    )
+
+
+def _story_video_help_instruction(section: str) -> str:
+    return (
+        "STORY_VIDEO_HELP_FAST_ROUTE. This is a read-only operator-help request, "
+        "not a production action. Call story_video_control action=guide exactly "
+        f"once with section={section}. Do not run shell commands, terminal tools, "
+        "file inspection, search, memory lookup, delegation, media, or visual tools. "
+        "Do not create, bind, validate, or advance a story-video project. Do not "
+        "change auto mode or provider authorization. Return the guide field verbatim "
+        "as the entire user-facing answer; do not summarize, omit, reorder, translate, "
+        "or add text."
+    )
+
+
+def _read_only_context_for_event(event: Any) -> StoryVideoRunContext | None:
+    if event is None:
+        return None
+    context = _STORE.for_source(_source_key(event))
+    if context is None:
+        context = _STORE.for_source(_legacy_source_key(event))
+    if context is None:
+        reply_parent = str(getattr(event, "reply_to_text", "") or "").strip()
+        if reply_parent:
+            context = _STORE.for_original_request(reply_parent)
+    return context
+
+
+def handle_story_video_command(raw_args: str, *, event: Any = None) -> str:
+    from .guide import format_story_video_guide, normalize_guide_section
+
+    section = normalize_guide_section(raw_args)
+    if section is None:
+        return (
+            f"不支援的故事影片子指令：{str(raw_args or '').strip()}\n\n"
+            + format_story_video_guide(None, "help")
+        )
+    context = _read_only_context_for_event(event)
+    voices: dict[str, Any] | None = None
+    if section == "voices":
+        from .tools import story_video_voice_manager
+
+        try:
+            payload = json.loads(story_video_voice_manager({"action": "list"}))
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            payload = {}
+        if isinstance(payload, dict) and payload.get("success") is True:
+            voices = payload
+    return format_story_video_guide(context, section, voices=voices)
+
+
+def _write_project_contract(context: StoryVideoRunContext) -> dict[str, Any]:
+    visual_mode = str(getattr(context, "visual_mode", "story_visual"))
+    from .source_passthrough import is_local_adult_passthrough_request
+
+    adult_passthrough = is_local_adult_passthrough_request(context)
+    if adult_passthrough:
+        explanation_profile = {
+            "schema": "story_video_accessible_explanation_v1",
+            "profile_id": "story-video-source-passthrough-v1",
+            "mode": "professional",
+            "activation": "source_locked",
+            "scope": "none-source-verbatim",
+            "audience_target": "adults_18_plus",
+            "explanation_order": [],
+            "baby_talk_forbidden": True,
+            "precision_loss_forbidden": True,
+        }
+        explanation_path = context.project_dir / "explanation_profile.json"
+        explanation_path.parent.mkdir(parents=True, exist_ok=True)
+        explanation_path.write_text(
+            json.dumps(explanation_profile, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    else:
+        explanation_profile = ensure_explanation_profile(
+            context.project_dir,
+            context.original_request,
+        )
+    path = context.project_dir / "PROJECT_CONTRACT.md"
+    if path.exists() and not adult_passthrough:
+        return explanation_profile
+    if path.exists() and adult_passthrough:
+        try:
+            if "Audience: adults 18+" in path.read_text(encoding="utf-8"):
+                return explanation_profile
+        except OSError:
+            pass
+    audience_line = (
+        "- Audience: adults 18+; user-supplied source passthrough; no child framing"
+        if adult_passthrough
+        else "- Audience default: curious children age 5+; clear but never baby talk"
+    )
+    craft_line = (
+        "- Story craft: verbatim user source; no model expansion or rewrite"
+        if adult_passthrough
+        else "- Story craft: Taiwan children's prose skill -> story-video script director -> production pipeline"
+    )
+    explanation_order_line = (
+        "- Explanation order: not applicable; source text stays verbatim"
+        if adult_passthrough
+        else "- Explanation order: concrete intuition -> causal chain -> formal term -> precision boundary"
+    )
+    continuity_line = (
+        "- Visual continuity: static pure-black frame; no generated visual assets"
+        if adult_passthrough
+        else "- Visual continuity: one style bible and one approved style anchor across the full video"
+    )
+    ending_line = (
+        "- Ending: follows the supplied screenplay without model-authored additions"
+        if adult_passthrough
+        else "- Ending: cinematic educational payoff from the story's knowledge payoff and ending echo"
+    )
+    hold_line = (
+        "- Subtitle timing: narration-segment boundaries; never cut a spoken sentence"
+        if adult_passthrough
+        else "- Semantic image hold: normally at least two complete sentences per image"
+    )
+    candidate_line = (
+        "- Candidate selection: not applicable; image generation is forbidden"
+        if adult_passthrough
+        else "- Candidate selection: one precise OpenAI candidate by default; vision QC selectively regenerates failures"
+    )
+    path.write_text(
+        "\n".join(
+            [
+                "# Project Contract",
+                "",
+                f"- Run ID: `{context.run_id}`",
+                f"- Topic: {context.topic}",
+                f"- Duration: {context.duration}",
+                f"- Visual style: {context.visual_style}",
+                f"- Visual mode: `{visual_mode}`",
+                "- Workflow: `story-video-production-pipeline`",
+                "- LLM provider: `openai-codex`",
+                (
+                    "- Source image provider: forbidden"
+                    if visual_mode == "black_subtitle"
+                    else "- Source image provider: `openai-codex`"
+                ),
+                "- Generic video provider: forbidden",
+                "- Render provider: local deterministic renderer",
+                "- TTS provider: locked local Qwen narration; no network, Edge, or xAI fallback",
+                "- Timeline: image changes only on narration-segment boundaries; never cut a spoken sentence",
+                (
+                    "- Motion: static pure-black frame"
+                    if visual_mode == "black_subtitle"
+                    else "- Motion: cinematic focus push 1.0 -> 1.10; one eased focal target, no per-frame tracking"
+                ),
+                "- Quality mode: quality-first shot-driven production",
+                audience_line,
+                f"- Explanation profile: `{explanation_profile['profile_id']}`",
+                f"- Explanation mode: `{explanation_profile['mode']}`",
+                explanation_order_line,
+                craft_line,
+                continuity_line,
+                ending_line,
+                hold_line,
+                candidate_line,
+                "",
+                "## Original Request",
+                "",
+                context.original_request.strip(),
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return explanation_profile
+
+
+def _native_chunk_call(context: StoryVideoRunContext) -> str:
+    authorization = _STORE.autopilot_authorization(context)
+    authorization_id = (
+        str(authorization.get("authorization_id") or "")
+        if authorization is not None
+        else ""
+    )
+    return (
+        "story_video_quality_control action=run_batch_chunk "
+        f"authorization_id={authorization_id} run_id={context.run_id} "
+        f"project_dir={context.project_dir}"
+    )
+
+
+def _native_voice_call(context: StoryVideoRunContext) -> str:
+    authorization = _STORE.autopilot_authorization(context)
+    authorization_id = (
+        str(authorization.get("authorization_id") or "")
+        if authorization is not None
+        else ""
+    )
+    return (
+        "story_video_quality_control action=run_voice_phase "
+        f"authorization_id={authorization_id} run_id={context.run_id} "
+        f"project_dir={context.project_dir}"
+    )
+
+
+def _needs_bound_voice_cast(context: StoryVideoRunContext) -> bool:
+    text = str(context.original_request or "")
+    return context.visual_mode == "black_subtitle" or bool(
+        re.search(r"(?:多角色|角色配音|multi[ -]?role)", text, re.IGNORECASE)
+        or len(re.findall(r"\S+\s*用\s*[A-Za-z][\w-]*", text)) >= 2
+    )
+
+
+def _has_bound_voice_cast(context: StoryVideoRunContext) -> bool:
+    try:
+        from .dubbing import inspect_dubbing_project
+        from .voice_profiles import VoiceProfileError
+
+        return inspect_dubbing_project(context.project_dir).get("bound") is True
+    except (OSError, TypeError, ValueError, VoiceProfileError):
+        return False
+
+
+def _has_compiled_voice_cast(context: StoryVideoRunContext) -> bool:
+    try:
+        from .dubbing import inspect_dubbing_project
+        from .voice_profiles import VoiceProfileError
+
+        status = inspect_dubbing_project(context.project_dir)
+        return int(status.get("speaker_count") or 0) > 0 and int(
+            status.get("utterance_count") or 0
+        ) > 0
+    except (OSError, TypeError, ValueError, VoiceProfileError):
+        return False
+
+
+def _production_job_status(context: StoryVideoRunContext) -> str:
+    try:
+        from .production import ProductionJobStore
+
+        payload = ProductionJobStore(context.project_dir).load() or {}
+    except (OSError, TypeError, ValueError):
+        return ""
+    return str(payload.get("status") or "").strip().lower()
+
+
+def _autopilot_authorization_instruction(
+    context: StoryVideoRunContext,
+) -> str:
+    authorization = _STORE.autopilot_authorization(context)
+    if authorization is None:
+        return ""
+    scopes = ",".join(str(scope) for scope in authorization["scopes"])
+    purpose = (
+        "This black-subtitle authorization permits only project-local writes, offline "
+        "local Qwen narration and QC, and deterministic local rendering; image generation "
+        "and external visual QC are not authorized. "
+        if context.visual_mode == "black_subtitle"
+        else
+        "This authorization was persisted from the operator's full-auto story-video "
+        "request and is purpose-limited to sending purpose-created story prompts and "
+        "generated source art to OpenAI for image generation and vision QC, plus writes "
+        "inside this project directory and offline local Qwen narration with local voice "
+        "QC; unrelated workspace data is not authorized. "
+    )
+    return (
+        " VERIFIED_STORY_VIDEO_AUTHORIZATION "
+        f"authorization_id={authorization['authorization_id']} "
+        f"run_id={context.run_id} project_dir={context.project_dir} "
+        f"provider={authorization['provider']} scopes={scopes}. "
+        f"{purpose}"
+        "The native tool verifies the authorization ID, run, project, provider, and "
+        "scopes before dispatch; a stop command revokes it. "
+    )
+
+
+def pre_gateway_dispatch(
+    *,
+    event: Any,
+    gateway: Any = None,
+    **_: Any,
+) -> dict[str, Any] | None:
+    text = str(getattr(event, "text", "") or "")
+    operator_text = _current_operator_text(text)
+    if _voice_management_action(operator_text) is not None:
+        return None
+    if _story_video_help_section(operator_text) is not None:
+        return None
+    source_key = _source_key(event)
+    context = _STORE.for_source(source_key)
+    if context is None:
+        context = _STORE.for_source(_legacy_source_key(event))
+        if context is not None:
+            _STORE.bind_source(context, source_key)
+    if context is None:
+        reply_parent = str(getattr(event, "reply_to_text", "") or "").strip()
+        if reply_parent:
+            context = _STORE.for_original_request(reply_parent)
+            if context is not None:
+                _STORE.bind_source(context, source_key)
+    call = parse_operator_call(
+        operator_text,
+        has_active_project=context is not None,
+    )
+    if call is None:
+        return None
+    if call.action == "stop" and context is not None:
+        if gateway is not None:
+            try:
+                if not gateway._is_user_authorized(event.source):
+                    return None
+            except (AttributeError, TypeError, ValueError):
+                return None
+        _STORE.create_or_load(
+            source_key=context.source_key,
+            session_id=context.session_ids[-1] if context.session_ids else "",
+            call=call,
+            original_request=operator_text,
+        )
+        return {"action": "rewrite", "text": "/stop"}
+    payload = {
+        "action": call.action,
+        "topic": call.topic,
+        "duration": call.duration,
+        "visual_style": call.visual_style,
+        "repair_request": call.repair_request,
+        "auto_mode": call.auto_mode,
+        "new_project": call.new_project,
+        "visual_mode": call.visual_mode,
+        "source_key": source_key,
+        "original_request": operator_text,
+    }
+    from .source_passthrough import adult_source_request_detected
+
+    adult_source = adult_source_request_detected(operator_text)
+    if adult_source and call.action == "start":
+        persisted = _STORE.create_or_load(
+            source_key=source_key,
+            session_id="",
+            call=call,
+            original_request=operator_text,
+        )
+        payload["run_id"] = persisted.run_id
+        payload.pop("original_request", None)
+    marker = f"{_MARKER} {json.dumps(payload, ensure_ascii=False)}"
+    rewritten = marker if adult_source else f"{text}\n\n{marker}"
+    return {"action": "rewrite", "text": rewritten}
+
+
+def pre_llm_call(
+    *,
+    session_id: str = "",
+    parent_session_id: str = "",
+    user_message: Any = "",
+    **_: Any,
+) -> dict[str, str] | None:
+    from tools.story_video_provider_guard import explicit_visual_agent_request_detected
+
+    completion = _PRODUCTION_COMPLETION_RE.search(str(user_message or ""))
+    if completion is not None:
+        context = _STORE.for_session(session_id)
+        if context is None and parent_session_id:
+            context = _STORE.for_session(parent_session_id)
+        if context is not None and completion.group(1) == context.run_id:
+            return {
+                "context": (
+                    "STORY_VIDEO_PRODUCTION_COMPLETION_FAST_ROUTE. "
+                    "Call story_video_audio_director action=production_status exactly once "
+                    f"with run_id={context.run_id} project_dir={context.project_dir}. "
+                    "Do not run shell commands, repeat synthesis/rendering, or launch another "
+                    "background job. Report the persisted terminal state; on success preserve "
+                    "every MEDIA: MP4 tag from the tool result verbatim so the gateway uploads "
+                    "the finished video in this thread. On failure report the stored error and "
+                    "the retry_delivery recovery action."
+                )
+            }
+
+    voice_action = _voice_management_action(user_message)
+    if voice_action is not None:
+        if session_id:
+            _VISUAL_AGENT_BYPASS_SESSIONS.add(session_id)
+            _SESSION_PHASE_AT_LLM_START.pop(session_id, None)
+            _SESSION_STATUS_AT_LLM_START.pop(session_id, None)
+        return {
+            "context": _voice_management_instruction(
+                voice_action,
+                preset_names=_voice_preset_names(user_message),
+            )
+        }
+
+    help_section = _story_video_help_section(user_message)
+    if help_section is not None:
+        if session_id:
+            _VISUAL_AGENT_BYPASS_SESSIONS.add(session_id)
+            _SESSION_PHASE_AT_LLM_START.pop(session_id, None)
+            _SESSION_STATUS_AT_LLM_START.pop(session_id, None)
+        return {"context": _story_video_help_instruction(help_section)}
+
+    if explicit_visual_agent_request_detected(user_message):
+        if session_id:
+            _VISUAL_AGENT_BYPASS_SESSIONS.add(session_id)
+            _SESSION_PHASE_AT_LLM_START.pop(session_id, None)
+            _SESSION_STATUS_AT_LLM_START.pop(session_id, None)
+        return None
+    if session_id:
+        _VISUAL_AGENT_BYPASS_SESSIONS.discard(session_id)
+    payload = _marker_payload(user_message)
+    if payload is None:
+        context = _STORE.for_session(session_id)
+        if context is None and parent_session_id:
+            parent_context = _STORE.for_session(parent_session_id)
+            if parent_context is not None:
+                new_binding = session_id not in parent_context.session_ids
+                context = _STORE.bind_session(parent_context, session_id)
+                if new_binding:
+                    ProviderAudit(context).append_event(
+                        ProviderAuditEvent(
+                            kind="session_rotation",
+                            phase=context.phase,
+                            provider="",
+                            model="",
+                            status="ok",
+                            session_id=session_id,
+                            detail={"parent_session_id": parent_session_id},
+                        )
+                    )
+        if context is None:
+            reply_parent = _reply_parent_text(user_message)
+            if reply_parent:
+                recovered = _STORE.for_original_request(reply_parent)
+                if recovered is not None:
+                    context = _STORE.bind_session(recovered, session_id)
+                    ProviderAudit(context).append_event(
+                        ProviderAuditEvent(
+                            kind="session_reset_recovery",
+                            phase=context.phase,
+                            provider="",
+                            model="",
+                            status="ok",
+                            session_id=session_id,
+                            detail={"recovery_key": "reply_parent"},
+                        )
+                    )
+        if context is None:
+            call = parse_operator_call(
+                _current_operator_text(user_message),
+                has_active_project=False,
+            )
+            if call is None:
+                return None
+            context = _STORE.create_or_load(
+                source_key=f"session:{session_id}",
+                session_id=session_id,
+                call=call,
+                original_request=str(user_message or ""),
+            )
+            _write_project_contract(context)
+            action = call.action
+        else:
+            call = parse_operator_call(
+                _current_operator_text(user_message), has_active_project=True
+            )
+            if call is None:
+                if context.status == "stopped":
+                    if session_id:
+                        _SESSION_PHASE_AT_LLM_START[session_id] = context.phase
+                        _SESSION_STATUS_AT_LLM_START[session_id] = context.status
+                    return None
+                action = "continue"
+            else:
+                context = _STORE.create_or_load(
+                    source_key=context.source_key,
+                    session_id=session_id,
+                    call=call,
+                    original_request=str(user_message or ""),
+                )
+                action = call.action
+    else:
+        call = OperatorCall(
+            action=str(payload.get("action") or "continue"),
+            topic=str(payload.get("topic") or ""),
+            duration=str(payload.get("duration") or ""),
+            visual_style=str(payload.get("visual_style") or ""),
+            repair_request=str(payload.get("repair_request") or ""),
+            auto_mode=payload.get("auto_mode") is True,
+            new_project=payload.get("new_project") is True,
+            visual_mode=str(payload.get("visual_mode") or "auto"),
+        )
+        context = _STORE.create_or_load(
+            source_key=str(payload.get("source_key") or f"session:{session_id}"),
+            session_id=session_id,
+            call=call,
+            original_request=str(payload.get("original_request") or user_message),
+        )
+        _write_project_contract(context)
+        action = str(payload.get("action") or "continue")
+
+    if action == "stop":
+        return None
+
+    explanation_profile = _write_project_contract(context)
+
+    adult_passthrough: dict[str, Any] | None = None
+    adult_passthrough_error = ""
+    if context.phase == "planning":
+        from .source_passthrough import (
+            is_local_adult_passthrough_request,
+            prepare_local_adult_passthrough,
+        )
+
+        if is_local_adult_passthrough_request(context):
+            try:
+                adult_passthrough = prepare_local_adult_passthrough(context)
+            except (OSError, TypeError, ValueError) as exc:
+                adult_passthrough_error = str(exc)
+
+    if session_id:
+        _SESSION_PHASE_AT_LLM_START[session_id] = context.phase
+        _SESSION_STATUS_AT_LLM_START[session_id] = context.status
+
+    revision_boundary = ""
+    if context.parent_run_id and context.source_project_dir is not None:
+        revision_boundary = (
+            f" revision_source_run_id={context.parent_run_id} "
+            f"revision_source_project_dir={context.source_project_dir}. "
+            "The revision source is read-only evidence: reuse validated research and "
+            "explicitly approved assets only when the new ledger selects them, but write "
+            "all revision artifacts under the current project_dir and never deliver any "
+            "render from the revision source. "
+        )
+
+    visual_policy = (
+        "Visual mode is black_subtitle. Image generation and release art are forbidden; "
+        "use a pure black 1920x1080 background with hard subtitles and local audio only. "
+        if context.visual_mode == "black_subtitle"
+        else
+        "Visual mode is story_visual. Every image_generate call MUST pass "
+        "provider=openai-codex. "
+    )
+    instruction = (
+        f"STORY_VIDEO_RUN_CONTEXT run_id={context.run_id} phase={context.phase} "
+        f"visual_mode={context.visual_mode} project_dir={context.project_dir}. "
+        f"Operator action={action}. "
+        f"{revision_boundary}"
+        "This structured session is authoritative even when individual scene prompts "
+        "do not mention story video. The original_request is historical and must not "
+        "revoke a later operator autopilot authorization; never edit "
+        "story_video_run_context.json and never edit production_checklist.json phase directly; "
+        "phase transitions belong to story_video_control and the state store. "
+        f"{visual_policy}Never call generic video_generate for the body, "
+        "and never use xAI/Grok through terminal or delegation. Use local locked "
+        "narration/render components only; generic text_to_speech is forbidden. "
+        "Narrator profiles are Qwen Base full voice clones selected by stable voice_id. "
+        "Use story_video_voice_manager for natural requests to list, add, tune, "
+        "archive, or delete versioned local voices; tuning always creates a new "
+        "immutable profile version. Use story_video_audio_director to compile "
+        "character casting and utterances in creative, remake, or read_aloud mode. "
+        "read_aloud requires exact source-text coverage; remake requires traceable "
+        "source references. Resolve and hash-lock every speaker before synthesis. "
+        "If the operator asks which voices exist, call story_video_voice_manager "
+        "action=list. If the operator chooses a single narrator, call "
+        "story_video_control action=select_voice voice_id=<voice_id> before voice "
+        "synthesis; one project keeps one hash-locked narrator. "
+        "Complete the current phase in this turn; do not stop after announcing "
+        "what you will do. "
+    )
+    if context.auto_mode:
+        instruction += _autopilot_authorization_instruction(context)
+    if context.phase == "planning" and adult_passthrough is not None:
+        instruction += (
+            " LOCAL_ADULT_SOURCE_PASSTHROUGH is active for a user-supplied "
+            "screenplay only. Deterministic local ingest already deduplicated, parsed, "
+            "hash-locked, and compiled the source into project-local dubbing contracts. "
+            "Do not rewrite script.md, source_screenplay.txt, content_profile.json, "
+            "source_passthrough_manifest.json, story_mode.json, cast_bible.json, or "
+            "dialogue_ledger.json. Do not expand, sanitize, or downgrade the source. "
+            "Image generation and every external media provider remain forbidden. Call "
+            "story_video_control action=validate exactly once "
+            f"with run_id={context.run_id} project_dir={context.project_dir}; do not run "
+            "shell commands or create the generic v6 planning bundle. "
+        )
+    elif context.phase == "planning" and adult_passthrough_error:
+        instruction += (
+            " LOCAL_ADULT_SOURCE_PASSTHROUGH could not prepare the supplied source: "
+            f"{adult_passthrough_error}. Report this exact deterministic ingest error "
+            "as SETUP_REQUIRED. Do not downgrade, rewrite, generate images, or dispatch "
+            "media. "
+        )
+    elif context.phase == "planning":
+        instruction += (
+        "During planning, immediately create content_profile.json, script.md, "
+        "storyboard.md, scene_ledger.json, production_checklist.json, "
+        "script_quality_report.json, script_review_report.json, and "
+        "pronunciation_lexicon.json in project_dir from the original request "
+        "and a proactive zh-TW risk-term scan; PROJECT_CONTRACT.md already exists. "
+        "explanation_profile.json is a deterministic project contract and is already "
+        f"locked with mode={explanation_profile['mode']}. Do not rewrite it. Bind "
+        "content_profile.json explanation_profile_id and explanation_mode to that file. "
+        "For mode=accessible on explanatory content, include "
+        "story-video-accessible-explainer-v1 in supplemental_writer_profile_ids, apply "
+        "story-video-accessible-explainer before dramatic adaptation, and add exactly one "
+        "newcomer_comprehension_editor to the review board. Build each difficult idea in "
+        "this order: concrete intuition, short causal chain, formal term, then precision "
+        "boundary. Keep useful technical words, but explain them through observable actors, "
+        "actions, and consequences. Baby talk, fake simplicity, and lost factual nuance are "
+        "blocking defects. The reviewer MUST emit accessibility_metrics with schema="
+        "story_video_accessibility_metrics_v1, status=PASS, empty unexplained_jargon, "
+        "baby_talk_detected=false, precision_loss_detected=false, and evidence-bound "
+        f"concept_bridges. concept_bridges entries MUST contain "
+        f"{_prompt_field_list(ACCESSIBILITY_CONCEPT_BRIDGE_FIELDS)}. In mode=advanced, "
+        "keep the same binding while allowing denser "
+        "terminology. In mode=professional, preserve expert depth and do not require the "
+        "newcomer reviewer or accessibility metrics. "
+        "content_profile.json MUST use schema=story_video_content_profile_v1. "
+        "Default to rating=family, activation_status=active, minimum_viewer_age=5, "
+        "policy_profile_id=family-safe-v1, "
+        "writer_profile_id=taiwan-childrens-story-writing-v1, "
+        "review_profile_id=story-video-review-board-v3, and "
+        "provider_capability_status=available unless the operator explicitly requests "
+        "an active general-audience profile. Only family and general are active. "
+        "mature and adult_explicit are reserved extension points and MUST return "
+        "SETUP_REQUIRED before any media or provider dispatch; never silently activate "
+        "or downgrade them. "
+        "pronunciation_lexicon.json MUST use schema "
+        "story_video_pronunciation_lexicon_v1, \"language\": \"zh-TW\", "
+        "\"review_status\": \"PASS\", and entries containing display, spoken, "
+        "expected_pinyin, source, and risk. Because local Qwen has no phoneme input, "
+        "high-risk spoken aliases MUST differ from display text, for example "
+        "三疊紀 -> 三碟紀. "
+        "Apply the story-video-script-director and story-video-production-pipeline "
+        "quality contracts. scene_ledger.json MUST use exact machine keys: root schema="
+        "story_video_scene_ledger_v2, quality_contract_version=6, production_type, "
+        "target_duration_sec, visual_style, audience_profile, engagement_profile, "
+        "story_engine, style_bible, music_direction, and scenes. The default audience is curious children "
+        "age 5+ unless the operator explicitly overrides it. audience_profile MUST declare "
+        "age_band=school_age, minimum_age_years=5, knowledge_level=newcomer, "
+        "attention_style=curious_explorer, and safety_intensity=gentle. For a "
+        "family/child profile, first apply taiwan-childrens-story-writing as the prose "
+        "craft owner. For an active general profile, use story-video-script-director "
+        "as the general draft owner and do not inherit child-only tone rules. Then "
+        "apply story-video-script-director as the dramatic and visual adaptation owner "
+        "and story-video-script-review-board as the independent editorial gate. "
+        "story_engine MUST declare audience_promise, opening_question, dramatic_question, "
+        "curiosity_gap, a three-or-more-step escalation array, knowledge_payoff, ending_echo, "
+        "and humor_strategy. The exact opening_question, knowledge_payoff, and ending_echo "
+        "MUST appear in script.md. The scene arc MUST contain hook, turn, payoff, and close. "
+        "Every scene MUST keep a non-empty shots array and MUST NOT create empty scenes just "
+        "to satisfy arc roles. A compact production may assign one role to a scene and a "
+        "different role to its existing shot; for example, with two scenes use the first "
+        "scene narrative_role=hook and its shot narrative_role=turn, then the second scene "
+        "narrative_role=payoff and its shot narrative_role=close. "
+        "Use curiosity, reversals, discovery, consequence, and earned wonder rather than "
+        "textbook exposition, baby talk, random danger, or forced jokes. "
+        "For the default 5y+ audience, engagement_profile MUST use "
+        "mode=young_explorer, energy=high, humor=light, and "
+        "sensationalism_forbidden=true. Any audience override MUST still use exact enums: "
+        "mode=young_explorer|discovery_documentary|human_drama|transformation|"
+        "decision_tension|calm_wonder; energy=gentle|balanced|high; "
+        "humor=none|light|playful. Each scenes item MUST contain scene_id, "
+        "narrative_role, viewer_takeaway, and a top-level shots array on that scene item; "
+        "never nest shots under a scene object and never put shot objects directly in "
+        "the root scenes array. A scene is a narrative unit; every purpose-built "
+        "shot MUST use shot_id, narration_text, narrative_role, viewer_takeaway, "
+        "subject, action, evidence_detail, shot_scale, camera_angle, focal_point, "
+        "subtitle_safe_area, acceptance_criteria, risk_class, engagement_role, "
+        "attention_hook, story_moment, action_consequence, composition_energy, "
+        "viewer_emotion, engagement_criteria, and visual_truth_mode. "
+        "Shot-level enums are exact: "
+        "engagement_role=hook|build|reveal|reaction|payoff|breathe and "
+        "composition_energy=calm|curious|tense|kinetic|awe. "
+        "engagement_criteria MUST be a non-empty JSON array of strings, not a string. "
+        "visual_truth_mode MUST distinguish direct_evidence, reconstruction, inference, "
+        "process, comparison, or mixed_evidence_reconstruction. A breathe shot requires "
+        "calm_reason; mixed evidence and reconstruction requires evidence_bridge. Do not translate "
+        "these keys. acceptance_criteria MUST be a non-empty JSON array of strings. "
+        "shot_scale MUST be exactly one of "
+        "establishing|wide|medium|close_up|macro|insert. Efficient semantic pacing is "
+        "3-4 semantic shots per minute, so 30 seconds normally requires 2 shots and five-minute "
+        "productions require 15-20. Each normal shot should cover one complete narration beat, "
+        "at least two complete sentences, and about 15-20 seconds of speech. Never split "
+        "a visual merely at a comma, colon, semicolon, or short connective fragment. A deliberate "
+        "3-5 second hook or montage cut requires intentional_fast_cut_reason. Preserve close-up "
+        "evidence coverage while using camera motion within a held image instead of extra cuts. "
+        "A deliberately held single sentence requires intentional_single_sentence_hold_reason. "
+        "style_bible MUST declare style_id, anchor_shot_id, medium, palette, lighting, "
+        "lens_language, texture, atmosphere, subject_treatment, and a non-empty "
+        "forbidden_drift array. anchor_shot_id MUST identify a real representative ledger "
+        "shot. Treat its first selected image as the visual style reference; all later "
+        "generation and visual QC compare against it for style_consistency. "
+        "music_direction MUST use schema=story_video_music_direction_v1 with non-empty "
+        "moods, instruments, and excluded_styles arrays. energy_curve MUST define "
+        "opening, body, payoff, and ending with gentle|balanced|high. Set "
+        "narration_priority=true and min_cue_variants=3. Choose the direction from the "
+        "story arc and audience rather than a generic topic keyword. Render resolves this "
+        "against story_video_music_library_v2 without downloading media. "
+        "script_quality_report.json MUST use schema=story_video_script_quality_v1, "
+        "quality_contract_version=6, status=PASS, production_type, shot_count, "
+        "final_script_sha256, and "
+        "checks. checks MUST be an object whose visual_evidence, narrative_roles, "
+        "claim_confidence, audience_engagement, visual_truth, dramatic_arc, "
+        "read_aloud_liveliness, knowledge_integrity, visual_causality, and style_consistency "
+        "values are PASS, not a list. For v6, language_fluency, factual_integrity, "
+        "clarity_concision, engagement, audience_fit, and read_aloud_performance MUST "
+        "also be PASS. child_curiosity is required only when the content profile or "
+        "audience age band includes children. "
+        "For science, history, documentary, biography, educational, or other factual "
+        f"work, apply story-video-factual-research and create factual_evidence.json with "
+        f"schema={FACTUAL_EVIDENCE_SCHEMA} before the final draft. Research once before "
+        "drafting and reuse factual_evidence.json throughout the review; browse again only "
+        "when a contradiction or missing support is found. Prefer primary, official, and "
+        "peer-reviewed sources. Use web search and open each selected source before citing "
+        "it. Never invent source IDs or URLs. sources entries MUST "
+        f"contain {_prompt_field_list(FACTUAL_SOURCE_FIELDS)}. claims entries MUST contain "
+        f"{_prompt_field_list(FACTUAL_CLAIM_FIELDS)}, including an exact quote from script.md "
+        "in the named segment. nonfactual_segments entries MUST contain "
+        f"{_prompt_field_list(NONFACTUAL_SEGMENT_FIELDS)}. Every ### Sxx segment MUST be "
+        "covered by a verified claim or explicitly classified as nonfactual. A central "
+        "claim needs one primary, official, or peer-reviewed source, or corroboration from "
+        "two different source domains. "
+        "Apply story-video-script-review-board after the director draft. "
+        "script_review_report.json MUST use schema=story_video_script_review_v1, "
+        "quality_contract_version=6, status=PASS, execution_mode=structured_board, "
+        "revision_round_count=1 or 2, and at most two revision rounds. One full board plus "
+        "one adjudicator revision is revision_round_count=1. A PASS reviewer with no "
+        "actionable defect MUST return findings=[]; never invent a finding to prove review. "
+        "Run round two only when post-adjudication verification still has a reviewer score "
+        "below 85 or an unresolved major or critical finding. Do not run round two merely "
+        "because round one found issues that the adjudicator already resolved. It MUST contain "
+        "exactly one record for each "
+        "reviewer_id: language_editor, fact_checker, clarity_editor, engagement_editor, "
+        "audience_safety_editor, and performance_editor. Reviewers emit structured "
+        "findings instead of six full rewrites. Every finding MUST contain exactly the "
+        "required machine keys finding_id, severity, location, category, evidence, "
+        "recommendation, and resolution_status; severity=minor|moderate|major|critical "
+        "and resolution_status=resolved|unresolved|accepted_risk. Every reviewer status "
+        "MUST be PASS, "
+        "every score MUST be at least 85, and no critical finding may remain unresolved. "
+        "The adjudicator writes the only revised full script. The report MUST contain an "
+        "adjudication object with status=PASS plus resolved_finding_ids and "
+        "unresolved_finding_ids arrays that classify every finding exactly once. For "
+        "science, history, documentary, or factual work, fact_checker evidence_source_ids "
+        "MUST exactly match the sources used by current claims and verified_claim_ids MUST "
+        "exactly match all current claim IDs. fact_checker MUST also set "
+        "claim_coverage_status=PASS and coverage_verified_segment_ids to every current "
+        "### Sxx segment after checking that no important factual assertion was omitted "
+        "from the claim ledger. After the "
+        "review board finishes, script_review_report.json MUST include editorial_metrics "
+        "with schema=story_video_editorial_metrics_v1. Bind every qualitative claim to "
+        "real ### Sxx sections: concrete_scene_evidence entries require segment_id, "
+        "subject, action, sensory_detail, and stakes_or_question; "
+        "curiosity_loop_evidence entries require loop_id, opening_segment_id, "
+        "payoff_segment_id, question, payoff, and status=resolved; delight_beat_evidence "
+        "requires segment_id, beat_type, and text; emotional_turn_evidence requires "
+        "segment_id, from_state, to_state, and cause. Include abstract_only_segment_ids, "
+        "rhetorical_template_evidence, and reported_read_aloud_metrics with sentence_count "
+        "and long_sentence_ratio. Compute these exactly as the runtime does: split immediately "
+        "after sentence-ending punctuation plus any closing quotes (。！？!? followed by "
+        "optional 」』\u201d\u2019 or a straight quote), ignore empty fragments, and classify a sentence "
+        "as long only when its whitespace-stripped length exceeds 46 characters. The enforceable "
+        "thresholds are "
+        "concrete_scene_ratio>=0.80, abstract_only_segment_count=0, "
+        "long_sentence_ratio<=0.25, "
+        "curiosity_loop_count>=max(2, ceil(runtime_minutes)), all curiosity loops resolved, "
+        "delight_beat_count>=max(1, floor(runtime_minutes/2)), and at least three emotional "
+        "turns for productions of two minutes or longer; no rhetorical template may appear "
+        "in more than two segments. The runtime recomputes sentence metrics and validates "
+        "every referenced segment; do not invent summary-only PASS evidence. After the "
+        "editorial metrics, script_review_report.json MUST include narrative_dynamics "
+        "with schema=story_video_narrative_dynamics_v1. Select one narrative_mode from "
+        "guided_mystery|discovery_quest|transformation|choice_and_consequence|"
+        "character_lens|pattern_reveal|calm_wonder and declare one concrete central_lens "
+        f"that can recur across the film. retention_beats entries MUST contain "
+        f"{_prompt_field_list(NARRATIVE_RETENTION_BEAT_FIELDS)}. They MUST bind cold_open, "
+        "expectation, reversal, payoff, and ending_echo to exact quotes in script.md; "
+        "expectation is a clearly framed viewer guess, prediction, or intuition to test, "
+        f"never a fabricated fact. cross_segment_loops entries MUST contain "
+        f"{_prompt_field_list(NARRATIVE_CROSS_SEGMENT_LOOP_FIELDS)}. They MUST bind exact "
+        "opening_quote and later payoff_quote, "
+        "and cannot open and resolve in the same segment. Require one such delayed loop for "
+        "short work and two for productions of two minutes or longer. causal_handoffs "
+        f"entries MUST contain {_prompt_field_list(NARRATIVE_CAUSAL_HANDOFF_FIELDS)}. "
+        "They MUST bind exact quotes across at least 70 percent of adjacent segment transitions so "
+        "the next scene grows from the previous consequence instead of restarting a topic "
+        "outline. exposition_only_segment_ids MUST be empty. Each retention beat also names "
+        "the change in the viewer's model; metadata labels without verbatim script evidence "
+        "are blocking defects. Use drama from questions, evidence, scale, choices, process, "
+        "and consequences; never invent danger, conflict, certainty, or jokes. After the "
+        "last revision, compute the exact SHA-256 of the final script.md bytes and write "
+        "the same final_script_sha256 to script_quality_report.json and "
+        "script_review_report.json final_verification. Never edit script.md after hashing. "
+        "script.md MUST contain narration-only sections headed exactly ### S00, "
+        "### S01, and so on for the local voice parser. Preserve correct display "
+        "spelling in all narration and never write spoken aliases into script.md; "
+        "aliases belong only in pronunciation_lexicon.json and are compiled at voice time. "
+        "The ending_echo MUST support a cinematic educational ending. "
+        )
+        if context.visual_mode == "story_visual":
+            instruction += (
+                "At render time, generate exactly two distinct text-free sources identified "
+                "as RELEASE_OPENING_C01 and RELEASE_ENDING_C01; never reuse the opening "
+                "source for the ending. "
+            )
+        else:
+            instruction += (
+                "Do not create shot prompts, keyframes, release cards, thumbnails, image "
+                "manifests, or provider image audit events for this black-subtitle run. "
+            )
+    if context.phase == "batch":
+        instruction += (
+        f"During batch, call {_native_chunk_call(context)} exactly "
+        "once per turn. This native tool owns deterministic prompt compilation, up to "
+        "three parallel OpenAI image requests, candidate judging, end-to-end generation "
+        "budgets across contract revisions, continuity holds, and persisted stop/resume. "
+        "Do not call image_generate, compile_prompt, judge_candidates, next_batch_work, "
+        "rejudge_existing, or replan_shot_contract yourself. Never edit "
+        "shot_candidate_manifest.json, batch_run_manifest.json, or scene_ledger.json "
+        "manually. If the tool returns in_progress, report brief progress and let internal "
+        "autopilot schedule the next native chunk. If it returns complete, validate batch. "
+        "Every generation and judge remains explicitly provider=openai-codex; xAI and Grok "
+        "are forbidden."
+        )
+    elif context.phase == "keyframes":
+        instruction += (
+        f"During keyframes, call {_native_chunk_call(context)} exactly once per turn. "
+        "The native tool generates the style anchor serially, then produces bounded "
+        "representative keyframes with OpenAI vision QC until the scale-coverage gate "
+        "passes. Do not call image_generate, compile_prompt, judge_candidates, "
+        "next_batch_work, rejudge_existing, or replan_shot_contract yourself. Never edit "
+        "shot_candidate_manifest.json, batch_run_manifest.json, or scene_ledger.json "
+        "manually. Return brief progress after the chunk so internal autopilot can "
+        "validate keyframes and schedule the next authorized chunk. "
+        )
+    if context.phase == "voice":
+        if _needs_bound_voice_cast(context) and not _has_bound_voice_cast(context):
+            if _has_compiled_voice_cast(context):
+                instruction += (
+                    "During voice, call story_video_audio_director action=bind_cast "
+                    f"run_id={context.run_id} project_dir={context.project_dir} exactly "
+                    "once. Bind the already compiled project-local cast; do not repost the "
+                    "long source_text or utterances and do not synthesize in this turn. "
+                )
+            else:
+                instruction += (
+                    "During voice, call story_video_audio_director action=compile exactly once. "
+                    "Derive ordered speakers, voice_id mappings, and utterances from the approved "
+                    "story text and the operator's explicit casting. Keep display_text as spoken "
+                    "dialogue only; put the supported emotion in emotion and a concise physical "
+                    "stage direction in the optional action field. The action takes visual "
+                    "precedence when both exist. Do not synthesize until the "
+                    "returned immutable cast binding is valid. "
+                )
+        elif context.visual_mode == "black_subtitle":
+            instruction += (
+                "During voice, call story_video_audio_director action=start_production "
+                f"run_id={context.run_id} project_dir={context.project_dir} exactly once. "
+                "It launches offline Qwen voice synthesis, QC, black-subtitle rendering, and "
+                "MP4 validation in the background. Return brief background progress; do not "
+                "poll, validate the voice phase, or relaunch it in this turn. "
+            )
+        else:
+            instruction += (
+                f"During voice, call {_native_voice_call(context)} exactly once per turn. "
+                "This is exactly one native voice phase call: it owns pronunciation "
+                "compilation, offline local Qwen synthesis, acoustic QC, one bounded transient "
+                "MLX retry, and stop/resume. Do not call generic text_to_speech, run shell "
+                "commands, edit the pronunciation lexicon, regenerate individual segments, "
+                "or hand-write narration manifests yourself. Return brief progress after the "
+                "native call so internal autopilot can validate voice and advance to render. "
+            )
+    if context.phase == "render":
+        if context.visual_mode == "black_subtitle":
+            instruction += (
+                "During render, call story_video_audio_director action=start_production "
+                f"run_id={context.run_id} project_dir={context.project_dir} exactly once. "
+                "The deterministic black-subtitle renderer runs in the background. Do not "
+                "generate images, run shell commands, or poll in this turn. "
+            )
+        else:
+            instruction += (
+        "During render, create dedicated release art before background production. First call "
+        "story_video_quality_control action=compile_release_art, then generate exactly two "
+        "distinct text-free sources with image_generate provider=openai-codex using each "
+        "returned candidates item: RELEASE_OPENING_C01 for the opening question and "
+        "RELEASE_ENDING_C01 for the resolved discovery. Apply every returned "
+        "reference_image_urls value to both as style-only references. Then call "
+        "action=register_release_art once with release_art_candidates containing both "
+        "returned local paths, roles, provider, model, and response_id. The registration "
+        "action composes the thumbnail, opening, and cinematic educational ending locally. "
+        "The ending MUST present story_engine ending_echo and knowledge_payoff as a beautiful "
+        "final discovery, not a generic CTA or a blurred placeholder. Never substitute "
+        "the first or last body shot for missing release art. After registering both "
+        "release-art sources, call story_video_audio_director action=start_production "
+        f"run_id={context.run_id} project_dir={context.project_dir} exactly once. The "
+        "background worker is the only writer of render_input.json; never hand-edit it. "
+        "Render preparation may select only from the approved "
+        "story-video music library. story_video_music_library_v2 requires at least three "
+        "compatible rights-approved cue variants and compiles one project-local cue bed; "
+        "it must never download random or unlicensed music. "
+        "The renderer mixes approved BGM after visual encoding with narration-first "
+        "sidechain ducking, and absence of an approved track must be reported as "
+        "NOT_CONFIGURED rather than silently substituting media. Do not run the renderer "
+        "through shell and do not poll in this turn. "
+            )
+    instruction += (
+        "Do not inspect other story-video projects, source code, memory, or unrelated "
+        "skills, and do not "
+        "invoke brainstorming, nested Hermes sessions, web research, or media "
+        "generation unless the operator explicitly requests them. The output gate "
+        "validates the phase automatically. Use story_video_control only when it "
+        "is exposed as a direct tool; never invoke it through terminal."
+    )
+    if action == "package":
+        instruction += (
+            " The operator requested a YouTube review package. Do not upload. Use the "
+            "story-video-youtube-release skill and its release packaging scripts to use the "
+            "distinct OpenAI/openai-codex opening and ending release-art sources with no baked-in text, "
+            "then compose exact Traditional Chinese thumbnail/opening/ending typography "
+            "locally. Public title and description are audience-facing editorial copy: "
+            "package the subject, question, discovery, viewer payoff, and reason to watch. "
+            "Never expose the production brief, internal visual style, image prompt, provider, "
+            "model, TTS, render/QC labels, or generation workflow in public metadata. Record "
+            "non-public production_brief_terms in youtube_package_input.json so the builder "
+            "can reject leaks. Produce polished title, description, tags, pinned comment, and a "
+            "REVIEW_REQUIRED manifest bound to artifact hashes. If release cards changed, "
+            "rerender and rerun render QC before reporting the review package."
+        )
+    elif action == "approve_upload":
+        instruction += (
+            " The operator explicitly approved YouTube upload, but not public release. "
+            "This is an API-only operation. Verify the current review package hashes, create "
+            "the approval record, then use the YouTube Data API through "
+            "~/.hermes/skills/creative/story-video-production-pipeline/scripts/"
+            "youtube_publish_from_manifest.py with privacy=private and authenticated "
+            "videos.list verification. Do not open YouTube Studio, youtube.com, Chrome, "
+            "computer-use, or any browser for upload, metadata, thumbnail, or status work. "
+            "If OAuth credentials, API scopes, or the API call are unavailable, return "
+            "SETUP_REQUIRED with the missing prerequisite; never fall back to web upload. "
+            "Never infer "
+            "public visibility from this command; public release requires a separate "
+            "explicit approval."
+        )
+    if context.auto_mode:
+        instruction += (
+            " STORY_VIDEO AUTOPILOT is enabled. Continue autonomously through the persisted "
+            f"phase order {', '.join(context.phase_order)}. Call story_video_control "
+            "action=validate after finishing each phase. If validation is BLOCKED, "
+            "execute the exact repair_request immediately and validate again. Do not ask "
+            "the operator to reply with continue or repair. Stop only for an operator "
+            "setup blocker such as missing credentials, exhausted quota, or unavailable "
+            "required provider; otherwise finish the production and delivery. "
+        )
+        if context.phase == "batch":
+            instruction += (
+            "Batch autopilot advances only through action=run_batch_chunk. Return a brief "
+            "progress response after that native chunk so internal continuation can invoke "
+            "the next chunk. This boundary is not an operator pause and must not request "
+            "input."
+            )
+    return {"context": instruction}
+
+
+def _autopilot_progress_token(context: StoryVideoRunContext) -> str:
+    evidence: dict[str, Any] = {"phase": context.phase}
+    if context.phase == "planning":
+        evidence["artifacts"] = []
+        for name in (
+            "script.md",
+            "storyboard.md",
+            "scene_ledger.json",
+            "production_checklist.json",
+            "script_quality_report.json",
+            "pronunciation_lexicon.json",
+        ):
+            path = context.project_dir / name
+            try:
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+            except OSError:
+                digest = ""
+            evidence["artifacts"].append((name, digest))
+    elif context.phase in {"keyframes", "batch"}:
+        path = context.project_dir / "manifests" / "shot_candidate_manifest.json"
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            payload = {}
+        evidence["outputs"] = [
+            (
+                str(row.get("shot_id") or ""),
+                str(row.get("candidate_id") or ""),
+                str(row.get("status") or ""),
+                row.get("selected") is True,
+            )
+            for row in payload.get("outputs") or []
+            if isinstance(row, dict)
+        ]
+        batch_path = context.project_dir / "manifests" / "batch_run_manifest.json"
+        try:
+            evidence["batch_manifest"] = hashlib.sha256(
+                batch_path.read_bytes()
+            ).hexdigest()[:16]
+        except OSError:
+            evidence["batch_manifest"] = ""
+    elif context.phase == "voice":
+        path = context.project_dir / "manifests" / "narration_manifest.json"
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            payload = {}
+        evidence["outputs"] = [
+            str(row.get("scene_id") or "")
+            for row in payload.get("outputs") or []
+            if isinstance(row, dict)
+        ]
+    elif context.phase == "render":
+        evidence["artifacts"] = [
+            (name, (context.project_dir / name).is_file())
+            for name in (
+                "render_input.json",
+                "manifests/render_manifest.json",
+                "render_qc.json",
+                "video/final.mp4",
+            )
+        ]
+    encoded = json.dumps(evidence, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
+
+
+def _batch_assets_complete(context: StoryVideoRunContext) -> bool:
+    try:
+        ledger = json.loads(
+            (context.project_dir / "scene_ledger.json").read_text(encoding="utf-8")
+        )
+        manifest = json.loads(
+            (
+                context.project_dir
+                / "manifests"
+                / "shot_candidate_manifest.json"
+            ).read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        return False
+    shot_ids = {
+        str(shot.get("shot_id") or "")
+        for scene in ledger.get("scenes") or []
+        if isinstance(scene, dict)
+        for shot in scene.get("shots") or []
+        if isinstance(shot, dict) and str(shot.get("shot_id") or "")
+    }
+    selected = {
+        str(row.get("shot_id") or "")
+        for row in manifest.get("outputs") or []
+        if isinstance(row, dict) and row.get("selected") is True
+    }
+    if not shot_ids or not shot_ids.issubset(selected):
+        return False
+    try:
+        profile = json.loads(
+            (context.project_dir / "content_profile.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        profile = {}
+    if str(profile.get("review_profile_id") or "").strip() == EDITORIAL_PROFILE_ID:
+        try:
+            report = json.loads(
+                (
+                    context.project_dir
+                    / "manifests"
+                    / "sequence_quality_report.json"
+                ).read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError):
+            return False
+        if validate_sequence_quality_report(
+            context.project_dir,
+            ledger,
+            manifest,
+            report,
+        ):
+            return False
+    try:
+        return _next_batch_work(context).get("work_status") == "complete"
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def _batch_review_attention(
+    context: StoryVideoRunContext,
+) -> tuple[str, str] | None:
+    if context.phase not in {"keyframes", "batch"}:
+        return None
+    try:
+        manifest = json.loads(
+            (
+                context.project_dir
+                / "manifests"
+                / "shot_candidate_manifest.json"
+            ).read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        return None
+    attention = manifest.get("terminal_attention")
+    if not isinstance(attention, dict):
+        return None
+    if attention.get("work_status") != "human_review_required":
+        return None
+    shot_id = str(attention.get("shot_id") or "").strip()
+    if not shot_id:
+        return None
+    selected_shot_ids = {
+        str(row.get("shot_id") or "").strip()
+        for row in manifest.get("outputs") or []
+        if isinstance(row, dict) and row.get("selected") is True
+    }
+    if shot_id in selected_shot_ids:
+        return None
+    recorded_at = str(attention.get("recorded_at") or "").strip()
+    if recorded_at and any(
+        isinstance(row, dict)
+        and str(row.get("shot_id") or "").strip() == shot_id
+        and str(row.get("replanned_at") or "").strip() > recorded_at
+        for row in manifest.get("contract_replans") or []
+    ):
+        return None
+    error = str(
+        attention.get("error") or "Visual repair budget exhausted."
+    ).strip()
+    return shot_id, error
+
+
+def auto_continue_llm_output(
+    *,
+    session_id: str = "",
+    response_text: str = "",
+    recoverable_transport_error: bool = False,
+    turn_error: str = "",
+    message_count: int = 0,
+    auto_continuation_count: int = 0,
+    **_: Any,
+) -> dict[str, str] | None:
+    if session_id in _VISUAL_AGENT_BYPASS_SESSIONS:
+        _VISUAL_AGENT_BYPASS_SESSIONS.discard(session_id)
+        return None
+    context = _STORE.for_session(session_id)
+    if context is None or not context.next_call:
+        return None
+    if _production_job_status(context) in {"queued", "running"}:
+        return None
+    planning_completion = (
+        context.planning_only
+        and context.phase == "planning"
+        and context.status == "active"
+    )
+    if not context.auto_mode and not planning_completion:
+        return None
+    if _has_operator_setup_blocker(response_text, turn_error):
+        return None
+    if _batch_review_attention(context) is not None:
+        return None
+    if context.phase in {"batch", "voice"} and _PHASE_REVIEW_REQUIRED_RE.search(
+        str(response_text or "")
+    ):
+        return None
+    if planning_completion:
+        signature = (
+            f"planning:completion:{context.next_call}:"
+            f"{_autopilot_progress_token(context)}"
+        )
+        stall_count = (
+            context.autopilot_stall_count + 1
+            if context.autopilot_last_signature == signature
+            else 1
+        )
+        context = _STORE.update(
+            context,
+            autopilot_last_signature=signature,
+            autopilot_stall_count=stall_count,
+        )
+        if stall_count >= _AUTOPILOT_STALL_LIMIT:
+            return None
+    elif (
+        _PHASE_BLOCKED_RE.search(str(response_text or ""))
+        or recoverable_transport_error
+    ):
+        reason = "transport" if recoverable_transport_error else "blocked"
+        signature = (
+            f"{context.phase}:{reason}:{context.next_call}:"
+            f"{_autopilot_progress_token(context)}"
+        )
+        stall_count = (
+            context.autopilot_stall_count + 1
+            if context.autopilot_last_signature == signature
+            else 1
+        )
+        context = _STORE.update(
+            context,
+            autopilot_last_signature=signature,
+            autopilot_stall_count=stall_count,
+        )
+        if stall_count >= _AUTOPILOT_STALL_LIMIT:
+            return None
+    elif context.autopilot_stall_count:
+        context = _STORE.update(
+            context,
+            autopilot_last_signature="",
+            autopilot_stall_count=0,
+        )
+    next_action = context.next_call
+    next_work_instruction = ""
+    if planning_completion:
+        from .tools import validate_phase
+
+        proof = validate_phase(context)
+        if proof.ok:
+            from .tools import story_video_control
+
+            result = json.loads(
+                story_video_control(
+                    {"action": "validate"},
+                    session_id=session_id,
+                    store=_STORE,
+                )
+            )
+            if result.get("success") is True:
+                return None
+            next_action = "repair and validate the story-video planning bundle"
+            next_work_instruction = (
+                " Direct planning validation failed: "
+                + json.dumps(result, ensure_ascii=False)
+                + ". Repair the reported gate failure without generating media."
+            )
+        else:
+            details = [*proof.missing, *proof.violations]
+            next_action = "complete and validate the story-video planning bundle"
+            next_work_instruction = (
+                " Repair these exact planning gaps: "
+                + json.dumps(details, ensure_ascii=False)
+                + ". Create or correct every required planning artifact, then call "
+                "story_video_control action=validate. Do not generate images, narration, "
+                "or video."
+            )
+    elif context.phase in {"keyframes", "batch", "voice"}:
+        if context.phase == "keyframes":
+            from .tools import validate_phase
+
+            native_work_complete = validate_phase(context).ok
+        elif context.phase == "voice":
+            from .tools import validate_phase
+
+            native_work_complete = validate_phase(context).ok
+        else:
+            native_work_complete = _batch_assets_complete(context)
+        if not native_work_complete:
+            if context.phase == "voice":
+                if _needs_bound_voice_cast(context) and not _has_bound_voice_cast(context):
+                    if _has_compiled_voice_cast(context):
+                        next_action = (
+                            "story_video_audio_director action=bind_cast "
+                            f"run_id={context.run_id} project_dir={context.project_dir}"
+                        )
+                        next_work_instruction = (
+                            " Bind the already compiled project-local cast exactly once; "
+                            "do not repost source_text or utterances and do not synthesize yet."
+                        )
+                    else:
+                        next_action = "story_video_audio_director action=compile"
+                        next_work_instruction = (
+                            " Compile and hash-lock the explicit character-to-voice mapping and "
+                            "ordered utterances exactly once; do not synthesize yet."
+                        )
+                elif context.visual_mode == "black_subtitle":
+                    next_action = (
+                        "story_video_audio_director action=start_production "
+                        f"run_id={context.run_id} project_dir={context.project_dir}"
+                    )
+                    next_work_instruction = (
+                        " Launch exactly one background production job and then stop this "
+                        "turn without polling or phase validation."
+                    )
+                else:
+                    next_action = _native_voice_call(context)
+                    next_work_instruction = (
+                        " Run exactly one native voice phase call. The tool owns offline local "
+                        "Qwen synthesis, pronunciation/alignment/prosody QC, bounded retry, "
+                        "and stop/resume behavior. Generic text_to_speech is forbidden; do not "
+                        "run shell commands or edit voice artifacts yourself."
+                    )
+            else:
+                next_action = _native_chunk_call(context)
+                next_work_instruction = (
+                    " Run exactly one native bounded production chunk. The tool owns prompt "
+                    "compilation, up to three parallel OpenAI image requests, QC, persistent "
+                    "end-to-end budgets, and stop/resume behavior. Do not call image_generate, "
+                    "compile_prompt, judge_candidates, or replan_shot_contract yourself."
+                )
+        else:
+            next_action = "story_video_control action=validate"
+            next_work_instruction = (
+                f" Canonical {context.phase} work is complete. Validate the "
+                f"{context.phase} phase now; "
+                "do not edit the candidate manifest or regenerate selected shots."
+            )
+    continuation_limit = (
+        _AUTOPILOT_BATCH_ROTATE_AFTER_CONTINUATIONS
+        if context.phase in {"keyframes", "batch", "voice"}
+        else _AUTOPILOT_ROTATE_AFTER_CONTINUATIONS
+    )
+    rotate_for_budget = (
+        int(message_count or 0) >= _AUTOPILOT_ROTATE_AFTER_MESSAGES
+        or int(auto_continuation_count or 0)
+        >= continuation_limit
+    )
+    rotate = recoverable_transport_error or rotate_for_budget
+    return {
+        "action": "rotate" if rotate else "continue",
+        "reason": (
+            "story_video_transport_recovery"
+            if recoverable_transport_error
+            else "story_video_planning_completion"
+            if planning_completion
+            else "story_video_context_budget"
+            if rotate_for_budget
+            else "story_video_autopilot"
+        ),
+        "message": (
+            (
+                "STORY_VIDEO_PLANNING_COMPLETION"
+                if planning_completion
+                else "STORY_VIDEO_AUTOPILOT"
+            )
+            + f" run_id={context.run_id} phase={context.phase}. "
+            f"Execute the next action now: {next_action}.{next_work_instruction} "
+            "Do not merely report "
+            "status; complete the phase, repair every gate failure that is locally "
+            "actionable, validate it, and continue toward final delivery."
+        ),
+    }
+
+
+def _provider_from_args(args: dict[str, Any]) -> str:
+    return str(
+        args.get("provider")
+        or args.get("_provider")
+        or args.get("image_provider")
+        or ""
+    )
+
+
+def pre_tool_call(
+    *,
+    tool_name: str = "",
+    args: dict[str, Any] | None = None,
+    session_id: str = "",
+    turn_id: str = "",
+    tool_call_id: str = "",
+    **_: Any,
+) -> dict[str, str] | None:
+    if session_id in _VISUAL_AGENT_BYPASS_SESSIONS:
+        return None
+    context = _STORE.for_session(session_id)
+    if context is None:
+        return None
+    payload = args if isinstance(args, dict) else {}
+    message: str | None = None
+    if (
+        context.status == "stopped"
+        and _SESSION_STATUS_AT_LLM_START.get(session_id) != "stopped"
+    ):
+        message = "Story-video production was stopped by the operator; discard this stale tool call."
+    if message is None and str(tool_name or "").strip().lower() == "image_generate":
+        explicit_provider = payload.get("provider") or payload.get("_provider")
+        if explicit_provider:
+            message = guard_tool_call(context, tool_name, payload)
+        if message is None:
+            payload["_provider"] = "openai-codex"
+    if message is None:
+        message = guard_tool_call(context, tool_name, payload)
+    if message is None:
+        return None
+    ProviderAudit(context).append_event(
+        ProviderAuditEvent(
+            kind="tool",
+            phase=context.phase,
+            provider=_provider_from_args(payload),
+            model=str(payload.get("model") or payload.get("_model") or ""),
+            status="blocked",
+            tool=tool_name,
+            session_id=session_id,
+            turn_id=turn_id,
+            request_id=tool_call_id,
+            detail={"reason": message},
+        )
+    )
+    return {"action": "block", "message": message}
+
+
+def pre_api_request(
+    *,
+    session_id: str = "",
+    turn_id: str = "",
+    api_request_id: str = "",
+    provider: str = "",
+    model: str = "",
+    **_: Any,
+) -> None:
+    if session_id in _VISUAL_AGENT_BYPASS_SESSIONS:
+        return
+    context = _STORE.for_session(session_id)
+    if context is None:
+        return
+    ProviderAudit(context).append_event(
+        ProviderAuditEvent(
+            kind="api",
+            phase=context.phase,
+            provider=provider,
+            model=model,
+            status="sent",
+            session_id=session_id,
+            turn_id=turn_id,
+            request_id=api_request_id,
+        )
+    )
+
+
+def post_api_request(**kwargs: Any) -> None:
+    _record_api_result("ok", kwargs)
+
+
+def api_request_error(**kwargs: Any) -> None:
+    _record_api_result("error", kwargs)
+
+
+def _record_api_result(status: str, payload: dict[str, Any]) -> None:
+    session_id = str(payload.get("session_id") or "")
+    if session_id in _VISUAL_AGENT_BYPASS_SESSIONS:
+        return
+    context = _STORE.for_session(session_id)
+    if context is None:
+        return
+    ProviderAudit(context).append_event(
+        ProviderAuditEvent(
+            kind="api_result",
+            phase=context.phase,
+            provider=str(payload.get("provider") or ""),
+            model=str(payload.get("response_model") or payload.get("model") or ""),
+            status=status,
+            session_id=session_id,
+            turn_id=str(payload.get("turn_id") or ""),
+            request_id=str(payload.get("api_request_id") or ""),
+        )
+    )
+
+
+def post_tool_call(
+    *,
+    tool_name: str = "",
+    result: Any = None,
+    status: str = "",
+    session_id: str = "",
+    turn_id: str = "",
+    tool_call_id: str = "",
+    **_: Any,
+) -> None:
+    if tool_name == "story_video_voice_manager":
+        parsed: dict[str, Any] = {}
+        if isinstance(result, dict):
+            parsed = result
+        elif isinstance(result, str):
+            try:
+                candidate = json.loads(result)
+                parsed = candidate if isinstance(candidate, dict) else {}
+            except json.JSONDecodeError:
+                parsed = {}
+        if (
+            session_id
+            and parsed.get("success") is True
+            and parsed.get("action") == "preview_preset"
+        ):
+            media = [
+                str(item)
+                for item in parsed.get("media") or []
+                if isinstance(item, str)
+                and item.startswith("MEDIA:/")
+                and item.casefold().endswith(".wav")
+            ]
+            if media:
+                _VOICE_PREVIEW_MEDIA_BY_SESSION[session_id] = media
+        return
+    if session_id in _VISUAL_AGENT_BYPASS_SESSIONS:
+        return
+    context = _STORE.for_session(session_id)
+    if context is None or tool_name not in {
+        "image_generate",
+        "video_generate",
+        "visual_package_generate",
+        "text_to_speech",
+    }:
+        return
+    parsed: dict[str, Any] = {}
+    if isinstance(result, dict):
+        parsed = result
+    elif isinstance(result, str):
+        try:
+            candidate = json.loads(result)
+            parsed = candidate if isinstance(candidate, dict) else {}
+        except json.JSONDecodeError:
+            parsed = {}
+    ProviderAudit(context).append_event(
+        ProviderAuditEvent(
+            kind="image" if tool_name == "image_generate" else "tool",
+            phase=context.phase,
+            provider=str(parsed.get("provider") or ""),
+            model=str(parsed.get("model") or ""),
+            status=status or ("ok" if parsed.get("success") else "error"),
+            tool=tool_name,
+            session_id=session_id,
+            turn_id=turn_id,
+            request_id=tool_call_id,
+        )
+    )
+
+
+def subagent_start(
+    *,
+    parent_session_id: str = "",
+    child_session_id: str = "",
+    **_: Any,
+) -> None:
+    if parent_session_id in _VISUAL_AGENT_BYPASS_SESSIONS:
+        return
+    context = _STORE.for_session(parent_session_id)
+    if context is not None and child_session_id:
+        _STORE.bind_session(context, child_session_id)
+
+
+def transform_llm_output(
+    *,
+    response_text: str,
+    session_id: str = "",
+    **_: Any,
+) -> str | None:
+    if session_id in _VISUAL_AGENT_BYPASS_SESSIONS:
+        _SESSION_PHASE_AT_LLM_START.pop(session_id, None)
+        _SESSION_STATUS_AT_LLM_START.pop(session_id, None)
+        media = _VOICE_PREVIEW_MEDIA_BY_SESSION.pop(session_id, [])
+        if media:
+            text = str(response_text or "").rstrip()
+            missing = [item for item in media if item not in text]
+            if missing:
+                return f"{text}\n\n" + "\n".join(missing)
+        return None
+    context = _STORE.for_session(session_id)
+    if context is None:
+        return None
+    text = re.sub(
+        r"\n*Raphael (?:提示|下一步)：[^\n]*$",
+        "",
+        str(response_text or "").rstrip(),
+    )
+    phase_at_start = _SESSION_PHASE_AT_LLM_START.pop(session_id, None)
+    _SESSION_STATUS_AT_LLM_START.pop(session_id, None)
+    production_status = _production_job_status(context)
+    if production_status in {"queued", "running"}:
+        return "\n".join(
+            (
+                "故事影片已在背景進行多角色配音、渲染與品質檢查。",
+                f"STORY_VIDEO_PRODUCTION_PROGRESS: {production_status}",
+            )
+        )
+    attention = (
+        _batch_review_attention(context)
+        if phase_at_start == context.phase
+        else None
+    )
+    if _has_operator_setup_blocker(text):
+        pass
+    elif attention is not None:
+        shot_id, error = attention
+        text = "\n".join(
+            (
+                f"故事影片 {context.phase} 需要處理目前鏡頭 {shot_id}：{error}",
+                f"STORY_VIDEO_PHASE_ATTENTION: batch REVIEW_REQUIRED shot_id={shot_id}",
+            )
+        )
+    elif (
+        phase_at_start == context.phase == "voice"
+        and _needs_bound_voice_cast(context)
+        and _has_bound_voice_cast(context)
+        and not (context.project_dir / "manifests" / "narration_manifest.json").is_file()
+    ):
+        text = "\n".join(
+            (
+                "多角色聲線 mapping 已鎖定，等待下一個原生製作步驟。",
+                "STORY_VIDEO_CAST_BINDING: PASS",
+            )
+        )
+    elif phase_at_start == context.phase == "voice" and _PHASE_REVIEW_REQUIRED_RE.search(
+        text
+    ):
+        pass
+    elif phase_at_start == context.phase == "batch":
+        if _PHASE_REVIEW_REQUIRED_RE.search(text):
+            pass
+        elif not _batch_assets_complete(context):
+            text = "\n".join(
+                (
+                    "故事影片 batch 原生批次製作中。",
+                    "STORY_VIDEO_PHASE_PROGRESS: batch IN_PROGRESS",
+                )
+            )
+        else:
+            from .tools import story_video_control
+
+            validation = json.loads(
+                story_video_control(
+                    {"action": "validate"},
+                    session_id=session_id,
+                    store=_STORE,
+                )
+            )
+            context = _STORE.for_session(session_id) or context
+            proof = str(validation.get("proof") or "")
+            text = f"{text}\n\n{proof}" if proof else text
+    elif phase_at_start == context.phase and context.phase != "complete":
+        from .tools import story_video_control
+
+        validation = json.loads(
+            story_video_control(
+                {"action": "validate"},
+                session_id=session_id,
+                store=_STORE,
+            )
+        )
+        context = _STORE.for_session(session_id) or context
+        proof = str(validation.get("proof") or "")
+        if validation.get("success") is True:
+            text = f"{text}\n\n{proof}" if proof else text
+        else:
+            details = [
+                *validation.get("missing", []),
+                *validation.get("violations", []),
+            ]
+            detail = "、".join(str(item) for item in details if item) or "缺少 phase proof"
+            text = "\n".join(
+                [
+                    f"狀態：故事影片 {phase_at_start} 尚未通過 phase proof。",
+                    f"風險：{detail}",
+                    proof,
+                ]
+            ).rstrip()
+    text = _guard_render_delivery(text, context)
+    from .guide import format_raphael_next_action
+
+    next_line = format_raphael_next_action(context)
+    if not next_line:
+        return text
+    return f"{text}\n\n{next_line}"
+
+
+_ABSOLUTE_DELIVERABLE_PATH_RE = re.compile(
+    r"(?:MEDIA:)?((?:/|~/)[^\s`\"'<>]+\."
+    r"(?:mp4|mov|m4v|webm|mp3|wav|m4a|aac|flac|ogg|opus|srt|vtt|json|pdf))",
+    re.IGNORECASE,
+)
+_DELIVERABLE_PATH_RE = re.compile(
+    r"(?:MEDIA:)?("
+    r"(?:(?:/|~/|\.\.?/|[A-Za-z0-9_.-]+/)[^\s`\"'<>()[\]]*|[A-Za-z0-9_.-]+)"
+    r"\.(?:mp4|mov|m4v|webm|mp3|wav|m4a|aac|flac|ogg|opus|srt|vtt|json|pdf))",
+    re.IGNORECASE,
+)
+
+
+def _selected_render_path(context: StoryVideoRunContext) -> Path | None:
+    for relative in ("render_manifest.json", "manifests/render_manifest.json"):
+        manifest_path = context.project_dir / relative
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        output = manifest.get("output") if isinstance(manifest, dict) else None
+        value = output.get("path") if isinstance(output, dict) else None
+        if not str(value or "").strip():
+            continue
+        selected = Path(str(value))
+        if not selected.is_absolute():
+            selected = context.project_dir / selected
+        return selected.expanduser().resolve()
+    return None
+
+
+def _guard_render_delivery(text: str, context: StoryVideoRunContext) -> str:
+    matcher = (
+        _DELIVERABLE_PATH_RE
+        if context.phase == "complete"
+        else _ABSOLUTE_DELIVERABLE_PATH_RE
+    )
+    matches = list(matcher.finditer(text))
+    selected = _selected_render_path(context) if context.phase == "complete" else None
+    if context.phase == "complete" and (
+        selected is None
+        or selected.suffix.casefold() != ".mp4"
+        or not selected.is_file()
+    ):
+        return "\n".join(
+            [
+                "STORY_VIDEO_DELIVERY_BLOCKED",
+                "狀態：目前 render manifest 沒有可交付的最終 MP4。",
+                "風險：完成狀態與最終影片證據不一致。",
+            ]
+        )
+    if not matches:
+        if selected is not None and selected.is_file():
+            return "\n".join(
+                [
+                    "故事影片已完成，僅交付目前通過 QC 的最終 MP4。",
+                    f"MEDIA:{selected}",
+                ]
+            )
+        return text
+    referenced = set()
+    for match in matches:
+        path = Path(match.group(1)).expanduser()
+        if not path.is_absolute():
+            path = context.project_dir / path
+        referenced.add(path.resolve())
+    if selected is not None and selected.is_file():
+        selected_directive = f"MEDIA:{selected}"
+        if referenced == {selected} and text.count(selected_directive) == 1:
+            return text
+        if selected in referenced or any(path.suffix.lower() != ".mp4" for path in referenced):
+            return "\n".join(
+                [
+                    "故事影片已完成，僅交付目前通過 QC 的最終 MP4。",
+                    selected_directive,
+                ]
+            )
+    return "\n".join(
+        [
+            "STORY_VIDEO_DELIVERY_BLOCKED",
+            "狀態：拒絕上傳不是目前 render manifest 精確選中的影片路徑。",
+            "風險：可能是舊成品、換名複本、跨專案成品，或尚未通過 render proof。",
+        ]
+    )

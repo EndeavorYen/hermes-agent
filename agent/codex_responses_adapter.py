@@ -22,6 +22,10 @@ from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
 logger = logging.getLogger(__name__)
 
+_MAX_RESPONSES_CALL_ID_LENGTH = 64
+_MAX_RESPONSES_FUNCTION_NAME_LENGTH = 64
+_INVALID_RESPONSES_FUNCTION_NAME_CHARS = re.compile(r"[^a-zA-Z0-9_-]")
+
 
 def _classify_responses_issuer(
     *,
@@ -178,6 +182,34 @@ def _summarize_user_message_for_log(content: Any, *, sep: str = " ") -> str:
 # ---------------------------------------------------------------------------
 # ID helpers
 # ---------------------------------------------------------------------------
+
+def _bounded_responses_call_id(call_id: str) -> str:
+    """Return a stable Responses API call_id within the provider limit."""
+    candidate = str(call_id or "").strip()
+    if len(candidate) <= _MAX_RESPONSES_CALL_ID_LENGTH:
+        return candidate
+
+    digest = hashlib.sha256(
+        candidate.encode("utf-8", errors="replace")
+    ).hexdigest()[:16]
+    prefix_length = _MAX_RESPONSES_CALL_ID_LENGTH - len(digest) - 1
+    return f"{candidate[:prefix_length]}_{digest}"
+
+
+def _normalized_responses_function_name(name: str) -> str:
+    """Return a stable function name accepted by the Responses API."""
+    candidate = str(name or "").strip()
+    normalized = _INVALID_RESPONSES_FUNCTION_NAME_CHARS.sub("_", candidate)
+    if not normalized:
+        normalized = "tool"
+    if len(normalized) <= _MAX_RESPONSES_FUNCTION_NAME_LENGTH:
+        return normalized
+
+    digest = hashlib.sha256(
+        candidate.encode("utf-8", errors="replace")
+    ).hexdigest()[:16]
+    prefix_length = _MAX_RESPONSES_FUNCTION_NAME_LENGTH - len(digest) - 1
+    return f"{normalized[:prefix_length]}_{digest}"
 
 def _deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:
     """Generate a deterministic call_id from tool call content.
@@ -535,7 +567,7 @@ def _chat_messages_to_responses_input(
                             else:
                                 _raw_args = str(fn.get("arguments", "{}"))
                                 call_id = _deterministic_call_id(fn_name, _raw_args, len(items))
-                        call_id = call_id.strip()
+                        call_id = _bounded_responses_call_id(call_id)
 
                         arguments = fn.get("arguments", "{}")
                         if isinstance(arguments, dict):
@@ -547,7 +579,7 @@ def _chat_messages_to_responses_input(
                         items.append({
                             "type": "function_call",
                             "call_id": call_id,
-                            "name": fn_name,
+                            "name": _normalized_responses_function_name(fn_name),
                             "arguments": arguments,
                         })
                 continue
@@ -568,6 +600,7 @@ def _chat_messages_to_responses_input(
                     call_id = raw_tool_call_id.strip()
             if not isinstance(call_id, str) or not call_id.strip():
                 continue
+            call_id = _bounded_responses_call_id(call_id)
 
             # Multimodal tool result: convert OpenAI-style content list into
             # Responses ``function_call_output.output`` array. The Responses
@@ -634,7 +667,7 @@ def _preflight_codex_input_items(
                 {
                     "type": "function_call",
                     "call_id": call_id.strip(),
-                    "name": name.strip(),
+                    "name": _normalized_responses_function_name(name),
                     "arguments": arguments,
                 }
             )

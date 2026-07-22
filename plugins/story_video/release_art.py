@@ -1,0 +1,396 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from PIL import Image, ImageDraw, ImageEnhance, ImageFont
+
+from .style import compile_style_directive
+
+
+def _text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _cover(image: Image.Image, size: tuple[int, int]) -> Image.Image:
+    width, height = size
+    scale = max(width / image.width, height / image.height)
+    resized = image.resize(
+        (round(image.width * scale), round(image.height * scale)),
+        Image.Resampling.LANCZOS,
+    )
+    left = max(0, (resized.width - width) // 2)
+    top = max(0, (resized.height - height) // 2)
+    return resized.crop((left, top, left + width, top + height)).convert("RGBA")
+
+
+def _font(size: int, *, bold: bool = False) -> ImageFont.FreeTypeFont:
+    candidates = (
+        Path("/System/Library/Fonts/PingFang.ttc"),
+        Path("/System/Library/Fonts/STHeiti Medium.ttc")
+        if bold
+        else Path("/System/Library/Fonts/STHeiti Light.ttc"),
+        Path("/System/Library/Fonts/Supplemental/Arial Unicode.ttf"),
+    )
+    for path in candidates:
+        if path.is_file():
+            return ImageFont.truetype(str(path), size)
+    raise ValueError("no CJK-safe release-art font found")
+
+
+def _shade(canvas: Image.Image, *, left: bool = True, bottom: bool = True) -> None:
+    overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    if left:
+        extent = int(canvas.width * 0.68)
+        for x in range(extent):
+            alpha = round(178 * (1 - x / max(1, extent - 1)) ** 1.8)
+            draw.line((x, 0, x, canvas.height), fill=(4, 8, 12, alpha))
+    if bottom:
+        start = int(canvas.height * 0.48)
+        for y in range(start, canvas.height):
+            progress = (y - start) / max(1, canvas.height - start - 1)
+            draw.line((0, y, canvas.width, y), fill=(2, 5, 8, round(150 * progress)))
+    canvas.alpha_composite(overlay)
+
+
+def _fit_title(
+    draw: ImageDraw.ImageDraw,
+    title: str,
+    *,
+    max_width: int,
+    preferred_size: int,
+    minimum_size: int,
+) -> ImageFont.FreeTypeFont:
+    for size in range(preferred_size, minimum_size - 1, -2):
+        font = _font(size, bold=True)
+        box = draw.textbbox((0, 0), title, font=font, stroke_width=2)
+        if box[2] - box[0] <= max_width:
+            return font
+    return _font(minimum_size, bold=True)
+
+
+def _wrap_zh(text: str, *, max_chars: int = 16) -> str:
+    value = _text(text)
+    if len(value) <= max_chars:
+        return value
+    split = min(max_chars, max(1, len(value) // 2))
+    for index in range(split, max(1, split - 5), -1):
+        if value[index - 1] in "，。！？；：":
+            split = index
+            break
+    return value[:split].rstrip() + "\n" + value[split:].lstrip()
+
+
+def _fit_multiline(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    *,
+    max_width: int,
+    preferred_size: int,
+    minimum_size: int,
+) -> ImageFont.FreeTypeFont:
+    for size in range(preferred_size, minimum_size - 1, -2):
+        font = _font(size, bold=True)
+        box = draw.multiline_textbbox((0, 0), text, font=font, spacing=10, stroke_width=2)
+        if box[2] - box[0] <= max_width:
+            return font
+    return _font(minimum_size, bold=True)
+
+
+def _draw_identity(
+    canvas: Image.Image,
+    *,
+    title: str,
+    subtitle: str,
+    thumbnail: bool,
+) -> None:
+    draw = ImageDraw.Draw(canvas)
+    width, height = canvas.size
+    margin = round(width * 0.055)
+    title_y = round(height * (0.59 if thumbnail else 0.63))
+    eyebrow_font = _font(max(22, round(height * 0.032)), bold=True)
+    subtitle_font = _font(max(24, round(height * 0.034)))
+    title_font = _fit_title(
+        draw,
+        title,
+        max_width=round(width * 0.78),
+        preferred_size=round(height * (0.145 if thumbnail else 0.13)),
+        minimum_size=round(height * 0.075),
+    )
+    accent = (255, 196, 59, 255)
+    draw.rounded_rectangle(
+        (
+            margin,
+            title_y - round(height * 0.075),
+            margin + round(width * 0.075),
+            title_y - round(height * 0.064),
+        ),
+        radius=3,
+        fill=accent,
+    )
+    draw.text(
+        (margin, title_y - round(height * 0.055)),
+        "故事專題",
+        font=eyebrow_font,
+        fill=(244, 245, 242, 245),
+        stroke_width=1,
+        stroke_fill=(0, 0, 0, 180),
+    )
+    draw.text(
+        (margin, title_y),
+        title,
+        font=title_font,
+        fill=(255, 255, 255, 255),
+        stroke_width=max(2, round(height * 0.004)),
+        stroke_fill=(0, 0, 0, 230),
+    )
+    if subtitle:
+        title_box = draw.textbbox((margin, title_y), title, font=title_font)
+        subtitle_y = min(
+            height - round(height * 0.11), title_box[3] + round(height * 0.026)
+        )
+        draw.text(
+            (margin, subtitle_y),
+            subtitle,
+            font=subtitle_font,
+            fill=(239, 241, 237, 245),
+            stroke_width=1,
+            stroke_fill=(0, 0, 0, 215),
+        )
+
+
+def compile_release_art_brief(topic: str, ledger: dict[str, Any]) -> dict[str, str]:
+    shots: list[dict[str, Any]] = []
+    for scene in ledger.get("scenes") or []:
+        if not isinstance(scene, dict):
+            continue
+        shots.extend(
+            shot for shot in scene.get("shots") or [] if isinstance(shot, dict)
+        )
+    first_shot = shots[0] if shots else {}
+
+    def hero_score(shot: dict[str, Any]) -> int:
+        role = _text(shot.get("engagement_role")).lower()
+        energy = _text(shot.get("composition_energy")).lower()
+        scale = _text(shot.get("shot_scale")).lower()
+        score = {
+            "payoff": 5,
+            "reveal": 4,
+            "hook": 3,
+            "reaction": 2,
+            "build": 1,
+        }.get(role, 0)
+        score += {"kinetic": 4, "awe": 4, "tense": 2, "curious": 1}.get(energy, 0)
+        score += 2 if scale in {"medium", "close_up", "wide"} else 0
+        score += 1 if _text(shot.get("action")) else 0
+        score += 1 if _text(shot.get("story_moment")) else 0
+        searchable = " ".join(_text(value).lower() for value in shot.values())
+        subject_text = _text(shot.get("subject")).lower()
+        if "恐龍" in subject_text or "dinosaur" in subject_text:
+            score += 10
+        elif "恐龍" in searchable or "dinosaur" in searchable:
+            score += 1
+        truth_mode = _text(shot.get("visual_truth_mode")).lower()
+        score += (
+            3
+            if truth_mode in {"reconstruction", "mixed_evidence_reconstruction"}
+            else 0
+        )
+        score -= 8 if truth_mode == "comparison" else 0
+        if any(
+            marker in searchable
+            for marker in (
+                "博物館",
+                "實驗室",
+                "演示裝置",
+                "標本桌",
+                "museum",
+                "laboratory",
+                "demonstration device",
+            )
+        ):
+            score -= 6
+        evidence_markers = (
+            "化石",
+            "研究員",
+            "骨骼",
+            "標本",
+            "fossil",
+            "researcher",
+            "specimen",
+        )
+        if any(
+            marker in searchable and marker not in topic.lower()
+            for marker in evidence_markers
+        ):
+            score -= 5
+        return score
+
+    hero_shot = max(shots, key=hero_score) if shots else first_shot
+    story_engine = ledger.get("story_engine")
+    story_engine = story_engine if isinstance(story_engine, dict) else {}
+    last_scene = next(
+        (scene for scene in reversed(ledger.get("scenes") or []) if isinstance(scene, dict)),
+        {},
+    )
+    takeaway = _text(first_shot.get("viewer_takeaway"))
+    subject = _text(hero_shot.get("subject")) or topic
+    action = _text(hero_shot.get("action"))
+    story_moment = _text(hero_shot.get("story_moment"))
+    style = _text(ledger.get("visual_style")) or "cinematic factual reconstruction"
+    style_directive = compile_style_directive(ledger)
+    prompt = " ".join((
+        f"Create a premium 16:9 cinematic hero image for the opening question of a story video titled {topic}.",
+        f"Hero subject: {subject}.",
+        f"Hero action: {action}." if action else "",
+        f"Decisive instant: {story_moment}." if story_moment else "",
+        f"Core audience promise: {takeaway or 'a surprising, visually immediate discovery'}.",
+        "Build one coherent scene with a dominant hero subject, a bold foreground clue, readable midground action, and atmospheric background scale.",
+        "Use a decisive story instant, dramatic low or intimate camera placement, motivated high-contrast light, volumetric atmosphere, selective depth of field, and strong leading lines.",
+        "Controlled exaggeration of perspective, lighting, particles, weather, and scale is welcome, while factual anatomy, evidence, time period, and causal meaning remain credible.",
+        f"Visual direction: {style}, premium theatrical color separation, emotionally inviting for a curious general audience.",
+        style_directive,
+        "Avoid empty landscapes, museum-catalog staging, generic documentary stock photography, passive centered subjects, collages, grids, and infographic layouts.",
+        "No generated text, title, caption, label, logo, border, or watermark; typography will be composed locally.",
+    ))
+    ending_heading = _text(story_engine.get("ending_echo")) or (
+        "原來，答案一直藏在線索裡。"
+    )
+    ending_takeaway = (
+        _text(story_engine.get("knowledge_payoff"))
+        or _text(last_scene.get("viewer_takeaway"))
+        or takeaway
+        or "帶著今天的線索，繼續問下一個好問題。"
+    )
+    ending_prompt = " ".join((
+        f"Create a distinct premium 16:9 cinematic ending image for a story video titled {topic}.",
+        f"Resolved discovery: {ending_takeaway}.",
+        f"Final emotional echo: {ending_heading}.",
+        "Show an earned visual resolution after the journey: the decisive evidence and its wider meaning coexist in one coherent scene, with calm forward momentum rather than a repeated opening pose.",
+        "Use a materially different composition from the opening hero: wider breathing room, warm motivated light after tension, layered depth, tactile factual detail, and one subtle visual path toward the next question.",
+        f"Visual direction: {style}, premium theatrical color separation and credible educational wonder.",
+        style_directive,
+        "Avoid generic calls to action, end-screen placeholders, empty landscapes, museum-catalog staging, collages, grids, and infographic layouts.",
+        "No generated text, title, caption, label, logo, border, buttons, or watermark; all typography will be composed locally.",
+    ))
+    return {
+        "prompt": prompt,
+        "opening_prompt": prompt,
+        "ending_prompt": ending_prompt,
+        "title": topic,
+        "subtitle": takeaway[:38] if takeaway else "從一個線索，看見完整故事",
+        "ending_label": "今天帶走的發現",
+        "ending_heading": ending_heading,
+        "ending_takeaway": ending_takeaway,
+    }
+
+
+def compose_release_art(
+    *,
+    source: Path | None = None,
+    opening_source: Path | None = None,
+    ending_source: Path | None = None,
+    output_dir: Path,
+    title: str,
+    subtitle: str,
+    ending_label: str = "今天帶走的發現",
+    ending_heading: str = "原來，答案一直藏在線索裡。",
+    ending_takeaway: str = "帶著今天的線索，繼續問下一個好問題。",
+) -> dict[str, Path]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    opening_source = opening_source or source
+    if opening_source is None:
+        raise ValueError("release art requires an opening source image")
+    ending_source = ending_source or opening_source
+    with Image.open(opening_source) as opened:
+        hero = opened.convert("RGB")
+    with Image.open(ending_source) as opened:
+        ending_hero = opened.convert("RGB")
+    hero_source = output_dir / "hero_source.png"
+    hero.save(hero_source, "PNG", optimize=True)
+    opening_source_path = output_dir / "opening_source.png"
+    hero.save(opening_source_path, "PNG", optimize=True)
+    ending_source_path = output_dir / "ending_source.png"
+    ending_hero.save(ending_source_path, "PNG", optimize=True)
+
+    opening = _cover(hero, (1920, 1080))
+    opening = ImageEnhance.Contrast(opening).enhance(1.08)
+    _shade(opening)
+    _draw_identity(opening, title=title, subtitle=subtitle, thumbnail=False)
+    opening_path = output_dir / "opening_card.png"
+    opening.convert("RGB").save(opening_path, "PNG", optimize=True)
+
+    thumbnail = _cover(hero, (1280, 720))
+    thumbnail = ImageEnhance.Color(thumbnail).enhance(1.08)
+    thumbnail = ImageEnhance.Contrast(thumbnail).enhance(1.12)
+    _shade(thumbnail)
+    _draw_identity(thumbnail, title=title, subtitle=subtitle, thumbnail=True)
+    thumbnail_path = output_dir / "thumbnail.jpg"
+    thumbnail.convert("RGB").save(thumbnail_path, "JPEG", quality=94, optimize=True)
+
+    ending = _cover(ending_hero, (1920, 1080))
+    ending = ImageEnhance.Color(ending).enhance(1.04)
+    ending = ImageEnhance.Contrast(ending).enhance(1.10)
+    ending = ImageEnhance.Brightness(ending).enhance(0.80)
+    _shade(ending)
+    draw = ImageDraw.Draw(ending)
+    label_font = _font(30, bold=True)
+    heading = _wrap_zh(ending_heading)
+    heading_font = _fit_multiline(
+        draw,
+        heading,
+        max_width=1420,
+        preferred_size=82,
+        minimum_size=54,
+    )
+    takeaway_font = _font(38)
+    margin = 108
+    accent = (255, 196, 59, 255)
+    draw.rounded_rectangle((margin, 390, margin + 105, 402), radius=3, fill=accent)
+    draw.text(
+        (margin, 420),
+        ending_label,
+        font=label_font,
+        fill=(244, 245, 242, 245),
+        stroke_width=1,
+        stroke_fill=(0, 0, 0, 180),
+    )
+    draw.multiline_text(
+        (margin, 475),
+        heading,
+        font=heading_font,
+        spacing=10,
+        fill=(255, 255, 255, 255),
+        stroke_width=3,
+        stroke_fill=(0, 0, 0, 225),
+    )
+    heading_box = draw.multiline_textbbox(
+        (margin, 475), heading, font=heading_font, spacing=10, stroke_width=3
+    )
+    takeaway = _wrap_zh(ending_takeaway, max_chars=26)
+    draw.multiline_text(
+        (margin, min(850, heading_box[3] + 34)),
+        takeaway,
+        font=takeaway_font,
+        spacing=8,
+        fill=(238, 239, 235, 248),
+        stroke_width=2,
+        stroke_fill=(0, 0, 0, 215),
+    )
+    topic_font = _font(28, bold=True)
+    draw.text((margin, 990), title, font=topic_font, fill=(255, 196, 59, 245))
+    ending_path = output_dir / "ending_card.png"
+    ending.convert("RGB").save(ending_path, "PNG", optimize=True)
+
+    return {
+        "hero_source": hero_source,
+        "opening_source": opening_source_path,
+        "ending_source": ending_source_path,
+        "opening_card": opening_path,
+        "ending_card": ending_path,
+        "thumbnail": thumbnail_path,
+    }
+
+
+__all__ = ["compile_release_art_brief", "compose_release_art"]

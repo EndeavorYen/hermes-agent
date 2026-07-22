@@ -45,6 +45,7 @@ from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
 from typing import Awaitable, Callable, Dict, Optional, Any, List, Union
+from urllib.parse import unquote, urlparse
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
 # /usage; we still import it at module top in the gateway because test
@@ -1110,6 +1111,9 @@ _AUTO_APPEND_MEDIA_TOOL_NAMES = {
     "text_to_speech",
     "text_to_speech_tool",
     "image_generate",
+    "visual_agent_generate",
+    "visual_package_generate",
+    "story_video_audio_director",
 }
 
 # ---- helpers: detect interrupted tool tails & auto-continue noise ----------
@@ -1181,10 +1185,352 @@ _TOOL_MEDIA_RE = re.compile(
 )
 
 
+def _normalise_tool_media_ref(ref: Any) -> Optional[str]:
+    if not isinstance(ref, str):
+        return None
+    text = ref.strip()
+    if not text:
+        return None
+    try:
+        parsed = urlparse(text)
+        if parsed.scheme == "file":
+            return unquote(parsed.path)
+    except Exception:
+        return text
+    return text
+
+
+def _tool_media_ref_lookup_keys(ref: str) -> List[str]:
+    keys = [ref]
+    normalised = _normalise_tool_media_ref(ref)
+    if normalised:
+        keys.append(normalised)
+        try:
+            path = Path(normalised)
+            keys.append(str(path))
+            if path.is_absolute():
+                keys.append(path.as_uri())
+        except Exception:
+            pass
+    return list(dict.fromkeys(key for key in keys if key))
+
+
+def _tool_media_seen(ref: str, history_media_paths: set, seen_refs: set) -> bool:
+    return any(
+        key in history_media_paths or key in seen_refs
+        for key in _tool_media_ref_lookup_keys(ref)
+    )
+
+
+def _add_tool_media_ref(refs: set, ref: Any) -> None:
+    normalised = _normalise_tool_media_ref(ref)
+    if normalised:
+        refs.update(_tool_media_ref_lookup_keys(normalised))
+
+
+def _selected_visual_payload_deliverables(
+    payload: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Delegate selection, freshness, request, and identity checks."""
+    from agent.visual.delivery_manifest import (
+        build_visual_delivery_manifest,
+        select_deliverable_artifacts,
+    )
+
+    manifest = build_visual_delivery_manifest(payload)
+    return select_deliverable_artifacts(manifest)
+
+
+def _selected_visual_payload_media_refs(payload: Dict[str, Any]) -> List[str]:
+    refs: List[str] = []
+    for deliverable in _selected_visual_payload_deliverables(payload):
+        ref = _normalise_tool_media_ref(deliverable.get("ref"))
+        if ref:
+            refs.append(ref)
+    return refs
+
+
+def _visual_delivery_history_key(request_id: Any, identity: Any) -> str:
+    """Encode request-scoped artifact identity without delimiter ambiguity."""
+    return json.dumps(
+        [str(request_id or ""), str(identity or "")],
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+
+
+def _current_turn_messages(
+    messages: List[Dict[str, Any]],
+    history_offset: int = 0,
+) -> List[Dict[str, Any]]:
+    if history_offset and len(messages) >= history_offset:
+        return messages[history_offset:]
+    return messages
+
+
+def _tool_name_by_call_id(messages: List[Dict[str, Any]]) -> Dict[str, str]:
+    tool_name_by_call_id: Dict[str, str] = {}
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        for call in msg.get("tool_calls") or []:
+            call_id = call.get("id") or call.get("call_id")
+            fn = call.get("function") or {}
+            name = str(fn.get("name") or call.get("name") or "")
+            if call_id and name:
+                tool_name_by_call_id[str(call_id)] = name
+    return tool_name_by_call_id
+
+
+def _collect_current_turn_delivery_media_paths(
+    messages: List[Dict[str, Any]],
+    history_offset: int = 0,
+    history_media_paths: Optional[set] = None,
+    history_media_identities: Optional[set] = None,
+    delivery_destination: Optional[str] = None,
+) -> set:
+    """Return selected deliverables produced by this turn's media tools.
+
+    ``history_media_paths`` is authoritative when compaction resets the offset
+    to zero; paths that were already delivered must not become current again.
+    """
+    history_media_paths = history_media_paths or set()
+    identity_history_available = history_media_identities is not None
+    history_media_identities = history_media_identities or set()
+    refs: set = set()
+    new_messages = _current_turn_messages(messages, history_offset)
+    tool_name_by_call_id = _tool_name_by_call_id(new_messages)
+    for msg in new_messages:
+        if msg.get("role") not in ("tool", "function"):
+            continue
+        call_id = str(msg.get("tool_call_id") or msg.get("call_id") or "")
+        tool_name = tool_name_by_call_id.get(call_id)
+        if tool_name not in _AUTO_APPEND_MEDIA_TOOL_NAMES:
+            continue
+        content = str(msg.get("content") or "")
+        try:
+            payload: Any = json.loads(content)
+        except Exception:
+            payload = None
+
+        if (
+            tool_name in {"visual_agent_generate", "visual_package_generate"}
+            and isinstance(payload, dict)
+            and payload.get("success")
+        ):
+            for deliverable in _selected_visual_payload_deliverables(payload):
+                path = _normalise_tool_media_ref(deliverable.get("ref"))
+                if not path:
+                    continue
+                identity = str(deliverable.get("identity") or path)
+                request_id = str(deliverable.get("request_id") or "")
+                history_key = _visual_delivery_history_key(request_id, identity)
+                identity_is_path_fallback = identity in _tool_media_ref_lookup_keys(path)
+                if identity_history_available:
+                    if history_key in history_media_identities:
+                        continue
+                    if identity_is_path_fallback and _tool_media_seen(
+                        path,
+                        history_media_paths,
+                        refs,
+                    ):
+                        continue
+                elif _tool_media_seen(path, history_media_paths, refs):
+                    continue
+                if delivery_destination:
+                    from agent.visual.delivery_dedupe import (
+                        get_artifact_delivery_deduper,
+                    )
+
+                    if not get_artifact_delivery_deduper().mark_if_new(
+                        identity,
+                        delivery_destination,
+                        request_id,
+                    ):
+                        continue
+                _add_tool_media_ref(refs, path)
+            continue
+
+        candidates: List[str] = []
+        if tool_name == "image_generate" and isinstance(payload, dict) and payload.get("success"):
+            for field in _JSON_MEDIA_TOOL_PATH_FIELDS:
+                path = payload.get(field)
+                if isinstance(path, str) and path:
+                    candidates.append(path)
+                    break
+        if (
+            tool_name not in {"visual_agent_generate", "visual_package_generate"}
+            and "MEDIA:" in content
+        ):
+            candidates.extend(
+                match.group(1).strip().rstrip('\",}')
+                for match in _TOOL_MEDIA_RE.finditer(content)
+            )
+        for path in candidates:
+            if not _tool_media_seen(path, history_media_paths, refs):
+                _add_tool_media_ref(refs, path)
+    return refs
+
+
+def _is_managed_visual_media_ref(ref: Any) -> bool:
+    normalised = _normalise_tool_media_ref(ref)
+    if not normalised:
+        return False
+    try:
+        path = Path(normalised).resolve(strict=False)
+    except Exception:
+        return False
+    from hermes_constants import get_hermes_home
+
+    roots = (
+        Path(get_hermes_home()) / "visual-arsenal" / "library" / "assets",
+        Path(get_hermes_home()) / "media" / "generated",
+        Path(get_hermes_home()) / "cache" / "images",
+        Path(get_hermes_home()) / "cache" / "videos",
+        Path(get_hermes_home()) / "image_cache",
+        Path(get_hermes_home()) / "video_cache",
+    )
+    for root in roots:
+        try:
+            path.relative_to(root.resolve(strict=False))
+            return True
+        except ValueError:
+            continue
+        except Exception:
+            continue
+    return False
+
+
+def _text_may_contain_managed_visual_media_ref(text: str) -> bool:
+    if not isinstance(text, str) or not text:
+        return False
+    return any(
+        needle in text
+        for needle in (
+            "/visual-arsenal/library/assets/",
+            "/media/generated/",
+            "/cache/images/",
+            "/cache/videos/",
+            "/image_cache/",
+            "/video_cache/",
+        )
+    )
+
+
+def _is_current_turn_media_ref(ref: Any, current_turn_media_paths: set) -> bool:
+    return any(
+        key in current_turn_media_paths
+        for key in _tool_media_ref_lookup_keys(str(ref))
+    )
+
+
+def _is_prior_turn_media_ref(ref: Any, history_media_paths: set) -> bool:
+    return any(
+        key in history_media_paths
+        for key in _tool_media_ref_lookup_keys(str(ref))
+    )
+
+
+def _is_old_managed_visual_media_ref(
+    ref: Any,
+    turn_started_at: Optional[float],
+) -> bool:
+    if not _is_managed_visual_media_ref(ref) or turn_started_at is None:
+        return False
+    normalised = _normalise_tool_media_ref(ref)
+    if not normalised:
+        return False
+    try:
+        return Path(normalised).stat().st_mtime < (float(turn_started_at) - 1.0)
+    except Exception:
+        return False
+
+
+def _filter_response_media_refs_to_current_turn(
+    media_files,
+    *,
+    current_turn_media_paths: set,
+    history_media_paths: set,
+    turn_started_at: Optional[float] = None,
+) -> List[tuple]:
+    """Drop prior or old managed visual artifacts from native delivery."""
+    filtered: List[tuple] = []
+    for media_path, is_voice in media_files or []:
+        if _is_current_turn_media_ref(media_path, current_turn_media_paths):
+            filtered.append((media_path, bool(is_voice)))
+            continue
+        if _is_managed_visual_media_ref(media_path) or _is_prior_turn_media_ref(
+            media_path,
+            history_media_paths,
+        ) or _is_old_managed_visual_media_ref(media_path, turn_started_at):
+            logger.warning(
+                "Skipping stale visual media delivery path from final response: %s",
+                str(media_path)[:200],
+            )
+            continue
+        filtered.append((media_path, bool(is_voice)))
+    return filtered
+
+
+def _sanitize_final_response_media_refs(
+    response: str,
+    *,
+    current_turn_media_paths: set,
+    history_media_paths: set,
+    turn_started_at: Optional[float] = None,
+) -> str:
+    """Remove stale visual refs before platform adapters extract files."""
+    if not response:
+        return response
+    if not (
+        current_turn_media_paths
+        or history_media_paths
+        or _text_may_contain_managed_visual_media_ref(response)
+    ):
+        return response
+    try:
+        from gateway.platforms.base import BasePlatformAdapter
+    except Exception:
+        return response
+
+    media_files, without_media = BasePlatformAdapter.extract_media(response)
+    images, without_images = BasePlatformAdapter.extract_images(without_media)
+    local_files, cleaned = BasePlatformAdapter.extract_local_files(without_images)
+    combined = list(media_files or []) + [
+        (path, False) for path in (local_files or [])
+    ]
+    if not combined:
+        return response
+    kept = _filter_response_media_refs_to_current_turn(
+        combined,
+        current_turn_media_paths=current_turn_media_paths,
+        history_media_paths=history_media_paths,
+        turn_started_at=turn_started_at,
+    )
+    if len(kept) == len(combined):
+        return response
+
+    rebuilt = cleaned.strip()
+    if images:
+        image_lines = [
+            f"![{alt}]({url})" if alt else str(url)
+            for url, alt in images
+        ]
+        rebuilt = (rebuilt + "\n" if rebuilt else "") + "\n".join(image_lines)
+    if kept:
+        if any(is_voice for _, is_voice in kept):
+            rebuilt = (rebuilt + "\n" if rebuilt else "") + "[[audio_as_voice]]"
+        rebuilt = (rebuilt + "\n" if rebuilt else "") + "\n".join(
+            f"MEDIA:{path}" for path, _is_voice in kept
+        )
+    return rebuilt.strip()
+
+
 def _collect_auto_append_media_tags(
     messages: List[Dict[str, Any]],
     history_offset: int = 0,
     history_media_paths: Optional[set] = None,
+    history_media_identities: Optional[set] = None,
 ) -> tuple[List[str], bool]:
     """Collect real media tags from current-turn producer-tool results only.
 
@@ -1205,6 +1551,8 @@ def _collect_auto_append_media_tags(
     of #160. The producer-tool allowlist still applies on the fallback path.
     """
     history_media_paths = history_media_paths or set()
+    identity_history_available = history_media_identities is not None
+    history_media_identities = history_media_identities or set()
     # Only trust the slice boundary when the message list still contains the
     # full history prefix. Otherwise scan everything (compression-safe fallback).
     if history_offset and len(messages) >= history_offset:
@@ -1233,6 +1581,33 @@ def _collect_auto_append_media_tags(
             continue
         content = str(msg.get("content") or "")
         tool_name = tool_name_by_call_id.get(call_id)
+        if tool_name == "story_video_audio_director":
+            try:
+                payload = json.loads(content)
+            except Exception:
+                payload = None
+            if not (
+                isinstance(payload, dict)
+                and payload.get("success") is True
+                and payload.get("action") in {"production_status", "retry_delivery"}
+                and isinstance(payload.get("media"), list)
+            ):
+                continue
+            for media_ref in payload["media"]:
+                if not isinstance(media_ref, str):
+                    continue
+                match = _TOOL_MEDIA_RE.fullmatch(media_ref.strip())
+                if match is None:
+                    continue
+                path = match.group(1).strip().rstrip('",}')
+                candidate = Path(path).expanduser()
+                if (
+                    candidate.suffix.lower() == ".mp4"
+                    and candidate.is_file()
+                    and path not in history_media_paths
+                ):
+                    media_tags.append(f"MEDIA:{path}")
+            continue
         # JSON-payload tools (image_generate) return a local-file path in a
         # known field rather than a MEDIA: tag. Extract it so delivery is
         # deterministic even when the model omits the path from its reply.
@@ -1249,6 +1624,44 @@ def _collect_auto_append_media_tags(
                             and path not in history_media_paths):
                         media_tags.append(f"MEDIA:{path}")
                         break
+            continue
+        if tool_name in {"visual_agent_generate", "visual_package_generate"}:
+            try:
+                payload = json.loads(content)
+            except Exception:
+                payload = None
+            if isinstance(payload, dict) and payload.get("success"):
+                seen_refs: set = set()
+                for deliverable in _selected_visual_payload_deliverables(payload):
+                    path = _normalise_tool_media_ref(deliverable.get("ref"))
+                    if not path or not _TOOL_MEDIA_RE.fullmatch(f"MEDIA:{path}"):
+                        continue
+                    identity = str(deliverable.get("identity") or path)
+                    request_id = str(deliverable.get("request_id") or "")
+                    history_key = _visual_delivery_history_key(
+                        request_id,
+                        identity,
+                    )
+                    identity_is_path_fallback = (
+                        identity in _tool_media_ref_lookup_keys(path)
+                    )
+                    if identity_history_available:
+                        if history_key in history_media_identities:
+                            continue
+                        if identity_is_path_fallback and _tool_media_seen(
+                            path,
+                            history_media_paths,
+                            seen_refs,
+                        ):
+                            continue
+                    elif _tool_media_seen(
+                        path,
+                        history_media_paths,
+                        seen_refs,
+                    ):
+                        continue
+                    media_tags.append(f"MEDIA:{path}")
+                    seen_refs.update(_tool_media_ref_lookup_keys(path))
             continue
         if "MEDIA:" not in content:
             continue
@@ -1290,14 +1703,24 @@ def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
         if msg.get("role") not in {"tool", "function"}:
             continue
         content = str(msg.get("content", "") or "")
+        cid = str(msg.get("tool_call_id") or msg.get("call_id") or "")
+        tool_name = tool_name_by_call_id.get(cid)
+        if tool_name in {"visual_agent_generate", "visual_package_generate"}:
+            try:
+                payload = json.loads(content)
+            except Exception:
+                payload = None
+            if isinstance(payload, dict) and payload.get("success"):
+                for ref in _selected_visual_payload_media_refs(payload):
+                    _add_tool_media_ref(paths, ref)
+            continue
         if "MEDIA:" in content:
             for match in _TOOL_MEDIA_RE.finditer(content):
                 p = match.group(1).strip().rstrip('",}')
                 if p:
-                    paths.add(p)
+                    _add_tool_media_ref(paths, p)
             continue
-        cid = str(msg.get("tool_call_id") or msg.get("call_id") or "")
-        if tool_name_by_call_id.get(cid) == "image_generate":
+        if tool_name == "image_generate":
             try:
                 payload = json.loads(content)
             except Exception:
@@ -1306,9 +1729,186 @@ def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
                 for field in _JSON_MEDIA_TOOL_PATH_FIELDS:
                     jp = payload.get(field)
                     if isinstance(jp, str) and jp:
-                        paths.add(jp)
+                        _add_tool_media_ref(paths, jp)
                         break
     return paths
+
+
+def _collect_history_media_identities(
+    agent_history: List[Dict[str, Any]],
+) -> set[str]:
+    """Collect canonical selected visual identities from prior tool results."""
+    identities: set[str] = set()
+    tool_name_by_call_id = _tool_name_by_call_id(agent_history)
+    for msg in agent_history:
+        if msg.get("role") not in {"tool", "function"}:
+            continue
+        call_id = str(msg.get("tool_call_id") or msg.get("call_id") or "")
+        if tool_name_by_call_id.get(call_id) not in {
+            "visual_agent_generate",
+            "visual_package_generate",
+        }:
+            continue
+        try:
+            payload = json.loads(str(msg.get("content") or ""))
+        except Exception:
+            continue
+        if not isinstance(payload, dict) or not payload.get("success"):
+            continue
+        for deliverable in _selected_visual_payload_deliverables(payload):
+            identity = str(deliverable.get("identity") or "").strip()
+            if identity:
+                identities.add(
+                    _visual_delivery_history_key(
+                        deliverable.get("request_id"),
+                        identity,
+                    )
+                )
+    return identities
+
+
+def _run_conversation_with_visual_reference_context(
+    agent: Any,
+    message: Any,
+    *,
+    visual_references: List[Dict[str, Any]],
+    visual_artifact_start_index: int = 1,
+    conversation_kwargs: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Bind current gateway attachments for direct and tool-selected visuals."""
+    from gateway.session_context import (
+        reset_visual_reference_context,
+        reset_visual_artifact_index_context,
+        set_visual_reference_context,
+        set_visual_artifact_index_context,
+    )
+
+    token = set_visual_reference_context(visual_references)
+    artifact_token = set_visual_artifact_index_context(visual_artifact_start_index)
+    try:
+        return agent.run_conversation(message, **conversation_kwargs)
+    finally:
+        reset_visual_artifact_index_context(artifact_token)
+        reset_visual_reference_context(token)
+
+
+def _visual_artifact_start_index_for_turn(
+    agent_history: List[Dict[str, Any]],
+    fallback_agent_history: Optional[List[Dict[str, Any]]] = None,
+) -> int:
+    """Continue user-visible G labels across the current route's transcripts."""
+    from agent.visual.session_references import next_session_visual_artifact_index
+
+    return max(
+        next_session_visual_artifact_index(agent_history),
+        next_session_visual_artifact_index(fallback_agent_history or []),
+    )
+
+
+def _should_load_previous_visual_history(
+    message: Any,
+    *,
+    current_attachment_paths: Optional[List[str]] = None,
+) -> bool:
+    """Load durable history for visual references and G-label continuity."""
+    from agent.visual.session_references import prompt_requests_visual_reference_reuse
+    from tools.story_video_provider_guard import explicit_visual_agent_request_detected
+
+    del current_attachment_paths  # Attachments affect reference priority, not label continuity.
+    return bool(
+        prompt_requests_visual_reference_reuse(message)
+        or explicit_visual_agent_request_detected(message)
+    )
+
+
+def _visual_reference_context_for_turn(
+    message: Any,
+    *,
+    current_attachment_paths: List[str],
+    agent_history: List[Dict[str, Any]],
+    fallback_agent_history: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    """Bind current uploads plus explicitly requested thread references."""
+    from agent.visual.session_references import (
+        MAX_SESSION_VISUAL_REFERENCES,
+        collect_recent_original_visual_reference_entries,
+        collect_recent_visual_reference_entries,
+        filter_visual_reference_entries_for_prompt,
+        named_original_visual_reference_indices,
+        prompt_requests_original_visual_references,
+        prompt_requests_visual_reference_reuse,
+    )
+    from agent.visual.prompt_text import strip_visual_prompt_metadata
+    from tools.story_video_provider_guard import current_operator_request_text
+
+    references: List[Dict[str, Any]] = [
+        {
+            "uri": path,
+            "role_hint": "visual_reference",
+            "source": "gateway_attachment",
+            "user_ref_index": index,
+        }
+        for index, path in enumerate(current_attachment_paths)
+        if isinstance(path, str) and path.strip()
+    ]
+    operator_request = strip_visual_prompt_metadata(
+        current_operator_request_text(message)
+    )
+    named_original_indices = named_original_visual_reference_indices(operator_request)
+    if references and named_original_indices and max(named_original_indices) <= len(references):
+        return references[:MAX_SESSION_VISUAL_REFERENCES]
+    requests_original = prompt_requests_original_visual_references(operator_request)
+    if not (
+        requests_original
+        or prompt_requests_visual_reference_reuse(operator_request)
+    ):
+        return references[:MAX_SESSION_VISUAL_REFERENCES]
+
+    named_rollover_reference = bool(
+        re.search(r"(?<![A-Za-z0-9])G\s*\d+\b", operator_request, re.IGNORECASE)
+    )
+    history_limit = None if named_rollover_reference else 16
+    if requests_original:
+        historical = collect_recent_original_visual_reference_entries(
+            agent_history,
+            limit=16,
+        )
+    else:
+        historical = collect_recent_visual_reference_entries(
+            agent_history,
+            limit=history_limit,
+        )
+    if fallback_agent_history and (not references or named_rollover_reference):
+        if requests_original:
+            fallback_historical = collect_recent_original_visual_reference_entries(
+                fallback_agent_history,
+                limit=16,
+            )
+        else:
+            fallback_historical = collect_recent_visual_reference_entries(
+                fallback_agent_history,
+                limit=history_limit,
+            )
+        historical_uris = {str(entry.get("uri") or "") for entry in historical}
+        historical.extend(
+            entry
+            for entry in fallback_historical
+            if str(entry.get("uri") or "") not in historical_uris
+        )
+    historical = filter_visual_reference_entries_for_prompt(
+        historical,
+        operator_request,
+    )
+    seen = {str(entry.get("uri") or "") for entry in references}
+    for entry in historical:
+        uri = str(entry.get("uri") or "").strip()
+        if not uri or uri in seen:
+            continue
+        references.append(entry)
+        seen.add(uri)
+        if len(references) >= MAX_SESSION_VISUAL_REFERENCES:
+            break
+    return references
 
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
@@ -2930,6 +3530,99 @@ def _should_clear_resume_pending_after_turn(agent_result: dict) -> bool:
     return True
 
 
+def _build_restart_resume_message(
+    *,
+    reason: Optional[str],
+    user_message: str,
+    interrupted_objective: Optional[str] = None,
+) -> str:
+    """Build restart recovery guidance without abandoning unfinished work.
+
+    Completed side effects must not be replayed, but a gateway interruption is
+    not user intent to cancel the task.  The model should inspect durable state
+    and continue from the last verified checkpoint whenever the objective is
+    recoverable from conversation history.
+    """
+    reason_phrase = (
+        "a gateway restart"
+        if reason == "restart_timeout"
+        else "a gateway shutdown"
+        if reason == "shutdown_timeout"
+        else "a gateway interruption"
+    )
+    if user_message:
+        guidance = (
+            "Address the user's NEW message below FIRST. If it asks to "
+            "continue, recover the interrupted objective from conversation "
+            "history and continue from the last durable checkpoint. If it is "
+            "unrelated, follow the newest request."
+        )
+    else:
+        guidance = (
+            "Continue the interrupted user task autonomously from the last "
+            "durable checkpoint in conversation history. First inspect "
+            "durable state and persisted artifacts to determine what already "
+            "completed, then finish the remaining work. Briefly report the "
+            "recovery only as useful status; do not ask what to do next when "
+            "the objective is recoverable."
+        )
+    objective_guidance = ""
+    if interrupted_objective and not user_message:
+        objective_guidance = (
+            " The interrupted objective below was recovered from this session only. "
+            "Continue only this objective; do not infer work from other sessions, "
+            "unrelated workspaces, global recent files, or machine-wide activity. "
+            "<interrupted_objective>"
+            f"{interrupted_objective}"
+            "</interrupted_objective>"
+        )
+    message = (
+        f"[System note: The previous turn was interrupted by {reason_phrase}; "
+        f"the gateway is now back online. Any restart/shutdown command in the "
+        f"history has already run - do NOT re-execute or verify it. {guidance}"
+        f"{objective_guidance} "
+        f"Do NOT re-execute old tool calls blindly. Treat persisted tool "
+        f"results and artifacts as evidence of prior effects; before retrying "
+        f"an operation with an uncertain outcome, inspect durable state. "
+        f"Unless the newest request cancels or replaces the interrupted "
+        f"objective, continue its remaining work once recovery state is known. "
+        f"Ask the user only if the interrupted objective cannot be recovered "
+        f"or continuation would be unsafe.]"
+    )
+    return message + (f"\n\n{user_message}" if user_message else "")
+
+
+def _last_session_user_objective(
+    history: list[dict[str, Any]],
+    *,
+    max_chars: int = 8000,
+) -> str:
+    """Return the latest real user objective from this session transcript.
+
+    Startup auto-resume runs on an empty synthetic turn.  Persisted recovery
+    notes may also appear as user rows, so skip those and bind recovery to the
+    latest actual user request instead of inviting machine-global discovery.
+    Keep the tail when truncation is necessary because platform adapters append
+    the newest request after reply/thread context.
+    """
+    recovery_prefix = "[System note: The previous turn was interrupted by "
+    for row in reversed(history or []):
+        if row.get("role") != "user":
+            continue
+        content = row.get("content")
+        if not isinstance(content, str):
+            continue
+        objective = content.strip()
+        if not objective or objective.startswith(recovery_prefix):
+            continue
+        if max_chars > 0 and len(objective) > max_chars:
+            objective = (
+                "[earlier session context truncated]\n" + objective[-max_chars:]
+            )
+        return objective
+    return ""
+
+
 def _preserve_queued_followup_history_offset(
     current_result: dict,
     followup_result: dict,
@@ -3024,6 +3717,76 @@ _RECONNECT_BACKOFF_CAP = 300
 def _reconnect_backoff(attempt: int) -> int:
     """Exponential reconnect backoff: 30s, 60s, 120s, ... capped at 5 min."""
     return min(30 * (2 ** (attempt - 1)), _RECONNECT_BACKOFF_CAP)
+
+
+def _format_long_running_activity_detail(
+    agent: Any,
+    want_iteration_detail: bool,
+) -> str:
+    """Format heartbeat detail from the agent's current activity snapshot.
+
+    Codex app-server owns its internal tool loop, so Hermes' iteration counter
+    remains unrelated to actual image or tool progress. Hide that counter on
+    this route and surface the latest concrete activity instead.
+    """
+    if not hasattr(agent, "get_activity_summary"):
+        return ""
+    try:
+        activity = agent.get_activity_summary()
+        parts = []
+        if (
+            want_iteration_detail
+            and getattr(agent, "api_mode", "") != "codex_app_server"
+        ):
+            parts.append(
+                f"iteration {activity['api_call_count']}/"
+                f"{activity['max_iterations']}"
+            )
+        action = activity.get("current_tool") or activity.get("last_activity_desc")
+        if action:
+            parts.append(str(action))
+        return " — " + ", ".join(parts) if parts else ""
+    except Exception:
+        return ""
+
+
+async def _deliver_generated_artifact_event(
+    adapter: Any,
+    chat_id: str,
+    context: Dict[str, Any],
+    metadata: Optional[Dict[str, Any]],
+) -> bool:
+    """Upload a trusted local image emitted by the Codex runtime."""
+    path = Path(str(context.get("path") or "")).expanduser().resolve()
+    codex_home = Path(os.environ.get("CODEX_HOME") or "~/.codex").expanduser()
+    generated_root = (codex_home / "generated_images").resolve()
+    try:
+        path.relative_to(generated_root)
+    except ValueError:
+        return False
+    if (
+        str(context.get("media_type") or "") != "image/png"
+        or not path.is_file()
+    ):
+        return False
+    index = context.get("artifact_index")
+    target = context.get("target")
+    caption = "Image completed"
+    if isinstance(index, int) and index > 0:
+        caption = f"Image {index} completed"
+        if isinstance(target, int) and target > 0:
+            caption = f"Image {index}/{target} completed"
+    try:
+        result = await adapter.send_image_file(
+            chat_id=chat_id,
+            image_path=str(path),
+            caption=caption,
+            metadata=metadata,
+        )
+        return bool(getattr(result, "success", False))
+    except Exception:
+        logger.warning("Generated artifact delivery failed", exc_info=True)
+        return False
 
 
 class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
@@ -3368,13 +4131,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if self._session_db is not None:
             try:
                 from hermes_cli.config import load_config as _load_full_config
-                _sess_cfg = (_load_full_config().get("sessions") or {})
+                _maintenance_cfg = _load_full_config()
+                _sess_cfg = (_maintenance_cfg.get("sessions") or {})
+                # Gateway construction happens before the event loop serves
+                # traffic. Keep the reviewed sync escape confined to this one
+                # binding even when multiple maintenance policies run.
+                _sync_session_db = self._session_db._db
                 if _sess_cfg.get("auto_prune", False):
-                    # Construction-time, before the loop serves traffic; sync DB is fine.
-                    self._session_db._db.maybe_auto_prune_and_vacuum(
+                    _sync_session_db.maybe_auto_prune_and_vacuum(
                         retention_days=int(_sess_cfg.get("retention_days", 90)),
                         min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)),
                         vacuum=bool(_sess_cfg.get("vacuum_after_prune", True)),
+                        sessions_dir=self.config.sessions_dir,
+                    )
+                _cron_retention = (
+                    (_maintenance_cfg.get("cron") or {}).get("session_retention") or {}
+                )
+                if _cron_retention.get("enabled", True):
+                    _sync_session_db.maybe_auto_prune_cron_sessions(
+                        retention_days=float(_cron_retention.get("days", 14)),
+                        keep_per_job=int(_cron_retention.get("per_job", 50)),
+                        min_interval_hours=int(
+                            _cron_retention.get("min_interval_hours", 24)
+                        ),
+                        vacuum=bool(
+                            _cron_retention.get("vacuum_after_prune", True)
+                        ),
                         sessions_dir=self.config.sessions_dir,
                     )
             except Exception as exc:
@@ -11187,14 +11969,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Plugin-registered slash commands
         if command:
             try:
-                from hermes_cli.plugins import get_plugin_command_handler
+                from hermes_cli.plugins import (
+                    get_plugin_command_handler,
+                    invoke_plugin_command_handler,
+                )
                 # Normalize underscores to hyphens so Telegram's underscored
                 # autocomplete form matches plugin commands registered with
                 # hyphens. See hermes_cli/commands.py:_build_telegram_menu.
                 plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
                 if plugin_handler:
                     user_args = event.get_command_args().strip()
-                    result = plugin_handler(user_args)
+                    result = invoke_plugin_command_handler(
+                        plugin_handler,
+                        user_args,
+                        event=event,
+                    )
                     if asyncio.iscoroutine(result):
                         result = await result
                     return str(result) if result else None
@@ -11243,6 +12032,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if command and not locals().get("_bundle_handled", False):
             try:
                 from agent.skill_commands import (
+                    build_durable_skill_goal,
                     get_skill_commands,
                     build_skill_invocation_message,
                     resolve_skill_command_key,
@@ -11299,11 +12089,47 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 f"stacked invocation are disabled for {_plat}.\n"
                                 f"Enable them with: `hermes skills config`"
                             )
+                    _invoked_skill_keys = [cmd_key, *extra_keys]
+                    _goal_mode = any(
+                        bool(skill_cmds.get(key, {}).get("goal_mode"))
+                        for key in _invoked_skill_keys
+                    )
+                    _effective_instruction = (
+                        stacked_instruction if extra_keys else user_instruction
+                    )
+                    _goal_runtime_note = ""
+                    if _goal_mode:
+                        if not _effective_instruction:
+                            return (
+                                f"The **{_skill_name}** skill requires an objective. "
+                                f"Use `/{command} <what must be completed>`."
+                            )
+                        try:
+                            _durable_goal = build_durable_skill_goal(
+                                _invoked_skill_keys,
+                                _effective_instruction,
+                                commands=skill_cmds,
+                            )
+                            _goal_runtime_note = await self._bootstrap_skill_goal(
+                                event, _durable_goal
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Skill /%s goal bootstrap failed: %s",
+                                command,
+                                exc,
+                                exc_info=True,
+                            )
+                            return (
+                                f"Could not start `/{command}` because Hermes could not "
+                                f"establish its required goal: {exc}"
+                            )
                     if extra_keys and _build_stacked is not None:
                         stacked_result = _build_stacked(
                             [cmd_key, *extra_keys],
                             stacked_instruction,
                             task_id=_quick_key,
+                            runtime_note=_goal_runtime_note,
                         )
                         if stacked_result:
                             msg, _loaded, _missing = stacked_result
@@ -11313,7 +12139,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             return f"Failed to load stacked skills for /{command}."
                     else:
                         msg = build_skill_invocation_message(
-                            cmd_key, user_instruction, task_id=_quick_key
+                            cmd_key,
+                            user_instruction,
+                            task_id=_quick_key,
+                            runtime_note=_goal_runtime_note,
                         )
                         if msg:
                             event.text = msg
@@ -13143,6 +13972,58 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
                 response = f"{response}\n\n{_footer_line}"
 
+            if response and not _intentional_silence:
+                _history_offset_for_media = agent_result.get(
+                    "history_offset",
+                    len(history),
+                )
+                _history_media_for_delivery = set(
+                    agent_result.get("history_media_paths") or []
+                )
+                _history_identities_for_delivery = set(
+                    agent_result.get("history_media_identities") or []
+                )
+                if (
+                    not _history_media_for_delivery
+                    and agent_messages
+                    and _history_offset_for_media
+                ):
+                    _history_media_for_delivery = _collect_history_media_paths(
+                        agent_messages[:_history_offset_for_media]
+                    )
+                if (
+                    not _history_identities_for_delivery
+                    and agent_messages
+                    and _history_offset_for_media
+                ):
+                    _history_identities_for_delivery = (
+                        _collect_history_media_identities(
+                            agent_messages[:_history_offset_for_media]
+                        )
+                    )
+                _delivery_destination = ":".join(
+                    (
+                        source.platform.value if source.platform else "gateway",
+                        str(session_entry.session_id or session_key or ""),
+                        str(getattr(source, "thread_id", None) or ""),
+                    )
+                )
+                _current_turn_media_for_delivery = (
+                    _collect_current_turn_delivery_media_paths(
+                        agent_messages,
+                        history_offset=_history_offset_for_media,
+                        history_media_paths=_history_media_for_delivery,
+                        history_media_identities=_history_identities_for_delivery,
+                        delivery_destination=_delivery_destination,
+                    )
+                )
+                response = _sanitize_final_response_media_refs(
+                    response,
+                    current_turn_media_paths=_current_turn_media_for_delivery,
+                    history_media_paths=_history_media_for_delivery,
+                    turn_started_at=_msg_start_time,
+                )
+
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
                 **hook_ctx,
@@ -14060,6 +14941,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return None, None
         max_turns = self._goal_max_turns_from_config()
         return GoalManager(session_id=sid, default_max_turns=max_turns), session_entry
+
+    async def _bootstrap_skill_goal(self, event: "MessageEvent", objective: str) -> str:
+        """Atomically establish the durable goal required by a skill."""
+        manager, _session_entry = self._get_goal_manager_for_event(event)
+        if manager is None:
+            raise RuntimeError("goal manager is unavailable for this session")
+        _state, reused = manager.ensure(objective)
+        status = manager.status_line()
+        await self._send_goal_status_notice(event.source, status)
+        action = "reused" if reused else "created"
+        return f"Goal bootstrap PASS ({action}): {status}"
 
 
 
@@ -19839,6 +20731,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Bridge sync event_callback → async hooks.emit for lifecycle events
         # (e.g. session:compress fires after context compression splits a session)
         def _event_callback_sync(event_type: str, context: dict) -> None:
+            if event_type == "artifact:generated" and _status_adapter:
+                safe_schedule_threadsafe(
+                    _deliver_generated_artifact_event(
+                        _status_adapter,
+                        _status_chat_id,
+                        context,
+                        _status_thread_metadata,
+                    ),
+                    _loop_for_step,
+                    logger=logger,
+                    log_message="generated artifact delivery scheduling error",
+                )
             try:
                 asyncio.run_coroutine_threadsafe(
                     _hooks_ref.emit(event_type, context),
@@ -20614,6 +21518,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # from the current turn's extraction. This is compression-safe:
             # even if the message list shrinks, we know which paths are old.
             _history_media_paths: set = _collect_history_media_paths(agent_history)
+            _history_media_identities: set[str] = (
+                _collect_history_media_identities(agent_history)
+            )
             
             # Register per-session gateway approval callback so dangerous
             # command approval blocks the agent thread (mirrors CLI input()).
@@ -20795,20 +21702,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _is_resume_pending:
                 _reason = getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
                 _persist_user_message_override = message
-                # The empty-message case is the auto-resume startup turn
-                # synthesized by _schedule_resume_pending_sessions — there is
-                # no NEW user message to address.  Guidance is adapter-aware:
-                # interactive platforms report the restore and ask what next;
-                # non-interactive event platforms (webhook, API server)
-                # continue the interrupted work instead, because nobody is
-                # present to answer and an acknowledgement would silently
-                # abandon the task (#57056).
-                _resume_adapter = self._adapter_for_source(source)
-                _interactive_resume = bool(
-                    getattr(_resume_adapter, "interactive_resume", True)
+                _interrupted_objective = (
+                    _last_session_user_objective(history)
+                    if isinstance(message, str) and not message.strip()
+                    else ""
                 )
-                message = build_resume_recovery_note(
-                    _reason, message, interactive=_interactive_resume,
+                message = _build_restart_resume_message(
+                    reason=_reason,
+                    user_message=message,
+                    interrupted_objective=_interrupted_objective,
                 )
             elif _has_fresh_tool_tail:
                 _persist_user_message_override = message
@@ -20849,13 +21751,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _sn_reason = (
                     getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
                 )
-                _sn_adapter = self._adapter_for_source(source)
-                message = build_resume_recovery_note(
-                    _sn_reason,
-                    "",
-                    interactive=bool(
-                        getattr(_sn_adapter, "interactive_resume", True)
-                    ),
+                message = _build_restart_resume_message(
+                    reason=_sn_reason,
+                    user_message="",
+                    interrupted_objective=_last_session_user_objective(history),
                 )
 
             _approval_session_key = session_key or ""
@@ -20909,7 +21808,44 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _conversation_kwargs["moa_config"] = moa_config
                 if _persist_user_timestamp_override is not None:
                     _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
-                result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
+                _fallback_visual_history: List[Dict[str, Any]] = []
+                try:
+                    from tools.story_video_provider_guard import (
+                        current_operator_request_text,
+                    )
+
+                    _operator_request = current_operator_request_text(_run_message)
+                    if _should_load_previous_visual_history(
+                        _operator_request,
+                        current_attachment_paths=_native_imgs,
+                    ):
+                        _fallback_visual_history = (
+                            self.session_store.load_previous_transcript_for_session_key(
+                                session_key,
+                                session_id,
+                            )
+                        )
+                except Exception:
+                    logger.debug(
+                        "Previous-session visual reference lookup failed",
+                        exc_info=True,
+                    )
+                _visual_references = _visual_reference_context_for_turn(
+                    _run_message,
+                    current_attachment_paths=_native_imgs,
+                    agent_history=agent_history,
+                    fallback_agent_history=_fallback_visual_history,
+                )
+                result = _run_conversation_with_visual_reference_context(
+                    agent,
+                    _api_run_message,
+                    visual_references=_visual_references,
+                    visual_artifact_start_index=_visual_artifact_start_index_for_turn(
+                        agent_history,
+                        _fallback_visual_history,
+                    ),
+                    conversation_kwargs=_conversation_kwargs,
+                )
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 # Cancel any pending clarify entries so blocked agent
@@ -21070,6 +22006,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
                     "context_length": _context_length,
+                    "history_media_paths": sorted(_history_media_paths),
+                    "history_media_identities": sorted(_history_media_identities),
                 }
 
             # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -21097,6 +22035,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     result.get("messages", []),
                     history_offset=len(agent_history),
                     history_media_paths=_history_media_paths,
+                    history_media_identities=_history_media_identities,
                 )
 
                 if media_tags:
@@ -21187,6 +22126,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "model": _resolved_model,
                 "context_length": _context_length,
                 "session_id": effective_session_id,
+                "history_media_paths": sorted(_history_media_paths),
+                "history_media_identities": sorted(_history_media_identities),
                 "response_previewed": result.get("response_previewed", False),
                 "response_transformed": result.get("response_transformed", False),
                 # Pass through the agent_persisted flag so the persistence block
@@ -21379,21 +22320,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         True,
                     )
                 )
-                if _agent_ref and hasattr(_agent_ref, "get_activity_summary"):
-                    try:
-                        _a = _agent_ref.get_activity_summary()
-                        _parts = []
-                        if _want_iteration_detail:
-                            _parts.append(
-                                f"iteration {_a['api_call_count']}/{_a['max_iterations']}"
-                            )
-                        _action = _a.get("current_tool") or _a.get("last_activity_desc")
-                        if _action:
-                            _parts.append(str(_action))
-                        if _parts:
-                            _status_detail = " — " + ", ".join(_parts)
-                    except Exception:
-                        pass
+                if _agent_ref:
+                    _status_detail = _format_long_running_activity_detail(
+                        _agent_ref,
+                        _want_iteration_detail,
+                    )
                 _heartbeat_text = (
                     _generic_status_phrase("status")
                     if _long_running_mode == "generic"

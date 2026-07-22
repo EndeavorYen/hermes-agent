@@ -1,0 +1,85 @@
+def test_feedback_parser_extracts_selection_and_quality_signal():
+    from agent.visual.feedback import parse_visual_feedback
+
+    feedback = parse_visual_feedback("第 2 張不錯，腿部構圖更好，但臉有點不自然")
+
+    assert feedback.selection_hint == 2
+    assert feedback.polarity > 0
+    assert "composition_positive" in feedback.parsed["signals"]
+    assert "face_unnatural" in feedback.parsed["issues"]
+
+
+def test_feedback_parser_extracts_negative_issues_without_learning_update():
+    from agent.visual.feedback import parse_visual_feedback
+
+    feedback = parse_visual_feedback("全部退貨，臉不像 reference，也不夠性感")
+
+    assert feedback.selection_hint is None
+    assert feedback.polarity < 0
+    assert "reference_identity_drift" in feedback.parsed["issues"]
+    assert "not_sexy_enough" in feedback.parsed["issues"]
+    assert "strategy_update" not in feedback.parsed
+
+
+def test_feedback_parser_extracts_subject_and_stocking_quality_issues():
+    from agent.visual.feedback import parse_visual_feedback
+
+    feedback = parse_visual_feedback("幾個問題：人物太醜，絲襪太醜")
+
+    assert feedback.polarity < 0
+    assert "subject_not_attractive" in feedback.parsed["issues"]
+    assert "stockings_bad" in feedback.parsed["issues"]
+
+
+def test_feedback_parser_extracts_xai_art_direction_quality_issues():
+    from agent.visual.feedback import parse_visual_feedback
+
+    feedback = parse_visual_feedback(
+        "動作過於生硬，差評\n"
+        "鏡頭構圖過於死板，差評\n"
+        "光影線條太過平面或是沒有特殊好看的風格，差評\n"
+        "不夠性感，差評"
+    )
+
+    assert feedback.polarity < 0
+    assert "pose_stiff" in feedback.parsed["issues"]
+    assert "composition_bad" in feedback.parsed["issues"]
+    assert "lighting_flat" in feedback.parsed["issues"]
+    assert "linework_flat" in feedback.parsed["issues"]
+    assert "not_sexy_enough" in feedback.parsed["issues"]
+
+
+def test_feedback_parser_treats_approved_latest_output_as_positive_signal():
+    from agent.visual.feedback import parse_visual_feedback
+
+    feedback = parse_visual_feedback("很棒! 最新的產出我覺得可以!")
+
+    assert feedback.polarity > 0
+    assert "general_positive" in feedback.parsed["signals"]
+
+
+def test_record_parsed_visual_feedback_maps_selection_to_artifact(tmp_path):
+    from agent.visual.attempt_ledger import VisualAttemptLedger
+    from agent.visual.feedback import record_parsed_visual_feedback
+
+    ledger = VisualAttemptLedger(tmp_path / "attempts.sqlite3")
+    ledger.initialize()
+    request_id = ledger.record_request(
+        normalized_intent={"kind": "image_batch"},
+        modality="image",
+        operation="text_to_image",
+    )
+    first_id = ledger.record_artifact(request_id=request_id, kind="image", content_hash="sha256:first")
+    second_id = ledger.record_artifact(request_id=request_id, kind="image", content_hash="sha256:second")
+
+    feedback_id = record_parsed_visual_feedback(
+        ledger,
+        request_id=request_id,
+        feedback_text="第 2 張不錯，但臉有點不自然",
+        artifact_ids_by_index=[first_id, second_id],
+    )
+
+    feedback = ledger.get_feedback(feedback_id)
+    assert feedback["artifact_id"] == second_id
+    assert feedback["parsed"]["selection_hint"] == 2
+    assert "face_unnatural" in feedback["parsed"]["issues"]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -38,6 +39,30 @@ def _goal_continuation_event(source, goal="finish the task"):
         message_type=MessageType.TEXT,
         source=source,
     )
+
+
+@pytest.mark.asyncio
+async def test_skill_goal_bootstrap_ensures_goal_and_reports_status():
+    runner = GatewayRunner.__new__(GatewayRunner)
+    manager = MagicMock()
+    manager.ensure.return_value = (MagicMock(), False)
+    manager.status_line.return_value = "Goal active: repair routing"
+    runner._get_goal_manager_for_event = MagicMock(return_value=(manager, MagicMock()))
+    runner._send_goal_status_notice = AsyncMock()
+    source = SessionSource(platform=Platform.DISCORD, chat_id="channel")
+    event = MessageEvent(
+        text="/deep-fix repair routing",
+        message_type=MessageType.TEXT,
+        source=source,
+    )
+
+    note = await runner._bootstrap_skill_goal(event, "repair routing")
+
+    manager.ensure.assert_called_once_with("repair routing")
+    runner._send_goal_status_notice.assert_awaited_once_with(
+        source, "Goal active: repair routing"
+    )
+    assert note == "Goal bootstrap PASS (created): Goal active: repair routing"
 
 
 @pytest.mark.asyncio

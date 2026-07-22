@@ -11,7 +11,7 @@ Codex emits items with a discriminator field `type`:
   - reasoning           → stashed in the assistant's "reasoning" field
   - commandExecution    → assistant tool_call(name="exec") + tool result
   - fileChange          → assistant tool_call(name="apply_patch") + tool result
-  - mcpToolCall         → assistant tool_call(name=f"mcp.{server}.{tool}") + tool result
+  - mcpToolCall         → assistant tool_call(name=f"mcp__{server}__{tool}") + tool result
   - dynamicToolCall     → assistant tool_call(name=tool) + tool result
   - plan/hookPrompt/collabAgentToolCall → recorded as opaque assistant notes
 
@@ -33,6 +33,11 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from agent.codex_responses_adapter import (
+    _bounded_responses_call_id,
+    _normalized_responses_function_name,
+)
+
 
 def _deterministic_call_id(item_type: str, item_id: str) -> str:
     """Stable id for tool_call message correlation.
@@ -42,9 +47,11 @@ def _deterministic_call_id(item_type: str, item_id: str) -> str:
     prefix caches stay valid. See AGENTS.md Pitfall #16 (deterministic IDs in
     tool call history)."""
     if item_id:
-        return f"codex_{item_type}_{item_id}"
-    digest = hashlib.sha256(f"{item_type}".encode()).hexdigest()[:16]
-    return f"codex_{item_type}_{digest}"
+        call_id = f"codex_{item_type}_{item_id}"
+    else:
+        digest = hashlib.sha256(f"{item_type}".encode()).hexdigest()[:16]
+        call_id = f"codex_{item_type}_{digest}"
+    return _bounded_responses_call_id(call_id)
 
 
 def _format_tool_args(d: dict) -> str:
@@ -170,7 +177,10 @@ class CodexEventProjector:
             "role": "tool",
             "tool_call_id": call_id,
             "content": output,
+            "command": args["command"],
         }
+        if exit_code is not None:
+            tool_msg["exit_code"] = exit_code
         return ProjectionResult(
             messages=[assistant_msg, tool_msg], is_tool_iteration=True
         )
@@ -231,7 +241,9 @@ class CodexEventProjector:
                     "id": call_id,
                     "type": "function",
                     "function": {
-                        "name": f"mcp.{server}.{tool}",
+                        "name": _normalized_responses_function_name(
+                            f"mcp__{server}__{tool}"
+                        ),
                         "arguments": _format_tool_args(args),
                     },
                 }

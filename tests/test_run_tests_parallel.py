@@ -359,3 +359,51 @@ def test_file_retry_does_not_launder_deterministic_failure(tmp_path: Path) -> No
     assert proc.returncode == 1, proc.stdout
     assert "deterministic regression" in proc.stdout
     assert "FLAKY file" not in proc.stdout
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="shell wrapper test")
+def test_shell_runner_preserves_safe_runner_environment_overrides(tmp_path: Path) -> None:
+    """The hermetic shell wrapper passes documented runner controls through."""
+    repo_root = Path(__file__).resolve().parent.parent
+    source_runner = (repo_root / "scripts" / "run_tests.sh").read_text(encoding="utf-8")
+    fake_repo = tmp_path / "repo"
+    scripts_dir = fake_repo / "scripts"
+    scripts_dir.mkdir(parents=True)
+    shell_runner = scripts_dir / "run_tests.sh"
+    shell_runner.write_text(source_runner, encoding="utf-8")
+
+    expected = {
+        "HERMES_TEST_WORKERS": "3",
+        "HERMES_TEST_PATHS": "tests/unit:tests/tools",
+        "HERMES_TEST_FILE_TIMEOUT": "420",
+        "HERMES_TEST_SLICE": "2/8",
+    }
+    (scripts_dir / "run_tests_parallel.py").write_text(
+        "import json, os\n"
+        "keys = (\n"
+        "    'HERMES_TEST_WORKERS',\n"
+        "    'HERMES_TEST_PATHS',\n"
+        "    'HERMES_TEST_FILE_TIMEOUT',\n"
+        "    'HERMES_TEST_SLICE',\n"
+        ")\n"
+        "print(json.dumps({key: os.environ.get(key) for key in keys}, sort_keys=True))\n",
+        encoding="utf-8",
+    )
+
+    venv_bin = fake_repo / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    (venv_bin / "activate").write_text("", encoding="utf-8")
+    os.symlink(sys.executable, venv_bin / "python")
+
+    proc = subprocess.run(
+        ["bash", str(shell_runner)],
+        cwd=fake_repo,
+        env={**os.environ, **expected},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=30,
+    )
+
+    assert proc.returncode == 0, proc.stdout
+    assert json.loads(proc.stdout.splitlines()[-1]) == expected

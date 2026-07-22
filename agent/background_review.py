@@ -27,6 +27,25 @@ from agent.thread_scoped_output import thread_scoped_silence
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_REVIEW_LABEL = "Self-improvement review"
+_MAX_REVIEW_LABEL_CHARS = 80
+
+
+def _sanitize_review_label(review_label: Any) -> str:
+    """Return a safe, single-line label for user-visible review summaries."""
+    raw_label = " ".join(str(review_label or "").split())
+    if not raw_label:
+        return _DEFAULT_REVIEW_LABEL
+    try:
+        from agent.redact import redact_sensitive_text
+
+        raw_label = redact_sensitive_text(raw_label, force=True)
+    except Exception:
+        pass
+    printable = "".join(character for character in raw_label if character.isprintable())
+    bounded = printable[:_MAX_REVIEW_LABEL_CHARS].strip(" :")
+    return bounded or _DEFAULT_REVIEW_LABEL
+
 
 # ---------------------------------------------------------------------------
 # Background-review aux-model selector + routed digest.
@@ -618,6 +637,8 @@ def _run_review_in_thread(
     agent: Any,
     messages_snapshot: List[Dict],
     prompt: str,
+    *,
+    review_label: str = _DEFAULT_REVIEW_LABEL,
 ) -> None:
     """Worker function executed in the background-review daemon thread.
 
@@ -912,13 +933,13 @@ def _run_review_in_thread(
         if actions:
             summary = " · ".join(dict.fromkeys(actions))
             agent._safe_print(
-                f"  💾 Self-improvement review: {summary}"
+                f"  💾 {review_label}: {summary}"
             )
             _bg_cb = agent.background_review_callback
             if _bg_cb:
                 try:
                     _bg_cb(
-                        f"💾 Self-improvement review: {summary}"
+                        f"💾 {review_label}: {summary}"
                     )
                 except Exception:
                     pass
@@ -958,6 +979,8 @@ def spawn_background_review_thread(
     messages_snapshot: List[Dict],
     review_memory: bool = False,
     review_skills: bool = False,
+    review_prompt: Optional[str] = None,
+    review_label: Optional[str] = None,
 ):
     """Build the review thread target and prompt for a background review.
 
@@ -968,15 +991,24 @@ def spawn_background_review_thread(
     # Pick the right prompt based on which triggers fired.  Allow per-agent
     # override (the prompts moved to module-level constants but old code paths
     # that set agent._MEMORY_REVIEW_PROMPT etc. directly keep working).
-    if review_memory and review_skills:
+    if review_prompt:
+        prompt = review_prompt
+    elif review_memory and review_skills:
         prompt = getattr(agent, "_COMBINED_REVIEW_PROMPT", _COMBINED_REVIEW_PROMPT)
     elif review_memory:
         prompt = getattr(agent, "_MEMORY_REVIEW_PROMPT", _MEMORY_REVIEW_PROMPT)
     else:
         prompt = getattr(agent, "_SKILL_REVIEW_PROMPT", _SKILL_REVIEW_PROMPT)
 
+    label = _sanitize_review_label(review_label)
+
     def _target() -> None:
-        _run_review_in_thread(agent, messages_snapshot, prompt)
+        _run_review_in_thread(
+            agent,
+            messages_snapshot,
+            prompt,
+            review_label=label,
+        )
 
     return _target, prompt
 

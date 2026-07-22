@@ -17,12 +17,23 @@ Selection precedence (first hit wins):
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
+import shutil
+import subprocess
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import quote
+from urllib.parse import unquote
+from urllib.parse import urlparse
 
 import requests
+
+from hermes_constants import get_hermes_home
 
 from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
@@ -79,6 +90,9 @@ _XAI_ASPECT_RATIOS = {
 _XAI_RESOLUTIONS = {"1k", "2k"}
 
 DEFAULT_RESOLUTION = "1k"
+GROK_BUILD_TRANSPORT = "grok-build"
+GROK_BUILD_MODEL = "grok-build-native-image"
+_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +135,453 @@ def _resolve_resolution() -> str:
     if res and res in _XAI_RESOLUTIONS:
         return res
     return DEFAULT_RESOLUTION
+
+
+def _configured_transport(config: Optional[Dict[str, Any]] = None) -> str:
+    cfg = config if isinstance(config, dict) else _load_xai_config()
+    value = str(cfg.get("transport") or "http").strip().lower().replace("_", "-")
+    return GROK_BUILD_TRANSPORT if value in {"grok-build", "grokbuild", "cli"} else "http"
+
+
+def _grok_build_binary(config: Optional[Dict[str, Any]] = None) -> str:
+    cfg = config if isinstance(config, dict) else _load_xai_config()
+    configured = str(
+        cfg.get("grok_binary")
+        or os.environ.get("GROK_BUILD_BINARY")
+        or ""
+    ).strip()
+    if configured:
+        return configured
+    discovered = shutil.which("grok")
+    if discovered:
+        return discovered
+    return str(Path.home() / ".local" / "bin" / "grok")
+
+
+def _grok_build_available(config: Optional[Dict[str, Any]] = None) -> bool:
+    binary = _grok_build_binary(config)
+    binary_path = Path(binary).expanduser()
+    executable = binary_path.is_file() and os.access(binary_path, os.X_OK)
+    if not executable and os.path.sep not in binary:
+        executable = bool(shutil.which(binary))
+    return executable and (Path.home() / ".grok" / "auth.json").is_file()
+
+
+def _grok_build_workdir(config: Dict[str, Any]) -> Path:
+    configured = str(config.get("workdir") or "").strip()
+    if configured:
+        path = Path(configured).expanduser()
+    else:
+        home = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
+        path = home / "cache" / "grok-build-image"
+    path.mkdir(parents=True, exist_ok=True)
+    return path.resolve()
+
+
+def _iter_output_strings(value: Any):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _iter_output_strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _iter_output_strings(item)
+
+
+def _grok_build_image_path_candidates(value: Any) -> List[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return []
+    candidates = [raw, unquote(raw)]
+    for source in (raw, unquote(raw)):
+        for match in re.finditer(
+            r"(?:vscode-file|file)://[^\s`'\"<>]+",
+            source,
+            re.IGNORECASE,
+        ):
+            uri = match.group(0).rstrip(").,;]")
+            parsed = urlparse(uri)
+            path = unquote(parsed.path)
+            if path.startswith("//"):
+                path = path[1:]
+            if path:
+                candidates.append(path)
+    return list(dict.fromkeys(candidates))
+
+
+def _existing_grok_build_image(value: Any) -> Optional[str]:
+    for candidate in _iter_output_strings(value):
+        for raw_path in _grok_build_image_path_candidates(candidate):
+            path = Path(str(raw_path).strip().strip("`'\"")).expanduser()
+            if path.suffix.lower() in _IMAGE_SUFFIXES and path.is_file():
+                return str(path.resolve())
+    return None
+
+
+def _grok_build_request_id(parsed: Any, text: str) -> str:
+    if isinstance(parsed, dict):
+        for key in ("requestId", "request_id", "promptId", "prompt_id"):
+            value = str(parsed.get(key) or "").strip()
+            if value:
+                return value
+    match = re.search(
+        r'["\'](?:requestId|request_id|promptId|prompt_id)["\']\s*:\s*["\']([^"\']+)["\']',
+        text,
+        re.IGNORECASE,
+    )
+    return match.group(1).strip() if match else ""
+
+
+def _grok_build_session_image(session_root: Path, *, request_id: str) -> Optional[str]:
+    resolved_session_root = session_root.resolve()
+
+    def current_session_image(value: Any) -> Optional[str]:
+        image = _existing_grok_build_image(value)
+        if not image:
+            return None
+        try:
+            Path(image).resolve().relative_to(resolved_session_root)
+        except ValueError:
+            return None
+        return image
+
+    updates_path = session_root / "updates.jsonl"
+    try:
+        lines = updates_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        params = event.get("params") if isinstance(event, dict) else None
+        update = params.get("update") if isinstance(params, dict) else None
+        if not isinstance(update, dict):
+            continue
+        metadata = params.get("_meta") if isinstance(params, dict) else None
+        prompt_id = str(metadata.get("promptId") or "").strip() if isinstance(metadata, dict) else ""
+        if prompt_id != request_id:
+            continue
+        if str(update.get("sessionUpdate") or "").strip() != "tool_call_update":
+            continue
+        if str(update.get("status") or "").strip().lower() != "completed":
+            continue
+        raw_output = update.get("rawOutput")
+        output_type = str(raw_output.get("type") or "").strip() if isinstance(raw_output, dict) else ""
+        if output_type not in {"ImageEdit", "ImageGen"}:
+            continue
+        image = current_session_image(raw_output)
+        if image:
+            return image
+        image = current_session_image(update.get("content"))
+        if image:
+            return image
+    return None
+
+
+def _grok_build_image_for_request(
+    request_id: str,
+    *,
+    workdir: Path,
+    config: Dict[str, Any],
+) -> Optional[str]:
+    if not request_id:
+        return None
+    grok_home = Path(str(config.get("grok_home") or Path.home() / ".grok")).expanduser()
+    sessions_root = grok_home / "sessions" / quote(str(workdir.resolve()), safe="")
+    try:
+        summaries = sorted(sessions_root.glob("*/summary.json"), reverse=True)
+    except OSError:
+        return None
+    for summary_path in summaries:
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        current_request_id = str(
+            summary.get("request_id")
+            or summary.get("requestId")
+            or summary.get("prompt_id")
+            or summary.get("promptId")
+            or ""
+        ).strip()
+        if current_request_id != request_id:
+            continue
+        return _grok_build_session_image(summary_path.parent, request_id=request_id)
+    return None
+
+
+def _extract_grok_build_image(
+    stdout: str,
+    *,
+    workdir: Optional[Path] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    candidates: List[str] = []
+    text = str(stdout or "").strip()
+    parsed: Any = None
+    if text:
+        try:
+            parsed = json.loads(text)
+            candidates.extend(_iter_output_strings(parsed))
+        except json.JSONDecodeError:
+            for line in reversed(text.splitlines()):
+                try:
+                    candidates.extend(_iter_output_strings(json.loads(line)))
+                except json.JSONDecodeError:
+                    continue
+        candidates.extend(
+            match.group(1)
+            for match in re.finditer(
+                r"(?:^|[\s\"'])(/[^\n\"']+?\.(?:png|jpe?g|webp))(?:$|[\s\"'])",
+                text,
+                re.IGNORECASE,
+            )
+        )
+        candidates.extend(
+            match.group(1)
+            for match in re.finditer(
+                r"(?:^|[`'\"\s:])((?:images?|outputs?)/[A-Za-z0-9._/-]+\.(?:png|jpe?g|webp))"
+                r"(?:$|[`'\"\s,)}\]])",
+                text,
+                re.IGNORECASE,
+            )
+        )
+        raw_text_candidates = _grok_build_image_path_candidates(text)
+        candidates.extend(
+            candidate
+            for candidate in raw_text_candidates
+            if candidate not in {text, unquote(text)}
+        )
+    candidates = [
+        path
+        for candidate in candidates
+        for path in _grok_build_image_path_candidates(candidate)
+    ]
+    for candidate in candidates:
+        path = Path(str(candidate).strip().strip("`'\"")).expanduser()
+        if path.suffix.lower() in _IMAGE_SUFFIXES and path.is_file():
+            return str(path.resolve())
+    if workdir is not None:
+        session_id = (
+            str(parsed.get("sessionId") or parsed.get("session_id") or "").strip()
+            if isinstance(parsed, dict)
+            else ""
+        )
+        if not session_id:
+            session_match = re.search(
+                r"[\"']session(?:Id|_id)[\"']\s*:\s*[\"']([^\"']+)[\"']",
+                text,
+                re.IGNORECASE,
+            )
+            session_id = session_match.group(1).strip() if session_match else ""
+        if session_id:
+            cfg = config if isinstance(config, dict) else {}
+            grok_home = Path(
+                str(cfg.get("grok_home") or Path.home() / ".grok")
+            ).expanduser()
+            session_roots = (
+                workdir.resolve() / session_id,
+                grok_home
+                / "sessions"
+                / quote(str(workdir.resolve()), safe="")
+                / session_id,
+            )
+            for candidate in candidates:
+                relative = Path(str(candidate).strip())
+                if (
+                    relative.is_absolute()
+                    or relative.suffix.lower() not in _IMAGE_SUFFIXES
+                    or ".." in relative.parts
+                ):
+                    continue
+                for session_root in session_roots:
+                    path = session_root / relative
+                    if path.is_file():
+                        return str(path.resolve())
+        cfg = config if isinstance(config, dict) else {}
+        request_image = _grok_build_image_for_request(
+            _grok_build_request_id(parsed, text),
+            workdir=workdir,
+            config=cfg,
+        )
+        if request_image:
+            return request_image
+    return None
+
+
+def _generate_with_grok_build(
+    *,
+    prompt: str,
+    aspect_ratio: str,
+    source_images: List[str],
+    config: Dict[str, Any],
+) -> Dict[str, Any]:
+    aspect = resolve_aspect_ratio(aspect_ratio)
+    if not _grok_build_available(config):
+        return error_response(
+            error="Grok Build OAuth transport is unavailable or not signed in.",
+            error_type="missing_oauth",
+            provider="xai",
+            model=GROK_BUILD_MODEL,
+            prompt=prompt,
+            aspect_ratio=aspect,
+        )
+
+    operation = "image_edit" if source_images else "image_gen"
+    reference_lines = "\n".join(
+        f"- ref {index}: {path}"
+        for index, path in enumerate(source_images, start=1)
+    )
+    instruction = (
+        "Use exactly one native xAI Grok Imagine tool call. "
+        f"Call `{operation}` and do not use web, shell, code execution, or subagents.\n"
+        f"Aspect ratio: {aspect}.\n"
+        f"Creative request: {prompt.strip()}\n"
+    )
+    if source_images:
+        instruction += (
+            "Use the following real source images as image inputs. Each numbered source "
+            "corresponds exactly to the same ref number in the creative "
+            "request. Obey every explicit ref role binding in that request. Do not downgrade a "
+            "role-locked source to general inspiration, and do not copy identity traits from a "
+            "source assigned only to pose or composition. When the creative request does not "
+            "specify reference roles, use ref 1 as the primary edit anchor and the remaining "
+            "sources as supporting references. Do not replace image "
+            "conditioning with a text-only description.\n"
+            f"Source images:\n{reference_lines}\n"
+        )
+    instruction += (
+        "After the native image tool succeeds, return its exact generated local path. "
+        "Never invent or predict a path. If the tool fails, state the tool error."
+    )
+    workdir = _grok_build_workdir(config)
+    command = [
+        _grok_build_binary(config),
+        "--cwd",
+        str(workdir),
+        "--single",
+        instruction,
+        "--output-format",
+        "json",
+        "--disallowed-tools",
+        (
+            "run_terminal_cmd,read_file,grep,list_dir,search_replace,web_search,"
+            "web_fetch,todo_write,task,Agent"
+        ),
+        "--disable-web-search",
+        "--no-subagents",
+        "--no-memory",
+        "--max-turns",
+        str(max(2, min(6, int(config.get("max_turns") or 4)))),
+        "--reasoning-effort",
+        str(config.get("reasoning_effort") or "medium"),
+        "--always-approve",
+        "--verbatim",
+    ]
+    timeout = max(60, min(600, int(config.get("timeout_seconds") or 300)))
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(workdir),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            shell=False,
+        )
+    except subprocess.TimeoutExpired:
+        return error_response(
+            error=f"xAI Grok Build image generation timed out ({timeout}s)",
+            error_type="timeout",
+            provider="xai",
+            model=GROK_BUILD_MODEL,
+            prompt=prompt,
+            aspect_ratio=aspect,
+        )
+    except OSError as exc:
+        return error_response(
+            error=f"Could not start Grok Build: {exc}",
+            error_type="transport_error",
+            provider="xai",
+            model=GROK_BUILD_MODEL,
+            prompt=prompt,
+            aspect_ratio=aspect,
+        )
+
+    image = _extract_grok_build_image(
+        completed.stdout,
+        workdir=workdir,
+        config=config,
+    )
+    if completed.returncode != 0 or not image:
+        detail = str(completed.stderr or completed.stdout or "").strip()[-500:]
+        return error_response(
+            error=(
+                f"xAI Grok Build image generation failed ({completed.returncode})"
+                + (f": {detail}" if detail else "")
+            ),
+            error_type="transport_error" if completed.returncode else "empty_response",
+            provider="xai",
+            model=GROK_BUILD_MODEL,
+            prompt=prompt,
+            aspect_ratio=aspect,
+        )
+
+    try:
+        staged_image = _stage_grok_build_image(image, config=config)
+    except (OSError, ValueError) as exc:
+        return error_response(
+            error=f"Could not stage xAI Grok Build image for delivery: {exc}",
+            error_type="artifact_staging_failed",
+            provider="xai",
+            model=GROK_BUILD_MODEL,
+            prompt=prompt,
+            aspect_ratio=aspect,
+        )
+
+    return success_response(
+        image=staged_image,
+        model=GROK_BUILD_MODEL,
+        prompt=prompt,
+        aspect_ratio=aspect,
+        provider="xai",
+        modality="image" if source_images else "text",
+        extra={
+            "transport": GROK_BUILD_TRANSPORT,
+            "reference_conditioning": "native_image_edit" if source_images else "none",
+            "reference_image_count": len(source_images),
+            "provider_source_image": image,
+        },
+    )
+
+
+def _stage_grok_build_image(image: str, *, config: Dict[str, Any]) -> str:
+    source = Path(image).expanduser().resolve()
+    if not source.is_file():
+        raise ValueError(f"generated image does not exist: {source}")
+    suffix = source.suffix.lower()
+    if suffix not in _IMAGE_SUFFIXES:
+        raise ValueError(f"unsupported generated image extension: {suffix or '<none>'}")
+    output_dir = Path(
+        str(config.get("output_dir") or get_hermes_home() / "visual" / "outputs" / "xai")
+    ).expanduser()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    for _ in range(4):
+        filename = (
+            f"xai-{GROK_BUILD_MODEL}_{timestamp}_{uuid.uuid4().hex[:8]}{suffix}"
+        )
+        destination = output_dir / filename
+        try:
+            with source.open("rb") as source_file, destination.open("xb") as output_file:
+                shutil.copyfileobj(source_file, output_file)
+            return str(destination.resolve())
+        except FileExistsError:
+            continue
+    raise OSError("could not allocate a unique delivery filename")
 
 
 def _xai_image_field(source: str) -> Dict[str, str]:
@@ -168,6 +629,9 @@ class XAIImageGenProvider(ImageGenProvider):
         return "xAI (Grok)"
 
     def is_available(self) -> bool:
+        cfg = _load_xai_config()
+        if _configured_transport(cfg) == GROK_BUILD_TRANSPORT:
+            return _grok_build_available(cfg)
         creds = resolve_xai_http_credentials()
         return bool(creds.get("api_key"))
 
@@ -228,6 +692,40 @@ class XAIImageGenProvider(ImageGenProvider):
         a JSON body (the OpenAI SDK's multipart ``images.edit()`` is NOT
         supported by xAI).
         """
+        cfg = _load_xai_config()
+        if _configured_transport(cfg) == GROK_BUILD_TRANSPORT:
+            source_images: List[str] = []
+            if isinstance(image_url, str) and image_url.strip():
+                source_images.append(image_url.strip())
+            refs = normalize_reference_images(reference_image_urls)
+            if refs:
+                source_images.extend(refs)
+            if len(source_images) > 3:
+                return error_response(
+                    error="xAI image editing supports at most 3 source images",
+                    error_type="too_many_references",
+                    provider="xai",
+                    model=GROK_BUILD_MODEL,
+                    prompt=prompt,
+                    aspect_ratio=aspect_ratio,
+                )
+            for source in source_images:
+                if not Path(source).expanduser().is_file():
+                    return error_response(
+                        error=f"Grok Build reference image is not a readable local file: {source}",
+                        error_type="invalid_image_url",
+                        provider="xai",
+                        model=GROK_BUILD_MODEL,
+                        prompt=prompt,
+                        aspect_ratio=aspect_ratio,
+                    )
+            return _generate_with_grok_build(
+                prompt=prompt,
+                aspect_ratio=aspect_ratio,
+                source_images=source_images,
+                config=cfg,
+            )
+
         creds = resolve_xai_http_credentials()
         api_key = str(creds.get("api_key") or "").strip()
         provider_name = str(creds.get("provider") or "xai").strip() or "xai"
@@ -408,7 +906,29 @@ class XAIImageGenProvider(ImageGenProvider):
         public_url = file_output.get("public_url") if isinstance(file_output.get("public_url"), str) else None
 
         if public_url:
-            image_ref = public_url
+            try:
+                saved_path = save_url_image(
+                    public_url,
+                    prefix=f"xai_{model_id}",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "xAI stored image URL could not be cached safely: %s",
+                    type(exc).__name__,
+                )
+                return error_response(
+                    error=(
+                        "Could not safely cache xAI image output: "
+                        f"{type(exc).__name__}"
+                    ),
+                    error_type="io_error",
+                    provider=provider_name,
+                    model=model_id,
+                    prompt=prompt,
+                    aspect_ratio=aspect,
+                )
+            else:
+                image_ref = str(saved_path)
         elif b64:
             try:
                 saved_path = save_b64_image(b64, prefix=f"xai_{model_id}")
@@ -434,11 +954,20 @@ class XAIImageGenProvider(ImageGenProvider):
                 saved_path = save_url_image(url, prefix=f"xai_{model_id}")
             except Exception as exc:
                 logger.warning(
-                    "xAI image URL %s could not be cached (%s); falling back to bare URL.",
-                    url,
-                    exc,
+                    "xAI image URL could not be cached safely: %s",
+                    type(exc).__name__,
                 )
-                image_ref = url
+                return error_response(
+                    error=(
+                        "Could not safely cache xAI image output: "
+                        f"{type(exc).__name__}"
+                    ),
+                    error_type="io_error",
+                    provider=provider_name,
+                    model=model_id,
+                    prompt=prompt,
+                    aspect_ratio=aspect,
+                )
             else:
                 image_ref = str(saved_path)
         else:

@@ -19,13 +19,499 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
+import uuid
+from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Mapping
 
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 
 logger = logging.getLogger(__name__)
+
+
+# Codex app-server threads become first-class Codex Remote tasks unless
+# ``thread/start.ephemeral`` is true.  Only direct, user-facing interaction
+# surfaces are allowed to materialize there. Internal workers and newly added
+# platform labels fail closed so a new background path cannot silently spam the
+# user's task list.
+_CODEX_USER_VISIBLE_PLATFORMS = frozenset({
+    "cli", "tui", "acp", "api_server",
+    "telegram", "discord", "whatsapp", "whatsapp_cloud", "slack",
+    "signal", "mattermost", "matrix", "homeassistant", "email", "sms",
+    "dingtalk", "webhook", "msgraph_webhook", "feishu", "wecom",
+    "wecom_callback", "weixin", "bluebubbles", "qqbot", "yuanbao",
+    "relay",
+})
+_MAX_PLUGIN_AUTO_CONTINUATIONS = 64
+
+
+def _is_story_video_workflow(decision: Mapping[str, Any] | None) -> bool:
+    if not isinstance(decision, Mapping):
+        return False
+    goal = decision.get("goal")
+    if isinstance(goal, Mapping):
+        return str(goal.get("target_artifact") or "") == "story_video_workflow"
+    return False
+
+
+def resolve_codex_thread_ephemeral(
+    agent,
+    raphael_decision: Mapping[str, Any] | None = None,
+) -> bool:
+    """Return whether this Hermes-owned Codex thread stays out of Remote UI.
+
+    An explicit boolean wins so callers sharing a platform label (interactive
+    CLI vs. CLI one-shot/background) can state their lifecycle. Otherwise only
+    known user-facing entrypoints materialize; internal and unknown paths are
+    ephemeral by default.
+    """
+    explicit = getattr(agent, "codex_thread_ephemeral", None)
+    if isinstance(explicit, bool):
+        return explicit
+    if _is_story_video_workflow(raphael_decision):
+        return True
+    platform = str(getattr(agent, "platform", "") or "").strip().lower()
+    return platform not in _CODEX_USER_VISIBLE_PLATFORMS
+
+
+def _invoke_runtime_hook(name: str, **kwargs: Any) -> list[Any]:
+    """Invoke a plugin hook without letting plugin failures break the turn."""
+    try:
+        from hermes_cli.plugins import has_hook, invoke_hook
+
+        if not has_hook(name):
+            return []
+        return invoke_hook(name, **kwargs)
+    except Exception:
+        logger.warning("codex app-server %s hook failed", name, exc_info=True)
+        return []
+
+
+def _plugin_auto_continue_request(
+    agent,
+    *,
+    response_text: str,
+    effective_task_id: str,
+    turn_id: str,
+    messages: List[Dict[str, Any]],
+    recoverable_transport_error: bool = False,
+    turn_error: str = "",
+) -> dict[str, str] | None:
+    auto_count = getattr(agent, "_plugin_auto_continue_count", 0)
+    if not isinstance(auto_count, int):
+        auto_count = 0
+    for hook_result in _invoke_runtime_hook(
+        "auto_continue_llm_output",
+        response_text=response_text,
+        session_id=str(getattr(agent, "session_id", "") or ""),
+        task_id=effective_task_id,
+        turn_id=turn_id,
+        model=str(getattr(agent, "model", "") or ""),
+        platform=str(getattr(agent, "platform", "") or ""),
+        recoverable_transport_error=recoverable_transport_error,
+        turn_error=turn_error,
+        message_count=len(messages),
+        auto_continuation_count=auto_count,
+    ):
+        if not isinstance(hook_result, dict):
+            continue
+        action = str(hook_result.get("action") or "").strip().lower()
+        message = str(hook_result.get("message") or "").strip()
+        if action in {"continue", "rotate"} and message:
+            return {
+                "action": action,
+                "message": message,
+                "reason": str(hook_result.get("reason") or "").strip(),
+            }
+    return None
+
+
+def _reset_rotated_session_usage(agent) -> None:
+    for name in (
+        "session_prompt_tokens",
+        "session_completion_tokens",
+        "session_total_tokens",
+        "session_api_calls",
+        "session_input_tokens",
+        "session_output_tokens",
+        "session_cache_read_tokens",
+        "session_cache_write_tokens",
+        "session_reasoning_tokens",
+        "session_estimated_cost_usd",
+    ):
+        setattr(agent, name, 0)
+    agent.session_cost_status = "unknown"
+    agent.session_cost_source = "none"
+
+
+def _rotate_plugin_auto_continuation_session(
+    agent,
+    messages: List[Dict[str, Any]],
+) -> str:
+    session_db = getattr(agent, "_session_db", None)
+    old_session_id = str(getattr(agent, "session_id", "") or "")
+    if session_db is None or not old_session_id:
+        return ""
+    try:
+        agent._flush_messages_to_session_db(messages)
+    except Exception:
+        logger.debug("plugin continuation pre-rotation flush failed", exc_info=True)
+    try:
+        old_title = session_db.get_session_title(old_session_id)
+    except Exception:
+        old_title = None
+    new_session_id = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    try:
+        session_db.end_session(old_session_id, "plugin_auto_continue")
+    except Exception:
+        logger.warning(
+            "plugin continuation rotation aborted; parent end failed for %s",
+            old_session_id,
+            exc_info=True,
+        )
+        return ""
+    try:
+        session_db.create_session(
+            session_id=new_session_id,
+            source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+            model=agent.model,
+            model_config=getattr(agent, "_session_init_model_config", None),
+            parent_session_id=old_session_id,
+        )
+    except Exception:
+        try:
+            session_db.reopen_session(old_session_id)
+        except Exception:
+            pass
+        logger.warning(
+            "plugin continuation rotation aborted; child create failed for %s",
+            old_session_id,
+            exc_info=True,
+        )
+        return ""
+
+    agent.session_id = new_session_id
+    try:
+        from gateway.session_context import set_current_session_id
+
+        set_current_session_id(new_session_id)
+    except Exception:
+        os.environ["HERMES_SESSION_ID"] = new_session_id
+    try:
+        from hermes_logging import set_session_context
+
+        set_session_context(new_session_id)
+    except Exception:
+        pass
+    agent._session_db_created = True
+    agent._flushed_db_message_ids = set()
+    agent._last_flushed_db_idx = 0
+    agent._last_compaction_in_place = False
+    agent._plugin_auto_continue_count = 0
+    _reset_rotated_session_usage(agent)
+
+    cached_prompt = getattr(agent, "_cached_system_prompt", None)
+    if cached_prompt:
+        try:
+            session_db.update_system_prompt(new_session_id, cached_prompt)
+        except Exception:
+            logger.debug("plugin continuation system-prompt copy failed", exc_info=True)
+    if old_title:
+        try:
+            new_title = session_db.get_next_title_in_lineage(old_title)
+            session_db.set_session_title(new_session_id, new_title)
+        except Exception:
+            logger.debug("plugin continuation title copy failed", exc_info=True)
+    try:
+        from hermes_cli.goals import migrate_goal_to_session
+
+        migrate_goal_to_session(
+            old_session_id,
+            new_session_id,
+            reason="plugin_auto_continue",
+        )
+    except Exception:
+        logger.debug("plugin continuation goal migration failed", exc_info=True)
+    try:
+        if getattr(agent, "_memory_manager", None):
+            agent._memory_manager.on_session_switch(
+                new_session_id,
+                parent_session_id=old_session_id,
+                reset=False,
+                reason="plugin_auto_continue",
+            )
+    except Exception:
+        logger.debug("plugin continuation memory switch failed", exc_info=True)
+    try:
+        compressor = getattr(agent, "context_compressor", None)
+        if compressor is not None and hasattr(compressor, "on_session_start"):
+            compressor.on_session_start(
+                new_session_id,
+                boundary_reason="plugin_auto_continue",
+                old_session_id=old_session_id,
+                platform=agent.platform or "cli",
+                conversation_id=getattr(agent, "_gateway_session_key", None),
+            )
+    except Exception:
+        logger.debug("plugin continuation context switch failed", exc_info=True)
+    try:
+        if getattr(agent, "event_callback", None):
+            agent.event_callback(
+                "session:compress",
+                {
+                    "platform": agent.platform or "",
+                    "session_id": new_session_id,
+                    "old_session_id": old_session_id,
+                    "in_place": False,
+                    "boundary_reason": "plugin_auto_continue",
+                },
+            )
+    except Exception:
+        logger.debug("plugin continuation event callback failed", exc_info=True)
+    try:
+        codex_session = getattr(agent, "_codex_session", None)
+        if codex_session is not None:
+            codex_session.close()
+    except Exception:
+        logger.debug("plugin continuation Codex close failed", exc_info=True)
+    agent._codex_session = None
+    messages.clear()
+    return old_session_id
+
+
+def _run_plugin_auto_continuation(
+    agent,
+    *,
+    auto_request: dict[str, str] | None,
+    messages: List[Dict[str, Any]],
+    effective_task_id: str,
+    turn_id: str,
+    should_review_memory: bool,
+    raphael_decision: Dict[str, Any] | None,
+    prior_api_calls: int,
+) -> Dict[str, Any] | None:
+    if auto_request is None:
+        return None
+    auto_count = getattr(agent, "_plugin_auto_continue_count", 0)
+    if not isinstance(auto_count, int):
+        auto_count = 0
+    if auto_count >= _MAX_PLUGIN_AUTO_CONTINUATIONS:
+        return None
+
+    parent_session_id = ""
+    if auto_request["action"] == "rotate":
+        parent_session_id = _rotate_plugin_auto_continuation_session(agent, messages)
+        if not parent_session_id:
+            return None
+        auto_count = 0
+
+    agent._plugin_auto_continue_count = auto_count + 1
+    base_message = auto_request["message"]
+    auto_message = base_message
+    auto_contexts: list[str] = []
+    for hook_result in _invoke_runtime_hook(
+        "pre_llm_call",
+        session_id=agent.session_id or "",
+        parent_session_id=parent_session_id,
+        turn_id=f"{turn_id}:auto:{auto_count + 1}",
+        user_message=base_message,
+        conversation_history=list(messages),
+        model=agent.model,
+        platform=agent.platform or "",
+        auto_continuation=True,
+    ):
+        if isinstance(hook_result, dict):
+            context = str(hook_result.get("context") or "").strip()
+            if context:
+                auto_contexts.append(context)
+    if auto_contexts:
+        auto_message = f"{base_message}\n\n" + "\n\n".join(auto_contexts)
+    if parent_session_id:
+        messages.append({"role": "user", "content": base_message})
+
+    continued = run_codex_app_server_turn(
+        agent,
+        user_message=auto_message,
+        original_user_message=base_message,
+        messages=messages,
+        effective_task_id=effective_task_id,
+        turn_id=f"{turn_id}:auto:{auto_count + 1}",
+        should_review_memory=should_review_memory,
+        raphael_decision=raphael_decision,
+    )
+    continued["api_calls"] = prior_api_calls + int(continued.get("api_calls") or 0)
+    return continued
+
+
+def _codex_note_to_tool_progress(note: dict) -> tuple[str, str, dict] | None:
+    """Map a Codex app-server ``item/started`` notification to a Hermes
+    tool-progress event ``(tool_name, preview, args)``.
+
+    The Codex app-server runtime processes ``item/started`` notifications for
+    command execution, file changes, and MCP/dynamic tool calls, but never
+    surfaced them as Hermes tool-progress events — so gateways (Telegram, etc.)
+    showed no verbose "running X" breadcrumbs on this route while every other
+    provider did (#38835). Returns None for items that aren't tool-shaped.
+    """
+    if not isinstance(note, dict) or note.get("method") != "item/started":
+        return None
+    params = note.get("params") or {}
+    item = params.get("item") or {}
+    if not isinstance(item, dict):
+        return None
+
+    item_type = item.get("type") or ""
+    if item_type == "commandExecution":
+        command = item.get("command") or ""
+        return "exec_command", command, {"command": command, "cwd": item.get("cwd") or ""}
+
+    if item_type == "fileChange":
+        changes = item.get("changes") or []
+        preview = "file changes"
+        if isinstance(changes, list) and changes:
+            paths = [
+                str(change.get("path"))
+                for change in changes
+                if isinstance(change, dict) and change.get("path")
+            ]
+            if paths:
+                preview = ", ".join(paths[:3])
+                if len(paths) > 3:
+                    preview += f", +{len(paths) - 3} more"
+        return "apply_patch", preview, {"changes": changes}
+
+    if item_type == "mcpToolCall":
+        server = item.get("server") or "mcp"
+        tool = item.get("tool") or "unknown"
+        args = item.get("arguments") or {}
+        if not isinstance(args, dict):
+            args = {"arguments": args}
+        return f"mcp.{server}.{tool}", tool, args
+
+    if item_type == "dynamicToolCall":
+        tool = item.get("tool") or "unknown"
+        args = item.get("arguments") or {}
+        if not isinstance(args, dict):
+            args = {"arguments": args}
+        return tool, tool, args
+
+    if item_type in {"imageGeneration", "imageGenerationCall"}:
+        return "image_generate", "generating image", {
+            "item_id": item.get("id") or "",
+        }
+
+    return None
+
+
+_IMAGE_COUNT_PATTERN = re.compile(
+    r"(?:remaining|剩下)?\s*([1-9]\d*)\s*(?:張|images?)",
+    re.IGNORECASE,
+)
+
+
+def _infer_requested_image_count(user_message: str) -> int | None:
+    """Return the last explicit image count from a prompt or thread replay."""
+    matches = _IMAGE_COUNT_PATTERN.findall(str(user_message or ""))
+    return int(matches[-1]) if matches else None
+
+
+def _format_image_progress(progress: Mapping[str, Any]) -> str:
+    target = progress.get("target")
+    succeeded = int(progress.get("succeeded") or 0)
+    failed = int(progress.get("failed") or 0)
+    if isinstance(target, int) and target > 0:
+        remaining = max(target - succeeded, 0)
+        return (
+            f"Image progress: target {target}, succeeded {succeeded}, "
+            f"failed attempts {failed}, remaining {remaining}."
+        )
+    return (
+        f"Image progress: succeeded {succeeded}, "
+        f"failed attempts {failed}."
+    )
+
+
+def _codex_turn_timeout_for_image_target(target: int | None) -> float:
+    """Give multi-image turns enough time while keeping a bounded deadline."""
+    if not isinstance(target, int) or target <= 1:
+        return 600.0
+    return float(min(1800, 600 + ((target - 1) * 300)))
+
+
+def _codex_turn_timeout_for_target(
+    image_target: int | None,
+    raphael_decision: Mapping[str, Any] | None,
+) -> float:
+    """Use a bounded long-work deadline for the story-video workflow."""
+    if _is_story_video_workflow(raphael_decision):
+        return 1800.0
+    return _codex_turn_timeout_for_image_target(image_target)
+
+
+def _completed_story_video_media(
+    projected_messages: List[Dict[str, Any]],
+) -> list[str]:
+    """Return current-turn, persisted story-video MP4 deliverables."""
+    tool_names: dict[str, str] = {}
+    for message in projected_messages:
+        if message.get("role") != "assistant":
+            continue
+        for call in message.get("tool_calls") or []:
+            call_id = str(call.get("id") or call.get("call_id") or "")
+            function = call.get("function") or {}
+            name = str(function.get("name") or call.get("name") or "")
+            if call_id and name:
+                tool_names[call_id] = name
+
+    media: list[str] = []
+    for message in projected_messages:
+        if message.get("role") not in {"tool", "function"}:
+            continue
+        call_id = str(message.get("tool_call_id") or message.get("call_id") or "")
+        if tool_names.get(call_id) != "story_video_audio_director":
+            continue
+        try:
+            payload = json.loads(str(message.get("content") or ""))
+        except Exception:
+            continue
+        if not (
+            isinstance(payload, dict)
+            and payload.get("success") is True
+            and payload.get("action") in {"production_status", "retry_delivery"}
+            and isinstance(payload.get("media"), list)
+        ):
+            continue
+        for value in payload["media"]:
+            if not isinstance(value, str) or not value.startswith("MEDIA:"):
+                continue
+            path = value.removeprefix("MEDIA:").strip()
+            candidate = Path(path).expanduser()
+            if candidate.suffix.lower() == ".mp4" and candidate.is_file():
+                media.append(f"MEDIA:{path}")
+    return list(dict.fromkeys(media))
+
+
+def _completed_codex_image_path(note: Mapping[str, Any]) -> Path | None:
+    params = note.get("params") or {}
+    item = params.get("item") or {}
+    if str(item.get("status") or "").strip().lower() not in {
+        "completed", "succeeded", "success",
+    }:
+        return None
+    thread_id = str(params.get("threadId") or "").strip()
+    item_id = str(item.get("id") or "").strip()
+    if not thread_id or not item_id:
+        return None
+    codex_home = Path(os.environ.get("CODEX_HOME") or "~/.codex").expanduser()
+    generated_root = (codex_home / "generated_images").resolve()
+    candidate = (generated_root / thread_id / f"{item_id}.png").resolve()
+    try:
+        candidate.relative_to(generated_root)
+    except ValueError:
+        return None
+    return candidate if candidate.is_file() else None
 
 
 def _coerce_usage_int(value: Any) -> int:
@@ -619,7 +1105,9 @@ def run_codex_app_server_turn(
     original_user_message: Any,
     messages: List[Dict[str, Any]],
     effective_task_id: str,
+    turn_id: str = "",
     should_review_memory: bool = False,
+    raphael_decision: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """Codex app-server runtime path. Hands the entire turn to a `codex
     app-server` subprocess and projects its events back into Hermes'
@@ -677,24 +1165,168 @@ def run_codex_app_server_turn(
         # users see no live tool-progress or interim commentary while
         # codex_app_server is running — only the final answer (#33200).
         # Supersedes the narrower item/started-only bridge from #38835.
+        base_event_bridge = make_codex_app_server_event_bridge(agent)
+
+        def _on_codex_event(note: dict) -> None:
+            base_event_bridge(note)
+            # Bridge Codex app-server item/started notifications to Hermes
+            # tool-progress so gateways show verbose "running X" breadcrumbs
+            # on this route too (#38835).
+            method = str(note.get("method") or "")
+            item = (note.get("params") or {}).get("item") or {}
+            item_type = str(item.get("type") or "")
+            is_image_generation = item_type in {
+                "imageGeneration", "imageGenerationCall",
+            }
+            if not is_image_generation:
+                return
+
+            if method == "item/started" and is_image_generation:
+                agent._current_tool = "image_generate"
+                agent._touch_activity("generating image")
+            elif method == "item/completed" and is_image_generation:
+                state = getattr(agent, "_codex_image_progress", None)
+                if not isinstance(state, dict):
+                    state = {"target": None, "succeeded": 0, "failed": 0}
+                    agent._codex_image_progress = state
+                status = str(item.get("status") or "").strip().lower()
+                if status in {"completed", "succeeded", "success"}:
+                    state["succeeded"] = int(state.get("succeeded") or 0) + 1
+                elif status in {"failed", "error", "cancelled", "canceled"}:
+                    state["failed"] = int(state.get("failed") or 0) + 1
+                summary = _format_image_progress(state)
+                agent._current_tool = None
+                agent._touch_activity(summary)
+                generated_path = _completed_codex_image_path(note)
+                event_callback = getattr(agent, "event_callback", None)
+                if generated_path is not None and event_callback is not None:
+                    try:
+                        event_callback(
+                            "artifact:generated",
+                            {
+                                "path": str(generated_path),
+                                "media_type": "image/png",
+                                "artifact_index": int(state.get("succeeded") or 0),
+                                "target": state.get("target"),
+                            },
+                        )
+                    except Exception:
+                        logger.debug(
+                            "codex generated artifact callback raised",
+                            exc_info=True,
+                        )
+                status_callback = getattr(agent, "status_callback", None)
+                if status_callback is not None:
+                    try:
+                        status_callback("lifecycle", summary)
+                    except Exception:
+                        logger.debug(
+                            "codex image progress status callback raised",
+                            exc_info=True,
+                        )
+
+            progress_callback = getattr(agent, "tool_progress_callback", None)
+            if progress_callback is None:
+                return
+            mapped = _codex_note_to_tool_progress(note)
+            if mapped is None:
+                return
+            tool_name, preview, args = mapped
+            agent._current_tool = tool_name
+            agent._touch_activity(f"executing tool: {tool_name}")
+            try:
+                progress_callback("tool.started", tool_name, preview, args)
+            except Exception:
+                logger.debug("codex tool-progress callback raised", exc_info=True)
+
+        codex_bin = os.path.expanduser(
+            os.environ.get("HERMES_CODEX_BIN", "").strip() or "codex"
+        )
+        logger.info("codex app-server executable: %s", codex_bin)
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
+            codex_bin=codex_bin,
+            ephemeral=resolve_codex_thread_ephemeral(agent, raphael_decision),
             approval_callback=approval_callback,
             request_routing=_ServerRequestRouting(
                 auto_approve_exec=auto_approve_requests,
                 auto_approve_apply_patch=auto_approve_requests,
+                auto_resolve_user_input=_is_story_video_workflow(
+                    raphael_decision
+                ),
             ),
-            on_event=make_codex_app_server_event_bridge(agent),
+            subprocess_env={
+                "HERMES_SESSION_ID": str(getattr(agent, "session_id", "") or ""),
+            },
+            on_event=_on_codex_event,
         )
 
     # NOTE: the user message is ALREADY appended to messages by the
     # standard run_conversation() flow (line ~11823) before the early
     # return reaches us. Do NOT append again — that would duplicate.
 
+    session_id = str(getattr(agent, "session_id", "") or "")
+    api_request_id = (
+        f"{session_id or 'codex'}:{turn_id or effective_task_id}:"
+        f"codex-app-server:{uuid.uuid4().hex[:8]}"
+    )
+    api_started_at = time.time()
+    platform = str(getattr(agent, "platform", "") or "")
+    model = str(getattr(agent, "model", "") or "")
+    provider = str(getattr(agent, "provider", "") or "")
+    base_url = str(getattr(agent, "base_url", "") or "")
+    api_mode = str(getattr(agent, "api_mode", "") or "")
+    hook_context = {
+        "task_id": effective_task_id,
+        "turn_id": turn_id,
+        "api_request_id": api_request_id,
+        "session_id": session_id,
+        "platform": platform,
+        "model": model,
+        "provider": provider,
+        "base_url": base_url,
+        "api_mode": api_mode,
+        "api_call_count": 1,
+    }
+    _invoke_runtime_hook(
+        "pre_api_request",
+        **hook_context,
+        user_message=original_user_message,
+        conversation_history=list(messages),
+        request_messages=list(messages),
+        message_count=len(messages),
+        tool_count=len(getattr(agent, "tools", None) or []),
+        started_at=api_started_at,
+        request={"transport": "codex_app_server"},
+    )
+
+    image_target = _infer_requested_image_count(user_message)
+    agent._codex_image_progress = {
+        "target": image_target,
+        "succeeded": 0,
+        "failed": 0,
+    }
+    touch_activity = getattr(agent, "_touch_activity", None)
+    if callable(touch_activity):
+        touch_activity("starting Codex turn")
+
     try:
-        turn = agent._codex_session.run_turn(user_input=user_message)
+        turn = agent._codex_session.run_turn(
+            user_input=user_message,
+            turn_timeout=_codex_turn_timeout_for_target(
+                image_target,
+                raphael_decision,
+            ),
+        )
     except Exception as exc:
         logger.exception("codex app-server turn failed")
+        _invoke_runtime_hook(
+            "api_request_error",
+            **hook_context,
+            api_duration=time.time() - api_started_at,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+        )
         # Crash → unconditionally drop the session so the next turn
         # respawns from scratch instead of reusing a dead client.
         try:
@@ -702,6 +1334,27 @@ def run_codex_app_server_turn(
         except Exception:
             pass
         agent._codex_session = None
+        auto_request = _plugin_auto_continue_request(
+            agent,
+            response_text="",
+            effective_task_id=effective_task_id,
+            turn_id=turn_id,
+            messages=messages,
+            recoverable_transport_error=True,
+            turn_error=str(exc),
+        )
+        continued = _run_plugin_auto_continuation(
+            agent,
+            auto_request=auto_request,
+            messages=messages,
+            effective_task_id=effective_task_id,
+            turn_id=turn_id,
+            should_review_memory=False,
+            raphael_decision=raphael_decision,
+            prior_api_calls=1,
+        )
+        if continued is not None:
+            return continued
         return {
             "final_response": (
                 f"Codex app-server turn failed: {exc}. "
@@ -713,6 +1366,64 @@ def run_codex_app_server_turn(
             "partial": True,
             "error": str(exc),
         }
+
+    api_duration = time.time() - api_started_at
+
+    if (
+        getattr(turn, "incomplete_turn_recovered", False)
+        and turn.error is None
+    ):
+        completed_story_media = _completed_story_video_media(
+            turn.projected_messages
+        )
+        progress = getattr(agent, "_codex_image_progress", None)
+        stale_text = turn.final_text
+        if completed_story_media:
+            turn.final_text = (
+                "故事影片已完成；已保留可交付的 MP4 成品。\n"
+                + "\n".join(completed_story_media)
+            )
+        elif isinstance(progress, dict) and (
+            int(progress.get("succeeded") or 0)
+            or int(progress.get("failed") or 0)
+        ):
+            turn.final_text = (
+                f"{_format_image_progress(progress)} "
+                "The Codex turn reached its time limit. Completed outputs "
+                "were preserved, and the session was reset so the next "
+                "message can continue safely."
+            )
+        if turn.final_text != stale_text:
+            for message in reversed(turn.projected_messages):
+                if (
+                    message.get("role") == "assistant"
+                    and message.get("content") == stale_text
+                ):
+                    message["content"] = turn.final_text
+                    break
+
+    if turn.error is None:
+        _invoke_runtime_hook(
+            "post_api_request",
+            **hook_context,
+            api_duration=api_duration,
+            started_at=api_started_at,
+            ended_at=time.time(),
+            finish_reason="interrupted" if turn.interrupted else "stop",
+            message_count=len(messages),
+            response_model=model,
+            response={"transport": "codex_app_server"},
+            assistant_content_chars=len(turn.final_text or ""),
+            assistant_tool_call_count=turn.tool_iterations,
+        )
+    else:
+        _invoke_runtime_hook(
+            "api_request_error",
+            **hook_context,
+            api_duration=api_duration,
+            error_type="CodexAppServerError",
+            error_message=str(turn.error),
+        )
 
     # If the turn signalled the underlying client is wedged (deadline
     # blown, post-tool watchdog tripped, OAuth refresh died, subprocess
@@ -736,7 +1447,8 @@ def run_codex_app_server_turn(
     if turn.projected_messages:
         messages.extend(turn.projected_messages)
 
-        # Persist the newly-projected assistant/tool messages ourselves.
+        # Persist the newly-projected assistant/tool messages ourselves after
+        # shared Raphael finalization and output transforms below.
         # This path is an early return that bypasses conversation_loop, whose
         # normal per-step _persist_session() calls would otherwise flush them.
         # The inbound user turn was already flushed at turn start
@@ -748,16 +1460,6 @@ def run_codex_app_server_turn(
         # we avoid the #860/#42039 duplicate user-message write (append_message
         # is a raw INSERT with no dedup, so a gateway re-write would duplicate
         # the already-flushed user turn). See gateway/run.py agent_persisted.
-        if getattr(agent, "_session_db", None) is not None:
-            try:
-                agent._flush_messages_to_session_db(messages)
-            except Exception:
-                logger.debug(
-                    "codex app-server projected-message flush failed",
-                    exc_info=True,
-                )
-
-
     # Counter ticks for the agent-improvement loop.
     # _turns_since_memory and _user_turn_count are ALREADY incremented
     # in the run_conversation() pre-loop block (lines ~11793-11817) so we
@@ -771,6 +1473,54 @@ def run_codex_app_server_turn(
     _record_codex_app_server_compaction(agent, turn)
     usage_result = _record_codex_app_server_usage(agent, turn)
     api_calls = 1
+    final_text = turn.final_text
+    from agent.raphael.finalization import (
+        enforce_raphael_completion,
+        record_raphael_finalization_outcome,
+        replace_terminal_assistant_response,
+    )
+
+    raphael_finalization = enforce_raphael_completion(
+        decision=raphael_decision,
+        final_response=final_text,
+        messages=messages,
+    )
+    if not turn.interrupted:
+        record_raphael_finalization_outcome(
+            decision=raphael_decision,
+            result=raphael_finalization,
+        )
+    final_text = raphael_finalization.final_response
+    if final_text and not turn.interrupted:
+        replace_terminal_assistant_response(messages, final_text)
+
+    if (
+        final_text
+        and not turn.interrupted
+        and raphael_finalization.status != "blocked_unverified_completion"
+    ):
+        for hook_result in _invoke_runtime_hook(
+            "transform_llm_output",
+            response_text=final_text,
+            session_id=session_id,
+            model=model,
+            platform=platform,
+        ):
+            if isinstance(hook_result, str) and hook_result:
+                final_text = hook_result
+                replace_terminal_assistant_response(messages, final_text)
+                break
+        _invoke_runtime_hook(
+            "post_llm_call",
+            session_id=session_id,
+            task_id=effective_task_id,
+            turn_id=turn_id,
+            user_message=original_user_message,
+            assistant_response=final_text,
+            conversation_history=list(messages),
+            model=model,
+            platform=platform,
+        )
 
     # Now check the skill nudge AFTER iters were incremented — same
     # pattern the chat_completions path uses (line ~15432).
@@ -789,7 +1539,7 @@ def run_codex_app_server_turn(
         try:
             agent._sync_external_memory_for_turn(
                 original_user_message=original_user_message,
-                final_response=turn.final_text,
+                final_response=final_text,
                 interrupted=False,
                 messages=messages,
             )
@@ -800,7 +1550,7 @@ def run_codex_app_server_turn(
     # path (line ~15449). Only fires when a trigger actually tripped AND
     # we have a real final response.
     if (
-        turn.final_text
+        final_text
         and not turn.interrupted
         and (should_review_memory or should_review_skills)
     ):
@@ -813,11 +1563,58 @@ def run_codex_app_server_turn(
         except Exception:
             logger.debug("background review spawn raised", exc_info=True)
 
+    if getattr(agent, "_session_db", None) is not None:
+        try:
+            agent._flush_messages_to_session_db(messages)
+        except Exception:
+            logger.debug(
+                "codex app-server projected-message flush failed",
+                exc_info=True,
+            )
+
+    recoverable_transport_error = (
+        bool(turn.interrupted)
+        and bool(turn.error)
+        and bool(getattr(turn, "should_retire", False))
+        and int(getattr(turn, "tool_iterations", 0) or 0) > 0
+        and bool(final_text)
+        and "went silent" in str(turn.error).lower()
+        and "after a tool result" in str(turn.error).lower()
+    )
+    auto_request: dict[str, str] | None = None
+    if (not turn.interrupted and turn.error is None) or recoverable_transport_error:
+        auto_request = _plugin_auto_continue_request(
+            agent,
+            response_text=final_text,
+            effective_task_id=effective_task_id,
+            turn_id=turn_id,
+            messages=messages,
+            recoverable_transport_error=recoverable_transport_error,
+            turn_error=str(turn.error or ""),
+        )
+    continued = _run_plugin_auto_continuation(
+        agent,
+        auto_request=auto_request,
+        messages=messages,
+        effective_task_id=effective_task_id,
+        turn_id=turn_id,
+        should_review_memory=False,
+        raphael_decision=raphael_decision,
+        prior_api_calls=api_calls,
+    )
+    if continued is not None:
+        return continued
+    agent._plugin_auto_continue_count = 0
+
     return {
-        "final_response": turn.final_text,
+        "final_response": final_text,
         "messages": messages,
         "api_calls": api_calls,
-        "completed": not turn.interrupted and turn.error is None,
+        "completed": (
+            not turn.interrupted
+            and turn.error is None
+            and raphael_finalization.status != "blocked_unverified_completion"
+        ),
         "partial": turn.interrupted or turn.error is not None,
         "error": turn.error,
         # The codex app-server runtime IS an early-return path that bypasses
@@ -834,6 +1631,7 @@ def run_codex_app_server_turn(
         "agent_persisted": True,
         "codex_thread_id": turn.thread_id,
         "codex_turn_id": turn.turn_id,
+        "raphael_finalization": raphael_finalization.to_dict(),
         **usage_result,
     }
 

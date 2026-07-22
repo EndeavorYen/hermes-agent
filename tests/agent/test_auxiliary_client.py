@@ -532,6 +532,81 @@ class TestReadCodexAccessToken:
         result = _read_codex_access_token()
         assert result == "plain-token-no-jwt"
 
+    def test_app_server_mode_falls_back_to_codex_cli_token_read_only(
+        self, tmp_path, monkeypatch
+    ):
+        import base64
+        import time as _time
+
+        payload = base64.urlsafe_b64encode(
+            json.dumps({"exp": int(_time.time()) + 3600}).encode()
+        ).rstrip(b"=").decode()
+        token = f"header.{payload}.sig"
+        codex_home = tmp_path / "codex-home"
+        codex_home.mkdir()
+        auth_path = codex_home / "auth.json"
+        auth_path.write_text(
+            json.dumps(
+                {
+                    "auth_mode": "chatgpt",
+                    "tokens": {
+                        "access_token": token,
+                        "refresh_token": "must-not-be-used",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        before = auth_path.read_bytes()
+        monkeypatch.setenv("CODEX_HOME", str(codex_home))
+        monkeypatch.setattr(
+            "agent.auxiliary_client._select_pool_entry", lambda _provider: (False, None)
+        )
+        monkeypatch.setattr(
+            "hermes_cli.auth._read_codex_tokens",
+            lambda: (_ for _ in ()).throw(
+                RuntimeError("Hermes OAuth store is empty")
+            ),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"model": {"openai_runtime": "codex_app_server"}},
+        )
+
+        assert _read_codex_access_token() == token
+        assert auth_path.read_bytes() == before
+
+    def test_codex_cli_token_is_not_used_when_app_server_is_disabled(
+        self, tmp_path, monkeypatch
+    ):
+        codex_home = tmp_path / "codex-home"
+        codex_home.mkdir()
+        (codex_home / "auth.json").write_text(
+            json.dumps(
+                {
+                    "auth_mode": "chatgpt",
+                    "tokens": {"access_token": "cli-token"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("CODEX_HOME", str(codex_home))
+        monkeypatch.setattr(
+            "agent.auxiliary_client._select_pool_entry", lambda _provider: (False, None)
+        )
+        monkeypatch.setattr(
+            "hermes_cli.auth._read_codex_tokens",
+            lambda: (_ for _ in ()).throw(
+                RuntimeError("Hermes OAuth store is empty")
+            ),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"model": {"openai_runtime": "auto"}},
+        )
+
+        assert _read_codex_access_token() is None
+
 
 class TestResolveXaiOAuthForAux:
     def test_uses_pool_backed_credentials_without_singleton(self, tmp_path, monkeypatch):
@@ -4201,12 +4276,13 @@ class TestCodexAdapterReasoningTranslation:
 
     def test_reasoning_effort_medium_translated_to_top_level(self):
         adapter, captured = self._build_adapter()
-        adapter.create(
+        response = adapter.create(
             messages=[{"role": "user", "content": "hi"}],
             extra_body={"reasoning": {"effort": "medium"}},
         )
         assert captured.get("reasoning") == {"effort": "medium", "summary": "auto"}
         assert captured.get("include") == ["reasoning.encrypted_content"]
+        assert response.id == "resp_test"
 
     def test_reasoning_effort_minimal_clamped_to_low(self):
         """Codex backend rejects 'minimal'; adapter clamps to 'low' per main transport."""
@@ -5095,6 +5171,212 @@ class TestAuxiliaryClientPoisonedCacheEviction:
         finally:
             with _client_cache_lock:
                 _client_cache.clear()
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_rebuilds_closed_client_before_same_provider_retry(self):
+        """A closed transport cannot be retried on the same cached object."""
+        from agent.auxiliary_client import _client_cache, _client_cache_lock
+
+        closed_error = ConnectionError("Connection error")
+        closed_error.__cause__ = RuntimeError(
+            "Cannot send a request, as the client has been closed."
+        )
+        poisoned = MagicMock(name="poisoned_async_client")
+        poisoned.base_url = "https://chatgpt.com/backend-api/codex"
+        poisoned.chat.completions.create = AsyncMock(side_effect=closed_error)
+        fresh = MagicMock(name="fresh_async_client")
+        fresh.base_url = "https://chatgpt.com/backend-api/codex"
+        fresh.chat.completions.create = AsyncMock(
+            return_value=_DummyResponse("fresh-vision")
+        )
+
+        cache_key = ("openai-codex", True, None, None, None)
+        with _client_cache_lock:
+            _client_cache.clear()
+            _client_cache[cache_key] = (poisoned, "gpt-5.5", None)
+
+        try:
+            resolve_calls = []
+
+            def resolve_vision(**_kwargs):
+                resolve_calls.append(1)
+                if len(resolve_calls) == 1:
+                    return "openai-codex", poisoned, "gpt-5.5"
+                with _client_cache_lock:
+                    assert all(
+                        entry[0] is not poisoned
+                        for entry in _client_cache.values()
+                    ), "poisoned cache entry must be removed before refresh"
+                return "openai-codex", fresh, "gpt-5.5"
+
+            with patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("openai-codex", "gpt-5.5", None, None, None),
+            ), patch(
+                "agent.auxiliary_client.resolve_vision_provider_client",
+                side_effect=resolve_vision,
+            ):
+                response = await async_call_llm(
+                    task="vision",
+                    messages=[{"role": "user", "content": "inspect pose"}],
+                )
+
+            assert response.choices[0].message.content == "fresh-vision"
+            assert len(resolve_calls) == 2
+            assert poisoned.chat.completions.create.await_count == 1
+            assert fresh.chat.completions.create.await_count == 1
+            with _client_cache_lock:
+                assert cache_key not in _client_cache
+        finally:
+            with _client_cache_lock:
+                _client_cache.clear()
+
+    @pytest.mark.asyncio
+    async def test_async_closed_uncached_client_does_not_evict_healthy_provider_cache(self):
+        from agent.auxiliary_client import _client_cache, _client_cache_lock
+
+        closed_error = ConnectionError("Connection error")
+        closed_error.__cause__ = RuntimeError(
+            "Cannot send a request, as the client has been closed."
+        )
+        poisoned = MagicMock(name="uncached_poisoned_async_client")
+        poisoned.base_url = "https://chatgpt.com/backend-api/codex"
+        poisoned.chat.completions.create = AsyncMock(side_effect=closed_error)
+        fresh = MagicMock(name="fresh_async_client")
+        fresh.base_url = "https://chatgpt.com/backend-api/codex"
+        fresh.chat.completions.create = AsyncMock(
+            return_value=_DummyResponse("fresh-vision")
+        )
+        healthy = MagicMock(name="healthy_parallel_client")
+        healthy_key = ("openai-codex", True, "healthy", None, None)
+        with _client_cache_lock:
+            _client_cache.clear()
+            _client_cache[healthy_key] = (healthy, "gpt-5.5", None)
+
+        try:
+            with patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("openai-codex", "gpt-5.5", None, None, None),
+            ), patch(
+                "agent.auxiliary_client.resolve_vision_provider_client",
+                side_effect=[
+                    ("openai-codex", poisoned, "gpt-5.5"),
+                    ("openai-codex", fresh, "gpt-5.5"),
+                ],
+            ):
+                response = await async_call_llm(
+                    task="vision",
+                    messages=[{"role": "user", "content": "inspect pose"}],
+                )
+
+            assert response.choices[0].message.content == "fresh-vision"
+            with _client_cache_lock:
+                assert _client_cache[healthy_key][0] is healthy
+        finally:
+            with _client_cache_lock:
+                _client_cache.clear()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("base_url", "expected_provider"),
+        [
+            ("https://chatgpt.com/backend-api/codex", "openai-codex"),
+            ("https://openrouter.ai/api/v1", "openrouter"),
+            ("https://api.x.ai/v1", "xai"),
+            ("https://llm.example.test/v1", "custom"),
+        ],
+    )
+    async def test_async_closed_auto_route_rebuilds_selected_provider(
+        self,
+        base_url,
+        expected_provider,
+    ):
+        """A poisoned auto route must not switch providers during its retry."""
+        closed_error = ConnectionError("Connection error")
+        closed_error.__cause__ = RuntimeError(
+            "Cannot send a request, as the client has been closed."
+        )
+        poisoned = MagicMock(name="poisoned_auto_client")
+        poisoned.base_url = base_url
+        poisoned.api_key = "selected-route-key"
+        poisoned.chat.completions.create = AsyncMock(side_effect=closed_error)
+        fresh = MagicMock(name="fresh_codex_client")
+        fresh.base_url = base_url
+        fresh.chat.completions.create = AsyncMock(
+            return_value=_DummyResponse("fresh-compression")
+        )
+
+        with patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", None, None, None, None),
+        ), patch(
+            "agent.auxiliary_client._get_cached_client",
+            side_effect=[
+                (poisoned, "gpt-5.5"),
+                (fresh, "gpt-5.5"),
+            ],
+        ) as get_client:
+            response = await async_call_llm(
+                task="summary",
+                messages=[{"role": "user", "content": "summarize"}],
+            )
+
+        assert response.choices[0].message.content == "fresh-compression"
+        assert get_client.call_args_list[0].args[0] == "auto"
+        retry_call = get_client.call_args_list[1]
+        assert retry_call.args[0] == expected_provider
+        assert retry_call.args[1] == "gpt-5.5"
+        if expected_provider == "custom":
+            assert retry_call.kwargs["base_url"] == base_url
+            assert retry_call.kwargs["api_key"] == "selected-route-key"
+        assert poisoned.chat.completions.create.await_count == 1
+        assert fresh.chat.completions.create.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_async_closed_auto_route_preserves_xai_oauth_transport(self):
+        from agent.auxiliary_client import (
+            AsyncCodexAuxiliaryClient,
+            CodexAuxiliaryClient,
+        )
+
+        closed_error = ConnectionError("Connection error")
+        closed_error.__cause__ = RuntimeError(
+            "Cannot send a request, as the client has been closed."
+        )
+        real = MagicMock(name="xai_oauth_real_client")
+        real.api_key = "xai-oauth-token"
+        real.base_url = "https://api.x.ai/v1"
+        poisoned = AsyncCodexAuxiliaryClient(
+            CodexAuxiliaryClient(real, "grok-4.20-multi-agent")
+        )
+        poisoned.chat.completions.create = AsyncMock(side_effect=closed_error)
+        fresh = MagicMock(name="fresh_xai_oauth_client")
+        fresh.base_url = "https://api.x.ai/v1"
+        fresh.chat.completions.create = AsyncMock(
+            return_value=_DummyResponse("fresh-xai-oauth")
+        )
+
+        with patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", None, None, None, None),
+        ), patch(
+            "agent.auxiliary_client._get_cached_client",
+            side_effect=[
+                (poisoned, "grok-4.20-multi-agent"),
+                (fresh, "grok-4.20-multi-agent"),
+            ],
+        ) as get_client:
+            response = await async_call_llm(
+                task="summary",
+                messages=[{"role": "user", "content": "summarize"}],
+            )
+
+        assert response.choices[0].message.content == "fresh-xai-oauth"
+        retry_call = get_client.call_args_list[1]
+        assert retry_call.args[:2] == (
+            "xai-oauth",
+            "grok-4.20-multi-agent",
+        )
 
 
 # ---------------------------------------------------------------------------

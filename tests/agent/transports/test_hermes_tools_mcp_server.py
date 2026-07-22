@@ -9,6 +9,7 @@ build helper assembles a server when the SDK is present.
 from __future__ import annotations
 
 import inspect
+import json
 from typing import get_args
 
 from agent.transports.hermes_tools_mcp_server import (
@@ -126,10 +127,7 @@ class TestSignatureFromSchema:
         sig, annots = _signature_from_schema(schema)
         assert sig.return_annotation == str
 
-
-
-
-
+import pytest
 
 class TestModuleSurface:
     def test_module_imports_clean(self):
@@ -168,6 +166,277 @@ class TestModuleSurface:
             "skill_view",
         ):
             assert required in EXPOSED_TOOLS, f"missing {required!r}"
+
+    def test_story_video_control_tools_are_exposed(self):
+        from agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
+
+        assert "story_video_control" in EXPOSED_TOOLS
+        assert "story_video_quality_control" in EXPOSED_TOOLS
+        assert "story_video_voice_manager" in EXPOSED_TOOLS
+        assert "story_video_audio_director" in EXPOSED_TOOLS
+
+    @pytest.mark.asyncio
+    async def test_story_video_tools_advertise_authoritative_schema_and_accept_top_level_args(
+        self, tmp_path, monkeypatch
+    ):
+        import agent.transports.hermes_tools_mcp_server as m
+        import model_tools
+        from plugins.story_video.schemas import (
+            STORY_VIDEO_CONTROL_SCHEMA,
+            STORY_VIDEO_QUALITY_CONTROL_SCHEMA,
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+        monkeypatch.setattr(
+            model_tools,
+            "get_tool_definitions",
+            lambda **_: [
+                {"type": "function", "function": STORY_VIDEO_CONTROL_SCHEMA},
+                {
+                    "type": "function",
+                    "function": STORY_VIDEO_QUALITY_CONTROL_SCHEMA,
+                },
+            ],
+        )
+        monkeypatch.setattr(
+            model_tools,
+            "handle_function_call",
+            lambda name, args, **_: json.dumps(
+                {
+                    "success": False,
+                    "error_type": "story_video_context_missing",
+                    "tool": name,
+                    "args": args,
+                }
+            ),
+        )
+        server = m._build_server()
+        quality_tool = server._tool_manager.get_tool("story_video_quality_control")
+        control_tool = server._tool_manager.get_tool("story_video_control")
+
+        assert quality_tool is not None
+        assert control_tool is not None
+        assert quality_tool.parameters == STORY_VIDEO_QUALITY_CONTROL_SCHEMA["parameters"]
+        assert "kwargs" not in quality_tool.parameters.get("properties", {})
+        assert "run_id" in quality_tool.parameters["properties"]
+        assert "project_dir" in quality_tool.parameters["properties"]
+        actions = quality_tool.parameters["properties"]["action"]["enum"]
+        assert "run_batch_chunk" in actions
+
+        routed = await quality_tool.run(
+            {
+                "action": "run_batch_chunk",
+                "run_id": "run-1",
+                "project_dir": "/tmp/story-video-run-1",
+                "authorization_id": "authorization-1",
+            }
+        )
+        assert '"run_id": "run-1"' in str(routed)
+        assert '"project_dir": "/tmp/story-video-run-1"' in str(routed)
+
+        result = await control_tool.run({"action": "status"})
+        assert "story_video_context_missing" in str(result)
+
+        legacy_result = await control_tool.run({"kwargs": {"action": "status"}})
+        assert "story_video_context_missing" in str(legacy_result)
+
+    def test_mcp_dispatch_forwards_hermes_session_id(self, monkeypatch):
+        import agent.transports.hermes_tools_mcp_server as m
+
+        observed = {}
+
+        def fake_handle(name, args, **kwargs):
+            observed.update({"name": name, "args": args, **kwargs})
+            return "ok"
+
+        monkeypatch.setenv("HERMES_SESSION_ID", "story-session-1")
+
+        result = m._dispatch_tool(
+            "story_video_control",
+            {"action": "validate"},
+            handle_function_call=fake_handle,
+        )
+
+        assert result == "ok"
+        assert observed["session_id"] == "story-session-1"
+
+    def test_stateful_story_tools_advertise_verified_run_identity(self):
+        from plugins.story_video.schemas import (
+            STORY_VIDEO_AUDIO_DIRECTOR_SCHEMA,
+            STORY_VIDEO_CONTROL_SCHEMA,
+        )
+
+        for schema in (
+            STORY_VIDEO_CONTROL_SCHEMA,
+            STORY_VIDEO_AUDIO_DIRECTOR_SCHEMA,
+        ):
+            properties = schema["parameters"]["properties"]
+            assert properties["run_id"]["type"] == "string"
+            assert properties["project_dir"]["type"] == "string"
+
+    def test_mcp_dispatch_unwraps_fastmcp_kwargs_envelope(self):
+        import agent.transports.hermes_tools_mcp_server as m
+
+        observed = {}
+
+        def fake_handle(name, args, **kwargs):
+            observed.update({"name": name, "args": args, **kwargs})
+            return "ok"
+
+        result = m._dispatch_tool(
+            "image_generate",
+            {"kwargs": {"prompt": "Triassic river", "provider": "openai-codex"}},
+            handle_function_call=fake_handle,
+        )
+
+        assert result == "ok"
+        assert observed["args"] == {
+            "prompt": "Triassic river",
+            "provider": "openai-codex",
+        }
+
+    def test_mcp_dispatch_decodes_string_fastmcp_kwargs_envelope(self):
+        import agent.transports.hermes_tools_mcp_server as m
+
+        observed = {}
+
+        def fake_handle(name, args, **kwargs):
+            observed.update({"name": name, "args": args, **kwargs})
+            return "ok"
+
+        result = m._dispatch_tool(
+            "story_video_control",
+            {"kwargs": '{"action":"validate","phase":"keyframes"}'},
+            handle_function_call=fake_handle,
+        )
+
+        assert result == "ok"
+        assert observed["args"] == {
+            "action": "validate",
+            "phase": "keyframes",
+        }
+
+    def test_mcp_dispatch_recovers_story_session_from_verified_run_context(
+        self, tmp_path, monkeypatch
+    ):
+        import agent.transports.hermes_tools_mcp_server as m
+        from plugins.story_video.state import OperatorCall, StoryVideoStateStore
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+        store = StoryVideoStateStore()
+        context = store.create_or_load(
+            source_key="source-1",
+            session_id="story-session-1",
+            call=OperatorCall(action="start", topic="Triassic"),
+            original_request="story video",
+        )
+        observed = {}
+
+        def fake_handle(name, args, **kwargs):
+            observed.update({"name": name, "args": args, **kwargs})
+            return "ok"
+
+        result = m._dispatch_tool(
+            "story_video_control",
+            {
+                "kwargs": {
+                    "action": "status",
+                    "run_id": context.run_id,
+                    "project_dir": str(context.project_dir),
+                }
+            },
+            handle_function_call=fake_handle,
+        )
+
+        assert result == "ok"
+        assert observed["session_id"] == "story-session-1"
+
+    def test_mcp_dispatch_recovers_story_session_from_scoped_authorization(
+        self, tmp_path, monkeypatch
+    ):
+        import agent.transports.hermes_tools_mcp_server as m
+        from plugins.story_video.state import OperatorCall, StoryVideoStateStore
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+        store = StoryVideoStateStore()
+        context = store.create_or_load(
+            source_key="source-1",
+            session_id="story-session-1",
+            call=OperatorCall(action="start", topic="Triassic", auto_mode=True),
+            original_request="story video full auto",
+        )
+        authorization = store.autopilot_authorization(context)
+        assert authorization is not None
+        observed = {}
+
+        def fake_handle(name, args, **kwargs):
+            observed.update({"name": name, "args": args, **kwargs})
+            return "ok"
+
+        result = m._dispatch_tool(
+            "story_video_quality_control",
+            {
+                "action": "run_batch_chunk",
+                "authorization_id": authorization["authorization_id"],
+            },
+            handle_function_call=fake_handle,
+        )
+
+        assert result == "ok"
+        assert observed["session_id"] == "story-session-1"
+
+        store.create_or_load(
+            source_key="source-1",
+            session_id="story-session-1",
+            call=OperatorCall(action="stop"),
+            original_request="stop story video",
+        )
+        observed.clear()
+        m._dispatch_tool(
+            "story_video_quality_control",
+            {
+                "action": "run_batch_chunk",
+                "authorization_id": authorization["authorization_id"],
+            },
+            handle_function_call=fake_handle,
+        )
+        assert observed["session_id"] is None
+
+    def test_mcp_dispatch_rejects_mismatched_story_run_context(
+        self, tmp_path, monkeypatch
+    ):
+        import agent.transports.hermes_tools_mcp_server as m
+        from plugins.story_video.state import OperatorCall, StoryVideoStateStore
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+        store = StoryVideoStateStore()
+        context = store.create_or_load(
+            source_key="source-1",
+            session_id="story-session-1",
+            call=OperatorCall(action="start", topic="Triassic"),
+            original_request="story video",
+        )
+        observed = {}
+
+        def fake_handle(name, args, **kwargs):
+            observed.update({"name": name, "args": args, **kwargs})
+            return "ok"
+
+        m._dispatch_tool(
+            "story_video_control",
+            {
+                "action": "status",
+                "run_id": "wrong-run-id",
+                "project_dir": str(context.project_dir),
+            },
+            handle_function_call=fake_handle,
+        )
+
+        assert observed["session_id"] is None
 
     def test_agent_loop_tools_not_exposed(self):
         """delegate_task / memory / session_search / todo require the

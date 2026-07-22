@@ -20,6 +20,10 @@ Scope (what we expose):
   - image_generate                       — image generation
   - skill_view, skills_list              — Hermes' skill library
   - text_to_speech                       — TTS
+  - story_video_control /                — stateful story-video phase proof,
+    story_video_voice_manager /             versioned local voices, character
+    story_video_audio_director /            casting, and OpenAI vision selection
+    story_video_quality_control
   - kanban_* (complete/block/comment/    — kanban worker + orchestrator
     heartbeat/show/list/create/            handoff (stateless: read env var,
     unblock/link)                          write ~/.hermes/kanban.db)
@@ -127,6 +131,10 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "skill_view",
     "skills_list",
     "text_to_speech",
+    "story_video_control",
+    "story_video_voice_manager",
+    "story_video_audio_director",
+    "story_video_quality_control",
     # Kanban worker handoff tools — gated on HERMES_KANBAN_TASK env var
     # (set by the kanban dispatcher when spawning a worker). Without these
     # in the callback, a worker spawned with openai_runtime=codex_app_server
@@ -147,6 +155,62 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "kanban_unblock",
     "kanban_link",
 )
+
+
+def _dispatch_session_id(kwargs: dict[str, Any]) -> str | None:
+    inherited = os.environ.get("HERMES_SESSION_ID") or None
+    run_id = str(kwargs.get("run_id") or "").strip()
+    project_dir = str(kwargs.get("project_dir") or "").strip()
+    authorization_id = str(kwargs.get("authorization_id") or "").strip()
+    if not ((run_id and project_dir) or authorization_id):
+        return inherited
+    try:
+        from plugins.story_video.state import StoryVideoStateStore
+
+        store = StoryVideoStateStore()
+        if run_id and project_dir:
+            context = store.for_run(run_id=run_id, project_dir=project_dir)
+        else:
+            context = store.for_autopilot_authorization(authorization_id)
+    except Exception:
+        logger.debug("could not resolve story-video run context", exc_info=True)
+        return inherited
+    if context is None:
+        return inherited
+    if inherited and inherited in context.session_ids:
+        return inherited
+    for session_id in reversed(context.session_ids):
+        indexed = store.for_session(session_id)
+        if indexed is not None and indexed.run_id == context.run_id:
+            return session_id
+    return inherited
+
+
+def _dispatch_tool(
+    tool_name: str,
+    kwargs: dict[str, Any],
+    *,
+    handle_function_call: Any = None,
+) -> str:
+    if handle_function_call is None:
+        from model_tools import handle_function_call as dispatch
+    else:
+        dispatch = handle_function_call
+    normalized_kwargs = kwargs or {}
+    if set(normalized_kwargs) == {"kwargs"}:
+        envelope = normalized_kwargs["kwargs"]
+        if isinstance(envelope, str):
+            try:
+                envelope = json.loads(envelope)
+            except (TypeError, ValueError):
+                envelope = None
+        if isinstance(envelope, dict):
+            normalized_kwargs = envelope
+    return dispatch(
+        tool_name,
+        normalized_kwargs,
+        session_id=_dispatch_session_id(normalized_kwargs),
+    )
 
 
 def _build_server() -> Any:
@@ -187,6 +251,27 @@ def _build_server() -> Any:
 
     exposed_count = 0
 
+    def _attach_authoritative_schema(tool_name: str, schema: dict[str, Any]) -> None:
+        from pydantic import ConfigDict
+        from mcp.server.fastmcp.utilities.func_metadata import ArgModelBase
+
+        class AuthoritativeArguments(ArgModelBase):
+            model_config = ConfigDict(
+                arbitrary_types_allowed=True,
+                extra="allow",
+            )
+
+            def model_dump_one_level(self) -> dict[str, Any]:
+                values = super().model_dump_one_level()
+                values.update(self.model_extra or {})
+                return values
+
+        tool = mcp._tool_manager.get_tool(tool_name)
+        if tool is None:
+            raise RuntimeError(f"FastMCP did not register tool {tool_name!r}")
+        tool.parameters = json.loads(json.dumps(schema))
+        tool.fn_metadata.arg_model = AuthoritativeArguments
+
     for name in EXPOSED_TOOLS:
         spec = all_defs.get(name)
         if spec is None:
@@ -208,10 +293,11 @@ def _build_server() -> Any:
 
             def _dispatch(**kwargs: Any) -> str:
                 try:
-                    # Filter out None values before dispatch so unset optionals
-                    # aren't forwarded to the handler.
-                    args = {k: v for k, v in kwargs.items() if v is not None}
-                    return handle_function_call(tool_name, args or {})
+                    return _dispatch_tool(
+                        tool_name,
+                        kwargs,
+                        handle_function_call=handle_function_call,
+                    )
                 except Exception as exc:
                     logger.exception("tool %s raised", tool_name)
                     return json.dumps({"error": str(exc), "tool": tool_name})
@@ -234,6 +320,8 @@ def _build_server() -> Any:
             # generation there.
             handler = _make_handler(name, params_schema)
             handler = mcp.tool(name=name, description=description)(handler)
+
+        _attach_authoritative_schema(name, params_schema)
 
         exposed_count += 1
 

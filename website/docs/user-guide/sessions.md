@@ -700,9 +700,29 @@ sessions:
   retention_days: 90        # keep ended sessions this many days
   vacuum_after_prune: true  # reclaim disk space after a pruning sweep
   min_interval_hours: 24    # don't re-run the sweep more often than this
+
+# Cron runs are internal execution records and are bounded independently even
+# when user-conversation auto_prune is disabled. A run must be recent and among
+# the newest per_job executions for that job to survive maintenance.
+cron:
+  min_agent_interval_minutes: 30
+  allow_high_frequency_agent_jobs: false
+  session_retention:
+    enabled: true
+    days: 14
+    per_job: 50
+    min_interval_hours: 24
+    vacuum_after_prune: true
 ```
 
-Active sessions are never auto-pruned, regardless of age.
+Active sessions are never auto-pruned, regardless of age. Cron output files
+remain governed separately by `cron.output_retention`; pruning an internal
+session does not remove the job definition or its retained output report.
+By default Hermes also rejects infinite LLM-backed schedules faster than 30
+minutes. Use a finite repeat count or `no_agent` script for short intervals;
+the explicit `allow_high_frequency_agent_jobs` override is for operators who
+have separately bounded cost and storage. The equivalent process-level override
+is `HERMES_CRON_ALLOW_HIGH_FREQUENCY_AGENT_JOBS=1`.
 
 ### Manual Cleanup
 

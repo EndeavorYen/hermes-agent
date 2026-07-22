@@ -342,6 +342,45 @@ class TestJobCRUD:
         assert job["deliver"] == "local"
 
 
+class TestAgentScheduleSafety:
+    def test_rejects_unbounded_high_frequency_interval_agent(self, tmp_cron_dir, monkeypatch):
+        monkeypatch.delenv("HERMES_CRON_ALLOW_HIGH_FREQUENCY_AGENT_JOBS", raising=False)
+        with pytest.raises(ValueError, match="unbounded agent cron"):
+            create_job(prompt="keep asking", schedule="every 5m")
+        assert load_jobs() == []
+
+    def test_rejects_unbounded_high_frequency_cron_expression(self, tmp_cron_dir, monkeypatch):
+        monkeypatch.delenv("HERMES_CRON_ALLOW_HIGH_FREQUENCY_AGENT_JOBS", raising=False)
+        with pytest.raises(ValueError, match="unbounded agent cron"):
+            create_job(prompt="keep asking", schedule="*/5 * * * *")
+
+    def test_allows_boundary_finite_and_no_agent_jobs(self, tmp_cron_dir):
+        boundary = create_job(prompt="half hourly", schedule="every 30m")
+        finite = create_job(prompt="bounded burst", schedule="every 5m", repeat=3)
+        scripted = create_job(
+            prompt=None, schedule="every 5m", script="echo healthy", no_agent=True
+        )
+        assert boundary["repeat"]["times"] is None
+        assert finite["repeat"]["times"] == 3
+        assert scripted["no_agent"] is True
+
+    def test_operator_can_explicitly_allow_high_frequency_agent(self, tmp_cron_dir, monkeypatch):
+        monkeypatch.delenv("HERMES_CRON_ALLOW_HIGH_FREQUENCY_AGENT_JOBS", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"cron": {"allow_high_frequency_agent_jobs": True}},
+        )
+        job = create_job(prompt="intentional watcher", schedule="every 5m")
+        assert job["repeat"]["times"] is None
+
+    def test_update_cannot_bypass_high_frequency_guard(self, tmp_cron_dir, monkeypatch):
+        monkeypatch.delenv("HERMES_CRON_ALLOW_HIGH_FREQUENCY_AGENT_JOBS", raising=False)
+        job = create_job(prompt="safe", schedule="every 1h")
+        with pytest.raises(ValueError, match="unbounded agent cron"):
+            update_job(job["id"], {"schedule": "every 5m"})
+        assert get_job(job["id"])["schedule"]["minutes"] == 60
+
+
 class TestUpdateJob:
     def test_update_name(self, tmp_cron_dir):
         job = create_job(prompt="Check server status", schedule="every 1h", name="Old Name")

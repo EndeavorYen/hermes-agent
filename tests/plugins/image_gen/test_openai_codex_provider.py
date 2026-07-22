@@ -91,6 +91,85 @@ class TestAvailability:
         assert codex_plugin.OpenAICodexImageGenProvider().is_available() is False
 
 
+class TestCodexAppServerTokenFallback:
+    @staticmethod
+    def _write_cli_auth(tmp_path, token: str) -> None:
+        import json
+
+        codex_home = tmp_path / "codex-home"
+        codex_home.mkdir()
+        (codex_home / "auth.json").write_text(
+            json.dumps(
+                {
+                    "auth_mode": "chatgpt",
+                    "tokens": {
+                        "access_token": token,
+                        "refresh_token": "must-not-be-read-or-mutated",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_app_server_mode_can_read_codex_cli_access_token_read_only(
+        self, tmp_path, monkeypatch
+    ):
+        import base64
+        import json
+        import time
+
+        payload = base64.urlsafe_b64encode(
+            json.dumps({"exp": int(time.time()) + 3600}).encode()
+        ).decode().rstrip("=")
+        token = f"header.{payload}.sig"
+        self._write_cli_auth(tmp_path, token)
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_codex_access_token", lambda: None
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"model": {"openai_runtime": "codex_app_server"}},
+        )
+
+        assert codex_plugin._read_codex_access_token() == token
+
+    def test_cli_token_fallback_is_disabled_outside_app_server_mode(
+        self, tmp_path, monkeypatch
+    ):
+        self._write_cli_auth(tmp_path, "cli-token")
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_codex_access_token", lambda: None
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"model": {"openai_runtime": "auto"}},
+        )
+
+        assert codex_plugin._read_codex_access_token() is None
+
+    def test_expired_cli_token_is_rejected(self, tmp_path, monkeypatch):
+        import base64
+        import json
+        import time
+
+        payload = base64.urlsafe_b64encode(
+            json.dumps({"exp": int(time.time()) - 60}).encode()
+        ).decode().rstrip("=")
+        self._write_cli_auth(tmp_path, f"header.{payload}.sig")
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_codex_access_token", lambda: None
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"model": {"openai_runtime": "codex_app_server"}},
+        )
+
+        assert codex_plugin._read_codex_access_token() is None
+
+
 # ── Generate ────────────────────────────────────────────────────────────────
 
 
@@ -121,9 +200,9 @@ class TestGenerate:
         saved = Path(result["image"])
         assert saved.exists()
         assert saved.parent == tmp_path / "cache" / "images"
-        # Filename prefix differs from the API-key plugin so cache audits can
-        # tell the two backends apart.
-        assert saved.name.startswith("openai_codex_")
+        # Provider and model stay visible while the timestamp/random suffix
+        # keeps Slack delivery names collision-safe.
+        assert saved.name.startswith("openai-codex-gpt-image-2-medium_")
 
     def test_codex_stream_request_shape(self, provider, monkeypatch):
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
@@ -286,6 +365,29 @@ class TestGenerate:
             },
         }
         assert codex_plugin._extract_image_b64(payload) == _b64_png()
+
+    def test_completed_response_exposes_provider_response_id(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        collected = codex_plugin._extract_image_generation_result(
+            {
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_image_123",
+                    "output": [
+                        {
+                            "type": "image_generation_call",
+                            "result": _b64_png(),
+                        }
+                    ],
+                },
+            }
+        )
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", lambda *a, **kw: collected)
+
+        result = provider.generate("a cat")
+
+        assert result["success"] is True
+        assert result["response_id"] == "resp_image_123"
 
     def test_empty_response_returns_error(self, provider, monkeypatch):
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")

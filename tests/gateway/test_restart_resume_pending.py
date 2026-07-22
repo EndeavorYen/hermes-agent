@@ -32,11 +32,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from gateway import run as gateway_run
 from gateway.config import GatewayConfig, HomeChannel, Platform
 from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.run import (
     _AGENT_PENDING_SENTINEL,
     _auto_continue_freshness_window,
+    _build_restart_resume_message,
     _coerce_gateway_timestamp,
     _is_fresh_gateway_interruption,
     _last_transcript_timestamp,
@@ -153,9 +155,10 @@ def _simulate_note_injection(
 
     if is_resume_pending:
         reason = getattr(resume_entry, "resume_reason", None) or "restart_timeout"
-        # Real production note builder — extracted to module scope in
-        # gateway/run.py so tests exercise the actual strings.
-        message = build_resume_recovery_note(reason, message)
+        message = _build_restart_resume_message(
+            reason=reason,
+            user_message=message,
+        )
     elif has_fresh_tool_tail:
         message = (
             "[System note: A new message has arrived. The conversation "
@@ -174,7 +177,10 @@ def _simulate_note_injection(
         and getattr(resume_entry, "resume_pending", False)
     ):
         sn_reason = getattr(resume_entry, "resume_reason", None) or "restart_timeout"
-        message = build_resume_recovery_note(sn_reason, "")
+        message = _build_restart_resume_message(
+            reason=sn_reason,
+            user_message="",
+        )
     return message
 
 
@@ -511,6 +517,29 @@ class TestResumePendingSystemNote:
         assert a == b
         assert "NEW message" in a
 
+    def test_resume_pending_continue_message_recovers_interrupted_task(self):
+        entry = self._pending_entry(reason="shutdown_timeout")
+        result = _simulate_note_injection(
+            history=[
+                {
+                    "role": "user",
+                    "content": "Record this quality feedback and update the next run.",
+                    "timestamp": time.time() - 2,
+                },
+                {
+                    "role": "assistant",
+                    "content": "I am applying the feedback now.",
+                    "timestamp": time.time() - 1,
+                },
+            ],
+            user_message="請繼續",
+            resume_entry=entry,
+        )
+        assert "recover the interrupted objective" in result
+        assert "last durable checkpoint" in result
+        assert "請繼續" in result
+        assert "skip any unfinished work" not in result
+
     def test_resume_pending_fires_without_tool_tail(self):
         """Key improvement over PR #9934: the restart-resume note fires
         even when the transcript's last role is NOT ``tool``."""
@@ -791,10 +820,12 @@ class TestResumePendingSystemNote:
         assert "already" in result and "do NOT re-execute or verify" in result
         assert "restarted!" in result
 
-    def test_resume_pending_empty_message_reports_recovery(self):
-        """On the empty-message auto-resume startup turn there is no NEW user
-        message, so the note instructs the model to report recovery and ask
-        for instructions rather than 'address the user's NEW message'.
+    def test_resume_pending_empty_message_continues_interrupted_task(self):
+        """A startup auto-resume must continue recoverable unfinished work.
+
+        The empty event is internal, not evidence that the user abandoned the
+        interrupted objective.  Existing durable effects must be inspected
+        before any retry, while remaining work continues autonomously.
         """
         entry = self._pending_entry(reason="restart_timeout")
         result = _simulate_note_injection(
@@ -806,13 +837,58 @@ class TestResumePendingSystemNote:
         )
         assert "[System note:" in result
         assert "gateway restart" in result
-        assert "restored successfully" in result
-        assert "ask what they would like to do next" in result
+        assert "Continue the interrupted user task" in result
+        assert "last durable checkpoint" in result
+        assert "inspect durable state" in result
         assert "do NOT re-execute or verify" in result
+        assert "ask what they would like to do next" not in result
+        assert "skip any unfinished work" not in result
         # No phantom "NEW message" instruction when there is no new message.
         assert "NEW message" not in result
         # Nothing appended after the closing bracket (no empty user text).
         assert result.rstrip().endswith("]")
+
+    def test_auto_resume_binds_latest_real_user_objective_from_same_session(self):
+        """Blank startup recovery must not guess from global recent work.
+
+        Regression for the 2026-07-17 incident: the correct Slack session was
+        resumed, but its empty synthetic turn searched machine-global Codex
+        rollouts and adopted an unrelated Alpha Agent Lab review.  Recovery
+        must quote the latest real user objective from this session and ignore
+        an older generated recovery note persisted as a user row.
+        """
+        history = [
+            {
+                "role": "user",
+                "content": (
+                    "Continue the xAI visual run using G1/G2 and upload four "
+                    "QC-passed images to this thread."
+                ),
+            },
+            {"role": "assistant", "content": "Starting the visual run."},
+            {
+                "role": "user",
+                "content": (
+                    "[System note: The previous turn was interrupted by a "
+                    "gateway restart; inspect durable state.]"
+                ),
+            },
+        ]
+
+        extractor = getattr(gateway_run, "_last_session_user_objective", None)
+        assert extractor is not None, "session-scoped objective extractor is required"
+        objective = extractor(history)
+        assert objective.startswith("Continue the xAI visual run")
+
+        prompt = _build_restart_resume_message(
+            reason="restart_timeout",
+            user_message="",
+            interrupted_objective=objective,
+        )
+        assert objective in prompt
+        assert "this session only" in prompt
+        assert "other sessions" in prompt
+        assert "global recent files" in prompt
 
 
 # ---------------------------------------------------------------------------

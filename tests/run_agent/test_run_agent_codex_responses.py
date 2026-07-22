@@ -1,3 +1,4 @@
+import re
 import sys
 import types
 from types import SimpleNamespace
@@ -1642,6 +1643,92 @@ def test_chat_messages_to_responses_input_uses_call_id_for_function_call(monkeyp
     assert function_call["call_id"] == "call_abc123"
     assert "id" not in function_call
     assert function_output["call_id"] == "call_abc123"
+
+
+def test_chat_messages_to_responses_input_bounds_legacy_call_ids(monkeypatch):
+    _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+    legacy_call_id = (
+        "codex_mcp__hermes-tools__story_video_quality_control_"
+        "cf365273-d583-47f6-ad85-583990af40ca"
+    )
+    items = _chat_messages_to_responses_input(
+        [
+            {"role": "user", "content": "Review the completed tool call"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": legacy_call_id,
+                        "type": "function",
+                        "function": {"name": "review", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": legacy_call_id,
+                "content": '{"ok":true}',
+            },
+        ]
+    )
+
+    function_call = next(item for item in items if item.get("type") == "function_call")
+    function_output = next(
+        item for item in items if item.get("type") == "function_call_output"
+    )
+
+    assert len(function_call["call_id"]) <= 64
+    assert function_output["call_id"] == function_call["call_id"]
+
+
+def test_chat_messages_to_responses_input_normalizes_legacy_function_names(monkeypatch):
+    _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+    items = _chat_messages_to_responses_input(
+        [
+            {"role": "user", "content": "Review the completed MCP tool call"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_legacy_name",
+                        "type": "function",
+                        "function": {
+                            "name": "mcp.hermes-tools.story_video_quality_control",
+                            "arguments": "{}",
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_legacy_name",
+                "content": '{"ok":true}',
+            },
+        ]
+    )
+
+    function_call = next(item for item in items if item.get("type") == "function_call")
+
+    assert function_call["name"] == "mcp_hermes-tools_story_video_quality_control"
+    assert re.fullmatch(r"[a-zA-Z0-9_-]+", function_call["name"])
+    assert len(function_call["name"]) <= 64
+
+
+def test_responses_function_name_normalization_is_stable_and_bounded():
+    from agent.codex_responses_adapter import _normalized_responses_function_name
+
+    legacy_name = "mcp." + ".".join(["very-long-server"] * 8)
+    normalized = _normalized_responses_function_name(legacy_name)
+
+    assert re.fullmatch(r"[a-zA-Z0-9_-]+", normalized)
+    assert len(normalized) <= 64
+    assert _normalized_responses_function_name(legacy_name) == normalized
 
 
 def test_chat_messages_to_responses_input_accepts_call_pipe_fc_ids(monkeypatch):

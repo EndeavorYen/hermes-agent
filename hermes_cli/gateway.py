@@ -1071,6 +1071,23 @@ def _read_gateway_runtime_status() -> dict | None:
     return state if isinstance(state, dict) else None
 
 
+def _active_gateway_agent_count() -> int:
+    """Return active runs only for the currently live gateway PID."""
+    state = _read_gateway_runtime_status()
+    if not state or state.get("gateway_state") not in {"running", "draining"}:
+        return 0
+    try:
+        from gateway.status import get_running_pid, parse_active_agents
+
+        live_pid = get_running_pid(cleanup_stale=False)
+        state_pid = int(state.get("pid", 0) or 0)
+    except (TypeError, ValueError, OSError):
+        return 0
+    if not live_pid or state_pid != live_pid:
+        return 0
+    return parse_active_agents(state.get("active_agents"))
+
+
 def _gateway_runtime_status_for_pid(pid: int | None) -> dict | None:
     if not pid:
         return None
@@ -7012,6 +7029,17 @@ def _gateway_command_inner(args):
                 "Use `hermes gateway restart` from a shell outside the running gateway."
             )
             sys.exit(1)
+
+        force = getattr(args, "force", False)
+        active_agents = _active_gateway_agent_count()
+        if active_agents and not force:
+            print_error(
+                "Refusing to restart the gateway while "
+                f"{active_agents} active agent run(s) would be interrupted.\n"
+                "Wait for the gateway to become idle and retry. Use --force "
+                "only when interruption is intentional."
+            )
+            sys.exit(75)
 
         # Try service first, fall back to killing and restarting
         service_available = False

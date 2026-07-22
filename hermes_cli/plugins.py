@@ -141,6 +141,7 @@ VALID_HOOKS: Set[str] = {
     # Plugins return a string to replace the response text, or None/empty to leave unchanged.
     # First non-None string wins. Useful for vocabulary/personality transformation.
     "transform_llm_output",
+    "auto_continue_llm_output",
     "pre_llm_call",
     "post_llm_call",
     # Verification-loop gate. Fired once per turn when the agent has edited code
@@ -288,6 +289,7 @@ class PluginManifest:
     requires_env: List[Union[str, Dict[str, Any]]] = field(default_factory=list)
     provides_tools: List[str] = field(default_factory=list)
     provides_hooks: List[str] = field(default_factory=list)
+    provides_commands: List[str] = field(default_factory=list)
     source: str = ""        # "user", "project", or "entrypoint"
     path: Optional[str] = None
     # Plugin kind — see plugins.py module docstring for semantics.
@@ -1640,6 +1642,7 @@ class PluginManager:
                 requires_env=data.get("requires_env", []),
                 provides_tools=data.get("provides_tools", []),
                 provides_hooks=data.get("provides_hooks", []),
+                provides_commands=data.get("provides_commands", []),
                 source=source,
                 path=str(plugin_dir),
                 kind=kind,
@@ -2346,6 +2349,32 @@ def get_plugin_command_handler(name: str) -> Optional[Callable]:
     """Return the handler for a plugin-registered slash command, or ``None``."""
     entry = _ensure_plugins_discovered()._plugin_commands.get(name)
     return entry["handler"] if entry else None
+
+
+def invoke_plugin_command_handler(
+    handler: Callable,
+    raw_args: str,
+    *,
+    event: Any = None,
+) -> Any:
+    """Invoke a plugin command, passing gateway context only when supported."""
+    if event is None:
+        return handler(raw_args)
+    try:
+        parameters = inspect.signature(handler).parameters
+    except (TypeError, ValueError):
+        return handler(raw_args)
+    event_parameter = parameters.get("event")
+    if event_parameter is not None:
+        if event_parameter.kind is inspect.Parameter.POSITIONAL_ONLY:
+            return handler(raw_args, event)
+        return handler(raw_args, event=event)
+    if any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    ):
+        return handler(raw_args, event=event)
+    return handler(raw_args)
 
 
 _PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0

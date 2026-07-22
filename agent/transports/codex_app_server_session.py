@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from agent.codex_responses_adapter import _format_responses_error
+from agent.file_safety import is_write_denied
 from agent.redact import redact_sensitive_text
 from agent.transports.codex_app_server import (
     CodexAppServerClient,
@@ -76,6 +77,7 @@ class TurnResult:
     token_usage_total: Optional[dict[str, Any]] = None
     model_context_window: Optional[int] = None
     compacted: bool = False
+    incomplete_turn_recovered: bool = False
     # Hint to the caller that the underlying codex subprocess is likely
     # wedged (turn-level timeout fired, post-tool watchdog tripped, or
     # token-refresh failure killed the child). The caller should retire
@@ -151,7 +153,12 @@ _OAUTH_REFRESH_FAILURE_HINTS = (
     "please login",
     "auth profile",
     "no auth profile",
-    "oauth",
+)
+
+_MODEL_CONFIGURATION_FAILURE_HINTS = (
+    "model is not supported",
+    "model not supported",
+    "unknown model",
 )
 
 
@@ -166,6 +173,8 @@ def _classify_oauth_failure(*parts: str) -> Optional[str]:
     """
     haystack = " ".join(p for p in parts if p).lower()
     if not haystack:
+        return None
+    if any(needle in haystack for needle in _MODEL_CONFIGURATION_FAILURE_HINTS):
         return None
     for needle in _OAUTH_REFRESH_FAILURE_HINTS:
         if needle in haystack:
@@ -187,6 +196,7 @@ class _ServerRequestRouting:
 
     auto_approve_exec: bool = False
     auto_approve_apply_patch: bool = False
+    auto_resolve_user_input: bool = False
 
 
 class CodexAppServerSession:
@@ -208,6 +218,8 @@ class CodexAppServerSession:
         approval_callback: Optional[Callable[..., str]] = None,
         on_event: Optional[Callable[[dict], None]] = None,
         request_routing: Optional[_ServerRequestRouting] = None,
+        ephemeral: bool = False,
+        subprocess_env: Optional[dict[str, str]] = None,
         client_factory: Optional[Callable[..., CodexAppServerClient]] = None,
     ) -> None:
         self._cwd = cwd or os.getcwd()
@@ -222,6 +234,8 @@ class CodexAppServerSession:
         self._approval_callback = approval_callback
         self._on_event = on_event  # Display hook (kawaii spinner ticks etc.)
         self._routing = request_routing or _ServerRequestRouting()
+        self._ephemeral = ephemeral
+        self._subprocess_env = dict(subprocess_env or {})
         self._client_factory = client_factory or CodexAppServerClient
 
         self._client: Optional[CodexAppServerClient] = None
@@ -233,6 +247,7 @@ class CodexAppServerSession:
         # approval params don't carry the changeset, so we cache here
         # to surface a real summary in the approval prompt (quirk #4).
         self._pending_file_changes: dict[str, str] = {}
+        self._pending_file_change_paths: dict[str, tuple[str, ...]] = {}
         self._closed = False
 
     # ---------- lifecycle ----------
@@ -244,9 +259,13 @@ class CodexAppServerSession:
         if self._thread_id is not None:
             return self._thread_id
         if self._client is None:
-            self._client = self._client_factory(
-                codex_bin=self._codex_bin, codex_home=self._codex_home
-            )
+            client_kwargs: dict[str, Any] = {
+                "codex_bin": self._codex_bin,
+                "codex_home": self._codex_home,
+            }
+            if self._subprocess_env:
+                client_kwargs["env"] = self._subprocess_env
+            self._client = self._client_factory(**client_kwargs)
         self._client.initialize(
             client_name="hermes",
             client_title="Hermes Agent",
@@ -268,6 +287,10 @@ class CodexAppServerSession:
         # Users who want a write-capable profile configure it in their
         # ~/.codex/config.toml the same way they would for any codex usage.
         params: dict[str, Any] = {"cwd": self._cwd}
+        if self._ephemeral:
+            # Internal scheduled runs should use Codex for inference without
+            # materializing one user-visible Codex Remote task per invocation.
+            params["ephemeral"] = True
         result = self._client.request("thread/start", params, timeout=15)
         # Cross-fill thread.id/sessionId — different codex versions have
         # serialized this under either key. Mirrors openclaw beta.8's
@@ -369,7 +392,7 @@ class CodexAppServerSession:
         *,
         turn_timeout: float = 600.0,
         notification_poll_timeout: float = 0.25,
-        post_tool_quiet_timeout: float = 90.0,
+        post_tool_quiet_timeout: float = 300.0,
     ) -> TurnResult:
         """Send a user message and block until turn/completed, while
         forwarding server-initiated approval requests and projecting items
@@ -575,10 +598,20 @@ class CodexAppServerSession:
                 # tool-shaped item completes.
                 last_tool_completion_at = time.monotonic()
             else:
-                # Any non-tool projected activity (assistant message,
-                # status update, etc.) means codex is still producing
-                # output — clear the quiet timer so we don't fast-fail.
-                if projection.messages or projection.final_text is not None:
+                # Streaming item notifications are meaningful model progress
+                # even though the projector deliberately does not persist
+                # deltas. Refresh the watchdog so long frontier-model
+                # reasoning is not mistaken for a wedged subprocess.
+                if (
+                    last_tool_completion_at is not None
+                    and method.startswith("item/")
+                    and projection.final_text is None
+                ):
+                    last_tool_completion_at = time.monotonic()
+                # A completed assistant message is usable terminal output;
+                # retain the existing outer-deadline recovery behavior while
+                # waiting for turn/completed.
+                elif projection.final_text is not None:
                     last_tool_completion_at = None
             if projection.final_text is not None:
                 # Codex can emit multiple agentMessage items in one turn
@@ -632,6 +665,13 @@ class CodexAppServerSession:
                 "assistant message but before turn/completed; accepting "
                 "the assistant text as the terminal response"
             )
+            # The text is usable, but the underlying Codex turn is not in a
+            # reusable terminal state. Interrupt any remaining provider work
+            # and retire the session so the next user message starts from a
+            # clean app-server thread instead of inheriting a dangling turn.
+            self._issue_interrupt(result.turn_id)
+            result.should_retire = True
+            result.incomplete_turn_recovered = True
             turn_complete = True
 
         if not turn_complete and not result.interrupted:
@@ -844,6 +884,36 @@ class CodexAppServerSession:
             # profile in ~/.codex/config.toml and surprise escalations
             # shouldn't be silently accepted.
             self._client.respond(rid, {"decision": "decline"})
+        elif method == "item/tool/requestUserInput":
+            if not self._routing.auto_resolve_user_input:
+                self._client.respond_error(
+                    rid,
+                    code=-32601,
+                    message="User input is unavailable in this client",
+                )
+                return
+            # Hermes gateway/cron turns are headless, so leaving Codex's
+            # experimental request_user_input call unresolved wedges the
+            # entire turn. Choose the first (recommended) option or tell the
+            # model to use its recommended default. Never fabricate secrets.
+            answers: dict[str, dict[str, list[str]]] = {}
+            for question in params.get("questions") or []:
+                if not isinstance(question, dict):
+                    continue
+                question_id = str(question.get("id") or "").strip()
+                if not question_id:
+                    continue
+                selected: list[str] = []
+                if not question.get("isSecret"):
+                    options = question.get("options") or []
+                    if options and isinstance(options[0], dict):
+                        label = str(options[0].get("label") or "").strip()
+                        if label:
+                            selected = [label]
+                    if not selected:
+                        selected = ["Proceed with your recommended default."]
+                answers[question_id] = {"answers": selected}
+            self._client.respond(rid, {"answers": answers})
         elif method == "mcpServer/elicitation/request":
             # Codex's MCP layer asks the user for structured input on
             # behalf of an MCP server (e.g. tool-call confirmation,
@@ -896,6 +966,16 @@ class CodexAppServerSession:
         return "decline"  # fail-closed when no callback wired
 
     def _decide_apply_patch_approval(self, params: dict) -> str:
+        item_id = params.get("itemId") or ""
+        pending_paths = self._pending_file_change_paths.get(item_id, ())
+        for path in pending_paths:
+            resolved = path if os.path.isabs(path) else os.path.join(self._cwd, path)
+            if is_write_denied(resolved):
+                logger.warning(
+                    "Declining Codex apply_patch to protected path: %s",
+                    resolved,
+                )
+                return "decline"
         if self._routing.auto_approve_apply_patch:
             return "accept"
         if self._approval_callback is not None:
@@ -905,7 +985,6 @@ class CodexAppServerSession:
             # up by item_id so the user sees what's actually changing.
             reason = params.get("reason")
             grant_root = params.get("grantRoot")
-            item_id = params.get("itemId") or ""
             change_summary = self._lookup_pending_file_change(item_id)
             description_parts = []
             if reason:
@@ -963,6 +1042,7 @@ class CodexAppServerSession:
                 p = ch.get("path") or ""
                 if p:
                     paths.append(p)
+            self._pending_file_change_paths[item_id] = tuple(paths)
             counts = ", ".join(f"{n} {k}" for k, n in sorted(kinds.items()))
             preview = ", ".join(paths[:3])
             if len(paths) > 3:
@@ -972,6 +1052,7 @@ class CodexAppServerSession:
             )
         elif method == "item/completed":
             self._pending_file_changes.pop(item_id, None)
+            self._pending_file_change_paths.pop(item_id, None)
 
     def _lookup_pending_file_change(self, item_id: str) -> Optional[str]:
         """Look up an in-progress fileChange item by id and summarize its

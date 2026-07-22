@@ -11,8 +11,11 @@ make_image tool several turns earlier must not leak onto a later
 text-only reply, even when the path-based dedup set fails to capture it.
 """
 
-import pytest
+import json
+import os
 import re
+
+import pytest
 
 
 def extract_media_tags_fixed(result_messages, history_len):
@@ -160,6 +163,74 @@ caption
         assert tags == ["MEDIA:/tmp/voice.ogg"]
         assert voice is True
 
+    def test_gateway_auto_append_story_video_completed_mp4(self, tmp_path):
+        from gateway.run import _collect_auto_append_media_tags
+
+        video = tmp_path / "final.mp4"
+        video.write_bytes(b"mp4")
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [{
+                    "id": "call_story_video",
+                    "function": {"name": "story_video_audio_director"},
+                }],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_story_video",
+                "content": (
+                    '{"success": true, "action": "production_status", '
+                    f'"media": ["MEDIA:{video}"]}}'
+                ),
+            },
+            {"role": "assistant", "content": "影片完成。"},
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+
+        assert tags == [f"MEDIA:{video}"]
+        assert voice is False
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            '{"success": false, "action": "production_status", "media": ["MEDIA:{path}"]}',
+            '{"success": true, "action": "status", "media": ["MEDIA:{path}"]}',
+            '{"success": true, "action": "production_status", "media": ["MEDIA:{path}.wav"]}',
+            '{"success": true, "action": "production_status", "media": ["MEDIA:{missing}"]}',
+        ],
+    )
+    def test_gateway_auto_append_story_video_rejects_non_deliverables(
+        self, tmp_path, payload
+    ):
+        from gateway.run import _collect_auto_append_media_tags
+
+        video = tmp_path / "final.mp4"
+        video.write_bytes(b"mp4")
+        content = payload.replace("{path}", str(video)).replace(
+            "{missing}", str(tmp_path / "missing.mp4")
+        )
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [{
+                    "id": "call_story_video",
+                    "function": {"name": "story_video_audio_director"},
+                }],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_story_video",
+                "content": content,
+            },
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+
+        assert tags == []
+        assert voice is False
+
     def test_gateway_auto_append_image_generate_json_path(self):
         """image_generate returns a local path in JSON (no MEDIA: tag); it is
         auto-appended so delivery doesn't depend on the model restating it."""
@@ -259,6 +330,394 @@ caption
         )
         assert tags == []
 
+    def test_gateway_auto_append_visual_package_selected_media_only(self):
+        """visual_package_generate JSON only appends selected current artifacts."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {"role": "user", "content": "Make image and video"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_visual", "function": {"name": "visual_package_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_visual",
+                "content": (
+                    '{"success": true, "visual_request_id": "vrq_1", '
+                    '"images": ["/tmp/current.png"], "videos": ["/tmp/current.mp4"], '
+                    '"delivery_metadata": {'
+                    '"selected_visual_artifact_ids": ["var_img", "var_vid"], '
+                    '"visual_artifacts": {'
+                    '"/tmp/current.png": {"request_id": "vrq_1", "artifact_id": "var_img", "kind": "image"}, '
+                    '"/tmp/old.png": {"request_id": "vrq_old", "artifact_id": "var_old", "kind": "image"}, '
+                    '"/tmp/current.mp4": {"request_id": "vrq_1", "artifact_id": "var_vid", "kind": "video"}'
+                    "}}}"
+                ),
+            },
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+
+        assert tags == ["MEDIA:/tmp/current.png", "MEDIA:/tmp/current.mp4"]
+        assert voice is False
+
+    def test_gateway_auto_append_partial_visual_package_qualified_media(self):
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {"role": "user", "content": "Make four candidates"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_visual", "function": {"name": "visual_package_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_visual",
+                "content": json.dumps(
+                    {
+                        "success": True,
+                        "package_status": "partial",
+                        "error_type": "candidate_option_shortfall",
+                        "visual_request_id": "vrq_partial",
+                        "images": ["/tmp/qualified.png"],
+                        "videos": [],
+                        "delivery_metadata": {
+                            "selected_visual_artifact_ids": ["var_qualified"],
+                            "visual_artifacts": {
+                                "/tmp/qualified.png": {
+                                    "request_id": "vrq_partial",
+                                    "artifact_id": "var_qualified",
+                                    "kind": "image",
+                                }
+                            },
+                        },
+                    }
+                ),
+            },
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+
+        assert tags == ["MEDIA:/tmp/qualified.png"]
+        assert voice is False
+
+    def test_gateway_auto_append_visual_agent_video_only_skips_source_image(self):
+        """visual_agent_generate video-only output skips internal source images."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {"role": "user", "content": "請產生一段 6 秒影片"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_visual_agent", "function": {"name": "visual_agent_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_visual_agent",
+                "content": (
+                    '{"success": true, "visual_request_id": "vrq_2", '
+                    '"images": [], "videos": ["/tmp/current.mp4"], '
+                    '"delivery_metadata": {'
+                    '"selected_visual_artifact_ids": ["var_vid"], '
+                    '"visual_artifacts": {'
+                    '"/tmp/internal-source.png": {"request_id": "vrq_2", "artifact_id": "var_img", "kind": "image"}, '
+                    '"/tmp/current.mp4": {"request_id": "vrq_2", "artifact_id": "var_vid", "kind": "video"}'
+                    "}}}"
+                ),
+            },
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+
+        assert tags == ["MEDIA:/tmp/current.mp4"]
+        assert voice is False
+
+    def test_gateway_auto_append_visual_package_dedupes_file_uri_variant(self):
+        """visual_package_generate should not append path and file:// variants twice."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {"role": "user", "content": "Make a video"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_visual", "function": {"name": "visual_package_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_visual",
+                "content": (
+                    '{"success": true, "visual_request_id": "vrq_3", '
+                    '"images": [], "videos": ["/tmp/current.mp4"], '
+                    '"delivery_metadata": {'
+                    '"selected_visual_artifact_ids": ["var_vid"], '
+                    '"visual_artifacts": {'
+                    '"/tmp/current.mp4": {"request_id": "vrq_3", "artifact_id": "var_vid", "kind": "video"}, '
+                    '"file:///tmp/current.mp4": {"request_id": "vrq_3", "artifact_id": "var_vid", "kind": "video"}'
+                    "}}}"
+                ),
+            },
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+
+        assert tags == ["MEDIA:/tmp/current.mp4"]
+        assert voice is False
+
+    def test_visual_media_tag_cannot_bypass_selected_manifest(self):
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_visual",
+                        "function": {"name": "visual_package_generate"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_visual",
+                "content": (
+                    '{"success": true, "visual_request_id": "vrq_current", '
+                    '"images": ["/tmp/selected.png"], "videos": [], '
+                    '"diagnostic": "MEDIA:/tmp/rejected.png", '
+                    '"delivery_metadata": {'
+                    '"selected_visual_artifact_ids": ["selected"], '
+                    '"visual_artifacts": {'
+                    '"/tmp/selected.png": {'
+                    '"request_id": "vrq_current", "artifact_id": "selected", '
+                    '"kind": "image"}, '
+                    '"/tmp/rejected.png": {'
+                    '"request_id": "vrq_current", "artifact_id": "rejected", '
+                    '"kind": "image"}}}}'
+                ),
+            },
+        ]
+
+        tags, _ = _collect_auto_append_media_tags(messages, history_offset=0)
+
+        assert tags == ["MEDIA:/tmp/selected.png"]
+
+    def test_visual_manifest_rejects_selected_artifact_from_other_request(self):
+        from gateway.run import _collect_current_turn_delivery_media_paths
+
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_visual",
+                        "function": {"name": "visual_package_generate"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_visual",
+                "content": (
+                    '{"success": true, "visual_request_id": "vrq_current", '
+                    '"images": ["/tmp/old.png"], "videos": [], '
+                    '"delivery_metadata": {'
+                    '"selected_visual_artifact_ids": ["old"], '
+                    '"visual_artifacts": {"/tmp/old.png": {'
+                    '"request_id": "vrq_old", "artifact_id": "old", '
+                    '"kind": "image"}}}}'
+                ),
+            },
+        ]
+
+        assert _collect_current_turn_delivery_media_paths(messages) == set()
+
+    def test_visual_delivery_dedupe_scopes_identity_to_session_thread(self):
+        from agent.visual.delivery_dedupe import get_artifact_delivery_deduper
+        from gateway.run import _collect_current_turn_delivery_media_paths
+
+        get_artifact_delivery_deduper()._seen.clear()
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_visual",
+                        "function": {"name": "visual_package_generate"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_visual",
+                "content": (
+                    '{"success": true, "visual_request_id": "vrq_1", '
+                    '"images": ["/tmp/alias-a.png"], "videos": [], '
+                    '"delivery_metadata": {'
+                    '"selected_visual_artifact_ids": ["selected"], '
+                    '"visual_artifacts": {"/tmp/alias-a.png": {'
+                    '"request_id": "vrq_1", "artifact_id": "selected", '
+                    '"content_hash": "sha256:same", "kind": "image"}}}}'
+                ),
+            },
+        ]
+
+        first = _collect_current_turn_delivery_media_paths(
+            messages,
+            delivery_destination="slack:session-1:thread-1",
+        )
+        duplicate = _collect_current_turn_delivery_media_paths(
+            messages,
+            delivery_destination="slack:session-1:thread-1",
+        )
+        other_thread = _collect_current_turn_delivery_media_paths(
+            messages,
+            delivery_destination="slack:session-1:thread-2",
+        )
+
+        assert "/tmp/alias-a.png" in first
+        assert duplicate == set()
+        assert "/tmp/alias-a.png" in other_thread
+
+    def test_reused_path_with_new_artifact_identity_is_current(self):
+        from gateway.run import (
+            _collect_current_turn_delivery_media_paths,
+            _visual_delivery_history_key,
+        )
+
+        path = "/tmp/reused-output.png"
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_visual",
+                        "function": {"name": "visual_package_generate"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_visual",
+                "content": (
+                    '{"success": true, "visual_request_id": "vrq_new", '
+                    '"images": ["'
+                    + path
+                    + '"], "videos": [], "delivery_metadata": {'
+                    '"selected_visual_artifact_ids": ["new"], '
+                    '"visual_artifacts": {"'
+                    + path
+                    + '": {"request_id": "vrq_new", "artifact_id": "new", '
+                    '"content_hash": "sha256:new", "kind": "image"}}}}'
+                ),
+            },
+        ]
+
+        current = _collect_current_turn_delivery_media_paths(
+            messages,
+            history_media_paths={path},
+            history_media_identities={
+                _visual_delivery_history_key("vrq_old", "sha256:old")
+            },
+        )
+
+        assert path in current
+
+    def test_auto_append_allows_reused_path_with_new_artifact_identity(self):
+        from gateway.run import (
+            _collect_auto_append_media_tags,
+            _visual_delivery_history_key,
+        )
+
+        path = "/tmp/reused-auto-append.png"
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_visual",
+                        "function": {"name": "visual_package_generate"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_visual",
+                "content": (
+                    '{"success": true, "visual_request_id": "vrq_new", '
+                    '"images": ["'
+                    + path
+                    + '"], "videos": [], "delivery_metadata": {'
+                    '"selected_visual_artifact_ids": ["new"], '
+                    '"visual_artifacts": {"'
+                    + path
+                    + '": {"request_id": "vrq_new", "artifact_id": "new", '
+                    '"content_hash": "sha256:new", "kind": "image"}}}}'
+                ),
+            },
+        ]
+
+        tags, _ = _collect_auto_append_media_tags(
+            messages,
+            history_media_paths={path},
+            history_media_identities={
+                _visual_delivery_history_key("vrq_old", "sha256:old")
+            },
+        )
+
+        assert tags == [f"MEDIA:{path}"]
+
+    def test_same_identity_is_allowed_for_a_new_visual_request(self):
+        from gateway.run import (
+            _collect_current_turn_delivery_media_paths,
+            _visual_delivery_history_key,
+        )
+
+        path = "/tmp/same-content-new-request.png"
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_visual",
+                        "function": {"name": "visual_package_generate"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_visual",
+                "content": (
+                    '{"success": true, "visual_request_id": "vrq_new", '
+                    '"images": ["'
+                    + path
+                    + '"], "videos": [], "delivery_metadata": {'
+                    '"selected_visual_artifact_ids": ["new"], '
+                    '"visual_artifacts": {"'
+                    + path
+                    + '": {"request_id": "vrq_new", "artifact_id": "new", '
+                    '"content_hash": "sha256:same", "kind": "image"}}}}'
+                ),
+            },
+        ]
+
+        current = _collect_current_turn_delivery_media_paths(
+            messages,
+            history_media_paths={path},
+            history_media_identities={
+                _visual_delivery_history_key("vrq_old", "sha256:same")
+            },
+        )
+
+        assert path in current
+
     def test_collect_history_media_paths_includes_image_generate_json(self):
         """Regression for #46627: the history media-path collector must pick up
         image_generate JSON-payload paths (no MEDIA: tag), not just MEDIA:
@@ -290,6 +749,37 @@ caption
         assert "/tmp/gen/cat.png" in paths  # JSON-payload path (the bug)
         assert "/tmp/voice/note.ogg" in paths  # MEDIA: text path (already worked)
 
+    def test_collect_history_media_paths_includes_visual_package_selected_artifacts(self):
+        """History dedup must include selected visual_package artifacts."""
+        from gateway.run import _collect_history_media_paths
+
+        history = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_visual", "function": {"name": "visual_package_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_visual",
+                "content": (
+                    '{"success": true, "images": ["/tmp/selected.png"], '
+                    '"videos": [], "delivery_metadata": {'
+                    '"selected_visual_artifact_ids": ["var_selected"], '
+                    '"visual_artifacts": {'
+                    '"/tmp/selected.png": {"artifact_id": "var_selected", "kind": "image"}, '
+                    '"/tmp/rejected.png": {"artifact_id": "var_rejected", "kind": "image"}'
+                    "}}}"
+                ),
+            },
+        ]
+
+        paths = _collect_history_media_paths(history)
+
+        assert "/tmp/selected.png" in paths
+        assert "/tmp/rejected.png" not in paths
+
     def test_image_generate_not_reemitted_after_compression(self):
         """End-to-end of the #46627 fix: collect history paths, then the
         compression-fallback rescan (history_offset stale) must dedup the
@@ -320,6 +810,196 @@ caption
             history, history_offset=9999, history_media_paths=history_paths
         )
         assert tags == [], f"generated image re-emitted after compression: {tags}"
+
+    def test_response_media_filter_drops_prior_visual_artifact_paths(self):
+        """Final-answer MEDIA paths must not re-deliver old visual artifacts.
+
+        Regression for Slack visual threads where the model called only
+        visual_arsenal_review_inbox, then placed four previous generated
+        images in its final response. Those paths are real files and pass the
+        platform safety filter, but they are not current-turn artifacts.
+        """
+        from gateway.run import _filter_response_media_refs_to_current_turn
+
+        stale = "/tmp/hermes-test/visual-arsenal/library/assets/old-a.png"
+        filtered = _filter_response_media_refs_to_current_turn(
+            [(stale, False)],
+            current_turn_media_paths=set(),
+            history_media_paths={stale},
+            turn_started_at=None,
+        )
+
+        assert filtered == []
+
+    def test_response_media_filter_drops_fresh_unselected_managed_visual(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        from gateway.run import _filter_response_media_refs_to_current_turn
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        rejected = tmp_path / "media" / "generated" / "rejected.png"
+        rejected.parent.mkdir(parents=True)
+        rejected.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+        filtered = _filter_response_media_refs_to_current_turn(
+            [(str(rejected), False)],
+            current_turn_media_paths=set(),
+            history_media_paths=set(),
+            turn_started_at=0,
+        )
+
+        assert filtered == []
+
+    def test_response_media_filter_keeps_current_visual_package_artifact(self):
+        """Final-answer MEDIA paths stay deliverable when the current turn made them."""
+        from gateway.run import (
+            _collect_current_turn_delivery_media_paths,
+            _filter_response_media_refs_to_current_turn,
+        )
+
+        current = "/tmp/hermes-test/visual-arsenal/library/assets/current.png"
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_visual", "function": {"name": "visual_package_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_visual",
+                "content": (
+                    '{"success": true, "images": ["'
+                    + current
+                    + '"], "videos": [], "delivery_metadata": {'
+                    '"selected_visual_artifact_ids": ["var_img"], '
+                    '"visual_artifacts": {"'
+                    + current
+                    + '": {"artifact_id": "var_img", "kind": "image"}}}}'
+                ),
+            },
+        ]
+
+        current_paths = _collect_current_turn_delivery_media_paths(messages, history_offset=0)
+        filtered = _filter_response_media_refs_to_current_turn(
+            [(current, False)],
+            current_turn_media_paths=current_paths,
+            history_media_paths={current},
+            turn_started_at=None,
+        )
+
+        assert filtered == [(current, False)]
+
+    def test_compacted_text_only_turn_does_not_reclassify_old_visual_as_current(self):
+        """A history_offset=0 compaction must not make old media current again."""
+        from gateway.run import (
+            _collect_current_turn_delivery_media_paths,
+            _sanitize_final_response_media_refs,
+        )
+
+        stale = "/tmp/hermes-history/old-selected.png"
+        compacted_messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "old_visual",
+                        "function": {"name": "visual_package_generate"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "old_visual",
+                "content": (
+                    '{"success": true, "images": ["'
+                    + stale
+                    + '"], "videos": [], "delivery_metadata": {'
+                    '"selected_visual_artifact_ids": ["old_artifact"], '
+                    '"visual_artifacts": {"'
+                    + stale
+                    + '": {"artifact_id": "old_artifact", "kind": "image"}}}}'
+                ),
+            },
+            {"role": "user", "content": "只要文字說明，不要重送圖片"},
+            {
+                "role": "assistant",
+                "content": f"舊圖路徑僅供說明：\nMEDIA:{stale}",
+            },
+        ]
+
+        current_paths = _collect_current_turn_delivery_media_paths(
+            compacted_messages,
+            history_offset=0,
+            history_media_paths={stale},
+        )
+        cleaned = _sanitize_final_response_media_refs(
+            compacted_messages[-1]["content"],
+            current_turn_media_paths=current_paths,
+            history_media_paths={stale},
+            turn_started_at=None,
+        )
+
+        assert current_paths == set()
+        assert "MEDIA:" not in cleaned
+        assert stale not in cleaned
+
+    def test_sanitize_final_response_removes_stale_visual_media_tag(self):
+        """Gateway should strip stale MEDIA tags before adapters extract them."""
+        from gateway.run import _sanitize_final_response_media_refs
+
+        stale = "/tmp/hermes-test/visual-arsenal/library/assets/old-a.png"
+        cleaned = _sanitize_final_response_media_refs(
+            f"這是構圖候選：\nMEDIA:{stale}",
+            current_turn_media_paths=set(),
+            history_media_paths={stale},
+            turn_started_at=None,
+        )
+
+        assert "MEDIA:" not in cleaned
+        assert stale not in cleaned
+        assert "這是構圖候選" in cleaned
+
+    def test_sanitize_final_response_removes_old_managed_visual_media_without_history(
+        self, tmp_path, monkeypatch
+    ):
+        """Old managed visual assets are stale even if they were found by search."""
+        from gateway.run import _sanitize_final_response_media_refs
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        asset = tmp_path / "visual-arsenal" / "library" / "assets" / "old-a.png"
+        asset.parent.mkdir(parents=True)
+        asset.write_bytes(b"\x89PNG\r\n\x1a\n")
+        old_time = 1000.0
+        os.utime(asset, (old_time, old_time))
+
+        cleaned = _sanitize_final_response_media_refs(
+            f"這是搜尋到的舊圖：\nMEDIA:{asset}",
+            current_turn_media_paths=set(),
+            history_media_paths=set(),
+            turn_started_at=old_time + 3600,
+        )
+
+        assert "MEDIA:" not in cleaned
+        assert str(asset) not in cleaned
+        assert "搜尋到的舊圖" in cleaned
+
+    def test_sanitize_final_response_preserves_current_visual_media_tag(self):
+        """Current-turn visual media remains available for native upload."""
+        from gateway.run import _sanitize_final_response_media_refs
+
+        current = "/tmp/hermes-test/visual-arsenal/library/assets/current.png"
+        response = f"這是新的構圖候選：\nMEDIA:{current}"
+        cleaned = _sanitize_final_response_media_refs(
+            response,
+            current_turn_media_paths={current},
+            history_media_paths={current},
+            turn_started_at=None,
+        )
+
+        assert cleaned == response
 
 
     def test_media_tags_not_extracted_from_history(self):

@@ -2325,6 +2325,29 @@ DEFAULT_CONFIG = {
         "provider": "",
     },
 
+    "raphael": {
+        "enabled": False,
+        "mode": "sage_king",
+        "status_card_ttl_seconds": 900,
+        "max_status_cards": 20,
+        "default_conversation_mode_enabled": False,
+        "public_delivery_enabled": False,
+        "skill_writes_enabled": False,
+        "cron_mutation_enabled": False,
+        "memory_writes_enabled": False,
+        "tool_install_enabled": False,
+        "skill_trace": {
+            "enabled": True,
+            "max_summary_rows": 20,
+            "max_trace_events": 500,
+        },
+        "evolution": {
+            "enabled": True,
+            "skill_review_enabled": True,
+            "memory_review_enabled": True,
+        },
+    },
+
     # Subagent delegation — override the provider:model used by delegate_task
     # so child agents can run on a different (cheaper/faster) provider and model.
     # Uses the same runtime provider resolution as CLI/gateway startup, so all
@@ -2842,6 +2865,21 @@ DEFAULT_CONFIG = {
         # wedges the job's dispatch guard forever. Also overridable via
         # HERMES_CRON_SESSION_DB_TIMEOUT env var. 0 = unlimited (skip the bound).
         "session_db_timeout_seconds": 10,
+        # Internal cron agent sessions have a shorter lifecycle than user
+        # conversations. This bounds state.db + FTS growth per job while job
+        # output files retain their own independently configured history.
+        "session_retention": {
+            "enabled": True,
+            "days": 14,
+            "per_job": 50,
+            "min_interval_hours": 24,
+            "vacuum_after_prune": True,
+        },
+        # Infinite LLM-backed schedules below this interval are rejected by
+        # every creation/update surface. Finite repeats and no-agent scripts
+        # remain available for intentional short bursts and watchdogs.
+        "min_agent_interval_minutes": 30,
+        "allow_high_frequency_agent_jobs": False,
     },
 
     # Kanban multi-agent coordination — controls the dispatcher loop that
