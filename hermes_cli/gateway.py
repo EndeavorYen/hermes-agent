@@ -1268,8 +1268,37 @@ def _recover_pending_systemd_restart(
     return False
 
 
+def _launchctl_registration_output(label: str) -> str | None:
+    """Return launchd registration output across legacy and domain APIs.
+
+    ``launchctl list <label>`` can exit 1 for a live GUI-domain LaunchAgent on
+    newer macOS releases.  The domain-qualified ``launchctl print`` API remains
+    authoritative in that state, so probe both user domains before declaring
+    the job absent.
+    """
+    uid = os.getuid()  # windows-footgun: ok — launchd helper is macOS-only
+    probes = (
+        ["launchctl", "list", label],
+        ["launchctl", "print", f"gui/{uid}/{label}"],
+        ["launchctl", "print", f"user/{uid}/{label}"],
+    )
+    for command in probes:
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            continue
+        if result.returncode == 0:
+            return getattr(result, "stdout", "") or ""
+    return None
+
+
 def _parse_launchd_pid_from_list_output(output: str) -> int | None:
-    """Extract the PID from ``launchctl list <label>`` output.
+    """Extract the PID from ``launchctl list`` or ``launchctl print`` output.
 
     When launchd is actively supervising a process, the output includes a
     ``"PID" = <number>;`` line.  When the service definition is only *registered*
@@ -1279,15 +1308,14 @@ def _parse_launchd_pid_from_list_output(output: str) -> int | None:
     """
     for line in output.splitlines():
         stripped = line.strip()
-        if stripped.startswith('"PID"') or stripped.startswith("PID"):
-            parts = stripped.split("=", 1)
-            if len(parts) == 2:
-                val = parts[1].strip().rstrip(";").strip('"')
-                try:
-                    pid = int(val)
-                    return pid if pid > 0 else None
-                except ValueError:
-                    return None
+        parts = stripped.split("=", 1)
+        if len(parts) == 2 and parts[0].strip().strip('"').lower() == "pid":
+            val = parts[1].strip().rstrip(";").strip('"')
+            try:
+                pid = int(val)
+                return pid if pid > 0 else None
+            except ValueError:
+                return None
     return None
 
 
@@ -1301,18 +1329,8 @@ def _probe_launchd_service_running() -> bool:
     """
     if not get_launchd_plist_path().exists():
         return False
-    try:
-        result = subprocess.run(
-            ["launchctl", "list", get_launchd_label()],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except subprocess.TimeoutExpired:
-        return False
-    if result.returncode != 0:
-        return False
-    return _parse_launchd_pid_from_list_output(result.stdout) is not None
+    output = _launchctl_registration_output(get_launchd_label())
+    return output is not None and _parse_launchd_pid_from_list_output(output) is not None
 
 
 def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot:
@@ -3782,18 +3800,8 @@ def _append_launchd_reload_log(message: str) -> None:
 
 
 def _launchctl_label_registered(label: str) -> bool:
-    """True when ``launchctl list <label>`` reports the job as registered."""
-    try:
-        result = subprocess.run(
-            ["launchctl", "list", label],
-            check=False,
-            timeout=10,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        return result.returncode == 0
-    except (subprocess.TimeoutExpired, OSError):
-        return False
+    """True when either launchctl registration API reports the job."""
+    return _launchctl_registration_output(label) is not None
 
 
 def _retry_launchctl_bootstrap_until_registered(
@@ -4492,18 +4500,9 @@ def launchd_restart():
 def launchd_status(deep: bool = False):
     plist_path = get_launchd_plist_path()
     label = get_launchd_label()
-    try:
-        result = subprocess.run(
-            ["launchctl", "list", label],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        service_listed = result.returncode == 0
-        list_output = result.stdout
-    except subprocess.TimeoutExpired:
-        service_listed = False
-        list_output = ""
+    registration_output = _launchctl_registration_output(label)
+    service_listed = registration_output is not None
+    list_output = registration_output or ""
 
     # Determine whether launchd is actively supervising a process.
     # ``launchctl list`` returns exit 0 whenever the service definition is

@@ -1223,6 +1223,11 @@ class TestLaunchdServiceRecovery:
         output = "{\n    PID = 99999;\n}"
         assert gateway_cli._parse_launchd_pid_from_list_output(output) == 99999
 
+    def test_parse_launchd_pid_from_print_output_lowercase_pid(self):
+        """``launchctl print`` uses a lowercase ``pid`` field."""
+        output = "state = running\n\tpid = 21832\n"
+        assert gateway_cli._parse_launchd_pid_from_list_output(output) == 21832
+
     def test_parse_launchd_pid_from_list_output_negative_pid_returns_none(self):
         """PID = -1 (recently-crashed service sentinel) must return None."""
         output = '{\n    "PID" = -1;\n    "Label" = "ai.hermes.gateway";\n}'
@@ -1260,6 +1265,27 @@ class TestLaunchdServiceRecovery:
                 stderr="",
             ),
         )
+        assert gateway_cli._probe_launchd_service_running() is True
+
+    def test_probe_launchd_service_running_falls_back_to_domain_print(self, tmp_path, monkeypatch):
+        """Modern launchd can hide a GUI job from ``list`` while ``print`` sees it."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(os, "getuid", lambda: 501)
+
+        def fake_run(cmd, **kwargs):
+            if cmd[:2] == ["launchctl", "list"]:
+                return SimpleNamespace(returncode=1, stdout="", stderr="")
+            if cmd == ["launchctl", "print", "gui/501/ai.hermes.gateway"]:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="state = running\n\tpid = 21832\n",
+                    stderr="",
+                )
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
         assert gateway_cli._probe_launchd_service_running() is True
 
     # ── Unsupport marker lifecycle ───────────────────────────────────────
@@ -1319,6 +1345,35 @@ class TestLaunchdServiceRecovery:
         out = capsys.readouterr().out
         assert "supervised by launchd" in out
         assert "Auto-start at login" in out
+
+    def test_launchd_status_uses_domain_print_when_legacy_list_misses_job(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Status must trust a live GUI-domain job even when legacy list exits 1."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(os, "getuid", lambda: 501)
+
+        def fake_run(cmd, **kwargs):
+            if cmd[:2] == ["launchctl", "list"]:
+                return SimpleNamespace(returncode=1, stdout="", stderr="")
+            if cmd == ["launchctl", "print", "gui/501/ai.hermes.gateway"]:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="state = running\n\tpid = 21832\n",
+                    stderr="",
+                )
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda cleanup_stale=False: 21832)
+
+        gateway_cli.launchd_status()
+
+        out = capsys.readouterr().out
+        assert "supervised by launchd (PID 21832)" in out
+        assert "service is not loaded" not in out.lower()
 
     def test_launchd_status_reports_fallback_when_unsupported_and_pid_running(self, tmp_path, monkeypatch, capsys):
         """When the unsupported marker exists and a fallback PID is running."""
