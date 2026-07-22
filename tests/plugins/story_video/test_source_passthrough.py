@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 
+import pytest
+
 from plugins.story_video.source_passthrough import (
     extract_user_screenplay,
     parse_user_screenplay,
@@ -95,6 +97,31 @@ def test_parse_user_screenplay_separates_spoken_text_from_actions() -> None:
     assert "安靜地點頭" not in [
         row["display_text"] for row in parsed.utterances
     ]
+
+
+@pytest.mark.parametrize(
+    "speaker_label",
+    ["嘉梅 (羞澀，低頭)", "嘉梅（羞澀，低頭）"],
+)
+def test_parse_user_screenplay_maps_voice_before_inline_action(
+    speaker_label: str,
+) -> None:
+    parsed = parse_user_screenplay(
+        f"{speaker_label}：『我只是有一點緊張。』\n",
+        "多角色配音：嘉梅用 Lily。",
+    )
+
+    assert parsed.speakers == (
+        {
+            "speaker_id": "嘉梅",
+            "display_name": "嘉梅",
+            "role": "lead",
+            "voice_id": "Lily",
+        },
+    )
+    assert parsed.utterances[0]["speaker_id"] == "嘉梅"
+    assert parsed.utterances[0]["action"] == "羞澀，低頭"
+    assert parsed.utterances[0]["display_text"] == "我只是有一點緊張。"
 
 
 def test_prepare_local_adult_passthrough_is_deterministic_and_planning_valid(

@@ -22,6 +22,9 @@ _FENCE_RE = re.compile(
     re.DOTALL,
 )
 _SPEAKER_LINE_RE = re.compile(r"^\s*([^：:\n]{1,32})\s*[：:]\s*(.*?)\s*$")
+_INLINE_ACTION_RE = re.compile(
+    r"^(?P<speaker>.*?)\s*[（(](?P<action>[^()（）]+)[）)]\s*$"
+)
 _ACTION_RE = re.compile(r"^\s*\[([^\]]*)\]\s*")
 _QUOTED_RE = re.compile(r"[「『\"](?P<text>.*?)[」』\"]")
 _SCENE_RE = re.compile(r"^\s*【[^】]+】\s*$")
@@ -129,9 +132,18 @@ def parse_user_screenplay(source_text: str, request: str) -> ParsedScreenplay:
             cursor += len(raw_line)
             continue
         speaker = match.group(1).strip()
+        inline_action_match = _INLINE_ACTION_RE.match(speaker)
+        inline_action = ""
+        if inline_action_match is not None:
+            speaker = inline_action_match.group("speaker").strip()
+            inline_action = inline_action_match.group("action").strip()
         remainder = match.group(2)
         action_match = _ACTION_RE.match(remainder)
-        action = action_match.group(1).strip() if action_match is not None else ""
+        action = (
+            action_match.group(1).strip()
+            if action_match is not None
+            else inline_action
+        )
         quoted = _QUOTED_RE.search(remainder)
         if quoted is not None:
             spoken = quoted.group("text")

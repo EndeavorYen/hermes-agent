@@ -242,6 +242,33 @@ class TestOnlyFinalStreamDeliverySuppressesFinalSend:
 
         assert "already_sent" not in response
 
+    def test_failed_response_is_suppressed_when_exact_text_was_commentary(self):
+        """An exact failed final already delivered as commentary is not resent."""
+        final = "SETUP_REQUIRED: missing explicit voice mapping"
+        sc = SimpleNamespace(
+            already_sent=True,
+            final_response_sent=False,
+            has_delivered_text=lambda text: text == final,
+        )
+        response = {
+            "final_response": final,
+            "failed": True,
+            "response_previewed": True,
+        }
+
+        if sc and isinstance(response, dict):
+            _final = response.get("final_response") or ""
+            _is_empty_sentinel = not _final or _final == "(empty)"
+            _previewed = bool(response.get("response_previewed"))
+            _streamed = bool(
+                sc.final_response_sent
+                or (_previewed and sc.has_delivered_text(_final))
+            )
+            if not _is_empty_sentinel and _streamed:
+                response["already_sent"] = True
+
+        assert response.get("already_sent") is True
+
 
 # ===================================================================
 # Test 2b: run.py — empty response never suppressed (#10xxx)
