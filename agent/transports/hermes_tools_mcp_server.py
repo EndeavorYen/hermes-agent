@@ -48,6 +48,7 @@ Spawned by: CodexAppServerSession.ensure_started() when the runtime is
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import os
@@ -55,6 +56,49 @@ import sys
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+# JSON Schema type -> Python type mapping for signature generation
+_JSON_TO_PY = {
+    "string": str,
+    "integer": int,
+    "number": float,
+    "boolean": bool,
+    "array": list,
+    "object": dict,
+}
+
+
+def _signature_from_schema(schema: dict | None) -> tuple[inspect.Signature, dict[str, type]]:
+    """Build a Python function signature and annotations from a JSON schema.
+
+    Args:
+        schema: JSON Schema dict with "properties" and "required" keys.
+
+    Returns:
+        (signature, annotations_dict) where signature has KEYWORD_ONLY params
+        and annotations maps param names to Python types.
+    """
+    props = (schema or {}).get("properties") or {}
+    required = set((schema or {}).get("required") or [])
+    params, annots = [], {}
+
+    for pname, pspec in props.items():
+        if pname.startswith("_"):
+            continue
+        py = _JSON_TO_PY.get((pspec or {}).get("type"), Any)
+        ann, default = (
+            (py, inspect.Parameter.empty)
+            if pname in required
+            else (Optional[py], None)
+        )
+        annots[pname] = ann
+        params.append(
+            inspect.Parameter(
+                pname, inspect.Parameter.KEYWORD_ONLY, annotation=ann, default=default
+            )
+        )
+
+    return inspect.Signature(params, return_annotation=str), annots
 
 
 # Tools we expose. Each name MUST match a registered Hermes tool that
@@ -241,10 +285,12 @@ def _build_server() -> Any:
 
         # FastMCP wants a Python callable. Build a closure that takes the
         # arguments dict, dispatches via handle_function_call, and returns
-        # the result string. FastMCP infers **kwargs as one opaque field, so
-        # _attach_authoritative_schema replaces that inferred contract after
-        # registration while retaining the callable metadata it needs.
-        def _make_handler(tool_name: str):
+        # the result string. We use add_tool() for full control over the
+        # input schema (FastMCP's @tool() decorator inspects type hints,
+        # which we can't get from a JSON schema at runtime).
+        def _make_handler(tool_name: str, schema: dict | None):
+            sig, annots = _signature_from_schema(schema)
+
             def _dispatch(**kwargs: Any) -> str:
                 try:
                     return _dispatch_tool(
@@ -255,19 +301,24 @@ def _build_server() -> Any:
                 except Exception as exc:
                     logger.exception("tool %s raised", tool_name)
                     return json.dumps({"error": str(exc), "tool": tool_name})
+
             _dispatch.__name__ = tool_name
             _dispatch.__doc__ = description
+            _dispatch.__signature__ = sig
+            _dispatch.__annotations__ = {**annots, "return": str}
             return _dispatch
 
         try:
             mcp.add_tool(
-                _make_handler(name),
+                _make_handler(name, params_schema),
                 name=name,
                 description=description,
             )
         except TypeError:
-            # Older mcp SDK signature — fall back to decorator-style.
-            handler = _make_handler(name)
+            # Older mcp SDK signature — fall back to decorator-style. The
+            # synthesized __signature__ on the handler still drives schema
+            # generation there.
+            handler = _make_handler(name, params_schema)
             handler = mcp.tool(name=name, description=description)(handler)
 
         _attach_authoritative_schema(name, params_schema)

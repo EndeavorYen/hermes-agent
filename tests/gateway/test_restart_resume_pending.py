@@ -43,6 +43,7 @@ from gateway.run import (
     _is_fresh_gateway_interruption,
     _last_transcript_timestamp,
     _should_clear_resume_pending_after_turn,
+    build_resume_recovery_note,
 )
 from gateway.session import SessionEntry, SessionSource, SessionStore
 from tests.gateway.restart_test_helpers import (
@@ -487,6 +488,34 @@ class TestResumePendingSystemNote:
             resume_entry=entry,
         )
         assert "gateway shutdown" in result
+
+    def test_empty_message_interactive_note_asks_what_next(self):
+        """Interactive platforms: the startup auto-resume turn reports the
+        restore and asks the (present) human what to do next."""
+        note = build_resume_recovery_note("restart_timeout", "", interactive=True)
+        assert "session was restored" in note
+        assert "ask what they would like to do next" in note
+        assert "skip any unfinished work" in note
+
+    def test_empty_message_noninteractive_note_continues_task(self):
+        """Non-interactive platforms (webhook, API server): nobody can answer
+        'what next?', so the resumed turn must complete the interrupted work
+        instead of acknowledging (#57056)."""
+        note = build_resume_recovery_note("restart_timeout", "", interactive=False)
+        assert "CONTINUE the interrupted task" in note
+        assert "session was restored" not in note
+        assert "ask what they would like to do next" not in note
+        # Must not tell the model to skip the unfinished work it should finish.
+        assert "skip any unfinished work" not in note
+        # But still guards against re-running already-recorded tool calls.
+        assert "already appear in the history" in note
+
+    def test_new_message_guidance_identical_regardless_of_interactivity(self):
+        """A real NEW user message always wins — same guidance either way."""
+        a = build_resume_recovery_note("restart_timeout", "do the thing", interactive=True)
+        b = build_resume_recovery_note("restart_timeout", "do the thing", interactive=False)
+        assert a == b
+        assert "NEW message" in a
 
     def test_resume_pending_continue_message_recovers_interrupted_task(self):
         entry = self._pending_entry(reason="shutdown_timeout")
