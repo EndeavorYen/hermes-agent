@@ -536,6 +536,10 @@ def finalize_turn(
                 "transform_llm_output",
                 response_text=final_response,
                 session_id=agent.session_id or "",
+                task_id=effective_task_id,
+                turn_id=turn_id,
+                exit_reason=str(_turn_exit_reason),
+                conversation_history=list(messages),
                 model=agent.model,
                 platform=getattr(agent, "platform", None) or "",
             )
@@ -562,6 +566,11 @@ def finalize_turn(
                 user_message=original_user_message,
                 assistant_response=final_response,
                 conversation_history=list(messages),
+                authoritative_turn_control=(
+                    dict(raphael_decision)
+                    if isinstance(raphael_decision, Mapping)
+                    else {}
+                ),
                 model=agent.model,
                 platform=getattr(agent, "platform", None) or "",
             )

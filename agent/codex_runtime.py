@@ -50,6 +50,13 @@ _MAX_PLUGIN_AUTO_CONTINUATIONS = 64
 def _is_story_video_workflow(decision: Mapping[str, Any] | None) -> bool:
     if not isinstance(decision, Mapping):
         return False
+    if str(decision.get("mode") or "") == "story_video_orchestration":
+        return True
+    route = decision.get("route")
+    if isinstance(route, Mapping) and str(route.get("capability") or "").startswith(
+        "story_video."
+    ):
+        return True
     goal = decision.get("goal")
     if isinstance(goal, Mapping):
         return str(goal.get("target_artifact") or "") == "story_video_workflow"
@@ -321,6 +328,9 @@ def _run_plugin_auto_continuation(
         model=agent.model,
         platform=agent.platform or "",
         auto_continuation=True,
+        control_authority=bool(
+            getattr(agent, "_turn_control_authority", True)
+        ),
     ):
         if isinstance(hook_result, dict):
             context = str(hook_result.get("context") or "").strip()
@@ -1503,6 +1513,10 @@ def run_codex_app_server_turn(
             "transform_llm_output",
             response_text=final_text,
             session_id=session_id,
+            task_id=effective_task_id,
+            turn_id=turn_id,
+            exit_reason="interrupted" if turn.interrupted else "text_response",
+            conversation_history=list(messages),
             model=model,
             platform=platform,
         ):
@@ -1518,6 +1532,11 @@ def run_codex_app_server_turn(
             user_message=original_user_message,
             assistant_response=final_text,
             conversation_history=list(messages),
+            authoritative_turn_control=(
+                dict(raphael_decision)
+                if isinstance(raphael_decision, Mapping)
+                else {}
+            ),
             model=model,
             platform=platform,
         )

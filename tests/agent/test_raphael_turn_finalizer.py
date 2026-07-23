@@ -300,6 +300,89 @@ def test_disabled_raphael_uses_readonly_gate_without_loading_evolution_stack(
     assert calls == ["readonly"]
 
 
+def test_transform_hook_receives_current_turn_finalization_context(monkeypatch):
+    disabled = {
+        "plugins": {"enabled": [], "disabled": ["raphael"]},
+        "raphael": {"enabled": False},
+    }
+    monkeypatch.setattr(hermes_config, "load_config_readonly", lambda: disabled)
+    captured = []
+
+    def invoke_hook(name, **kwargs):
+        if name == "transform_llm_output":
+            captured.append(kwargs)
+        return []
+
+    monkeypatch.setattr(hermes_plugins, "invoke_hook", invoke_hook)
+    messages = [
+        {"role": "user", "content": "請修復"},
+        {"role": "assistant", "content": "已完成"},
+    ]
+
+    finalize_turn(
+        _FakeAgent(),
+        final_response="已完成",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=None,
+        effective_task_id="task-control",
+        turn_id="turn-control",
+        user_message="請修復",
+        original_user_message="請修復",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response",
+    )
+
+    assert captured[0]["task_id"] == "task-control"
+    assert captured[0]["turn_id"] == "turn-control"
+    assert captured[0]["exit_reason"] == "text_response"
+    assert captured[0]["conversation_history"] == messages
+
+
+def test_post_llm_hook_receives_authoritative_turn_control(monkeypatch):
+    disabled = {
+        "plugins": {"enabled": [], "disabled": ["raphael"]},
+        "raphael": {"enabled": False},
+    }
+    monkeypatch.setattr(hermes_config, "load_config_readonly", lambda: disabled)
+    captured = []
+
+    def invoke_hook(name, **kwargs):
+        if name == "post_llm_call":
+            captured.append(kwargs)
+        return []
+
+    monkeypatch.setattr(hermes_plugins, "invoke_hook", invoke_hook)
+    authoritative = {
+        "turn_id": "turn-shadow",
+        "origin": "foreground",
+        "mode": "general_conversation",
+        "completion_policy": "informational",
+        "evidence": {"required_proofs": []},
+    }
+
+    finalize_turn(
+        _FakeAgent(),
+        final_response="answer",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=[{"role": "user", "content": "question"}],
+        conversation_history=None,
+        effective_task_id="task-shadow",
+        turn_id="turn-shadow",
+        user_message="question",
+        original_user_message="question",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response",
+        raphael_decision=authoritative,
+    )
+
+    assert captured[0]["authoritative_turn_control"] == authoritative
+
+
 def test_real_turn_finalizer_blocks_unverified_mutation_before_persistence(
     monkeypatch,
     tmp_path,

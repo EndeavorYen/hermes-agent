@@ -824,6 +824,7 @@ def run_conversation(
     _plugin_user_context = _ctx.plugin_user_context
     _ext_prefetch_cache = _ctx.ext_prefetch_cache
     _raphael_decision = getattr(_ctx, "raphael_decision", {})
+    _turn_control = getattr(_ctx, "turn_control", {})
 
     # Commentary deduplication spans all provider continuations and tool calls
     # within one user turn, but must not suppress the same phrase next turn.
@@ -868,7 +869,7 @@ def run_conversation(
         effective_task_id=effective_task_id,
         turn_id=turn_id,
         should_review_memory=_should_review_memory,
-        raphael_decision=_raphael_decision,
+        raphael_decision=_turn_control or _raphael_decision,
     )
     if _direct_visual_result is not None:
         return _direct_visual_result
@@ -894,7 +895,7 @@ def run_conversation(
             effective_task_id=effective_task_id,
             turn_id=turn_id,
             should_review_memory=_should_review_memory,
-            raphael_decision=_raphael_decision,
+            raphael_decision=_turn_control or _raphael_decision,
         )
 
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
