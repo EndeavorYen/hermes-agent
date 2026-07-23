@@ -57,11 +57,11 @@ def operator_next_call(context: StoryVideoRunContext) -> str | None:
     return context.next_call
 
 
-def format_raphael_next_action(context: StoryVideoRunContext) -> str | None:
+def format_next_action(context: StoryVideoRunContext) -> str | None:
     next_call = operator_next_call(context)
     if not next_call:
         return None
-    return f"Raphael 下一步：回覆「{next_call}」。"
+    return f"下一步：回覆「{next_call}」。"
 
 
 def _format_help() -> str:

@@ -5,7 +5,6 @@ from typing import Any
 
 from agent.visual.feedback import is_visual_feedback_only_text
 from agent.visual.feedback import parse_visual_feedback
-from agent.visual.production_kernel.integration import attach_visual_production_kernel
 from agent.visual.prompt_text import strip_visual_prompt_metadata
 
 
@@ -277,7 +276,6 @@ def plan_visual_agent_request(
         if polish_provider is not None:
             arguments["polish_provider"] = polish_provider
             arguments["polish_provider_source"] = "prompt_override"
-        arguments = attach_visual_production_kernel(raw_prompt, arguments)
     contract_image_provider = image_provider
     if image_provider is None and image_provider_source in {
         "character_design_default",

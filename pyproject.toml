@@ -313,7 +313,7 @@ hermes-acp = "acp_adapter.entry:main"
 py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_bootstrap", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "utils", "mcp_serve"]
 
 [tool.setuptools.data-files]
-docs = ["docs/raphael-mode.md"]
+docs = ["docs/external-control-and-visual-engines.md"]
 # i18n catalogs. locales/ is a bare data directory (no __init__.py), so it is
 # neither a package (packages.find) nor package-data (which attaches to a
 # package). data-files ships it in the wheel; MANIFEST.in `graft locales`
@@ -342,8 +342,6 @@ hermes_cli = [
   "tui_dist/**/*",
   "scripts/install.sh",
   "scripts/install.ps1",
-  "release_evidence/raphael/*.md",
-  "release_evidence/raphael/*.py",
 ]
 gateway = ["assets/**/*"]
 plugins = [

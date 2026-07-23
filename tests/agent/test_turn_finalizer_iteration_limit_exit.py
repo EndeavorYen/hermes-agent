@@ -205,6 +205,34 @@ def test_text_response_exit_not_rewritten_at_iteration_limit(monkeypatch):
     assert agent._handle_max_iterations_called is False
 
 
+def test_structured_turn_control_result_can_block_completion(monkeypatch):
+    def invoke_hook(name, **_kwargs):
+        if name == "transform_llm_output":
+            return [{
+                "response_text": "blocked by external proof gate",
+                "turn_control_status": "blocked",
+                "completed": False,
+            }]
+        return []
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", invoke_hook)
+    agent = _LimitAgent(budget_remaining=5)
+
+    result = _finalize(
+        agent,
+        final_response="claimed complete",
+        exit_reason="text_response(finish_reason=stop)",
+        api_call_count=1,
+    )
+
+    assert result["final_response"] == "blocked by external proof gate"
+    assert result["completed"] is False
+    assert result["turn_control_finalization"] == {
+        "status": "blocked",
+        "completed": False,
+    }
+
+
 @pytest.mark.parametrize(
     "exit_reason",
     [
@@ -377,3 +405,41 @@ def test_terminal_verification_failure_is_persisted_as_one_correction(monkeypatc
     persisted_contents = [m.get("content") for m in agent.persisted_messages]
     assert "[System: run tests]" not in persisted_contents
     assert report in persisted_contents
+
+
+def test_pending_verification_response_survives_budget_fallback(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = _LimitAgent()
+    report = "pending verification response"
+
+    result = finalize_turn(
+        agent,
+        final_response=None,
+        api_call_count=60,
+        interrupted=False,
+        failed=False,
+        messages=[
+            {"role": "user", "content": "task"},
+            {"role": "assistant", "content": report},
+            {
+                "role": "user",
+                "content": "[System: run tests]",
+                "_verification_stop_synthetic": True,
+            },
+        ],
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="task",
+        original_user_message="task",
+        _should_review_memory=False,
+        _turn_exit_reason="unknown",
+        _pending_verification_response=report,
+    )
+
+    assert result["final_response"] == report
+    assert [message["role"] for message in result["messages"]] == [
+        "user",
+        "assistant",
+    ]
+    assert result.get("cleanup_errors") in (None, [])

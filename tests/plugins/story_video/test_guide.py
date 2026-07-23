@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from plugins import story_video
 from plugins.story_video import hooks
 from plugins.story_video.guide import (
-    format_raphael_next_action,
+    format_next_action,
     format_story_video_guide,
     operator_next_call,
 )
@@ -146,8 +146,8 @@ def test_planning_hold_prompts_for_production_authorization_not_upload(tmp_path)
     )
 
     assert operator_next_call(planning_hold) == "全自動"
-    assert format_raphael_next_action(planning_hold) == (
-        "Raphael 下一步：回覆「全自動」。"
+    assert format_next_action(planning_hold) == (
+        "下一步：回覆「全自動」。"
     )
     status = format_story_video_guide(planning_hold, "status")
     assert "開始製作影像、旁白與影片" in status
@@ -263,8 +263,8 @@ def test_raphael_next_action_uses_operator_next_call(tmp_path) -> None:
     context = _context(tmp_path, phase="render")
 
     assert operator_next_call(context) == "出片"
-    assert format_raphael_next_action(context) == "Raphael 下一步：回覆「出片」。"
-    assert format_raphael_next_action(replace(context, auto_mode=True)) is None
+    assert format_next_action(context) == "下一步：回覆「出片」。"
+    assert format_next_action(replace(context, auto_mode=True)) is None
 
 
 def test_slash_status_is_read_only_and_thread_aware(tmp_path, monkeypatch) -> None:

@@ -117,24 +117,24 @@ def test_manifest_includes_bundled_skills():
     assert "graft optional-skills" in manifest
 
 
-def test_raphael_architecture_doc_ships_in_wheel_and_sdist():
+def test_external_engine_architecture_doc_ships_in_wheel_and_sdist():
     data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     data_files = data["tool"]["setuptools"]["data-files"]
     manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
-    doc = REPO_ROOT / "docs" / "raphael-mode.md"
+    doc = REPO_ROOT / "docs" / "external-control-and-visual-engines.md"
 
     assert doc.exists()
     text = doc.read_text(encoding="utf-8")
     for heading in (
-        "# Raphael Mode",
-        "## Control Kernel",
-        "## Turn Origins",
-        "## Proof Enforcement",
-        "## Runtime Truth And Recovery",
+        "# External Control And Visual Engines",
+        "## Ownership Boundary",
+        "## Adapter Contracts",
+        "## Deployment Order",
+        "## Rollback",
     ):
         assert heading in text
-    assert "docs/raphael-mode.md" in data_files.get("docs", [])
-    assert "include docs/raphael-mode.md" in manifest
+    assert "docs/external-control-and-visual-engines.md" in data_files.get("docs", [])
+    assert "include docs/external-control-and-visual-engines.md" in manifest
 
 
 def test_bundled_plugin_manifests_ship_in_both_wheel_and_sdist():

@@ -1972,9 +1972,9 @@ def transform_llm_output(
                 ]
             ).rstrip()
     text = _guard_render_delivery(text, context)
-    from .guide import format_raphael_next_action
+    from .guide import format_next_action
 
-    next_line = format_raphael_next_action(context)
+    next_line = format_next_action(context)
     if not next_line:
         return text
     return f"{text}\n\n{next_line}"

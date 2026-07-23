@@ -292,18 +292,13 @@ class TurnContext:
     plugin_user_context: str = ""
     # External-memory prefetch result, reused across loop iterations.
     ext_prefetch_cache: str = ""
-    # Stable origin used to keep internal/background work out of foreground state.
-    raphael_origin: str = "foreground"
+    # Stable origin exposed to generic turn-control plugins.
+    turn_origin: str = "foreground"
     # Privacy-safe snapshot of the provider/model contract effective for this turn.
-    raphael_runtime_contract: Dict[str, Any] = field(default_factory=dict)
-    # Canonical foreground decision consumed by execution and finalization.
-    raphael_decision: Dict[str, Any] = field(default_factory=dict)
+    runtime_contract: Dict[str, Any] = field(default_factory=dict)
     # Opaque decision supplied by a generic turn-control plugin. The host may
     # route and finalize with it, but must not interpret provider policy.
     turn_control: Dict[str, Any] = field(default_factory=dict)
-    # External decision retained for parity reporting while embedded control
-    # remains authoritative in shadow mode.
-    shadow_turn_control: Dict[str, Any] = field(default_factory=dict)
 
 
 def build_turn_context(
@@ -342,9 +337,9 @@ def build_turn_context(
     # null; rebuilding from scratch" warning and a needless first-turn prefix
     # cache miss. (Issue #45499.)
 
-    _raphael_config: Dict[str, Any] = {}
-    _raphael_origin = "foreground"
-    _raphael_runtime_contract: Dict[str, Any] = {}
+    _host_config: Dict[str, Any] = {}
+    _turn_origin = "foreground"
+    _runtime_contract: Dict[str, Any] = {}
     # Tag log records on this thread with the session ID for ``hermes logs``.
     set_session_context(agent.session_id)
 
@@ -734,53 +729,31 @@ def build_turn_context(
         agent._persist_user_message_idx = current_turn_user_idx
 
     try:
-        from agent.raphael.runtime_contract import (
-            resolve_raphael_runtime_contract,
-            resolve_raphael_turn_origin,
-        )
+        from agent.turn_control import resolve_runtime_contract, resolve_turn_origin
         from hermes_cli.config import load_config_readonly
 
-        _raphael_origin = resolve_raphael_turn_origin(
-            explicit_origin=getattr(agent, "_raphael_turn_origin", None),
+        _turn_origin = resolve_turn_origin(
+            explicit_origin=getattr(agent, "_turn_origin", None),
             write_origin=getattr(agent, "_memory_write_origin", None),
-        ).value
+        )
         try:
-            loaded_raphael_config = load_config_readonly()
-            _raphael_config = (
-                loaded_raphael_config
-                if isinstance(loaded_raphael_config, dict)
-                else {}
-            )
+            loaded_config = load_config_readonly()
+            _host_config = loaded_config if isinstance(loaded_config, dict) else {}
         except Exception:
-            _raphael_config = {}
-        _raphael_runtime_contract = resolve_raphael_runtime_contract(
-            _raphael_config,
+            _host_config = {}
+        _runtime_contract = resolve_runtime_contract(
+            _host_config,
             live_provider=getattr(agent, "provider", None),
             live_model=getattr(agent, "model", None),
             live_api_mode=getattr(agent, "api_mode", None),
-        ).to_dict()
-    except Exception:
-        _raphael_origin = "foreground"
-        _raphael_runtime_contract = {}
-
-    _raphael_section = _raphael_config.get("raphael")
-    _raphael_transport = str(
-        _raphael_section.get("transport", "embedded")
-        if isinstance(_raphael_section, dict)
-        else "embedded"
-    ).strip().lower()
-    agent._turn_control_authority = _raphael_transport != "shadow"
-
-    _raphael_fail_closed = False
-    try:
-        from agent.raphael.config import raphael_effective_enabled
-
-        _raphael_fail_closed = (
-            _raphael_origin == "foreground"
-            and raphael_effective_enabled(_raphael_config)
         )
     except Exception:
-        logger.debug("Raphael fail-closed readiness check failed", exc_info=True)
+        _turn_origin = "foreground"
+        _runtime_contract = {}
+
+    # Turn-control policy belongs to plugins. Hermes only transports the
+    # opaque envelope and never invokes an embedded policy engine.
+    agent._turn_control_authority = True
 
     # Plugin hook: pre_llm_call (context injected into user message, not system prompt).
     plugin_user_context = ""
@@ -805,9 +778,9 @@ def build_turn_context(
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
-            turn_origin=_raphael_origin,
-            runtime_contract=_raphael_runtime_contract,
-            attachments=extract_turn_attachment_refs(original_user_message),
+            turn_origin=_turn_origin,
+            runtime_contract=_runtime_contract,
+            attachments=extract_turn_attachment_refs(user_message),
             session_attachments=_session_attachments,
             control_authority=agent._turn_control_authority,
         )
@@ -874,54 +847,6 @@ def build_turn_context(
                 if plugin_user_context
                 else _gateway_notes
             )
-
-    raphael_decision: Dict[str, Any] = {}
-    if _raphael_transport != "service":
-        try:
-            from agent.raphael.kernel import (
-                prepare_raphael_turn,
-                render_raphael_turn_decision_context,
-            )
-            from agent.raphael.observer import extract_raphael_attachment_refs
-
-            _decision = prepare_raphael_turn(
-                turn_id=turn_id,
-                origin=_raphael_origin,
-                runtime_contract=_raphael_runtime_contract,
-                config=_raphael_config,
-                user_message=original_user_message,
-                attachments=extract_raphael_attachment_refs(user_message),
-                conversation_history=list(messages),
-            )
-            if _decision is not None:
-                raphael_decision = _decision.to_dict()
-                _decision_context = render_raphael_turn_decision_context(_decision)
-                plugin_user_context = "\n\n".join(
-                    part for part in (plugin_user_context, _decision_context) if part
-                )
-        except Exception as exc:
-            logger.warning("Raphael turn decision preparation failed: %s", exc)
-            if _raphael_fail_closed:
-                raphael_decision = {
-                    "turn_id": turn_id,
-                    "origin": _raphael_origin,
-                    "mission_id": None,
-                    "mode": "control_decision_failed",
-                    "completion_policy": "blocked",
-                    "control_decision_failed": True,
-                    "evidence": {
-                        "required_proofs": ["control_decision"],
-                        "failure_layer": "control_decision",
-                        "next_repair_action": "repair Raphael control decision",
-                    },
-                    "next_action": "repair Raphael control decision",
-                    "runtime_contract": dict(_raphael_runtime_contract),
-                }
-
-    shadow_turn_control: Dict[str, Any] = {}
-    if _raphael_transport == "shadow" and turn_control:
-        shadow_turn_control = turn_control
-        turn_control = {}
 
     # Per-turn file-mutation verifier state.
     agent._turn_failed_file_mutations = {}
@@ -1057,9 +982,7 @@ def build_turn_context(
         should_review_memory=should_review_memory,
         plugin_user_context=plugin_user_context,
         ext_prefetch_cache=ext_prefetch_cache,
-        raphael_origin=_raphael_origin,
-        raphael_runtime_contract=_raphael_runtime_contract,
-        raphael_decision=raphael_decision,
+        turn_origin=_turn_origin,
+        runtime_contract=_runtime_contract,
         turn_control=turn_control,
-        shadow_turn_control=shadow_turn_control,
     )

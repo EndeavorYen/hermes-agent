@@ -4,6 +4,35 @@ import json
 from types import SimpleNamespace
 
 
+def _engine_result(path: str, *, provider: str = "xai") -> str:
+    return json.dumps(
+        {
+            "success": True,
+            "run": {
+                "run_id": "run-current",
+                "status": "completed",
+                "selected_artifact_id": "artifact-current",
+            },
+            "artifact": {
+                "artifact_id": "artifact-current",
+                "alias": "G1",
+                "local_path": path,
+                "provider": provider,
+            },
+            "candidate_aliases": [
+                {"alias": "G1", "artifact_id": "artifact-current"},
+            ],
+            "evidence": {
+                "provider_attempt": {"status": "passed"},
+                "artifact_quality": {"status": "passed"},
+                "delivery": {"status": "passed"},
+                "reference_mapping": {"status": "passed"},
+            },
+        },
+        ensure_ascii=False,
+    )
+
+
 class _FakeBudget:
     remaining = 10
     used = 0
@@ -18,7 +47,7 @@ class _FakeAgent:
     provider = "openai-codex"
     base_url = "https://api.openai.test/v1"
     session_id = "sess-visual"
-    valid_tool_names = {"visual_agent_generate"}
+    valid_tool_names = {"visual_engine_generate"}
     iteration_budget = _FakeBudget()
     session_input_tokens = 0
     session_output_tokens = 0
@@ -79,13 +108,17 @@ class _FakeAgent:
         pass
 
 
-def test_run_conversation_executes_direct_visual_handoff_before_base_llm(monkeypatch):
+def test_run_conversation_executes_direct_visual_handoff_before_base_llm(
+    monkeypatch,
+    tmp_path,
+):
     import agent.conversation_loop as conversation_loop
-    from agent.visual.agent_mode import handoff as handoff_module
     from tools.registry import registry
 
     agent = _FakeAgent()
     dispatched = {}
+    artifact_path = tmp_path / "current-composition.png"
+    artifact_path.write_bytes(b"current")
 
     def fake_build_turn_context(*_args, **_kwargs):
         user_message = "現在用 openai 幫我產出構圖，一樣產出四張不同構圖讓我挑選"
@@ -101,56 +134,56 @@ def test_run_conversation_executes_direct_visual_handoff_before_base_llm(monkeyp
             should_review_memory=False,
             plugin_user_context="",
             ext_prefetch_cache=None,
+            turn_control={
+                "schema_version": "raphael.turn-decision.v1",
+                "decision_id": "decision-visual",
+                "mission_id": "mission-visual",
+                "mode": "visual_agent_generation",
+                "completion_policy": "verify",
+                "failure_policy": "fail_closed",
+                "required_proofs": [],
+            },
         )
 
     def fake_dispatch(name, args, **_kwargs):
         dispatched["name"] = name
         dispatched["args"] = dict(args)
-        return json.dumps(
-            {
-                "success": True,
-                "package_status": "completed",
-                "images": ["/tmp/current-composition.png"],
-                "videos": [],
-            },
-            ensure_ascii=False,
-        )
+        return _engine_result(str(artifact_path), provider="openai-codex")
 
     monkeypatch.setattr(conversation_loop, "build_turn_context", fake_build_turn_context)
-    monkeypatch.setattr(
-        handoff_module,
-        "_raphael_handoff_control_enabled",
-        lambda: False,
-    )
     monkeypatch.setattr(registry, "dispatch", fake_dispatch)
 
     result = conversation_loop.run_conversation(agent, "ignored by fake context")
 
     assert result["api_calls"] == 0
     assert result["turn_exit_reason"] == "direct_visual_agent_handoff"
-    assert result["final_response"] == "已產出圖片。"
-    assert dispatched["name"] == "visual_agent_generate"
-    assert dispatched["args"]["include_image"] is True
-    assert dispatched["args"]["include_video"] is False
-    assert dispatched["args"]["image_provider"] == "openai-codex"
-    assert dispatched["args"]["candidate_budget"] == 4
+    assert dispatched["name"] == "visual_engine_generate"
+    assert dispatched["args"]["session_id"] == "sess-visual"
+    assert dispatched["args"]["message_id"] == "turn-visual"
+    assert result["final_response"] == "已產出圖片：G1。後續可直接指定編號繼續編輯。"
+    assert dispatched["args"]["provider"] == "openai-codex"
+    assert dispatched["args"]["candidate_count"] == 4
     tool_turns = [msg for msg in result["messages"] if msg.get("tool_calls")]
     assert len(tool_turns) == 1
-    assert tool_turns[0]["tool_calls"][0]["function"]["name"] == "visual_agent_generate"
+    assert tool_turns[0]["tool_calls"][0]["function"]["name"] == "visual_engine_generate"
     tool_results = [msg for msg in result["messages"] if msg.get("role") == "tool"]
     assert len(tool_results) == 1
     payload = json.loads(tool_results[0]["content"])
     assert payload["direct_visual_agent_handoff"]["mode"] == "pre_llm_direct"
 
 
-def test_codex_app_server_executes_direct_xai_handoff_before_runtime(monkeypatch):
+def test_codex_app_server_executes_direct_xai_handoff_before_runtime(
+    monkeypatch,
+    tmp_path,
+):
     import agent.conversation_loop as conversation_loop
-    from agent.visual.agent_mode import handoff as handoff_module
     from tools.registry import registry
 
     agent = _FakeAgent()
     agent.api_mode = "codex_app_server"
     dispatched = {}
+    artifact_path = tmp_path / "current-xai.png"
+    artifact_path.write_bytes(b"current")
 
     def fail_codex_runtime(**_kwargs):
         raise AssertionError("Codex app-server must not receive a direct visual request")
@@ -176,30 +209,24 @@ def test_codex_app_server_executes_direct_xai_handoff_before_runtime(monkeypatch
     def fake_dispatch(name, args, **_kwargs):
         dispatched["name"] = name
         dispatched["args"] = dict(args)
-        return json.dumps(
-            {
-                "success": True,
-                "package_status": "completed",
-                "images": ["/tmp/current-xai.png"],
-                "videos": [],
-            },
-            ensure_ascii=False,
-        )
+        return _engine_result(str(artifact_path))
 
     monkeypatch.setattr(conversation_loop, "build_turn_context", fake_build_turn_context)
-    monkeypatch.setattr(handoff_module, "_raphael_handoff_control_enabled", lambda: False)
     monkeypatch.setattr(registry, "dispatch", fake_dispatch)
 
     result = conversation_loop.run_conversation(agent, "ignored by fake context")
 
     assert result["api_calls"] == 0
     assert result["turn_exit_reason"] == "direct_visual_agent_handoff"
-    assert dispatched["name"] == "visual_agent_generate"
-    assert dispatched["args"]["image_provider"] == "xai"
-    assert dispatched["args"]["candidate_budget"] == 4
+    assert dispatched["name"] == "visual_engine_generate"
+    assert dispatched["args"]["provider"] == "xai"
+    assert dispatched["args"]["candidate_count"] == 4
 
 
-def test_codex_app_server_routes_slack_regenerate_output_through_visual_tool(monkeypatch):
+def test_codex_app_server_routes_slack_regenerate_output_through_visual_tool(
+    monkeypatch,
+    tmp_path,
+):
     import agent.conversation_loop as conversation_loop
     from gateway.session_context import reset_visual_reference_context, set_visual_reference_context
     from tools.registry import registry
@@ -207,6 +234,8 @@ def test_codex_app_server_routes_slack_regenerate_output_through_visual_tool(mon
     agent = _FakeAgent()
     agent.api_mode = "codex_app_server"
     dispatched = {}
+    artifact_path = tmp_path / "current-regenerated.png"
+    artifact_path.write_bytes(b"current")
 
     def fail_codex_runtime(**_kwargs):
         raise AssertionError("Slack visual regeneration must bypass Codex app-server")
@@ -234,7 +263,7 @@ def test_codex_app_server_routes_slack_regenerate_output_through_visual_tool(mon
             should_review_memory=False,
             plugin_user_context="",
             ext_prefetch_cache=None,
-            raphael_decision={
+            turn_control={
                 "mode": "visual_agent_generation",
                 "completion_policy": "visual",
                 "route": {},
@@ -245,16 +274,7 @@ def test_codex_app_server_routes_slack_regenerate_output_through_visual_tool(mon
     def fake_dispatch(name, args, **_kwargs):
         dispatched["name"] = name
         dispatched["args"] = dict(args)
-        return json.dumps(
-            {
-                "success": True,
-                "package_status": "completed",
-                "images": ["/tmp/current-regenerated.png"],
-                "videos": [],
-                "selected_artifact": "/tmp/current-regenerated.png",
-            },
-            ensure_ascii=False,
-        )
+        return _engine_result(str(artifact_path))
 
     monkeypatch.setattr(conversation_loop, "build_turn_context", fake_build_turn_context)
     monkeypatch.setattr(registry, "dispatch", fake_dispatch)
@@ -275,18 +295,23 @@ def test_codex_app_server_routes_slack_regenerate_output_through_visual_tool(mon
 
     assert result["api_calls"] == 0
     assert result["turn_exit_reason"] == "direct_visual_agent_handoff"
-    assert dispatched["name"] == "visual_agent_generate"
-    assert dispatched["args"]["image_provider"] == "xai"
-    assert dispatched["args"]["attachments"] == ["/tmp/locked-character.png"]
-    assert dispatched["args"]["candidate_budget"] == 4
+    assert dispatched["name"] == "visual_engine_generate"
+    assert dispatched["args"]["provider"] == "xai"
+    assert [item["source_path"] for item in dispatched["args"]["references"]] == [
+        "/tmp/locked-character.png"
+    ]
+    assert dispatched["args"]["candidate_count"] == 4
     tool_results = [msg for msg in result["messages"] if msg.get("role") == "tool"]
     assert len(tool_results) == 1
     payload = json.loads(tool_results[0]["content"])
-    assert payload["selected_artifact"] == "/tmp/current-regenerated.png"
+    assert payload["artifact"]["local_path"] == str(artifact_path)
     assert payload["direct_visual_agent_handoff"]["mode"] == "pre_llm_direct"
 
 
-def test_codex_app_server_routes_current_attachment_generation_before_runtime(monkeypatch):
+def test_codex_app_server_routes_current_attachment_generation_before_runtime(
+    monkeypatch,
+    tmp_path,
+):
     import agent.conversation_loop as conversation_loop
     from gateway.session_context import reset_visual_reference_context, set_visual_reference_context
     from tools.registry import registry
@@ -294,6 +319,8 @@ def test_codex_app_server_routes_current_attachment_generation_before_runtime(mo
     agent = _FakeAgent()
     agent.api_mode = "codex_app_server"
     dispatched = {}
+    artifact_path = tmp_path / "current-selected.png"
+    artifact_path.write_bytes(b"current")
 
     def fail_codex_runtime(**_kwargs):
         raise AssertionError("Current-attachment generation must bypass Codex app-server")
@@ -320,7 +347,7 @@ def test_codex_app_server_routes_current_attachment_generation_before_runtime(mo
             should_review_memory=False,
             plugin_user_context="",
             ext_prefetch_cache=None,
-            raphael_decision={
+            turn_control={
                 "mode": "visual_agent_generation",
                 "completion_policy": "visual",
                 "route": {
@@ -334,16 +361,7 @@ def test_codex_app_server_routes_current_attachment_generation_before_runtime(mo
     def fake_dispatch(name, args, **_kwargs):
         dispatched["name"] = name
         dispatched["args"] = dict(args)
-        return json.dumps(
-            {
-                "success": True,
-                "package_status": "completed",
-                "images": ["/tmp/current-selected.png"],
-                "videos": [],
-                "selected_artifact": "/tmp/current-selected.png",
-            },
-            ensure_ascii=False,
-        )
+        return _engine_result(str(artifact_path))
 
     monkeypatch.setattr(conversation_loop, "build_turn_context", fake_build_turn_context)
     monkeypatch.setattr(registry, "dispatch", fake_dispatch)
@@ -364,12 +382,12 @@ def test_codex_app_server_routes_current_attachment_generation_before_runtime(mo
 
     assert result["api_calls"] == 0
     assert result["turn_exit_reason"] == "direct_visual_agent_handoff"
-    assert dispatched["name"] == "visual_agent_generate"
-    assert dispatched["args"]["attachments"] == [
+    assert dispatched["name"] == "visual_engine_generate"
+    assert [item["source_path"] for item in dispatched["args"]["references"]] == [
         "/tmp/current-slack-reference.png"
     ]
-    assert dispatched["args"]["image_provider"] == "xai"
-    assert dispatched["args"]["candidate_budget"] == 4
+    assert dispatched["args"]["provider"] == "xai"
+    assert dispatched["args"]["candidate_count"] == 4
 
 
 def test_gateway_attachment_context_reaches_visual_handoff_consumer():
