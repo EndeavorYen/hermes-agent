@@ -114,12 +114,6 @@ def test_agent_mode_planner_routes_image_only_request():
     assert plan["arguments"]["include_video"] is False
     assert plan["arguments"]["candidate_budget"] == 1
     assert plan["arguments"]["candidate_budget_source"] == "planner_default"
-    assert plan["arguments"]["visual_production_kernel"] is True
-    assert plan["arguments"]["max_generated_repairs"] == 2
-    assert plan["arguments"]["visual_contract_hash"]
-    assert plan["arguments"]["visual_intent_contract"]["primary_subject"]
-    assert plan["arguments"]["provider_decision"]["provider"] == "xai"
-    assert plan["arguments"]["provider_decision"]["reason"] == "configured_default"
 
 
 def test_agent_mode_planner_defaults_reference_visual_brief_to_prompt_only():

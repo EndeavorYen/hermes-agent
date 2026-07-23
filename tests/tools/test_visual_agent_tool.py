@@ -3,24 +3,9 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
-
 _ONE_PIXEL_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
 )
-
-
-@pytest.fixture(autouse=True)
-def _isolate_runtime_provider_profiles(monkeypatch):
-    from tools import visual_agent_tool
-
-    monkeypatch.setattr(
-        visual_agent_tool,
-        "_runtime_provider_quality_profiles",
-        lambda **_kwargs: {},
-        raising=False,
-    )
 
 
 def test_visual_agent_registry_handler_is_synchronous():
@@ -112,87 +97,14 @@ def test_visual_agent_generate_plans_natural_image_plus_video_request(monkeypatc
     assert captured["candidate_budget"] == 1
     assert captured["candidate_budget_source"] == "user"
     assert captured["video_budget"] == 1
-    assert captured["visual_production_kernel"] is True
-    assert captured["max_generated_repairs"] == 2
-    assert captured["visual_contract_hash"]
-    assert captured["visual_intent_contract"]["original_request"] == (
-        "請用這張 reference 產出一張圖片和一段 6 秒影片"
-    )
-    assert captured["provider_decision"]["provider"] == "xai"
 
 
-def test_visual_agent_generate_routes_one_provider_from_measured_quality_profile(monkeypatch):
-    from tools import visual_agent_tool
-
-    captured = {}
-    profile_lookup = {}
-
-    def fake_profiles(*, category=None):
-        profile_lookup["category"] = category
-        return {
-            "xai": {
-                "sample_count": 12,
-                "first_pass_rate": 0.5,
-                "failure_rate": 0.1,
-            },
-            "openai-codex": {
-                "sample_count": 8,
-                "first_pass_rate": 0.9,
-                "failure_rate": 0.0,
-            },
-        }
-
-    monkeypatch.setattr(
-        visual_agent_tool,
-        "_runtime_provider_quality_profiles",
-        fake_profiles,
-    )
-    monkeypatch.setattr(
-        visual_agent_tool,
-        "_handle_visual_package_generate",
-        lambda args, **_kwargs: captured.update(args)
-        or json.dumps({"success": True, "images": ["/tmp/current.png"], "videos": []}),
-    )
-
-    payload = json.loads(
-        visual_agent_tool._handle_visual_agent_generate(
-            {"prompt": "請生成乾淨產品攝影圖片"}
-        )
-    )
-
-    assert payload["success"] is True
-    assert profile_lookup["category"] == "product"
-    assert captured["image_provider"] == "openai-codex"
-    assert captured["image_provider_source"] == "visual_kernel_quality_profile"
-    assert captured["provider_decision"]["reason"] == "measured_quality_profile"
-    assert captured["provider_decision"]["evidence"]["providers_evaluated"] == 2
-    assert payload["visual_agent_provider_contract"]["image_provider"] == (
-        "openai-codex"
-    )
-    assert payload["visual_agent_provider_contract"][
-        "visual_media_provider_selected"
-    ] == "openai-codex"
-    assert payload["visual_agent_provider_contract"][
-        "visual_media_provider_selection_reason"
-    ] == "measured_quality_profile"
 
 
 def test_visual_agent_generate_does_not_downgrade_prompt_provider_source(monkeypatch):
     from tools import visual_agent_tool
 
     captured = {}
-    monkeypatch.setattr(
-        visual_agent_tool,
-        "_runtime_provider_quality_profiles",
-        lambda **_kwargs: {
-            "xai": {"sample_count": 12, "first_pass_rate": 0.5, "failure_rate": 0.1},
-            "openai-codex": {
-                "sample_count": 12,
-                "first_pass_rate": 0.95,
-                "failure_rate": 0.0,
-            },
-        },
-    )
     monkeypatch.setattr(
         visual_agent_tool,
         "_handle_visual_package_generate",
@@ -216,7 +128,6 @@ def test_visual_agent_generate_does_not_downgrade_prompt_provider_source(monkeyp
     assert payload["success"] is True
     assert captured["image_provider"] == "xai"
     assert captured["image_provider_source"] == "prompt_override"
-    assert captured["provider_decision"]["reason"] == "explicit_override"
 
 
 def test_visual_agent_generate_materializes_data_uri_attachment(monkeypatch, tmp_path):

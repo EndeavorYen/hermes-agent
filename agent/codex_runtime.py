@@ -65,7 +65,7 @@ def _is_story_video_workflow(decision: Mapping[str, Any] | None) -> bool:
 
 def resolve_codex_thread_ephemeral(
     agent,
-    raphael_decision: Mapping[str, Any] | None = None,
+    turn_control: Mapping[str, Any] | None = None,
 ) -> bool:
     """Return whether this Hermes-owned Codex thread stays out of Remote UI.
 
@@ -77,7 +77,7 @@ def resolve_codex_thread_ephemeral(
     explicit = getattr(agent, "codex_thread_ephemeral", None)
     if isinstance(explicit, bool):
         return explicit
-    if _is_story_video_workflow(raphael_decision):
+    if _is_story_video_workflow(turn_control):
         return True
     platform = str(getattr(agent, "platform", "") or "").strip().lower()
     return platform not in _CODEX_USER_VISIBLE_PLATFORMS
@@ -296,7 +296,7 @@ def _run_plugin_auto_continuation(
     effective_task_id: str,
     turn_id: str,
     should_review_memory: bool,
-    raphael_decision: Dict[str, Any] | None,
+    turn_control: Dict[str, Any] | None,
     prior_api_calls: int,
 ) -> Dict[str, Any] | None:
     if auto_request is None:
@@ -349,7 +349,7 @@ def _run_plugin_auto_continuation(
         effective_task_id=effective_task_id,
         turn_id=f"{turn_id}:auto:{auto_count + 1}",
         should_review_memory=should_review_memory,
-        raphael_decision=raphael_decision,
+        turn_control=turn_control,
     )
     continued["api_calls"] = prior_api_calls + int(continued.get("api_calls") or 0)
     return continued
@@ -452,10 +452,10 @@ def _codex_turn_timeout_for_image_target(target: int | None) -> float:
 
 def _codex_turn_timeout_for_target(
     image_target: int | None,
-    raphael_decision: Mapping[str, Any] | None,
+    turn_control: Mapping[str, Any] | None,
 ) -> float:
     """Use a bounded long-work deadline for the story-video workflow."""
-    if _is_story_video_workflow(raphael_decision):
+    if _is_story_video_workflow(turn_control):
         return 1800.0
     return _codex_turn_timeout_for_image_target(image_target)
 
@@ -1117,7 +1117,7 @@ def run_codex_app_server_turn(
     effective_task_id: str,
     turn_id: str = "",
     should_review_memory: bool = False,
-    raphael_decision: Dict[str, Any] | None = None,
+    turn_control: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """Codex app-server runtime path. Hands the entire turn to a `codex
     app-server` subprocess and projects its events back into Hermes'
@@ -1256,13 +1256,13 @@ def run_codex_app_server_turn(
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
             codex_bin=codex_bin,
-            ephemeral=resolve_codex_thread_ephemeral(agent, raphael_decision),
+            ephemeral=resolve_codex_thread_ephemeral(agent, turn_control),
             approval_callback=approval_callback,
             request_routing=_ServerRequestRouting(
                 auto_approve_exec=auto_approve_requests,
                 auto_approve_apply_patch=auto_approve_requests,
                 auto_resolve_user_input=_is_story_video_workflow(
-                    raphael_decision
+                    turn_control
                 ),
             ),
             subprocess_env={
@@ -1325,7 +1325,7 @@ def run_codex_app_server_turn(
             user_input=user_message,
             turn_timeout=_codex_turn_timeout_for_target(
                 image_target,
-                raphael_decision,
+                turn_control,
             ),
         )
     except Exception as exc:
@@ -1360,7 +1360,7 @@ def run_codex_app_server_turn(
             effective_task_id=effective_task_id,
             turn_id=turn_id,
             should_review_memory=False,
-            raphael_decision=raphael_decision,
+            turn_control=turn_control,
             prior_api_calls=1,
         )
         if continued is not None:
@@ -1458,7 +1458,7 @@ def run_codex_app_server_turn(
         messages.extend(turn.projected_messages)
 
         # Persist the newly-projected assistant/tool messages ourselves after
-        # shared Raphael finalization and output transforms below.
+        # shared turn-control finalization and output transforms below.
         # This path is an early return that bypasses conversation_loop, whose
         # normal per-step _persist_session() calls would otherwise flush them.
         # The inbound user turn was already flushed at turn start
@@ -1484,30 +1484,14 @@ def run_codex_app_server_turn(
     usage_result = _record_codex_app_server_usage(agent, turn)
     api_calls = 1
     final_text = turn.final_text
-    from agent.raphael.finalization import (
-        enforce_raphael_completion,
-        record_raphael_finalization_outcome,
-        replace_terminal_assistant_response,
-    )
+    from agent.turn_finalizer import _replace_terminal_assistant_response
 
-    raphael_finalization = enforce_raphael_completion(
-        decision=raphael_decision,
-        final_response=final_text,
-        messages=messages,
-    )
-    if not turn.interrupted:
-        record_raphael_finalization_outcome(
-            decision=raphael_decision,
-            result=raphael_finalization,
-        )
-    final_text = raphael_finalization.final_response
-    if final_text and not turn.interrupted:
-        replace_terminal_assistant_response(messages, final_text)
+    turn_control_status = "not_applicable"
+    turn_control_completed = True
 
     if (
         final_text
         and not turn.interrupted
-        and raphael_finalization.status != "blocked_unverified_completion"
     ):
         for hook_result in _invoke_runtime_hook(
             "transform_llm_output",
@@ -1522,8 +1506,26 @@ def run_codex_app_server_turn(
         ):
             if isinstance(hook_result, str) and hook_result:
                 final_text = hook_result
-                replace_terminal_assistant_response(messages, final_text)
+                _replace_terminal_assistant_response(messages, final_text)
                 break
+            if isinstance(hook_result, Mapping):
+                transformed = str(
+                    hook_result.get("response_text")
+                    or hook_result.get("final_response")
+                    or ""
+                )
+                if transformed:
+                    final_text = transformed
+                    _replace_terminal_assistant_response(messages, final_text)
+                turn_control_status = str(
+                    hook_result.get("turn_control_status")
+                    or hook_result.get("status")
+                    or "applied"
+                )
+                if hook_result.get("completed") is False:
+                    turn_control_completed = False
+                if transformed:
+                    break
         _invoke_runtime_hook(
             "post_llm_call",
             session_id=session_id,
@@ -1533,8 +1535,8 @@ def run_codex_app_server_turn(
             assistant_response=final_text,
             conversation_history=list(messages),
             authoritative_turn_control=(
-                dict(raphael_decision)
-                if isinstance(raphael_decision, Mapping)
+                dict(turn_control)
+                if isinstance(turn_control, Mapping)
                 else {}
             ),
             model=model,
@@ -1618,7 +1620,7 @@ def run_codex_app_server_turn(
         effective_task_id=effective_task_id,
         turn_id=turn_id,
         should_review_memory=False,
-        raphael_decision=raphael_decision,
+        turn_control=turn_control,
         prior_api_calls=api_calls,
     )
     if continued is not None:
@@ -1632,10 +1634,14 @@ def run_codex_app_server_turn(
         "completed": (
             not turn.interrupted
             and turn.error is None
-            and raphael_finalization.status != "blocked_unverified_completion"
+            and turn_control_completed
         ),
         "partial": turn.interrupted or turn.error is not None,
         "error": turn.error,
+        "turn_control_finalization": {
+            "status": turn_control_status,
+            "completed": turn_control_completed,
+        },
         # The codex app-server runtime IS an early-return path that bypasses
         # conversation_loop, but we flush the projected assistant/tool messages
         # ourselves above (see the _flush_messages_to_session_db call after
@@ -1650,7 +1656,6 @@ def run_codex_app_server_turn(
         "agent_persisted": True,
         "codex_thread_id": turn.thread_id,
         "codex_turn_id": turn.turn_id,
-        "raphael_finalization": raphael_finalization.to_dict(),
         **usage_result,
     }
 

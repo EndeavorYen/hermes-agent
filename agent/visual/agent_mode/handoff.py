@@ -7,7 +7,6 @@ import json
 import logging
 import os
 import re
-from datetime import datetime, timezone
 from typing import Any
 
 from agent.visual.agent_mode.planner import _pose_composition_is_guidance_only
@@ -44,7 +43,8 @@ def build_direct_visual_agent_handoff(
     user_message: Any,
     original_user_message: Any = None,
     *,
-    raphael_decision: dict[str, Any] | None = None,
+    turn_control: dict[str, Any] | None = None,
+    turn_id: str = "",
 ) -> dict[str, Any] | None:
     """Return a direct pre-LLM visual-agent handoff plan when it is safe.
 
@@ -55,7 +55,9 @@ def build_direct_visual_agent_handoff(
     if _disabled_by_env():
         return None
     valid_tool_names = set(getattr(agent, "valid_tool_names", None) or ())
-    if "visual_agent_generate" not in valid_tool_names:
+    has_engine_tool = "visual_engine_generate" in valid_tool_names
+    has_legacy_tool = "visual_agent_generate" in valid_tool_names
+    if not has_engine_tool and not has_legacy_tool:
         return None
 
     source = original_user_message if original_user_message is not None else user_message
@@ -75,24 +77,24 @@ def build_direct_visual_agent_handoff(
         or is_text_only_visual_analysis_request(prompt)
     ):
         return None
-    raphael_control = (
-        dict(raphael_decision)
-        if isinstance(raphael_decision, dict) and raphael_decision
+    control = (
+        dict(turn_control)
+        if isinstance(turn_control, dict) and turn_control
         else None
     )
-    raphael_route = (
-        raphael_control.get("route")
-        if isinstance(raphael_control, dict)
-        and isinstance(raphael_control.get("route"), dict)
+    control_route = (
+        control.get("route")
+        if isinstance(control, dict)
+        and isinstance(control.get("route"), dict)
         else {}
     )
-    raphael_direct_request = bool(
-        isinstance(raphael_control, dict)
+    control_direct_request = bool(
+        isinstance(control, dict)
         and (
-            str(raphael_control.get("mode") or "") == "needs_clarification"
+            str(control.get("mode") or "") == "needs_clarification"
             or (
-                str(raphael_control.get("mode") or "").startswith("visual_agent")
-                and bool(raphael_route.get("bypass_base_llm"))
+                str(control.get("mode") or "").startswith("visual_agent")
+                and bool(control_route.get("bypass_base_llm", True))
             )
         )
     )
@@ -105,7 +107,7 @@ def build_direct_visual_agent_handoff(
         followup_request
         or polish_request
         or explicit_generation_request
-        or raphael_direct_request
+        or control_direct_request
     ):
         session_reference_entries = _session_visual_reference_entries(prompt)
         if polish_request:
@@ -117,7 +119,7 @@ def build_direct_visual_agent_handoff(
         explicit_generation_request
         or (bool(attachments) and polish_request)
         or bool(session_reference_entries)
-        or raphael_direct_request
+        or control_direct_request
     ):
         return None
 
@@ -127,28 +129,17 @@ def build_direct_visual_agent_handoff(
         force_image_output=bool(
             session_reference_entries
             or candidate_output_request
-            or raphael_direct_request
+            or control_direct_request
         ),
     )
     if not plan.get("should_use_visual_package"):
         return None
-    if raphael_control is None and _raphael_handoff_control_enabled():
-        try:
-            from agent.raphael.control import build_raphael_control_decision
-
-            raphael_control = build_raphael_control_decision(
-                prompt,
-                attachments=attachments,
-                visual_plan=plan,
-            ).to_dict()
-        except Exception as exc:
-            logger.debug("Raphael visual handoff control decision skipped: %s", exc)
-    if isinstance(raphael_control, dict):
-        raphael_mode = str(raphael_control.get("mode") or "")
-        if raphael_mode != "needs_clarification" and not raphael_mode.startswith("visual_agent"):
+    if isinstance(control, dict):
+        control_mode = str(control.get("mode") or "")
+        if control_mode != "needs_clarification" and not control_mode.startswith("visual_agent"):
             logger.info(
-                "direct visual-agent handoff vetoed by Raphael control mode=%s",
-                raphael_mode,
+                "direct visual-agent handoff vetoed by turn-control mode=%s",
+                control_mode,
             )
             return None
 
@@ -210,19 +201,13 @@ def build_direct_visual_agent_handoff(
                     "edit_anchor": True,
                 }
     contract = dict(plan.get("provider_contract") or {})
-    control_route = (
-        raphael_control.get("route")
-        if isinstance(raphael_control, dict)
-        and isinstance(raphael_control.get("route"), dict)
-        else {}
-    )
     for key in ("visual_agent_llm_provider", "visual_agent_llm_model"):
         if control_route.get(key):
             contract[key] = control_route[key]
     runtime_contract = (
-        raphael_control.get("runtime_contract")
-        if isinstance(raphael_control, dict)
-        and isinstance(raphael_control.get("runtime_contract"), dict)
+        control.get("runtime_contract")
+        if isinstance(control, dict)
+        and isinstance(control.get("runtime_contract"), dict)
         else {}
     )
     if (
@@ -258,7 +243,7 @@ def build_direct_visual_agent_handoff(
     )
     arguments["visual_agent_handoff_mode"] = "pre_llm_direct"
 
-    if isinstance(raphael_control, dict) and raphael_control.get("mode") == "needs_clarification":
+    if isinstance(control, dict) and control.get("mode") == "needs_clarification":
         return {
             "mode": "pre_llm_clarification",
             "tool_name": None,
@@ -268,37 +253,86 @@ def build_direct_visual_agent_handoff(
             "base_llm_model_bypassed": str(getattr(agent, "model", "") or ""),
             "visual_agent_llm_provider": contract.get("visual_agent_llm_provider"),
             "visual_agent_llm_model": contract.get("visual_agent_llm_model"),
-            "raphael_control": raphael_control,
-            "clarification_response": raphael_control.get("clarification_question")
+            "turn_control": control,
+            "clarification_response": control.get("clarification_question")
             or "請先補充 reference 對應後我再繼續。",
         }
 
+    tool_name = "visual_agent_generate"
+    if has_engine_tool and not bool(arguments.get("include_video")):
+        tool_name = "visual_engine_generate"
+        arguments = _visual_engine_arguments(
+            agent=agent,
+            turn_id=turn_id,
+            prompt=str(arguments.get("prompt") or prompt),
+            arguments=arguments,
+            attachments=attachments,
+            session_reference_entries=session_reference_entries,
+        )
+
     return {
         "mode": "pre_llm_direct",
-        "tool_name": "visual_agent_generate",
+        "tool_name": tool_name,
         "arguments": arguments,
         "plan": plan,
         "base_llm_provider_bypassed": str(getattr(agent, "provider", "") or ""),
         "base_llm_model_bypassed": str(getattr(agent, "model", "") or ""),
         "visual_agent_llm_provider": contract.get("visual_agent_llm_provider"),
         "visual_agent_llm_model": contract.get("visual_agent_llm_model"),
-        "raphael_control": raphael_control,
+        "turn_control": control,
     }
 
 
-def _raphael_handoff_control_enabled() -> bool:
-    try:
-        from hermes_cli.config import load_config
-
-        config = load_config()
-    except Exception:
-        return False
-    try:
-        from agent.raphael.config import raphael_effective_enabled
-
-        return raphael_effective_enabled(config)
-    except Exception:
-        return False
+def _visual_engine_arguments(
+    *,
+    agent: Any,
+    turn_id: str,
+    prompt: str,
+    arguments: dict[str, Any],
+    attachments: list[str],
+    session_reference_entries: list[dict[str, Any]],
+) -> dict[str, Any]:
+    entries = session_reference_entries or [
+        {
+            "uri": path,
+            "role_hint": (
+                "character_identity"
+                if index == 1
+                else "pose_composition"
+                if index == 2
+                else "supporting_reference"
+            ),
+        }
+        for index, path in enumerate(attachments, start=1)
+    ]
+    role_map = {
+        "edit_anchor": "character_identity",
+        "visual_reference": "supporting_reference",
+    }
+    references = [
+        {
+            "source_path": str(entry.get("uri") or ""),
+            "role": role_map.get(
+                str(entry.get("role_hint") or ""),
+                str(entry.get("role_hint") or "supporting_reference"),
+            ),
+        }
+        for entry in entries
+        if str(entry.get("uri") or "").strip()
+    ]
+    provider = str(arguments.get("image_provider") or "").strip()
+    if provider not in {"xai", "openai-codex"}:
+        provider = "xai"
+    return {
+        "session_id": str(getattr(agent, "session_id", None) or "unknown"),
+        "message_id": str(turn_id or ""),
+        "prompt": prompt,
+        "provider": provider,
+        "candidate_count": max(1, int(arguments.get("candidate_budget") or 1)),
+        "aspect_ratio": str(arguments.get("aspect_ratio") or "portrait"),
+        "references": references,
+        "max_repairs": 1,
+    }
 
 
 def _is_visual_followup_edit_request(prompt: str) -> bool:
@@ -995,38 +1029,18 @@ def attach_direct_visual_agent_handoff_metadata(
         "visual_agent_llm_provider": handoff.get("visual_agent_llm_provider"),
         "visual_agent_llm_model": handoff.get("visual_agent_llm_model"),
     }
-    if isinstance(handoff.get("raphael_control"), dict):
-        payload["direct_visual_agent_handoff"]["raphael_control"] = handoff[
-            "raphael_control"
+    if isinstance(handoff.get("turn_control"), dict):
+        payload["direct_visual_agent_handoff"]["turn_control"] = handoff[
+            "turn_control"
         ]
-        external_control = _is_external_control_engine_envelope(
-            handoff["raphael_control"]
-        )
-        gate = (
-            _evaluate_external_control_evidence_gate(
-                handoff["raphael_control"],
-                payload,
-            )
-            if external_control
-            else _evaluate_raphael_evidence_gate(
-                handoff["raphael_control"],
-                payload,
-            )
+        gate = _evaluate_turn_control_evidence_gate(
+            handoff["turn_control"],
+            payload,
         )
         review_only_delivery = _review_only_candidate_delivery_allowed(payload, gate)
         if review_only_delivery:
             gate["delivery_disposition"] = "review_only"
-        payload["direct_visual_agent_handoff"]["raphael_evidence_gate"] = gate
-        if (
-            payload.get("success") is True
-            and gate.get("passed") is True
-            and not external_control
-        ):
-            _record_successful_raphael_visual_handoff_mission(
-                payload,
-                handoff["raphael_control"],
-                gate,
-            )
+        payload["direct_visual_agent_handoff"]["control_evidence_gate"] = gate
         if (
             payload.get("success") is True
             and gate.get("passed") is not True
@@ -1038,16 +1052,16 @@ def attach_direct_visual_agent_handoff_metadata(
                 payload["blocked_delivery"] = {
                     "images": blocked_images,
                     "videos": blocked_videos,
-                    "reason": "raphael_evidence_gate_failed",
+                    "reason": "turn_control_evidence_gate_failed",
                 }
             payload["images"] = []
             payload["videos"] = []
             payload["success"] = False
             payload["package_status"] = "failed"
-            payload["error_type"] = "raphael_evidence_gate_failed"
+            payload["error_type"] = "turn_control_evidence_gate_failed"
             missing = ", ".join(gate.get("missing_proofs") or ())
             payload["error"] = (
-                "Raphael evidence gate failed"
+                "Turn-control evidence gate failed"
                 + (f": missing {missing}" if missing else "")
             )
             payload["failure_layer"] = gate.get("failure_layer") or "artifact_quality"
@@ -1075,131 +1089,7 @@ def _review_only_candidate_delivery_allowed(
     return bool(missing) and missing.issubset(allowed_missing)
 
 
-def _record_successful_raphael_visual_handoff_mission(
-    payload: dict[str, Any],
-    raphael_control: dict[str, Any],
-    gate: dict[str, Any],
-) -> None:
-    selected_ids = sorted(_selected_visual_artifact_ids(payload))
-    if not selected_ids:
-        return
-    try:
-        from agent.raphael.mission import RaphaelMissionState
-        from agent.raphael.state import read_mission_state, write_mission_state
-
-        current = read_mission_state()
-        goal = (
-            raphael_control.get("goal")
-            if isinstance(raphael_control.get("goal"), dict)
-            else {}
-        )
-        goal_summary = str(goal.get("summary") or "visual agent handoff").strip()
-        mission_id = (
-            current.mission_id
-            if current is not None
-            else _visual_handoff_mission_id(goal_summary, selected_ids[0])
-        )
-        write_mission_state(
-            RaphaelMissionState(
-                mission_id=mission_id,
-                goal=goal_summary,
-                phase="proof_passed",
-                selected_strategy_id="visual_agent_handoff",
-                active_artifact_id=selected_ids[0],
-                blockers=(),
-                next_action="deliver_selected_visual_artifact",
-                proof_status="passed",
-                required_proofs=tuple(
-                    str(item)
-                    for item in gate.get("required_proofs", ())
-                    if str(item).strip()
-                ),
-                updated_at=datetime.now(timezone.utc),
-            )
-        )
-    except Exception as exc:  # noqa: BLE001 - mission continuity must not break delivery.
-        logger.debug("Raphael visual handoff mission update skipped: %s", exc)
-
-
-def _visual_handoff_mission_id(goal: str, artifact_id: str) -> str:
-    digest = hashlib.sha256(f"{goal}|{artifact_id}".encode("utf-8")).hexdigest()[:12]
-    return f"mission-{digest}"
-
-
-def _evaluate_raphael_evidence_gate(
-    raphael_control: dict[str, Any],
-    payload: dict[str, Any],
-) -> dict[str, Any]:
-    from agent.raphael.proof import build_raphael_evidence_event
-
-    evidence = (
-        raphael_control.get("evidence")
-        if isinstance(raphael_control.get("evidence"), dict)
-        else {}
-    )
-    required = [
-        str(proof)
-        for proof in evidence.get("required_proofs", ())
-        if str(proof).strip()
-    ]
-    proof_results = {
-        proof: _raphael_required_proof_present(proof, raphael_control, payload)
-        for proof in required
-    }
-    mission_id = str(raphael_control.get("mission_id") or "")
-    turn_id = str(raphael_control.get("turn_id") or "")
-    selected_ids = sorted(_selected_visual_artifact_ids(payload))
-    artifact_id = selected_ids[0] if selected_ids else ""
-    provider = _raphael_evidence_provider(payload, raphael_control)
-    identity_missing = [
-        label
-        for label, value in (
-            ("mission_identity", mission_id),
-            ("turn_identity", turn_id),
-            ("artifact_identity", artifact_id),
-            ("provider_identity", provider),
-        )
-        if not value
-    ]
-    missing = [
-        proof for proof, present in proof_results.items() if not present
-    ] + identity_missing
-    payload_digest = _raphael_evidence_payload_digest(
-        proof_results=proof_results,
-        selected_ids=selected_ids,
-        provider=provider,
-        payload=payload,
-    )
-    observed_at = datetime.now(timezone.utc).isoformat()
-    evidence_events = [
-        build_raphael_evidence_event(
-            mission_id=mission_id,
-            turn_id=turn_id,
-            proof_type=proof,
-            source="visual_agent_handoff",
-            status="passed" if present and not identity_missing else "missing",
-            command="visual_agent_generate",
-            artifact_id=artifact_id,
-            provider=provider,
-            payload_digest=payload_digest,
-            observed_at=observed_at,
-        ).to_dict()
-        for proof, present in proof_results.items()
-    ]
-    return {
-        "passed": not missing,
-        "required_proofs": required,
-        "missing_proofs": missing,
-        "failure_layer": "artifact_quality" if missing else None,
-        "evidence_events": evidence_events,
-    }
-
-
-def _is_external_control_engine_envelope(control: dict[str, Any]) -> bool:
-    return str(control.get("schema_version") or "") == "raphael.turn-decision.v1"
-
-
-def _evaluate_external_control_evidence_gate(
+def _evaluate_turn_control_evidence_gate(
     control: dict[str, Any],
     payload: dict[str, Any],
 ) -> dict[str, Any]:
@@ -1210,12 +1100,12 @@ def _evaluate_external_control_evidence_gate(
         if proof:
             required.append(proof)
     proof_results = {
-        proof: _raphael_required_proof_present(proof, control, payload)
+        proof: _turn_control_required_proof_present(proof, control, payload)
         for proof in required
     }
     selected_ids = sorted(_selected_visual_artifact_ids(payload))
     artifact_id = selected_ids[0] if selected_ids else ""
-    provider = _raphael_evidence_provider(payload, control)
+    provider = _turn_control_evidence_provider(payload, control)
     identity_missing = [
         label
         for label, value in (
@@ -1229,7 +1119,7 @@ def _evaluate_external_control_evidence_gate(
     missing = [
         proof for proof, present in proof_results.items() if not present
     ] + identity_missing
-    payload_digest = _raphael_evidence_payload_digest(
+    payload_digest = _turn_control_evidence_payload_digest(
         proof_results=proof_results,
         selected_ids=selected_ids,
         provider=provider,
@@ -1240,7 +1130,7 @@ def _evaluate_external_control_evidence_gate(
             "proof_type": proof,
             "status": "passed" if present and not identity_missing else "missing",
             "source": "visual_agent_handoff",
-            "command": "visual_agent_generate",
+            "command": "visual_engine_generate",
             "artifact_id": artifact_id,
             "provider": provider,
             "payload_digest": payload_digest,
@@ -1256,9 +1146,9 @@ def _evaluate_external_control_evidence_gate(
     }
 
 
-def _raphael_evidence_provider(
+def _turn_control_evidence_provider(
     payload: dict[str, Any],
-    raphael_control: dict[str, Any],
+    turn_control: dict[str, Any],
 ) -> str:
     contract = payload.get("visual_agent_provider_contract")
     if isinstance(contract, dict) and str(contract.get("provider") or "").strip():
@@ -1268,10 +1158,13 @@ def _raphael_evidence_provider(
         for candidate in generation_payloads.values():
             if isinstance(candidate, dict) and str(candidate.get("provider") or "").strip():
                 return str(candidate["provider"])
-    route = raphael_control.get("route")
+    artifact = payload.get("artifact")
+    if isinstance(artifact, dict) and str(artifact.get("provider") or "").strip():
+        return str(artifact["provider"])
+    route = turn_control.get("route")
     if isinstance(route, dict) and str(route.get("visual_media_provider") or "").strip():
         return str(route["visual_media_provider"])
-    runtime_contract = raphael_control.get("runtime_contract")
+    runtime_contract = turn_control.get("runtime_contract")
     if isinstance(runtime_contract, dict):
         provider_key = "video_provider" if payload.get("videos") else "image_provider"
         if str(runtime_contract.get(provider_key) or "").strip():
@@ -1279,7 +1172,7 @@ def _raphael_evidence_provider(
     return ""
 
 
-def _raphael_evidence_payload_digest(
+def _turn_control_evidence_payload_digest(
     *,
     proof_results: dict[str, bool],
     selected_ids: list[str],
@@ -1301,17 +1194,27 @@ def _raphael_evidence_payload_digest(
     return f"sha256:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
 
 
-def _raphael_required_proof_present(
+def _turn_control_required_proof_present(
     proof: str,
-    raphael_control: dict[str, Any],
+    turn_control: dict[str, Any],
     payload: dict[str, Any],
 ) -> bool:
     if proof == "direct_handoff_metadata":
         return isinstance(payload.get("direct_visual_agent_handoff"), dict)
     if proof == "provider_attempt_evidence":
-        return bool(payload.get("generation_payloads")) or isinstance(
-            payload.get("visual_agent_provider_contract"),
-            dict,
+        evidence = payload.get("evidence")
+        provider_attempt = (
+            evidence.get("provider_attempt")
+            if isinstance(evidence, dict)
+            else None
+        )
+        return (
+            bool(payload.get("generation_payloads"))
+            or isinstance(payload.get("visual_agent_provider_contract"), dict)
+            or (
+                isinstance(provider_attempt, dict)
+                and provider_attempt.get("status") == "passed"
+            )
         )
     if proof == "artifact_quality_evidence":
         return _has_passing_artifact_quality_evidence(payload)
@@ -1320,6 +1223,13 @@ def _raphael_required_proof_present(
     if proof == "stale_artifact_guard":
         return _selected_current_visual_artifacts_are_fresh(payload)
     if proof == "delivery_cleanliness":
+        evidence = payload.get("evidence")
+        delivery = evidence.get("delivery") if isinstance(evidence, dict) else None
+        if isinstance(delivery, dict):
+            return (
+                delivery.get("status") == "passed"
+                and _selected_current_visual_artifacts_verified(payload)
+            )
         recovery = payload.get("delivery_recovery")
         if not isinstance(recovery, dict):
             return False
@@ -1331,9 +1241,22 @@ def _raphael_required_proof_present(
             and not payload.get("unexpected_delivery_artifact_ids")
         )
     if proof == "reference_mapping_evidence":
-        return bool(payload.get("reference_binding")) or bool(payload.get("rankings"))
+        evidence = payload.get("evidence")
+        reference_mapping = (
+            evidence.get("reference_mapping")
+            if isinstance(evidence, dict)
+            else None
+        )
+        return (
+            bool(payload.get("reference_binding"))
+            or bool(payload.get("rankings"))
+            or (
+                isinstance(reference_mapping, dict)
+                and reference_mapping.get("status") == "passed"
+            )
+        )
     if proof == "reference_adherence":
-        route = raphael_control.get("route")
+        route = turn_control.get("route")
         constraints = route.get("constraints") if isinstance(route, dict) else None
         try:
             reference_count = int(
@@ -1343,6 +1266,9 @@ def _raphael_required_proof_present(
             reference_count = 0
         return reference_count > 0 and _has_passing_artifact_quality_evidence(payload)
     if proof == "multi_candidate_validation":
+        aliases = payload.get("candidate_aliases")
+        if isinstance(aliases, list) and len(aliases) >= 2:
+            return True
         strategy = payload.get("generation_strategy")
         if isinstance(strategy, dict):
             try:
@@ -1421,6 +1347,13 @@ def _has_single_ranked_video_source_image(payload: dict[str, Any]) -> bool:
 
 
 def _has_passing_artifact_quality_evidence(payload: dict[str, Any]) -> bool:
+    evidence = payload.get("evidence")
+    quality = evidence.get("artifact_quality") if isinstance(evidence, dict) else None
+    if isinstance(quality, dict):
+        return (
+            quality.get("status") == "passed"
+            and _selected_current_visual_artifacts_verified(payload)
+        )
     if _delivery_gate_explicitly_failed(payload.get("delivery_gate")):
         return False
     if _autonomous_validation_explicitly_failed(payload.get("autonomous_validation")):
@@ -1453,6 +1386,12 @@ def _visual_quality_run_passed(payload: dict[str, Any]) -> bool:
 
 
 def _selected_current_visual_artifacts_verified(payload: dict[str, Any]) -> bool:
+    artifact = payload.get("artifact")
+    run = payload.get("run")
+    if isinstance(artifact, dict) and isinstance(run, dict):
+        artifact_id = str(artifact.get("artifact_id") or "")
+        selected_id = str(run.get("selected_artifact_id") or "")
+        return bool(artifact_id and selected_id and artifact_id == selected_id)
     selected_ids = _selected_visual_artifact_ids(payload)
     if not selected_ids:
         return False
@@ -1468,6 +1407,10 @@ def _selected_current_visual_artifacts_verified(payload: dict[str, Any]) -> bool
 def _selected_current_visual_artifacts_are_fresh(payload: dict[str, Any]) -> bool:
     if not _selected_current_visual_artifacts_verified(payload):
         return False
+    artifact = payload.get("artifact")
+    if isinstance(artifact, dict):
+        local_path = str(artifact.get("local_path") or "")
+        return bool(local_path and os.path.isfile(local_path))
     for entry in _selected_current_visual_artifact_entries(payload):
         if _visual_artifact_entry_is_stale_or_unstable(entry):
             return False
@@ -1476,6 +1419,9 @@ def _selected_current_visual_artifacts_are_fresh(payload: dict[str, Any]) -> boo
 
 
 def _selected_visual_artifact_ids(payload: dict[str, Any]) -> set[str]:
+    artifact = payload.get("artifact")
+    if isinstance(artifact, dict) and str(artifact.get("artifact_id") or "").strip():
+        return {str(artifact["artifact_id"])}
     metadata = payload.get("delivery_metadata")
     if not isinstance(metadata, dict):
         return set()
@@ -1591,11 +1537,25 @@ def format_direct_visual_agent_handoff_response(raw_tool_result: str) -> str:
 
     images = _string_list(payload.get("images"))
     videos = _string_list(payload.get("videos"))
+    artifact = payload.get("artifact")
+    if not images and isinstance(artifact, dict):
+        local_path = str(artifact.get("local_path") or "").strip()
+        if local_path:
+            images = [local_path]
+            alias = str(artifact.get("alias") or "").strip()
+            if alias:
+                labels = [alias]
+            else:
+                labels = []
+        else:
+            labels = []
+    else:
+        labels = []
     labels = [
         str(item.get("label") or "").strip()
         for item in payload.get("session_visual_artifacts") or []
         if isinstance(item, dict) and str(item.get("label") or "").strip()
-    ]
+    ] or labels
     image_gate = (payload.get("delivery_gate") or {}).get("image")
     candidate_options = (
         image_gate.get("candidate_options") if isinstance(image_gate, dict) else None

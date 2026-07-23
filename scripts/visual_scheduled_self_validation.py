@@ -74,7 +74,7 @@ def _fixture_summary() -> dict[str, Any]:
     visual_package_requirements_available = False
     planner_image_plus_video = False
     planner_image_first_video = False
-    visual_agent_production_kernel = False
+    visual_engine_adapter_boundary = False
     prompt_disclosure_guard_active = False
 
     try:
@@ -112,14 +112,12 @@ def _fixture_summary() -> dict[str, Any]:
             and image_first_video.get("arguments", {}).get("include_video") is True
             and image_first_video.get("arguments", {}).get("candidate_budget") == 1
         )
-        kernel_arguments = image_first_video.get("arguments", {})
-        kernel_contract = kernel_arguments.get("visual_intent_contract", {})
-        visual_agent_production_kernel = (
-            kernel_arguments.get("visual_production_kernel") is True
-            and kernel_arguments.get("max_generated_repairs") == 2
-            and bool(kernel_arguments.get("visual_contract_hash"))
-            and isinstance(kernel_contract, dict)
-            and kernel_contract.get("schema") == "visual_intent_contract_v1"
+        planner_arguments = image_first_video.get("arguments", {})
+        visual_engine_adapter_boundary = (
+            "visual_production_kernel" not in planner_arguments
+            and not any(
+                (_REPO_ROOT / "agent" / "visual" / "production_kernel").glob("*.py")
+            )
         )
         prompt_disclosure_guard_active = (
             is_visual_prompt_disclosure_request("show me the prompt you used for the image") is True
@@ -141,7 +139,7 @@ def _fixture_summary() -> dict[str, Any]:
         "visual_package_in_cli_toolset": visual_package_in_cli_toolset,
         "visual_agent_planner_image_plus_video": planner_image_plus_video,
         "visual_agent_planner_image_first_video": planner_image_first_video,
-        "visual_agent_production_kernel": visual_agent_production_kernel,
+        "visual_engine_adapter_boundary": visual_engine_adapter_boundary,
         "prompt_disclosure_guard_active": prompt_disclosure_guard_active,
     }
     failures.extend(key for key, value in checks.items() if value is not True)

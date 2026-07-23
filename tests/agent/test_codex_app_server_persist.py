@@ -266,7 +266,7 @@ def test_codex_runtime_keeps_story_video_slack_worker_out_of_codex_task_list(
         original_user_message="故事影片：恐龍起源",
         messages=[{"role": "user", "content": "故事影片：恐龍起源"}],
         effective_task_id="story-video-1",
-        raphael_decision={"goal": {"target_artifact": "story_video_workflow"}},
+        turn_control={"goal": {"target_artifact": "story_video_workflow"}},
     )
 
     assert captured["ephemeral"] is True
@@ -468,7 +468,7 @@ def test_codex_runtime_rotates_plugin_continuation_into_fresh_session(monkeypatc
         messages=messages,
         effective_task_id="story-auto-rotate",
         turn_id="turn-1",
-        raphael_decision={"goal": {"target_artifact": "story_video_workflow"}},
+        turn_control={"goal": {"target_artifact": "story_video_workflow"}},
     )
 
     assert agent.session_id != "session-parent"
@@ -723,7 +723,6 @@ def test_codex_runtime_receives_pre_llm_plugin_context(monkeypatch):
             should_review_memory=False,
             plugin_user_context="PLUGIN_CONTEXT",
             ext_prefetch_cache="",
-            raphael_decision={},
             turn_control=external_control,
         )
 
@@ -740,7 +739,7 @@ def test_codex_runtime_receives_pre_llm_plugin_context(monkeypatch):
     assert captured["user_message"] == "hello\n\nPLUGIN_CONTEXT"
     assert captured["original_user_message"] == "hello"
     assert captured["messages"] == [{"role": "user", "content": "hello"}]
-    assert captured["raphael_decision"] == external_control
+    assert captured["turn_control"] == external_control
 
 
 def test_codex_turn_persists_each_message_exactly_once():

@@ -41,10 +41,6 @@ from agent.visual.judges.deterministic import judge_artifact
 from agent.visual.judges.quality import judge_visual_quality
 from agent.visual.media_probe import probe_media_reference
 from agent.visual.preference_profile import build_preference_profile
-from agent.visual.production_kernel.quality_loop import BoundedQualityLoop
-from agent.visual.production_kernel.quality_loop import snapshot_from_candidate
-from agent.visual.production_kernel.quality import evaluate_visual_quality
-from agent.visual.production_kernel.repair import plan_visual_repair
 from agent.visual.prompt_arsenal import approved_prompt_arsenal_entries
 from agent.visual.prompt_text import build_provider_facing_visual_prompt
 from agent.visual.prompt_text import strip_visual_prompt_metadata
@@ -146,10 +142,6 @@ class _VisualPackageDeadlineExceeded(RuntimeError):
 
 _ACTIVE_EXECUTION_DEADLINE: ContextVar[_VisualExecutionDeadline | None] = ContextVar(
     "visual_package_execution_deadline",
-    default=None,
-)
-_ACTIVE_VISUAL_KERNEL_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar(
-    "visual_kernel_context",
     default=None,
 )
 
@@ -968,7 +960,6 @@ def _handle_visual_package_generate(args: dict[str, Any], **_kw: Any) -> str:
             request_type="visual_feedback",
         )
     deadline_token = _ACTIVE_EXECUTION_DEADLINE.set(_new_execution_deadline(args))
-    kernel_token = _ACTIVE_VISUAL_KERNEL_CONTEXT.set(_visual_kernel_context(args))
     try:
         _deadline_checkpoint("request_start")
         payload = _visual_package_generate(args, prompt=prompt)
@@ -1010,7 +1001,6 @@ def _handle_visual_package_generate(args: dict[str, Any], **_kw: Any) -> str:
             ensure_ascii=False,
         )
     finally:
-        _ACTIVE_VISUAL_KERNEL_CONTEXT.reset(kernel_token)
         _ACTIVE_EXECUTION_DEADLINE.reset(deadline_token)
 
 
@@ -1128,11 +1118,6 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
     if hybrid_final_combine and should_generate_image:
         candidate_budget = 1
         candidate_budget_source = "hybrid_final_combine_initial_then_repair"
-    candidate_budget, candidate_budget_source = _visual_kernel_candidate_budget(
-        args,
-        candidate_budget=candidate_budget,
-        candidate_budget_source=candidate_budget_source,
-    )
     video_budget = _video_budget(args, wants_video=wants_video)
     inline_vision_judge = _inline_vision_judge_mode(args)
     if (
@@ -1178,7 +1163,6 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         metadata={
             "intent_signature": intent_signature,
             "visual_agent_prompt_mediated": prompt,
-            **_visual_kernel_request_metadata(args),
         },
     )
 
@@ -1241,11 +1225,6 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         if hybrid_final_combine and should_generate_image:
             candidate_budget = 1
             candidate_budget_source = "hybrid_final_combine_initial_then_repair"
-        candidate_budget, candidate_budget_source = _visual_kernel_candidate_budget(
-            args,
-            candidate_budget=candidate_budget,
-            candidate_budget_source=candidate_budget_source,
-        )
         if (
             args.get("inline_vision_judge") is None
             and feedback_policy.get("require_preference_dimension_evidence") is True
@@ -1328,7 +1307,6 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                     aspect_ratio=aspect_ratio,
                     reference_conditioning=None,
                 ) or {}),
-                **_visual_kernel_generation_strategy(args),
                 "storyboard_execution": storyboard_result["execution"],
             },
         )
@@ -1669,22 +1647,14 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 image_candidates.append(image_candidate)
             elif not image_payload.get("success"):
                 fallback_candidate_added = False
-                fallback_payloads = (
-                    _provider_fallback_payloads(
-                        generator=generate_image,
-                        payload=image_payload,
-                        base_kwargs=image_kwargs,
-                        request=image_request,
-                        modality="image",
-                        retry_of=candidate_index,
-                        max_fallbacks=(
-                            1
-                            if _coerce_bool(args.get("visual_production_kernel"))
-                            else None
-                        ),
-                    )
-                    if _visual_kernel_allows_provider_fallback(args)
-                    else []
+                fallback_payloads = _provider_fallback_payloads(
+                    generator=generate_image,
+                    payload=image_payload,
+                    base_kwargs=image_kwargs,
+                    request=image_request,
+                    modality="image",
+                    retry_of=candidate_index,
+                    max_fallbacks=provider_retry_budget,
                 )
                 for fallback_offset, fallback_payload in enumerate(fallback_payloads):
                     image_payloads.append(fallback_payload)
@@ -1720,12 +1690,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                         break
                 if fallback_candidate_added:
                     continue
-                retry_budget_remaining = (
-                    0
-                    if _coerce_bool(args.get("visual_production_kernel"))
-                    and fallback_payloads
-                    else provider_retry_budget
-                )
+                retry_budget_remaining = provider_retry_budget
                 for retry_offset, retry_payload in enumerate(_retry_generation_payloads(
                     generator=generate_image,
                     modality="image",
@@ -1809,7 +1774,6 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 image_gate = _with_hybrid_quality_gate_block(image_gate, hybrid_quality_gate_metadata)
             else:
                 image_gate = _with_hybrid_quality_gate_pass(image_gate, hybrid_quality_gate_metadata)
-        image_gate = _apply_visual_kernel_delivery_gate(image_gate, selected_image, args)
         if direct_polish_mode:
             image_gate["polish_pass_attempted"] = True
         delivery_gate["image"] = image_gate
@@ -1929,7 +1893,6 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 learning["active_learning"]["image"] = polish_learning
                 selected_image = _selected_candidate(image_candidates, polish_decision.selected_artifact_id)
                 image_gate = _delivery_gate_decision(polish_learning, selected_image, prompt=prompt)
-                image_gate = _apply_visual_kernel_delivery_gate(image_gate, selected_image, args)
                 image_gate["polish_pass_attempted"] = True
                 delivery_gate["image"] = image_gate
         if (
@@ -1937,7 +1900,6 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
             and not image_gate["allowed"]
             and not composition_guide_only
             and not hybrid_final_combine
-            and not _coerce_bool(args.get("visual_production_kernel"))
             and _should_escalate_candidate_budget(image_gate)
         ):
             escalation_prompt = _candidate_escalation_prompt(image_prompt_base, image_gate)
@@ -2057,218 +2019,14 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 escalated_from = image_gate
                 selected_image = _selected_candidate(image_candidates, escalation_decision.selected_artifact_id)
                 image_gate = _delivery_gate_decision(escalation_learning, selected_image, prompt=prompt)
-                image_gate = _apply_visual_kernel_delivery_gate(image_gate, selected_image, args)
                 image_gate["candidate_budget_escalated"] = True
                 image_gate["escalated_from"] = escalated_from
                 delivery_gate["image"] = image_gate
-        quality_loop = None
-        if (
-            selected_image
-            and not image_gate["allowed"]
-            and not composition_guide_only
-            and (
-                not deliver_candidate_options
-                or _max_visual_kernel_repairs(args) == 0
-            )
-            and _coerce_bool(args.get("visual_production_kernel"))
-        ):
-            quality_loop = BoundedQualityLoop(
-                snapshot_from_candidate(selected_image, image_gate),
-                max_rounds=_max_visual_kernel_repairs(args),
-            )
-            generation_attempts_before_loop = len(image_payloads)
-            prior_repair_strategies: list[str] = []
-            while True:
-                repair_plan = _visual_kernel_repair_plan(
-                    image_gate,
-                    args,
-                    prior_generated_repairs=tuple(prior_repair_strategies),
-                )
-                if repair_plan is None:
-                    quality_loop.stop_reason = "quality_gate_passed"
-                    break
-                strategy = str(repair_plan.get("strategy") or "targeted_repair")
-                blockers = _string_list(repair_plan.get("blocker_codes"))
-                repair_fingerprint = f"{strategy}:{','.join(blockers)}"
-                attempt_decision = quality_loop.can_attempt(repair_fingerprint)
-                if not attempt_decision.allowed:
-                    break
-                if repair_plan.get("should_generate") is not True:
-                    quality_loop.stop_reason = str(
-                        repair_plan.get("reason") or "repair_not_generation_safe"
-                    )
-                    break
-                repair_provider, provider_stop_reason = _quality_repair_provider(
-                    image_provider_override,
-                    repair_plan,
-                    args,
-                )
-                if provider_stop_reason:
-                    quality_loop.stop_reason = provider_stop_reason
-                    break
-
-                previous_gate = image_gate
-                repair_round = quality_loop.rounds_attempted + 1
-                repair_candidate, repair_payload = _generate_image_quality_repair_candidate(
-                    args=args,
-                    ledger=ledger,
-                    request_id=request_id,
-                    image_prompt_base=image_prompt_base,
-                    image_gate=image_gate,
-                    repair_plan=repair_plan,
-                    feedback_policy=feedback_policy,
-                    hybrid_final_combine=hybrid_final_combine,
-                    reference_binding=reference_binding,
-                    attachments=attachments,
-                    reference_conditioning_variants=reference_conditioning_variants,
-                    pose_transfer=pose_transfer,
-                    aspect_ratio=aspect_ratio,
-                    image_aspect_ratio=image_aspect_ratio,
-                    image_provider_override=repair_provider,
-                    request_category=request_category,
-                    selected_image=selected_image,
-                    candidate_index=len(image_candidates),
-                    image_input_artifacts=image_input_artifacts,
-                    image_artifact_role=image_artifact_role,
-                    prompt_original=visual_agent_original_prompt,
-                    repair_round=repair_round,
-                )
-                image_payloads.append(repair_payload)
-                prior_repair_strategies.append(strategy)
-                if repair_candidate:
-                    image_candidates.append(repair_candidate)
-                    _score_candidates(
-                        ledger,
-                        request_id=request_id,
-                        intent_signature=intent_signature,
-                        strategy_signature=strategy_plan.strategy_signature,
-                        modality="image",
-                        has_reference_image=bool(attachments),
-                        request_category=request_category,
-                        candidates=[repair_candidate],
-                        inline_vision_judge=inline_vision_judge,
-                        vision_analyzer=analyze_candidate_with_vision_tool,
-                        reference_binding=reference_binding,
-                    )
-                    repair_decision = rank_visual_candidates(
-                        request_id=request_id,
-                        candidates=[repair_candidate],
-                        post_threshold=0.0,
-                        ask_threshold=0.0,
-                    )
-                    repair_learning = _active_learning_trace(
-                        rank_decision=repair_decision.__dict__,
-                        candidates=[repair_candidate],
-                        has_reference_image=bool(attachments),
-                    )
-                    challenger = repair_candidate
-                    challenger_gate = _delivery_gate_decision(
-                        repair_learning,
-                        challenger,
-                        prompt=prompt,
-                    )
-                    challenger_gate = _apply_visual_kernel_delivery_gate(
-                        challenger_gate,
-                        challenger,
-                        args,
-                    )
-                    challenger_gate["repair_attempted"] = True
-                    challenger_gate["repair_round"] = repair_round
-                    challenger_gate["repaired_from"] = previous_gate
-                    if hybrid_final_combine:
-                        repaired_hybrid_gate = _hybrid_final_combine_quality_gate(challenger)
-                        repaired_hybrid_gate["repair_attempted"] = True
-                        repaired_hybrid_gate["repaired_from"] = hybrid_quality_gate_metadata
-                        hybrid_quality_gate_metadata = repaired_hybrid_gate
-                        if repaired_hybrid_gate.get("passed") is not True:
-                            challenger_gate = _with_hybrid_quality_gate_block(
-                                challenger_gate,
-                                repaired_hybrid_gate,
-                            )
-                        else:
-                            challenger_gate = _with_hybrid_quality_gate_pass(
-                                challenger_gate,
-                                repaired_hybrid_gate,
-                            )
-                    observation = quality_loop.observe(
-                        snapshot_from_candidate(challenger, challenger_gate),
-                        repair_fingerprint=repair_fingerprint,
-                    )
-                    if observation.accepted:
-                        repair_learning = _record_learning_trace(
-                            ledger,
-                            request_id=request_id,
-                            intent_signature=intent_signature,
-                            strategy_signature=strategy_plan.strategy_signature,
-                            strategy_plan=strategy_plan.to_record(),
-                            modality="image",
-                            rank_decision=repair_decision.__dict__,
-                            candidates=[repair_candidate],
-                            has_reference_image=bool(attachments),
-                        )
-                        selected_image = challenger
-                        image_gate = challenger_gate
-                        rankings["image"] = repair_decision.__dict__
-                        learning["active_learning"]["image"] = repair_learning
-                else:
-                    quality_loop.observe(
-                        snapshot_from_candidate(
-                            None,
-                            {
-                                "allowed": False,
-                                "blocker_codes": ["provider_failure"],
-                            },
-                        ),
-                        repair_fingerprint=repair_fingerprint,
-                    )
-                if quality_loop.stop_reason:
-                    break
-
-            quality_loop_record = quality_loop.to_record()
-            quality_loop_record["generation_attempts_before_loop"] = generation_attempts_before_loop
-            quality_loop_record["total_generation_attempts"] = len(image_payloads)
-            image_gate["quality_loop"] = quality_loop_record
-            delivery_gate["image"] = image_gate
-            generation_payloads["image"] = (
-                image_payloads[0] if len(image_payloads) == 1 else image_payloads
-            )
-            record_shadow_update(
-                ledger,
-                request_id=request_id,
-                intent_signature=intent_signature,
-                strategy_signature=strategy_plan.strategy_signature,
-                proposed_change={
-                    "type": "bounded_quality_loop_observation",
-                    "activation": "shadow_only",
-                },
-                evidence=quality_loop_record,
-                confidence=quality_loop.champion.score,
-            )
-
-        if quality_loop is not None and not image_gate["allowed"]:
-            kernel_repair_plan = {
-                "strategy": "stop_quality_loop",
-                "should_generate": False,
-                "should_switch_provider": False,
-                "blocker_codes": list(quality_loop.champion.blocker_codes),
-                "directive": "Keep the current champion and stop generated repairs.",
-                "reason": str(quality_loop.stop_reason or "bounded_quality_loop_stopped"),
-            }
-        else:
-            kernel_repair_plan = _visual_kernel_repair_plan(image_gate, args)
-        if kernel_repair_plan is not None:
-            image_gate["visual_kernel_repair"] = kernel_repair_plan
-            delivery_gate["image"] = image_gate
         if (
             selected_image
             and not image_gate["allowed"]
             and not composition_guide_only
             and not deliver_candidate_options
-            and quality_loop is None
-            and (
-                kernel_repair_plan is None
-                or kernel_repair_plan.get("should_generate") is True
-            )
         ):
             image_repair_mode = (
                 "hybrid_final_combine"
@@ -2281,15 +2039,6 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 mode=image_repair_mode,
                 reference_binding=reference_binding,
             )
-            if kernel_repair_plan is not None:
-                repair_prompt = (
-                    f"{repair_prompt}\n\n"
-                    "Visual contract repair strategy: "
-                    f"{kernel_repair_plan.get('strategy')}. "
-                    "Blocker codes: "
-                    f"{', '.join(_string_list(kernel_repair_plan.get('blocker_codes')))}. "
-                    f"{kernel_repair_plan.get('directive')}"
-                )
             repair_reference_policy = _reference_conditioning_policy_for_gate(
                 image_gate,
                 reference_conditioning_variants,
@@ -2349,18 +2098,6 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 "policy_mode": image_repair_mode,
                 "policy_actions": feedback_policy.get("applied_action_types", []),
             }
-            if kernel_repair_plan is not None:
-                repair_payload["quality_repair"].update(
-                    {
-                        "strategy": kernel_repair_plan.get("strategy"),
-                        "blocker_codes": _string_list(
-                            kernel_repair_plan.get("blocker_codes")
-                        ),
-                        "visual_contract_hash": str(
-                            args.get("visual_contract_hash") or ""
-                        ),
-                    }
-                )
             image_payloads.append(repair_payload)
             if not repair_payload.get("success"):
                 _annotate_generation_failure(
@@ -2433,11 +2170,6 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 learning["active_learning"]["image"] = repair_learning
                 selected_image = _selected_candidate([repair_candidate], repair_decision.selected_artifact_id)
                 repaired_gate = _delivery_gate_decision(repair_learning, selected_image, prompt=prompt)
-                repaired_gate = _apply_visual_kernel_delivery_gate(
-                    repaired_gate,
-                    selected_image,
-                    args,
-                )
                 repaired_gate["repair_attempted"] = True
                 repaired_gate["repaired_from"] = image_gate
                 if hybrid_final_combine:
@@ -2478,113 +2210,6 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                 args=args,
                 requested_count=candidate_budget,
             )
-            option_repairs_attempted = 0
-            option_repairs_succeeded = 0
-            if (
-                len(deliverable_candidate_options) < candidate_budget
-                and _coerce_bool(args.get("visual_production_kernel"))
-                and _max_visual_kernel_repairs(args) > 0
-            ):
-                rejected_ids = {
-                    str(item.get("artifact_id") or "")
-                    for item in candidate_option_gate.get("rejected") or []
-                    if isinstance(item, dict)
-                }
-                for blocked_candidate in ranked_options:
-                    if len(deliverable_candidate_options) >= candidate_budget:
-                        break
-                    if str(blocked_candidate.get("artifact_id") or "") not in rejected_ids:
-                        continue
-                    blocked_gate = _candidate_option_delivery_gate(
-                        blocked_candidate,
-                        prompt=prompt,
-                        args=args,
-                    )
-                    repair_plan = _visual_kernel_repair_plan(blocked_gate, args)
-                    if not repair_plan or repair_plan.get("should_generate") is not True:
-                        continue
-                    repair_provider, provider_stop_reason = _quality_repair_provider(
-                        image_provider_override,
-                        repair_plan,
-                        args,
-                    )
-                    if provider_stop_reason:
-                        continue
-                    option_repairs_attempted += 1
-                    repair_candidate, repair_payload = _generate_image_quality_repair_candidate(
-                        args=args,
-                        ledger=ledger,
-                        request_id=request_id,
-                        image_prompt_base=str(
-                            blocked_candidate.get("generation_prompt") or image_prompt_base
-                        ),
-                        image_gate=blocked_gate,
-                        repair_plan=repair_plan,
-                        feedback_policy=feedback_policy,
-                        hybrid_final_combine=hybrid_final_combine,
-                        reference_binding=reference_binding,
-                        attachments=attachments,
-                        reference_conditioning_variants=reference_conditioning_variants,
-                        pose_transfer=pose_transfer,
-                        aspect_ratio=aspect_ratio,
-                        image_aspect_ratio=image_aspect_ratio,
-                        image_provider_override=repair_provider,
-                        request_category=request_category,
-                        selected_image=blocked_candidate,
-                        candidate_index=len(image_candidates),
-                        image_input_artifacts=image_input_artifacts,
-                        image_artifact_role=image_artifact_role,
-                        prompt_original=visual_agent_original_prompt,
-                        repair_round=1,
-                    )
-                    image_payloads.append(repair_payload)
-                    if not repair_candidate:
-                        continue
-                    image_candidates.append(repair_candidate)
-                    _score_candidates(
-                        ledger,
-                        request_id=request_id,
-                        intent_signature=intent_signature,
-                        strategy_signature=strategy_plan.strategy_signature,
-                        modality="image",
-                        has_reference_image=bool(attachments),
-                        request_category=request_category,
-                        candidates=[repair_candidate],
-                        inline_vision_judge=inline_vision_judge,
-                        vision_analyzer=analyze_candidate_with_vision_tool,
-                        reference_binding=reference_binding,
-                    )
-                    repaired_gate = _candidate_option_delivery_gate(
-                        repair_candidate,
-                        prompt=prompt,
-                        args=args,
-                    )
-                    if repaired_gate.get("allowed") is True:
-                        option_repairs_succeeded += 1
-                        deliverable_candidate_options.append(repair_candidate)
-
-                option_decision = rank_visual_candidates(
-                    request_id=request_id,
-                    candidates=image_candidates,
-                    post_threshold=0.0,
-                    ask_threshold=0.0,
-                )
-                ranked_options = _ranked_candidate_options(
-                    image_candidates,
-                    option_decision.ranked_artifact_ids,
-                )
-                deliverable_candidate_options, candidate_option_gate = _qualified_candidate_options(
-                    ranked_options,
-                    prompt=prompt,
-                    args=args,
-                    requested_count=candidate_budget,
-                )
-                candidate_option_gate["repair_attempted"] = option_repairs_attempted
-                candidate_option_gate["repair_succeeded"] = option_repairs_succeeded
-                candidate_option_gate["repair_policy"] = "one_bounded_repair_per_blocked_option"
-                generation_payloads["image"] = (
-                    image_payloads[0] if len(image_payloads) == 1 else image_payloads
-                )
             if not deliverable_candidate_options and not wants_video:
                 review_only_options = _review_only_candidate_options(
                     ranked_options,
@@ -2630,40 +2255,6 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                     has_reference_image=bool(attachments),
                 )
                 learning["active_learning"]["image"] = final_learning
-                if quality_loop is not None:
-                    prior_loop = quality_loop.to_record()
-                    prior_loop["generation_attempts_before_loop"] = (
-                        generation_attempts_before_loop
-                    )
-                    prior_loop["total_generation_attempts"] = len(image_payloads)
-                    resolution = {
-                        "strategy": "ranked_qualified_candidate_options",
-                        "selected_artifact_id": selected_image.get("artifact_id"),
-                        "selected_attempt_id": selected_image.get("attempt_id"),
-                        "prior_champion_artifact_id": prior_loop["champion"].get(
-                            "artifact_id"
-                        ),
-                    }
-                    selected_gate["prior_quality_loop"] = prior_loop
-                    selected_gate["candidate_option_resolution"] = resolution
-                    record_shadow_update(
-                        ledger,
-                        request_id=request_id,
-                        intent_signature=intent_signature,
-                        strategy_signature=strategy_plan.strategy_signature,
-                        proposed_change={
-                            "type": "candidate_option_resolution",
-                            "activation": "shadow_only",
-                        },
-                        evidence={
-                            **resolution,
-                            "prior_quality_loop": prior_loop,
-                        },
-                        confidence=_coerce_float(
-                            selected_image.get("visual_quality_confidence")
-                        ),
-                    )
-                    image_gate = selected_gate
             image_gate["candidate_options"] = candidate_option_gate
             delivery_gate["image"] = image_gate
         review_only_delivery = _candidate_options_review_only(image_gate)
@@ -2818,6 +2409,7 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
                         request=video_request,
                         modality="video",
                         retry_of=candidate_index,
+                        max_fallbacks=provider_retry_budget,
                     )):
                         video_payloads.append(fallback_payload)
                         fallback_candidate = _record_payload_candidate(
@@ -3027,7 +2619,6 @@ def _visual_package_generate(args: dict[str, Any], *, prompt: str) -> dict[str, 
         reference_conditioning_variants=reference_conditioning_variants,
         image_prompt_variants=_public_prompt_variants(image_prompt_variants),
     ) or {}
-    extra_generation_strategy.update(_visual_kernel_generation_strategy(args))
     if image_wave_run is not None:
         extra_generation_strategy["image_generation_waves"] = image_wave_run.to_record()
     if character_design_ref_only:
@@ -5117,12 +4708,6 @@ def _image_attempt_parameters(
         parameters["reference_binding"] = sanitized_binding
     if extra:
         parameters.update(extra)
-    kernel_context = _ACTIVE_VISUAL_KERNEL_CONTEXT.get()
-    if isinstance(kernel_context, dict) and kernel_context.get("enabled") is True:
-        parameters["visual_contract_hash"] = str(
-            kernel_context.get("visual_contract_hash") or ""
-        )
-        parameters["visual_production_kernel"] = True
     return parameters
 
 
@@ -5276,11 +4861,6 @@ def _record_payload_candidate(
         "vision_observation": _payload_vision_observation(payload),
         "generation_prompt": prompt,
     }
-    kernel_context = _ACTIVE_VISUAL_KERNEL_CONTEXT.get()
-    if isinstance(kernel_context, dict) and kernel_context.get("enabled") is True:
-        candidate["visual_intent_contract"] = dict(
-            kernel_context.get("visual_intent_contract") or {}
-        )
     if artifact_role:
         candidate["artifact_role"] = artifact_role
     return candidate
@@ -6309,7 +5889,7 @@ def _candidate_option_delivery_gate(
         candidate,
         prompt=prompt,
     )
-    return _apply_visual_kernel_delivery_gate(gate, candidate, args)
+    return gate
 
 
 def _enforce_non_grid_video_source_decision(
@@ -6354,192 +5934,6 @@ def _candidate_has_blocking_video_source_issue(candidate: dict[str, Any], *, pro
         prompt=prompt,
     )
     return bool(quality_issues)
-
-
-def _visual_kernel_context(args: dict[str, Any]) -> dict[str, Any] | None:
-    if not _coerce_bool(args.get("visual_production_kernel")):
-        return None
-    return {
-        "enabled": True,
-        "visual_contract_hash": str(args.get("visual_contract_hash") or "").strip(),
-        "visual_intent_contract": (
-            dict(args["visual_intent_contract"])
-            if isinstance(args.get("visual_intent_contract"), dict)
-            else {}
-        ),
-        "provider_decision": (
-            dict(args["provider_decision"])
-            if isinstance(args.get("provider_decision"), dict)
-            else {}
-        ),
-        "max_generated_repairs": _max_visual_kernel_repairs(args),
-    }
-
-
-def _max_visual_kernel_repairs(args: dict[str, Any]) -> int:
-    value = _coerce_int(args.get("max_generated_repairs"))
-    return 2 if value is None else max(0, min(2, value))
-
-
-def _visual_kernel_candidate_budget(
-    args: dict[str, Any],
-    *,
-    candidate_budget: int,
-    candidate_budget_source: str,
-) -> tuple[int, str]:
-    if not _coerce_bool(args.get("visual_production_kernel")) or candidate_budget <= 0:
-        return candidate_budget, candidate_budget_source
-    if candidate_budget_source in {
-        "grok_web_current_result_operation",
-        "hybrid_final_combine_initial_then_repair",
-    }:
-        return candidate_budget, candidate_budget_source
-    requested_source = str(args.get("candidate_budget_source") or "planner_default")
-    if requested_source == "user":
-        return max(1, int(args.get("candidate_budget") or candidate_budget)), "user"
-    return 1, "visual_kernel_default"
-
-
-def _visual_kernel_allows_provider_fallback(args: dict[str, Any]) -> bool:
-    if not _coerce_bool(args.get("visual_production_kernel")):
-        return True
-    decision = args.get("provider_decision")
-    reason = str(decision.get("reason") or "") if isinstance(decision, dict) else ""
-    return not reason.startswith("explicit_override")
-
-
-def _visual_kernel_request_metadata(args: dict[str, Any]) -> dict[str, Any]:
-    context = _visual_kernel_context(args)
-    if context is None:
-        return {}
-    return {
-        "visual_production_kernel": {
-            "enabled": True,
-            "visual_contract_hash": context["visual_contract_hash"],
-            "visual_intent_contract": context["visual_intent_contract"],
-            "provider_decision": context["provider_decision"],
-            "max_generated_repairs": context["max_generated_repairs"],
-        }
-    }
-
-
-def _visual_kernel_generation_strategy(args: dict[str, Any]) -> dict[str, Any]:
-    context = _visual_kernel_context(args)
-    if context is None:
-        return {}
-    return {
-        "visual_production_kernel": {
-            "enabled": True,
-            "visual_contract_hash": context["visual_contract_hash"],
-            "provider_decision": context["provider_decision"],
-            "max_generated_repairs": context["max_generated_repairs"],
-            "default_candidate_policy": "one_then_bounded_repair",
-        }
-    }
-
-
-def _apply_visual_kernel_delivery_gate(
-    gate: dict[str, Any],
-    candidate: dict[str, Any] | None,
-    args: dict[str, Any],
-) -> dict[str, Any]:
-    if not _coerce_bool(args.get("visual_production_kernel")) or candidate is None:
-        return gate
-    current_hash = str(args.get("visual_contract_hash") or "").strip()
-    requested = candidate.get("requested_parameters")
-    if not isinstance(requested, dict):
-        requested = candidate.get("user_requested_parameters")
-    if not isinstance(requested, dict):
-        requested = {}
-    vision_source = str(candidate.get("vision_observation_source") or "").strip()
-    trusted_vision_sources = {"candidate_vision_observation", "inline_vision_judge"}
-    vision_source_components = {
-        component.strip()
-        for component in vision_source.split("+")
-        if component.strip()
-    }
-    confidence = (
-        candidate.get("visual_quality_confidence")
-        if vision_source_components.intersection(trusted_vision_sources)
-        and not candidate.get("vision_failure")
-        else 0.0
-    )
-    hard_gate = candidate.get("hard_gate")
-    hard_gate_passed = isinstance(hard_gate, dict) and hard_gate.get("passed") is True
-    decision = evaluate_visual_quality(
-        contract_hash=current_hash,
-        artifact_contract_hash=str(requested.get("visual_contract_hash") or ""),
-        artifact_id=str(candidate.get("artifact_id") or ""),
-        quality_issues=_string_list(gate.get("quality_issues")),
-        hard_gate_passed=hard_gate_passed,
-        provider_failure=candidate.get("provider_failure"),
-        vision_confidence=confidence,
-    )
-    result = dict(gate)
-    result["visual_kernel"] = decision.to_record()
-    result["blocker_codes"] = list(decision.blocker_codes)
-    result["allowed"] = bool(gate.get("allowed")) and decision.deliverable
-    if not result["allowed"] and gate.get("allowed"):
-        result["reason"] = "visual_kernel_blocked"
-    return result
-
-
-def _visual_kernel_repair_plan(
-    gate: dict[str, Any],
-    args: dict[str, Any],
-    *,
-    prior_generated_repairs: tuple[str, ...] = (),
-    repeated_blockers: tuple[str, ...] = (),
-) -> dict[str, Any] | None:
-    if not _coerce_bool(args.get("visual_production_kernel")):
-        return None
-    if gate.get("allowed") is True:
-        return None
-    visual_kernel = gate.get("visual_kernel")
-    blockers = (
-        visual_kernel.get("blocker_codes")
-        if isinstance(visual_kernel, dict)
-        else gate.get("blocker_codes")
-    )
-    plan = plan_visual_repair(
-        _string_list(blockers),
-        prior_generated_repairs=prior_generated_repairs,
-        repeated_blockers=repeated_blockers,
-        max_generated_repairs=_max_visual_kernel_repairs(args),
-    )
-    return plan.to_record()
-
-
-def _quality_repair_provider(
-    image_provider_override: str | None,
-    repair_plan: dict[str, Any],
-    args: dict[str, Any],
-) -> tuple[str | None, str | None]:
-    if repair_plan.get("should_switch_provider") is not True:
-        return image_provider_override, None
-    decision = args.get("provider_decision")
-    reason = str(decision.get("reason") or "") if isinstance(decision, dict) else ""
-    if reason.startswith("explicit_override"):
-        return None, "explicit_provider_pinned"
-    if not _visual_kernel_allows_provider_fallback(args):
-        return None, "explicit_provider_pinned"
-    fallback_providers = _available_image_provider_fallbacks(
-        failed_provider=image_provider_override,
-    )
-    configured = args.get("authorized_image_providers")
-    authorized = {
-        provider
-        for provider in (
-            _normalise_image_provider(value)
-            for value in configured
-        )
-        if provider
-    } if isinstance(configured, (list, tuple)) else set()
-    for fallback_provider in fallback_providers:
-        normalized = _normalise_image_provider(fallback_provider)
-        if normalized and normalized in authorized:
-            return normalized, None
-    return None, "fallback_provider_unavailable"
 
 
 def _generate_image_quality_repair_candidate(

@@ -227,10 +227,10 @@ def test_turn_origin_and_runtime_contract_are_forwarded_to_plugin_hook():
     ):
         ctx = _build(agent)
 
-    assert ctx.raphael_origin == "background_review"
-    assert ctx.raphael_runtime_contract["base_model"] == "gpt-5.6-terra"
+    assert ctx.turn_origin == "background"
+    assert ctx.runtime_contract["base_model"] == "gpt-5.6-terra"
     _, hook_kwargs = hook_calls[0]
-    assert hook_kwargs["turn_origin"] == "background_review"
+    assert hook_kwargs["turn_origin"] == "background"
     assert hook_kwargs["runtime_contract"]["base_model"] == "gpt-5.6-terra"
 
 
@@ -263,7 +263,6 @@ def test_pre_llm_hook_exposes_opaque_turn_control_envelope():
 
     assert ctx.turn_control == envelope
     assert ctx.plugin_user_context == "control context"
-    assert ctx.raphael_decision == {}
 
 
 def test_service_transport_does_not_create_embedded_raphael_decision(tmp_path):
@@ -295,55 +294,12 @@ def test_service_transport_does_not_create_embedded_raphael_decision(tmp_path):
             "hermes_cli.plugins.invoke_hook",
             return_value=[{"context": "service control", "turn_control": envelope}],
         ),
-        patch("agent.raphael.kernel.prepare_raphael_turn") as embedded_prepare,
     ):
         ctx = _build(agent, user_message="請修復並測試")
 
-    embedded_prepare.assert_not_called()
     assert ctx.turn_control["decision_id"] == "decision-service"
-    assert ctx.raphael_decision == {}
 
 
-def test_shadow_transport_records_external_envelope_without_applying_it(tmp_path):
-    agent = _FakeAgent()
-    config = {
-        "plugins": {"enabled": ["raphael", "raphael-control"], "disabled": []},
-        "raphael": {
-            "enabled": True,
-            "transport": "shadow",
-            "default_conversation_mode_enabled": True,
-        },
-    }
-    envelope = {
-        "schema_version": "raphael.turn-decision.v1",
-        "decision_id": "decision-shadow",
-        "mission_id": "mission-shadow",
-        "mode": "tool_task",
-        "completion_policy": "verify",
-        "failure_policy": "fail_closed",
-        "required_proofs": [],
-        "context_text": "shadow control",
-        "policy_version": "raphael-policy.v1",
-    }
-
-    captured = []
-
-    def invoke_hook(name, **kwargs):
-        if name == "pre_llm_call":
-            captured.append(kwargs)
-        return [{"context": "shadow control", "turn_control": envelope}]
-
-    with (
-        patch.dict("os.environ", {"HERMES_HOME": str(tmp_path)}),
-        patch("hermes_cli.config.load_config_readonly", return_value=config),
-        patch("hermes_cli.plugins.invoke_hook", side_effect=invoke_hook),
-    ):
-        ctx = _build(agent, user_message="請修復並測試")
-
-    assert ctx.raphael_decision["mode"] == "tool_task"
-    assert ctx.turn_control == {}
-    assert ctx.shadow_turn_control == envelope
-    assert captured[0]["control_authority"] is False
 
 
 def test_pre_llm_hook_receives_current_multimodal_attachment_refs():
@@ -415,61 +371,8 @@ def test_pre_llm_hook_receives_session_visual_reference_entries():
     )
 
 
-def test_enabled_foreground_turn_exposes_canonical_raphael_decision(tmp_path):
-    agent = _FakeAgent()
-    agent.model = "gpt-5.6-terra"
-    agent.provider = "openai-codex"
-    enabled_config = {
-        "plugins": {"enabled": ["raphael"], "disabled": []},
-        "raphael": {
-            "enabled": True,
-            "default_conversation_mode_enabled": True,
-            "mode": "sage_king",
-        },
-        "model": {"default": "gpt-5.5", "provider": "openai-codex"},
-    }
-
-    with (
-        patch.dict("os.environ", {"HERMES_HOME": str(tmp_path)}),
-        patch("hermes_cli.config.load_config_readonly", return_value=enabled_config),
-        patch("hermes_cli.plugins.invoke_hook", return_value=[]),
-    ):
-        ctx = _build(agent, user_message="請修復 gateway bug 並跑測試")
-
-    assert ctx.raphael_decision["mode"] == "tool_task"
-    assert ctx.raphael_decision["turn_id"] == ctx.turn_id
-    assert ctx.raphael_decision["runtime_contract"]["base_model"] == "gpt-5.6-terra"
 
 
-def test_enabled_foreground_turn_marks_control_decision_failure_for_fail_closed_finalization(
-    tmp_path,
-):
-    agent = _FakeAgent()
-    enabled_config = {
-        "plugins": {"enabled": ["raphael"], "disabled": []},
-        "raphael": {
-            "enabled": True,
-            "default_conversation_mode_enabled": True,
-            "mode": "sage_king",
-        },
-    }
-
-    with (
-        patch.dict("os.environ", {"HERMES_HOME": str(tmp_path)}),
-        patch("hermes_cli.config.load_config_readonly", return_value=enabled_config),
-        patch("hermes_cli.plugins.invoke_hook", return_value=[]),
-        patch(
-            "agent.raphael.kernel.prepare_raphael_turn",
-            side_effect=RuntimeError("synthetic control failure"),
-        ),
-    ):
-        ctx = _build(agent, user_message="請修復 gateway bug 並跑測試")
-
-    assert ctx.raphael_decision["control_decision_failed"] is True
-    assert ctx.raphael_decision["turn_id"] == ctx.turn_id
-    assert ctx.raphael_decision["origin"] == "foreground"
-    assert ctx.raphael_decision["evidence"]["failure_layer"] == "control_decision"
-    assert "synthetic control failure" not in str(ctx.raphael_decision)
 
 
 def test_persist_user_message_becomes_original():
@@ -564,7 +467,9 @@ def test_runtime_main_sync_happens_after_restore():
     )]
 
 
-def test_raphael_receives_multimodal_attachments_with_clean_persisted_text(tmp_path):
+def test_turn_control_hook_receives_multimodal_attachments_with_clean_persisted_text(
+    tmp_path,
+):
     agent = _FakeAgent()
     captured = {}
     first_image = b"first-reference-image"
@@ -590,15 +495,15 @@ def test_raphael_receives_multimodal_attachments_with_clean_persisted_text(tmp_p
         },
     ]
 
-    def capture_turn(**kwargs):
-        captured.update(kwargs)
-        return None
+    def capture_turn(name, **kwargs):
+        if name == "pre_llm_call":
+            captured.update(kwargs)
+        return []
 
     with (
         patch.dict("os.environ", {"HERMES_HOME": str(tmp_path)}),
         patch("hermes_cli.config.load_config_readonly", return_value={}),
-        patch("hermes_cli.plugins.invoke_hook", return_value=[]),
-        patch("agent.raphael.kernel.prepare_raphael_turn", side_effect=capture_turn),
+        patch("hermes_cli.plugins.invoke_hook", side_effect=capture_turn),
     ):
         _build(
             agent,

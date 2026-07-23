@@ -542,7 +542,7 @@ def test_raphael_output_uses_canonical_next_action_formatter(
     )
     monkeypatch.setattr(
         guide,
-        "format_raphael_next_action",
+        "format_next_action",
         lambda _context: "CANONICAL_RAPHAEL_NEXT",
     )
 
@@ -2775,7 +2775,7 @@ def test_transform_output_uses_phase_next_call(tmp_path, monkeypatch) -> None:
         session_id="session-1",
     )
 
-    assert result.endswith('Raphael 下一步：回覆「繼續」。')
+    assert result.endswith('下一步：回覆「繼續」。')
 
 
 def test_transform_output_uses_render_and_repair_calls_from_state(tmp_path, monkeypatch) -> None:
@@ -2801,8 +2801,8 @@ def test_transform_output_uses_render_and_repair_calls_from_state(tmp_path, monk
         session_id="session-1",
     )
 
-    assert render.endswith('Raphael 下一步：回覆「出片」。')
-    assert repair.endswith('Raphael 下一步：回覆「修正：補齊 provider audit」。')
+    assert render.endswith('下一步：回覆「出片」。')
+    assert repair.endswith('下一步：回覆「修正：補齊 provider audit」。')
 
 
 def test_transform_output_blocks_unproven_planning_completion(tmp_path, monkeypatch) -> None:
@@ -2820,7 +2820,7 @@ def test_transform_output_blocks_unproven_planning_completion(tmp_path, monkeypa
 
     assert "STORY_VIDEO_PHASE_PROOF: planning BLOCKED" in result
     assert "storyboard.md" in result
-    assert 'Raphael 下一步：回覆「修正：' in result
+    assert '下一步：回覆「修正：' in result
 
 
 def test_transform_output_auto_validates_current_phase_once(tmp_path, monkeypatch) -> None:
@@ -2841,7 +2841,7 @@ def test_transform_output_auto_validates_current_phase_once(tmp_path, monkeypatc
 
     assert "STORY_VIDEO_PHASE_PROOF: planning PASS" in result
     assert store.for_session("session-1").phase == "keyframes"
-    assert result.endswith('Raphael 下一步：回覆「繼續」。')
+    assert result.endswith('下一步：回覆「繼續」。')
 
 
 def test_transform_output_does_not_validate_new_phase_after_explicit_advance(
@@ -2872,7 +2872,7 @@ def test_transform_output_does_not_validate_new_phase_after_explicit_advance(
 
     assert "keyframes BLOCKED" not in result
     assert store.for_session("session-1").phase == "keyframes"
-    assert result.endswith('Raphael 下一步：回覆「繼續」。')
+    assert result.endswith('下一步：回覆「繼續」。')
 
 
 def test_transform_output_blocks_video_not_selected_by_current_render_manifest(
