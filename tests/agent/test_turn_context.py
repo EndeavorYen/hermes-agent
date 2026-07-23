@@ -234,6 +234,187 @@ def test_turn_origin_and_runtime_contract_are_forwarded_to_plugin_hook():
     assert hook_kwargs["runtime_contract"]["base_model"] == "gpt-5.6-terra"
 
 
+def test_pre_llm_hook_exposes_opaque_turn_control_envelope():
+    agent = _FakeAgent()
+    envelope = {
+        "schema_version": "raphael.turn-decision.v1",
+        "decision_id": "decision-1",
+        "mission_id": "mission-1",
+        "mode": "tool_task",
+        "completion_policy": "verify",
+        "failure_policy": "fail_closed",
+        "required_proofs": [{"proof_type": "focused_tests"}],
+        "context_text": "control context",
+        "policy_version": "raphael-policy.v1",
+    }
+    disabled_config = {
+        "plugins": {"enabled": [], "disabled": ["raphael"]},
+        "raphael": {"enabled": False},
+    }
+
+    with (
+        patch("hermes_cli.config.load_config_readonly", return_value=disabled_config),
+        patch(
+            "hermes_cli.plugins.invoke_hook",
+            return_value=[{"context": "control context", "turn_control": envelope}],
+        ),
+    ):
+        ctx = _build(agent, user_message="請修復並測試")
+
+    assert ctx.turn_control == envelope
+    assert ctx.plugin_user_context == "control context"
+    assert ctx.raphael_decision == {}
+
+
+def test_service_transport_does_not_create_embedded_raphael_decision(tmp_path):
+    agent = _FakeAgent()
+    config = {
+        "plugins": {"enabled": ["raphael-control"], "disabled": ["raphael"]},
+        "raphael": {
+            "enabled": True,
+            "transport": "service",
+            "default_conversation_mode_enabled": True,
+        },
+    }
+    envelope = {
+        "schema_version": "raphael.turn-decision.v1",
+        "decision_id": "decision-service",
+        "mission_id": "mission-service",
+        "mode": "tool_task",
+        "completion_policy": "verify",
+        "failure_policy": "fail_closed",
+        "required_proofs": [],
+        "context_text": "service control",
+        "policy_version": "raphael-policy.v1",
+    }
+
+    with (
+        patch.dict("os.environ", {"HERMES_HOME": str(tmp_path)}),
+        patch("hermes_cli.config.load_config_readonly", return_value=config),
+        patch(
+            "hermes_cli.plugins.invoke_hook",
+            return_value=[{"context": "service control", "turn_control": envelope}],
+        ),
+        patch("agent.raphael.kernel.prepare_raphael_turn") as embedded_prepare,
+    ):
+        ctx = _build(agent, user_message="請修復並測試")
+
+    embedded_prepare.assert_not_called()
+    assert ctx.turn_control["decision_id"] == "decision-service"
+    assert ctx.raphael_decision == {}
+
+
+def test_shadow_transport_records_external_envelope_without_applying_it(tmp_path):
+    agent = _FakeAgent()
+    config = {
+        "plugins": {"enabled": ["raphael", "raphael-control"], "disabled": []},
+        "raphael": {
+            "enabled": True,
+            "transport": "shadow",
+            "default_conversation_mode_enabled": True,
+        },
+    }
+    envelope = {
+        "schema_version": "raphael.turn-decision.v1",
+        "decision_id": "decision-shadow",
+        "mission_id": "mission-shadow",
+        "mode": "tool_task",
+        "completion_policy": "verify",
+        "failure_policy": "fail_closed",
+        "required_proofs": [],
+        "context_text": "shadow control",
+        "policy_version": "raphael-policy.v1",
+    }
+
+    captured = []
+
+    def invoke_hook(name, **kwargs):
+        if name == "pre_llm_call":
+            captured.append(kwargs)
+        return [{"context": "shadow control", "turn_control": envelope}]
+
+    with (
+        patch.dict("os.environ", {"HERMES_HOME": str(tmp_path)}),
+        patch("hermes_cli.config.load_config_readonly", return_value=config),
+        patch("hermes_cli.plugins.invoke_hook", side_effect=invoke_hook),
+    ):
+        ctx = _build(agent, user_message="請修復並測試")
+
+    assert ctx.raphael_decision["mode"] == "tool_task"
+    assert ctx.turn_control == {}
+    assert ctx.shadow_turn_control == envelope
+    assert captured[0]["control_authority"] is False
+
+
+def test_pre_llm_hook_receives_current_multimodal_attachment_refs():
+    agent = _FakeAgent()
+    captured = []
+    disabled_config = {
+        "plugins": {"enabled": [], "disabled": ["raphael"]},
+        "raphael": {"enabled": False},
+    }
+
+    def invoke_hook(name, **kwargs):
+        if name == "pre_llm_call":
+            captured.append(kwargs)
+        return []
+
+    with (
+        patch("hermes_cli.config.load_config_readonly", return_value=disabled_config),
+        patch("hermes_cli.plugins.invoke_hook", side_effect=invoke_hook),
+    ):
+        _build(
+            agent,
+            user_message=[
+                {"type": "text", "text": "使用 ref1"},
+                {"type": "image_url", "image_url": {"url": "/tmp/ref1.png"}},
+            ],
+            summarize_user_message_for_log=lambda _value: "multimodal request",
+        )
+
+    assert captured[0]["attachments"] == ("/tmp/ref1.png",)
+
+
+def test_pre_llm_hook_receives_session_visual_reference_entries():
+    agent = _FakeAgent()
+    captured = []
+    disabled_config = {
+        "plugins": {"enabled": [], "disabled": ["raphael"]},
+        "raphael": {"enabled": False},
+    }
+
+    def invoke_hook(name, **kwargs):
+        if name == "pre_llm_call":
+            captured.append(kwargs)
+        return []
+
+    with (
+        patch("hermes_cli.config.load_config_readonly", return_value=disabled_config),
+        patch("hermes_cli.plugins.invoke_hook", side_effect=invoke_hook),
+        patch(
+            "gateway.session_context.get_visual_reference_context_entries",
+            return_value=[
+                {
+                    "uri": "/tmp/original-ref1.png",
+                    "role_hint": "character_identity",
+                    "source": "session_visual_context",
+                    "user_ref_index": 1,
+                }
+            ],
+        ),
+    ):
+        _build(agent, user_message="完全保持 ref1 的人物特徵")
+
+    assert captured[0]["session_attachments"] == (
+        {
+            "uri": "/tmp/original-ref1.png",
+            "role_hint": "character_identity",
+            "source": "session_visual_context",
+            "user_ref_index": 1,
+        },
+    )
+
+
 def test_enabled_foreground_turn_exposes_canonical_raphael_decision(tmp_path):
     agent = _FakeAgent()
     agent.model = "gpt-5.6-terra"

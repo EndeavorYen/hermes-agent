@@ -41,6 +41,35 @@ from agent.model_metadata import (
 logger = logging.getLogger(__name__)
 
 
+def extract_turn_attachment_refs(value: Any) -> tuple[str, ...]:
+    """Return opaque attachment references for generic control plugins."""
+    refs: list[str] = []
+
+    def visit(item: Any) -> None:
+        if isinstance(item, Mapping):
+            item_type = str(item.get("type") or "").strip().lower()
+            image_url = item.get("image_url")
+            if isinstance(image_url, Mapping) and image_url.get("url"):
+                refs.append(str(image_url["url"]))
+            elif image_url:
+                refs.append(str(image_url))
+            for key in ("url", "path", "file", "file_path", "source"):
+                candidate = item.get(key)
+                if candidate and any(marker in item_type for marker in ("image", "file")):
+                    refs.append(str(candidate))
+            content = item.get("content")
+            if isinstance(content, (list, tuple)):
+                for child in content:
+                    visit(child)
+            return
+        if isinstance(item, (list, tuple)):
+            for child in item:
+                visit(child)
+
+    visit(value)
+    return tuple(ref for ref in refs if ref.strip())
+
+
 def compose_user_api_content(
     content: Any,
     ext_prefetch_cache: str,
@@ -269,6 +298,12 @@ class TurnContext:
     raphael_runtime_contract: Dict[str, Any] = field(default_factory=dict)
     # Canonical foreground decision consumed by execution and finalization.
     raphael_decision: Dict[str, Any] = field(default_factory=dict)
+    # Opaque decision supplied by a generic turn-control plugin. The host may
+    # route and finalize with it, but must not interpret provider policy.
+    turn_control: Dict[str, Any] = field(default_factory=dict)
+    # External decision retained for parity reporting while embedded control
+    # remains authoritative in shadow mode.
+    shadow_turn_control: Dict[str, Any] = field(default_factory=dict)
 
 
 def build_turn_context(
@@ -728,6 +763,14 @@ def build_turn_context(
         _raphael_origin = "foreground"
         _raphael_runtime_contract = {}
 
+    _raphael_section = _raphael_config.get("raphael")
+    _raphael_transport = str(
+        _raphael_section.get("transport", "embedded")
+        if isinstance(_raphael_section, dict)
+        else "embedded"
+    ).strip().lower()
+    agent._turn_control_authority = _raphael_transport != "shadow"
+
     _raphael_fail_closed = False
     try:
         from agent.raphael.config import raphael_effective_enabled
@@ -741,8 +784,16 @@ def build_turn_context(
 
     # Plugin hook: pre_llm_call (context injected into user message, not system prompt).
     plugin_user_context = ""
+    turn_control: Dict[str, Any] = {}
     try:
         from hermes_cli.plugins import invoke_hook as _invoke_hook
+        from gateway.session_context import get_visual_reference_context_entries
+
+        _session_attachments = tuple(
+            dict(entry)
+            for entry in get_visual_reference_context_entries()
+            if isinstance(entry, Mapping)
+        )
         _pre_results = _invoke_hook(
             "pre_llm_call",
             session_id=agent.session_id,
@@ -756,6 +807,9 @@ def build_turn_context(
             sender_id=getattr(agent, "_user_id", None) or "",
             turn_origin=_raphael_origin,
             runtime_contract=_raphael_runtime_contract,
+            attachments=extract_turn_attachment_refs(original_user_message),
+            session_attachments=_session_attachments,
+            control_authority=agent._turn_control_authority,
         )
         _ctx_parts: list[str] = []
         # Spill oversized per-hook context to disk so a runaway plugin
@@ -772,11 +826,15 @@ def build_turn_context(
             _spill_config_cached = None
         for r in _pre_results:
             _piece: str = ""
-            if isinstance(r, dict) and r.get("context"):
-                _piece = str(r["context"])
+            if isinstance(r, dict):
+                _candidate_control = r.get("turn_control")
+                if not turn_control and isinstance(_candidate_control, dict):
+                    turn_control = dict(_candidate_control)
+                if r.get("context"):
+                    _piece = str(r["context"])
             elif isinstance(r, str) and r.strip():
                 _piece = r
-            else:
+            if not _piece:
                 continue
             if _spill_if_oversized is not None:
                 try:
@@ -818,46 +876,52 @@ def build_turn_context(
             )
 
     raphael_decision: Dict[str, Any] = {}
-    try:
-        from agent.raphael.kernel import (
-            prepare_raphael_turn,
-            render_raphael_turn_decision_context,
-        )
-        from agent.raphael.observer import extract_raphael_attachment_refs
-
-        _decision = prepare_raphael_turn(
-            turn_id=turn_id,
-            origin=_raphael_origin,
-            runtime_contract=_raphael_runtime_contract,
-            config=_raphael_config,
-            user_message=original_user_message,
-            attachments=extract_raphael_attachment_refs(user_message),
-            conversation_history=list(messages),
-        )
-        if _decision is not None:
-            raphael_decision = _decision.to_dict()
-            _decision_context = render_raphael_turn_decision_context(_decision)
-            plugin_user_context = "\n\n".join(
-                part for part in (plugin_user_context, _decision_context) if part
+    if _raphael_transport != "service":
+        try:
+            from agent.raphael.kernel import (
+                prepare_raphael_turn,
+                render_raphael_turn_decision_context,
             )
-    except Exception as exc:
-        logger.warning("Raphael turn decision preparation failed: %s", exc)
-        if _raphael_fail_closed:
-            raphael_decision = {
-                "turn_id": turn_id,
-                "origin": _raphael_origin,
-                "mission_id": None,
-                "mode": "control_decision_failed",
-                "completion_policy": "blocked",
-                "control_decision_failed": True,
-                "evidence": {
-                    "required_proofs": ["control_decision"],
-                    "failure_layer": "control_decision",
-                    "next_repair_action": "repair Raphael control decision",
-                },
-                "next_action": "repair Raphael control decision",
-                "runtime_contract": dict(_raphael_runtime_contract),
-            }
+            from agent.raphael.observer import extract_raphael_attachment_refs
+
+            _decision = prepare_raphael_turn(
+                turn_id=turn_id,
+                origin=_raphael_origin,
+                runtime_contract=_raphael_runtime_contract,
+                config=_raphael_config,
+                user_message=original_user_message,
+                attachments=extract_raphael_attachment_refs(user_message),
+                conversation_history=list(messages),
+            )
+            if _decision is not None:
+                raphael_decision = _decision.to_dict()
+                _decision_context = render_raphael_turn_decision_context(_decision)
+                plugin_user_context = "\n\n".join(
+                    part for part in (plugin_user_context, _decision_context) if part
+                )
+        except Exception as exc:
+            logger.warning("Raphael turn decision preparation failed: %s", exc)
+            if _raphael_fail_closed:
+                raphael_decision = {
+                    "turn_id": turn_id,
+                    "origin": _raphael_origin,
+                    "mission_id": None,
+                    "mode": "control_decision_failed",
+                    "completion_policy": "blocked",
+                    "control_decision_failed": True,
+                    "evidence": {
+                        "required_proofs": ["control_decision"],
+                        "failure_layer": "control_decision",
+                        "next_repair_action": "repair Raphael control decision",
+                    },
+                    "next_action": "repair Raphael control decision",
+                    "runtime_contract": dict(_raphael_runtime_contract),
+                }
+
+    shadow_turn_control: Dict[str, Any] = {}
+    if _raphael_transport == "shadow" and turn_control:
+        shadow_turn_control = turn_control
+        turn_control = {}
 
     # Per-turn file-mutation verifier state.
     agent._turn_failed_file_mutations = {}
@@ -996,4 +1060,6 @@ def build_turn_context(
         raphael_origin=_raphael_origin,
         raphael_runtime_contract=_raphael_runtime_contract,
         raphael_decision=raphael_decision,
+        turn_control=turn_control,
+        shadow_turn_control=shadow_turn_control,
     )

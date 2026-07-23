@@ -786,6 +786,88 @@ def test_raphael_evidence_gate_rejects_empty_turn_identity():
     assert "turn_identity" in gate["missing_proofs"]
 
 
+def test_direct_visual_handoff_accepts_external_control_engine_envelope():
+    from agent.visual.agent_mode.handoff import attach_direct_visual_agent_handoff_metadata
+
+    image = "/tmp/current-service.png"
+    raw = attach_direct_visual_agent_handoff_metadata(
+        json.dumps(
+            {
+                "success": True,
+                "images": [image],
+                "generation_payloads": {"image": {"provider": "xai"}},
+                "rankings": {"selected_artifact_id": "artifact-service"},
+                "delivery_metadata": {
+                    "selected_visual_artifact_ids": ["artifact-service"],
+                    "visual_artifacts": {
+                        image: {
+                            "artifact_id": "artifact-service",
+                            "freshness_status": "fresh",
+                            "is_stable": True,
+                        }
+                    },
+                    "visual_quality_run": {
+                        "success": True,
+                        "summary": {
+                            "case_count": 1,
+                            "failed_case_count": 0,
+                            "quality_issue_count": 0,
+                        },
+                    },
+                },
+                "delivery_recovery": {
+                    "status": "delivered",
+                    "deliver_rejected_artifact": False,
+                },
+                "delivery_gate": {"image": {"allowed": True}},
+                "autonomous_validation": {"valid": True},
+            }
+        ),
+        {
+            "mode": "visual_agent_edit",
+            "base_llm_provider_bypassed": True,
+            "base_llm_model_bypassed": True,
+            "visual_agent_llm_provider": "xai-oauth",
+            "visual_agent_llm_model": "grok-runtime-model",
+            "raphael_control": {
+                "schema_version": "raphael.turn-decision.v1",
+                "decision_id": "decision-service",
+                "mission_id": "mission-service",
+                "mode": "visual_agent_edit",
+                "route": {
+                    "capability": "visual.edit_with_references",
+                    "operation": "edit",
+                    "constraints": {"reference_count": 2},
+                },
+                "completion_policy": "verify",
+                "failure_policy": "fail_closed",
+                "required_proofs": [
+                    {"proof_type": "provider_attempt_evidence"},
+                    {"proof_type": "reference_adherence"},
+                    {"proof_type": "artifact_quality_evidence"},
+                    {"proof_type": "selected_current_artifact_only"},
+                    {"proof_type": "delivery_cleanliness"},
+                ],
+                "policy_version": "raphael-policy.v1",
+            },
+        },
+    )
+    payload = json.loads(raw)
+
+    assert payload["success"] is True
+    gate = payload["direct_visual_agent_handoff"]["raphael_evidence_gate"]
+    assert gate["passed"] is True
+    assert gate["missing_proofs"] == []
+    assert {event["proof_type"] for event in gate["evidence_events"]} == {
+        "provider_attempt_evidence",
+        "reference_adherence",
+        "artifact_quality_evidence",
+        "selected_current_artifact_only",
+        "delivery_cleanliness",
+    }
+    assert all(event["status"] == "passed" for event in gate["evidence_events"])
+
+
 def test_direct_visual_handoff_allows_payload_with_raphael_evidence(
     tmp_path, monkeypatch
 ):

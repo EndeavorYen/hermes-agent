@@ -999,15 +999,29 @@ def attach_direct_visual_agent_handoff_metadata(
         payload["direct_visual_agent_handoff"]["raphael_control"] = handoff[
             "raphael_control"
         ]
-        gate = _evaluate_raphael_evidence_gate(
-            handoff["raphael_control"],
-            payload,
+        external_control = _is_external_control_engine_envelope(
+            handoff["raphael_control"]
+        )
+        gate = (
+            _evaluate_external_control_evidence_gate(
+                handoff["raphael_control"],
+                payload,
+            )
+            if external_control
+            else _evaluate_raphael_evidence_gate(
+                handoff["raphael_control"],
+                payload,
+            )
         )
         review_only_delivery = _review_only_candidate_delivery_allowed(payload, gate)
         if review_only_delivery:
             gate["delivery_disposition"] = "review_only"
         payload["direct_visual_agent_handoff"]["raphael_evidence_gate"] = gate
-        if payload.get("success") is True and gate.get("passed") is True:
+        if (
+            payload.get("success") is True
+            and gate.get("passed") is True
+            and not external_control
+        ):
             _record_successful_raphael_visual_handoff_mission(
                 payload,
                 handoff["raphael_control"],
@@ -1181,6 +1195,67 @@ def _evaluate_raphael_evidence_gate(
     }
 
 
+def _is_external_control_engine_envelope(control: dict[str, Any]) -> bool:
+    return str(control.get("schema_version") or "") == "raphael.turn-decision.v1"
+
+
+def _evaluate_external_control_evidence_gate(
+    control: dict[str, Any],
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    required = []
+    for item in control.get("required_proofs", ()):
+        proof = item.get("proof_type") if isinstance(item, dict) else item
+        proof = str(proof or "").strip()
+        if proof:
+            required.append(proof)
+    proof_results = {
+        proof: _raphael_required_proof_present(proof, control, payload)
+        for proof in required
+    }
+    selected_ids = sorted(_selected_visual_artifact_ids(payload))
+    artifact_id = selected_ids[0] if selected_ids else ""
+    provider = _raphael_evidence_provider(payload, control)
+    identity_missing = [
+        label
+        for label, value in (
+            ("mission_identity", control.get("mission_id")),
+            ("decision_identity", control.get("decision_id")),
+            ("artifact_identity", artifact_id),
+            ("provider_identity", provider),
+        )
+        if not str(value or "").strip()
+    ]
+    missing = [
+        proof for proof, present in proof_results.items() if not present
+    ] + identity_missing
+    payload_digest = _raphael_evidence_payload_digest(
+        proof_results=proof_results,
+        selected_ids=selected_ids,
+        provider=provider,
+        payload=payload,
+    )
+    evidence_events = [
+        {
+            "proof_type": proof,
+            "status": "passed" if present and not identity_missing else "missing",
+            "source": "visual_agent_handoff",
+            "command": "visual_agent_generate",
+            "artifact_id": artifact_id,
+            "provider": provider,
+            "payload_digest": payload_digest,
+        }
+        for proof, present in proof_results.items()
+    ]
+    return {
+        "passed": not missing,
+        "required_proofs": required,
+        "missing_proofs": missing,
+        "failure_layer": "artifact_quality" if missing else None,
+        "evidence_events": evidence_events,
+    }
+
+
 def _raphael_evidence_provider(
     payload: dict[str, Any],
     raphael_control: dict[str, Any],
@@ -1257,6 +1332,16 @@ def _raphael_required_proof_present(
         )
     if proof == "reference_mapping_evidence":
         return bool(payload.get("reference_binding")) or bool(payload.get("rankings"))
+    if proof == "reference_adherence":
+        route = raphael_control.get("route")
+        constraints = route.get("constraints") if isinstance(route, dict) else None
+        try:
+            reference_count = int(
+                constraints.get("reference_count") if isinstance(constraints, dict) else 0
+            )
+        except (TypeError, ValueError):
+            reference_count = 0
+        return reference_count > 0 and _has_passing_artifact_quality_evidence(payload)
     if proof == "multi_candidate_validation":
         strategy = payload.get("generation_strategy")
         if isinstance(strategy, dict):

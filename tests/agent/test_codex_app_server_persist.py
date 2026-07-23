@@ -32,11 +32,25 @@ import hermes_cli.plugins
 import pytest
 
 from agent.codex_runtime import (
+    _is_story_video_workflow,
     _rotate_plugin_auto_continuation_session,
     run_codex_app_server_turn,
 )
 from hermes_state import SessionDB
 from run_agent import AIAgent
+
+
+def test_external_control_envelope_identifies_story_video_workflow():
+    assert _is_story_video_workflow(
+        {
+            "schema_version": "raphael.turn-decision.v1",
+            "mode": "story_video_orchestration",
+            "route": {
+                "capability": "story_video.continue",
+                "operation": "continue",
+            },
+        }
+    ) is True
 
 
 def _make_turn():
@@ -366,6 +380,7 @@ def test_codex_runtime_runs_bounded_plugin_auto_continuation(monkeypatch):
     agent.provider = "openai-codex"
     agent.base_url = "https://chatgpt.com/backend-api/codex"
     agent.platform = "slack"
+    agent._turn_control_authority = False
 
     result = run_codex_app_server_turn(
         agent,
@@ -382,6 +397,12 @@ def test_codex_runtime_runs_bounded_plugin_auto_continuation(monkeypatch):
     )
     assert result["final_response"] == "AUTO COMPLETE"
     assert result["api_calls"] == 2
+    auto_pre = next(
+        kwargs
+        for name, kwargs in calls
+        if name == "pre_llm_call" and kwargs.get("auto_continuation") is True
+    )
+    assert auto_pre["control_authority"] is False
 
 
 def test_codex_runtime_rotates_plugin_continuation_into_fresh_session(monkeypatch):
@@ -683,6 +704,11 @@ def test_codex_runtime_receives_pre_llm_plugin_context(monkeypatch):
 
     captured = {}
     agent = SimpleNamespace(api_mode="codex_app_server")
+    external_control = {
+        "schema_version": "raphael.turn-decision.v1",
+        "decision_id": "decision-story",
+        "mode": "story_video_orchestration",
+    }
 
     def fake_build_turn_context(*_args, **_kwargs):
         return SimpleNamespace(
@@ -697,6 +723,8 @@ def test_codex_runtime_receives_pre_llm_plugin_context(monkeypatch):
             should_review_memory=False,
             plugin_user_context="PLUGIN_CONTEXT",
             ext_prefetch_cache="",
+            raphael_decision={},
+            turn_control=external_control,
         )
 
     def fake_codex_turn(**kwargs):
@@ -712,6 +740,7 @@ def test_codex_runtime_receives_pre_llm_plugin_context(monkeypatch):
     assert captured["user_message"] == "hello\n\nPLUGIN_CONTEXT"
     assert captured["original_user_message"] == "hello"
     assert captured["messages"] == [{"role": "user", "content": "hello"}]
+    assert captured["raphael_decision"] == external_control
 
 
 def test_codex_turn_persists_each_message_exactly_once():
