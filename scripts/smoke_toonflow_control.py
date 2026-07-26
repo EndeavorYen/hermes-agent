@@ -256,6 +256,15 @@ def main(argv: list[str] | None = None) -> int:
             )
             result["paths"] = state["paths"]
             result["provider_requests"] = state["provider_requests"]
+            result["acceptance_proof"] = {
+                "proof_id": "hermes_supervised",
+                "passed": True,
+                "evidence_class": "fixture",
+                "billing_class": "not_applicable",
+                "toonflow_contract_version": result[
+                    "contract_version"
+                ],
+            }
     else:
         result = run_smoke(
             ToonflowControlClient(base_url=args.base_url),

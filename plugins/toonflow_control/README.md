@@ -35,3 +35,25 @@ Failures are returned as a stable class, retryable flag, user action, and
 message. `setup_required` means local configuration is missing;
 `capability_unavailable` means the requested logical route is not advertised;
 `provider_unavailable` means the local Control API could not be reached.
+
+## Acceptance boundary
+
+The no-spend fixture smoke is:
+
+```bash
+PYTHONPATH=. venv/bin/python scripts/smoke_toonflow_control.py \
+  --fake-server --no-spend
+```
+
+It proves that Hermes supervises capabilities, project creation, run creation,
+and run status only through `/control/v1`. Its
+`acceptance_proof.evidence_class` is `fixture`, so it cannot be used as the
+quota-consuming `hermes_supervised` live proof.
+
+A live supervised proof requires accepted bridge, Toonflow, and Hermes builds;
+an explicit subscription-quota acknowledgement; a current Toonflow run and
+artifact hash; and `billing_class=subscription_included` for generated media.
+Keep prompts, cookies, tokens, CDP/profile details, raw responses, and generated
+media out of the committed repository. If Toonflow or its subscription route
+is unavailable, Hermes reports that failure and does not invoke a provider,
+browser, Media Bridge endpoint, Codex, or Grok directly.

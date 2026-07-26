@@ -16,6 +16,13 @@ def test_embedded_fake_smoke_is_no_spend_and_contract_only(capsys):
     assert result["contract_version"] == "1.0"
     assert result["state"] == "succeeded"
     assert result["provider_requests"] == 0
+    assert result["acceptance_proof"] == {
+        "proof_id": "hermes_supervised",
+        "passed": True,
+        "evidence_class": "fixture",
+        "billing_class": "not_applicable",
+        "toonflow_contract_version": "1.0",
+    }
     assert result["paths"] == [
         "/control/v1/capabilities",
         "/control/v1/projects",
