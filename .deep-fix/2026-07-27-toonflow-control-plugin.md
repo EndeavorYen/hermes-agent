@@ -30,7 +30,7 @@ perform paid generation.
      and mutations negotiate capabilities first, and responses are allowlisted
      so internal job fields cannot escape.
 
-3. `pending` — Plugin registration
+3. `fixed` — Plugin registration
    - Outcome: Hermes discovers and registers the six tools under the
      `toonflow` toolset; configuration checks are local and do not contact a
      provider or block startup.
@@ -38,6 +38,10 @@ perform paid generation.
      discovery tests exist.
    - Focused proof:
      `PYTHONPATH=. venv/bin/python -m pytest tests/plugins/toonflow_control/test_plugin.py -q`
+   - Evidence: 7 tests passed. Hermes discovers the bundled backend under the
+     manifest key `toonflow-control`; all six runtime handlers serialize to
+     registry-compatible JSON strings, while the availability gate remains a
+     network-free boolean check.
 
 4. `pending` — External-boundary and no-spend proof
    - Outcome: source and smoke tests prove Hermes calls only `/control/v1`,

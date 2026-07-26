@@ -1,0 +1,12 @@
+name: toonflow-control
+version: 1.0.0
+description: Optional supervisory control of Toonflow through /control/v1.
+author: local-integration
+kind: backend
+provides_tools:
+  - toonflow_capabilities
+  - toonflow_create_project
+  - toonflow_run
+  - toonflow_run_status
+  - toonflow_cancel_run
+  - toonflow_select_artifact
