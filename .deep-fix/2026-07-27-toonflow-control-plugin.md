@@ -18,12 +18,17 @@ perform paid generation.
      no private virtualenv. The four HTTP fixture tests required loopback socket
      permission from the managed sandbox.
 
-2. `pending` — Supervisory tools
+2. `fixed` — Supervisory tools
    - Outcome: six strict tools expose only logical workflow controls and
      capability-gate optional routes.
    - Current evidence: no Toonflow tool schemas or handlers exist.
    - Focused proof:
      `PYTHONPATH=. venv/bin/python -m pytest tests/plugins/toonflow_control/test_tools.py -q`
+   - Evidence: 9 tests passed. Schemas use the accepted Control 1.0 integer
+     project/shot identifiers and omit non-functional candidate/repair knobs
+     that the accepted Toonflow endpoint rejects. All optional route choices
+     and mutations negotiate capabilities first, and responses are allowlisted
+     so internal job fields cannot escape.
 
 3. `pending` — Plugin registration
    - Outcome: Hermes discovers and registers the six tools under the
