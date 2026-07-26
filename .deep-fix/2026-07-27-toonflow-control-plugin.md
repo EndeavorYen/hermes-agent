@@ -58,4 +58,13 @@ perform paid generation.
 
 Final required proof:
 
-`PYTHONPATH=. venv/bin/python -m pytest tests/plugins/toonflow_control tests/architecture/test_toonflow_control_boundary.py tests/integration/test_toonflow_control_no_spend.py -q`
+`PYTHONPATH=. venv/bin/python -m pytest tests/plugins/toonflow_control tests/architecture/test_external_engine_boundaries.py tests/scripts/test_smoke_toonflow_control.py tests/hermes_cli/test_plugin_scanner_recursion.py tests/hermes_cli/test_plugins.py -q`
+
+Final evidence:
+
+- Related Hermes gate: 170 tests passed, including the full Toonflow plugin
+  suite, external-engine boundary tests, no-spend script tests, and the native
+  plugin scanner/loader regressions.
+- Standalone CLI smoke: Control Contract 1.0, four `/control/v1` paths,
+  terminal `succeeded`, and `provider_requests: 0`.
+- Ruff and `git diff --check` passed; the topic worktree was clean.
