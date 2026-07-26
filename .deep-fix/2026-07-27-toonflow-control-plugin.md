@@ -43,14 +43,18 @@ perform paid generation.
      registry-compatible JSON strings, while the availability gate remains a
      network-free boolean check.
 
-4. `pending` — External-boundary and no-spend proof
+4. `fixed` — External-boundary and no-spend proof
    - Outcome: source and smoke tests prove Hermes calls only `/control/v1`,
      never `/media/v1` or provider endpoints, and a fake-control-server run
      performs no paid generation.
    - Current evidence: no architecture enforcement test, no-spend smoke, or
      deployment guide exists.
    - Focused proof:
-     `PYTHONPATH=. venv/bin/python -m pytest tests/architecture/test_toonflow_control_boundary.py tests/integration/test_toonflow_control_no_spend.py -q`
+     `PYTHONPATH=. venv/bin/python -m pytest tests/architecture/test_external_engine_boundaries.py tests/scripts/test_smoke_toonflow_control.py -q`
+   - Evidence: 7 tests passed. The smoke uses an embedded loopback Control 1.0
+     fixture that advertises `execution_mode: fake`, records every path, and
+     reports zero generation requests. `--no-spend` fails closed without that
+     evidence.
 
 Final required proof:
 
