@@ -241,7 +241,7 @@ def test_manifest_declares_the_six_tools():
     )
     manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     assert manifest["name"] == "toonflow-control"
-    assert manifest["kind"] == "backend"
+    assert manifest["kind"] == "standalone"
     assert manifest["provides_tools"] == [
         "toonflow_capabilities",
         "toonflow_create_project",
@@ -252,7 +252,7 @@ def test_manifest_declares_the_six_tools():
     ]
 
 
-def test_plugin_is_discoverable_without_toonflow_running(
+def test_plugin_is_opt_in_without_toonflow_running(
     tmp_path,
     monkeypatch,
 ):
@@ -262,5 +262,26 @@ def test_plugin_is_discoverable_without_toonflow_running(
     manager.discover_and_load()
     loaded = manager._plugins["toonflow-control"]
     assert loaded.manifest.source == "bundled"
+    assert loaded.enabled is False
+    assert "not enabled in config" in str(loaded.error)
+
+
+def test_plugin_loads_when_explicitly_enabled_without_toonflow_running(
+    tmp_path,
+    monkeypatch,
+):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "plugins:\n  enabled:\n    - toonflow-control\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("TOONFLOW_CONTROL_TOKEN", raising=False)
+
+    manager = PluginManager()
+    manager.discover_and_load()
+
+    loaded = manager._plugins["toonflow-control"]
     assert loaded.enabled is True
     assert loaded.error is None
