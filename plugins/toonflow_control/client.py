@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import socket
+import stat
+from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlparse, urlunparse
@@ -12,6 +14,7 @@ from urllib.request import Request, urlopen
 
 DEFAULT_CONTROL_URL = "http://127.0.0.1:10588"
 CONTRACT_VERSION = "1.0"
+_MAX_TOKEN_FILE_BYTES = 4096
 
 
 class ToonflowControlError(RuntimeError):
@@ -48,8 +51,12 @@ class ToonflowControlClient:
             base_url or os.environ.get("TOONFLOW_CONTROL_URL") or DEFAULT_CONTROL_URL,
             allow_remote_for_tests=allow_remote_for_tests,
         )
-        self._token = token if token is not None else os.environ.get("TOONFLOW_CONTROL_TOKEN")
+        self._token = _resolve_control_token(token)
         self._timeout = timeout
+
+    @property
+    def configured(self) -> bool:
+        return bool((self._token or "").strip())
 
     def capabilities(self) -> dict[str, Any]:
         return self._request("GET", "/control/v1/capabilities")
@@ -91,7 +98,9 @@ class ToonflowControlClient:
             raise ToonflowControlError(
                 "Toonflow control is not configured.",
                 failure_class="setup_required",
-                user_action="Set TOONFLOW_CONTROL_TOKEN.",
+                user_action=(
+                    "Set TOONFLOW_CONTROL_TOKEN or TOONFLOW_CONTROL_TOKEN_FILE."
+                ),
             )
         if not path.startswith("/control/v1/"):
             raise ValueError("Toonflow control requests must use /control/v1")
@@ -127,6 +136,35 @@ class ToonflowControlClient:
                 retryable=True,
                 user_action="Confirm the local Toonflow Control API is running.",
             ) from None
+
+
+def _resolve_control_token(explicit: str | None) -> str | None:
+    if explicit is not None:
+        return explicit
+    environment_token = os.environ.get("TOONFLOW_CONTROL_TOKEN")
+    if environment_token is not None:
+        return environment_token
+    token_file_value = (os.environ.get("TOONFLOW_CONTROL_TOKEN_FILE") or "").strip()
+    if not token_file_value:
+        return None
+
+    token_file = Path(token_file_value).expanduser()
+    try:
+        metadata = token_file.stat()
+    except OSError as exc:
+        raise ValueError("Toonflow control token file is unavailable") from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise ValueError("Toonflow control token file must be a regular file")
+    if os.name != "nt" and metadata.st_mode & 0o077:
+        raise ValueError(
+            "Toonflow control token file permissions must deny group and world access"
+        )
+    if metadata.st_size > _MAX_TOKEN_FILE_BYTES:
+        raise ValueError("Toonflow control token file is too large")
+    try:
+        return token_file.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError) as exc:
+        raise ValueError("Toonflow control token file is unreadable") from exc
 
 
 def _normalize_base_url(value: str, *, allow_remote_for_tests: bool) -> str:
@@ -198,9 +236,7 @@ def _control_error(
     failure_class = details.get("class") or details.get("code")
     return ToonflowControlError(
         str(details.get("message") or "Toonflow control request failed."),
-        failure_class=(
-            str(failure_class) if failure_class else "provider_unavailable"
-        ),
+        failure_class=(str(failure_class) if failure_class else "provider_unavailable"),
         retryable=details.get("retryable") is True,
         user_action=(
             str(details.get("user_action"))

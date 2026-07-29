@@ -13,6 +13,15 @@ TOONFLOW_CONTROL_URL=http://127.0.0.1:10588
 TOONFLOW_CONTROL_TOKEN=<dedicated-control-token>
 ```
 
+For a long-running local service, prefer a mode-`0600` token file instead of
+putting the token directly in a launch-service definition:
+
+```text
+TOONFLOW_CONTROL_TOKEN_FILE=/absolute/private/path/control-token
+```
+
+An explicit `TOONFLOW_CONTROL_TOKEN` takes precedence over the file.
+
 Version 1 accepts loopback URLs only. The control token is separate from
 Toonflow's UI JWT and from the media service token. The configuration check
 validates URL shape and token presence without making a network request, so
@@ -25,6 +34,24 @@ Start services in this order:
 2. Start Toonflow with its Control API enabled.
 3. Start Hermes with the variables above.
 4. Call `toonflow_capabilities` before requesting a workflow route.
+
+When the selected text provider uses Codex app-server, Codex owns the tool
+loop. Register the plugin-owned MCP bridge in the Codex configuration so the
+same six `toonflow_*` tools are visible without adding Toonflow behavior to
+Hermes core:
+
+```toml
+[mcp_servers.toonflow-control]
+command = "/absolute/path/to/hermes/python"
+args = ["-m", "plugins.toonflow_control.mcp_server"]
+env = {
+  HERMES_HOME = "/absolute/path/to/.hermes",
+  TOONFLOW_CONTROL_URL = "http://127.0.0.1:10588",
+  TOONFLOW_CONTROL_TOKEN_FILE = "/absolute/private/path/control-token"
+}
+startup_timeout_sec = 30.0
+tool_timeout_sec = 600.0
+```
 
 Hermes does not provide media OAuth, browser sessions, or generation
 credentials. It does not ask Codex or Grok to build Toonflow media. Toonflow

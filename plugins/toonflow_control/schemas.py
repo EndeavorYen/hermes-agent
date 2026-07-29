@@ -5,7 +5,7 @@ from __future__ import annotations
 IMAGE_ROUTE_PROFILES = ["image.standard", "image.allowed_high_scale"]
 VIDEO_ROUTE_PROFILES = ["video.subscription"]
 ROUTE_PROFILES = [*IMAGE_ROUTE_PROFILES, *VIDEO_ROUTE_PROFILES]
-OPERATIONS = ["generate_shots"]
+OPERATIONS = ["generate_shots", "produce_story_film"]
 
 
 def _schema(
@@ -58,7 +58,12 @@ TOONFLOW_CREATE_PROJECT_SCHEMA = _schema(
 
 TOONFLOW_RUN_SCHEMA = _schema(
     "toonflow_run",
-    "Start an idempotent Toonflow shot-generation run using a logical route.",
+    (
+        "Start an idempotent Toonflow-owned run. Use generate_shots with "
+        "one or more shot_ids, or produce_story_film with "
+        "video.subscription, an empty shot_ids list, and one 30-second "
+        "16:9 creative_brief."
+    ),
     {
         "project_id": {"type": "integer", "minimum": 1},
         "operation": {"type": "string", "enum": OPERATIONS},
@@ -66,10 +71,54 @@ TOONFLOW_RUN_SCHEMA = _schema(
         "shot_ids": {
             "type": "array",
             "items": {"type": "integer", "minimum": 1},
-            "minItems": 1,
+            "minItems": 0,
             "uniqueItems": True,
         },
         "prompt": {"type": "string", "maxLength": 20000},
+        "creative_brief": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200,
+                },
+                "story": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 20000,
+                },
+                "cast": {"type": "string", "maxLength": 10000},
+                "visual_style": {
+                    "type": "string",
+                    "maxLength": 5000,
+                },
+                "continuity_rules": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 1000,
+                    },
+                    "maxItems": 20,
+                },
+                "target_duration_seconds": {
+                    "type": "integer",
+                    "const": 30,
+                },
+                "aspect_ratio": {
+                    "type": "string",
+                    "const": "16:9",
+                },
+            },
+            "required": [
+                "title",
+                "story",
+                "target_duration_seconds",
+                "aspect_ratio",
+            ],
+            "additionalProperties": False,
+        },
         "idempotency_key": {
             "type": "string",
             "minLength": 1,

@@ -113,6 +113,7 @@ def toonflow_run(
                 "route_profile",
                 "shot_ids",
                 "prompt",
+                "creative_brief",
                 "idempotency_key",
             ),
         )

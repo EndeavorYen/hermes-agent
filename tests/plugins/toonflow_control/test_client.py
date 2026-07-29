@@ -75,9 +75,40 @@ def test_client_rejects_unsafe_base_url(url):
 
 def test_token_is_required_before_request(monkeypatch):
     monkeypatch.delenv("TOONFLOW_CONTROL_TOKEN", raising=False)
+    monkeypatch.delenv("TOONFLOW_CONTROL_TOKEN_FILE", raising=False)
     client = ToonflowControlClient()
     with pytest.raises(ToonflowControlError, match="not configured"):
         client.capabilities()
+
+
+def test_token_can_be_loaded_from_private_file(tmp_path, monkeypatch):
+    token_file = tmp_path / "control-token"
+    token_file.write_text("file-token\n", encoding="utf-8")
+    token_file.chmod(0o600)
+    monkeypatch.delenv("TOONFLOW_CONTROL_TOKEN", raising=False)
+    monkeypatch.setenv("TOONFLOW_CONTROL_TOKEN_FILE", str(token_file))
+
+    with _server() as (url, state):
+        client = ToonflowControlClient(
+            base_url=url,
+            allow_remote_for_tests=True,
+        )
+        client.capabilities()
+
+    headers = state["headers"]
+    assert isinstance(headers, dict)
+    assert headers["Authorization"] == "Bearer file-token"
+
+
+def test_token_file_must_not_be_group_or_world_readable(tmp_path, monkeypatch):
+    token_file = tmp_path / "control-token"
+    token_file.write_text("file-token\n", encoding="utf-8")
+    token_file.chmod(0o644)
+    monkeypatch.delenv("TOONFLOW_CONTROL_TOKEN", raising=False)
+    monkeypatch.setenv("TOONFLOW_CONTROL_TOKEN_FILE", str(token_file))
+
+    with pytest.raises(ValueError, match="permissions"):
+        ToonflowControlClient()
 
 
 def test_get_run_uses_only_control_contract_and_quotes_identifier():
@@ -100,8 +131,20 @@ def test_get_run_uses_only_control_contract_and_quotes_identifier():
 def test_endpoint_methods_and_object_bodies():
     cases = [
         ("capabilities", (), "GET", "/control/v1/capabilities", None),
-        ("create_project", ({"name": "Demo"},), "POST", "/control/v1/projects", {"name": "Demo"}),
-        ("create_run", ({"project_id": "p1"},), "POST", "/control/v1/runs", {"project_id": "p1"}),
+        (
+            "create_project",
+            ({"name": "Demo"},),
+            "POST",
+            "/control/v1/projects",
+            {"name": "Demo"},
+        ),
+        (
+            "create_run",
+            ({"project_id": "p1"},),
+            "POST",
+            "/control/v1/runs",
+            {"project_id": "p1"},
+        ),
         ("cancel_run", ("r1",), "POST", "/control/v1/runs/r1/cancel", None),
         (
             "select_artifact",
