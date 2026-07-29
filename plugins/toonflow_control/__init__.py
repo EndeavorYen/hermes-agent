@@ -77,12 +77,15 @@ _TOONFLOW_TURN_CLAIMS_LOCK = threading.Lock()
 def check_toonflow_configured() -> tuple[bool, str]:
     """Validate local configuration without contacting Toonflow."""
 
-    if not (os.environ.get("TOONFLOW_CONTROL_TOKEN") or "").strip():
-        return False, "TOONFLOW_CONTROL_TOKEN is not configured"
     try:
-        ToonflowControlClient()
+        client = ToonflowControlClient()
     except ValueError as exc:
         return False, str(exc)
+    if not client.configured:
+        return (
+            False,
+            "TOONFLOW_CONTROL_TOKEN or TOONFLOW_CONTROL_TOKEN_FILE is not configured",
+        )
     return True, "configured"
 
 

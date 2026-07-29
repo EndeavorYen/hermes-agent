@@ -19,7 +19,7 @@ class RecordingClient:
     ) -> None:
         self.capability_value = capabilities or {
             "contract_version": "1.0",
-            "operations": ["generate_shots"],
+            "operations": ["generate_shots", "produce_story_film"],
             "route_profiles": [
                 "image.standard",
                 "image.allowed_high_scale",
@@ -206,6 +206,73 @@ def test_successful_run_passes_only_control_contract_fields():
             "idempotency_key": "request-1",
         }
     ]
+
+
+def test_story_film_run_passes_creative_brief_to_toonflow_unchanged():
+    client = RecordingClient(
+        run={
+            "contract_version": "1.0",
+            "run_id": "run-story-1",
+            "project_id": 1,
+            "operation": "produce_story_film",
+            "route_profile": "video.subscription",
+            "shot_ids": [],
+            "state": "queued",
+            "artifacts": [],
+            "created_at": 1,
+            "updated_at": 1,
+        }
+    )
+    creative_brief = {
+        "title": "末班光影",
+        "story": "一名疲憊乘客在末班地鐵遇見改變人生的陌生人。",
+        "cast": "一名三十多歲上班族與一名神秘旅客",
+        "visual_style": "cinematic realism",
+        "continuity_rules": ["角色服裝與髮型跨鏡頭一致"],
+        "target_duration_seconds": 30,
+        "aspect_ratio": "16:9",
+    }
+
+    result = tools.toonflow_run(
+        {
+            "project_id": 1,
+            "operation": "produce_story_film",
+            "route_profile": "video.subscription",
+            "shot_ids": [],
+            "creative_brief": creative_brief,
+            "idempotency_key": "story-film-1",
+        },
+        client=client,
+    )
+
+    assert result["success"] is True
+    assert client.create_run_calls == [
+        {
+            "project_id": 1,
+            "operation": "produce_story_film",
+            "route_profile": "video.subscription",
+            "shot_ids": [],
+            "creative_brief": creative_brief,
+            "idempotency_key": "story-film-1",
+        }
+    ]
+
+
+def test_run_schema_advertises_toonflow_owned_story_film_contract():
+    parameters = schemas.TOONFLOW_RUN_SCHEMA["parameters"]
+
+    assert "produce_story_film" in parameters["properties"]["operation"]["enum"]
+    assert parameters["properties"]["shot_ids"]["minItems"] == 0
+    brief = parameters["properties"]["creative_brief"]
+    assert brief["additionalProperties"] is False
+    assert set(brief["required"]) == {
+        "title",
+        "story",
+        "target_duration_seconds",
+        "aspect_ratio",
+    }
+    assert brief["properties"]["target_duration_seconds"]["const"] == 30
+    assert brief["properties"]["aspect_ratio"]["const"] == "16:9"
 
 
 def test_status_returns_toonflow_run_without_bridge_fields():

@@ -135,6 +135,7 @@ def test_explicit_toonflow_request_fails_closed_when_control_is_unconfigured(
     monkeypatch,
 ):
     monkeypatch.delenv("TOONFLOW_CONTROL_TOKEN", raising=False)
+    monkeypatch.delenv("TOONFLOW_CONTROL_TOKEN_FILE", raising=False)
     ctx = RecordingPluginContext()
     plugin.register(ctx)
 
@@ -205,9 +206,21 @@ def test_toonflow_turn_claim_rejects_opt_outs_and_questions(prompt):
 
 def test_check_reports_missing_control_token(monkeypatch):
     monkeypatch.delenv("TOONFLOW_CONTROL_TOKEN", raising=False)
+    monkeypatch.delenv("TOONFLOW_CONTROL_TOKEN_FILE", raising=False)
     ok, message = plugin.check_toonflow_configured()
     assert ok is False
     assert "TOONFLOW_CONTROL_TOKEN" in message
+
+
+def test_check_accepts_private_control_token_file(tmp_path, monkeypatch):
+    token_file = tmp_path / "control-token"
+    token_file.write_text("fixture\n", encoding="utf-8")
+    token_file.chmod(0o600)
+    monkeypatch.delenv("TOONFLOW_CONTROL_TOKEN", raising=False)
+    monkeypatch.setenv("TOONFLOW_CONTROL_TOKEN_FILE", str(token_file))
+    monkeypatch.setenv("TOONFLOW_CONTROL_URL", "http://127.0.0.1:10588")
+
+    assert plugin.check_toonflow_configured() == (True, "configured")
 
 
 def test_check_rejects_remote_url_without_network(monkeypatch):
