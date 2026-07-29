@@ -10,3 +10,6 @@ provides_tools:
   - toonflow_run_status
   - toonflow_cancel_run
   - toonflow_select_artifact
+hooks:
+  - pre_llm_call
+  - pre_tool_call

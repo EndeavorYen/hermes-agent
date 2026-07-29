@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 import plugins.toonflow_control as plugin
@@ -23,6 +24,7 @@ class RegisteredTool:
 class RecordingPluginContext:
     def __init__(self) -> None:
         self.tools: list[RegisteredTool] = []
+        self.hooks: dict[str, Any] = {}
 
     def register_tool(self, **kwargs: Any) -> None:
         self.tools.append(
@@ -34,6 +36,9 @@ class RecordingPluginContext:
                 check_fn=kwargs["check_fn"],
             )
         )
+
+    def register_hook(self, name: str, callback: Any) -> None:
+        self.hooks[name] = callback
 
 
 def test_register_exposes_only_control_tools():
@@ -67,6 +72,135 @@ def test_registered_handlers_serialize_for_hermes_registry(monkeypatch):
     result = ctx.tools[0].handler({}, client=Client())
     assert isinstance(result, str)
     assert json.loads(result)["success"] is True
+
+
+def test_explicit_toonflow_request_claims_turn_before_direct_visual_handoff(
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from agent.visual.agent_mode.handoff import build_direct_visual_agent_handoff
+
+    monkeypatch.setenv("TOONFLOW_CONTROL_TOKEN", "fixture")
+    monkeypatch.setenv("TOONFLOW_CONTROL_URL", "http://127.0.0.1:10588")
+    ctx = RecordingPluginContext()
+    plugin.register(ctx)
+    prompt = "請用 ToonFlow 製作一隻約 30 秒、有角色和劇情的短片"
+
+    hook_result = ctx.hooks["pre_llm_call"](
+        user_message=prompt,
+        session_id="session-configured",
+        turn_id="turn-configured",
+    )
+    handoff = build_direct_visual_agent_handoff(
+        SimpleNamespace(
+            valid_tool_names={"visual_agent_generate", "toonflow_run"},
+            provider="openai-codex",
+            model="gpt-5.6",
+        ),
+        prompt,
+        turn_control=hook_result["turn_control"],
+    )
+
+    assert hook_result["turn_control"]["mode"] == "external_workflow"
+    assert hook_result["turn_control"]["route"]["owner"] == "toonflow"
+    assert "toonflow_capabilities" in hook_result["context"]
+    assert handoff is None
+    assert (
+        ctx.hooks["pre_tool_call"](
+            tool_name="visual_agent_generate",
+            session_id="session-configured",
+            turn_id="turn-configured",
+        )["action"]
+        == "block"
+    )
+    assert (
+        ctx.hooks["pre_tool_call"](
+            tool_name="toonflow_capabilities",
+            session_id="session-configured",
+            turn_id="turn-configured",
+        )
+        is None
+    )
+
+
+def test_toonflow_turn_claim_ignores_generic_video_requests():
+    ctx = RecordingPluginContext()
+    plugin.register(ctx)
+
+    assert ctx.hooks["pre_llm_call"](user_message="請幫我做一支短片") is None
+
+
+def test_explicit_toonflow_request_fails_closed_when_control_is_unconfigured(
+    monkeypatch,
+):
+    monkeypatch.delenv("TOONFLOW_CONTROL_TOKEN", raising=False)
+    ctx = RecordingPluginContext()
+    plugin.register(ctx)
+
+    hook_result = ctx.hooks["pre_llm_call"](
+        user_message="請用 ToonFlow 製作一支短片",
+        session_id="session-unconfigured",
+        turn_id="turn-unconfigured",
+    )
+
+    assert hook_result["turn_control"]["route"]["configured"] is False
+    assert "TOONFLOW_WORKFLOW_ROUTE_SETUP_REQUIRED" in hook_result["context"]
+    assert "TOONFLOW_CONTROL_TOKEN" in hook_result["context"]
+    assert "Do not fall back" in hook_result["context"]
+    assert (
+        ctx.hooks["pre_tool_call"](
+            tool_name="visual_agent_generate",
+            session_id="session-unconfigured",
+            turn_id="turn-unconfigured",
+        )["action"]
+        == "block"
+    )
+    assert (
+        ctx.hooks["pre_tool_call"](
+            tool_name="toonflow_capabilities",
+            session_id="session-unconfigured",
+            turn_id="turn-unconfigured",
+        )["action"]
+        == "block"
+    )
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    (
+        "ToonFlow 幫我做一支短片",
+        "用 ToonFlow 製作短片",
+        "Can you make a video with ToonFlow?",
+        "ToonFlow, please create a short video",
+        "Don't use Grok; make it with ToonFlow",
+        "Without changing the prompt, use ToonFlow",
+    ),
+)
+def test_toonflow_turn_claim_accepts_natural_explicit_requests(prompt):
+    ctx = RecordingPluginContext()
+    plugin.register(ctx)
+
+    assert ctx.hooks["pre_llm_call"](user_message=prompt) is not None
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    (
+        "不要使用 ToonFlow，直接做短片",
+        "請勿使用 ToonFlow",
+        "Do not use ToonFlow",
+        "Do not make this video with ToonFlow",
+        "Please don't create it with ToonFlow",
+        "Never use ToonFlow",
+        "ToonFlow 可以做影片嗎？",
+    ),
+)
+def test_toonflow_turn_claim_rejects_opt_outs_and_questions(prompt):
+    ctx = RecordingPluginContext()
+    plugin.register(ctx)
+
+    assert ctx.hooks["pre_llm_call"](user_message=prompt) is None
 
 
 def test_check_reports_missing_control_token(monkeypatch):
