@@ -59,7 +59,26 @@ def test_latest_message_wins_over_inherited_active_task():
     # The "consistent -> use as background" carveout licensed stale-task
     # resumption on topic overlap (#41607, #38364) — it must stay gone.
     assert "you may use the summary as background" not in lower
-    assert "topic overlap" in lower
+    # Unrelated new topics still win; same-task overlap must CONTINUE live
+    # work (Hermes-Bot contract rule 8 / P9). The old "topic overlap does
+    # NOT mean you should resume" line is gone on purpose.
+    assert "topic overlap with the summary does not mean" not in lower
+    assert "continue that work" in lower
+
+
+def test_summary_prefix_does_not_close_in_progress_work():
+    """Compact handoff must not tell the model in-progress work is done.
+
+    Hermes-Bot contract rule 8 / P9: live work is stored separately and
+    remains continuable. Closing phrases from the pre-fix prefix must stay
+    gone; X-P9-01 asserts the same on the product side.
+    """
+    lower = SUMMARY_PREFIX.lower()
+    assert "already addressed" not in lower
+    assert "do not wrap up" not in lower
+    assert "unless the latest message explicitly asks" not in lower
+    assert "live" in lower
+    assert "continue" in lower
 
 
 def test_no_resume_exactly_directive_can_hijack():
