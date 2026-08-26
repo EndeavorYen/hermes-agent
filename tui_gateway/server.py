@@ -5270,6 +5270,75 @@ def _bot_channel_merge_enabled() -> bool:
     return is_truthy_value(os.environ.get("HERMES_BOT_CHANNEL_MERGE"))
 
 
+def _bot_channel_bind_survivor(db, stored: str, canonical: str, source: str | None = None) -> None:
+    """Retarget the survivor row onto the Bot Chat key and stamp Slack labels."""
+    if not db or not stored or not canonical:
+        return
+    retarget = getattr(db, "retarget_session_key", None)
+    if callable(retarget):
+        try:
+            retarget(stored, canonical)
+        except Exception:
+            logger.debug("bot-channel retarget failed", exc_info=True)
+    row = None
+    getter = getattr(db, "get_session", None)
+    if callable(getter):
+        try:
+            row = getter(stored)
+        except Exception:
+            row = None
+    slackish = str(source or "").lower() == "slack"
+    if row and str(row.get("source") or "").lower() == "slack":
+        slackish = True
+    if slackish:
+        backfill = getattr(db, "backfill_message_channel", None)
+        if callable(backfill):
+            try:
+                backfill(stored, "slack")
+            except Exception:
+                logger.debug("bot-channel slack backfill failed", exc_info=True)
+
+
+def _bot_channel_resume_target(db, target: str, profile: str | None) -> str:
+    """Map a Desktop pin / canonical key onto the Bot Chat survivor row."""
+    if not db or not target or not _bot_channel_merge_enabled():
+        return target
+    from gateway.session import (
+        bot_channel_session_key,
+        is_bot_channel_candidate_key,
+        is_bot_channel_session_key,
+        resolve_bot_channel_stored_session,
+    )
+
+    canonical = bot_channel_session_key(profile)
+    row = None
+    getter = getattr(db, "get_session", None)
+    if callable(getter):
+        try:
+            row = getter(target)
+        except Exception:
+            row = None
+    candidate = target == canonical or is_bot_channel_session_key(target)
+    if not candidate and row:
+        sk = str(row.get("session_key") or "")
+        src = str(row.get("source") or "").lower()
+        if is_bot_channel_candidate_key(sk, canonical) or src in {
+            "desktop",
+            "cli",
+            "local",
+            "slack",
+        }:
+            candidate = True
+    if not candidate:
+        return target
+    survivor = resolve_bot_channel_stored_session(db, canonical)
+    if not survivor or not survivor.get("id"):
+        return target
+    stored = str(survivor["id"])
+    _bot_channel_bind_survivor(db, stored, canonical, source=survivor.get("source"))
+    return stored
+
+
 def _bot_channel_create_state(
     *,
     source: str,
@@ -5303,6 +5372,9 @@ def _bot_channel_create_state(
     try:
         if existing:
             stored = str(existing.get("id") or canonical)
+            _bot_channel_bind_survivor(
+                db, stored, canonical, source=existing.get("source")
+            )
             if not history and db is not None:
                 try:
                     history = db.get_messages_as_conversation(
@@ -5551,9 +5623,7 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
             continue
         msg = {"role": role, "text": content_text}
         channel = m.get("channel")
-        if not channel and m.get("message_id") and (
-            str(m.get("source") or "").lower() == "slack"
-        ):
+        if not channel and str(m.get("source") or "").lower() == "slack":
             channel = "slack"
         if channel:
             msg["channel"] = channel
@@ -6244,6 +6314,11 @@ def _(rid, params: dict) -> dict:
         return _db_unavailable_error(rid, code=5000)
 
     found = db.get_session(target)
+    if _bot_channel_merge_enabled():
+        remapped = _bot_channel_resume_target(db, target, profile)
+        if remapped != target:
+            target = remapped
+            found = db.get_session(target) or found
     if not found:
         found = db.get_session_by_title(target)
         if found:

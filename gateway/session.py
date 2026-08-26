@@ -13,6 +13,7 @@ import hashlib
 import logging
 import os
 import json
+import re
 import threading
 import uuid
 from pathlib import Path
@@ -939,10 +940,41 @@ def _is_legacy_bot_channel_key(session_key: str, namespace: str) -> bool:
     )
 
 
+_TIMESTAMP_SESSION_ID = re.compile(r"^\d{8}_\d{6}_[0-9a-fA-F]+$")
+
+
+def is_timestamp_session_id(session_id: object) -> bool:
+    """Return True for first-knife / TUI ``YYYYMMDD_HHMMSS_<hex>`` stored ids."""
+    return bool(_TIMESTAMP_SESSION_ID.match(str(session_id or "")))
+
+
+def is_bot_channel_candidate_key(session_key: object, canonical_key: str) -> bool:
+    """Return True when *session_key* is the Bot Chat key or a pre-merge alias."""
+    key = str(session_key or "")
+    if not key or not canonical_key:
+        return False
+    if key == canonical_key or is_bot_channel_session_key(key):
+        return True
+    namespace = canonical_key.rsplit(":", 1)[0]
+    return _is_legacy_bot_channel_key(key, namespace)
+
+
 def resolve_bot_channel_stored_session(db: Any, session_key: str) -> Optional[Dict[str, Any]]:
-    """Return the durable row for a Bot Chat key, ignoring surface source."""
+    """Return the survivor Bot Chat row, including legacy Slack/Desktop keys.
+
+    Lookup of only ``agent:<ns>:bot`` orphans ``agent:<ns>:slack:dm:*`` and
+    timestamp Desktop pins. Prefer the most recently active transcript.
+    """
     if not db or not session_key:
         return None
+    survivor = getattr(db, "find_bot_channel_survivor", None)
+    if callable(survivor):
+        try:
+            row = survivor(session_key)
+        except Exception:
+            row = None
+        if row:
+            return dict(row)
     getter = getattr(db, "get_session", None)
     if callable(getter):
         try:
@@ -1527,32 +1559,99 @@ class SessionStore:
             profile=self._resolve_profile_for_key(source),
         )
 
+    @staticmethod
+    def _bot_channel_survivor_sort_key(
+        entry: "SessionEntry",
+        db_row: Optional[Dict[str, Any]] = None,
+    ) -> tuple:
+        """Rank Bot Chat candidates: real transcripts beat empty canonical rows."""
+        has_msg = bool(entry.last_prompt_tokens)
+        last_active = (
+            entry.updated_at.timestamp()
+            if hasattr(entry.updated_at, "timestamp")
+            else 0.0
+        )
+        if db_row:
+            has_msg = has_msg or bool(db_row.get("_has_msg")) or int(
+                db_row.get("message_count") or 0
+            ) > 0
+            try:
+                last_active = max(last_active, float(db_row.get("last_active") or 0))
+            except (TypeError, ValueError):
+                pass
+        is_empty_canonical = (
+            is_bot_channel_session_key(entry.session_key)
+            and entry.session_id == entry.session_key
+            and not has_msg
+        )
+        return (0 if is_empty_canonical else 1, 1 if has_msg else 0, last_active)
+
     def _bind_legacy_bot_channel_keys(self, canonical_key: str, source: SessionSource) -> None:
-        """Alias pre-merge Slack/Desktop/CLI keys onto the Bot Chat key.
+        """Alias pre-merge Slack/Desktop/CLI keys onto the most recent survivor.
 
         Existing rows keep their ``session_id`` so transcripts are not
-        orphaned. Routing keys become aliases of one store entry.
+        orphaned. An empty canonical ``agent:<ns>:bot`` row must not win
+        over a Slack ``slack:dm`` transcript. The survivor's
+        ``sessions.session_key`` is retargeted in SQLite.
         """
         if not is_bot_channel_session_key(canonical_key):
             return
         namespace = canonical_key.rsplit(":", 1)[0]
+        db = getattr(self, "_db", None)
+        db_row = None
+        if db:
+            finder = getattr(db, "find_bot_channel_survivor", None)
+            if callable(finder):
+                try:
+                    db_row = finder(canonical_key)
+                except Exception:
+                    logger.debug(
+                        "bot-channel survivor lookup failed for %s",
+                        canonical_key,
+                        exc_info=True,
+                    )
+
+        winner = None
+        candidates: List[str] = []
         with self._lock:
             self._ensure_loaded_locked()
             legacy_exact = self._legacy_bot_channel_session_key(source)
-            candidates: List[str] = []
             seen = set()
-            for key in (legacy_exact, *list(self._entries.keys())):
+            for key in (legacy_exact, canonical_key, *list(self._entries.keys())):
                 if key in seen:
                     continue
                 seen.add(key)
                 if key == canonical_key or _is_legacy_bot_channel_key(key, namespace):
                     if key in self._entries:
                         candidates.append(key)
-            winner = self._entries.get(canonical_key)
-            if winner is None and candidates:
+
+            pool: List[SessionEntry] = []
+            if db_row and db_row.get("id"):
+                sid = str(db_row["id"])
+                existing_for_sid = next(
+                    (entry for entry in self._entries.values() if entry.session_id == sid),
+                    None,
+                )
+                if existing_for_sid is None:
+                    existing_for_sid = self._create_entry_from_recovered_row(
+                        row=db_row,
+                        session_key=canonical_key,
+                        source=source,
+                        now=_now(),
+                    )
+                pool.append(existing_for_sid)
+            pool.extend(self._entries[key] for key in candidates)
+
+            by_id: Dict[str, SessionEntry] = {}
+            for entry in pool:
+                by_id[entry.session_id] = entry
+            if by_id:
                 winner = max(
-                    (self._entries[key] for key in candidates),
-                    key=lambda entry: entry.updated_at,
+                    by_id.values(),
+                    key=lambda entry: self._bot_channel_survivor_sort_key(
+                        entry,
+                        db_row if db_row and str(db_row.get("id")) == entry.session_id else None,
+                    ),
                 )
             if winner is None:
                 return
@@ -1560,26 +1659,44 @@ class SessionStore:
             self._entries[canonical_key] = winner
             for key in candidates:
                 self._entries[key] = winner
+            if db_row:
+                old_key = str(db_row.get("session_key") or "")
+                if old_key:
+                    self._entries[old_key] = winner
             self._save()
-        db = getattr(self, "_db", None)
-        if db and winner.session_id:
-            recorder = getattr(db, "record_gateway_session_peer", None)
-            if callable(recorder):
+
+        if not (db and winner.session_id):
+            return
+        retarget = getattr(db, "retarget_session_key", None)
+        if callable(retarget):
+            try:
+                retarget(winner.session_id, canonical_key)
+            except Exception:
+                logger.debug(
+                    "Failed to retarget session_key %s onto %s",
+                    canonical_key,
+                    winner.session_id,
+                    exc_info=True,
+                )
+        slackish = False
+        origin = winner.origin or source
+        plat = getattr(getattr(origin, "platform", None), "value", None)
+        if plat is None:
+            plat = getattr(origin, "platform", None)
+        if str(plat or "").lower() == "slack":
+            slackish = True
+        if db_row and str(db_row.get("source") or "").lower() == "slack":
+            slackish = True
+        if any("slack:dm" in key for key in candidates):
+            slackish = True
+        if slackish:
+            backfill = getattr(db, "backfill_message_channel", None)
+            if callable(backfill):
                 try:
-                    origin = winner.origin or source
-                    recorder(
-                        winner.session_id,
-                        source=origin.platform.value,
-                        user_id=origin.user_id,
-                        session_key=canonical_key,
-                        chat_id=origin.chat_id,
-                        chat_type=origin.chat_type,
-                        thread_id=origin.thread_id,
-                    )
+                    backfill(winner.session_id, "slack")
                 except Exception:
                     logger.debug(
-                        "Failed to retarget session_key %s onto %s",
-                        canonical_key,
+                        "Failed to backfill slack channel on %s",
                         winner.session_id,
                         exc_info=True,
                     )
@@ -2749,6 +2866,25 @@ class SessionStore:
 
     def _append_transcript_message(self, session_id: str, message: Dict[str, Any]) -> None:
         """Write one transcript row. Caller handles retry queuing."""
+        channel = message.get("channel")
+        if not channel:
+            src = str(message.get("source") or message.get("platform") or "").lower()
+            if src == "slack":
+                channel = "slack"
+            elif getattr(self, "_lock", None) is not None:
+                try:
+                    entry = self.lookup_by_session_id(session_id)
+                except Exception:
+                    entry = None
+                plat = None
+                if entry is not None:
+                    origin = entry.origin
+                    plat = getattr(getattr(origin, "platform", None), "value", None)
+                    if plat is None:
+                        plat = getattr(entry, "platform", None)
+                        plat = getattr(plat, "value", plat)
+                if str(plat or "").lower() == "slack":
+                    channel = "slack"
         self._db.append_message(
             session_id=session_id,
             role=message.get("role", "unknown"),
@@ -2769,6 +2905,7 @@ class SessionStore:
             # any gateway-side persistence path or the next turn's
             # replay diverges at this row.
             api_content=extract_api_content_sidecar(message),
+            channel=channel,
         )
 
     # Maximum in-memory pending messages per session before dropping the

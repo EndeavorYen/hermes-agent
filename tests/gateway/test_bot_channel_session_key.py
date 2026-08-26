@@ -1,4 +1,4 @@
-"""P7 / contract rule 6: Slack, Desktop, and CLI share one Bot Chat key."""
+"""P7 / contract rule 6: Slack, Desktop, and CLI share one Bot Chat row."""
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
@@ -12,6 +12,12 @@ from gateway.session import (
     is_bot_channel_session_key,
     legacy_bot_channel_session_key,
 )
+from hermes_state import SessionDB
+
+
+SLACK_UNIQUE = "slack-unique-p7-02"
+DESKTOP_UNIQUE = "desktop-unique-p7-03"
+UNFINISHED = "進行中：寫季報，先從目錄開始"
 
 
 def _src(**kw) -> SessionSource:
@@ -19,13 +25,58 @@ def _src(**kw) -> SessionSource:
     return SessionSource(**kw)
 
 
-def _store(tmp_path, **cfg_kw) -> SessionStore:
+def _store(tmp_path, db=None, **cfg_kw) -> SessionStore:
     config = GatewayConfig(**cfg_kw)
     with patch("gateway.session.SessionStore._ensure_loaded"):
         store = SessionStore(sessions_dir=tmp_path, config=config)
-    store._db = None
+    store._db = db
     store._loaded = True
     return store
+
+
+def _session_db(tmp_path) -> SessionDB:
+    return SessionDB(db_path=tmp_path / "state.db")
+
+
+def _seed_slack_row(
+    db: SessionDB,
+    *,
+    session_id: str = "20260101_010101_deadbeef",
+    session_key: str = "agent:main:slack:dm:D999",
+    unique: str = SLACK_UNIQUE,
+    extra_user: str | None = None,
+) -> str:
+    db.create_session(
+        session_id=session_id,
+        source="slack",
+        user_id="U1",
+        session_key=session_key,
+        chat_id="D999",
+        chat_type="dm",
+    )
+    db.append_message(
+        session_id,
+        role="user",
+        content=unique,
+        platform_message_id="1717.1",
+        channel="slack",
+        timestamp=1_700_000_000,
+    )
+    db.append_message(
+        session_id,
+        role="assistant",
+        content="收到。",
+        timestamp=1_700_000_010,
+    )
+    if extra_user:
+        db.append_message(
+            session_id,
+            role="user",
+            content=extra_user,
+            channel="slack",
+            timestamp=1_700_000_100,
+        )
+    return session_id
 
 
 class TestBotChannelSessionKey:
@@ -74,46 +125,70 @@ class TestBotChannelSessionKey:
 
 
 class TestBotChannelStoreMerge:
-    """G-P7-02 / G-P7-03 / G-P7-04: one stored transcript, live work on that row."""
+    """G-P7-02 / G-P7-03 / G-P7-04: one SessionDB session_id, not dict aliases."""
 
-    def test_g_p7_02_slack_string_lands_on_same_store_as_desktop(self, tmp_path):
-        store = _store(tmp_path)
-        transcripts: dict[str, list[str]] = {}
+    def test_g_p7_02_slack_string_lands_on_same_sessiondb_row_as_desktop(self, tmp_path):
+        db = _session_db(tmp_path)
+        slack_id = _seed_slack_row(db)
+        store = _store(tmp_path, db=db)
         slack = _src(platform=Platform.SLACK, chat_id="D999", user_id="U1")
         desktop = _src(platform=Platform.DESKTOP, chat_id="desktop")
         slack_entry = store.get_or_create_session(slack)
-        unique = "slack-unique-p7-02"
-        transcripts.setdefault(slack_entry.session_id, []).append(unique)
         desktop_entry = store.get_or_create_session(desktop)
+        assert slack_entry.session_id == slack_id
+        assert desktop_entry.session_id == slack_id
         assert slack_entry.session_id == desktop_entry.session_id
         assert slack_entry.session_key == desktop_entry.session_key == "agent:main:bot"
-        assert unique in transcripts[desktop_entry.session_id]
-        assert len(store._entries) >= 1
-        ids = {entry.session_id for entry in store._entries.values()}
-        assert ids == {slack_entry.session_id}
+        assert db.get_session(slack_id)["session_key"] == "agent:main:bot"
+        history = db.get_messages_as_conversation(desktop_entry.session_id)
+        assert any(SLACK_UNIQUE in str(m.get("content")) for m in history)
+        assert any(m.get("channel") == "slack" for m in history)
+        assert desktop_entry.session_id == slack_id
 
-    def test_g_p7_03_desktop_string_visible_from_slack_channel(self, tmp_path):
-        store = _store(tmp_path)
-        transcripts: dict[str, list[str]] = {}
+    def test_g_p7_03_desktop_string_visible_from_slack_on_same_row(self, tmp_path):
+        db = _session_db(tmp_path)
+        slack_id = _seed_slack_row(db)
+        store = _store(tmp_path, db=db)
         desktop = _src(platform=Platform.DESKTOP, chat_id="desktop")
         slack = _src(platform=Platform.SLACK, chat_id="D999", user_id="U1")
         desktop_entry = store.get_or_create_session(desktop)
-        unique = "desktop-unique-p7-03"
-        transcripts.setdefault(desktop_entry.session_id, []).append(unique)
+        assert desktop_entry.session_id == slack_id
+        db.append_message(
+            desktop_entry.session_id,
+            role="user",
+            content=DESKTOP_UNIQUE,
+            timestamp=1_700_000_200,
+        )
         slack_entry = store.get_or_create_session(slack)
-        assert slack_entry.session_id == desktop_entry.session_id
-        assert unique in transcripts[slack_entry.session_id]
+        assert slack_entry.session_id == desktop_entry.session_id == slack_id
+        slack_history = db.get_messages_as_conversation(slack_entry.session_id)
+        desktop_history = db.get_messages_as_conversation(desktop_entry.session_id)
+        assert slack_history is not desktop_history
+        texts = [str(m.get("content")) for m in slack_history]
+        assert DESKTOP_UNIQUE in texts
+        assert SLACK_UNIQUE in texts
+        assert [str(m.get("content")) for m in desktop_history] == texts
 
-    def test_g_p7_04_unfinished_work_continues_from_other_surface(self, tmp_path):
-        store = _store(tmp_path)
+    def test_g_p7_04_unfinished_work_continues_on_the_same_sessiondb_row(self, tmp_path):
+        db = _session_db(tmp_path)
+        slack_id = _seed_slack_row(db, extra_user=UNFINISHED)
+        store = _store(tmp_path, db=db)
         slack = _src(platform=Platform.SLACK, chat_id="D999")
         desktop = _src(platform=Platform.DESKTOP, chat_id="desktop")
-        live_work: dict[str, str] = {}
         slack_entry = store.get_or_create_session(slack)
-        live_work[slack_entry.session_id] = "進行中：寫季報"
+        db.append_message(
+            slack_entry.session_id,
+            role="assistant",
+            content="",
+            tool_calls=[{"id": "call_1", "function": {"name": "terminal", "arguments": "{}"}}],
+            timestamp=1_700_000_150,
+        )
         desktop_entry = store.get_or_create_session(desktop)
-        assert desktop_entry.session_id == slack_entry.session_id
-        assert live_work[desktop_entry.session_id] == "進行中：寫季報"
+        assert desktop_entry.session_id == slack_entry.session_id == slack_id
+        history = db.get_messages_as_conversation(desktop_entry.session_id)
+        contents = [str(m.get("content")) for m in history]
+        assert UNFINISHED in contents
+        assert any(m.get("tool_calls") for m in history)
 
     def test_legacy_slack_key_is_aliased_not_orphaned(self, tmp_path):
         store = _store(tmp_path)
@@ -135,3 +210,59 @@ class TestBotChannelStoreMerge:
         assert entry.session_key == "agent:main:bot"
         assert store._entries[legacy_key].session_id == old_id
         assert store._entries["agent:main:bot"].session_id == old_id
+
+    def test_empty_canonical_does_not_win_over_slack_transcript(self, tmp_path):
+        db = _session_db(tmp_path)
+        slack_id = _seed_slack_row(db)
+        db.create_session(
+            session_id="agent:main:bot",
+            source="desktop",
+            session_key="agent:main:bot",
+        )
+        store = _store(tmp_path, db=db)
+        now = datetime.now()
+        store._entries["agent:main:bot"] = SessionEntry(
+            session_key="agent:main:bot",
+            session_id="agent:main:bot",
+            created_at=now,
+            updated_at=now,
+            origin=_src(platform=Platform.DESKTOP, chat_id="desktop"),
+            platform=Platform.DESKTOP,
+            chat_type="dm",
+        )
+        slack = _src(platform=Platform.SLACK, chat_id="D999", user_id="U1")
+        with patch.object(store, "_save"):
+            entry = store.get_or_create_session(slack)
+        assert entry.session_id == slack_id
+        assert entry.session_id != "agent:main:bot"
+        assert db.get_session(slack_id)["session_key"] == "agent:main:bot"
+        history = db.get_messages_as_conversation(entry.session_id)
+        assert any(SLACK_UNIQUE in str(m.get("content")) for m in history)
+
+    def test_desktop_timestamp_pin_binds_onto_slack_survivor(self, tmp_path):
+        db = _session_db(tmp_path)
+        slack_id = _seed_slack_row(db)
+        pin = "20260826_120000_abc123"
+        db.create_session(
+            session_id=pin,
+            source="desktop",
+            session_key=pin,
+        )
+        db.append_message(pin, role="user", content="draft-from-desktop", timestamp=1_600_000_000)
+        store = _store(tmp_path, db=db)
+        desktop = _src(platform=Platform.DESKTOP, chat_id="desktop")
+        with patch.object(store, "_save"):
+            entry = store.get_or_create_session(desktop)
+        assert entry.session_id == slack_id
+        assert db.get_session(slack_id)["session_key"] == "agent:main:bot"
+        assert SLACK_UNIQUE in [
+            str(m.get("content")) for m in db.get_messages_as_conversation(entry.session_id)
+        ]
+
+    def test_channel_survives_get_messages_as_conversation(self, tmp_path):
+        db = _session_db(tmp_path)
+        sid = _seed_slack_row(db)
+        history = db.get_messages_as_conversation(sid)
+        assert history[0]["channel"] == "slack"
+        assert history[0]["message_id"] == "1717.1"
+        assert "source" not in history[0]

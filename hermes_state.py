@@ -830,7 +830,8 @@ CREATE TABLE IF NOT EXISTS messages (
     observed INTEGER DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1,
     compacted INTEGER NOT NULL DEFAULT 0,
-    api_content TEXT
+    api_content TEXT,
+    channel TEXT
 );
 
 CREATE TABLE IF NOT EXISTS session_model_usage (
@@ -2059,6 +2060,110 @@ class SessionDB:
             )
 
         self._execute_write(_do)
+
+    def retarget_session_key(self, session_id: str, session_key: str) -> None:
+        """Point a durable session row at a new routing key without changing id.
+
+        Bot Chat merge keeps the survivor ``sessions.id`` (and its transcript)
+        and only rewrites ``session_key`` so Slack / Desktop / CLI share one
+        row. Source and origin stay as-is — channel labels live on messages.
+        """
+        if not session_id or not session_key:
+            return
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET session_key = ? WHERE id = ?",
+                (session_key, session_id),
+            )
+
+        self._execute_write(_do)
+
+    def backfill_message_channel(self, session_id: str, channel: str) -> None:
+        """Stamp a durable channel marker on existing user rows missing one."""
+        if not session_id or not channel:
+            return
+
+        def _do(conn):
+            conn.execute(
+                """UPDATE messages
+                   SET channel = ?
+                   WHERE session_id = ?
+                     AND role = 'user'
+                     AND (channel IS NULL OR channel = '')""",
+                (channel, session_id),
+            )
+
+        self._execute_write(_do)
+
+    def find_bot_channel_survivor(self, session_key: str) -> Optional[Dict[str, Any]]:
+        """Most recently active Bot Chat row, including pre-merge Slack/Desktop keys.
+
+        Desktop ``session.create`` / ``session.resume`` with
+        ``HERMES_BOT_CHANNEL_MERGE`` must reuse this row. Lookup of only
+        ``agent:<ns>:bot`` orphans ``agent:<ns>:slack:dm:*`` transcripts and
+        first-knife timestamp Desktop pins.
+        """
+        if not session_key:
+            return None
+        parts = str(session_key).split(":")
+        if len(parts) != 3 or parts[0] != "agent" or parts[2] != "bot":
+            return None
+        namespace = f"{parts[0]}:{parts[1]}"
+        slack_prefix = f"{namespace}:slack:dm%"
+        desktop_prefix = f"{namespace}:desktop%"
+        cli_prefix = f"{namespace}:cli%"
+        local_prefix = f"{namespace}:local:dm%"
+        timestamp_glob = (
+            "[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_"
+            "[0-9][0-9][0-9][0-9][0-9][0-9]_*"
+        )
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT sessions.*,
+                       COALESCE(
+                           (SELECT MAX(m.timestamp) FROM messages m
+                            WHERE m.session_id = sessions.id),
+                           sessions.started_at
+                       ) AS last_active,
+                       COALESCE(sessions.message_count, 0) AS _msg_count,
+                       EXISTS(
+                           SELECT 1 FROM messages
+                           WHERE messages.session_id = sessions.id
+                           LIMIT 1
+                       ) AS _has_msg
+                FROM sessions
+                WHERE (ended_at IS NULL
+                       OR end_reason IN ('agent_close', 'ws_orphan_reap'))
+                  AND (
+                        session_key = ?
+                     OR id = ?
+                     OR session_key LIKE ?
+                     OR session_key LIKE ?
+                     OR session_key LIKE ?
+                     OR session_key LIKE ?
+                     OR (
+                            LOWER(COALESCE(source, '')) IN ('desktop', 'cli', 'local')
+                        AND id GLOB ?
+                     )
+                  )
+                ORDER BY (_has_msg OR _msg_count > 0) DESC,
+                         last_active DESC,
+                         started_at DESC
+                LIMIT 1
+                """,
+                (
+                    session_key,
+                    session_key,
+                    slack_prefix,
+                    desktop_prefix,
+                    cli_prefix,
+                    local_prefix,
+                    timestamp_glob,
+                ),
+            ).fetchone()
+        return dict(row) if row else None
 
     def set_expiry_finalized(self, session_id: str, finalized: bool = True) -> None:
         """Mark a gateway session's expiry-finalization flag in state.db.
@@ -4239,6 +4344,7 @@ class SessionDB:
         effect_disposition: Optional[str] = None,
         timestamp: Any = None,
         api_content: Optional[str] = None,
+        channel: Optional[str] = None,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -4298,8 +4404,8 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed, active, api_content)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id, observed, active, api_content, channel)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -4320,6 +4426,7 @@ class SessionDB:
                     1 if observed else 0,
                     1,
                     _scrub_surrogates(api_content) if isinstance(api_content, str) else None,
+                    (str(channel).strip() or None) if channel else None,
                 ),
             )
             msg_id = cursor.lastrowid
@@ -4389,13 +4496,14 @@ class SessionDB:
             )
 
             api_content = msg.get("api_content")
+            channel = msg.get("channel")
 
             conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed, active, api_content)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id, observed, active, api_content, channel)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -4416,6 +4524,7 @@ class SessionDB:
                     1 if msg.get("observed") else 0,
                     1,
                     _scrub_surrogates(api_content) if isinstance(api_content, str) else None,
+                    (str(channel).strip() or None) if channel else None,
                 ),
             )
             inserted += 1
@@ -4945,7 +5054,7 @@ class SessionDB:
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
                 "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp, "
-                "api_content "
+                "api_content, channel "
                 f"FROM messages WHERE session_id IN ({placeholders})"
                 # Order by AUTOINCREMENT id (true insertion order), NOT timestamp:
                 # append_message stamps rows with time.time(), which is not
@@ -4973,7 +5082,7 @@ class SessionDB:
         "role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
         "finish_reason, reasoning, reasoning_content, reasoning_details, "
         "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp, "
-        "api_content"
+        "api_content, channel"
     )
 
     def _rows_to_conversation(
@@ -5026,6 +5135,13 @@ class SessionDB:
             # for backward compatibility with the JSONL transcript shape.
             if row["platform_message_id"]:
                 msg["message_id"] = row["platform_message_id"]
+            channel = None
+            try:
+                channel = row["channel"]
+            except (KeyError, IndexError):
+                channel = None
+            if channel:
+                msg["channel"] = channel
             if row["observed"]:
                 msg["observed"] = True
             # Restore reasoning fields on assistant messages so providers
@@ -6230,6 +6346,7 @@ class SessionDB:
             "reasoning_content",
             "platform_message_id",
             "message_id",
+            "channel",
         )
 
         for index, raw in enumerate(sessions):
