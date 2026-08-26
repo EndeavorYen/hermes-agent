@@ -2025,6 +2025,7 @@ def _ensure_session_db_row(session: dict) -> None:
             model_config=model_config or None,
             parent_session_id=parent_session_id,
             cwd=_session_cwd(session) if session.get("explicit_cwd") else None,
+            session_key=key,
         )
     except Exception:
         logger.debug("failed to persist desktop session row", exc_info=True)
@@ -5265,6 +5266,60 @@ def _new_session_key() -> str:
     return f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
 
 
+def _bot_channel_merge_enabled() -> bool:
+    return is_truthy_value(os.environ.get("HERMES_BOT_CHANNEL_MERGE"))
+
+
+def _bot_channel_create_state(
+    *,
+    source: str,
+    profile: str | None,
+    profile_home: Path | str | None,
+    seeded_history: list[dict],
+) -> tuple[str, list[dict]]:
+    """Reuse the Bot Chat stored row for Desktop/CLI when merge is on."""
+    key = _new_session_key()
+    history = seeded_history
+    if not _bot_channel_merge_enabled():
+        return key, history
+    if source not in {"desktop", "cli", "local", "tui"}:
+        return key, history
+    from gateway.session import bot_channel_session_key, resolve_bot_channel_stored_session
+
+    canonical = bot_channel_session_key(profile)
+    db = None
+    close_db = False
+    if profile_home:
+        from hermes_state import SessionDB
+
+        try:
+            db = SessionDB(db_path=Path(profile_home) / "state.db")
+            close_db = True
+        except Exception:
+            db = None
+    if db is None:
+        db = _get_db()
+    existing = resolve_bot_channel_stored_session(db, canonical)
+    try:
+        if existing:
+            stored = str(existing.get("id") or canonical)
+            if not history and db is not None:
+                try:
+                    history = db.get_messages_as_conversation(
+                        stored, repair_alternation=True
+                    )
+                except Exception:
+                    logger.debug("bot-channel history load failed", exc_info=True)
+            return stored, history
+    finally:
+        if close_db and db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
+    return canonical, history
+
+
 def _with_checkpoints(session, fn):
     return fn(session["agent"]._checkpoint_mgr, _session_cwd(session))
 
@@ -5495,6 +5550,13 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         if not content_text.strip() and not has_reasoning:
             continue
         msg = {"role": role, "text": content_text}
+        channel = m.get("channel")
+        if not channel and m.get("message_id") and (
+            str(m.get("source") or "").lower() == "slack"
+        ):
+            channel = "slack"
+        if channel:
+            msg["channel"] = channel
         if role == "assistant":
             for key in reasoning_keys:
                 if key in m and m.get(key) is not None:
@@ -5765,7 +5827,6 @@ def _queued_prompt_snapshot(session: dict) -> dict | None:
 @method("session.create")
 def _(rid, params: dict) -> dict:
     sid = uuid.uuid4().hex[:8]
-    key = _new_session_key()
     cols = int(params.get("cols", 80))
     history = _coerce_seed_history(params.get("messages"))
     title = str(params.get("title") or "").strip()
@@ -5792,6 +5853,12 @@ def _(rid, params: dict) -> dict:
     # and each turn re-bind HERMES_HOME. None/own profile → launch (unchanged).
     profile = (params.get("profile") or "").strip() or None
     profile_home = _profile_home(profile)
+    key, history = _bot_channel_create_state(
+        source=source,
+        profile=profile,
+        profile_home=profile_home,
+        seeded_history=history,
+    )
 
     # The desktop composer owns its model/effort/fast as plain UI state and ships
     # it on every session.create. Honor each as a PER-SESSION override (built into

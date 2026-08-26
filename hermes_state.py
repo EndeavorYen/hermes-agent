@@ -2314,7 +2314,27 @@ class SessionDB:
         """
         if not session_key:
             return None
+        parts = str(session_key).split(":")
+        bot_channel_key = (
+            len(parts) == 3 and parts[0] == "agent" and parts[2] == "bot"
+        )
         with self._lock:
+            if bot_channel_key:
+                row = self._conn.execute(
+                    """
+                    SELECT * FROM sessions
+                    WHERE (session_key = ? OR id = ?)
+                      AND (ended_at IS NULL OR end_reason IN ('agent_close', 'ws_orphan_reap'))
+                      AND (COALESCE(message_count, 0) > 0 OR EXISTS (
+                          SELECT 1 FROM messages WHERE messages.session_id = sessions.id LIMIT 1
+                      ))
+                    ORDER BY started_at DESC
+                    LIMIT 1
+                    """,
+                    (session_key, session_key),
+                ).fetchone()
+                if row is not None:
+                    return dict(row)
             row = self._conn.execute(
                 """
                 SELECT * FROM sessions
@@ -2353,6 +2373,29 @@ class SessionDB:
                 LIMIT 1
                 """,
                 (source, user_id, chat_id, chat_type, thread_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def find_latest_session_for_session_key(
+        self, session_key: str
+    ) -> Optional[Dict[str, Any]]:
+        """Newest recoverable row for *session_key*, regardless of source.
+
+        Bot Chat (Slack / Desktop / CLI) shares one routing key; the
+        surface lives in ``source`` and must not split the lookup.
+        """
+        if not session_key:
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT * FROM sessions
+                WHERE (session_key = ? OR id = ?)
+                  AND (ended_at IS NULL OR end_reason IN ('agent_close', 'ws_orphan_reap'))
+                ORDER BY started_at DESC
+                LIMIT 1
+                """,
+                (session_key, session_key),
             ).fetchone()
         return dict(row) if row else None
 

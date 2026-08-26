@@ -881,6 +881,12 @@ def is_shared_multi_user_session(
     return not group_sessions_per_user
 
 
+# Slack / Desktop / CLI DMs are channels of one Bot Chat. Groups stay
+# platform-scoped. Values match ``Platform.value`` plus tui ``source``.
+BOT_CHANNEL_PLATFORMS = frozenset({"slack", "desktop", "cli", "local"})
+BOT_CHANNEL_KIND = "bot"
+
+
 def _session_key_namespace(profile: Optional[str]) -> str:
     """Return the ``agent:<ns>`` namespace prefix for a session key.
 
@@ -901,6 +907,61 @@ def _session_key_namespace(profile: Optional[str]) -> str:
     return f"agent:{profile}"
 
 
+def bot_channel_session_key(profile: Optional[str] = None) -> str:
+    """Return the Bot Chat routing key: ``agent:<ns>:bot`` (no platform)."""
+    return f"{_session_key_namespace(profile)}:{BOT_CHANNEL_KIND}"
+
+
+def is_bot_channel_session_key(session_key: object) -> bool:
+    """Return True for ``agent:<ns>:bot`` keys (no platform segment)."""
+    parts = str(session_key or "").split(":")
+    return len(parts) == 3 and parts[0] == "agent" and parts[2] == BOT_CHANNEL_KIND
+
+
+def is_bot_channel_source(source: SessionSource) -> bool:
+    """Return True when this origin is a Bot Chat channel (not a group)."""
+    platform = getattr(source.platform, "value", source.platform)
+    return source.chat_type == "dm" and str(platform or "").lower() in BOT_CHANNEL_PLATFORMS
+
+
+def _is_legacy_bot_channel_key(session_key: str, namespace: str) -> bool:
+    """Return True for pre-merge Slack/Desktop/CLI DM keys in *namespace*."""
+    prefix = f"{namespace}:"
+    if not session_key.startswith(prefix):
+        return False
+    rest = session_key[len(prefix):]
+    return (
+        rest.startswith("slack:dm:")
+        or rest.startswith("desktop:")
+        or rest.startswith("cli:")
+        or rest.startswith("local:dm:")
+        or rest in {"slack:dm", "desktop", "cli", "local:dm"}
+    )
+
+
+def resolve_bot_channel_stored_session(db: Any, session_key: str) -> Optional[Dict[str, Any]]:
+    """Return the durable row for a Bot Chat key, ignoring surface source."""
+    if not db or not session_key:
+        return None
+    getter = getattr(db, "get_session", None)
+    if callable(getter):
+        try:
+            row = getter(session_key)
+        except Exception:
+            row = None
+        if row:
+            return dict(row)
+    finder = getattr(db, "find_latest_session_for_session_key", None)
+    if callable(finder):
+        try:
+            row = finder(session_key)
+        except Exception:
+            row = None
+        if row:
+            return dict(row)
+    return None
+
+
 def build_session_key(
     source: SessionSource,
     group_sessions_per_user: bool = True,
@@ -916,7 +977,11 @@ def build_session_key(
     that don't multiplex produce byte-identical keys to before. Only the
     multiplexing gateway passes a non-default profile.
 
-    DM rules:
+    Bot Chat channels (Slack DM, Desktop, CLI, local) share one key
+    ``agent:<ns>:bot``. Platform is a delivery surface, not a personality
+    split. Groups and other messengers keep the historical platform layout.
+
+    DM rules (non-Bot-Chat messengers):
       - DMs include chat_id when present, so each private conversation is isolated.
       - thread_id further differentiates threaded DMs within the same DM chat.
       - Without chat_id, thread_id is used as a best-effort fallback.
@@ -935,6 +1000,38 @@ def build_session_key(
         shared session per chat.
       - Without identifiers, messages fall back to one session per platform/chat_type.
     """
+    if is_bot_channel_source(source):
+        return bot_channel_session_key(profile)
+    return _build_platform_session_key(
+        source,
+        group_sessions_per_user=group_sessions_per_user,
+        thread_sessions_per_user=thread_sessions_per_user,
+        profile=profile,
+    )
+
+
+def legacy_bot_channel_session_key(
+    source: SessionSource,
+    group_sessions_per_user: bool = True,
+    thread_sessions_per_user: bool = False,
+    profile: Optional[str] = None,
+) -> str:
+    """Pre-merge platform-segmented key for Bot Chat DMs (migration alias)."""
+    return _build_platform_session_key(
+        source,
+        group_sessions_per_user=group_sessions_per_user,
+        thread_sessions_per_user=thread_sessions_per_user,
+        profile=profile,
+    )
+
+
+def _build_platform_session_key(
+    source: SessionSource,
+    group_sessions_per_user: bool = True,
+    thread_sessions_per_user: bool = False,
+    profile: Optional[str] = None,
+) -> str:
+    """Historical ``agent:<ns>:<platform>:<chat_type>:...`` key constructor."""
     ns = _session_key_namespace(profile)
     platform = source.platform.value
     if source.chat_type == "dm":
@@ -1422,6 +1519,71 @@ class SessionStore:
             profile=self._resolve_profile_for_key(source),
         )
 
+    def _legacy_bot_channel_session_key(self, source: SessionSource) -> str:
+        return legacy_bot_channel_session_key(
+            source,
+            group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
+            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+            profile=self._resolve_profile_for_key(source),
+        )
+
+    def _bind_legacy_bot_channel_keys(self, canonical_key: str, source: SessionSource) -> None:
+        """Alias pre-merge Slack/Desktop/CLI keys onto the Bot Chat key.
+
+        Existing rows keep their ``session_id`` so transcripts are not
+        orphaned. Routing keys become aliases of one store entry.
+        """
+        if not is_bot_channel_session_key(canonical_key):
+            return
+        namespace = canonical_key.rsplit(":", 1)[0]
+        with self._lock:
+            self._ensure_loaded_locked()
+            legacy_exact = self._legacy_bot_channel_session_key(source)
+            candidates: List[str] = []
+            seen = set()
+            for key in (legacy_exact, *list(self._entries.keys())):
+                if key in seen:
+                    continue
+                seen.add(key)
+                if key == canonical_key or _is_legacy_bot_channel_key(key, namespace):
+                    if key in self._entries:
+                        candidates.append(key)
+            winner = self._entries.get(canonical_key)
+            if winner is None and candidates:
+                winner = max(
+                    (self._entries[key] for key in candidates),
+                    key=lambda entry: entry.updated_at,
+                )
+            if winner is None:
+                return
+            winner.session_key = canonical_key
+            self._entries[canonical_key] = winner
+            for key in candidates:
+                self._entries[key] = winner
+            self._save()
+        db = getattr(self, "_db", None)
+        if db and winner.session_id:
+            recorder = getattr(db, "record_gateway_session_peer", None)
+            if callable(recorder):
+                try:
+                    origin = winner.origin or source
+                    recorder(
+                        winner.session_id,
+                        source=origin.platform.value,
+                        user_id=origin.user_id,
+                        session_key=canonical_key,
+                        chat_id=origin.chat_id,
+                        chat_type=origin.chat_type,
+                        thread_id=origin.thread_id,
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed to retarget session_key %s onto %s",
+                        canonical_key,
+                        winner.session_id,
+                        exc_info=True,
+                    )
+
     def _create_entry_from_recovered_row(
         self,
         *,
@@ -1906,6 +2068,8 @@ class SessionStore:
         """
         session_key = self._generate_session_key(source)
         now = _now()
+        if is_bot_channel_session_key(session_key) and not force_new:
+            self._bind_legacy_bot_channel_keys(session_key, source)
 
         db_end_session_id = None
         db_create_kwargs = None
@@ -2029,6 +2193,10 @@ class SessionStore:
                         _needs_recover = True
                     else:
                         entry.updated_at = now
+                        if is_bot_channel_session_key(session_key):
+                            entry.origin = source
+                            entry.platform = source.platform
+                            entry.chat_type = source.chat_type
                         _needs_save = True
             else:
                 if not force_new:
@@ -2051,7 +2219,10 @@ class SessionStore:
         if entry is None:
             # Create a candidate outside the lock, then publish only if another
             # worker has not already populated this routing key.
-            session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+            if is_bot_channel_session_key(session_key):
+                session_id = session_key
+            else:
+                session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
             candidate = SessionEntry(
                 session_key=session_key,
                 session_id=session_id,
